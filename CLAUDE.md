@@ -48,14 +48,14 @@ compatibility/tempo/         TraceQL differential harness vs reference Tempo + v
 docs/                        engine.md, compatibility.md, test-strategy.md, observability.md, operations.md, upstream-forks.md, health.md, …
 ```
 
-See [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical 11-layer test map, the CI-gate inventory, the gremlins phased rollout, and the property-test phase plan.
+See [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical 12-layer test map, the CI-gate inventory, the gremlins phased rollout, and the property-test phase plan.
 
 Top-level reading order for any new contributor (human or agent):
 
 1. `README.md` — what the project is, quick start.
 2. `docs/engine.md` — shared query pipeline (`internal/engine/`), the `Lang` contract, and the extension points each new head plugs into.
 3. `docs/operations.md` — runtime contract: configuration, lifecycle, scaling.
-4. `docs/test-strategy.md` — 11-layer test map + CI gate inventory.
+4. `docs/test-strategy.md` — 12-layer test map + CI gate inventory.
 5. `internal/promql/lower.go` — the canonical lowering pattern; mirror it when adding LogQL / TraceQL slices.
 
 ## Common workflows

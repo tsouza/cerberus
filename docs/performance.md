@@ -156,27 +156,30 @@ spanning *static* (cheap, every PR) to *broad* (corpus-wide, nightly).
    with neither side bounded, an `arrayJoin` feeding a `JOIN`, an uncapped
    `WITH RECURSIVE`, a correlated subquery — on the lowered plan *and* emitted
    SQL of **every** corpus fixture. Cheap, pre-execution, no chDB needed.
-2. **Per-construct scaling harness** — `test/perf/scaling`, in the required
-   `perf-guards` chDB job. For a known-hot construct it sweeps a parameter
-   (step count, chain depth, recursion depth) and asserts wall-time stays
-   **sub-linear** in it *and* peak intermediate cardinality stays **bounded**.
-   This is the compute-fan-out axis the original read-side harness was blind
-   to.
+2. **Per-construct scaling harness** — `test/perf/scaling`, in the
+   `perf-guards` chDB job (runs on every PR; informational). For a known-hot
+   construct it sweeps a parameter (step count, chain depth, recursion depth)
+   and asserts wall-time stays **sub-linear** in it *and* peak intermediate
+   cardinality stays **bounded**. This is the compute-fan-out axis the original
+   read-side harness was blind to.
 3. **Corpus-wide fan-out profiler** — `test/perf/profile`, nightly +
    push-to-main, informational. Profiles all ~636 fixtures via in-process chDB
    `EXPLAIN` + per-subquery `count()`, ranks them by fan factor, and surfaces
    the worst as a job step-summary. The wide net for a fan-out in a construct
    nobody thought to write a guard for.
 4. **Cardinality ratchet** — `test/perf/cardinality_ratchet_test.go`, in the
-   required `perf-guards` chDB job. Pins every fixture's fan factor + structural
-   flags + recursion depth in `test/perf/cardinality-baseline.json` and fails
-   the PR on an **upward** fan-factor regression, a new CROSS JOIN /
-   `WITH RECURSIVE` where the baseline had none, or a deeper recursion. A new
-   fixture must add a baseline row, so a new construct's absolute fan factor
-   lands in the diff as a built-in cost review.
+   `perf-guards` chDB job (runs on every PR; informational). Pins every
+   fixture's fan factor + structural flags + recursion depth in
+   `test/perf/cardinality-baseline.json` and fails the run on an **upward**
+   fan-factor regression, a new CROSS JOIN / `WITH RECURSIVE` where the baseline
+   had none, or a deeper recursion. A new fixture must add a baseline row, so a
+   new construct's absolute fan factor lands in the diff as a built-in cost
+   review.
 
-The lint + ratchet are the per-PR gates; the scaling harness pins the
-known-hot shapes; the profiler is the wide net for the unknown ones.
+The static fan-out lint is the per-PR gate (in the required `check` job); the
+scaling harness and cardinality ratchet run on every PR through the
+informational `perf-guards` chDB lane; the profiler is the nightly wide net for
+the unknown shapes.
 Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.

@@ -1,11 +1,11 @@
 # Test strategy
 
-Cerberus is tested in 11 layers, ordered roughly cheapest-and-fastest
+Cerberus is tested in 12 layers, ordered roughly cheapest-and-fastest
 to slowest-and-most-realistic. Each layer pins a different class of
 contract: AST shape, plan-IR invariants, optimizer behaviour, emitted
-SQL bytes, semantic equivalence under chDB execution, HTTP wire
-conformance, process lifecycle, browser UX, failure-mode resilience,
-performance ceilings.
+SQL bytes, semantic equivalence under chDB execution, function-surface
+parity, HTTP wire conformance, process lifecycle, browser UX,
+failure-mode resilience, performance ceilings.
 
 This document is the canonical map of what each layer covers, where
 the tests live, which CI gates run them, and how to add a new test
@@ -13,39 +13,70 @@ inside each layer.
 
 ## At a glance
 
-| Layer | Name                                | Lives in                                                                                          | Catches                                                                                                              | Misses                                                                      |
-| ----- | ----------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| 1     | Parser smoke / AST-shape pinning    | `internal/{promql,logql,traceql}/parser_*_test.go`                                                | Upstream parser renames a field, swaps an enum, changes a root-node type after a fork rebase                         | Semantic divergence below the AST surface                                   |
-| 2a    | chplan IR snapshots in TXTAR        | `test/spec/<head>/*.txtar` (`-- chplan --` sections)                                              | Lowering regressions that don't change emitted SQL bytes                                                             | Optimizer-introduced regressions (covered by `-- chplan_optimized --` pair) |
-| 2b    | Lowering edge cases                 | `internal/{promql,logql,traceql}/lower_*_test.go`                                                 | Edge inputs (NaN, empty matrix, scalar coercions) that don't appear in golden fixtures                               | Combinatoric blow-up — keep table-driven                                    |
-| 3     | chplan IR invariants                | `internal/chplan/{equal,walk}_invariants_test.go`                                                 | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity                          | Lowering bugs — IR is generic                                               |
-| 4     | Optimizer rule properties           | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank}_test.go`         | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                                       | Cross-rule chDB row drift (covered by Layer 6 chDB property)                |
-| 5     | chsql Frag + QueryBuilder goldens   | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go`                | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency                             | SQL that compiles but executes incorrectly — covered by Layer 6             |
-| 6a    | PromQL chDB roundtrip               | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                 | Optimizer/emitter rewrites that change the row set                                                                   | Behaviour outside the seeded corpus                                         |
-| 6b    | LogQL chDB roundtrip                | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                 | Same as 6a                                                                  |
-| 6c    | TraceQL chDB roundtrip              | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                  |
-| 7     | HTTP handler conformance            | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (Layer 10) and UX flows (Layer 9)                |
-| 7b    | Consumer-corpus replay              | `test/consumer-corpus/`                                                                           | Consumer-decode drift on captured Grafana request shapes (proto envelopes, bare JSON, drilldown queries)             | Shapes Grafana hasn't been observed sending — crawler mines captures        |
-| 8     | System / process lifecycle          | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 9)                           |
-| 9     | Playwright UX flows                 | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                             |
-| 10    | Chaos / failure-mode                | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                        |
-| 11    | Perf benchmarks + alloc regressions | `internal/*/*_bench_test.go`                                                                      | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat        |
+| Layer | Name                                | Lives in                                                                                          | Catches                                                                                                              | Misses                                                                       |
+| ----- | ----------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1     | Parser smoke / AST-shape pinning    | `internal/{promql,logql,traceql}/parser_*_test.go`                                                | Upstream parser renames a field, swaps an enum, changes a root-node type after a fork rebase                         | Semantic divergence below the AST surface                                    |
+| 2a    | chplan IR snapshots in TXTAR        | `test/spec/<head>/*.txtar` (`-- chplan --` sections)                                              | Lowering regressions that don't change emitted SQL bytes                                                             | Optimizer-introduced regressions (covered by `-- chplan_optimized --` pair)  |
+| 2b    | Lowering edge cases                 | `internal/{promql,logql,traceql}/lower_*_test.go`                                                 | Edge inputs (NaN, empty matrix, scalar coercions) that don't appear in golden fixtures                               | Combinatoric blow-up — keep table-driven                                     |
+| 3     | chplan IR invariants                | `internal/chplan/{equal,walk}_invariants_test.go`                                                 | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity                          | Lowering bugs — IR is generic                                                |
+| 4     | Optimizer rule properties           | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank}_test.go`         | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                                       | Cross-rule chDB row drift (covered by Layer 6 chDB property)                 |
+| 5     | chsql Frag + QueryBuilder goldens   | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go`                | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency                             | SQL that compiles but executes incorrectly — covered by Layer 6              |
+| 6a    | PromQL chDB roundtrip               | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                 | Optimizer/emitter rewrites that change the row set                                                                   | Behaviour outside the seeded corpus                                          |
+| 6b    | LogQL chDB roundtrip                | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                 | Same as 6a                                                                   |
+| 6c    | TraceQL chDB roundtrip              | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                   |
+| 6d    | Function-surface parity ledger      | `test/surface-parity/`, `test/rejection-parity/`, `test/inventory/`                               | A symbol cerberus fails to lower (wrong-reject) or answers when the reference rejects (wrong-accept)                 | Whether an accepted symbol returns the *right rows* (Layer 6a-c)             |
+| 7     | HTTP handler conformance            | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (Layer 10) and UX flows (Layer 9)                 |
+| 7b    | Consumer-corpus replay              | `test/consumer-corpus/`                                                                           | Consumer-decode drift on captured Grafana request shapes (proto envelopes, bare JSON, drilldown queries)             | Shapes Grafana hasn't been observed sending — crawler mines captures         |
+| 8     | System / process lifecycle          | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 9)                            |
+| 9     | Playwright UX flows                 | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                              |
+| 10    | Chaos / failure-mode                | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                         |
+| 11    | Perf benchmarks + alloc regressions | `internal/*/*_bench_test.go`                                                                      | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat         |
+| 12    | Compute fan-out guards              | `internal/perf/fanout`, `test/perf/` (scaling harness; cardinality / wall / decision ratchets)    | Upward fan-factor regression, a new unbounded shape (`CrossJoin` / uncapped `WITH RECURSIVE`), super-linear scaling  | A fan-out in a construct with no guard and no fixture (the nightly profiler) |
 
 ## CI gates
 
-| Gate                          | Workflow                                       | Trigger                            | Required PR check? | Scope                                                                                                             |
-| ----------------------------- | ---------------------------------------------- | ---------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `check`                       | `.github/workflows/ci.yml` (job `check`)       | PRs + push                         | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 7b stub lane, 8, 10 default)                          |
-| `lint`                        | `.github/workflows/ci.yml` (job `lint`)        | PRs + push                         | Required           | `golangci-lint` v2 + markdownlint + commitlint                                                                    |
-| `forbid-skip`                 | `.github/workflows/ci.yml` (job `forbid-skip`) | PRs + push                         | Required           | `t.Skip*` + discipline-erosion wording + soft-assertion + skip-additions                                          |
-| `probe`                       | `.github/workflows/chdb.yml` (job `probe`)     | PRs + push                         | Required           | chDB driver sanity (`TestChDBProbe`) + `just test-chdb` (api handler chdb tests, Layer 7b chdb lane)              |
-| `roundtrip (<ql>)`            | `.github/workflows/chdb.yml` matrix            | PRs + push                         | Required           | TXTAR chDB roundtrip for promql / logql / traceql (Layer 6a-c)                                                    |
-| `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix   | PRs + push + nightly               | Required           | Differential vs reference Prom / Loki / Tempo                                                                     |
-| `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`)  | push-to-main + nightly + manual    | Informational      | k3d + cerberus + Grafana + Playwright (Layer 9)                                                                   |
-| `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix        | PRs (path-match) + push + nightly  | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
-| `property`                    | `.github/workflows/property.yml`               | push-to-main + nightly + manual    | Informational      | rapid-driven property tests (Layer 4 + 6 cross-check)                                                             |
-| `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`         | PRs (path-match) + weekly + manual | Informational      | benchstat-based perf regression                                                                                   |
-| `compose-smoke`               | `.github/workflows/e2e.yml` (compose-smoke)    | PRs + push                         | Required           | `docker compose up --wait` + `/healthz` + `/readyz` + Grafana `/api/health`                                       |
+The eleven **required** status checks on `main` are `check`, `lint`,
+`forbid-skip`, `probe`, `roundtrip (promql)`, `roundtrip (logql)`,
+`roundtrip (traceql)`, `compatibility/prometheus`, `compatibility/loki`,
+`compatibility/tempo`, and `compose-smoke`. Every other job below is
+informational — it runs (push-to-main, nightly, or dispatch) and reports,
+but a red result does not block a merge. Informational does **not** mean
+tolerated: a red informational lane is a real failure to fix, it is just
+not wired as a branch-protection gate (typically because it needs the chDB
+substrate, a Docker stack, or a soak streak before promotion).
+
+| Gate                                    | Workflow (job)                                       | Trigger                             | Required? | Scope                                                                                                                                                                                                                    |
+| --------------------------------------- | ---------------------------------------------------- | ----------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `check`                                 | `ci.yml` (`check`)                                   | PR + push                           | Required  | `just test` (`go test -race -cover ./...`) + `just build`. Default-tag lanes: 1, 2a, 2b, 3, 4, 5, **6d** (surface / rejection / inventory parity ratchets), 7, 7b stub, 8, 10, 11, 12 solver-decision ratchet            |
+| `lint`                                  | `ci.yml` (`lint`)                                    | PR + push                           | Required  | `golangci-lint` v2 + `go-arch-lint` + `actionlint` + `commitlint` (PR) + `markdownlint-cli2`                                                                                                                             |
+| `forbid-skip`                           | `ci.yml` (`forbid-skip`)                             | PR + push                           | Required  | `t.Skip*`, discipline-erosion wording, soft-assertion / silent-recover, escape-hatch patterns, `should_skip` overlay, regex self-test                                                                                    |
+| `probe`                                 | `chdb.yml` (`probe`)                                 | PR + push + nightly                 | Required  | chDB driver sanity (`TestChDBProbe`) + `just test-chdb` (api-handler + Layer 7b chdb lane)                                                                                                                               |
+| `roundtrip (promql / logql / traceql)`  | `chdb.yml` (matrix)                                  | PR + push + nightly                 | Required  | TXTAR chDB roundtrip per head (Layer 6a-c)                                                                                                                                                                               |
+| `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)     | PR + push + nightly + dispatch      | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness)                                                                                                                                            |
+| `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus                                                                                                                                            |
+| `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus)                                                                                                                                                    |
+| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | PR + push + nightly                 | Required  | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                             |
+| `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Info      | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                 |
+| `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`) | PR + push + nightly + dispatch      | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half) |
+| `perf-guards`                           | `chdb.yml` (`perf-guards`)                           | PR + push + nightly                 | Info      | `just perf-chdb` (`go test -tags chdb ./test/perf/...`): the cardinality / scale-wall ratchets, per-construct scaling harness, and cycle-guards (Layer 12 chdb lanes)                                                    |
+| `perf-profile`                          | `perf-profile.yml` (`profile`)                       | push + nightly + dispatch           | Info      | Corpus-wide compute-fan-out profiler over every executable TXTAR fixture (EXPLAIN + per-subquery `count()` fan-factor); top-40 to step summary (Layer 12, Component B)                                                   |
+| `perf-benchmark`                        | `perf-benchmark.yml` (`benchstat diff`)              | PR (path-match) + weekly + dispatch | Info      | benchstat wall-clock regression vs baseline (Layer 11)                                                                                                                                                                   |
+| `dashboard`                             | `e2e.yml` (`dashboard`)                              | push + nightly + dispatch           | Info      | k3d + cerberus + Grafana + Playwright full smoke + `k3d` crawl (Layer 9)                                                                                                                                                 |
+| `startup-bench`                         | `e2e.yml` (`startup-bench`)                          | push + nightly + dispatch           | Info      | cerberus reaches `/healthz` under 2 s against an inline ClickHouse                                                                                                                                                       |
+| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | push + nightly + dispatch           | Info      | gremlins per package (`chplan` / `chsql` / `optimizer` / `promql` / `logql` x4 / `traceql` / `qlcommon`) at the phase efficacy floor                                                                                     |
+| `property`                              | `property.yml`                                       | push + nightly + dispatch           | Info      | rapid-driven oracle property tests, PromQL / LogQL / TraceQL (Layer 4 + 6 cross-check)                                                                                                                                   |
+| `coverage`                              | `coverage.yml`                                       | push + nightly + dispatch           | Info      | merged default-tag + chdb-tagged cover profile, per-package summary                                                                                                                                                      |
+
+The `compatibility/promql-surface`, `compatibility/prometheus-forced-route`,
+and `perf-guards` lanes ride the same `compatibility.yml` / `chdb.yml`
+workflows as their required siblings and run on every PR, but are not yet
+promoted to branch-protection gates — they stay informational until each has
+held a green soak streak (the same flip discipline the three
+`compatibility/<head>` heads went through). The chdb-free half of the
+function-surface ledger (`test/surface-parity/`, `test/rejection-parity/`,
+`test/inventory/` regenerability ratchets) DOES gate on every PR through the
+required `check` job, so a wrong-reject / wrong-accept regression fails red
+regardless of the live-reference lane's gate status.
 
 ## Per-layer guidance
 
@@ -116,6 +147,58 @@ set to `expected_rows`. `just update-golden` regenerates this layer too
 (it requires libchdb.so; see `just chdb-install`). Use `just spec-chdb`
 to verify locally without rewriting.
 
+### Layer 6d — Function-surface parity ledger
+
+Layers 6a-c prove that an *accepted* query returns the right rows. Layer
+6d proves cerberus accepts and rejects the right *set* of grammar symbols
+in the first place — the conformance frontier between the three upstream
+parsers' grammars and what cerberus's `parse → fold → lower → optimize →
+emit` pipeline actually admits. Three sibling packages, all chDB-free, all
+gating on every PR through `check`:
+
+- **`test/surface-parity/`** — the authoritative ledger. It enumerates
+  every symbol the three upstream parser symbol tables expose (PromQL
+  `parser.Functions` + aggregators + binary ops + modifiers, LogQL `Op*`
+  consts, TraceQL intrinsics + metrics-ops), runs the cerberus verdict
+  (accept / reject) and the reference-backend verdict on each, and
+  classifies every pair into a four-way grid: `parity-accept` (both
+  accept), `parity-reject` (both reject), `wrong-reject` (cerberus 422s a
+  symbol the reference accepts — a real coverage gap), `wrong-accept`
+  (cerberus answers a query the reference won't). `inventory.json` is the
+  pinned artifact; `inventory_test.go` runs a three-leg ratchet
+  (regenerability + a raise-only floor on the wrong-reject and wrong-accept
+  sets), so a NEW wrong-reject — a freshly-added grammar symbol cerberus
+  doesn't lower, or one that regressed from accept — fails CI red, and a
+  burndown that *closes* a gap also fails until the inventory is
+  regenerated (`CERBERUS_UPDATE_INVENTORY=1`), keeping the ledger in
+  lock-step with the surface.
+
+  The PromQL reference oracle is the **flag-ON** reference Prometheus HTTP
+  verdict (started with `--enable-feature=promql-experimental-functions`,
+  matching cerberus's own parser config), pinned in
+  `promql-reference-verdicts.json`. The in-process ratchet reads the pinned
+  artifact (Docker-free); the `compatibility/promql-surface` CI job
+  re-probes the live reference and fails on drift, so the artifact can
+  never silently diverge from the real backend.
+
+- **`test/rejection-parity/`** — the SITE-based complement. Where
+  surface-parity starts from the parser's accepted grammar, rejection-parity
+  diffs cerberus's KNOWN 422 code-sites against the reference's error class
+  for the same probe, so a rejection whose *message / status* drifts from
+  the reference is caught even when the accept/reject verdict agrees.
+  `catalogue.json` + `catalogue_test.go` ratchet it the same way.
+
+- **`test/inventory/`** — per-head capability inventories
+  (`{promql,logql,traceql}_test.go`), regenerable under the same
+  `CERBERUS_UPDATE_INVENTORY=1` convention.
+
+The user-facing translation of this ledger — every function / operator /
+intrinsic with its support status — lives in
+[`coverage.md`](coverage.md), which is generated from `inventory.json` and
+presents the ledger classes in honest support language (an experimental fn
+cerberus implements that the flag-OFF reference would reject is "Supported
+(experimental)", not a raw "wrong-accept").
+
 ### Layer 7 — HTTP handler conformance
 
 `internal/api/{prom,loki,tempo}/conformance_test.go` exercises every
@@ -184,6 +267,41 @@ breaker shields cerberus from amplifying transient CH outages into a
 `testing.AllocsPerRun`. `TestAllocs_Xxx` pins documented zero-alloc
 hot paths (e.g. emitter slot append, Frag render). benchstat-based
 wall-clock comparisons live in `perf-benchmark.yml` (manual dispatch).
+
+### Layer 12 — Compute fan-out guards
+
+The axis Layer 11's read-side benchmarks are blind to: peak intermediate
+cardinality and wall-time scaling against a query parameter (step count,
+chain depth, recursion depth). The thing cerberus watches is the **fan
+factor** — peak intermediate rows ÷ leaf scan rows — and four lanes hold
+it flat from cheap-static to broad-corpus (see
+[`performance.md`](performance.md#how-fast-is-kept-fast--the-assurance-framework)
+for the strategy):
+
+- **Static fan-out lint** (`internal/perf/fanout`, in `check`) — flags
+  structurally-unbounded shapes (an unbounded `CrossJoin`, an `arrayJoin`
+  feeding a `JOIN`, an uncapped `WITH RECURSIVE`, a correlated subquery) on
+  the lowered plan *and* emitted SQL of every corpus fixture. No chDB
+  needed.
+- **Per-construct scaling harness** (`test/perf/scaling`, chdb `perf-guards`
+  job) — sweeps a parameter for a known-hot construct and asserts wall-time
+  stays sub-linear *and* peak intermediate cardinality stays bounded.
+- **Cardinality + scale-wall ratchets** (`test/perf/cardinality_ratchet_test.go`,
+  `scale_wall_pin_chdb_test.go`, chdb `perf-guards` job) — pin every
+  fixture's fan factor + structural flags + recursion depth in
+  `cardinality-baseline.json` / `scale-wall-baseline.json` and fail on an
+  upward regression, a new unbounded shape, or a deeper recursion. A
+  decrease never blocks; the ceiling tightens only on a deliberate
+  `just update-cardinality-baseline`.
+- **Solver-decision ratchet** (`test/perf/solver_decision_ratchet_test.go`,
+  chDB-free, in `check`) — pins the per-fixture route A/B classification
+  against `solver-decision-baseline.json` so a routing-heuristic change
+  surfaces in the diff.
+- **Corpus-wide fan-out profiler** (`test/perf/profile`, the `perf-profile`
+  workflow, nightly + push, informational) — profiles every executable
+  TXTAR fixture via in-process chDB `EXPLAIN` + per-subquery `count()`,
+  ranks by fan factor, and surfaces the worst as a job step-summary. The
+  wide net for a fan-out in a construct nobody wrote a guard for.
 
 ## Property tests
 

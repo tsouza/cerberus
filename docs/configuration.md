@@ -1,12 +1,14 @@
 # Configuration
 
-Cerberus is a stateless 12-factor binary configured **entirely** through
-`CERBERUS_*` environment variables — there is no YAML, INI, or TOML file to
-load. ClickHouse and the (optional) OpenTelemetry collector are attached
-resources reached through env-var connection inputs, so swapping a local
-single-node ClickHouse for a managed cluster, or a sidecar collector for a
-SaaS ingest URL, is a matter of flipping env vars and restarting. Every
-default below is the value `internal/config/config.go` ships out of the box.
+Cerberus is a stateless 12-factor binary configured primarily through
+`CERBERUS_*` environment variables. An optional `cerberus.yaml`
+([below](#configuration-file-optional)) may supply file-level defaults, but the
+environment contract always wins — env vars are the source of truth.
+ClickHouse and the (optional) OpenTelemetry collector are attached resources
+reached through env-var connection inputs, so swapping a local single-node
+ClickHouse for a managed cluster, or a sidecar collector for a SaaS ingest URL,
+is a matter of flipping env vars and restarting. Every default below is the
+value `internal/config/config.go` ships out of the box.
 
 Misconfigured values fail fast: an unparseable duration, an out-of-range
 integer, an unknown log level, or a malformed OTLP header list aborts startup
@@ -17,6 +19,51 @@ vault-injecting init container — never committed.
 
 For how these knobs interact with the running service — lifecycle, readiness,
 deployment, scaling — see [`operations.md`](operations.md).
+
+## Configuration file (optional)
+
+Cerberus loads configuration through a [viper](https://github.com/spf13/viper)
+loader, so an **optional** `cerberus.yaml` may supply values alongside the
+environment. The resolution order is:
+
+1. **Environment variable** (`CERBERUS_*`) — always wins.
+2. **Config file** (`cerberus.yaml`) — fills in anything the environment leaves
+   unset.
+3. **Built-in default** — the value `internal/config/config.go` ships.
+
+The loader probes two paths for `cerberus.yaml`, in order: the **working
+directory** (`.`) and **`/etc/cerberus`**. The file is **purely additive** — it
+can only supply a value the operator hasn't set in the environment; it can never
+override an env var. That keeps the 12-factor contract intact (the deployment's
+environment remains the source of truth) while giving a baked-image or
+bare-metal deployment a place to pin defaults without a long `-e` list.
+
+The file is **optional and best-effort**: a **missing** `cerberus.yaml` is not
+an error, and a **malformed** one is tolerated at load time rather than crashing
+startup — values still resolve from the environment and the built-in defaults.
+Each resolved value, whatever its source, is then run through the **same
+fail-fast typed validation** an env value gets: an unparseable duration or an
+out-of-range integer supplied by the file aborts startup with the same clear
+error it would from an env var. So a file *value* that is present but invalid
+still fails fast; only an absent or structurally-broken file is silently
+skipped.
+
+The keys are the literal `CERBERUS_*` names (the loader binds each viper key to
+its environment variable). A minimal example pinning the ClickHouse endpoint and
+log format:
+
+```yaml
+# /etc/cerberus/cerberus.yaml — defaults; any CERBERUS_* env var overrides these
+CERBERUS_CH_ADDR: clickhouse.observability.svc:9000
+CERBERUS_CH_DATABASE: otel
+CERBERUS_LOG_FORMAT: json
+CERBERUS_ADMIT_TEMPO: 24
+```
+
+Secrets (the ClickHouse password, OTLP bearer tokens) are best left **out** of
+the file and injected through the environment from a Kubernetes `Secret` or a
+vault sidecar, exactly as without a config file — the file is for non-secret
+defaults.
 
 ## HTTP server
 
