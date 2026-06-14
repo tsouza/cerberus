@@ -482,13 +482,15 @@ func setupSchema(
 // table that EXISTS but is WRONG-SHAPE) never self-heals, so the returned
 // error aggregates every such requirement and the caller exits non-zero —
 // the precise boot-time failure replaces the opaque query-time error a
-// too-old server or divergent schema would otherwise produce. A schema that
-// is ENTIRELY ABSENT (not yet provisioned) is TRANSIENT — the
-// cerberus+collector startup race — so it does NOT fail startup: the
-// returned health.SchemaPresentFunc reports NOT READY on /readyz with the
-// absent reason, and a background re-probe (reusing the auto-create retry
-// cadence) flips it ready once an external writer provisions the schema,
-// with no restart.
+// too-old server or divergent schema would otherwise produce. Two cases are
+// instead TRANSIENT and do NOT fail startup: a schema that is ENTIRELY ABSENT
+// (not yet provisioned — the cerberus+collector race), and a ClickHouse that
+// is ENTIRELY UNREACHABLE (a dial / connection-refused error — cerberus
+// booted ahead of the database). In both the returned
+// health.SchemaPresentFunc reports NOT READY on /readyz with a precise
+// reason, and a background re-probe (reusing the auto-create retry cadence)
+// flips it ready once the server appears and the schema is provisioned, with
+// no restart.
 //
 // When the check is disabled, both gates are bypassed (one log line) and a
 // nil SchemaPresentFunc is returned — readiness does not gate on the schema.
@@ -515,6 +517,22 @@ func runRequirementsCheck(
 		// some tables are also absent: a too-old server won't fix itself by
 		// waiting, and a wrong-shape table is a genuine misconfiguration.
 		return nil, res.Fatal
+	}
+
+	if res.Unreachable {
+		// Transient: ClickHouse is not accepting connections yet (cerberus
+		// booted ahead of the database). A dial / connection-refused error is
+		// NOT a misconfiguration and self-heals once the server appears, so
+		// boot but stay NOT READY; the same background re-probe that waits on
+		// an absent schema also waits out an unreachable server. No restart.
+		reason := res.UnreachableReason()
+		logger.Warn(
+			"clickhouse not reachable at startup; serving unready until it appears (/readyz gates traffic)",
+			"reason", reason,
+		)
+		present := newSchemaPresentSignal(reason)
+		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
+		return present.Func(), nil
 	}
 
 	if !res.SchemaProvisioned() {
@@ -586,13 +604,15 @@ func (s *schemaPresentSignal) setReason(reason string) {
 }
 
 // reprobeSchema re-runs the requirements check on the auto-create retry
-// cadence until the configured schema is fully provisioned (or ctx is
-// cancelled). It only ever transitions a not-present schema to present: a
-// re-probe that turns up a FATAL finding (e.g. an external writer created a
-// wrong-shape table) is logged and retried rather than crashing a
-// already-serving process — the boot-time fail-fast contract covers the
-// cold-start case, and a running replica must not exit on a transient
-// introspection blip. Once present it flips readiness and returns.
+// cadence until the configured schema is fully provisioned AND ClickHouse is
+// reachable (or ctx is cancelled). It only ever transitions a not-present
+// schema to present: a re-probe that turns up a FATAL finding (e.g. an
+// external writer created a wrong-shape table) is logged and retried rather
+// than crashing an already-serving process — the boot-time fail-fast contract
+// covers the cold-start case, and a running replica must not exit on a
+// transient introspection blip. A still-unreachable server keeps the
+// unreachable reason fresh and waits. Once the schema is present it flips
+// readiness and returns.
 func reprobeSchema(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -612,6 +632,11 @@ func reprobeSchema(
 		res := preflight.Run(ctx, client, req)
 		if res.Fatal != nil {
 			logger.Warn("schema re-probe found a fatal requirement; staying unready and retrying", "err", res.Fatal)
+			continue
+		}
+		if res.Unreachable {
+			// Still no ClickHouse: keep the unreachable reason fresh and wait.
+			signal.setReason(res.UnreachableReason())
 			continue
 		}
 		if !res.SchemaProvisioned() {

@@ -3,12 +3,31 @@ package preflight
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// dialRefusedErr mimics the error the clickhouse-go/v2 driver surfaces when
+// ClickHouse is not accepting connections yet: a *net.OpError wrapping an
+// ECONNREFUSED syscall, then wrapped again under the chclient stage prefix
+// (preserved via %w, exactly as client.go does). isUnreachable must see
+// through both wrappers via errors.As.
+func dialRefusedErr() error {
+	opErr := &net.OpError{
+		Op:   "dial",
+		Net:  "tcp",
+		Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 5), Port: 9000},
+		Err:  os.NewSyscallError("connect", syscall.ECONNREFUSED),
+	}
+	return fmt.Errorf("chclient: query: %w", opErr)
+}
 
 // stubQuerier is the in-memory ClickHouse stub the preflight tests drive.
 // It answers the version() scalar from Version (or VersionErr) and the
@@ -282,10 +301,14 @@ func TestRunUnparseableVersionFails(t *testing.T) {
 
 func TestRunVersionQueryErrorFails(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{VersionErr: errors.New("connection refused"), Columns: healthyColumns()}
+	// A reachable server that rejects the version query server-side (NOT a
+	// transport error) is still fatal — the check ran but couldn't read the
+	// version. A connection-refused / dial error is the transient case,
+	// covered separately by TestRunUnreachableVersionIsTransient.
+	q := &stubQuerier{VersionErr: errors.New("code 241: memory limit exceeded"), Columns: healthyColumns()}
 	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
-		t.Fatal("version query error must fail startup")
+		t.Fatal("server-side version query error must fail startup")
 	}
 	if !strings.Contains(err.Error(), "could not read clickhouse version") {
 		t.Errorf("message missing version-read note: %v", err)
@@ -448,7 +471,11 @@ func TestRunWrongShapeFatalEvenIfOtherTableAbsent(t *testing.T) {
 // the same signal as a cleanly-absent table.
 func TestRunIntrospectionErrorIsFatal(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{Version: "25.8.2.1", ColumnsErr: errors.New("read timeout")}
+	// A server-side introspection rejection (NOT a transport error) is fatal —
+	// the check ran against a reachable server but couldn't read the columns.
+	// A dial / connection-refused error is transient, covered by
+	// TestRunUnreachableTableIsTransient.
+	q := &stubQuerier{Version: "25.8.2.1", ColumnsErr: errors.New("code 60: unknown table")}
 	res := Run(context.Background(), q, defaultReq())
 	if res.Fatal == nil {
 		t.Fatal("introspection query error must be fatal")
@@ -555,4 +582,95 @@ func (c *countingQuerier) QueryNameTypePairs(ctx context.Context, sql string, ar
 		}
 	}
 	return c.stubQuerier.QueryNameTypePairs(ctx, sql, args...)
+}
+
+// assertTransient is the shared assertion for the unreachable cases: the
+// Result must be transient (not fatal, not provisioned), carry the
+// Unreachable flag, and render a precise not-reachable reason.
+func assertTransient(t *testing.T, res Result) {
+	t.Helper()
+	if res.Fatal != nil {
+		t.Fatalf("unreachable ClickHouse must NOT be fatal (transient boot race), got: %v", res.Fatal)
+	}
+	if !res.Unreachable {
+		t.Fatal("unreachable ClickHouse must set Result.Unreachable")
+	}
+	if res.SchemaProvisioned() {
+		t.Fatal("unreachable ClickHouse must report schema NOT provisioned")
+	}
+	reason := res.UnreachableReason()
+	if !strings.Contains(reason, "clickhouse not reachable") {
+		t.Errorf("UnreachableReason = %q, want a precise not-reachable reason", reason)
+	}
+}
+
+// TestRunUnreachableVersionIsTransient: a connection-refused / dial error on
+// the version probe means ClickHouse hasn't come up yet — the residual sibling
+// of the absent-schema race. It must be TRANSIENT (Unreachable), never fatal,
+// so the pod boots NOT READY and re-probes instead of crash-looping.
+func TestRunUnreachableVersionIsTransient(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{VersionErr: dialRefusedErr(), Columns: healthyColumns()}
+	assertTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// TestRunUnreachableTableIsTransient: the version probe succeeds but the
+// server drops before the schema gate, so introspection fails with a dial
+// error. That too is transient — abandon the shape gate and wait, don't crash.
+func TestRunUnreachableTableIsTransient(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{Version: "25.8.2.1", ColumnsErr: dialRefusedErr()}
+	assertTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// TestRunUnreachableVersionShortCircuitsShapeGate: an unreachable server on
+// the version probe must NOT then run (and fail) the shape gate — the Result
+// carries only the Unreachable signal, no wrong-shape fatal even though the
+// columns would diverge.
+func TestRunUnreachableVersionShortCircuitsShapeGate(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{VersionErr: dialRefusedErr(), ColumnsErr: errors.New("code 60: unknown table")}
+	res := Run(context.Background(), q, defaultReq())
+	assertTransient(t, res)
+	if res.Fatal != nil {
+		t.Fatalf("unreachable on version probe must short-circuit the shape gate, got fatal: %v", res.Fatal)
+	}
+}
+
+// TestRunUnreachableSubstringFallback: when the driver wraps the dial failure
+// opaquely (a plain error whose message carries transport vocabulary but no
+// *net.OpError in the chain), the named substring fallback still classifies it
+// transient.
+func TestRunUnreachableSubstringFallback(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{
+		VersionErr: errors.New("chclient: query: dial tcp clickhouse:9000: connect: connection refused"),
+		Columns:    healthyColumns(),
+	}
+	assertTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// TestIsUnreachableClassification pins the typed vs server-side split that the
+// fatal/transient routing depends on.
+func TestIsUnreachableClassification(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"typed-dial-refused", dialRefusedErr(), true},
+		{"net-timeout", &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}, true},
+		{"substring-no-route", errors.New("dial tcp: no route to host"), true},
+		{"substring-conn-reset", errors.New("read: connection reset by peer"), true},
+		{"server-side-memory", errors.New("code 241: memory limit exceeded"), false},
+		{"server-side-unknown-table", errors.New("code 60: unknown table"), false},
+		{"too-old-shape-text", errors.New("table otel_logs: missing required column Body"), false},
+	}
+	for _, tc := range cases {
+		if got := isUnreachable(tc.err); got != tc.want {
+			t.Errorf("isUnreachable(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
