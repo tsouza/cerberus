@@ -104,8 +104,8 @@ function breakerStateName(v) {
 //
 // Both the ch-slow-query-timeout and load-admit-saturation scenarios need a
 // query that is GENUINELY expensive to evaluate — heavy enough to blow the
-// 3s CERBERUS_QUERY_TIMEOUT the chaos overlay sets (slow-query) or to hold
-// an admit slot long enough to overlap a concurrent burst (saturation).
+// (calibrated) CERBERUS_QUERY_TIMEOUT the chaos overlay sets (slow-query) or
+// to hold an admit slot long enough to overlap a concurrent burst (saturation).
 //
 // The cost MUST come from COMPUTE PER ANCHOR, not from anchor count. An
 // earlier version drove cost with a 30-day range at step=1s (~2.6M anchors),
@@ -115,23 +115,39 @@ function breakerStateName(v) {
 // timeout is even armed — so the "slow" query 400'd instead of timing out,
 // and the scenario asserted a 503 it could never see. The 11000-point cap is
 // an intentional Prometheus-compat invariant, so the query has to stay UNDER
-// it while still costing seconds to evaluate.
+// it while still costing real compute to evaluate.
 //
-// The fix: a MODEST outer point count (well under the cap) where EACH outer
-// anchor fans out into a heavy nested subquery —
+// The cost MUST ALSO be UNCOLLAPSIBLE. An earlier version used
 //   max_over_time( sum(rate(<counter>[INNER])) [SUBQ_RANGE:SUBQ_STEP] )
-// Every outer anchor re-evaluates SUBQ_RANGE/SUBQ_STEP inner sub-anchors,
-// each a rate() over INNER seconds of the seeded high-cardinality counter
-// (the O(rows x anchors) compute fan-out). That product (outer x inner)
-// reliably exceeds 3s on the CI runner without ever tripping the points cap.
+// but the seed is deliberately thin — http_server_request_duration_count is
+// a SINGLE low-cardinality series of 600 samples whose Count grows linearly
+// (test/e2e/seed/cmd/seed/main.go). Over uniform, linearly-growing data the
+// optimizer + the subquery folding collapse max_over_time(sum(rate(...))) to
+// a CHEAP FLAT CONSTANT (~hundred ms, returning the same value at every
+// timestamp). It never exceeded the cap -> 200 instead of the asserted 503
+// (dispatch run 27505378745). Reordering / fuller data didn't help: the
+// problem was the query is cheap on cerberus, not the data being thin.
+//
+// The fix: stddev_over_time over a sub-stepped rate() subquery. A per-anchor
+// dispersion CANNOT fold to a constant (each outer anchor must materialise
+// its SUBQ_RANGE/SUBQ_STEP inner rate() samples and compute their stddev),
+// so the cost is real CH compute regardless of optimizer or uniform data.
+// Measured on the live compose stack (2026-06-14): ~650 ms wall-clock on the
+// seed-only {job=api} series vs ~8 ms for a trivial query=up. The chaos
+// overlay then calibrates CERBERUS_QUERY_TIMEOUT to 250ms (test-only) — it
+// sits cleanly between the two (heavy ~650 ms > cap 250 ms > trivial ~8 ms),
+// so the heavy query reliably 503s errorType=timeout while up stays 200.
 const SLOW_QUERY_RANGE_SECONDS = 2 * 3600; // 2h outer window
 const SLOW_QUERY_STEP_SECONDS = 1; // 1s outer step => 7200 outer anchors (< 11000 cap)
 const SLOW_QUERY_SUBQ_RANGE = '1h'; // each anchor fans out a 1h subquery
-const SLOW_QUERY_SUBQ_STEP = '5s'; // at 5s => 720 inner sub-anchors per outer anchor
-const SLOW_QUERY_INNER_RANGE = '10m'; // each sub-anchor rate()s 10m of raw counter rows
-// The seeded high-cardinality counter the rate() scans (test/e2e/seed: 600
-// samples/series in otel_metrics_sum -> histogram-routed under this name).
+const SLOW_QUERY_SUBQ_STEP = '1s'; // at 1s => 3600 inner sub-anchors per outer anchor
+const SLOW_QUERY_INNER_RANGE = '5m'; // each sub-anchor rate()s 5m of raw counter rows
+// The seeded counter the rate() scans (test/e2e/seed: 600 samples in
+// otel_metrics_sum -> histogram-routed under this name). Scoped to the seed
+// series {job="api"} so the cost is independent of any self-telemetry the
+// dogfood loop happens to add — the seed shape is guaranteed in the k3d lane.
 const SLOW_QUERY_COUNTER = 'http_server_request_duration_count';
+const SLOW_QUERY_SERIES_MATCHER = '{job="api"}';
 
 // slowQueryPath builds the /api/v1/query_range path for the expensive
 // nested-subquery query. anchored to `now` so the outer window overlaps the
@@ -143,8 +159,8 @@ function slowQueryPath() {
   const now = Math.floor(Date.now() / 1000);
   const start = now - SLOW_QUERY_RANGE_SECONDS;
   const expr =
-    `max_over_time(` +
-    `sum(rate(${SLOW_QUERY_COUNTER}[${SLOW_QUERY_INNER_RANGE}]))` +
+    `stddev_over_time(` +
+    `rate(${SLOW_QUERY_COUNTER}${SLOW_QUERY_SERIES_MATCHER}[${SLOW_QUERY_INNER_RANGE}])` +
     `[${SLOW_QUERY_SUBQ_RANGE}:${SLOW_QUERY_SUBQ_STEP}])`;
   return (
     '/api/v1/query_range?query=' +
@@ -508,8 +524,11 @@ async function scenarioChSlowTimeout() {
   // A heavy query_range whose cost comes from COMPUTE PER ANCHOR (a nested
   // subquery fanned out at every outer anchor), not from anchor count — so
   // it stays under the 11000-point resolution cap (which would 400 before
-  // the timeout arms) yet blows past the small CERBERUS_QUERY_TIMEOUT (3s)
-  // the chaos overlay set. See slowQueryPath / the SLOW_QUERY_* constants.
+  // the timeout arms) yet blows past the small, calibrated
+  // CERBERUS_QUERY_TIMEOUT (250ms) the chaos overlay set. The query is an
+  // UNCOLLAPSIBLE stddev_over_time (a per-anchor dispersion that can't fold
+  // to a constant), so its cost is real CH compute, not optimizer-foldable.
+  // See slowQueryPath / the SLOW_QUERY_* constants.
   // ?timeout= mins with the cap; we lean on the configured cap.
   const slowPath = slowQueryPath();
 
@@ -965,9 +984,9 @@ async function endOfRunHealthGate() {
 // scenarios run FIRST and destructive ones LAST (see orderScenarios). This is
 // load-bearing for ch-slow-query-timeout: that scenario's "deliberately slow"
 // nested-subquery query is DATA-DRIVEN (its inner rate() evals scan the seeded
-// counter), so it only reliably exceeds the 3s CERBERUS_QUERY_TIMEOUT — and thus
-// returns the contracted 503 — when it runs against the FULL rolling-seeded
-// window. Running it BEFORE the destructive ch-pod-kill (whose recreate leaves a
+// counter), so it only reliably exceeds the calibrated CERBERUS_QUERY_TIMEOUT
+// — and thus returns the contracted 503 — when it runs against the FULL
+// rolling-seeded window. Running it BEFORE the destructive ch-pod-kill (whose recreate leaves a
 // thin post-reseed window right after the one-shot re-anchor) keeps the query
 // cost-dominated. As a bonus, load-admit-saturation's "breaker stays CLOSED"
 // assertion then runs on a naturally-closed breaker (no prior outage), and each
@@ -975,7 +994,7 @@ async function endOfRunHealthGate() {
 const PHASE1 = [
   // Non-destructive, data-dependent: the slow-query timeout contract. Runs on
   // the full rolling-seeded window so the heavy nested subquery reliably blows
-  // the 3s wall-clock cap.
+  // the calibrated wall-clock cap.
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
   // Destructive pod-kills, sorted to run after the non-destructive set.
   { name: 'ch-pod-kill', run: scenarioChPodKill, recreatesCh: true, destructive: true },
