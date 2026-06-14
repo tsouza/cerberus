@@ -251,6 +251,11 @@ func New(cfg Config) (*Client, error) {
 			threshold:    cfg.BreakerThreshold,
 			window:       cfg.BreakerWindow,
 			openInterval: cfg.BreakerOpenInterval,
+			// Wire the transition telemetry (state gauge + trips counter)
+			// off the global MeterProvider. Zero-initialised at
+			// construction so a healthy replica's breaker exports a flat
+			// closed/0 series instead of "No data" — see breaker_metrics.go.
+			metrics: newGlobalBreakerMetrics(),
 		},
 		maxSamples: cfg.MaxQuerySamples,
 		maxMemory:  cfg.MaxQueryMemoryBytes,
