@@ -1104,6 +1104,12 @@
     "reason": "routed"
   },
   {
+    "query": "mad_over_time",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
     "query": "matcher_and_agg_by_service_name",
     "routed": true,
     "k": 8,
@@ -1845,6 +1851,30 @@
     "query": "trig_sinh_metric",
     "routed": true,
     "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "ts_of_first_over_time",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
+    "query": "ts_of_last_over_time",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
+    "query": "ts_of_max_over_time",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
+    "query": "ts_of_min_over_time",
+    "routed": true,
+    "k": 6,
     "reason": "routed"
   },
   {

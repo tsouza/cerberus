@@ -984,7 +984,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "The statistical *_over_time reducers. mad_over_time lives in the parity-rejection row until its emitter support lands.",
+      "description": "The statistical *_over_time reducers. mad_over_time now renders live in the 'Statistical & timestamp over-time' row (lowering + chsql median-of-abs-deviation reducer landed).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6850,100 +6850,6 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `mad_over_time(up[5m])` today; this panel pins the rejection.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 8,
-            "y": 179
-          },
-          "id": 77,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "mad_over_time(up[5m])",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "mad_over_time \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
           "description": "Cerberus rejects `first_over_time(up[5m])` today; this panel pins the rejection.",
           "fieldConfig": {
             "defaults": {
@@ -7125,382 +7031,6 @@
           "cerberus": {
             "expect": "nonempty",
             "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
-          "description": "Cerberus rejects `ts_of_first_over_time(up[5m])` today; this panel pins the rejection.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 8,
-            "y": 186
-          },
-          "id": 80,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "ts_of_first_over_time(up[5m])",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "ts_of_first_over_time \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
-          "description": "Cerberus rejects `ts_of_last_over_time(up[5m])` today; this panel pins the rejection.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 16,
-            "y": 186
-          },
-          "id": 81,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "ts_of_last_over_time(up[5m])",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "ts_of_last_over_time \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
-          "description": "Cerberus rejects `ts_of_max_over_time(up[5m])` today; this panel pins the rejection.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 0,
-            "y": 193
-          },
-          "id": 82,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "ts_of_max_over_time(up[5m])",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "ts_of_max_over_time \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
-          "description": "Cerberus rejects `ts_of_min_over_time(up[5m])` today; this panel pins the rejection.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 8,
-            "y": 193
-          },
-          "id": 83,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "ts_of_min_over_time(up[5m])",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "ts_of_min_over_time \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
           }
         },
         {
@@ -7696,6 +7226,489 @@
       ],
       "title": "Parity rejections \u2014 declared error contracts",
       "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 207
+      },
+      "id": 120,
+      "panels": [],
+      "title": "Statistical & timestamp over-time (mad / ts_of_*)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Median absolute deviation over a 5m window \u2014 median(|x - median(x)|).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 208
+      },
+      "id": 77,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mad_over_time(up[5m])",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "mad_over_time",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer landed); the panel asserts a live nonempty result. Previously a parity-rejection pin in the collapsed rejection row \u2014 the moment lowering/emitter support landed, the contract was upgraded to nonempty and the panel moved into the over-time showcase row."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Epoch-seconds timestamp of the earliest sample in a 5m window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 208
+      },
+      "id": 80,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "ts_of_first_over_time(up[5m])",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ts_of_first_over_time",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer landed); the panel asserts a live nonempty result. Previously a parity-rejection pin in the collapsed rejection row \u2014 the moment lowering/emitter support landed, the contract was upgraded to nonempty and the panel moved into the over-time showcase row."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Epoch-seconds timestamp of the latest sample in a 5m window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 208
+      },
+      "id": 81,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "ts_of_last_over_time(up[5m])",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ts_of_last_over_time",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer landed); the panel asserts a live nonempty result. Previously a parity-rejection pin in the collapsed rejection row \u2014 the moment lowering/emitter support landed, the contract was upgraded to nonempty and the panel moved into the over-time showcase row."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Epoch-seconds timestamp of the max-valued sample in a 5m window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 215
+      },
+      "id": 82,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "ts_of_max_over_time(up[5m])",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ts_of_max_over_time",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer landed); the panel asserts a live nonempty result. Previously a parity-rejection pin in the collapsed rejection row \u2014 the moment lowering/emitter support landed, the contract was upgraded to nonempty and the panel moved into the over-time showcase row."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Epoch-seconds timestamp of the min-valued sample in a 5m window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 215
+      },
+      "id": 83,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "ts_of_min_over_time(up[5m])",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ts_of_min_over_time",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer landed); the panel asserts a live nonempty result. Previously a parity-rejection pin in the collapsed rejection row \u2014 the moment lowering/emitter support landed, the contract was upgraded to nonempty and the panel moved into the over-time showcase row."
+      }
     }
   ],
   "schemaVersion": 39,

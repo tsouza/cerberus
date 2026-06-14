@@ -156,7 +156,13 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 	cfg := solver.DefaultConfig()
 	cfg.Mode = solver.ModeAuto // the production routing mode the ratchet pins.
 	planner := &solver.Planner{Cfg: cfg}
-	parse := parser.NewParser(parser.Options{})
+	// Mirror the production PromQL head, which builds its parser with
+	// EnableExperimentalFunctions=true (see internal/api/prom/lang.go) so
+	// the deliberately-supported experimental subset
+	// (mad_over_time / ts_of_*_over_time / …) parses. Without this the
+	// ratchet rejects those corpus fixtures at parse time even though the
+	// engine accepts them.
+	parse := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	meta := solver.RequestMeta{
 		Lang:  "promql",
 		Start: decisionGridStart,

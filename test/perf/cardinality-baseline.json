@@ -3340,6 +3340,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/mad_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/matcher_and_agg_by_service_name",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -4574,6 +4584,46 @@
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/ts_of_first_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/ts_of_last_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/ts_of_max_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/ts_of_min_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -6152,8 +6202,8 @@
   {
     "fixture": "traceql/select_nested_set_drilldown_limited",
     "fan_factor": 1,
-    "scan_rows": 8,
-    "peak_intermediate": 8,
+    "scan_rows": 12,
+    "peak_intermediate": 12,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": true,
@@ -6162,8 +6212,8 @@
   {
     "fixture": "traceql/select_nested_set_drilldown_structure",
     "fan_factor": 1,
-    "scan_rows": 2,
-    "peak_intermediate": 2,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": true,
