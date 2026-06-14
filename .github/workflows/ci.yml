@@ -172,10 +172,29 @@ jobs:
       # pull_request events: base.sha..head.sha, i.e. the commits
       # unique to the PR head. `fetch-depth: 0` on the checkout above
       # guarantees both SHAs exist locally.
+      # Shared by commitlint (pull_request only) and the Playwright
+      # typecheck below (every event) — set up unconditionally so both
+      # consumers find a Node toolchain.
       - uses: actions/setup-node@v6
-        if: github.event_name == 'pull_request'
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: test/e2e/playwright/package-lock.json
+
+      # The Playwright e2e specs run via Playwright's transpile-only
+      # esbuild loader, which strips types and NEVER type-checks. A
+      # latent TS error (e.g. a self-referential `as typeof x` cast that
+      # collapsed an error-envelope to `never` in
+      # iterate-time-ranges.spec.ts) therefore compiled green and the
+      # required compose-smoke gate stayed green over it. This step
+      # closes that hole: `tsc --noEmit` over the whole playwright
+      # tsconfig, no browser, sub-second. Fast enough to live in the
+      # lint job rather than gate behind the compose stack.
+      - name: typecheck e2e Playwright specs
+        working-directory: test/e2e/playwright
+        run: |
+          npm ci
+          npx --no -- tsc --noEmit -p tsconfig.json
 
       - name: commitlint
         if: github.event_name == 'pull_request'
