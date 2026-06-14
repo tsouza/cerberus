@@ -32,6 +32,19 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
+- **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
+  GATE that refuses to publish a release unless the WHOLE of `main` is
+  green on the exact commit being tagged — every push-triggered lane
+  (ci, compatibility, chdb, coverage, e2e dashboard+chaos, mutation,
+  perf-profile, property, CodeQL, …), not just the PR-required subset.
+  Reads the check-runs + commit statuses on `GITHUB_SHA` and fails on any
+  non-`success`/`skipped`/`neutral` or still-pending lane. Re-runs are
+  deduped by name (latest wins); the release run's own jobs are excluded.
+  - Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_SHA`; optional
+    `GITHUB_API_URL` (default `https://api.github.com`) and
+    `RELEASE_SELF_JOBS` (default `preflight,goreleaser`).
+  - Exit: `0` when every non-self check on the commit is green, `1`
+    otherwise (with one `::error::` per red/pending lane).
 - **`compat-step-summary.mjs`** — `compatibility.yml`, the three
   `Append score to step summary` steps.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that

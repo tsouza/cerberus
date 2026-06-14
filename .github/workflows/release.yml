@@ -13,10 +13,30 @@ permissions:
   # `attestations` (writes the attestation record back to the repo).
   id-token: write
   attestations: write
+  # The preflight gate reads the check-runs / statuses on the tagged commit.
+  checks: read
+  statuses: read
 
 jobs:
+  # Refuse to publish unless the WHOLE of main is green on the exact commit
+  # being tagged — not just the PR-required subset, but every push-triggered
+  # lane (ci, compatibility, chdb, coverage, e2e dashboard+chaos, mutation,
+  # perf-profile, property, CodeQL, …). A tag cut from a commit with any red
+  # or still-pending lane aborts here, before goreleaser publishes anything.
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify all CI on the tagged commit is green
+        run: node .github/scripts/release-preflight.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SELF_JOBS: preflight,goreleaser
+
   release:
     name: goreleaser
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
