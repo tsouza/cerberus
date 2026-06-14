@@ -112,25 +112,51 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
   `dashboard` (k3d) lane fans its Playwright spec set across a MODEST matrix
-  (3) of isolated-k3d-cluster shards. The dominant cost is the crawl BFS — one
-  indivisible async `test()`, the ~50min long pole — so the parallelism is
-  COARSE: two smoke shards (non-crawl specs, `CRAWL_STACK` unset → `crawl/**`
-  ignored) run CONCURRENTLY with a DEDICATED crawl shard (`CRAWL_STACK=k3d`,
-  `SWEEP_DEPTH=full`). Splitting the crawl frontier itself is the follow-up.
-  The `SHARDS` partition (each carrying `specs` + `crawlStack` + `runGoE2E`) +
-  `EXCLUDED` list live in this module; specs are DISCOVERED (`git ls-files`) so
-  a new `*.spec.ts` is a hard failure unless assigned or excluded — no silent
-  no-run. Coverage assertion is collect-all-violations (unassigned,
-  double-assigned, phantom/stale, bad-shard-name, and the "exactly one shard
-  runs Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
+  of isolated-k3d-cluster shards. Two smoke shards (non-crawl specs,
+  `CRAWL_STACK` unset → `crawl/**` ignored) run CONCURRENTLY with
+  `CRAWL_SUB_SHARDS` (2) dedicated crawl shards (`CRAWL_STACK=k3d`,
+  `SWEEP_DEPTH=full`), each carrying a distinct `CRAWL_SHARD_INDEX` /
+  `CRAWL_SHARD_COUNT`. The crawl engine (`crawl/sharding.ts`) has every
+  sub-shard run the WHOLE cheap BFS discovery but audit + pin only the ~1/N of
+  surfaces it OWNS (the heavy interaction sweep), so the ~50min BFS long pole
+  drops toward ~50/N. The crawl trio is REPLICATED across the crawl sub-shards
+  (same specs, distinct index) — the coverage check treats that as one logical
+  assignment, and a crawl spec leaking onto a smoke shard is a hard failure.
+  The `SHARDS` partition (each carrying `specs` + `crawlStack` + `runGoE2E` +
+  `crawlShardIndex`/`crawlShardCount`) + `EXCLUDED` list live in this module;
+  specs are DISCOVERED (`git ls-files`) so a new `*.spec.ts` is a hard failure
+  unless assigned or excluded — no silent no-run. Coverage assertion is
+  collect-all-violations (unassigned, double-assigned, phantom/stale,
+  bad-shard-name, the crawl-replication leak, and the "exactly one shard runs
+  Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
   `node --test` guard (run on the cheap `gate` lane) pinning the invariant +
-  proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
-  deliberately small.
+  proving the detectors fire. k3d is heavy + flaky, so the cluster count is
+  kept deliberately small.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
     `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `GITHUB_OUTPUT` (emit:
-    the runner file the `{include:[{name,specs,crawlStack,runGoE2E}]}` matrix
-    JSON is written to).
+    the runner file the
+    `{include:[{name,specs,crawlStack,runGoE2E,crawlShardIndex,crawlShardCount}]}`
+    matrix JSON + the `crawl_shard_count` output are written to).
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
+    `MODE`.
+
+- **`crawl-inventory-merge.mjs`** — `e2e.yml`, the `dashboard-merge` job (only
+  on the `update_crawl_inventory=true` dispatch). Unions the per-shard crawl
+  surface SLICES the sharded BFS crawl emits (`grafana-surface-slice.<stack>.
+  shard-<i>.json`) into ONE full inventory, asserting an EXACT, DISJOINT, TOTAL
+  cover — a surface missing from every slice (discovery gap), a surface owned
+  by two shards (non-disjoint), a missing shard index, or a slice smuggling in
+  a surface the deterministic assignment doesn't map to it all `::error::` +
+  `exit 1`. This is the coverage guarantee that keeps frontier-sharding from
+  weakening the inventory ratchet. Mirrors
+  `crawl/sharding.ts:mergeShardSlices` (same FNV-1a hash, path-only ownership
+  key, disjoint-union rules) — the two are kept in lockstep, pinned by
+  `crawl-inventory-merge.test.mjs` (run on the cheap `gate` lane).
+  - Env: `MODE` (`merge` | `verify`; also `argv[2]`; default `merge`),
+    `SLICES_DIR` (dir of downloaded slice JSONs), `STACK` (e.g. `k3d`),
+    `INVENTORY_DOC` (the `doc` header for the merged inventory), `INVENTORY_OUT`
+    (merge: the inventory path to write).
+  - Exit: `0` clean / inventory written, `1` on any partition violation or bad
     `MODE`.
 
 ## Notes

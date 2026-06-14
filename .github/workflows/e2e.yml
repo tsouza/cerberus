@@ -28,13 +28,17 @@ name: e2e
 #     Informational on merges, not a PR gate (never runs on
 #     pull_request, so NOT a branch-protection check); regressions are
 #     caught at merge-to-main time and reverted from main if they break.
-#     On schedule + dispatch the DEDICATED crawl shard runs the Grafana
+#     On schedule + dispatch the DEDICATED crawl sub-shards run the Grafana
 #     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
 #     test/e2e/playwright/crawl/stacks.ts) at SWEEP_DEPTH=full,
 #     CONCURRENTLY with the smoke shards. The ~50min crawl BFS is a single
-#     indivisible test(); splitting its frontier across shards is the
-#     follow-up that beats the 50min wall-clock floor.
+#     indivisible test(), so its FRONTIER is sharded across CRAWL_SUB_SHARDS
+#     clusters (CRAWL_SHARD_INDEX/COUNT, see crawl/sharding.ts): every
+#     sub-shard runs the whole cheap discovery walk but audits only its ~1/N
+#     of surfaces (the heavy interaction sweep), dropping the long pole toward
+#     ~50/N. The dashboard-merge job unions the per-shard inventory slices on
+#     the update_crawl_inventory dispatch, asserting an exact disjoint cover.
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #
@@ -213,6 +217,15 @@ jobs:
       # PR gate, same as the compose-smoke guard above.
       - name: dashboard shard coverage (unit guard)
         run: node --test .github/scripts/dashboard-matrix.test.mjs
+
+      # crawl inventory union-merge coverage guard. The merge job only runs on
+      # the update_crawl_inventory dispatch, so without this its partition
+      # assertions (exact disjoint cover; lockstep with crawl/sharding.ts's
+      # FNV-1a hash + path-only ownership) would only be exercised on a manual
+      # bootstrap run. Pinning them on the cheap PR gate keeps the merge logic
+      # and the spec's sharding logic from drifting apart silently.
+      - name: crawl inventory merge coverage (unit guard)
+        run: node --test .github/scripts/crawl-inventory-merge.test.mjs
 
   # compose-smoke is sharded into a balanced matrix of isolated-compose-stack
   # jobs. The three heaviest specs are each a SINGLE async test() that loops
@@ -501,27 +514,35 @@ jobs:
   #
   # The dominant cost is crawl/crawl.spec.ts: a SINGLE async BFS test() (the
   # ~50min long pole at SWEEP_DEPTH=full) that is indivisible by Playwright's
-  # native --shard AND by spec-file sharding (one file, one test). So spec-file
-  # sharding alone can't beat the 50min floor; the win this lane buys is COARSE
-  # and LOGICAL: run the non-crawl smoke specs on their own k3d clusters
-  # CONCURRENTLY with a DEDICATED crawl cluster, so the ~50min crawl no longer
-  # runs serially after the smoke set. Wall-clock drops from
-  # (smoke serial + crawl) toward max(crawl ~50min, slowest smoke shard).
+  # native --shard AND by spec-file sharding (one file, one test). Two layers of
+  # parallelism beat that:
+  #   1. COARSE: the non-crawl smoke specs run on their own k3d clusters
+  #      CONCURRENTLY with the crawl clusters, so the crawl no longer runs
+  #      serially after the smoke set.
+  #   2. FRONTIER SHARDING: the crawl BFS frontier is fanned across
+  #      CRAWL_SUB_SHARDS dedicated clusters (CRAWL_SHARD_INDEX/COUNT — see
+  #      crawl/sharding.ts). Every sub-shard runs the WHOLE cheap BFS discovery
+  #      walk (so the visited set converges identically) but audits + pins only
+  #      the ~1/N of surfaces it OWNS (fnv1a(path) % COUNT == INDEX) — the heavy
+  #      per-surface interaction sweep, the actual long pole. Wall-clock drops
+  #      toward ~50/N.
   #
-  # Beating the 50min floor itself needs the crawl ENGINE to partition its
-  # discovered BFS frontier across shards (a CRAWL_SHARD_INDEX/COUNT contract +
-  # a final union-merge-and-assert against the pinned inventory). That is a deep
-  # change to the 1383-line BFS + the inventory ratchet, blocked today by the
-  # k3d inventory being unbootstrapped — tracked as the explicit follow-up in
-  # this lane's PR. This sharding is the safe coarse win that lands first.
+  # The inventory ratchet stays whole: each sub-shard's per-shard ratchet
+  # asserts the rows it owns (lib.ts diffInventory, scoped to its slice), and on
+  # the update_crawl_inventory dispatch every sub-shard uploads its owned slice
+  # which the dashboard-merge job unions into the full inventory, asserting an
+  # EXACT, DISJOINT, TOTAL cover (crawl-inventory-merge.mjs). A per-shard ratchet
+  # alone could miss a surface no shard owned; the union-merge proves the slices
+  # reconstitute the whole.
   #
   # k3d cost/flake: a cluster is heavy (~3-5min bring-up) and flaky
   # (telemetrygen / otel-collector-gateway readiness BackOff). A matrix of N
-  # clusters multiplies BOTH, so the shard count is kept MODEST (3) — two smoke
-  # shards + one crawl shard. The partition + coverage assertion live in the
-  # single source of truth .github/scripts/dashboard-matrix.mjs — never
-  # hand-listed in YAML, so a new spec that isn't sharded is a HARD failure
-  # (verify step below), never a silent no-run.
+  # clusters multiplies BOTH, so the total cluster count is kept MODEST — two
+  # smoke shards + CRAWL_SUB_SHARDS (2) crawl shards = 4. The partition +
+  # coverage assertion live in the single source of truth
+  # .github/scripts/dashboard-matrix.mjs — never hand-listed in YAML, so a new
+  # spec that isn't sharded is a HARD failure (verify step below), never a
+  # silent no-run.
   #
   # Topology:
   #   dashboard-setup   — verify the partition covers every k3d-lane spec, then
@@ -529,8 +550,13 @@ jobs:
   #   dashboard-shard   — the matrix; each shard boots its OWN k3d cluster and
   #                       runs only its assigned specs (smoke shards with
   #                       CRAWL_STACK unset = crawl/** ignored, exactly as the
-  #                       old unfiltered smoke step; the crawl shard with
-  #                       CRAWL_STACK=k3d SWEEP_DEPTH=full = the crawl trio).
+  #                       old unfiltered smoke step; the crawl sub-shards with
+  #                       CRAWL_STACK=k3d SWEEP_DEPTH=full + a distinct
+  #                       CRAWL_SHARD_INDEX = the crawl trio over a ~1/N
+  #                       frontier slice).
+  #   dashboard-merge   — only on the update_crawl_inventory dispatch; unions
+  #                       the crawl sub-shards' inventory slices into the full
+  #                       inventory, asserting an exact disjoint cover.
   #   dashboard         — the AGGREGATOR; a single clean pass/fail over every
   #                       shard. NOT a branch-protection check (the lane never
   #                       runs on pull_request), but a clean roll-up + the
@@ -545,6 +571,9 @@ jobs:
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
+      # The number of crawl sub-shards the frontier fanned across — the merge
+      # job asserts it saw exactly this many slices (no shard index missing).
+      crawl_shard_count: ${{ steps.emit.outputs.crawl_shard_count }}
     steps:
       - uses: actions/checkout@v6
 
@@ -701,7 +730,13 @@ jobs:
       # bootstrap (or deliberately regenerate after surface growth): dispatch
       # this workflow with update_crawl_inventory=true, then commit the uploaded
       # artifact.
-      - name: Run Playwright crawl (${{ matrix.name }}, CRAWL_STACK=k3d)
+      # CRAWL_SHARD_INDEX/COUNT fan the BFS frontier across the crawl
+      # sub-shards (dashboard-matrix.mjs CRAWL_SUB_SHARDS): every sub-shard runs
+      # the WHOLE cheap discovery walk but audits + pins only the ~1/N of
+      # surfaces it owns (the heavy interaction sweep), so the ~50min BFS long
+      # pole drops toward ~50/N. crawl/sharding.ts treats both unset as the
+      # single-shard default, so a non-sharded run is unchanged.
+      - name: Run Playwright crawl (${{ matrix.name }}, CRAWL_STACK=k3d, shard ${{ matrix.crawlShardIndex }}/${{ matrix.crawlShardCount }})
         id: playwright_crawl
         if: env.RUN_SHARD == 'true' && matrix.crawlStack == 'k3d'
         working-directory: test/e2e/playwright
@@ -710,16 +745,24 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           CRAWL_STACK: ${{ matrix.crawlStack }}
           SWEEP_DEPTH: full
+          CRAWL_SHARD_INDEX: ${{ matrix.crawlShardIndex }}
+          CRAWL_SHARD_COUNT: ${{ matrix.crawlShardCount }}
           CERBERUS_UPDATE_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory && '1' || '' }}
         run: npx playwright test ${{ matrix.specs }} --reporter=list
 
-      - name: Upload regenerated k3d crawl inventory
+      # On the bootstrap/regen dispatch each crawl sub-shard emits its OWNED
+      # SLICE (grafana-surface-slice.k3d.shard-<i>.json); the dashboard-merge
+      # job downloads every slice and unions them into the full inventory
+      # (asserting an exact disjoint cover). A per-shard artifact name avoids the
+      # upload-artifact 409 across the matrix.
+      - name: Upload this shard's crawl inventory slice
         if: always() && matrix.crawlStack == 'k3d' && github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory
         uses: actions/upload-artifact@v7
         with:
-          name: grafana-surface-inventory-k3d
-          path: test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json
+          name: grafana-surface-slice-k3d-${{ matrix.name }}
+          path: test/e2e/playwright/crawl/grafana-surface-slice.k3d.shard-${{ matrix.crawlShardIndex }}.json
           retention-days: 14
+          if-no-files-found: error
 
       # Hard gate: zero cerberus container restarts across this shard,
       # asserted even when every spec passed. The nightly at run 27253909069
@@ -813,6 +856,66 @@ jobs:
         if: always() && env.RUN_SHARD == 'true'
         run: just e2e-down
 
+  # The MERGE job — only on the bootstrap/regen dispatch
+  # (update_crawl_inventory=true). Each crawl sub-shard uploaded its OWNED slice
+  # of the surface inventory; this job downloads every slice and unions them
+  # into the full inventory, asserting an EXACT, DISJOINT, TOTAL cover (no
+  # surface missed, none double-owned, no shard index missing). The merged
+  # inventory is byte-for-byte what a single full crawl would pin — download its
+  # artifact and commit it to bootstrap/regenerate
+  # test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json. This is the
+  # coverage guarantee that keeps the frontier-sharding from weakening the
+  # inventory ratchet: a per-shard ratchet alone could miss a surface no shard
+  # owned; the union-merge proves the slices reconstitute the whole.
+  dashboard-merge:
+    name: dashboard-merge
+    needs: [dashboard-setup, dashboard-shard]
+    # Only the regen dispatch produces slices to merge. needs.* must have
+    # succeeded (a failed shard means an incomplete/aborted crawl — merging a
+    # partial slice set would silently under-cover).
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.update_crawl_inventory &&
+      needs.dashboard-setup.result == 'success' &&
+      needs.dashboard-shard.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      # Collect every crawl sub-shard's slice artifact into one dir. The slice
+      # artifacts are named grafana-surface-slice-k3d-shard-crawl-<i>; the glob
+      # pattern pulls them all, merge-multiple flattens them into SLICES_DIR.
+      - name: Download crawl inventory slices
+        uses: actions/download-artifact@v6
+        with:
+          pattern: grafana-surface-slice-k3d-*
+          path: ${{ github.workspace }}/crawl-slices
+          merge-multiple: true
+
+      # Union + assert an exact disjoint cover, then write the full inventory.
+      # The doc header MUST match the k3d stack config's inventoryDoc so the
+      # committed file round-trips through the spec's marshaller (the
+      # canonicalization pin asserts this); it is read straight from the
+      # committed inventory's existing doc field, which the stack config keeps in
+      # sync.
+      - name: Merge slices into the full k3d inventory
+        env:
+          SLICES_DIR: ${{ github.workspace }}/crawl-slices
+          STACK: k3d
+          INVENTORY_OUT: test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json
+        run: |
+          doc=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json','utf8')).doc)")
+          INVENTORY_DOC="$doc" node .github/scripts/crawl-inventory-merge.mjs merge
+
+      - name: Upload merged k3d crawl inventory
+        uses: actions/upload-artifact@v7
+        with:
+          name: grafana-surface-inventory-k3d
+          path: test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json
+          retention-days: 14
+          if-no-files-found: error
+
   # The AGGREGATOR — a single clean pass/fail over every dashboard shard. The
   # dashboard lane never runs on pull_request, so this is NOT a
   # branch-protection required check (unlike compose-smoke's aggregator); it
@@ -823,7 +926,7 @@ jobs:
   # is off).
   dashboard:
     name: dashboard
-    needs: [dashboard-setup, dashboard-shard]
+    needs: [dashboard-setup, dashboard-shard, dashboard-merge]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -851,6 +954,16 @@ jobs:
           fi
           if [ "${{ needs.dashboard-shard.result }}" != "success" ]; then
             echo "::error::one or more dashboard shards failed/cancelled (rolled-up: ${{ needs.dashboard-shard.result }})."
+            exit 1
+          fi
+          # dashboard-merge only runs on the update_crawl_inventory dispatch;
+          # `skipped` is the expected steady state and is NOT a failure. When it
+          # DID run (the regen dispatch), it must have succeeded — a failed
+          # union-merge means the slices weren't a clean disjoint cover.
+          merge="${{ needs.dashboard-merge.result }}"
+          echo "merge  = $merge"
+          if [ "$merge" != "skipped" ] && [ "$merge" != "success" ]; then
+            echo "::error::dashboard-merge did not succeed ($merge) — the crawl shard slices failed the union-merge coverage assertion."
             exit 1
           fi
           echo "all dashboard shards passed."

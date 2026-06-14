@@ -695,6 +695,16 @@ export function diffInventory(
   exclusions: SurfaceExclusions,
   depth: 'lean' | 'full',
   stack: StackFiles,
+  /**
+   * Frontier-sharding predicate: the inventory rows THIS shard owns
+   * (audited the heavy work for). A sharded crawl only audited its ~1/N
+   * slice, so it can only assert coverage of the rows it owns — the
+   * other rows are asserted by their owning shards, and the final
+   * merge step proves the slices' union equals the whole inventory. The
+   * default owns EVERY url (the single-shard / unsharded run), so the
+   * unsharded behavior is byte-for-byte unchanged.
+   */
+  owns: (url: string) => boolean = () => true,
 ): string[] {
   const out: string[] = [];
 
@@ -718,6 +728,10 @@ export function diffInventory(
         `surface ${JSON.stringify(s.url)} is in BOTH the inventory and the exclusions file — a crawled surface cannot be excluded (stale exclusion)`,
       );
     }
+    // Only assert the rows this shard owns. Disjointness + completeness
+    // of the OWNERSHIP partition is the merge step's job; here each
+    // shard guards its own slice against the committed inventory.
+    if (!owns(s.url)) continue;
     if (depth === 'full' || s.lean) expected.add(s.url);
   }
 

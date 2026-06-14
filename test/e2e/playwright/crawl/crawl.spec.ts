@@ -152,6 +152,16 @@ import {
   knownStackNames,
   stackByName,
 } from './stacks.js';
+import {
+  marshalShardSlice,
+  mergeShardSlices,
+  ownsSurface,
+  resolveShardAssignment,
+  shardAssignmentFromEnv,
+  shardSlicePath,
+  type ShardAssignment,
+  type ShardSlice,
+} from './sharding.js';
 
 // Self-traffic warmup — same rationale + value as the iterate-* specs:
 // without populated counters/streams/traces, a "No data" panel on a
@@ -586,6 +596,179 @@ test.describe('crawl: canonicalization pins', () => {
 });
 
 // ---------------------------------------------------------------------------
+// BFS-frontier sharding pins — pure-function proofs that the partition
+// is deterministic, that a surface + its derived states co-locate on one
+// shard, and that the per-shard slices union back to the WHOLE set
+// disjointly. These are the coverage guarantee the sharded crawl rests
+// on; pinning them here (no live stack) means a partition regression
+// fails on a fast unit check, not a 50min k3d run.
+// ---------------------------------------------------------------------------
+
+test.describe('crawl: BFS-frontier sharding pins', () => {
+  // A representative cross-section of the surface/state key shapes the
+  // real crawl pins: bare surfaces, dashboards, structural-param
+  // surfaces, parameterized families, and in-place interaction states.
+  const SAMPLE_KEYS: ReadonlyArray<string> = [
+    '/',
+    '/dashboards',
+    '/explore',
+    '/d/cerberus-self',
+    '/d/clickhouse',
+    '/a/grafana-exploretraces-app/explore',
+    '/a/grafana-exploretraces-app/explore?var-groupBy=kind',
+    '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+    '/a/grafana-metricsdrilldown-app/drilldown?metric={metric}',
+    '/a/grafana-lokiexplore-app/explore/service/{service}/logs',
+    '/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType="table"',
+    '/a/grafana-exploretraces-app/explore#var-metric={rep}',
+    '/d/cerberus-self#tab=overview',
+  ];
+
+  test('resolveShardAssignment: unset env is the single-shard identity, bad values fail loudly', () => {
+    expect(resolveShardAssignment({})).toEqual({ index: 0, count: 1 });
+    expect(resolveShardAssignment({ index: '1', count: '3' })).toEqual({
+      index: 1,
+      count: 3,
+    });
+    // half-configured, out-of-range, and non-integer all throw.
+    expect(() => resolveShardAssignment({ count: '3' })).toThrow(
+      /must be set together/,
+    );
+    expect(() => resolveShardAssignment({ index: '0' })).toThrow(
+      /must be set together/,
+    );
+    expect(() => resolveShardAssignment({ index: '3', count: '3' })).toThrow(
+      /must be an integer in \[0, 3\)/,
+    );
+    expect(() => resolveShardAssignment({ index: '0', count: '0' })).toThrow(
+      /must be an integer ≥ 1/,
+    );
+    expect(() => resolveShardAssignment({ index: '1.5', count: '3' })).toThrow(
+      /must be an integer in \[0, 3\)/,
+    );
+  });
+
+  test('count==1 owns every key (the unsharded identity)', () => {
+    const single: ShardAssignment = { index: 0, count: 1 };
+    for (const k of SAMPLE_KEYS) {
+      expect(ownsSurface(k, single), `single shard owns ${k}`).toBe(true);
+    }
+  });
+
+  test('a surface, its structural-param children, and its in-place states co-locate on one shard', () => {
+    // baseSurfaceOf strips both the `?…` query and the `#…` state, so
+    // every key sharing a PATH hashes to the same owner — discovery and
+    // ownership coincide (the sweep that finds the children runs on the
+    // owner of the bare surface).
+    const path = '/a/grafana-exploretraces-app/explore';
+    const family = [
+      path,
+      `${path}?var-groupBy=kind`,
+      `${path}?actionView=comparison&var-groupBy=kind`,
+      `${path}#var-metric={rep}`,
+      `${path}#actionView={rep}`,
+    ];
+    for (const count of [2, 3, 4]) {
+      for (let index = 0; index < count; index++) {
+        const a: ShardAssignment = { index, count };
+        const ownedByThis = family.map((k) => ownsSurface(k, a));
+        // All-or-nothing: the whole family lands on exactly one shard.
+        const allSame = ownedByThis.every((v) => v === ownedByThis[0]);
+        expect(allSame, `family co-located at ${count}/${index}`).toBe(true);
+      }
+    }
+  });
+
+  test('the per-shard partition is total, disjoint, and deterministic over a sample set', () => {
+    for (const count of [1, 2, 3, 4, 5]) {
+      const ownerOf = new Map<string, number>();
+      for (const k of SAMPLE_KEYS) {
+        const owners = [];
+        for (let index = 0; index < count; index++) {
+          if (ownsSurface(k, { index, count })) owners.push(index);
+        }
+        // EXACTLY one shard owns each key — total cover + disjoint.
+        expect(owners.length, `exactly one owner for ${k} at count ${count}`).toBe(
+          1,
+        );
+        ownerOf.set(k, owners[0]!);
+      }
+      // Determinism: a second pass yields identical assignments.
+      for (const k of SAMPLE_KEYS) {
+        const second = [];
+        for (let index = 0; index < count; index++) {
+          if (ownsSurface(k, { index, count })) second.push(index);
+        }
+        expect(second).toEqual([ownerOf.get(k)]);
+      }
+    }
+  });
+
+  test('mergeShardSlices: the union of owned slices is the EXACT full set, disjoint', () => {
+    const count = 3;
+    const stack = 'k3d';
+    const doc = 'pinned';
+    // Partition the sample set into per-shard owned slices exactly the
+    // way the live crawl does.
+    const slices: ShardSlice[] = Array.from({ length: count }, (_, index) => ({
+      stack,
+      shardIndex: index,
+      shardCount: count,
+      surfaces: SAMPLE_KEYS.filter((k) =>
+        ownsSurface(k, { index, count }),
+      ).map((url) => ({ url, lean: false })),
+    }));
+    const merged = mergeShardSlices(slices, doc, stack);
+    expect(new Set(merged.surfaces.map((s) => s.url))).toEqual(
+      new Set(SAMPLE_KEYS),
+    );
+    expect(merged.surfaces.length, 'no duplicates in the union').toBe(
+      SAMPLE_KEYS.length,
+    );
+    expect(merged.stack).toBe(stack);
+    expect(merged.doc).toBe(doc);
+  });
+
+  test('mergeShardSlices fails loudly on a missing shard, a double-owned surface, and a smuggled surface', () => {
+    const count = 2;
+    const stack = 'k3d';
+    const good: ShardSlice[] = Array.from({ length: count }, (_, index) => ({
+      stack,
+      shardIndex: index,
+      shardCount: count,
+      surfaces: SAMPLE_KEYS.filter((k) =>
+        ownsSurface(k, { index, count }),
+      ).map((url) => ({ url, lean: false })),
+    }));
+    // Missing a shard → incomplete union (coverage gap).
+    expect(() => mergeShardSlices([good[0]!], 'd', stack)).toThrow(
+      /missing slice for shard index/,
+    );
+    // The same surface owned by two shards → not disjoint.
+    const dup0 = good[0]!.surfaces[0]!.url;
+    const overlap: ShardSlice[] = [
+      good[0]!,
+      {
+        ...good[1]!,
+        surfaces: [...good[1]!.surfaces, { url: dup0, lean: false }],
+      },
+    ];
+    expect(() => mergeShardSlices(overlap, 'd', stack)).toThrow(
+      /owned by more than one shard|does NOT map to it/,
+    );
+    // A shard smuggling a surface the assignment doesn't map to it.
+    const notMine = SAMPLE_KEYS.find((k) => !ownsSurface(k, { index: 0, count }))!;
+    const smuggled: ShardSlice[] = [
+      { ...good[0]!, surfaces: [{ url: notMine, lean: false }] },
+      good[1]!,
+    ];
+    expect(() => mergeShardSlices(smuggled, 'd', stack)).toThrow(
+      /does NOT map to it|owned by more than one shard/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The crawl
 // ---------------------------------------------------------------------------
 
@@ -595,13 +778,24 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 }, testInfo) => {
   const stack = activeStack();
   const depth = sweepDepth();
-  // Budget: lean ≈ 10 pages × ~6s + 30s seed + the representative
-  // interaction sweep over the 3 drilldown roots (~3 min); full ≈
-  // cap pages + the exhaustive interaction sweep (a fresh navigation
-  // per planned gesture).
+  // BFS-frontier sharding (see sharding.ts). Unset env = single shard =
+  // today's behavior (COUNT=1 owns everything). When CRAWL_SHARD_COUNT>1
+  // every shard runs the WHOLE cheap discovery walk (navigate + harvest +
+  // expand the frontier) so the visited set converges identically, but
+  // this shard only runs the HEAVY work — the base-surface oracle
+  // battery + the interaction sweep + the in-place state audits — on
+  // surfaces it OWNS (fnv1a(surface) % COUNT == INDEX). The dominant cost
+  // is the per-gesture-navigation interaction sweep, so this splits the
+  // long pole ~evenly while every shard keeps a complete frontier.
+  const shard = shardAssignmentFromEnv(process.env);
   testInfo.setTimeout(depth === 'full' ? 75 * 60_000 : 14 * 60_000);
   // eslint-disable-next-line no-console
-  console.log(`crawl stack: ${stack.name} — ${describeSweepDepth(depth)}`);
+  console.log(
+    `crawl stack: ${stack.name} — ${describeSweepDepth(depth)}` +
+      (shard.count > 1
+        ? ` — shard ${shard.index + 1}/${shard.count} (owns ~1/${shard.count} of the heavy interaction sweep)`
+        : ''),
+  );
 
   const baseURL =
     process.env.GRAFANA_URL ??
@@ -701,10 +895,16 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 
   const pageCap = depth === 'full' ? stack.pageCapFull : stack.pageCapLean;
   const visited = new Map<string, string>(); // canonical → concrete navigated
+  // Surfaces this shard OWNS (audited the heavy work for). With a single
+  // shard this equals `visited`; with N shards it is this shard's ~1/N
+  // slice. Only owned surfaces pin into this shard's inventory slice —
+  // the final merge step unions all shards' slices back to the full set.
+  const ownedSurfaces = new Map<string, string>();
   // In-place interaction states (`<canonical>#<control>=<value>`) →
   // concrete URL the gesture ran against. Kept separate from
   // `visited` because they are gestures on an already-counted page,
-  // not navigations — the page cap governs navigations.
+  // not navigations — the page cap governs navigations. Only the
+  // owning shard runs a surface's sweep, so these are all owned.
   const inPlaceVisited = new Map<string, string>();
   const failures: CrawlFailure[] = [];
 
@@ -729,6 +929,12 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       }
 
       visited.set(entry.canonical, entry.concrete);
+      // Every shard navigates + harvests every surface (discovery is
+      // cheap and must stay complete so the frontier converges). Only
+      // the OWNING shard runs the oracle battery + interaction sweep —
+      // the dominant cost — and pins the surface into its slice.
+      const owned = ownsSurface(entry.canonical, shard);
+      if (owned) ownedSurfaces.set(entry.canonical, entry.concrete);
 
       const { harvested, pageFailures } = await visitAndAudit(
         lease,
@@ -736,6 +942,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
         entry,
         declaredNoData,
         declaredErrorExprs,
+        owned,
       );
       failures.push(...pageFailures);
 
@@ -774,7 +981,11 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       // the pairwise bound: surfaces pinning ≥2 structural params are
       // terminal (planInteractions returns an empty plan for them).
       const isLeanRoot = stack.leanInteractionRoots.includes(entry.canonical);
-      if (depth === 'full' || isLeanRoot) {
+      // Sweep only OWNED surfaces: the per-gesture-navigation sweep is
+      // the dominant cost and the whole point of the partition. A
+      // surface and all its in-place states share one shard (ownsSurface
+      // hashes the base canonical), so the sweep stays atomic.
+      if (owned && (depth === 'full' || isLeanRoot)) {
         const sweep = await sweepInteractions(
           lease,
           baseURL,
@@ -805,21 +1016,25 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
     await lease.close();
   }
 
-  // The full audited state set: navigated surfaces plus the in-place
-  // interaction states (`<canonical>#<control>=<value>` notation) —
-  // both pin into the same inventory ratchet.
+  // This shard's audited state set: the surfaces it OWNS plus their
+  // in-place interaction states (`<canonical>#<control>=<value>`
+  // notation) — both pin into the same inventory ratchet. Under a single
+  // shard this equals every navigated surface + state (today's full set);
+  // under N shards it is this shard's ~1/N slice, and the merge step
+  // unions every shard's slice back to the whole.
   const auditedStates = new Map<string, string>([
-    ...visited,
+    ...ownedSurfaces,
     ...inPlaceVisited,
   ]);
 
   // eslint-disable-next-line no-console
   console.log(
-    `crawl: audited ${auditedStates.size} state(s) (${visited.size} navigated surface(s), ` +
-      `${inPlaceVisited.size} in-place interaction state(s)) at depth=${depth} stack=${stack.name}:\n${[...auditedStates.keys()]
-      .sort()
-      .map((u) => `  - ${u}`)
-      .join('\n')}`,
+    `crawl: shard ${shard.index + 1}/${shard.count} audited ${auditedStates.size} owned state(s) ` +
+      `(${ownedSurfaces.size} navigated surface(s), ${inPlaceVisited.size} in-place interaction state(s)) ` +
+      `of ${visited.size} discovered surface(s) at depth=${depth} stack=${stack.name}:\n${[...auditedStates.keys()]
+        .sort()
+        .map((u) => `  - ${u}`)
+        .join('\n')}`,
   );
 
   // -------------------------------------------------------------------------
@@ -829,25 +1044,49 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // regen against a stack carrying known-red states (e.g. a found bug
   // whose fix is in flight) must still capture the coverage, and the
   // run still fails loudly on the failures right below.
+  //
+  // Sharded vs unsharded regen:
+  //   - single shard (count==1) → write the FULL inventory exactly as
+  //     before (this shard owns everything).
+  //   - N shards → write THIS shard's owned SLICE artifact; the e2e
+  //     workflow's merge step unions every shard's slice and writes the
+  //     full inventory (identical to what a single full crawl produces).
   // -------------------------------------------------------------------------
   if (process.env.CERBERUS_UPDATE_INVENTORY) {
     expect(
       depth,
       'inventory regeneration requires the exhaustive crawl: rerun with SWEEP_DEPTH=full',
     ).toBe('full');
-    const inv: SurfaceInventory = {
-      doc: stack.inventoryDoc,
-      stack: stack.name,
-      surfaces: [...auditedStates.keys()].map((url) => ({
-        url,
-        lean: leanSet.has(url),
-      })),
-    };
-    writeFileSync(inventoryPath(stack), marshalInventory(inv));
-    // eslint-disable-next-line no-console
-    console.log(
-      `crawl: regenerated ${inventoryPath(stack)} with ${inv.surfaces.length} surface(s)`,
-    );
+    const ownedRows = [...auditedStates.keys()].map((url) => ({
+      url,
+      lean: leanSet.has(url),
+    }));
+    if (shard.count === 1) {
+      const inv: SurfaceInventory = {
+        doc: stack.inventoryDoc,
+        stack: stack.name,
+        surfaces: ownedRows,
+      };
+      writeFileSync(inventoryPath(stack), marshalInventory(inv));
+      // eslint-disable-next-line no-console
+      console.log(
+        `crawl: regenerated ${inventoryPath(stack)} with ${inv.surfaces.length} surface(s)`,
+      );
+    } else {
+      const slice: ShardSlice = {
+        stack: stack.name,
+        shardIndex: shard.index,
+        shardCount: shard.count,
+        surfaces: ownedRows,
+      };
+      const out = shardSlicePath(__dirname, stack.name, shard.index);
+      writeFileSync(out, marshalShardSlice(slice));
+      // eslint-disable-next-line no-console
+      console.log(
+        `crawl: shard ${shard.index + 1}/${shard.count} wrote ${out} with ${ownedRows.length} owned surface(s) ` +
+          `— the workflow merge step unions all ${shard.count} slices into ${inventoryPath(stack)}`,
+      );
+    }
   }
 
   if (failures.length > 0) {
@@ -867,16 +1106,23 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // row per visited page.
   const committed = loadInventory(stack);
   assertInventoryBootstrapped(committed, stack);
+  // Each shard asserts coverage of the rows IT OWNS — it only audited
+  // its slice. ownsThisShard mirrors the live partition, so the shard
+  // can't be held to rows another shard is responsible for. The merge
+  // step (workflow) proves the slices' union equals the whole inventory,
+  // closing the gap a per-shard diff alone would leave.
+  const ownsThisShard = (url: string): boolean => ownsSurface(url, shard);
   const violations = diffInventory(
     new Set(auditedStates.keys()),
     committed,
     loadExclusions(stack),
     depth,
     stack,
+    ownsThisShard,
   );
   expect(
     violations,
-    `surface-inventory ratchet violated:\n  - ${violations.join('\n  - ')}`,
+    `surface-inventory ratchet violated (shard ${shard.index + 1}/${shard.count}):\n  - ${violations.join('\n  - ')}`,
   ).toEqual([]);
 });
 
@@ -1108,6 +1354,15 @@ async function visitAndAudit(
   entry: QueueEntry,
   declaredNoData: ReadonlyMap<string, Set<string>>,
   declaredErrorExprs: ReadonlyMap<string, Set<string>>,
+  /**
+   * Whether THIS shard owns the surface. Every shard navigates +
+   * harvests every surface (discovery must stay complete so the frontier
+   * converges identically), but only the OWNING shard runs the oracle
+   * battery (DOM + wire + console) and reports its failures — the
+   * non-owning shards never double-audit it. With a single shard `owned`
+   * is always true, so the unsharded behavior is unchanged.
+   */
+  owned: boolean,
 ): Promise<{ harvested: string[]; pageFailures: CrawlFailure[] }> {
   const pageFailures: CrawlFailure[] = [];
   const fail: FailFn = (rule, detail) =>
@@ -1136,16 +1391,24 @@ async function visitAndAudit(
 
     harvested = await harvestLinks(page);
 
-    await evaluateDomOracles(page, contracts, entry.concrete, fail);
+    // Oracles 3 + 4 only on the owning shard — a non-owning shard
+    // visits purely to harvest the frontier.
+    if (owned) await evaluateDomOracles(page, contracts, entry.concrete, fail);
   } catch (err) {
-    fail(
-      'navigation-threw',
-      `goto(${entry.concrete}) threw: ${(err as Error).message}`,
-    );
+    // A navigation failure is a real oracle failure ONLY on the owning
+    // shard; on a non-owning visit it just means harvest came back
+    // empty (the owning shard will report the genuine failure).
+    if (owned) {
+      fail(
+        'navigation-threw',
+        `goto(${entry.concrete}) threw: ${(err as Error).message}`,
+      );
+    }
   } finally {
     stopConsole();
   }
   await wire.stop();
+  if (!owned) return { harvested, pageFailures };
   evaluateWireOracles(wire.captured, contracts, fail);
 
   // Oracle 1 — console errors. Zero, with no noise filter (see the

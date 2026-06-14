@@ -23,22 +23,25 @@
 // instead of serially after them. Wall-clock drops from
 // (smoke serial + crawl) toward max(crawl ~50min, slowest smoke shard).
 //
-// What this manifest does NOT do (the follow-up): it does not split the crawl
-// BFS frontier itself. Beating the ~50min floor needs the crawl engine to
-// PARTITION its discovered frontier across shards (a CRAWL_SHARD_INDEX /
-// CRAWL_SHARD_COUNT contract that deterministically assigns each discovered
-// surface to a shard, with each shard emitting its visited slice and a final
-// job merging + asserting the union against the pinned inventory). That is a
-// deep change to the 1383-line BFS + the inventory ratchet (lib.ts diffInventory
-// asserts the WHOLE visited set) and is blocked today by the k3d inventory being
-// unbootstrapped (grafana-surface-inventory.k3d.json carries surfaces: []), so
-// the union couldn't be validated. It is tracked as the explicit next step in
-// the PR body. This manifest is the safe, coarse win that lands first.
+// What this manifest DOES with the crawl (the frontier split): it fans the
+// crawl trio across CRAWL_SUB_SHARDS dedicated k3d clusters, each a matrix entry
+// carrying a CRAWL_SHARD_INDEX / CRAWL_SHARD_COUNT pair. The crawl engine
+// (test/e2e/playwright/crawl/sharding.ts) has every shard run the WHOLE cheap
+// BFS discovery walk but audit + pin only the ~1/N of surfaces it OWNS
+// (fnv1a(path) % COUNT == INDEX) — the heavy per-surface interaction sweep is
+// the dominant cost, so splitting it drops the ~50min long pole toward ~50/N.
+// On the bootstrap/regen dispatch each sub-shard writes its owned slice as an
+// artifact and a final merge job (crawl-inventory-merge.mjs) unions them into
+// the full inventory, asserting an exact disjoint cover (no surface missed, none
+// doubled). The per-shard inventory ratchet (lib.ts diffInventory, scoped to the
+// shard's owned rows) plus that union-merge together preserve the WHOLE-set
+// coverage guarantee the unsharded crawl had.
 //
 // k3d cost/flake trade-off: a k3d cluster is heavy (~3-5min bring-up) and flaky
 // (telemetrygen / otel-collector-gateway readiness BackOff). A matrix of N
-// clusters multiplies BOTH cost and flake surface, so the shard count is kept
-// deliberately MODEST (3): two smoke shards + one crawl shard.
+// clusters multiplies BOTH cost and flake surface, so the total cluster count is
+// kept deliberately MODEST: two smoke shards + CRAWL_SUB_SHARDS (2) crawl
+// shards = 4 clusters.
 //
 // Two modes (env MODE, or argv[2]; default `verify`):
 //   - verify : assert the SHARDS partition is a total, disjoint cover of the
@@ -83,30 +86,56 @@ const PW_DIR = process.env.PLAYWRIGHT_DIR || 'test/e2e/playwright';
 const CRAWL_STACK_K3D = 'k3d';
 const CRAWL_STACK_NONE = '';
 
+// How many dedicated k3d clusters the crawl frontier fans across. The crawl
+// engine has every shard run the WHOLE cheap BFS discovery but audit only the
+// ~1/N of surfaces it owns (the heavy interaction sweep), so the ~50min long
+// pole drops toward ~50/N. Kept MODEST (2): k3d is heavy + flaky, so total
+// cluster count (2 smoke + this) stays at 4. Bumping it is a one-line reviewed
+// change — and re-bootstrapping the k3d inventory via a dispatch is NOT required
+// (the merge unions whatever COUNT the shards ran with), but the merge job's
+// CRAWL_SHARD_COUNT must match.
+const CRAWL_SUB_SHARDS = 2;
+
+// The crawl trio every crawl sub-shard runs. Each sub-shard runs the SAME specs
+// but with a distinct CRAWL_SHARD_INDEX, so the BFS partition (sharding.ts)
+// gives each a disjoint ~1/N slice of the heavy audit work.
+const CRAWL_TRIO = [
+  'crawl/crawl.spec.ts', //                  full BFS — frontier sharded across CRAWL_SUB_SHARDS
+  'crawl/dsquery.spec.ts',
+  'crawl/lints.spec.ts',
+];
+
+// Smoke shards carry no crawl sharding (CRAWL_STACK empty → crawl/** ignored);
+// their crawlShardIndex/Count render to empty env so the spec sees the
+// single-shard default. A crawl sub-shard sets all three.
+const NO_CRAWL_SHARD = { crawlShardIndex: '', crawlShardCount: '' };
+
 // ---------------------------------------------------------------------------
 // The partition of the dashboard-lane spec set across isolated k3d clusters.
 //
-// Three shards, each its own k3d cluster:
-//   - shard-smoke-a / shard-smoke-b — the 27 non-crawl specs, split by
-//     wall-clock weight (the three internally-looping heavies —
-//     iterate-panel-kiosk, compose_grafana_smoke, the iterate-* sweeps — are
-//     spread across the two so neither shard carries all the long poles).
-//     CRAWL_STACK is empty → crawl/** is ignored, exactly as the old
-//     unfiltered smoke step ran. Go e2e runs ONCE, on shard-smoke-a, so the
-//     Go suite isn't redundantly re-run on every cluster.
-//   - shard-crawl — the crawl trio ONLY, CRAWL_STACK=k3d, SWEEP_DEPTH=full.
-//     The ~50min BFS long pole runs ALONE on its own cluster, concurrently
-//     with the smoke shards. It carries no companion specs (its single BFS
-//     test() already saturates the shard's wall-clock budget).
+// Shards, each its own k3d cluster:
+//   - shard-smoke-a / shard-smoke-b — the non-crawl specs, split by
+//     wall-clock weight (the internally-looping heavies — iterate-panel-kiosk,
+//     compose_grafana_smoke, the iterate-* sweeps — are spread across the two
+//     so neither shard carries all the long poles). CRAWL_STACK is empty →
+//     crawl/** is ignored, exactly as the old unfiltered smoke step ran. Go e2e
+//     runs ONCE, on shard-smoke-a, so the Go suite isn't redundantly re-run on
+//     every cluster.
+//   - shard-crawl-<i> (CRAWL_SUB_SHARDS of them) — the crawl trio, CRAWL_STACK=k3d,
+//     SWEEP_DEPTH=full, each with its own CRAWL_SHARD_INDEX. Every sub-shard runs
+//     the whole cheap BFS discovery; the heavy per-surface interaction sweep is
+//     partitioned across them, so the BFS long pole drops toward ~50/N. The
+//     sub-shards run concurrently with the smoke shards.
 //
 // Spec paths are relative to PLAYWRIGHT_DIR — exactly how they're passed to
 // `npx playwright test <files>` — so the matrix entry's space-joined string
 // drops verbatim into the run step.
 // ---------------------------------------------------------------------------
-const SHARDS = [
+const SMOKE_SHARDS = [
   {
     name: 'shard-smoke-a',
     crawlStack: CRAWL_STACK_NONE,
+    ...NO_CRAWL_SHARD,
     // Go e2e tests (`just e2e-run`) run once across the matrix, here — they're
     // stack-health Go tests, not Playwright, and don't need re-running per
     // cluster. The crawl + the other smoke shard skip them.
@@ -131,6 +160,7 @@ const SHARDS = [
   {
     name: 'shard-smoke-b',
     crawlStack: CRAWL_STACK_NONE,
+    ...NO_CRAWL_SHARD,
     runGoE2E: false,
     specs: [
       'iterate-time-ranges.spec.ts', //          phase-5 matrix sweep — heavy anchor
@@ -148,17 +178,30 @@ const SHARDS = [
       'helpers-variables.spec.ts',
     ],
   },
-  {
-    name: 'shard-crawl',
-    crawlStack: CRAWL_STACK_K3D,
-    runGoE2E: false,
-    specs: [
-      'crawl/crawl.spec.ts', //                  ~50min full BFS long pole — runs ALONE
-      'crawl/dsquery.spec.ts',
-      'crawl/lints.spec.ts',
-    ],
-  },
 ];
+
+// The crawl sub-shards, generated so adding a cluster is a single const bump.
+// Each runs the WHOLE crawl trio (the dsquery/lints pins are cheap + run on
+// every sub-shard; the BFS is the sharded long pole).
+const CRAWL_SHARDS = Array.from({ length: CRAWL_SUB_SHARDS }, (_, i) => ({
+  name: `shard-crawl-${i}`,
+  crawlStack: CRAWL_STACK_K3D,
+  runGoE2E: false,
+  crawlShardIndex: String(i),
+  crawlShardCount: String(CRAWL_SUB_SHARDS),
+  // Each sub-shard lists the same crawl specs; double-assignment across crawl
+  // sub-shards is EXPECTED (they differ by CRAWL_SHARD_INDEX, not spec set), so
+  // the coverage check below treats crawl specs as sub-shard-replicated rather
+  // than a double-assignment violation.
+  specs: [...CRAWL_TRIO],
+}));
+
+const SHARDS = [...SMOKE_SHARDS, ...CRAWL_SHARDS];
+
+// The crawl trio is intentionally replicated across every crawl sub-shard
+// (same specs, different CRAWL_SHARD_INDEX). The coverage check must treat
+// those as ONE logical assignment, not N double-assignments.
+const CRAWL_REPLICATED_SPECS = new Set(CRAWL_TRIO);
 
 // ---------------------------------------------------------------------------
 // Specs that live under PLAYWRIGHT_DIR but are NOT part of the dashboard
@@ -231,8 +274,19 @@ export function collectViolations(discovered) {
     v.push('EXCLUDED contains duplicate entries');
   }
 
-  // double-assignment (wasted work + a spec running on two clusters).
+  // double-assignment (wasted work + a spec running on two clusters) — EXCEPT
+  // the crawl trio, which is deliberately replicated across the crawl
+  // sub-shards (same specs, distinct CRAWL_SHARD_INDEX). A replicated crawl
+  // spec must appear ONLY on crawl sub-shards (a `shard-crawl-*` name), never
+  // leak onto a smoke shard.
   for (const [spec, who] of owners) {
+    if (CRAWL_REPLICATED_SPECS.has(spec)) {
+      const nonCrawl = who.filter((n) => !n.startsWith('shard-crawl-'));
+      if (nonCrawl.length > 0) {
+        v.push(`crawl-replicated spec ${spec} assigned to non-crawl shard(s) [${nonCrawl.join(', ')}]`);
+      }
+      continue;
+    }
     if (who.length > 1) {
       v.push(`double-assigned spec ${spec} -> shards [${who.join(', ')}]`);
     }
@@ -282,10 +336,10 @@ function assertCoverageOrExit(discovered) {
 function verify() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
-  const assignedCount = SHARDS.reduce((n, s) => n + s.specs.length, 0);
+  const uniqueAssigned = new Set(SHARDS.flatMap((s) => s.specs)).size;
   notice(
-    `dashboard-matrix OK: ${SHARDS.length} shards, ${assignedCount} specs assigned, ` +
-      `${EXCLUDED.length} excluded, ${discovered.length} discovered.`,
+    `dashboard-matrix OK: ${SHARDS.length} shards (${CRAWL_SUB_SHARDS} crawl sub-shards), ` +
+      `${uniqueAssigned} unique specs assigned, ${EXCLUDED.length} excluded, ${discovered.length} discovered.`,
   );
   process.exit(0);
 }
@@ -298,17 +352,27 @@ function emit() {
     specs: s.specs.join(' '),
     crawlStack: s.crawlStack,
     runGoE2E: s.runGoE2E,
+    // Empty string on smoke shards → the run step renders empty env, so the
+    // crawl spec sees CRAWL_SHARD_INDEX/COUNT unset (single-shard default).
+    crawlShardIndex: s.crawlShardIndex ?? '',
+    crawlShardCount: s.crawlShardCount ?? '',
   }));
   setOutput('matrix', JSON.stringify({ include }));
   setOutput('shard_names', JSON.stringify(SHARDS.map((s) => s.name)));
+  // The merge job needs the crawl shard count to assert the slice union is
+  // complete (every shard index in [0, count) uploaded a slice).
+  setOutput('crawl_shard_count', String(CRAWL_SUB_SHARDS));
   appendStepSummary(
     [
       '### dashboard (k3d) shard matrix',
       '',
-      '| shard | specs | CRAWL_STACK | Go e2e |',
-      '| --- | --- | --- | --- |',
+      '| shard | specs | CRAWL_STACK | crawl shard | Go e2e |',
+      '| --- | --- | --- | --- | --- |',
       ...SHARDS.map(
-        (s) => `| \`${s.name}\` | ${s.specs.length} | ${s.crawlStack || '(none)'} | ${s.runGoE2E ? 'yes' : 'no'} |`,
+        (s) =>
+          `| \`${s.name}\` | ${s.specs.length} | ${s.crawlStack || '(none)'} | ` +
+          `${s.crawlShardCount ? `${Number(s.crawlShardIndex) + 1}/${s.crawlShardCount}` : '(n/a)'} | ` +
+          `${s.runGoE2E ? 'yes' : 'no'} |`,
       ),
     ].join('\n'),
   );
@@ -330,4 +394,4 @@ if (invokedDirectly) {
 }
 
 // Exported for the unit guard (.github/scripts/dashboard-matrix.test.mjs).
-export { SHARDS, EXCLUDED, SHARD_NAME_RE };
+export { SHARDS, EXCLUDED, SHARD_NAME_RE, CRAWL_SUB_SHARDS, CRAWL_TRIO };
