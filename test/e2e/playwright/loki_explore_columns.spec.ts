@@ -38,6 +38,17 @@ import { test, expect } from '@playwright/test';
 
 const lokiProxy = '/api/datasources/proxy/uid/cerberus-loki/loki/api/v1';
 
+// Grafana's Loki datasource (and the Logs Drilldown app on top of it)
+// always sends this request header so its promlib response converter takes
+// the categorized-stream branch and reads per-line structured metadata.
+// cerberus gates the optional third `[ts, line, {metadata}]` tuple element
+// on this exact flag (strict two-element reference-Loki parity otherwise),
+// so any spec asserting structured-metadata columns MUST send it — it is
+// what the real Drilldown client this gate stands in for sends on the wire.
+const categorizeLabelsHeaders = {
+  'X-Loki-Response-Encoding-Flags': 'categorize-labels',
+};
+
 // The compose collector tails ClickHouse system.query_log into the
 // `clickhouse` service stream (test/e2e/otel-collector/compose-config.yaml,
 // sqlquery/clickhouse-logs receiver). Its LogAttributes carry the useful
@@ -67,37 +78,64 @@ test.describe('Loki Explore columns — clickhouse query_log', () => {
     const q = encodeURIComponent(clickhouseSelector);
     const url = `${lokiProxy}/query_range?query=${q}&start=${start}&end=${end}&limit=200&direction=backward`;
 
-    const resp = await request.get(url);
+    // Send the categorize-labels flag the real Logs Drilldown app sends, so
+    // cerberus emits the categorized three-element value tuples this gate
+    // inspects (without it, cerberus is correct to return strict two-element
+    // reference-Loki tuples and no structured metadata surfaces at all).
+    const resp = await request.get(url, { headers: categorizeLabelsHeaders });
     expect(resp.status(), 'loki /query_range status').toBe(200);
 
     const body = await resp.json();
     expect(body.status, 'loki response status').toBe('success');
     expect(body.data.resultType, 'loki resultType').toBe('streams');
+    // Under the categorize-labels request flag cerberus must advertise the
+    // matching encodingFlags on the envelope so Grafana's converter takes
+    // the categorized-stream reader (a categorized body without the flag
+    // 400s that parser). This pins the request-driven wire contract.
+    expect(
+      body.data.encodingFlags,
+      'categorize-labels advertised on the streams envelope',
+    ).toContain('categorize-labels');
     expect(
       body.data.result.length,
       'clickhouse query_log logs present (collector seeded them)',
     ).toBeGreaterThan(0);
 
-    // Walk every entry's optional third tuple element (structured
-    // metadata) and collect the union of advertised keys + a sample of
-    // each key's value.
+    // Walk every entry's third tuple element and collect the union of
+    // advertised structured-metadata keys + a sample of each key's value.
+    //
+    // Under categorize-labels cerberus emits the categorized wire shape
+    // reference Loki uses: each value is `[ts, line, {"structuredMetadata":
+    // {...}}]`, with the object present (possibly empty `{}`) on EVERY value
+    // so Grafana's readCategorizedStream parser is satisfied. The Drilldown
+    // app renders columns from the `structuredMetadata` sub-object, so that
+    // is the layer this gate inspects — unwrap it and count only the entries
+    // carrying real per-line metadata.
     const seenKeys = new Set<string>();
     const sampleValue = new Map<string, string>();
     let entriesWithMetadata = 0;
 
     for (const stream of body.data.result) {
       for (const value of stream.values) {
-        // Loki value tuple: [ts, line] or [ts, line, {metadata}].
-        expect(value.length, 'value tuple has ≥2 elements').toBeGreaterThanOrEqual(2);
-        const [, line, metadata] = value;
+        // Categorized value tuple: [ts, line, {structuredMetadata: {...}}].
+        expect(value.length, 'categorized value tuple has 3 elements').toBe(3);
+        const [, line, categorized] = value;
         expect(typeof line, 'line is a string').toBe('string');
-        if (metadata === undefined) {
+        expect(
+          typeof categorized,
+          'categorized element is an object, not a string',
+        ).toBe('object');
+        const metadata = (categorized as Record<string, unknown>).structuredMetadata as
+          | Record<string, string>
+          | undefined;
+        expect(metadata, 'structuredMetadata sub-object present').toBeDefined();
+        expect(typeof metadata, 'structuredMetadata is an object').toBe('object');
+        const keys = Object.keys(metadata as Record<string, string>);
+        if (keys.length === 0) {
+          // An empty `{}` is a well-formed categorized tuple for a
+          // metadata-free row; it just carries no columns to inspect.
           continue;
         }
-        expect(
-          typeof metadata,
-          'structured metadata is an object, not a string',
-        ).toBe('object');
         entriesWithMetadata += 1;
         for (const [k, v] of Object.entries(metadata as Record<string, string>)) {
           seenKeys.add(k);
