@@ -67,7 +67,7 @@ dockers:
       - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
   - id: cerberus-arm64
     image_templates:
@@ -85,7 +85,7 @@ dockers:
       - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
   # `latest-*` tags published ONLY for stable (non-prerelease) tags.
   # Otherwise an RC / alpha / beta tag would advance `:latest` and
@@ -105,7 +105,7 @@ dockers:
       - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
   - id: cerberus-arm64-latest
     image_templates:
@@ -122,7 +122,7 @@ dockers:
       - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
 docker_manifests:
   # Versioned multi-arch manifests — always published.
