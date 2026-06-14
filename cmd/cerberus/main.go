@@ -244,6 +244,7 @@ func run() error {
 	lokiHandler.Limiter = lokiLimiter
 	lokiHandler.Version = Version
 	lokiHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	lokiHandler.TailWriteTimeout = cfg.LokiTailWriteTimeout
 	lokiHandler.Mount(traceMux)
 
 	tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
@@ -286,7 +287,7 @@ func run() error {
 	tempoGRPCService := tempogrpc.NewService(tempoHandler, tempoLimiter, logger.With("api", "tempo-grpc"))
 	grpcServer := tempogrpc.NewServer(tempoGRPCService)
 
-	srv := buildDualStackServer(cfg.HTTPAddr, rootMux, grpcServer)
+	srv := buildDualStackServer(cfg.HTTPAddr, cfg.HTTPServer, rootMux, grpcServer)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -706,7 +707,7 @@ func retrySchemaApply(
 // Cloud Run) the proxy negotiates h2 with the client and forwards
 // h2c upstream — the standard pattern. See
 // docs/operations.md#port-binding.
-func buildDualStackServer(addr string, rootMux, grpcServer http.Handler) *http.Server {
+func buildDualStackServer(addr string, httpCfg config.HTTPServerConfig, rootMux, grpcServer http.Handler) *http.Server {
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			grpcServer.ServeHTTP(w, r)
@@ -717,10 +718,19 @@ func buildDualStackServer(addr string, rootMux, grpcServer http.Handler) *http.S
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
+	// All five timeout / size knobs come from CERBERUS_HTTP_* (internal/config).
+	// ReadHeaderTimeout defaults to the promoted 5s; ReadTimeout / WriteTimeout
+	// default to 0 (unlimited) so the Loki /tail WebSocket and long query_range
+	// matrix streams are never severed mid-response; IdleTimeout bounds an idle
+	// keep-alive connection; MaxHeaderBytes 0 leaves Go's 1 MiB default.
 	return &http.Server{
 		Addr:              addr,
 		Handler:           dispatcher,
 		Protocols:         protocols,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       httpCfg.ReadTimeout,
+		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,
+		WriteTimeout:      httpCfg.WriteTimeout,
+		IdleTimeout:       httpCfg.IdleTimeout,
+		MaxHeaderBytes:    httpCfg.MaxHeaderBytes,
 	}
 }

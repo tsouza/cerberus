@@ -89,6 +89,13 @@ type Handler struct {
 	// Config.ClickHouse.QueryTimeout in cmd/cerberus; 0 applies no
 	// per-request override (the Client default still caps every query).
 	QueryTimeout time.Duration
+
+	// TailWriteTimeout bounds a single /tail WebSocket write before a slow /
+	// dead client is torn down. Wired from CERBERUS_LOKI_TAIL_WRITE_TIMEOUT
+	// (Config.LokiTailWriteTimeout) in cmd/cerberus. Zero falls back to the
+	// package default (defaultTailWriteTimeout) so tests that build a bare
+	// Handler keep the historical 10s bound.
+	TailWriteTimeout time.Duration
 }
 
 // New constructs a Handler with the seed optimizer wired in.
