@@ -87,6 +87,26 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
 
+- **`compose-smoke-matrix.mjs`** — `e2e.yml`, the `compose-smoke-setup` job.
+  Single source of truth for how the `compose-smoke` required PR gate fans its
+  10 Playwright spec files out across a balanced matrix of isolated-compose-
+  stack shards. The three heaviest specs are each one indivisible async
+  `test()` (Playwright's native `--shard` can't split them), so the
+  parallelism is LOGICAL — split the spec FILES across jobs, each booting its
+  own stack. The `SHARDS` partition + `EXCLUDED` list live in this module;
+  specs are DISCOVERED (`git ls-files`) so a new `*.spec.ts` is a hard CI
+  failure unless assigned to a shard or named in `EXCLUDED` — no silent
+  no-run. Coverage assertion is collect-all-violations: unassigned (the
+  forbidden gap), double-assigned, phantom/stale, and bad-shard-name are each
+  reported, then `exit 1`. `compose-smoke-matrix.test.mjs` is the `node --test`
+  guard (run on the cheap `gate` lane) that pins the invariant + proves the
+  detectors fire.
+  - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
+    `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `GITHUB_OUTPUT` (emit:
+    the runner file the `{include:[{name,specs}]}` matrix JSON is written to).
+  - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
+    `MODE`.
+
 ## Notes
 
 - **`forbid-skip.mjs` regexes are a contract.** They are kept
