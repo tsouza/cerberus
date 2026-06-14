@@ -55,6 +55,11 @@ func allNodeKinds() []chplan.Node {
 			Left: leaf, Right: &chplan.Scan{Table: "r"}, Match: chplan.VectorMatch{Labels: []string{"job"}, On: true},
 			Include: []string{"inst"}, ValueColumn: "Value",
 		},
+		&chplan.InfoJoin{
+			Base: leaf, Info: &chplan.Scan{Table: "r"},
+			IdentifyingLabels: []string{"instance", "job"}, DataLabelFilter: []string{"version"},
+			ValueColumn: "Value",
+		},
 		&chplan.VectorSetOp{Left: leaf, Right: &chplan.Scan{Table: "r"}, Match: chplan.VectorMatch{Labels: []string{"job"}}, ValueColumn: "Value"},
 		&chplan.NaryVectorSetOp{
 			Arms: []chplan.Node{leaf, &chplan.Scan{Table: "r"}, &chplan.Scan{Table: "s"}},
@@ -109,7 +114,7 @@ func TestCloneNodeExhaustive(t *testing.T) {
 	// Lock-step guard: every concrete planNode() implementer in chplan must
 	// appear here. When this count drifts, a Node type was added — extend
 	// allNodeKinds AND the CloneNode switch in clone.go.
-	const wantNodeTypes = 28
+	const wantNodeTypes = 29
 	if len(nodes) != wantNodeTypes {
 		t.Fatalf("expected %d Node types, listed %d — a Node type was added: "+
 			"extend allNodeKinds + CloneNode", wantNodeTypes, len(nodes))

@@ -5158,7 +5158,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `info(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `info(up)` — the experimental info() function enriches each series with the data labels of the matching target_info series (joined on instance + job).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5240,11 +5240,11 @@
               "refId": "A"
             }
           ],
-          "title": "info \u2014 parity rejection",
+          "title": "info \u2014 target_info label enrichment",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements info(): the lowering joins the input vector against the target_info series on the identifying labels (instance, job) and enriches the input label set with target_info's data labels. The panel asserts a live nonempty result; previously a parity-rejection pin upgraded per the bidirectional ratchet."
           }
         },
         {

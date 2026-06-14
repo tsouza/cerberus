@@ -1,0 +1,52 @@
+-- query.promql --
+info(up)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('instance', 'a:9100', 'job', 'node'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('instance', 'b:9100', 'job', 'node'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('instance', 'a:9100', 'job', 'node', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('instance', 'b:9100', 'job', 'node', 'version', '4.5.6'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["up", {"instance": "a:9100", "job": "node", "version": "1.2.3"}, "2026-01-01T00:00:00Z", 1.0],
+  ["up", {"instance": "b:9100", "job": "node", "version": "4.5.6"}, "2026-01-01T00:00:00Z", 1.0]
+]
+-- args --
+[0] string = "up"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+[6] string = "instance"
+[7] string = "job"
+[8] string = "instance"
+[9] string = "job"
+[10] string = "__name__"
+[11] string = "target_info"
+[12] string = "target.info"
+[13] string = "2026-01-01 00:00:01.000000000"
+[14] int64 = 9
+[15] string = "2026-01-01 00:00:01.000000000"
+[16] int64 = 9
+[17] int64 = 300000000000
+[18] string = "instance"
+[19] string = "job"
+-- chplan --
+InfoJoin identifying=[instance, job]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName IN ("target_info", "target.info")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT B.`MetricName` AS `MetricName`, mapConcat(R.`_info_data`, B.`Attributes`) AS `Attributes`, B.`TimeUnix` AS `TimeUnix`, B.`Value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) AS B LEFT JOIN (SELECT mapFilter((k, v) -> k IN (?, ?), `Attributes`) AS `_info_sig`, argMax(mapFilter((k, v) -> NOT (k IN (?, ?, ?)), `Attributes`), `TimeUnix`) AS `_info_data` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY _info_sig) AS R ON mapFilter((k, v) -> k IN (?, ?), B.`Attributes`) = R.`_info_sig`

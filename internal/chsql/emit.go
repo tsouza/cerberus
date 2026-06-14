@@ -129,6 +129,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitTopK(v)
 	case *chplan.VectorJoin:
 		return e.emitVectorJoin(v)
+	case *chplan.InfoJoin:
+		return e.emitInfoJoin(v)
 	case *chplan.VectorSetOp:
 		return e.emitVectorSetOp(v)
 	case *chplan.NaryVectorSetOp:

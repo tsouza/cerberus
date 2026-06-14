@@ -265,6 +265,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		b.WriteString("\n")
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
+	case *chplan.InfoJoin:
+		fmt.Fprintf(b, "%sInfoJoin identifying=[%s]",
+			indent, strings.Join(v.IdentifyingLabels, ", "))
+		if len(v.DataLabelFilter) > 0 {
+			fmt.Fprintf(b, " dataLabels=[%s]", strings.Join(v.DataLabelFilter, ", "))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Base, depth+1)
+		printNode(b, v.Info, depth+1)
 	case *chplan.VectorSetOp:
 		fmt.Fprintf(b, "%sVectorSetOp op=%s match=%s\n",
 			indent, v.Op, printVectorMatch(v.Match))

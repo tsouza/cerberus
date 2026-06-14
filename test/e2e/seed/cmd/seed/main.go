@@ -434,6 +434,43 @@ SELECT
     toFloat64((number % 3) + 1)
 FROM numbers(120)`
 
+	// `target_info` is the companion info metric the experimental PromQL
+	// `info(v)` function joins against. It is always value 1.0; its
+	// identifying labels (job, instance) key the join and its remaining
+	// labels are the "data labels" info() enriches onto the input series.
+	//
+	// The `up` series above carry `job=api` and `job=db` (no `instance`
+	// label), so the matching target_info series key on `job` alone. The
+	// data label `version` is what `info(up)` adds to each `up` series —
+	// the showcase-promql `info` panel asserts a nonempty enriched result.
+	// 40 samples × 15 s mirror the `up` window so the LWR lookback always
+	// finds a target_info sample alongside each `up` sample.
+	insertTargetInfoSQL = `INSERT INTO otel_metrics_gauge
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'target_info',
+    'Target metadata for the api scrape target',
+    '1',
+    map('job', 'api', 'version', '1.2.3'),
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    1.0
+FROM numbers(40)
+UNION ALL
+SELECT
+    map('service.name', 'db'),
+    'db',
+    'target_info',
+    'Target metadata for the db scrape target',
+    '1',
+    map('job', 'db', 'version', '4.5.6'),
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    1.0
+FROM numbers(40)`
+
 	// Exponential-histogram rows. Scale=0 means base-2 buckets
 	// ((2^(i+PositiveOffset-1), 2^(i+PositiveOffset)]); the per-row
 	// bucket counts grow with the sample index so the cumulative
@@ -492,6 +529,9 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	}
 	if err := conn.Exec(ctx, insertShowcaseExpHistSQL); err != nil {
 		return fmt.Errorf("showcase exp histogram: %w", err)
+	}
+	if err := conn.Exec(ctx, insertTargetInfoSQL); err != nil {
+		return fmt.Errorf("target_info gauge: %w", err)
 	}
 	return nil
 }

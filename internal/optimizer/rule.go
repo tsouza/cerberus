@@ -452,6 +452,13 @@ func rewriteBinaryNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) 
 			cp.Right = r
 			return &cp
 		})
+	case *chplan.InfoJoin:
+		out, changed = rewriteLeftRight(v, v.Base, v.Info, fn, func(l, r chplan.Node) chplan.Node {
+			cp := *v
+			cp.Base = l
+			cp.Info = r
+			return &cp
+		})
 	case *chplan.VectorSetOp:
 		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r chplan.Node) chplan.Node {
 			cp := *v
