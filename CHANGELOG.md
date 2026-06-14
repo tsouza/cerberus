@@ -197,6 +197,43 @@ delivers most of these. The remainder are honest gaps still to close:
 - LogQL: `| json`, `| logfmt`, `| regexp` parser stages; `unwrap`-based ops.
 - TraceQL: recursive structural ops `>>` / `<<` and sibling ops.
 
+### Known limitations / experimental notes (RC1 posture)
+
+RC1 is an early, experimental cut. The differential harnesses gate every
+merge, but correctness, performance, and operational behaviour are still
+being shaken out — **validate cerberus against your own corpus before
+pointing anything real at it** (see the README warning). The
+maintainer-accepted caveats specific to this candidate:
+
+- **TraceQL conformance is the weakest of the three heads.** PromQL is
+  scored against the third-party CNCF / PromLabs
+  [PromQL Compliance Tester](https://github.com/prometheus/compliance) and
+  LogQL against a real reference Loki seeded from Grafana's own
+  `pkg/logql/bench` corpus, but **there is no third-party TraceQL
+  conformance suite** to draw on. The TraceQL harness diffs against a real
+  reference Tempo, yet its corpus is author-written cerberus-owned TXTAR, so
+  its breadth is author-bounded rather than reference-derived. Raising
+  TraceQL's confidence is the top post-RC1 improvement item. See
+  [`docs/compatibility.md`](docs/compatibility.md#traceql--cerberus-owned-driver)
+  for the per-head confidence table and the full reasoning.
+
+- **Per-head circuit-breaker isolation is in place but not fully hardened
+  ([#94]).** The single `chclient.Client` holds a registry of breakers —
+  one per data-plane head (`prom` / `loki` / `tempo`) plus a dedicated
+  `probe` breaker for `/readyz` — so one head tripping OPEN no longer 503s
+  the others or evicts the pod (see
+  [`docs/operations.md`](docs/operations.md#clickhouse-circuit-breaker) for
+  the blast-radius contract). Full isolation and independent-recovery
+  hardening is post-RC1 work: after a ClickHouse restart, recovery may
+  briefly flap as the per-head HALF-OPEN probes re-converge. This is being
+  improved separately and is a known experimental rough edge, not a
+  blocker.
+
+- **Not production-ready.** Cerberus remains experimental and under active
+  development; the surface is evolving and breaking changes are expected.
+  Do not stand it in for a running Prometheus / Loki / Tempo deployment
+  without first evaluating it against your own queries and data.
+
 ## [v0.1.0] — Seed
 
 First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
