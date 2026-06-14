@@ -103,7 +103,7 @@ ClickHouse-health failure).
 | ------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CERBERUS_CH_MAX_OPEN_CONNS`    | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.                                                                                                                       |
 | `CERBERUS_CH_MAX_IDLE_CONNS`    | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.                                                                                                                         |
-| `CERBERUS_CH_CONN_MAX_LIFETIME` | duration | `5m`    | Max age of a pooled connection before it is recycled. Kept short (vs the driver's 1h) so a stale conn to a restarted ClickHouse pod is recycled in minutes, not an hour. Must be > 0. |
+| `CERBERUS_CH_CONN_MAX_LIFETIME` | duration | `30s`   | Max age of a pooled connection before it is recycled. Kept short (vs the driver's 1h) because it is the effective recovery bound after a ClickHouse restart: the driver has no idle-health knob and a stale conn to a force-killed pod blocks reads for minutes, so age eviction is what heals the pool — 30s recovers in seconds. Must be > 0. |
 
 ## Query limits and memory
 

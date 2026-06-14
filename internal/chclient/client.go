@@ -109,20 +109,25 @@ type Config struct {
 	// 1h; cerberus makes it explicit. Zero falls back to
 	// defaultConnMaxLifetime.
 	//
-	// It doubles as the recovery-speed ceiling for a restarted ClickHouse
-	// backend (ch-pod-kill, run 27509796946). clickhouse-go (v2.46.0) has
-	// no separate idle-time knob: a pooled conn to the OLD pod is dropped
-	// at acquire only once acquire()'s isBad() check trips — either the
-	// non-blocking socket read in conn_check.go notices the dead peer, OR
-	// the conn crosses ConnMaxLifetime (isBad checks both). A force-killed
-	// pod often leaves the socket in ESTABLISHED with no FIN/RST, so the
-	// socket check passes and the conn is only retired once it ages past
-	// ConnMaxLifetime — which at the 1h default is far too long. The
-	// transport-retry on the data path (see retry.go) makes a stale conn
-	// transparent on the FIRST query regardless of this value; this cap is
-	// the backstop that bounds how long a never-queried idle stale conn can
-	// otherwise loiter, so a modest value (minutes, not an hour) keeps the
-	// pool self-healing without churning conns under healthy load.
+	// It is the recovery-speed CEILING for a restarted ClickHouse backend
+	// (ch-pod-kill, run 27509796946). clickhouse-go (v2.46.0) has no
+	// idle-health knob: a pooled conn to the OLD pod is dropped at acquire
+	// only once acquire()'s isBad() check trips — either the non-blocking
+	// socket read in conn_check.go notices the dead peer, OR the conn
+	// crosses ConnMaxLifetime (isBad checks both). A force-killed pod often
+	// leaves the socket in ESTABLISHED with no FIN/RST, so the socket check
+	// passes the dead conn through as healthy. The driver evicts a conn the
+	// instant a query against it errors (release(conn, err) → close), but
+	// the error only surfaces AFTER the read on the dead peer unblocks — and
+	// that read blocks for the driver's ReadTimeout (300s default) or the
+	// request's ctx budget (minutes). So the transport-retry can NOT make a
+	// stale conn transparent in seconds: the FIRST attempt blocks for
+	// minutes before it can even retry. ConnMaxLifetime is therefore the
+	// effective heal bound — the only age-eviction lever — so it must be
+	// SHORT (tens of seconds) for fast restart recovery, not minutes. See
+	// internal/config defaultCHConnMaxLifetime for the chosen value + churn
+	// trade-off; the retry.go path remains the in-window absorber for the
+	// rare stale conn that fails fast.
 	ConnMaxLifetime time.Duration
 
 	// MaxQuerySamples caps the number of Sample rows a single query may

@@ -228,7 +228,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
 //	CERBERUS_CH_MAX_OPEN_CONNS     default 10 (total pooled conns, busy + idle)
 //	CERBERUS_CH_MAX_IDLE_CONNS     default 5  (idle conns kept warm for reuse)
-//	CERBERUS_CH_CONN_MAX_LIFETIME  default "5m" (max age before a conn is recycled; short so a stale conn to a restarted CH pod recycles fast)
+//	CERBERUS_CH_CONN_MAX_LIFETIME  default "30s" (max age before a conn is recycled; short so a stale conn to a restarted CH pod ages out in seconds — the effective restart heal bound)
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
 //	CERBERUS_QUERY_TIMEOUT         default "2m" — per-query wall-clock cap stamped
 //	    as ClickHouse max_execution_time (timeout_overflow_mode=throw); the
@@ -571,22 +571,33 @@ const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 // circuit breaker treats neutrally (local pool-sizing signal, not CH-health
 // failure).
 //
-// ConnMaxLifetime DEPARTS from the driver's 1h default: it is the backstop
-// that bounds how long a stale pooled conn to a RESTARTED ClickHouse backend
-// can loiter (ch-pod-kill recovery, run 27509796946). clickhouse-go v2.46.0
-// has no idle-time knob, and a force-killed pod's socket can stay ESTABLISHED
-// (no FIN/RST) so the driver's per-acquire socket check passes the dead conn
-// through; the conn is only retired once it ages past ConnMaxLifetime. At 1h
-// that left a never-queried idle conn dead-but-pooled for the better part of
-// an hour. 5m keeps the pool self-healing after a restart while staying long
-// enough that healthy conns are not churned on every request. The data-path
-// transport-retry (internal/chclient/retry.go) already makes a stale conn
-// transparent on the first QUERY regardless of this value; this just caps the
-// loiter window for idle conns that are never queried.
+// ConnMaxLifetime DEPARTS from the driver's 1h default: it is the
+// recovery-speed CEILING for a RESTARTED ClickHouse backend (ch-pod-kill
+// recovery, run 27509796946 — then re-flaked at the 5m value, run
+// 27572XXXXXX). clickhouse-go v2.46.0 exposes NO idle-health knob, and a
+// force-killed pod's socket can stay ESTABLISHED (no FIN/RST), so the driver's
+// per-acquire socket check (conn_check.go) passes the dead conn through as
+// healthy. The driver DOES evict a conn the moment a query against it errors
+// (clickhouse.release(conn, err) → conn.close()), but the error only surfaces
+// AFTER the socket read on the dead peer unblocks — and an idle-but-not-noticed
+// stale conn's read blocks for the driver's full ReadTimeout (300s default) or
+// the request's ctx budget (the prom head's 2m QueryTimeout). So neither the
+// transport-retry nor the per-query eviction fires in seconds: recovery is
+// bounded by whichever ages the stale conn out first. ConnMaxLifetime is the
+// ONLY age-eviction lever — isBad() retires any conn older than it at acquire,
+// and the pool's background drain ticker fires on the same period — so it
+// directly sets the worst-case heal window. 5m bounded recovery at ~5m (the
+// observed flake: one replica's breaker stayed OPEN until exactly
+// process-start + 5m). 30s bounds it to ~30s + one breaker probe interval
+// (well under the chaos BREAKER_CLOSE_DEADLINE_MS=300s, and under 60s),
+// deterministically and on EVERY replica, because age eviction is
+// unconditional. CH native conns are stateless (no session temp tables) and
+// cheap to redial, so recycling the idle pool every 30s is negligible churn —
+// the steady-state trade-off the short window costs.
 const (
-	defaultCHMaxOpenConns                  = 10
-	defaultCHMaxIdleConns                  = 5
-	defaultCHConnMaxLifetime time.Duration = 5 * time.Minute
+	defaultCHMaxOpenConns                       = 10
+	defaultCHMaxIdleConns                       = 5
+	defaultCHConnMaxLifetime      time.Duration = 30 * time.Second
 )
 
 // Circuit-breaker defaults (#95). These reproduce the previously-

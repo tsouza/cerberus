@@ -169,6 +169,43 @@ func TestQuery_ManyStaleConns_DrainedInOneRequest(t *testing.T) {
 	}
 }
 
+// TestWithTransportRetry_BlockingStaleConn_NotRetried pins the failure mode
+// the ConnMaxLifetime fix targets — the one the retry path CANNOT absorb. A
+// force-killed CH pod leaves its socket half-open (ESTABLISHED, no FIN/RST),
+// so a read against it does NOT fail fast: it blocks until the request's ctx
+// deadline (or the driver's ReadTimeout), surfacing context.DeadlineExceeded.
+// That error is deliberately NOT a broken-conn error (isBrokenConnError ==
+// false), so withTransportRetry makes exactly ONE attempt and returns it —
+// there is no fast re-acquire that drains the bad conn. record() then counts
+// the deadline as a real breaker failure. Hence the stale conn lingers and
+// re-trips every probe until something AGES it out: ConnMaxLifetime is that
+// lever, which is why it (not the retry) bounds restart recovery and must be
+// short. If this ever starts retrying, the fast-recovery reasoning in
+// internal/config defaultCHConnMaxLifetime needs revisiting.
+func TestWithTransportRetry_BlockingStaleConn_NotRetried(t *testing.T) {
+	t.Parallel()
+	if isBrokenConnError(context.DeadlineExceeded) {
+		t.Fatal("context.DeadlineExceeded must NOT be a broken-conn error — a blocking stale conn is not fast-retryable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls int
+	// The call models a read that blocked on the dead peer until the ctx
+	// budget expired: it returns DeadlineExceeded, exactly as the driver's
+	// firstBlock read does once SetDeadline fires.
+	_, err := withTransportRetry(ctx, func() (struct{}, error) {
+		calls++
+		return struct{}{}, context.DeadlineExceeded
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v; want the deadline surfaced unmodified", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d; want 1 (a blocking stale conn is NOT retried — age eviction heals it)", calls)
+	}
+}
+
 // TestPing_StaleConn_RecoversSilently — the readiness-probe path (Ping) gets
 // the same stale-conn recovery, so /readyz doesn't flap red on a transient
 // stale conn after a restart.
