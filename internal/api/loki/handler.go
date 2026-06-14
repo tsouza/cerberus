@@ -79,6 +79,16 @@ type Handler struct {
 	// handler still returns 200 with empty-string fields, matching
 	// upstream Loki's behaviour when build metadata is unset).
 	Version string
+
+	// QueryTimeout is the configured default per-query wall-clock cap
+	// (CERBERUS_QUERY_TIMEOUT). Loki's query API accepts a `timeout`
+	// param; when present it min's against this default (the smaller
+	// wins) and the result is threaded onto the request ctx as both a
+	// context deadline and chclient.WithQueryTimeout (the ClickHouse
+	// max_execution_time override). Wired from
+	// Config.ClickHouse.QueryTimeout in cmd/cerberus; 0 applies no
+	// per-request override (the Client default still caps every query).
+	QueryTimeout time.Duration
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -234,13 +244,19 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := parseLogDirection(r.URL.Query().Get("direction"))
 
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+
 	// Instant /query: collapse the window onto a single point. Per
 	// upstream Loki contract the evaluation lookback is the previous
 	// 5 minutes (the same instant-lookback PromQL uses). Threading
 	// [ts - 5m, ts] keeps the Scan filtered to that envelope so the
 	// SQL doesn't return every matching log in the table.
 	const instantLookback = 5 * time.Minute
-	res, err := h.Engine.Query(r.Context(), h.langForRequest(ts.Add(-instantLookback), ts), q)
+	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-instantLookback), ts), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -294,7 +310,13 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := parseLogDirection(r.URL.Query().Get("direction"))
 
-	res, err := h.Engine.Query(r.Context(), h.langForRangeRequest(start, end, step), q)
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+
+	res, err := h.Engine.Query(ctx, h.langForRangeRequest(start, end, step), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -361,6 +383,54 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 // out unchanged. Engine-wrapped emit / execute errors are bare wrapped
 // strings — we sniff the stage prefix to map emit → 500 and execute →
 // 502 with the right Loki errorType.
+// applyQueryTimeout derives the request context the /query and
+// /query_range handlers run under, honouring Loki's `timeout` query
+// param. It resolves the effective wall-clock budget — the configured
+// default (h.QueryTimeout) min'd with the request's ?timeout= (the
+// smaller wins; 0 on either side means "no cap from that source") — and,
+// when positive, threads it onto the returned context as both a context
+// deadline AND chclient.WithQueryTimeout (the ClickHouse
+// max_execution_time override). The caller MUST defer the returned
+// cancel (a no-op when no deadline was installed). A malformed ?timeout=
+// is a 400 bad_data; ok=false signals the caller already wrote the error
+// and must return.
+func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
+	ctx := r.Context()
+	budget := h.QueryTimeout
+	if raw := r.URL.Query().Get("timeout"); raw != "" {
+		reqTimeout, err := format.ParseDuration(raw)
+		if err != nil || reqTimeout < 0 {
+			writeError(w, http.StatusBadRequest, ErrBadData,
+				fmt.Errorf("invalid parameter 'timeout': %w", err))
+			return ctx, func() {}, false
+		}
+		budget = minPositiveDuration(budget, reqTimeout)
+	}
+	if budget <= 0 {
+		return ctx, func() {}, true
+	}
+	ctx = chclient.WithQueryTimeout(ctx, budget)
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	return ctx, cancel, true
+}
+
+// minPositiveDuration returns the smaller of a and b, treating a
+// non-positive value as "unbounded" so it never wins the min; when both
+// are non-positive the result is 0 (no cap). Mirrors the effective-
+// timeout rule shared with the Prom head.
+func minPositiveDuration(a, b time.Duration) time.Duration {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
+}
+
 func classifyEngineErr(err error) error {
 	if err == nil {
 		return nil
@@ -414,6 +484,26 @@ func classifyEngineErr(err error) error {
 			Kind:   ErrBadData,
 			Err:    errors.New(msg),
 			Status: http.StatusBadRequest,
+		}
+	}
+	// Wall-clock timeout: the data-plane query hit its max_execution_time
+	// cap (TIMEOUT_EXCEEDED → *QueryTimeoutError) or the handler's
+	// context deadline fired. Upstream Loki surfaces a query-timeout as
+	// HTTP 503 errorType=timeout (queryrange's "context deadline
+	// exceeded" path), NOT a 5xx fault — the query ran exactly as long as
+	// it was allowed to; ClickHouse is healthy (the chclient breaker
+	// treats code 159 as a success for the same reason). A plain
+	// context.Canceled (client gone) is deliberately not caught here.
+	if errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		msg := "query timed out"
+		var qt *chclient.QueryTimeoutError
+		if errors.As(err, &qt) && qt.Timeout > 0 {
+			msg = fmt.Sprintf("query timed out after %s", qt.Timeout)
+		}
+		return &apiError{
+			Kind:   ErrTimeout,
+			Err:    errors.New(msg),
+			Status: http.StatusServiceUnavailable,
 		}
 	}
 	var apiErr *apiError

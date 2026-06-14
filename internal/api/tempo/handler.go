@@ -389,6 +389,14 @@ func classifySearchErr(err error) int {
 	// carries the chclient message naming the configured cap.
 	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
 		return http.StatusUnprocessableEntity
+	// Wall-clock timeout (CERBERUS_QUERY_TIMEOUT → ClickHouse
+	// max_execution_time, code 159, or the request ctx deadline): a
+	// per-query cap doing its job, not a transport failure. 503 like the
+	// breaker-open case so clients back off, rather than a generic 5xx —
+	// ClickHouse is healthy when it aborts an over-long query (the
+	// chclient breaker treats code 159 as a success for the same reason).
+	case errors.Is(err, chclient.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, errParseStage):
 		return http.StatusBadRequest
 	case errors.Is(err, errLowerStage):
@@ -624,6 +632,11 @@ func classifyTraceByIDErr(err error) int {
 	// classifySearchErr; see the rationale there.
 	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
 		return http.StatusUnprocessableEntity
+	}
+	// Wall-clock timeout (code 159 / ctx deadline) → 503, mirroring
+	// classifySearchErr; see the rationale there.
+	if errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusServiceUnavailable
 	}
 	if strings.Contains(err.Error(), "engine: execute:") {
 		return http.StatusBadGateway

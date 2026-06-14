@@ -171,6 +171,7 @@ const (
 	envCHMaxIdleConns      = "CERBERUS_CH_MAX_IDLE_CONNS"
 	envCHConnMaxLifetime   = "CERBERUS_CH_CONN_MAX_LIFETIME"
 	envQueryMaxSamples     = "CERBERUS_QUERY_MAX_SAMPLES"
+	envQueryTimeout        = "CERBERUS_QUERY_TIMEOUT"
 	envCHQueryMaxMemory    = "CERBERUS_CH_QUERY_MAX_MEMORY"
 	envCHBreakerEnabled    = "CERBERUS_CH_BREAKER_ENABLED"
 	envCHBreakerThreshold  = "CERBERUS_CH_BREAKER_THRESHOLD"
@@ -212,6 +213,9 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_MAX_IDLE_CONNS     default 5  (idle conns kept warm for reuse)
 //	CERBERUS_CH_CONN_MAX_LIFETIME  default "1h" (max age before a conn is recycled)
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
+//	CERBERUS_QUERY_TIMEOUT         default "2m" — per-query wall-clock cap stamped
+//	    as ClickHouse max_execution_time (timeout_overflow_mode=throw); the
+//	    standard Prometheus ?timeout= param min's with it per request; 0 disables
 //	CERBERUS_CH_QUERY_MAX_MEMORY   default 1073741824 bytes = 1GiB (0 = don't set)
 //	CERBERUS_CH_BREAKER_ENABLED       default "true"  (false → breaker never trips)
 //	CERBERUS_CH_BREAKER_THRESHOLD     default 5   (consecutive failures to trip OPEN)
@@ -296,6 +300,13 @@ func FromEnv() (Config, error) {
 	if maxMemory < 0 {
 		return Config{}, fmt.Errorf("%s: must be >= 0, got %d", envCHQueryMaxMemory, maxMemory)
 	}
+	queryTimeout, err := getDuration(v, envQueryTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	if queryTimeout < 0 {
+		return Config{}, fmt.Errorf("%s: must be >= 0, got %s", envQueryTimeout, queryTimeout)
+	}
 	breaker, err := breakerFromEnv(v)
 	if err != nil {
 		return Config{}, err
@@ -325,6 +336,7 @@ func FromEnv() (Config, error) {
 			ConnMaxLifetime:     connMaxLifetime,
 			MaxQuerySamples:     maxSamples,
 			MaxQueryMemoryBytes: maxMemory,
+			QueryTimeout:        queryTimeout,
 			BreakerThreshold:    breaker.Threshold,
 			BreakerWindow:       breaker.Window,
 			BreakerOpenInterval: breaker.OpenInterval,
@@ -355,6 +367,7 @@ var allEnvKeys = []string{
 	envCHMaxIdleConns,
 	envCHConnMaxLifetime,
 	envQueryMaxSamples,
+	envQueryTimeout,
 	envCHQueryMaxMemory,
 	envCHBreakerEnabled,
 	envCHBreakerThreshold,
@@ -411,6 +424,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envCHMaxIdleConns, defaultCHMaxIdleConns)
 	v.SetDefault(envCHConnMaxLifetime, defaultCHConnMaxLifetime.String())
 	v.SetDefault(envQueryMaxSamples, defaultQueryMaxSamples)
+	v.SetDefault(envQueryTimeout, defaultQueryTimeout.String())
 	v.SetDefault(envCHQueryMaxMemory, defaultCHQueryMaxMemory)
 	v.SetDefault(envCHBreakerEnabled, defaultCHBreakerEnabled)
 	v.SetDefault(envCHBreakerThreshold, defaultCHBreakerThreshold)
@@ -487,6 +501,22 @@ const (
 // should set CERBERUS_QUERY_MAX_SAMPLES well below the default — the
 // k3d e2e stack runs at 5,000,000.
 const defaultQueryMaxSamples int64 = 50_000_000
+
+// defaultQueryTimeout is the default per-query wall-clock execution cap:
+// 2 minutes, mirroring upstream Prometheus's `--query.timeout` default
+// so Grafana / Prom clients see the budget they already expect. It is
+// stamped on the DEFAULT route-A data-plane path as ClickHouse's
+// per-query `max_execution_time` (with timeout_overflow_mode=throw), so
+// a pathological query is aborted server-side with TIMEOUT_EXCEEDED
+// (code 159) instead of holding a pooled connection + admit slot for an
+// unbounded duration. This is deliberately looser than the solver's
+// 60s CERBERUS_SOLVER_TIMEOUT (which guards only the dark route-B
+// fan-out): route A is the common single-statement path and a 2m
+// ceiling matches the wall-clock budget Prom operators tune against,
+// while still capping the unbounded hold the gap left open. The
+// standard Prometheus ?timeout= query param min's with this default per
+// request. 0 disables the cap (ClickHouse server defaults apply).
+const defaultQueryTimeout time.Duration = 2 * time.Minute
 
 // defaultCHQueryMaxMemory is the default ClickHouse per-query memory
 // cap (the `max_memory_usage` setting chclient stamps on every

@@ -82,6 +82,20 @@ type Handler struct {
 	// query_range grid, so they are unaffected.
 	ExperimentalTSGridRange bool
 
+	// QueryTimeout is the configured default per-query wall-clock cap
+	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
+	// `?timeout=<duration>` query param min's against per request
+	// (Prometheus uses the smaller of `query.timeout` and `?timeout=`):
+	// the resolved value is threaded onto the request ctx as BOTH a
+	// context deadline AND chclient.WithQueryTimeout (the ClickHouse
+	// max_execution_time override), so route A gets a server-side
+	// deadline matching the client-visible one. Wired from
+	// Config.ClickHouse.QueryTimeout in cmd/cerberus; 0 leaves the cap
+	// at whatever the Client default is and applies no per-request
+	// override (?timeout= still narrows the Client default via
+	// chclient.WithQueryTimeout). Tests leave it zero.
+	QueryTimeout time.Duration
+
 	// parser is the single PromQL parser instance the handler uses for
 	// every parse path. The handler-side classification parse
 	// (parseExpr — scalar fold / string literal / expression type
@@ -245,12 +259,18 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+
 	// Classify the expression once up front: scalar folds and string
 	// literals are answered in Go (no ClickHouse round-trip), and a
 	// matrix-typed expression (`up[5m]`, `up[5m:1m]`) selects the
 	// instant-matrix pivot below — reference Prometheus answers all
 	// four result types on /api/v1/query.
-	expr, err := h.parseExpr(r.Context(), q)
+	expr, err := h.parseExpr(ctx, q)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
 		return
@@ -278,7 +298,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	samples, hdr, err := h.executeInstant(r.Context(), q, ts, ts)
+	samples, hdr, err := h.executeInstant(ctx, q, ts, ts)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -411,10 +431,16 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+
 	// Parse up front: the expression type gate below and the scalar
 	// fold both need the AST. Mirrors upstream Prometheus's
 	// web/api/v1.queryRange ordering (parse → type check → engine).
-	expr, err := h.parseExpr(r.Context(), q)
+	expr, err := h.parseExpr(ctx, q)
 	if err != nil {
 		h.respondError(w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
 		return
@@ -442,7 +468,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursor, hdr, err := h.executeRangeStreaming(r.Context(), q, start, end, step)
+	cursor, hdr, err := h.executeRangeStreaming(ctx, q, start, end, step)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -463,6 +489,65 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
 	})
+}
+
+// applyQueryTimeout derives the request context every query handler runs
+// under, honouring the standard Prometheus `?timeout=<duration>` query
+// param. It resolves the effective per-query wall-clock budget — the
+// configured default (h.QueryTimeout) min'd with the request's ?timeout=
+// (Prometheus uses the smaller of the two), treating 0 on either side as
+// "no cap from that source" — and, when the budget is positive, threads
+// it onto the returned context as BOTH:
+//
+//   - a context deadline (context.WithTimeout), so a query that hangs
+//     past the budget unblocks the handler and releases its admit slot +
+//     pooled connection even if the server-side cap somehow doesn't fire;
+//     and
+//   - chclient.WithQueryTimeout, so the data-plane query's ClickHouse
+//     max_execution_time is narrowed to the same budget and the server
+//     aborts the query with TIMEOUT_EXCEEDED (code 159) → *QueryTimeoutError.
+//
+// The returned cancel MUST be deferred by the caller (it is a no-op when
+// no deadline was installed). A malformed ?timeout= is a 400 bad_data
+// (matching upstream Prometheus); ok=false signals the caller already
+// wrote the error and must return.
+func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
+	ctx := r.Context()
+	budget := h.QueryTimeout
+	if raw := r.FormValue("timeout"); raw != "" {
+		reqTimeout, err := format.ParseDuration(raw)
+		if err != nil || reqTimeout < 0 {
+			writeError(w, http.StatusBadRequest, ErrBadData,
+				fmt.Errorf("invalid parameter 'timeout': %w", err))
+			return ctx, func() {}, false
+		}
+		budget = minPositiveDuration(budget, reqTimeout)
+	}
+	if budget <= 0 {
+		return ctx, func() {}, true
+	}
+	ctx = chclient.WithQueryTimeout(ctx, budget)
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	return ctx, cancel, true
+}
+
+// minPositiveDuration returns the smaller of a and b, treating a
+// non-positive value as "unbounded" (so it never wins the min). When
+// both are non-positive the result is 0 (no cap). This mirrors
+// Prometheus's effective-timeout rule: the engine uses the smaller of
+// the global query.timeout and the per-request ?timeout=, and a disabled
+// (zero) cap on either side does not clamp the other.
+func minPositiveDuration(a, b time.Duration) time.Duration {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
 }
 
 // parseExpr wraps the prom parser in a `parse` pipeline-stage span. The
@@ -650,12 +735,46 @@ func memoryLimitAPIError(e *chclient.MemoryLimitError) *apiError {
 	}
 }
 
+// queryTimeoutAPIError is the head-idiomatic rejection for a query that
+// exceeded its wall-clock budget — HTTP 503, errorType "timeout",
+// mirroring upstream Prometheus's web/api/v1 handling of a query that
+// hits `query.timeout` (ErrQueryTimeout → 503 errorType=timeout). It
+// covers both the ClickHouse server-side abort (TIMEOUT_EXCEEDED, code
+// 159 → *QueryTimeoutError) and a context-deadline expiry on the
+// handler-installed budget (context.DeadlineExceeded). It is NOT a 5xx
+// server fault: the query ran exactly as long as it was allowed to, then
+// the cap fired — CH is healthy, so this is breaker-neutral too.
+func queryTimeoutAPIError(err error) *apiError {
+	msg := "query timed out"
+	var qt *chclient.QueryTimeoutError
+	if errors.As(err, &qt) && qt.Timeout > 0 {
+		msg = fmt.Sprintf("query timed out after %s", qt.Timeout)
+	}
+	return &apiError{
+		Kind:   ErrTimeout,
+		Err:    errors.New(msg),
+		Status: http.StatusServiceUnavailable,
+	}
+}
+
+// isQueryTimeout reports whether err is a per-query wall-clock timeout —
+// either the ClickHouse server-side TIMEOUT_EXCEEDED rejection
+// (chclient.ErrQueryTimeout) or the handler's own context-deadline
+// expiry (context.DeadlineExceeded), the latter being how a query that
+// hangs past the budget without the server-side cap firing surfaces. A
+// plain context.Canceled (client walked away) is deliberately NOT
+// treated as a timeout — that maps to the canceled wire shape elsewhere.
+func isQueryTimeout(err error) bool {
+	return errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // classifyDrainError maps errors surfaced while draining a query_range
 // cursor (matrixFromCursor → cursor.Err()). The sample-budget sentinel
-// becomes the Prometheus-parity 422; everything else keeps the
-// transport-failure 502 shape. Budget errors occur AFTER the cursor
-// open succeeded, so they are never recorded against the chclient
-// circuit breaker — this mapping is purely a wire-shape concern.
+// becomes the Prometheus-parity 422; the wall-clock timeout becomes a
+// 503 errorType=timeout; everything else keeps the transport-failure 502
+// shape. These errors occur AFTER the cursor open succeeded, so they are
+// never recorded against the chclient circuit breaker — this mapping is
+// purely a wire-shape concern.
 func classifyDrainError(err error) error {
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		return tooManySamplesAPIError()
@@ -663,6 +782,9 @@ func classifyDrainError(err error) error {
 	var memLimit *chclient.MemoryLimitError
 	if errors.As(err, &memLimit) {
 		return memoryLimitAPIError(memLimit)
+	}
+	if isQueryTimeout(err) {
+		return queryTimeoutAPIError(err)
 	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 }
@@ -706,6 +828,14 @@ func classifyEngineError(err error) error {
 	var memLimit *chclient.MemoryLimitError
 	if errors.As(err, &memLimit) {
 		return memoryLimitAPIError(memLimit)
+	}
+	// Wall-clock timeout (open path): the data-plane query hit its
+	// max_execution_time cap (TIMEOUT_EXCEEDED → *QueryTimeoutError) or
+	// the handler's context deadline fired before the cursor opened. 503
+	// errorType=timeout, mirroring upstream Prometheus; never a 5xx — the
+	// query ran exactly as long as it was allowed to.
+	if isQueryTimeout(err) {
+		return queryTimeoutAPIError(err)
 	}
 	var ps *parseStageError
 	if errors.As(err, &ps) {
