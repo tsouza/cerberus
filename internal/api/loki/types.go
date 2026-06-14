@@ -4,6 +4,10 @@ package loki
 // schema so Grafana parses cerberus's responses without datasource-
 // specific quirks.
 
+import (
+	"encoding/json"
+)
+
 // Response is the top-level wrapper for every /loki/api/v1/* response.
 // Data shape varies by endpoint (QueryData for /query{,_range}, plain
 // slices for /labels and /label/<name>/values).
@@ -23,12 +27,72 @@ type QueryData struct {
 }
 
 // Stream is one element of a "streams"-type Result. Values are
-// [unix_nanoseconds_string, log_line] tuples — Loki's documented
-// on-the-wire format.
+// [unix_nanoseconds_string, log_line] or
+// [unix_nanoseconds_string, log_line, {structured_metadata}] tuples —
+// Loki's documented on-the-wire format. The optional third element
+// carries per-entry structured metadata (the OTel-CH LogAttributes map),
+// which Grafana's Logs Drilldown reads to render clean per-line columns.
 type Stream struct {
 	Stream map[string]string `json:"stream"`
-	Values [][2]string       `json:"values"`
+	Values []StreamValue     `json:"values"`
 }
+
+// StreamValue is one log entry inside a [Stream]: a nanosecond timestamp
+// string, the log line, and an optional structured-metadata map. It
+// marshals to Loki's positional array shape — a two-element
+// `[ts, line]` array when Metadata is empty, or a three-element
+// `[ts, line, {metadata}]` array when structured metadata is present —
+// so the wire format stays byte-compatible with reference Loki on both
+// paths.
+type StreamValue struct {
+	Timestamp string
+	Line      string
+	Metadata  map[string]string
+}
+
+// MarshalJSON renders the entry as Loki's positional array. The
+// structured-metadata object is emitted only when non-empty, keeping
+// metadata-free streams (every prior log query, and rows whose
+// LogAttributes map is empty) byte-identical to the two-element shape.
+func (v StreamValue) MarshalJSON() ([]byte, error) {
+	if len(v.Metadata) == 0 {
+		return json.Marshal([2]string{v.Timestamp, v.Line})
+	}
+	return json.Marshal([3]any{v.Timestamp, v.Line, v.Metadata})
+}
+
+// UnmarshalJSON parses Loki's positional value array back into the
+// struct, accepting both the two-element `[ts, line]` and the
+// three-element `[ts, line, {metadata}]` shapes so a round-trip (e.g. a
+// conformance test decoding cerberus's own output, or a client reading a
+// reference-Loki response) recovers the structured metadata when present.
+func (v *StreamValue) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw) < 2 {
+		return errStreamValueArity
+	}
+	if err := json.Unmarshal(raw[0], &v.Timestamp); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw[1], &v.Line); err != nil {
+		return err
+	}
+	if len(raw) >= 3 {
+		return json.Unmarshal(raw[2], &v.Metadata)
+	}
+	return nil
+}
+
+// errStreamValueArity is returned when a Loki stream value array carries
+// fewer than the two mandatory [timestamp, line] elements.
+var errStreamValueArity = errStreamValue("loki stream value: want at least [timestamp, line]")
+
+type errStreamValue string
+
+func (e errStreamValue) Error() string { return string(e) }
 
 // MatrixSample is one element of a "matrix"-type Result. Values are
 // [seconds_float, value_string] tuples — same convention as Prometheus

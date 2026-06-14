@@ -75,6 +75,7 @@ const SHARDS = [
       'iterate-panel-kiosk.spec.ts', //        144.0s lean — heavy anchor
       'iterate-all-dashboards.spec.ts', //      20.6s
       'crawl/dsquery.spec.ts', //               20.5s
+      'loki_explore_columns.spec.ts', //         1.6s — lightest companion, lands on the lean shard
     ],
   },
   {

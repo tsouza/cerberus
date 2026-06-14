@@ -398,6 +398,40 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByL
 	}
 }
 
+// structuredMetadataExpr returns the chplan expression that surfaces a
+// log row's OTel-CH LogAttributes map as Loki structured metadata — the
+// third element of each `[ts, line, {metadata}]` value tuple in a
+// streams response. The shape is
+//
+//	mapFilter((k, v) -> v != '', LogAttributes)
+//
+// Empty-valued entries are dropped so a row that doesn't populate a given
+// attribute doesn't advertise an empty column — mirroring reference
+// Loki, which only attaches structured-metadata keys that carry a value.
+// The keys are stored verbatim (Loki/OTLP-convention names like
+// `duration` / `read_bytes` / `query_id`), already matching the
+// structured-metadata grammar, so no per-key normalisation runs here;
+// the handler normalises on the way out alongside the stream labels.
+//
+// Callers gate on a non-empty AttributesColumn — a custom schema without
+// a structured-metadata column never reaches this expression.
+func structuredMetadataExpr(s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapFilter",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{"k", "v"},
+				Body: &chplan.Binary{
+					Op:    chplan.OpNe,
+					Left:  &chplan.BareIdent{Name: "v"},
+					Right: &chplan.LitString{V: ""},
+				},
+			},
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+	}
+}
+
 // queryShouldSurfaceDetectedLevel reports whether the parsed LogQL
 // expression should carry the synthesized `detected_level` label on its
 // output stream identity. Used by the log-stream projection in

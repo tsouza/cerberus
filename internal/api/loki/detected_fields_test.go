@@ -99,6 +99,62 @@ func TestDetectedFields_JSON(t *testing.T) {
 	}
 }
 
+// TestDetectedFields_ClickHouseQueryLog pins the #903 follow-up: against
+// the compose stack's `{service_name="clickhouse"}` logs — whose Body is
+// a raw SQL query string and whose LogAttributes carry the useful
+// query_log columns — cerberus's detected_fields must (a) surface the
+// real structured-metadata keys (duration / read_bytes / query_id), and
+// (b) NOT emit garbage `_method` / `_` / `_id` keys from line-parsing the
+// SQL Body. A SQL string is neither valid JSON nor valid logfmt, so
+// parseLine rejects it and contributes zero parsed fields — the garbage
+// columns the maintainer saw originate in the Drilldown app's own
+// client-side line parse, never in cerberus's advertised field set.
+func TestDetectedFields_ClickHouseQueryLog(t *testing.T) {
+	t.Parallel()
+
+	sqlBody := `SELECT count() FROM otel_logs WHERE method = 'GET' AND ` +
+		`_id = 5 SETTINGS index_granularity = 8192, max_threads = 4`
+	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
+		{
+			Line: sqlBody,
+			Attributes: map[string]string{
+				"duration":   "12ms",
+				"read_bytes": "4096",
+				"query_id":   "abc-123",
+			},
+		},
+	}}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	out := getDetectedFields(t, srv.URL+
+		`/loki/api/v1/detected_fields?query=%7Bservice_name%3D%22clickhouse%22%7D`)
+
+	byLabel := fieldsByLabel(out.Fields)
+	// Real structured-metadata keys surface as fields with no parser
+	// (they come from LogAttributes, not a line parse).
+	for _, label := range []string{"duration", "read_bytes", "query_id"} {
+		f, ok := byLabel[label]
+		if !ok {
+			t.Errorf("expected structured-metadata field %q to surface; fields=%v", label, out.Fields)
+			continue
+		}
+		if len(f.Parsers) != 0 {
+			t.Errorf("%s.parsers=%v want [] (structured metadata, not parsed)", label, f.Parsers)
+		}
+	}
+	if got := byLabel["duration"].Type; got != "duration" {
+		t.Errorf("duration.type=%q want duration", got)
+	}
+	// No garbage keys parsed out of the SQL Body. The SQL string is
+	// neither JSON nor logfmt, so NO `method` / `_id` / `_` field appears.
+	for k := range byLabel {
+		if k == "method" || k == "_id" || k == "_" || strings.HasPrefix(k, "_") {
+			t.Errorf("garbage field parsed from SQL body: %q (fields=%v)", k, out.Fields)
+		}
+	}
+}
+
 // TestDetectedFields_Logfmt covers the logfmt fallback branch:
 // free-form key=value lines tagged with the "logfmt" parser, no
 // jsonPath.

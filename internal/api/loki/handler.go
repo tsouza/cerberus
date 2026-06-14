@@ -772,7 +772,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Stream {
 	type acc struct {
 		labels map[string]string
-		values [][2]string
+		values []StreamValue
 	}
 	bySeries := map[string]*acc{}
 	for _, s := range samples {
@@ -787,14 +787,22 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 			a = &acc{labels: labels}
 			bySeries[key] = a
 		}
-		a.values = append(a.values, [2]string{
-			strconv.FormatInt(s.Timestamp.UnixNano(), 10),
-			line,
+		a.values = append(a.values, StreamValue{
+			Timestamp: strconv.FormatInt(s.Timestamp.UnixNano(), 10),
+			Line:      line,
+			// Per-line structured metadata (the OTel-CH LogAttributes map)
+			// rides as the optional third tuple element. Keys are
+			// normalised to the Loki/Prom grammar so the Drilldown app
+			// renders them as well-formed columns; empty-valued keys are
+			// dropped so a blank column never surfaces; an all-empty map
+			// marshals back to the two-element shape (see
+			// [StreamValue.MarshalJSON]).
+			Metadata: normalizeMetadata(s.Metadata),
 		})
 	}
 	out := make([]Stream, 0, len(bySeries))
 	for _, a := range bySeries {
-		sort.Slice(a.values, func(i, j int) bool { return a.values[i][0] < a.values[j][0] })
+		sort.Slice(a.values, func(i, j int) bool { return a.values[i].Timestamp < a.values[j].Timestamp })
 		// NormalizeLabelMap rewrites every OTel-dotted key to Loki's
 		// (and Prom's) `[a-zA-Z_][a-zA-Z0-9_]*` grammar; the
 		// already-underscored sibling wins on collisions. The
@@ -804,6 +812,27 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 		out = append(out, Stream{Stream: format.NormalizeLabelMap(a.labels), Values: a.values})
 	}
 	return out
+}
+
+// normalizeMetadata rewrites a per-line structured-metadata map through
+// the Loki/Prom label grammar (via [format.NormalizeLabelMap]) and drops
+// any entry whose value is empty. The empty-drop mirrors reference Loki,
+// which only attaches structured-metadata keys that carry a value, and
+// is a defence-in-depth backstop to the SQL-side mapFilter — so a blank
+// `_method`-style column can never surface regardless of which path
+// populated the map. A nil / all-empty input returns nil so
+// [StreamValue.MarshalJSON] falls back to the two-element tuple.
+func normalizeMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	nonEmpty := make(map[string]string, len(in))
+	for k, v := range in {
+		if v != "" {
+			nonEmpty[k] = v
+		}
+	}
+	return format.NormalizeLabelMap(nonEmpty)
 }
 
 // apiError is a package-local alias for the shared [httperr.Error]

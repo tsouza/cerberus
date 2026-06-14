@@ -225,6 +225,91 @@ func TestQuery_Streams(t *testing.T) {
 	}
 }
 
+// TestQuery_Streams_StructuredMetadata pins the per-line structured
+// metadata surface (PR #903 follow-up): a log-stream entry carries the
+// OTel-CH LogAttributes map as the optional third tuple element
+// (`[ts, line, {metadata}]`), which Grafana's Logs Drilldown reads to
+// render clean per-line columns. The assertions cover all three #903
+// regressions at the wire boundary:
+//
+//   - the useful CH-query-log keys (duration / read_bytes / query_id)
+//     surface with non-empty, well-formed values;
+//   - an empty-valued attribute is DROPPED, so no blank `_method`-style
+//     column appears;
+//   - a value with a trailing comma is carried verbatim (cerberus never
+//     mangles it into an `8192,` artefact — the join-with-comma bug that
+//     #903 was accused of doesn't exist on cerberus's side: each value is
+//     a single map entry, not a stray-delimiter join).
+func TestQuery_Streams_StructuredMetadata(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "SELECT count() FROM otel_logs",
+				Labels:     map[string]string{"service_name": "clickhouse"},
+				Timestamp:  ts,
+				Metadata: map[string]string{
+					"duration":   "12ms",
+					"read_bytes": "4096",
+					"query_id":   "abc-123",
+					// An empty attribute must NOT surface as a column.
+					"exception": "",
+				},
+			},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22clickhouse%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+	if len(streams) != 1 || len(streams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %d streams", len(streams))
+	}
+
+	md := streams[0].Values[0].Metadata
+	for k, want := range map[string]string{
+		"duration":   "12ms",
+		"read_bytes": "4096",
+		"query_id":   "abc-123",
+	} {
+		if got := md[k]; got != want {
+			t.Errorf("metadata[%q]=%q, want %q", k, got, want)
+		}
+	}
+	// Empty-valued attribute dropped — no blank column.
+	if _, ok := md["exception"]; ok {
+		t.Errorf("empty-valued attribute leaked into structured metadata: %v", md)
+	}
+	// No leading-underscore / single-underscore garbage keys (the
+	// `_method` / `_` / `_id` Drilldown line-parse artefacts must never
+	// originate from cerberus's structured-metadata surface).
+	for k := range md {
+		if k == "_" || strings.HasPrefix(k, "_") {
+			t.Errorf("garbage structured-metadata key surfaced: %q", k)
+		}
+	}
+}
+
 // TestQuery_MetricVector covers the metric-form query path: rate(...)
 // returns a "vector" result.
 func TestQuery_MetricVector(t *testing.T) {
@@ -608,7 +693,7 @@ func TestQuery_Streams_RespectsLimitParameter(t *testing.T) {
 	// (the second tuple slot in each value).
 	got := map[string]bool{}
 	for _, v := range streams[0].Values {
-		got[v[1]] = true
+		got[v.Line] = true
 	}
 	for _, want := range []string{"line-3", "line-4", "line-5"} {
 		if !got[want] {
@@ -773,7 +858,7 @@ func TestQuery_Streams_RespectsForwardDirection(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, v := range streams[0].Values {
-		got[v[1]] = true
+		got[v.Line] = true
 	}
 	for _, want := range []string{"line-1", "line-2"} {
 		if !got[want] {

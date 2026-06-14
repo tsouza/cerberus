@@ -124,7 +124,21 @@ type rowsCursor struct {
 	// path that also calls Close).
 	closeOnce sync.Once
 	closeErr  error
+	// metadataProbed latches the one-time column-shape probe (see
+	// [rowsCursor.scanRow]). hasMetadata records whether the projection
+	// carries a fifth `Metadata` column — the Loki log-stream path — so
+	// the scan binds five destinations (…, &metadata) instead of four.
+	// Every metric query and the prom / tempo heads project four columns,
+	// leaving hasMetadata false and the scan byte-identical to before.
+	metadataProbed bool
+	hasMetadata    bool
 }
+
+// metadataColumn is the projection alias the Loki log-stream path appends
+// as a fifth column to carry per-row structured metadata (the OTel-CH
+// LogAttributes map) into [Sample.Metadata]. The shared cursor probes the
+// result-set columns for this name once and adapts its positional scan.
+const metadataColumn = "Metadata"
 
 // Next advances the cursor to the next row. Returns false when the
 // stream is exhausted or when a decode error occurred; in the error case
@@ -148,7 +162,22 @@ func (c *rowsCursor) Next() bool {
 	}
 	var s Sample
 	var labels map[string]string
-	if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
+	var metadata map[string]string
+	// Probe the result-set shape once: the Loki log-stream projection
+	// appends a fifth `Metadata` column, every other path projects four.
+	// driver.Rows.Columns() is stable across the stream, so latch the
+	// decision on the first row and bind the scan accordingly.
+	if !c.metadataProbed {
+		cols := c.rows.Columns()
+		c.hasMetadata = len(cols) > 0 && cols[len(cols)-1] == metadataColumn
+		c.metadataProbed = true
+	}
+	if c.hasMetadata {
+		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value, &metadata); err != nil {
+			c.err = fmt.Errorf("chclient: scan: %w", err)
+			return false
+		}
+	} else if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
 		c.err = fmt.Errorf("chclient: scan: %w", err)
 		return false
 	}
@@ -172,6 +201,10 @@ func (c *rowsCursor) Next() bool {
 		return false
 	}
 	s.Labels = c.internLabels(labels)
+	// Per-row structured metadata is genuinely distinct per log line
+	// (durations, byte counts, query ids), so it is NOT interned — unlike
+	// the series-identity Labels map. Left nil on the four-column path.
+	s.Metadata = metadata
 	c.cur = s
 	return true
 }

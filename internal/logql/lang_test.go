@@ -415,9 +415,22 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 	if !ok {
 		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
 	}
-	if len(proj.Projections) != 4 {
-		t.Fatalf("got %d projections, want 4 (MetricName, Attributes, TimeUnix, Value)",
+	// The default OTel-logs schema carries a structured-metadata column,
+	// so the wire projection adds a fifth `Metadata` slot surfacing the
+	// per-line LogAttributes map (Loki's `[ts, line, {metadata}]` tuple).
+	if len(proj.Projections) != 5 {
+		t.Fatalf("got %d projections, want 5 (MetricName, Attributes, TimeUnix, Value, Metadata)",
 			len(proj.Projections))
+	}
+	metaSlot := proj.Projections[4]
+	if metaSlot.Alias != "Metadata" {
+		t.Fatalf("metadata slot alias: got %q, want %q", metaSlot.Alias, "Metadata")
+	}
+	metaFn, ok := metaSlot.Expr.(*chplan.FuncCall)
+	if !ok || metaFn.Name != "mapFilter" {
+		t.Fatalf("metadata slot expr: got %T/%v, want *chplan.FuncCall mapFilter "+
+			"(structured-metadata surface drops empty LogAttributes values)",
+			metaSlot.Expr, metaSlot.Expr)
 	}
 
 	attrsSlot := proj.Projections[1]
