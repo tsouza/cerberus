@@ -293,26 +293,37 @@ function verify() {
 function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
-  const include = SHARDS.map((s) => ({
+  // The crawl shard (CRAWL_STACK=k3d) is the ~50min full-depth long pole, so it
+  // is dispatched only on schedule + manual dispatch (INCLUDE_CRAWL=true). On
+  // pull_request + push the matrix is smoke-only: the parallel smoke shards run
+  // (fast, testable per-change) with no all-skipped crawl leg. Coverage is
+  // unaffected — every spec is still ASSIGNED to a shard (asserted above); the
+  // crawl shard is simply not dispatched on those events.
+  const includeCrawl = process.env.INCLUDE_CRAWL === 'true';
+  const shards = includeCrawl ? SHARDS : SHARDS.filter((s) => s.crawlStack !== CRAWL_STACK_K3D);
+  const include = shards.map((s) => ({
     name: s.name,
     specs: s.specs.join(' '),
     crawlStack: s.crawlStack,
     runGoE2E: s.runGoE2E,
   }));
   setOutput('matrix', JSON.stringify({ include }));
-  setOutput('shard_names', JSON.stringify(SHARDS.map((s) => s.name)));
+  setOutput('shard_names', JSON.stringify(shards.map((s) => s.name)));
   appendStepSummary(
     [
       '### dashboard (k3d) shard matrix',
       '',
       '| shard | specs | CRAWL_STACK | Go e2e |',
       '| --- | --- | --- | --- |',
-      ...SHARDS.map(
+      ...shards.map(
         (s) => `| \`${s.name}\` | ${s.specs.length} | ${s.crawlStack || '(none)'} | ${s.runGoE2E ? 'yes' : 'no'} |`,
       ),
     ].join('\n'),
   );
-  log(`dashboard-matrix: emitted ${include.length}-shard matrix.`);
+  log(
+    `dashboard-matrix: emitted ${include.length}-shard matrix` +
+      (includeCrawl ? '.' : ' (smoke-only; crawl shard runs on schedule/dispatch).'),
+  );
   process.exit(0);
 }
 

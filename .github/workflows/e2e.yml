@@ -537,10 +537,16 @@ jobs:
   #                       coverage-discipline guard mirror compose-smoke.
   dashboard-setup:
     name: dashboard-setup
-    # Push-to-main + nightly + manual dispatch only — informational on merges,
-    # not a PR gate. The PR fast-feedback loop stays on `check` + `lint` +
-    # `compose-smoke`.
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    # Runs on pull_request (skipping docs-only PRs) so the parallel smoke shards
+    # are exercised per-change, plus push + nightly + manual dispatch. The crawl
+    # shard is the ~50min long pole and is dispatched only on schedule + manual
+    # (INCLUDE_CRAWL below) — so PR/push get a fast smoke-only matrix with no
+    # all-skipped crawl leg. Informational on merges, not a required PR gate.
+    if: |
+      always() &&
+      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -567,6 +573,10 @@ jobs:
         run: node .github/scripts/dashboard-matrix.mjs
         env:
           MODE: emit
+          # Include the ~50min crawl shard only on schedule + manual dispatch;
+          # pull_request + push get a smoke-only matrix (fast, testable, no
+          # all-skipped crawl leg).
+          INCLUDE_CRAWL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
   dashboard-shard:
     name: dashboard-shard
