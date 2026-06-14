@@ -503,7 +503,7 @@
       "site": "internal/promql/lower.go:buildAggFunc#a6e9df79",
       "message": "promql: aggregation op %s is not yet supported",
       "class": "rejection",
-      "trigger_query": "limitk(2, up)"
+      "trigger_query": "limit_ratio(0.5, up)"
     },
     {
       "head": "promql",
@@ -539,6 +539,13 @@
       "message": "promql: count_values requires a non-empty label name",
       "class": "rejection",
       "trigger_query": "count_values(\"\", up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerLimitK#5ff80394",
+      "message": "promql: limitk K must be a scalar literal; computed-K (e.g. scalar(\u003cvector\u003e)) is not supported",
+      "class": "rejection",
+      "trigger_query": "limitk(scalar(up), up)"
     },
     {
       "head": "promql",
@@ -769,7 +776,7 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "rejection",
-      "trigger_query": "max_over_time(limitk(2, up)[5m:1m])"
+      "trigger_query": "max_over_time(limit_ratio(0.5, up)[5m:1m])"
     },
     {
       "head": "promql",

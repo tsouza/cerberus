@@ -1068,6 +1068,30 @@
     "reason": "routed"
   },
   {
+    "query": "limitk_below_one_empty",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "limitk_by_job_all_survive",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "limitk_by_job_truncates",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "limitk_without_instance",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "ln_metric",
     "routed": true,
     "k": 8,
@@ -1630,6 +1654,12 @@
     "routed": false,
     "k": 0,
     "reason": "instant"
+  },
+  {
+    "query": "subquery_over_limitk",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "subquery_over_quantile",
