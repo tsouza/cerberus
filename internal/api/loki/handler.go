@@ -589,25 +589,25 @@ func wantsCategorizedLabels(r *http.Request) bool {
 }
 
 // encodingFlagsFor returns the `encodingFlags` array to advertise on a
-// streams response. It is `["categorize-labels"]` only when the client
-// requested categorization AND at least one value actually carries
-// structured metadata — so a categorize-labels request over a
-// metadata-free result still returns the plain two-element shape with no
-// flag, byte-identical to a non-categorize request. Returning nil leaves
-// the `encodingFlags` field absent from the JSON (omitempty), which keeps
-// Grafana's parser on the plain `readStream` branch.
-func encodingFlagsFor(categorize bool, streams []Stream) []string {
+// streams response. The decision is REQUEST-driven, not data-driven: it is
+// `["categorize-labels"]` exactly when the client requested categorization
+// (`categorize` true), independent of whether any value carries structured
+// metadata. This MUST stay in lock-step with [StreamValue.MarshalJSON],
+// which emits the three-element categorized tuple for every value when
+// `Categorize` is set: the advertised flag and the per-value arity are two
+// halves of one contract. Grafana's parser switches on the flag alone
+// (`readResult`: `slices.Contains(encodingFlags, "categorize-labels")`),
+// then `readCategorizedStream` reads a mandatory third element from EVERY
+// value — so advertising the flag while emitting a two-element value (the
+// old "metadata-free → no flag" gate) is precisely the mismatch that 400'd
+// `[explore:loki] POST /api/ds/query`. Returning nil leaves the field
+// absent (omitempty), keeping a non-categorize client on the plain
+// `readStream` branch with byte-identical two-element values.
+func encodingFlagsFor(categorize bool, _ []Stream) []string {
 	if !categorize {
 		return nil
 	}
-	for _, s := range streams {
-		for _, v := range s.Values {
-			if len(v.Metadata) > 0 {
-				return []string{encodingFlagCategorizeLabels}
-			}
-		}
-	}
-	return nil
+	return []string{encodingFlagCategorizeLabels}
 }
 
 // logDirection is the wire-format direction parameter — "backward"
@@ -837,11 +837,12 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform, categor
 			// Per-line structured metadata (the OTel-CH LogAttributes map).
 			// When the client requested `categorize-labels` it rides as the
 			// categorized `{"structuredMetadata": {...}}` third tuple element
-			// (see [StreamValue.MarshalJSON]); otherwise it is dropped and the
-			// value marshals to the two-element shape reference Loki returns
-			// without the flag. Keys are normalised to the Loki/Prom grammar
-			// so the Drilldown app renders them as well-formed columns;
-			// empty-valued keys are dropped so a blank column never surfaces.
+			// (see [StreamValue.MarshalJSON]); an empty map still rides as
+			// `{}` so the categorized tuple stays three-element. Without the
+			// flag the value marshals to the two-element shape reference Loki
+			// returns. Keys are normalised to the Loki/Prom grammar so the
+			// Drilldown app renders them as well-formed columns; empty-valued
+			// keys are dropped so a blank column never surfaces.
 			Metadata:   normalizeMetadata(s.Metadata),
 			Categorize: categorize,
 		})

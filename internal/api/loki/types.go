@@ -65,20 +65,28 @@ type Stream struct {
 // marshalled shape depends on Categorize:
 //
 //   - Categorize == false (default — plain clients, the loki-compat
-//     harness, and every metadata-free query): a two-element
+//     harness, and every non-categorize query): a two-element
 //     `[ts, line]` array, byte-identical to reference Loki's default
 //     wire format. Metadata is NOT surfaced; without the categorize
 //     request a non-Loki-aware parser (Grafana's shared Prometheus-style
 //     converter on the `readStream` branch) rejects a bare third map
 //     element with `ReadArray: expect [ or , or ] or n, but found {`.
-//   - Categorize == true AND Metadata non-empty: a three-element
+//   - Categorize == true: ALWAYS a three-element
 //     `[ts, line, {"structuredMetadata": {...}}]` array — the categorized
 //     shape reference Loki returns under `X-Loki-Response-Encoding-Flags:
 //     categorize-labels`, which Grafana's `readCategorizedStream` parser
-//     reads to render structured-metadata columns in Logs Drilldown.
-//   - Categorize == true but Metadata empty: still the two-element shape,
-//     so a row that populated no attributes doesn't advertise an empty
-//     metadata object.
+//     reads to render structured-metadata columns in Logs Drilldown. The
+//     third element is mandatory for EVERY value once the response
+//     advertises the flag: Grafana's parser
+//     (`pkg/promlib/converter.readCategorizedStream`) unconditionally
+//     reads `[ts, line, {…}]` — after the line it calls `iter.ReadArray()`
+//     then `readCategorizedStreamField`, so a two-element value (closing
+//     `]` where the object is expected) 400s with
+//     `ReadObject: expect { or , or } or n, but found ]`. When this row
+//     carries no attributes the object is the empty
+//     `{"structuredMetadata": {}}` — the converter reads a missing /
+//     empty `structuredMetadata` as an empty label set, so the row simply
+//     surfaces no extra columns.
 type StreamValue struct {
 	Timestamp string
 	Line      string
@@ -94,26 +102,42 @@ type StreamValue struct {
 // reads the `structuredMetadata` (and `parsed`) sub-objects to tag each
 // surfaced key with its label type ("S" / "P"). Cerberus's OTel-CH
 // LogAttributes are all structured metadata; the `parsed` slot is omitted
-// (parser-stage extraction isn't surfaced here).
+// (parser-stage extraction isn't surfaced here). The field has NO
+// `omitempty`: under categorize-labels the key must always be present so
+// the converter's `iter.ReadVal(&structuredMetadata)` finds a `{}` (an
+// empty label set) rather than the unexpected closing `]` of a bare
+// two-element tuple.
 type categorizedValue struct {
 	StructuredMetadata map[string]string `json:"structuredMetadata"`
 }
 
-// MarshalJSON renders the entry as Loki's positional array. A two-element
-// `[ts, line]` array is the default — it keeps metadata-free streams and
-// every non-categorize-labels client byte-compatible with reference Loki.
-// When the client asked for `categorize-labels` AND this row carries
-// structured metadata, the third element is the categorized
-// `{"structuredMetadata": {...}}` object reference Loki emits under that
-// flag.
+// MarshalJSON renders the entry as Loki's positional array.
+//
+//   - Default (Categorize == false): a two-element `[ts, line]` array —
+//     byte-identical to reference Loki's wire format, the shape every
+//     non-categorize-labels client (the loki-compat harness, curl)
+//     expects and Grafana's plain `readStream` parser accepts.
+//   - Categorize == true: ALWAYS the three-element
+//     `[ts, line, {"structuredMetadata": {...}}]` array reference Loki
+//     emits under the flag. The object is emitted for EVERY value even
+//     when this row has no attributes (an empty `{}` map) — Grafana's
+//     `readCategorizedStream` reads the third element unconditionally, so
+//     a two-element tuple under the advertised flag 400s its parser.
 func (v StreamValue) MarshalJSON() ([]byte, error) {
-	if !v.Categorize || len(v.Metadata) == 0 {
+	if !v.Categorize {
 		return json.Marshal([2]string{v.Timestamp, v.Line})
+	}
+	meta := v.Metadata
+	if meta == nil {
+		// A nil map marshals to JSON `null`; the converter's
+		// `iter.ReadVal(&data.Labels)` wants an object. Emit `{}` so the
+		// empty-metadata row stays a well-formed categorized tuple.
+		meta = map[string]string{}
 	}
 	return json.Marshal([3]any{
 		v.Timestamp,
 		v.Line,
-		categorizedValue{StructuredMetadata: v.Metadata},
+		categorizedValue{StructuredMetadata: meta},
 	})
 }
 

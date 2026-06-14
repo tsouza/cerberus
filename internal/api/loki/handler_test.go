@@ -291,12 +291,36 @@ func TestQuery_Streams_StructuredMetadata(t *testing.T) {
 		t.Fatalf("encodingFlags=%v, want [categorize-labels]", got)
 	}
 	raw, _ := json.Marshal(parsed.Data.Result)
+	// Assert the RAW wire arity first: under the advertised flag Grafana's
+	// readCategorizedStream reads a MANDATORY third element from every
+	// value, so each tuple must be exactly three elements. Decoding through
+	// the lenient loki.Stream would hide a two-element value (the #908
+	// shard-smoke 400), so inspect the raw JSON.
+	var rawStreams []struct {
+		Values [][]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &rawStreams); err != nil {
+		t.Fatalf("decode raw streams: %v", err)
+	}
+	if len(rawStreams) != 1 || len(rawStreams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %+v", rawStreams)
+	}
+	if n := len(rawStreams[0].Values[0]); n != 3 {
+		t.Fatalf("categorized stream value must be a 3-element [ts, line, {…}] tuple, got %d elements: %s", n, raw)
+	}
+	// The third element must be the categorized `{"structuredMetadata": {…}}`
+	// envelope — not a bare metadata map and not `null`.
+	var third categorizedThird
+	if err := json.Unmarshal(rawStreams[0].Values[0][2], &third); err != nil {
+		t.Fatalf("decode categorized third element: %v (raw: %s)", err, rawStreams[0].Values[0][2])
+	}
+	if third.StructuredMetadata == nil {
+		t.Fatalf("third element missing structuredMetadata object: %s", rawStreams[0].Values[0][2])
+	}
+
 	var streams []loki.Stream
 	if err := json.Unmarshal(raw, &streams); err != nil {
 		t.Fatalf("decode streams: %v", err)
-	}
-	if len(streams) != 1 || len(streams[0].Values) != 1 {
-		t.Fatalf("want 1 stream / 1 value, got %d streams", len(streams))
 	}
 
 	md := streams[0].Values[0].Metadata
@@ -389,6 +413,94 @@ func TestQuery_Streams_PlainShapeNoCategorize(t *testing.T) {
 	if n := len(rawStreams[0].Values[0]); n != 2 {
 		t.Fatalf("plain stream value must be a 2-element [ts, line] tuple, got %d elements: %s",
 			n, rawResult)
+	}
+}
+
+// categorizedThird mirrors the `{"structuredMetadata": {…}}` shape
+// Grafana's readCategorizedStreamField reads from the third element of a
+// categorized stream value. Used by the wire-shape assertions to confirm
+// the envelope is present and correctly keyed.
+type categorizedThird struct {
+	StructuredMetadata map[string]string `json:"structuredMetadata"`
+}
+
+// TestQuery_Streams_CategorizeEmptyMetadataStillThreeTuple is the unit-level
+// guard for the #908 shard-smoke 400 (run 27503329607): a categorize-labels
+// request over a row that carries NO structured metadata must STILL emit a
+// three-element `[ts, line, {"structuredMetadata": {}}]` tuple — never the
+// two-element shape. Grafana's readCategorizedStream reads the third element
+// unconditionally once the response advertises the flag, so a two-element
+// value (a closing `]` where the object is expected) 400s its parser with
+// `ReadObject: expect { or , or } or n, but found ]`. The prior empty-drop
+// (`!v.Categorize || len(v.Metadata) == 0 → two-element`) emitted exactly
+// that illegal mix, which is the regression this pins.
+func TestQuery_Streams_CategorizeEmptyMetadataStillThreeTuple(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "a line with no structured metadata",
+				Labels:     map[string]string{"service_name": "api"},
+				Timestamp:  ts,
+				// No Metadata: the empty-metadata row that the old gate
+				// collapsed to a two-element tuple.
+			},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+`/loki/api/v1/query?query=%7Bservice_name%3D%22api%22%7D`, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Loki-Response-Encoding-Flags", "categorize-labels")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The flag is advertised whenever the client requested it — independent
+	// of whether any value carried metadata.
+	if got := parsed.Data.EncodingFlags; len(got) != 1 || got[0] != "categorize-labels" {
+		t.Fatalf("encodingFlags=%v, want [categorize-labels]", got)
+	}
+
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var rawStreams []struct {
+		Values [][]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &rawStreams); err != nil {
+		t.Fatalf("decode raw streams: %v", err)
+	}
+	if len(rawStreams) != 1 || len(rawStreams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %+v", rawStreams)
+	}
+	if n := len(rawStreams[0].Values[0]); n != 3 {
+		t.Fatalf("empty-metadata categorized value must STILL be a 3-element tuple, got %d elements: %s", n, raw)
+	}
+	// The third element is the categorized envelope with an empty (non-nil)
+	// structuredMetadata object — `{}`, never `null` and never a bare map.
+	var third categorizedThird
+	if err := json.Unmarshal(rawStreams[0].Values[0][2], &third); err != nil {
+		t.Fatalf("decode third element: %v (raw: %s)", err, rawStreams[0].Values[0][2])
+	}
+	if third.StructuredMetadata == nil {
+		t.Fatalf("structuredMetadata must be an empty object {}, got null/absent: %s", rawStreams[0].Values[0][2])
+	}
+	if len(third.StructuredMetadata) != 0 {
+		t.Fatalf("structuredMetadata must be empty for a metadata-free row, got %v", third.StructuredMetadata)
 	}
 }
 

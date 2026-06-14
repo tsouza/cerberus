@@ -1,0 +1,60 @@
+{
+  "name": "logs-panel-streams-categorized",
+  "datasource": "loki",
+  "consumer": "Grafana 12.2.9 Logs Drilldown / Explore logs panel — categorized streams envelope decode (queryType=range, X-Loki-Response-Encoding-Flags: categorize-labels)",
+  "provenance": [
+    "Grafana's Loki datasource backend ALWAYS sends X-Loki-Response-Encoding-Flags:",
+    "categorize-labels on its query / query_range requests (pkg/tsdb/loki/api.go",
+    "makeDataRequest), and its shared converter (pkg/promlib/converter.readResult)",
+    "switches to readCategorizedStream when the response advertises that flag. That",
+    "branch reads a MANDATORY three-element [ts, line, {structuredMetadata,parsed}]",
+    "tuple from EVERY value — a two-element value under the flag 400s with",
+    "`ReadObject: expect { or , or } or n, but found ]`. Pins the #908 shard-smoke",
+    "(run 27503329607) regression: cerberus advertised the flag but emitted a",
+    "two-element tuple for metadata-free rows. The structured-metadata third element",
+    "is what the Logs Drilldown app reads to render per-line columns",
+    "(test/e2e/playwright/loki_explore_columns.spec.ts)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "cerberus-loki" },
+          "queryType": "range",
+          "expr": "{service_name=\"api\"}",
+          "maxLines": 100,
+          "direction": "backward"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/loki/api/v1/query_range",
+    "query": {
+      "query": "{service_name=\"api\"}",
+      "start": "${START_NS}",
+      "end": "${END_NS}",
+      "step": "60",
+      "limit": "100",
+      "direction": "backward"
+    },
+    "headers": {
+      "X-Loki-Response-Encoding-Flags": "categorize-labels"
+    }
+  },
+  "stub": "loki-streams",
+  "expect": {
+    "status": 200,
+    "decode": "loki-envelope",
+    "wire": [
+      "resulttype:streams",
+      "result-min:1",
+      "encoding-flag:categorize-labels",
+      "categorized-metadata-min:1"
+    ],
+    "data": ["streams-values-min:6", "categorized-metadata-min:1"]
+  }
+}
