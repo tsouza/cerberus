@@ -86,7 +86,7 @@ an external proxy or service mesh already owns CH fail-fast).
 ### Sharded-pushdown solver
 
 The sharded-pushdown solver (`internal/solver`,
-[`query-solver-design.md`](query-solver-design.md)) handles the one query
+[`solver.md`](solver.md)) handles the one query
 class route A cannot bound: high **anchor fan-out** (`F = Range/Step`, e.g.
 `sum(rate(m[5m]))` at a fine step over a wide range), where one statement's
 peak intermediate cardinality exceeds the CH memory cap. For an eligible plan
@@ -95,8 +95,8 @@ disjoint slices of the anchor grid, emits each via the existing `chsql.Emit`,
 and concatenates the result streams behind the existing cursor — no new
 evaluator, no new SQL template, the same compat-gated route-A SQL per shard.
 
-**ON by default (`CERBERUS_EVAL_ROUTE=auto`).** As of the phase-2 flip
-(2026-06-13) the solver routes in production. `auto` is fail-toward-A: only
+**ON by default (`CERBERUS_EVAL_ROUTE=auto`).** The solver routes in
+production. `auto` is fail-toward-A: only
 ELIGIBLE plans that clear the cost thresholds
 (`CERBERUS_SHARD_MIN_FANOUT` / `CERBERUS_SHARD_MIN_ANCHOR_PAIRS`, and
 `K >= 2`) take route B; everything else — instant queries, `now64`,
