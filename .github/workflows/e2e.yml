@@ -845,11 +845,12 @@ jobs:
         run: |
           echo "setup  = ${{ needs.dashboard-setup.result }}"
           echo "shards = ${{ needs.dashboard-shard.result }}"
-          # The lane is off on pull_request (and any path that skipped setup):
-          # report green without work — the dashboard lane is informational and
-          # never a PR gate.
+          # If setup was skipped (docs-only PR, or a non-PR/push/schedule/
+          # dispatch path), there is nothing to aggregate — report green
+          # without work. On a code PR setup runs, so this branch does not fire
+          # and the shard roll-up below is the real gate.
           if [ "${{ needs.dashboard-setup.result }}" = "skipped" ]; then
-            echo "dashboard lane skipped (not push/schedule/dispatch) — nothing to aggregate."
+            echo "dashboard lane skipped (docs-only or unsupported event) — nothing to aggregate."
             exit 0
           fi
           # Otherwise setup must have succeeded and the matrix must be a clean
