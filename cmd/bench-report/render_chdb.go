@@ -570,11 +570,12 @@ func renderScaling(b *strings.Builder, in docInput) error {
 			c.Points[0].FanRatio, c.Points[len(c.Points)-1].FanRatio)
 	}
 
-	b.WriteString("> **Note.** The `setop_chain` wall is a documented residual super-linearity: ")
-	b.WriteString("each `or` level re-scans the accumulated relation, so the *wall* tracks the ")
-	b.WriteString("parameter even though the *cardinality* axis stays flat. It is a tracked ")
-	b.WriteString("finding (the fix is an N-ary single-pass flatten); the scaling harness still ")
-	b.WriteString("hard-gates the cardinality axis, which is the one that bounds memory.\n\n")
+	b.WriteString("> **Note.** The `setop_chain` curve runs through the optimizer, so the ")
+	b.WriteString("`FlattenVectorSetOp` rule collapses the left-assoc `a or b or c …` nesting into ")
+	b.WriteString("one N-ary `UNION ALL` under a single window pass — the chain is one scan, not K ")
+	b.WriteString("nested window passes, so **both** the wall and the cardinality axis are flat in ")
+	b.WriteString("chain depth and the harness hard-gates both. (`unless` is not associative, so an ")
+	b.WriteString("`unless` chain keeps its binary nesting by construction.)\n\n")
 	return nil
 }
 

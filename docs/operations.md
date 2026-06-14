@@ -170,7 +170,7 @@ the SQL array machinery leaves at high cardinality. See
 **Requirements and hard constraints:**
 
 - **ClickHouse ≥ 25.6.** The `timeSeries*ToGrid` family was introduced in CH
-  v25.6.0. The compose / e2e / compatibility deployment now runs **25.8**
+  v25.6.0. The compose / e2e / compatibility deployment runs **25.8**
   (matching the chDB test substrate), so the function exists everywhere — but
   on any older server a native-path query still errors with `UNKNOWN_FUNCTION`,
   so the flag **must stay OFF** unless the target CH is ≥ 25.6. The experimental

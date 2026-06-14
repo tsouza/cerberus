@@ -102,7 +102,7 @@ livenessProbe:
 - **Liveness** — `periodSeconds: 10`. Liveness probes are cheap (no CH
   call), so the period is set by container-restart sensitivity rather
   than by CH load.
-- **Startup** — none needed today; `initialDelaySeconds: 2` on the
+- **Startup** — none needed; `initialDelaySeconds: 2` on the
   readiness probe is enough for cerberus to bind its listener.
 
 ## Startup latency
@@ -140,7 +140,8 @@ the first success.
 
 ## ClickHouse down at boot
 
-An unreachable ClickHouse never prevents startup. The connection pool
+With the requirements preflight off (`CERBERUS_REQUIREMENTS_CHECK=false`),
+an unreachable ClickHouse never prevents startup. The connection pool
 is constructed lazily (no dial), the startup connectivity ping is
 demoted to a WARN log, and the process serves immediately:
 
@@ -149,11 +150,19 @@ demoted to a WARN log, and the process serves immediately:
 
 flipping `/readyz` to `200` as soon as ClickHouse answers — no restart
 needed. This is the readiness-gating contract Kubernetes expects: a
-replica scaled up while ClickHouse is saturated (CI run 27272406583
-crash-looped on exactly this) waits out the outage out of the Service
-endpoints instead of converting it into a CrashLoopBackOff. Fail-fast
-remains for misconfiguration that can never succeed (bad env values,
-invalid connection options).
+replica scaled up while ClickHouse is saturated waits out the outage out
+of the Service endpoints instead of converting it into a
+CrashLoopBackOff. Fail-fast remains for misconfiguration that can never
+succeed (bad env values, invalid connection options).
+
+The preflight is a deliberately **stricter** contract, and it is on by
+default. `CERBERUS_REQUIREMENTS_CHECK` (the boot-time CH-version + schema
+gate — see [`operations.md`](operations.md#startup-requirements-preflight))
+needs ClickHouse reachable to read `version()` and `system.columns`, so a
+CH that is unreachable at the preflight point fails startup rather than
+booting unready. Deployments that need the boot-into-unready behaviour
+above against a CH that may be down at boot set
+`CERBERUS_REQUIREMENTS_CHECK=false` to skip the gate.
 
 ## Implementation pointers
 

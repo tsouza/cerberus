@@ -184,8 +184,9 @@ The preflight runs two gates, both parameterised by the active
 
 - **Version gate.** `SELECT version()` is compared against
   `max(base, applicable-feature-floors)`. The base floor is **ClickHouse
-  24.8** (the supported floor — the differential compatibility suite runs
-  24.8 and is green). Enabling `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` adds the
+  24.8** — the minimum cerberus supports, with the 24.8 empty-input /
+  parse-unit / filter-path emit workarounds shipped unconditionally so the
+  SQL is correct on it. Enabling `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` adds the
   native-rate floor (CH 25.6); the effective requirement is the maximum, so
   the flag **raises** the floor from 24.8 to 25.6, and a future feature floor
   raises it further. An unreadable or unparseable version is a failure, never
@@ -257,9 +258,9 @@ take route B; everything else stays byte-identical on route A.
 `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` **requires ClickHouse ≥ 25.6** — the
 `timeSeries*ToGrid` family was introduced in CH v25.6.0; on any older server a
 native-path query errors with `UNKNOWN_FUNCTION`, so the flag **must stay off**
-unless the target ClickHouse is ≥ 25.6 (the compose / e2e lanes run 25.8, so the
-floor is met where the flag is exercised; the compatibility lanes run 24.8 with
-the flag off). The native operator computes the same
+unless the target ClickHouse is ≥ 25.6 (the compose / e2e / compatibility lanes
+all run 25.8, so the floor is met where the flag is exercised). The native
+operator computes the same
 Prometheus `extrapolatedRate` inside the engine, closing the execution-layer gap
 the SQL array machinery leaves at high cardinality. Default off is byte-for-byte
 the established fan-out. See [`performance.md`](performance.md#the-durable-answer)

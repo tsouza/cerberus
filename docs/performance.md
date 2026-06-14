@@ -93,9 +93,12 @@ the plan before any rule runs.
   of sample×anchor pairs and a single scan.
 - **Single-pass set-op chains.** `a or b or c …` lowers so each binary set-op
   scans both arms exactly once (a tagged `UNION ALL` + a window-partition
-  anti-join) instead of re-materialising the left arm per level. (A residual
-  super-linearity from the left-associative *nesting* of N arms is tracked
-  separately — see "Known residuals" below.)
+  anti-join) instead of re-materialising the left arm per level. The optimizer's
+  `FlattenVectorSetOp` rule then collapses the left-associative *nesting* of N
+  arms into one N-ary `NaryVectorSetOp`, which the emitter renders as a single
+  `UNION ALL` over all K arms under one window pass — so a K-arm chain is one
+  scan, not K nested window passes. (`unless` is not associative, so an `unless`
+  chain keeps its binary nesting.)
 - **Bounded recursion.** TraceQL structural operators (`>>`, `<<`) and
   nested-set traversals lower to `WITH RECURSIVE` carrying an explicit
   `_depth` column and a hard cap, so a cyclic trace terminates instead of
@@ -147,9 +150,9 @@ service-pinned query costs only a couple of extra granules. See
 ## How "fast" is kept fast — the assurance framework
 
 A one-time optimization is worthless if the next refactor quietly undoes it.
-The bugs above were originally caught by a human manually sweeping Grafana —
-which is not a control. Cerberus replaces that with four automated layers,
-spanning *static* (cheap, every PR) to *broad* (corpus-wide, nightly).
+A human manually sweeping Grafana for the bugs above is not a control. Cerberus
+holds the speed in place with four automated layers, spanning *static* (cheap,
+every PR) to *broad* (corpus-wide, nightly).
 
 1. **Static fan-out lint** — `internal/perf/fanout`, always-on in the
    regression suite. Flags the structurally-unbounded shapes — a `CrossJoin`
@@ -184,15 +187,18 @@ Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.
 
-### Known residuals
+### Set-op chains: N-ary linearisation
 
-The framework is honest about what is *not yet* flat. Set-op chains are
-single-pass per binary operator, but `a or b or c …` still lowers
-left-associatively into K nested levels, so wall-time grows ~2.6×/level even
-though the intermediate stays bounded. The scaling harness records this as a
-tracked `KnownSuperlinear` finding (the cardinality axis still hard-gates), and
-the true fix — flattening the chain into one N-ary single pass — is tracked
-rather than silently accepted.
+An associative set-op chain (`a or b or c …`, `and`) is fully flat on both
+axes. Each binary operator already scans both arms exactly once, and the
+`FlattenVectorSetOp` optimizer rule collapses the left-associative nesting of N
+arms into one N-ary `NaryVectorSetOp` — a single `UNION ALL` over all K arms
+under one window pass — so wall-time is sub-linear in chain depth and the peak
+intermediate stays a small bounded constant. The `setop_chain` scaling harness
+hard-gates **both** axes on this shape. `unless` is not associative
+(`a unless (b unless c) ≠ (a unless b) unless c`), so an `unless` chain keeps
+its binary nesting by construction — the one set-op shape that does not
+linearise, because flattening it would change results.
 
 ## Rate-range windowing: why the fan-out ships as the default
 
@@ -200,7 +206,7 @@ rather than silently accepted.
 over the OTel-CH counter table is the one metrics shape route A cannot fold
 flat — `rate` needs the per-window sample pairs, so the RangeLWR collapse
 doesn't apply (see the
-[`range query (240 steps)` note in benchmarks.md](benchmarks.md#end-to-end-query-latency)).
+[`range query (240 steps)` note in benchmarks.md](benchmarks.md#end-to-end-the-query_range-path)).
 The emit fans each sample into the `~Range/Step` overlapping windows it belongs
 to (`arrayJoin`), groups + sorts per `(series, anchor)`, then applies
 Prometheus's `extrapolatedRate`. That fan-out *looks* like the expensive part,
@@ -314,7 +320,7 @@ rejected rather than served. That is exactly the wall this flag exists to move.
 > wall, and it is on by default (`auto`): it slices the same fan-out across `K`
 > statements so no single one exceeds the cap. Sharding makes the fan-out
 > *fit*; the native path below makes it *vanish*. They are independent levers —
-> see the [route × native-rate numbers in benchmarks.md](benchmarks.md#end-to-end-query-latency)
+> see the [route × native-rate numbers in benchmarks.md](benchmarks.md#execution-routes--native-rate-the-matrix)
 > for how they compose.
 
 ### The durable answer
@@ -334,7 +340,7 @@ the memory — stays **flat** instead of growing with the grid. On the canonical
 | **on** (experimental) | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
 
 (Measured on the 500k-row seed; full methodology and the route × native-rate
-numbers are in [benchmarks.md](benchmarks.md#end-to-end-query-latency).)
+numbers are in [benchmarks.md](benchmarks.md#execution-routes--native-rate-the-matrix).)
 The fan-out's memory scales with the data; the native path's stays roughly flat
 no matter how many series or anchors you ask for — which is precisely what lets
 it serve the million-row queries that would otherwise hit the cap.

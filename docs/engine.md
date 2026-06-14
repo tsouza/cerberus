@@ -247,12 +247,12 @@ promql/parser      pkg/logql/syntax         pkg/traceql        ← reference ups
               │               anchor slices; emit + execute each
               │                       │
               ▼                       ▼
- ┌────────────────────────────────────────────────┐
+ ┌─────────────────────────────────────────────────┐
  │           internal/chsql — typed emitter        │   • parameterised, escape-free
  │  QueryBuilder slots + typed Frag constructors;  │   • PREWHERE promotion on Filter(Scan)
- │  closed typed surface — no raw SQL. Route B      │   • sort-key-aware predicate ordering
+ │  closed typed surface — no raw SQL. Route B     │   • sort-key-aware predicate ordering
  │  emits each shard byte-identically to route A.  │   • streaming clickhouse-go/v2 cursor
- └────────────────────────────────────────────────┘
+ └─────────────────────────────────────────────────┘
               │                       │
               ▼                       ▼  K statements, bounded parallelism +
    one ClickHouse statement   connection gate, concatenated behind one
@@ -279,21 +279,24 @@ and `FixedPoint(n)` (rules that unlock each other; iterates until no
 rule reports a change or `n` iterations have elapsed). The default
 pipeline ships:
 
-| Stage                            | Rules                                                                    | What it buys                                                                          |
-| -------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                   | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`    |
-| Once — heuristic fold            | `ConstantFoldHeuristic`                                                  | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                  |
-| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below aggregates / range windows so CH skip-indexes can fire on a `Scan` |
-| FixedPoint — projection pushdown | `ProjectionPushdown`                                                     | Late materialisation: wide columns are only resolved after `LIMIT` cuts the row set   |
+| Stage                            | Rules                                                                    | What it buys                                                                                                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                   | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                                                                                            |
+| Once — heuristic fold            | `ConstantFoldHeuristic`                                                  | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                                                                                                          |
+| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below aggregates / range windows so CH skip-indexes can fire on a `Scan`                                                                                         |
+| FixedPoint — projection pushdown | `ProjectionPushdown`                                                     | Late materialisation: the narrowed column set is pushed through `Aggregate` / `RangeWindow` to the inner `Scan`, so wide columns are only read after `LIMIT` cuts the row set |
+| FixedPoint — set-op linearise    | `FlattenVectorSetOp`                                                     | Collapses a left-assoc `a or b or c …` / `and` chain into one N-ary `NaryVectorSetOp` so the emitter scans each arm once under a single window pass instead of K nested ones  |
 
 `FilterAggregateTranspose` is retained as speculative correctness
 insurance (0 fires on the current corpus); `FilterRangeWindowTranspose`,
-`FilterFusion`, `ConstantFoldHeuristic`, and `ProjectionPushdown` all
-fire on real queries. The rule set carries only rules that can fire:
-there is no `FilterProjectTranspose` (no lowering emits `Filter(Project)`,
-so the rule would never match) and no `MVSubstitution` (the default schema
-ships no live rollups, so a substitution rule would be a guaranteed
-no-op).
+`FilterFusion`, `ConstantFoldHeuristic`, `ProjectionPushdown`, and
+`FlattenVectorSetOp` all fire on real queries. `FlattenVectorSetOp` only
+flattens the associative `or` / `and` operators — `unless` is not
+associative, so an `unless` chain keeps its binary shape. The rule set
+carries only rules that can fire: there is no `FilterProjectTranspose`
+(no lowering emits `Filter(Project)`, so the rule would never match) and
+no `MVSubstitution` (the default schema ships no live rollups, so a
+substitution rule would be a guaranteed no-op).
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.
