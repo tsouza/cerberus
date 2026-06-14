@@ -790,7 +790,7 @@
     "type": "tempo",
     "uid": "cerberus-tempo"
    },
-   "description": "All six arithmetic operators against the seeded payload_bytes span attribute; toFloat64OrNull coercion keeps spans without the attribute out of the result instead of aborting the query.",
+   "description": "The six binary arithmetic operators plus unary minus (-x) against the seeded payload_bytes span attribute; toFloat64OrNull coercion keeps spans without the attribute out of the result instead of aborting the query.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -900,6 +900,17 @@
      "query": "{ .payload_bytes ^ 2 > 100 }",
      "queryType": "traceql",
      "refId": "F",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ -.payload_bytes < 0 }",
+     "queryType": "traceql",
+     "refId": "G",
      "tableType": "traces"
     }
    ],

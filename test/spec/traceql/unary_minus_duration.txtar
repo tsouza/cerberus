@@ -1,0 +1,23 @@
+-- query.traceql --
+{ -duration < 0ns }
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (0),
+    (10000000),
+    (50000000);
+-- expected_rows --
+[
+  [10000000],
+  [50000000]
+]
+-- args --
+[0] int64 = 0
+[1] int64 = 0
+-- chplan --
+Filter predicate=((0 - Duration) < 0)
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE ((? - `Duration`) < ?)
