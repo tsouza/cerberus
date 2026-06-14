@@ -109,6 +109,30 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 
+- **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
+  twin of `compose-smoke-matrix.mjs`: single source of truth for how the
+  `dashboard` (k3d) lane fans its Playwright spec set across a MODEST matrix
+  (3) of isolated-k3d-cluster shards. The dominant cost is the crawl BFS — one
+  indivisible async `test()`, the ~50min long pole — so the parallelism is
+  COARSE: two smoke shards (non-crawl specs, `CRAWL_STACK` unset → `crawl/**`
+  ignored) run CONCURRENTLY with a DEDICATED crawl shard (`CRAWL_STACK=k3d`,
+  `SWEEP_DEPTH=full`). Splitting the crawl frontier itself is the follow-up.
+  The `SHARDS` partition (each carrying `specs` + `crawlStack` + `runGoE2E`) +
+  `EXCLUDED` list live in this module; specs are DISCOVERED (`git ls-files`) so
+  a new `*.spec.ts` is a hard failure unless assigned or excluded — no silent
+  no-run. Coverage assertion is collect-all-violations (unassigned,
+  double-assigned, phantom/stale, bad-shard-name, and the "exactly one shard
+  runs Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
+  `node --test` guard (run on the cheap `gate` lane) pinning the invariant +
+  proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
+  deliberately small.
+  - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
+    `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `GITHUB_OUTPUT` (emit:
+    the runner file the `{include:[{name,specs,crawlStack,runGoE2E}]}` matrix
+    JSON is written to).
+  - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
+    `MODE`.
+
 ## Notes
 
 - **`forbid-skip.mjs` regexes are a contract.** They are kept
