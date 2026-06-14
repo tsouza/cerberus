@@ -237,12 +237,7 @@ func run() error {
 	// All three heads run on the shared engine.Engine pipeline; each
 	// engine is constructed below from a per-head Client VIEW + a seed
 	// optimizer and assigned onto the per-head handler.
-	promHandler := prom.New(promClient, cfg.Schema, logger.With("api", "prom"))
-	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: promClient, Solver: evalSolver}
-	promHandler.Limiter = promLimiter
-	promHandler.Version = Version
-	promHandler.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
-	promHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	promHandler := newPromHandler(promClient, cfg, evalSolver, promLimiter, logger)
 	promHandler.Mount(traceMux)
 
 	lokiHandler := loki.New(lokiClient, cfg.Logs, logger.With("api", "loki"))
@@ -344,6 +339,18 @@ const solverGateReserve = 2
 // the Executor; everything else fails toward route A. Operators pin
 // CERBERUS_EVAL_ROUTE=single to keep the Executor dormant (the Planner still
 // classifies for the shadow header, but never routes).
+// newPromHandler builds the prom head's handler with its engine (per-head
+// Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
+func newPromHandler(client *chclient.Client, cfg config.Config, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
+	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
+	h.Engine = &engine.Engine{Optimizer: h.Optimizer, Client: client, Solver: evalSolver}
+	h.Limiter = limiter
+	h.Version = Version
+	h.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
+	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	return h
+}
+
 func buildSolver(
 	logger *slog.Logger,
 	chCfg chclient.Config,
