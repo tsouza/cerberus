@@ -165,6 +165,27 @@ type Config struct {
 	// rejection (errors.Is ErrMemoryLimitExceeded), classified by the
 	// API heads as resource-exhausted, not internal.
 	MaxQueryMemoryBytes int64
+
+	// QueryTimeoutSeconds caps the server-side wall-clock duration of a
+	// single data-plane query: it is stamped as the per-query
+	// `max_execution_time` setting (with `timeout_overflow_mode=throw`)
+	// on every read-path query, so a pathological query is ABORTED by
+	// ClickHouse with TIMEOUT_EXCEEDED (code 159) instead of holding a
+	// pooled connection + admit slot for its full unbounded duration.
+	// DDL / DML through Exec is exempt — schema creation legitimately
+	// takes longer than the query path. 0 = don't set the setting
+	// (ClickHouse server defaults apply). cmd/cerberus wires it from
+	// CERBERUS_QUERY_TIMEOUT (a duration string, e.g. "2m"; 0 disables).
+	//
+	// This is the wall-clock sibling of MaxQueryMemoryBytes: that bounds
+	// the working set the server materialises, this bounds how long it
+	// may run. A query crossing this cap gets a *QueryTimeoutError
+	// rejection (errors.Is ErrQueryTimeout), classified by the API heads
+	// as a head-idiomatic timeout (prom 503 errorType=timeout), not a
+	// 5xx — CH is healthy when it enforces a cap. The standard
+	// Prometheus ?timeout= query param min's with this default per
+	// request (see WithQueryTimeout).
+	QueryTimeout time.Duration
 }
 
 // Client is a stateless wrapper over a clickhouse-go/v2 connection pool.
@@ -188,6 +209,11 @@ type Client struct {
 	// `max_memory_usage` ClickHouse setting applied to every data-plane
 	// query via queryContext. 0 = setting not sent.
 	maxMemory int64
+	// queryTimeout is Config.QueryTimeoutSeconds as a time.Duration —
+	// the per-query `max_execution_time` ClickHouse setting applied to
+	// every data-plane query via queryContext (overridable per-request,
+	// min'd, via WithQueryTimeout). 0 = setting not sent.
+	queryTimeout time.Duration
 }
 
 // New opens a connection pool to ClickHouse. Construction is lazy:
@@ -257,8 +283,9 @@ func New(cfg Config) (*Client, error) {
 			// closed/0 series instead of "No data" — see breaker_metrics.go.
 			metrics: newGlobalBreakerMetrics(),
 		},
-		maxSamples: cfg.MaxQuerySamples,
-		maxMemory:  cfg.MaxQueryMemoryBytes,
+		maxSamples:   cfg.MaxQuerySamples,
+		maxMemory:    cfg.MaxQueryMemoryBytes,
+		queryTimeout: cfg.QueryTimeout,
 	}, nil
 }
 
@@ -268,6 +295,11 @@ func New(cfg Config) (*Client, error) {
 //
 //   - `max_memory_usage` — ClickHouse's per-query memory cap, from
 //     Config.MaxQueryMemoryBytes (when > 0).
+//   - `max_execution_time` + `timeout_overflow_mode=throw` — the
+//     per-query wall-clock cap from Config.QueryTimeoutSeconds (when the
+//     effective timeout, after any per-request WithQueryTimeout override,
+//     is > 0). `throw` aborts an over-long query with TIMEOUT_EXCEEDED
+//     (code 159) rather than returning partial results.
 //   - SettingExperimentalTSGridAggregate=1 — ONLY when ctx was marked by
 //     WithTSGridSetting (the engine marks it when the emitted plan
 //     contains a chplan.RangeWindowNative node). The experimental knob
@@ -282,12 +314,21 @@ func New(cfg Config) (*Client, error) {
 // QueryOptions under an unexported context key with no public getter.
 func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	wantTSGrid := wantTSGridSetting(ctx)
-	if c.maxMemory <= 0 && !wantTSGrid {
+	timeout := c.effectiveQueryTimeout(ctx)
+	if c.maxMemory <= 0 && timeout <= 0 && !wantTSGrid {
 		return nil
 	}
 	s := clickhouse.Settings{}
 	if c.maxMemory > 0 {
 		s["max_memory_usage"] = c.maxMemory
+	}
+	if timeout > 0 {
+		// ClickHouse's max_execution_time is a Float64 in seconds; send
+		// the effective timeout as seconds so a sub-second ?timeout=
+		// override (or a non-integer config) is honoured exactly rather
+		// than truncated to whole seconds.
+		s[settingMaxExecutionTime] = timeout.Seconds()
+		s[settingTimeoutOverflowMode] = timeoutOverflowModeThrow
 	}
 	if wantTSGrid {
 		s[SettingExperimentalTSGridAggregate] = 1
@@ -481,7 +522,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -496,7 +537,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -535,7 +576,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -554,7 +595,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 		out = append(out, DetectedFieldRow{Line: line, Attributes: attrs, Resource: resource})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -587,7 +628,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -603,7 +644,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 		out = append(out, TimestampedLine{Timestamp: ts, Body: body})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -636,7 +677,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -652,7 +693,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -687,7 +728,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -700,7 +741,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return IndexStatsRow{}, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return IndexStatsRow{}, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -730,7 +771,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -747,7 +788,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -794,7 +835,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -818,7 +859,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }
@@ -839,7 +880,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -854,7 +895,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
 	}
 	return out, nil
 }

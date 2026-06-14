@@ -321,6 +321,19 @@ func (b *breaker) record(ctx context.Context, err error) {
 		err = nil
 	}
 
+	// A ClickHouse TIMEOUT_EXCEEDED rejection (code 159) is the
+	// wall-clock sibling of the memory cap above: the server enforcing
+	// the per-query `max_execution_time` cerberus stamps (with
+	// timeout_overflow_mode=throw) on a query that ran too long. The
+	// server answering with a typed exception is positive proof it is
+	// alive and healthy — a deliberately-slow / pathological query is
+	// not a CH outage. Count it as a SUCCESS so a burst of over-long
+	// queries can never trip the breaker and 503 unrelated traffic,
+	// exactly as the code-241 memory rejection is handled.
+	if err != nil && isQueryTimeoutExceeded(err) {
+		err = nil
+	}
+
 	// A pool acquire-timeout (clickhouse.ErrAcquireConnTimeout) is NOT a
 	// ClickHouse-health failure: it means every connection in the local
 	// pool is busy and the acquire blocked past DialTimeout without one

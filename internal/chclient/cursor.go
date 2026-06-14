@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"go.opentelemetry.io/otel/trace"
@@ -90,6 +91,14 @@ type rowsCursor struct {
 	// *MemoryLimitError naming the cap. Informational only; the cap
 	// itself is enforced server-side via the max_memory_usage setting.
 	maxMemoryBytes int64
+	// queryTimeout is the effective per-query wall-clock cap the cursor
+	// ran under (the Client default min'd with any per-request
+	// WithQueryTimeout override), carried so a mid-stream
+	// TIMEOUT_EXCEEDED (code 159) surfacing via rows.Err() is wrapped
+	// into a *QueryTimeoutError naming the budget. Informational only;
+	// the cap itself is enforced server-side via the max_execution_time
+	// setting. 0 = no cap was configured.
+	queryTimeout time.Duration
 	// interned caches decoded label maps keyed by their canonical
 	// serialised form so all rows of one series share a single map
 	// instance. A long-window matrix query returns thousands of rows
@@ -126,11 +135,14 @@ func (c *rowsCursor) Next() bool {
 	}
 	if !c.rows.Next() {
 		if err := c.rows.Err(); err != nil {
-			// A mid-stream CH memory-limit abort (code 241) is a
-			// per-query resource rejection, not a transport failure —
-			// wrap it so handlers map it onto the resource-exhausted
-			// wire shape instead of a 502 (k3d run 27277793810).
-			c.err = fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemoryBytes))
+			// A mid-stream CH resource abort — memory-limit (code 241)
+			// or wall-clock timeout (code 159) — is a per-query resource
+			// rejection, not a transport failure: wrap it so handlers map
+			// it onto the resource-exhausted / timeout wire shape instead
+			// of a 502 (k3d run 27277793810 surfaced the memory case
+			// mid-stream; a long-window matrix can hit max_execution_time
+			// the same way).
+			c.err = fmt.Errorf("chclient: rows.Err: %w", wrapQueryTimeout(wrapMemoryLimit(err, c.maxMemoryBytes), c.queryTimeout))
 		}
 		return false
 	}
@@ -295,7 +307,7 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	if err != nil {
 		span.RecordError(err)
 		span.End()
-		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 	return &rowsCursor{
 		rows:           rows,
@@ -303,6 +315,7 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 		rec:            recorderFromContext(ctx),
 		maxSamples:     c.maxSamples,
 		maxMemoryBytes: c.maxMemory,
+		queryTimeout:   c.effectiveQueryTimeout(ctx),
 		budget:         budgetFromContext(ctx),
 	}, nil
 }

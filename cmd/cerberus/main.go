@@ -208,11 +208,13 @@ func run() error {
 	promHandler.Limiter = promLimiter
 	promHandler.Version = Version
 	promHandler.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
+	promHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	promHandler.Mount(traceMux)
 
 	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))
 	lokiHandler.Limiter = lokiLimiter
 	lokiHandler.Version = Version
+	lokiHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	lokiHandler.Mount(traceMux)
 
 	tempoHandler := tempo.New(client, cfg.Traces, Version, logger.With("api", "tempo"))
