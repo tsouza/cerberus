@@ -936,6 +936,18 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantiles_classic_multi_phi",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantiles_native_multi_phi",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_stddev_exp",
     "routed": false,
     "k": 0,

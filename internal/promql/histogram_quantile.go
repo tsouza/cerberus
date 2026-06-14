@@ -270,6 +270,107 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	}, nil
 }
 
+// histogramQuantilesMinArgs is the smallest legal arity of
+// `histogram_quantiles(<vector>, "<label>", <phi>, ...)`: a vector, the
+// quantile-label name, and at least one phi.
+const histogramQuantilesMinArgs = 3
+
+// lowerHistogramQuantiles handles the experimental, variadic
+// `histogram_quantiles(<vector>, "<labelName>", phi0, phi1, ...)`.
+//
+// Reference Prometheus semantics (promql.funcHistogramQuantiles):
+// compute `histogram_quantile(phi_i, <vector>)` for EACH phi in one pass
+// over the input, and for every (input series × phi) emit one output
+// series whose label set is the input series' labels with `__name__`
+// dropped and a new label `<labelName>=<FormatOpenMetricsFloat(phi)>`
+// attached. The phi label value uses OpenMetrics float formatting
+// (`0` → `"0.0"`, `1` → `"1.0"`, `0.5` → `"0.5"`, `-0.1` → `"-0.1"`).
+// Out-of-domain phi (< 0 / > 1 / NaN) carries the same per-quantile
+// warning + saturating value as the singular function — that behaviour
+// lives entirely inside the per-phi kernel, so reusing it gives parity
+// for free.
+//
+// Lowering strategy: fan out over the variadic phi list. Each phi
+// reuses lowerHistogramQuantile as the per-phi kernel by synthesising a
+// singular `histogram_quantile(phi_i, <vector>)` call, then wraps the
+// kernel's Sample-row output in a Project that overrides the Attributes
+// map with `mapConcat(Attributes, map('<labelName>', '<phiStr>'))` —
+// the same label-injection shape histogram_bucket.go uses for `le`.
+// mapConcat with the synthetic single-entry map on the right overwrites
+// any pre-existing `<labelName>` key, matching Prom's
+// `NewBuilder(lbls).Set(labelName, phiStr)`. The per-phi arms are then
+// stitched with UNION ALL: each arm produces a disjoint label set (the
+// phi label differs), so UNION ALL is the correct, dedup-free
+// concatenation. A single-phi call collapses to the lone arm (UnionAll
+// rejects degenerate single-arm unions), so the phi label is still
+// injected but no union is emitted.
+func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if len(c.Args) < histogramQuantilesMinArgs {
+		return nil, fmt.Errorf(
+			"promql: histogram_quantiles expects at least %d arguments (vector, label, phi...), got %d",
+			histogramQuantilesMinArgs, len(c.Args),
+		)
+	}
+	vectorArg := c.Args[0]
+	labelName, err := stringArg(c.Args[1], "histogram_quantiles", "label")
+	if err != nil {
+		return nil, err
+	}
+
+	phiArgs := c.Args[2:]
+	arms := make([]chplan.Node, 0, len(phiArgs))
+	for _, phiExpr := range phiArgs {
+		// Reuse the singular kernel: synthesise
+		// `histogram_quantile(phi_i, <vector>)`. The kernel handles every
+		// input shape (classic / native bare selector, the sum-rate idiom)
+		// plus the phi-domain saturation + computed-phi paths, so the
+		// plural function inherits all of it.
+		kernelCall := &parser.Call{
+			Func: parser.Functions["histogram_quantile"],
+			Args: parser.Expressions{phiExpr, vectorArg},
+		}
+		kernel, err := lowerHistogramQuantile(kernelCall, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		// Attach the quantile label. The label VALUE is the OpenMetrics
+		// float rendering of phi. When phi is a literal (the common case,
+		// and the only case the parser admits without a scalar()-wrapped
+		// sub-expression) we fold it at lowering time so the label is a
+		// static string. A non-literal phi (computed scalar) has no stable
+		// label rendering — Prometheus reads phi[0].F at eval time — so we
+		// reject it rather than emit a wrong label.
+		phiLit, ok := tryScalarLiteral(phiExpr)
+		if !ok {
+			return nil, fmt.Errorf(
+				"promql: histogram_quantiles requires literal phi arguments for the %q label, got %T",
+				labelName, phiExpr,
+			)
+		}
+		phiStr := labels.FormatOpenMetricsFloat(phiLit)
+		attrs := &chplan.FuncCall{
+			Name: "mapConcat",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.AttributesColumn},
+				&chplan.FuncCall{
+					Name: "map",
+					Args: []chplan.Expr{
+						&chplan.LitString{V: labelName},
+						&chplan.LitString{V: phiStr},
+					},
+				},
+			},
+		}
+		arms = append(arms, projectAttributesOverInner(kernel, s, attrs))
+	}
+
+	if len(arms) == 1 {
+		return arms[0], nil
+	}
+	return &chplan.UnionAll{Inputs: arms}, nil
+}
+
 // histogramAggShape collects the bits we need to build the
 // aggregated-input plan for `histogram_quantile(phi, <agg>(rate(<sel>[range])))`.
 //

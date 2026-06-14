@@ -1,0 +1,57 @@
+-- query.promql --
+histogram_quantiles(http_server_request_duration, "q", 0.5, 0.9)
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
+-- args --
+[0] string = "q"
+[1] string = "0.5"
+[2] string = ""
+[3] int64 = 9
+[4] string = "http_server_request_duration"
+[5] string = "http.server.request.duration"
+[6] string = "http.server.request_duration"
+[7] string = "http.server_request.duration"
+[8] string = "http.server_request_duration"
+[9] string = "http_server.request.duration"
+[10] string = "http_server.request_duration"
+[11] string = "http_server_request.duration"
+[12] string = "q"
+[13] string = "0.9"
+[14] string = ""
+[15] int64 = 9
+[16] string = "http_server_request_duration"
+[17] string = "http.server.request.duration"
+[18] string = "http.server.request_duration"
+[19] string = "http.server_request.duration"
+[20] string = "http.server_request_duration"
+[21] string = "http_server.request.duration"
+[22] string = "http_server.request_duration"
+[23] string = "http_server_request.duration"
+-- chplan --
+UnionAll arms=2
+  Project [MetricName, mapConcat(Attributes, map("q", "0.5")) AS Attributes, TimeUnix, Value]
+    Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      HistogramQuantile phi=0.5 groupBy=[Attributes AS Attributes]
+        Filter predicate=(MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request_duration", "http.server_request.duration", "http.server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration"))
+          Scan(otel_metrics_histogram)
+  Project [MetricName, mapConcat(Attributes, map("q", "0.9")) AS Attributes, TimeUnix, Value]
+    Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      HistogramQuantile phi=0.9 groupBy=[Attributes AS Attributes]
+        Filter predicate=(MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request_duration", "http.server_request.duration", "http.server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration"))
+          Scan(otel_metrics_histogram)
+-- sql --
+(SELECT `MetricName`, mapConcat(`Attributes`, map(?, ?)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.5 <= 0, 0.0, if(0.5 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?)))))) UNION ALL (SELECT `MetricName`, mapConcat(`Attributes`, map(?, ?)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.9 <= 0, 0.0, if(0.9 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.9 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?))))))
+
+-- expected_rows --
+[
+  ["", {"job": "api", "q": "0.5"}, "2026-01-01T00:00:01Z", 0.5],
+  ["", {"job": "api", "q": "0.9"}, "2026-01-01T00:00:01Z", 1]
+]
