@@ -581,7 +581,14 @@ jobs:
   dashboard-shard:
     name: dashboard-shard
     needs: [dashboard-setup]
-    if: needs.dashboard-setup.result == 'success'
+    # always() is REQUIRED: without a status function GitHub prepends an
+    # implicit success(), which is false whenever a transitive need is skipped
+    # — and dashboard-setup's `changes` need is skipped on push/schedule, so
+    # the matrix never expanded there (green on PRs, skipped on push). Mirror
+    # compose-smoke-shard: run regardless, then require setup to have emitted.
+    if: |
+      always() &&
+      needs.dashboard-setup.result == 'success'
     runs-on: ubuntu-latest
     strategy:
       # MANDATORY: one shard's failure must NOT cancel its siblings — each
