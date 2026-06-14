@@ -14,14 +14,12 @@ import (
 )
 
 // breakerHeadState reports the CURRENT lifecycle level for head h from a
-// manual-reader snapshot. The state gauge carries BOTH a head= and a state=
-// label, so it is multi-series per head ({head,closed}=0, {head,open}=1, …)
-// and a last-value gauge never clears the stale series. The current level is
-// therefore the MAX value recorded across head h's series — the breaker only
-// ever records the level it just entered, so the highest level present is the
-// one it is in. (closed=0 is the zero-init floor; any non-zero is a real
-// transition that head went through and, being last-value, reflects its
-// current phase since each head records exactly one transition per test step.)
+// manual-reader snapshot. The state gauge is observable: its callback reports
+// exactly ONE sample per head per collection (the head's current state, with a
+// matching state= label), so a collection holds a single series per head and
+// the MAX-over-h's-samples below is simply that one current value — there are
+// no stale lingering series to filter out (the whole point of the observable
+// gauge).
 func breakerHeadState(t *testing.T, reader *sdkmetric.ManualReader, h string) int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -368,7 +366,10 @@ func TestBreakerMetrics_ZeroInitAllHeads(t *testing.T) {
 	t.Parallel()
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	_ = newBreakerMetrics(mp)
+	// buildBreakers mints the four head breakers and registers the observable
+	// state callback over them, so every head's gauge series exists from the
+	// first collection — no transition needed.
+	_, _ = buildBreakers(false, 0, 0, 0, newBreakerMetrics(mp))
 
 	states := breakerHeadStates(t, reader)
 	trips := breakerHeadTrips(t, reader)

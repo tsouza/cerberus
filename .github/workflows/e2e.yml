@@ -989,10 +989,18 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
-      # Reuse the e2e k3d bring-up VERBATIM (identical first steps to the
-      # dashboard job): cluster, cerberus:e2e image, manifests, host port
-      # maps (localhost:8080 cerberus), and live OTel data.
+      # Reuse the e2e k3d bring-up (same first steps as the dashboard job):
+      # cluster, cerberus:e2e image, manifests, host port maps
+      # (localhost:8080 cerberus), and live OTel data. The ONE difference
+      # from the dashboard job: CERBERUS_BUILD_TAGS=chaos_sleep links the
+      # deterministic-sleep injection (internal/{chsql,api/prom}/chaos_sleep.go)
+      # so ch-slow-query-timeout blocks ClickHouse for a fixed, substrate-
+      # independent duration instead of relying on brittle timing
+      # calibration. No other lane sets this tag, so production + the
+      # dashboard image never compile the sleep in.
       - name: Bring up k3d stack
+        env:
+          CERBERUS_BUILD_TAGS: chaos_sleep
         run: just e2e-up
 
       - name: Seed OTel data (deterministic synthetic rows; rolling)
@@ -1007,10 +1015,14 @@ jobs:
       - name: Apply chaos overlay (resilience knobs)
         run: just e2e-chaos-overlay
 
-      # Phase-1 scenarios sequentially with heal-between-each:
-      # ch-pod-kill, ch-slow/query-timeout, cerberus-pod-kill. On the
-      # nightly schedule + manual dispatch, run the full phase set
-      # (adds ch-network-partition + load/admit-saturation).
+      # Phase-1 scenarios sequentially with heal-between-each, ordered
+      # non-destructive-first / destructive-last (see orderScenarios in
+      # chaos-run.mjs): ch-slow/query-timeout (runs on the full rolling
+      # window so its heavy query reliably hits the wall-clock cap), then
+      # the destructive pod-kills ch-pod-kill + cerberus-pod-kill. On the
+      # nightly schedule + manual dispatch, run the full phase set — the
+      # non-destructive head also picks up load/admit-saturation +
+      # ch-network-partition, which sort ahead of the pod-kills.
       - name: Run live-stack chaos lane
         env:
           CERBERUS_URL: http://localhost:8080

@@ -147,17 +147,19 @@ type breaker struct {
 	// currentState(), not via the metric label).
 	head Head
 
-	// metrics carries the OTel state gauge + trips counter the breaker
-	// fires on every transition. A nil pointer is the no-telemetry
-	// sentinel — the zero-value breaker (and any breaker built without a
-	// MeterProvider) records nothing, so the un-instrumented path pays
-	// zero cost. client.New always wires a non-nil set off the global
-	// MeterProvider. Recording happens inside the b.mu critical section
-	// (the transition site) so the gauge level can never lag or reorder
-	// against the state field it mirrors. The set is SHARED across all of a
-	// Client's per-head breakers (one instrument pair, N head-labelled
-	// streams); each breaker fans its own head label in via recordState /
-	// recordTrip.
+	// metrics carries the OTel state gauge + trips counter. A nil pointer is
+	// the no-telemetry sentinel — the zero-value breaker (and any breaker
+	// built without a MeterProvider) records nothing, so the un-instrumented
+	// path pays zero cost. client.New always wires a non-nil set off the
+	// global MeterProvider. The state gauge is OBSERVABLE: a callback
+	// registered in buildBreakers reads each breaker's CURRENT state
+	// (observeLevel, under b.mu) every collection interval, so the exported
+	// level can never lag, reorder, or go STALE against the state field it
+	// mirrors — the failure mode of a transition-recorded synchronous gauge.
+	// The breaker still fires recordTrip on the CLOSED->OPEN edge to advance
+	// the cumulative trips counter. The set is SHARED across all of a Client's
+	// per-head breakers (one instrument pair, N head-labelled streams); each
+	// breaker fans its own head label in.
 	metrics *breakerMetrics
 }
 
@@ -238,7 +240,6 @@ func (b *breaker) allow() bool {
 		}
 		b.state = stateHalfOpen
 		b.probeInFlight = true
-		b.metrics.recordState(b.head, breakerGaugeHalfOpen, "half-open")
 		breakerLogger().Warn("ch circuit breaker entering half-open: admitting one recovery probe",
 			"from", "open", "to", "half-open")
 		return true
@@ -440,7 +441,6 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.state = stateClosed
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
-			b.metrics.recordState(b.head, breakerGaugeClosed, "closed")
 			breakerLogger().Warn("ch circuit breaker recovered: probe succeeded, circuit closed",
 				"from", "half-open", "to", "closed")
 			return
@@ -454,7 +454,6 @@ func (b *breaker) record(ctx context.Context, err error) {
 		// the probe outcome matters.
 		b.failures = 0
 		b.failureWindowStart = time.Time{}
-		b.metrics.recordState(b.head, breakerGaugeOpen, "open")
 		breakerLogger().Warn("ch circuit breaker probe failed: circuit re-opened, backoff restarted",
 			"from", "half-open", "to", "open")
 		return
@@ -486,7 +485,6 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.openedAt = now
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
-			b.metrics.recordState(b.head, breakerGaugeOpen, "open")
 			b.metrics.recordTrip(b.head)
 			breakerLogger().Warn("ch circuit breaker tripped OPEN: fast-failing all queries (503) until recovery",
 				"from", "closed", "to", "open",
@@ -501,6 +499,32 @@ func (b *breaker) record(ctx context.Context, err error) {
 		// (e.g. a caller raced allow() with a state change) we
 		// stay OPEN — record is idempotent under retries.
 		return
+	}
+}
+
+// observeLevel returns the breaker's CURRENT lifecycle phase as the gauge
+// level (breakerGaugeClosed / _Open / _HalfOpen) plus its stable string label,
+// read under b.mu so the observable-gauge callback gets a tear-free snapshot.
+//
+// Unlike peek(), it does NOT evaluate the OPEN backoff window: the gauge must
+// mirror the breaker's STORED state field exactly (the same value
+// currentState() reports), so a back-off-elapsed OPEN breaker that no
+// allow() has yet driven to HALF-OPEN still reports OPEN — the gauge tracks
+// what the breaker IS, not what the next allow() would make it. A nil breaker
+// (zero-value Client) is permanently CLOSED, matching allow().
+func (b *breaker) observeLevel() (int64, string) {
+	if b == nil {
+		return breakerGaugeClosed, "closed"
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.state {
+	case stateOpen:
+		return breakerGaugeOpen, "open"
+	case stateHalfOpen:
+		return breakerGaugeHalfOpen, "half-open"
+	default:
+		return breakerGaugeClosed, "closed"
 	}
 }
 

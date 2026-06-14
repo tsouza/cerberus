@@ -61,6 +61,83 @@ const METRIC_SETTLE_DEADLINE_MS = 90_000; // OTLP flush lag before self-metrics 
 const POLL_INTERVAL_MS = 2_000;
 const SETTLE_INTERVAL_MS = 3_000;
 
+// Breaker HALF-OPEN -> CLOSED drive (ch-pod-kill heal). When CH comes back the
+// breaker is OPEN; after its OPEN_INTERVAL cooldown the NEXT query through it
+// transitions OPEN -> HALF-OPEN and admits exactly one recovery probe, and a
+// SUCCESSFUL probe is what closes it (internal/chclient/breaker.go record():
+// stateHalfOpen + err==nil -> stateClosed). /readyz going green and a single
+// "all 3 heads 200" sweep do NOT guarantee the close: /readyz keys on the
+// SEPARATE per-head probe breaker (#904), and with >=2 replicas each carries
+// its OWN main query breaker, so one sweep may close one replica's breaker
+// while another stays HALF-OPEN. We therefore DRIVE sustained successful
+// CH-touching queries (prom head -> real CH round-trip through the main
+// breaker) and wait for a SETTLED, all-replica CLOSED signal, so the
+// post-recovery assertion (and every downstream scenario that reads the gauge)
+// sees a genuinely-CLOSED breaker. This drives the legitimate transition; it
+// never weakens the assertion.
+//
+// Why a SETTLE-AND-HOLD (not a single CLOSED sample): the CH pod is recreated
+// onto a PVC, so on heal it boots + reattaches the volume + the heal re-seed
+// loads it. During that warm-up CH is INTERMITTENTLY available, so the breaker
+// OSCILLATES — it closes, re-opens on a transient CH blip, then closes again
+// once CH is fully warm. Dispatch 27505378745 captured exactly this: a first
+// close at 16:49:08, then a re-open, then the FINAL stable close at 16:50:46 —
+// ~98 s after the first observable HALF-OPEN. The old 90 s drive deadline
+// expired at 16:50:41, ~5 s BEFORE that final close, so a single-sample poll
+// gave up mid-oscillation and the binding assert read a transient HALF-OPEN.
+// The gauge also rides the OTLP self-metric pipeline (cerberus -> collector ->
+// CH -> Prom head), so it LAGS real state by the flush/scrape interval and is
+// PER-REPLICA (>=2 via the HPA floor); queryBreakerMetric() takes the MAX
+// across replica series, so a non-zero from ANY lagged/oscillating replica
+// keeps the read off CLOSED until every replica has genuinely settled.
+//
+// The fix gates on TWO things, both of which a genuinely-recovered breaker
+// reaches and a genuinely-stuck-open one never does:
+//   1. a behavioral real-time gate — query=up returns 200 continuously for a
+//      hold window (the breaker is admitting traffic with no re-trip), and
+//   2. the OTLP gauge reading CLOSED (max across all replica series) and
+//      HOLDING CLOSED for the same hold window (absorbs OTLP lag + per-replica
+//      oscillation; a mid-warm-up transient half-open breaks the hold and the
+//      wait continues rather than passing prematurely).
+//
+// THE DRIVE IS READINESS-GATED. The main prom breaker only closes when a
+// SUCCESSFUL CH-touching query flows through THAT replica's breaker (breaker.go
+// record(): stateHalfOpen + err==nil -> stateClosed). But while a pod is
+// NOT-Ready the k8s Service excludes it from its endpoint set, so the harness's
+// drive queries (routed through the Service / port-forward, exactly like real
+// traffic) never reach it — driving before the pod is Ready is wasted work that
+// burns the deadline against an unroutable target. So recovery is TWO-STAGE and
+// the harness mirrors it:
+//   stage (i)  — poll /readyz until 200. /readyz pings flow through the SEPARATE
+//                HeadProbe breaker (#94, cmd/cerberus/main.go wires
+//                client.ForHead(HeadProbe) as the Pinger), and the kubelet
+//                readiness probe hits the pod DIRECTLY (bypassing the Service),
+//                so the probe breaker can close and the pod flip Ready off its
+//                own low-rate pings — independent of any data-plane traffic.
+//                Pod Ready => the Service now routes to it.
+//   stage (ii) — only THEN drive successful query=up bursts (prom head -> real
+//                CH round-trip through the MAIN breaker), which now actually
+//                reach the Ready pod, and wait for the SETTLED all-replica
+//                CLOSED hold below.
+// driveBreakerClosed enforces this gate: it re-confirms /readyz 200 before each
+// drive tick, so a pod that briefly drops Ready mid-warm-up stops being driven
+// until it's routable again.
+//
+// Deadline: dispatch 27506048143 saw the final stable close at +~2 min after the
+// fault, and recovery on k3d (CH pod recreate -> PVC reattach -> warm-up ->
+// breaker re-close, with mid-warm-up oscillation) is VARIABLE and can exceed the
+// old 180 s budget — that run's drive deadline expired ~5 s before the final
+// close and read a transient HALF-OPEN. Raised to a k3d-generous 300 s so the
+// genuine two-stage self-heal completes with comfortable margin on a slow CI
+// runner; the assertion stays BINDING (a breaker that never settles CLOSED
+// within 300 s despite a Ready pod + sustained successful queries is a real
+// stuck-breaker bug worth surfacing, not masked).
+const BREAKER_CLOSE_DEADLINE_MS = 300_000; // k3d-generous: > observed +~2min variable warm-up oscillation + OTLP lag, with CI margin
+const BREAKER_CLOSE_READYZ_DEADLINE_MS = 10_000; // per-tick /readyz re-confirm: pod must be Ready (Service-routable) before a drive tick counts
+const BREAKER_CLOSE_STABILITY_MS = 15_000; // CLOSED must HOLD this long (behaviorally + on the gauge) to count as settled
+const BREAKER_CLOSE_DRIVE_QUERIES = 8; // successful CH-touching queries to fire per drive tick (covers >=2 replicas' breakers)
+const BREAKER_CLOSE_HOLD_INTERVAL_MS = 3_000; // re-check cadence inside the hold window
+
 // cerberus_ch_breaker_state gauge encoding — mirrors the breakerGauge* consts
 // in internal/chclient/breaker_metrics.go (closed=0, open=1, half-open=2). The
 // chaos asserts key on CLOSED (0) as the only correct steady state for a
@@ -83,12 +160,15 @@ function breakerStateName(v) {
   }
 }
 
-// ---- deliberately-expensive query (slow-query / admit-saturation) ----
+// ---- deliberately-expensive query (admit-saturation) -----------------
 //
-// Both the ch-slow-query-timeout and load-admit-saturation scenarios need a
-// query that is GENUINELY expensive to evaluate — heavy enough to blow the
-// 3s CERBERUS_QUERY_TIMEOUT the chaos overlay sets (slow-query) or to hold
-// an admit slot long enough to overlap a concurrent burst (saturation).
+// The load-admit-saturation scenario needs a query that is GENUINELY
+// expensive to evaluate — heavy enough to hold an admit slot long enough to
+// overlap a concurrent burst. (ch-slow-query-timeout no longer uses this:
+// it drives a DETERMINISTIC server-side ClickHouse sleep via the chaos
+// header instead — see CHAOS_SLEEP_* above. Saturation keeps the real-
+// compute query because it must hold the slot under real work, not block on
+// a sleep that a timeout would abort mid-burst.)
 //
 // The cost MUST come from COMPUTE PER ANCHOR, not from anchor count. An
 // earlier version drove cost with a 30-day range at step=1s (~2.6M anchors),
@@ -98,23 +178,63 @@ function breakerStateName(v) {
 // timeout is even armed — so the "slow" query 400'd instead of timing out,
 // and the scenario asserted a 503 it could never see. The 11000-point cap is
 // an intentional Prometheus-compat invariant, so the query has to stay UNDER
-// it while still costing seconds to evaluate.
+// it while still costing real compute to evaluate.
 //
-// The fix: a MODEST outer point count (well under the cap) where EACH outer
-// anchor fans out into a heavy nested subquery —
+// The cost MUST ALSO be UNCOLLAPSIBLE. An earlier version used
 //   max_over_time( sum(rate(<counter>[INNER])) [SUBQ_RANGE:SUBQ_STEP] )
-// Every outer anchor re-evaluates SUBQ_RANGE/SUBQ_STEP inner sub-anchors,
-// each a rate() over INNER seconds of the seeded high-cardinality counter
-// (the O(rows x anchors) compute fan-out). That product (outer x inner)
-// reliably exceeds 3s on the CI runner without ever tripping the points cap.
+// but the seed is deliberately thin — http_server_request_duration_count is
+// a SINGLE low-cardinality series of 600 samples whose Count grows linearly
+// (test/e2e/seed/cmd/seed/main.go). Over uniform, linearly-growing data the
+// optimizer + the subquery folding collapse max_over_time(sum(rate(...))) to
+// a CHEAP FLAT CONSTANT (~hundred ms, returning the same value at every
+// timestamp). It never exceeded the cap -> 200 instead of the asserted 503
+// (dispatch run 27505378745). Reordering / fuller data didn't help: the
+// problem was the query is cheap on cerberus, not the data being thin.
+//
+// The fix: stddev_over_time over a sub-stepped rate() subquery. A per-anchor
+// dispersion CANNOT fold to a constant (each outer anchor must materialise
+// its SUBQ_RANGE/SUBQ_STEP inner rate() samples and compute their stddev),
+// so the cost is real CH compute regardless of optimizer or uniform data.
+// Measured on the live compose stack (2026-06-14): ~650 ms wall-clock on the
+// seed-only {job=api} series vs ~8 ms for a trivial query=up. The chaos
+// overlay then calibrates CERBERUS_QUERY_TIMEOUT to 250ms (test-only) — it
+// sits cleanly between the two (heavy ~650 ms > cap 250 ms > trivial ~8 ms),
+// so the heavy query reliably 503s errorType=timeout while up stays 200.
 const SLOW_QUERY_RANGE_SECONDS = 2 * 3600; // 2h outer window
 const SLOW_QUERY_STEP_SECONDS = 1; // 1s outer step => 7200 outer anchors (< 11000 cap)
 const SLOW_QUERY_SUBQ_RANGE = '1h'; // each anchor fans out a 1h subquery
-const SLOW_QUERY_SUBQ_STEP = '5s'; // at 5s => 720 inner sub-anchors per outer anchor
-const SLOW_QUERY_INNER_RANGE = '10m'; // each sub-anchor rate()s 10m of raw counter rows
-// The seeded high-cardinality counter the rate() scans (test/e2e/seed: 600
-// samples/series in otel_metrics_sum -> histogram-routed under this name).
+const SLOW_QUERY_SUBQ_STEP = '1s'; // at 1s => 3600 inner sub-anchors per outer anchor
+const SLOW_QUERY_INNER_RANGE = '5m'; // each sub-anchor rate()s 5m of raw counter rows
+// The seeded counter the rate() scans (test/e2e/seed: 600 samples in
+// otel_metrics_sum -> histogram-routed under this name). Scoped to the seed
+// series {job="api"} so the cost is independent of any self-telemetry the
+// dogfood loop happens to add — the seed shape is guaranteed in the k3d lane.
 const SLOW_QUERY_COUNTER = 'http_server_request_duration_count';
+const SLOW_QUERY_SERIES_MATCHER = '{job="api"}';
+
+// ---- deterministic chaos sleep (ch-slow-query-timeout) ----------------
+//
+// The ch-slow-query-timeout scenario no longer relies on a "naturally slow"
+// query: timing one is substrate-dependent (the stddev_over_time subquery
+// above measured ~650ms on compose but <250ms on k3d, so no static cap
+// separated it from a trivial query everywhere). Instead the chaos lane's
+// cerberus image is built with `-tags chaos_sleep`, and this scenario sends
+// an undocumented request header that splices a genuinely-blocking
+// server-side ClickHouse sleep into the emitted SQL — substrate-independent.
+//
+// CHAOS_SLEEP_HEADER names the seconds to sleep; CHAOS_SLEEP_SECONDS is set
+// well above the chaos overlay's CERBERUS_QUERY_TIMEOUT (5s) so the query
+// reliably times out on ANY substrate. The chaos build narrows the
+// ClickHouse-side max_execution_time to 3s (< the 5s Go deadline), so CH
+// aborts with code 159 (breaker-NEUTRAL) -> 503 errorType=timeout while the
+// breaker stays CLOSED. The trigger query itself is a trivial instant query;
+// only the header makes it slow, so the SAME query WITHOUT the header (and
+// any unrelated query) returns 200 in milliseconds.
+const CHAOS_SLEEP_HEADER = 'X-Cerberus-Chaos-Sleep-Seconds';
+const CHAOS_SLEEP_SECONDS = 10;
+// The trigger query is intentionally trivial — the sleep, not the query
+// shape, is what blocks. A bare instant `up` keeps the PromQL clean.
+const CHAOS_SLEEP_TRIGGER_QUERY = '/api/v1/query?query=up';
 
 // slowQueryPath builds the /api/v1/query_range path for the expensive
 // nested-subquery query. anchored to `now` so the outer window overlaps the
@@ -126,8 +246,8 @@ function slowQueryPath() {
   const now = Math.floor(Date.now() / 1000);
   const start = now - SLOW_QUERY_RANGE_SECONDS;
   const expr =
-    `max_over_time(` +
-    `sum(rate(${SLOW_QUERY_COUNTER}[${SLOW_QUERY_INNER_RANGE}]))` +
+    `stddev_over_time(` +
+    `rate(${SLOW_QUERY_COUNTER}${SLOW_QUERY_SERIES_MATCHER}[${SLOW_QUERY_INNER_RANGE}])` +
     `[${SLOW_QUERY_SUBQ_RANGE}:${SLOW_QUERY_SUBQ_STEP}])`;
   return (
     '/api/v1/query_range?query=' +
@@ -302,6 +422,90 @@ async function queryBreakerMetric(metric) {
   }
 }
 
+// driveOneBurst — fan out BREAKER_CLOSE_DRIVE_QUERIES successful CH-touching
+// prom-head queries so every replica's main breaker gets a HALF-OPEN probe + a
+// closing success (with >=2 replicas the Service round-robins, so a single
+// query may miss a still-HALF-OPEN replica). Returns true iff EVERY query in
+// the burst returned 200 — i.e. no replica fast-failed (503) and no transport
+// error, which is the behavioral, real-time signal that the breaker is
+// admitting traffic with no re-trip. A non-200 means we drive again; the close
+// only lands once a probe succeeds.
+async function driveOneBurst() {
+  let allOk = true;
+  for (let i = 0; i < BREAKER_CLOSE_DRIVE_QUERIES; i += 1) {
+    const r = await httpGet('/api/v1/query?query=up', { timeoutMs: 10_000 });
+    if (r.status !== 200) allOk = false;
+  }
+  return allOk;
+}
+
+// breakerSettledClosed — confirm the close is STABLE, not a transient caught
+// mid-oscillation. Requires BOTH gates to hold continuously for
+// BREAKER_CLOSE_STABILITY_MS:
+//   - behavioral (real-time): a query=up burst keeps returning all-200 (the
+//     breaker keeps admitting traffic; a re-trip would 503), and
+//   - the OTLP gauge: cerberus_ch_breaker_state reads CLOSED as the MAX across
+//     ALL replica series (queryBreakerMetric maxes them, so any lagged or
+//     oscillating replica reading non-zero breaks the hold).
+// Returns true iff the hold completes uninterrupted; false the moment either
+// gate regresses (so the caller keeps driving). This absorbs OTLP lag +
+// per-replica oscillation while staying binding: a genuinely-stuck-open breaker
+// never holds, so it still fails.
+async function breakerSettledClosed() {
+  const holdStart = Date.now();
+  while (Date.now() - holdStart < BREAKER_CLOSE_STABILITY_MS) {
+    const burstOk = await driveOneBurst();
+    if (!burstOk) return false; // a 503/transport error = re-trip; not settled
+    const state = await queryBreakerMetric('cerberus_ch_breaker_state');
+    // null = gauge not yet flushed (OTLP lag) — not a confirmed CLOSED, so the
+    // hold cannot complete on it; keep driving from the outer loop.
+    if (state !== BREAKER_STATE_CLOSED) return false;
+    await sleep(BREAKER_CLOSE_HOLD_INTERVAL_MS);
+  }
+  return true;
+}
+
+// driveBreakerClosed — after CH recovers, the main query breaker is in
+// HALF-OPEN until a SUCCESSFUL CH-touching request flows through it and closes
+// it (breaker.go record(): stateHalfOpen + err==nil -> stateClosed). The CH pod
+// boots onto a PVC and the heal re-seed loads it, so CH is intermittently
+// available during warm-up and the breaker OSCILLATES (close -> transient
+// re-open -> final close). A single CLOSED sample can therefore catch a
+// transient; we instead drive sustained successful prom-head queries (each a
+// real CH round-trip through the main breaker) and wait for a SETTLED,
+// all-replica CLOSED state that HOLDS for BREAKER_CLOSE_STABILITY_MS on both
+// the behavioral (all-200) and gauge (max-across-replicas == 0) signals.
+//
+// READINESS-GATED: each drive tick first re-confirms /readyz 200 (the pod is
+// Ready, so the Service routes drive traffic to it — see the BREAKER_CLOSE_*
+// rationale block above). A drive against a NOT-Ready pod can't reach it through
+// the Service and would just burn the deadline, so we wait for readiness inside
+// the tick instead of counting an unroutable drive. Once Ready, drive + attempt
+// to confirm a STABLE close.
+//
+// Returns true once settled, false on timeout. It is a DRIVE + SETTLE, not a
+// tolerance: callers still bindingly assert the gauge reads CLOSED afterwards,
+// and a genuinely-stuck breaker never settles so the assert still fails.
+async function driveBreakerClosed(deadlineMs) {
+  return pollUntil(
+    async () => {
+      // Stage (i): the pod must be Ready before a drive can route to it. If it
+      // isn't yet, abandon this tick (return false -> pollUntil retries) rather
+      // than drive into a black hole.
+      const ready = await assertReadyzGreen(BREAKER_CLOSE_READYZ_DEADLINE_MS);
+      if (!ready) return false;
+      // Stage (ii): drive once to admit recovery probes across all replicas,
+      // then attempt to confirm a STABLE close. breakerSettledClosed drives
+      // further bursts inside its own hold window, so a steady stream of
+      // CH-touching queries flows the whole time; it returns true only once
+      // CLOSED has held.
+      await driveOneBurst();
+      return breakerSettledClosed();
+    },
+    { deadlineMs, intervalMs: SETTLE_INTERVAL_MS, label: 'breaker-close' },
+  );
+}
+
 // ---- scenario: ch-pod-kill -------------------------------------------
 // CH outage -> shared breaker OPEN -> 503 every head, /readyz red,
 // /healthz green (NO restart), auto-recover after CH recreate.
@@ -382,19 +586,38 @@ async function scenarioChPodKill() {
     log('    all 3 heads 200');
   }
 
+  // Drive the main query breaker HALF-OPEN -> CLOSED before asserting. CH is
+  // back, but the breaker only closes when a SUCCESSFUL CH-touching query
+  // flows through it (breaker.go: stateHalfOpen + err==nil -> stateClosed).
+  // /readyz green + a single heads sweep don't guarantee that across >=2
+  // replicas, so push sustained successful prom-head queries (real CH
+  // round-trips through the main breaker) and poll the gauge until CLOSED. This
+  // closes the legitimate transition so the post-recovery assertion below — and
+  // every later scenario that reads cerberus_ch_breaker_state — sees a genuinely
+  // CLOSED breaker, with NO assertion weakened.
+  log('  driving main breaker HALF-OPEN -> CLOSED with successful CH queries...');
+  const breakerClosed = await driveBreakerClosed(BREAKER_CLOSE_DEADLINE_MS);
+  if (!breakerClosed) {
+    failures.push(
+      'main breaker did not return to CLOSED after CH recovery despite sustained successful CH queries — HALF-OPEN -> CLOSED probe never closed (would mean a real breaker bug, not OTLP lag)',
+    );
+  } else {
+    log('    main breaker driven to CLOSED (cerberus_ch_breaker_state == 0)');
+  }
+
   // Post-recovery metric corroboration (settle poll): trips >= 1, state == 0.
   // This is BEST-EFFORT corroboration, not the binding trip signal — the
   // breaker trip is already bindingly asserted DURING the fault via the
   // 503 + Retry-After:5 HTTP path above. The self-metric flows OTLP ->
   // collector -> CH -> Prom head, so it rides the very CH the outage knocked
-  // out; on the e2e fixture CH uses ephemeral storage with a Recreate
-  // strategy (test/e2e/k3s/clickhouse.yaml), so the trip counter written
-  // mid-outage can be lost when CH is recreated and never read back —
-  // surfacing as a NULL series (metric absent), not a 0. We therefore
-  // tolerate NULL (absent, OTLP-lag / ephemeral-CH-wipe — same tolerance the
-  // sibling state check already applies) but still FAIL if the series IS
-  // present and reads < 1, which would mean the trip genuinely wasn't
-  // recorded despite CH being queryable.
+  // out: CH now persists its data across the pod-kill (a PVC backs
+  // /var/lib/clickhouse — test/e2e/k3s/clickhouse.yaml), so the trip counter
+  // written mid-outage survives, but it can still be lagging the OTLP flush
+  // right after recovery — surfacing transiently as a NULL series (metric
+  // absent), not a 0. We therefore tolerate NULL (absent, OTLP-lag — same
+  // tolerance the sibling state check already applies) but still FAIL if the
+  // series IS present and reads < 1, which would mean the trip genuinely
+  // wasn't recorded despite CH being queryable.
   log('  corroborating breaker self-metrics via Prom head (settle poll)...');
   let tripsSeen = null;
   await pollUntil(
@@ -408,7 +631,7 @@ async function scenarioChPodKill() {
   if (tripsSeen !== null && tripsSeen < 1) {
     failures.push(`cerberus_ch_breaker_trips_total present but < 1 (${tripsSeen}) — breaker trip not recorded despite CH being queryable`);
   } else {
-    log(`    cerberus_ch_breaker_trips_total == ${tripsSeen === null ? '(absent; OTLP lag / ephemeral-CH wipe, tolerated — trip already asserted via 503)' : tripsSeen}`);
+    log(`    cerberus_ch_breaker_trips_total == ${tripsSeen === null ? '(absent; OTLP lag, tolerated — trip already asserted via 503)' : tripsSeen}`);
   }
   const state = await queryBreakerMetric('cerberus_ch_breaker_state');
   if (state !== null && state !== BREAKER_STATE_CLOSED) {
@@ -434,22 +657,38 @@ async function scenarioChPodKill() {
 // A slow query -> clean 503 errorType=timeout at the cap, breaker-NEUTRAL
 // (no trip, no 503 on unrelated heads), /readyz stays 200, slot+conn
 // released.
+//
+// The "slow" query is a TRIVIAL instant query carrying the undocumented
+// X-Cerberus-Chaos-Sleep-Seconds header, which (in the chaos_sleep-tagged
+// image only) splices a genuinely-blocking server-side ClickHouse sleep
+// into the emitted SQL. This makes the block DETERMINISTIC across compose
+// vs k3d — a fixed-duration server-side sleep, not a timing-calibrated
+// "heavy" query that ran fast on one substrate and slow on another.
+
+// SLOW_QUERY_BURST_TIMEOUT_MS bounds each slow request client-side. It must
+// exceed the server's wall-clock timeout (CERBERUS_QUERY_TIMEOUT=5s) plus
+// slack so the client sees the server's 503, not its own abort.
+const SLOW_QUERY_BURST_TIMEOUT_MS = 30_000;
+// The slow-query burst that must leave the breaker CLOSED.
+const SLOW_QUERY_BURST_COUNT = 4;
+
+// chaosSleepHeaders returns the per-request header map that triggers the
+// deterministic server-side sleep.
+function chaosSleepHeaders() {
+  return { [CHAOS_SLEEP_HEADER]: String(CHAOS_SLEEP_SECONDS) };
+}
+
 async function scenarioChSlowTimeout() {
   const failures = [];
 
   // Baseline breaker state before the slow burst.
   const baselineTrips = await queryBreakerMetric('cerberus_ch_breaker_trips_total');
 
-  // A heavy query_range whose cost comes from COMPUTE PER ANCHOR (a nested
-  // subquery fanned out at every outer anchor), not from anchor count — so
-  // it stays under the 11000-point resolution cap (which would 400 before
-  // the timeout arms) yet blows past the small CERBERUS_QUERY_TIMEOUT (3s)
-  // the chaos overlay set. See slowQueryPath / the SLOW_QUERY_* constants.
-  // ?timeout= mins with the cap; we lean on the configured cap.
-  const slowPath = slowQueryPath();
-
-  log('  fault: issuing a deliberately slow query_range (nested subquery, heavy per-anchor compute)...');
-  const slow = await httpGet(slowPath, { timeoutMs: 30_000 });
+  log(`  fault: issuing a trivial query with a ${CHAOS_SLEEP_SECONDS}s server-side chaos sleep (deterministic block)...`);
+  const slow = await httpGet(CHAOS_SLEEP_TRIGGER_QUERY, {
+    timeoutMs: SLOW_QUERY_BURST_TIMEOUT_MS,
+    headers: chaosSleepHeaders(),
+  });
   if (slow.status !== 503) {
     failures.push(`slow query should return 503 at the wall-clock cap; got ${slow.status} (body=${slow.body.slice(0, 200)})`);
   } else {
@@ -469,18 +708,25 @@ async function scenarioChSlowTimeout() {
     log('    /readyz stayed 200');
   }
 
-  // A separate FAST query still 200 (heads stay healthy; slot+conn released).
-  const fast = await httpGet('/api/v1/query?query=up');
+  // The SAME trigger query WITHOUT the chaos header still 200 in
+  // milliseconds — proof the sleep is opt-in per-request (no header => no
+  // sleep) and the slot + pooled conn from the slow query were released.
+  const fast = await httpGet(CHAOS_SLEEP_TRIGGER_QUERY);
   if (fast.status !== 200) {
-    failures.push(`a fast /api/v1/query?query=up must still 200 after the slow query (slot+conn released); got ${fast.status}`);
+    failures.push(`a fast /api/v1/query?query=up (no chaos header) must still 200 after the slow query (slot+conn released); got ${fast.status}`);
   } else {
-    log('    fast query still 200 (admit slot + pooled conn released)');
+    log('    fast query still 200 (no header => no sleep; admit slot + pooled conn released)');
   }
 
   // Burst of slow queries must NOT trip the breaker.
-  log('  bursting slow queries to confirm breaker stays CLOSED (breaker-neutral)...');
+  log('  bursting slow (chaos-sleep) queries to confirm breaker stays CLOSED (breaker-neutral)...');
   await Promise.all(
-    Array.from({ length: 4 }, () => httpGet(slowPath, { timeoutMs: 30_000 })),
+    Array.from({ length: SLOW_QUERY_BURST_COUNT }, () =>
+      httpGet(CHAOS_SLEEP_TRIGGER_QUERY, {
+        timeoutMs: SLOW_QUERY_BURST_TIMEOUT_MS,
+        headers: chaosSleepHeaders(),
+      }),
+    ),
   );
 
   // Heads must stay 200 (unrelated heads not 503'd by the timeout burst).
@@ -877,34 +1123,80 @@ async function endOfRunHealthGate() {
 
 // ---- scenario registry + driver --------------------------------------
 
-// `wipesCh: true` marks a scenario that destroys the ClickHouse pod. Because
-// CH runs `strategy: Recreate` on container-ephemeral storage
-// (test/e2e/k3s/clickhouse.yaml), the pod comes back EMPTY — every seeded
-// table is gone. The heal gate after such a scenario must RE-SEED before the
-// next scenario asserts, otherwise downstream queries hit `code:60 Unknown
-// table … otel_*`. The rolling seeder (e2e-seed-rolling) cannot do this: its
-// long-lived port-forward is bound to the killed pod and never reconnects, so
-// it writes into a dead socket for the rest of the run. The heal step issues a
-// one-shot `just e2e-reseed` through a FRESH port-forward instead.
+// `recreatesCh: true` marks a scenario that deletes the ClickHouse pod. CH now
+// backs /var/lib/clickhouse with a PersistentVolumeClaim
+// (test/e2e/k3s/clickhouse.yaml), so the recreated pod comes back WITH its
+// schema + data INTACT — the pod-kill is the realistic "CH briefly away, then
+// back with its data" outage the breaker assertions expect, NOT an empty-table
+// wipe. The heal gate after such a scenario still runs a one-shot
+// `just e2e-reseed` through a FRESH port-forward, but only to RE-ANCHOR the
+// rolling time-window at wall-clock now (the seeder's INSERTs re-anchor on
+// now64(9)); it is no longer restoring lost tables.
+//
+// This one-shot is COMPLEMENTARY to the rolling seeder. As of the
+// reconnecting-supervisor fix (test/e2e/seed/port_forward_supervisor.sh) the
+// rolling seeder's port-forward respawns once CH is recreated, so the 30 s
+// rolling feed resumes on its own and keeps the data anchored at wall-clock now
+// for the time-windowed assertions of the scenarios that follow. The one-shot
+// closes the freshness gap between CH coming back and the next rolling tick
+// landing; the PVC guarantees the schema + historical data are already there.
+//
+// `destructive: true` marks a scenario that injects a POD-KILL fault (CH pod or
+// a cerberus replica). The run loop sorts every selected pool so NON-destructive
+// scenarios run FIRST and destructive ones LAST (see orderScenarios). This is
+// load-bearing for ch-slow-query-timeout: that scenario's "deliberately slow"
+// nested-subquery query is DATA-DRIVEN (its inner rate() evals scan the seeded
+// counter), so it only reliably exceeds the calibrated CERBERUS_QUERY_TIMEOUT
+// — and thus returns the contracted 503 — when it runs against the FULL
+// rolling-seeded window. Running it BEFORE the destructive ch-pod-kill (whose recreate leaves a
+// thin post-reseed window right after the one-shot re-anchor) keeps the query
+// cost-dominated. As a bonus, load-admit-saturation's "breaker stays CLOSED"
+// assertion then runs on a naturally-closed breaker (no prior outage), and each
+// destructive scenario re-establishes its own preconditions via the heal gate.
 const PHASE1 = [
-  { name: 'ch-pod-kill', run: scenarioChPodKill, wipesCh: true },
+  // Non-destructive, data-dependent: the slow-query timeout contract. Runs on
+  // the full rolling-seeded window so the heavy nested subquery reliably blows
+  // the calibrated wall-clock cap.
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
-  { name: 'cerberus-pod-kill', run: scenarioCerberusPodKill },
+  // Destructive pod-kills, sorted to run after the non-destructive set.
+  { name: 'ch-pod-kill', run: scenarioChPodKill, recreatesCh: true, destructive: true },
+  { name: 'cerberus-pod-kill', run: scenarioCerberusPodKill, destructive: true },
 ];
 
 const PHASE2 = [
-  // ch-network-partition only blackholes egress with a NetworkPolicy; it never
-  // deletes the CH pod, so CH data survives — no re-seed needed after it. (On
-  // the k3d image where kube-router does not enforce NetworkPolicy this
-  // scenario records not-applicable; see scenarioChNetworkPartition.)
-  { name: 'ch-network-partition', run: scenarioChNetworkPartition },
+  // load-admit-saturation is non-destructive (admission-layer shed only) and
+  // wants a naturally-CLOSED breaker, so it sorts into the non-destructive head
+  // of the run alongside ch-slow-query-timeout.
   { name: 'load-admit-saturation', run: scenarioLoadAdmitSaturation },
+  // ch-network-partition only blackholes egress with a NetworkPolicy; it never
+  // deletes the CH pod, so CH data survives — no re-seed needed after it. It is
+  // non-destructive in the pod-kill sense, but it DOES trip the breaker OPEN, so
+  // it sorts after the breaker-neutral non-destructive scenarios yet before the
+  // pod-kills. (On the k3d image where kube-router does not enforce
+  // NetworkPolicy this scenario records not-applicable; see
+  // scenarioChNetworkPartition.)
+  { name: 'ch-network-partition', run: scenarioChNetworkPartition },
 ];
+
+// orderScenarios — stable-sort a selected pool so NON-destructive scenarios run
+// before destructive (pod-kill) ones. Stable: authored order is preserved within
+// each group, so the non-destructive head stays [slow-query, load-admit,
+// network-partition] and the destructive tail stays [ch-pod-kill,
+// cerberus-pod-kill]. The ch-pod-kill recreate (and its thin post-reseed window)
+// therefore always lands AFTER the data-dependent slow-query has run against the
+// full rolling-seeded window.
+function orderScenarios(pool) {
+  const rank = (s) => (s.destructive ? 1 : 0);
+  return pool
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => rank(a.s) - rank(b.s) || a.i - b.i)
+    .map((e) => e.s);
+}
 
 function selectedScenarios() {
   let pool = PHASE === 'all' ? [...PHASE1, ...PHASE2] : [...PHASE1];
   if (ONLY.length > 0) pool = pool.filter((s) => ONLY.includes(s.name));
-  return pool;
+  return orderScenarios(pool);
 }
 
 // PREFLIGHT_DEADLINE_MS bounds both the initial preflight gate and the
@@ -932,23 +1224,27 @@ async function preflight() {
 }
 
 // healBetweenScenarios re-establishes the green-stack precondition each
-// scenario assumes. The lane is sequential and a CH-destructive scenario tears
-// CH down (Recreate + ephemeral storage), so the NEXT scenario must not start
-// until /readyz + all heads are green again AND the data plane has been
-// REPOPULATED — otherwise a still-recovering or EMPTY stack from the prior
-// fault masquerades as the next scenario's failure (e.g. cerberus-pod-kill's
-// aggregate-success loop running while CH is empty, or ch-slow-query's nested
-// subquery 502'ing on a missing `otel_metrics_histogram` table). This
+// scenario assumes. The lane is sequential and a CH-recreating scenario tears
+// the CH pod down (Recreate, but its /var/lib/clickhouse PVC survives), so the
+// NEXT scenario must not start until /readyz + all heads are green again AND
+// the data plane is queryable + freshly anchored — otherwise a still-recovering
+// stack from the prior fault masquerades as the next scenario's failure (e.g.
+// cerberus-pod-kill's aggregate-success loop running before CH is back, or
+// ch-slow-query's nested subquery hitting a still-rolling-out CH). This
 // implements the heal-between-each-scenario invariant the lane's header
 // documents.
 //
-// CH recreates EMPTY (container-ephemeral storage), and the rolling seeder
-// cannot refill it: its long-lived port-forward died with the killed pod and
-// never reconnects. So after a `wipesCh` scenario the heal gate RE-SEEDS via a
-// one-shot `just e2e-reseed` (fresh port-forward, idempotent DDL + INSERTs),
-// then waits for the seeded fixtures to be visible through the Prom head
-// before clearing the gate. After a non-destructive scenario, CH data
-// survives and only a short settle window is needed.
+// CH's schema + historical data PERSIST across the pod-kill (PVC-backed data
+// dir — test/e2e/k3s/clickhouse.yaml), so the recreated pod is never empty.
+// After a `recreatesCh` scenario the heal gate still runs a one-shot
+// `just e2e-reseed` (fresh port-forward, idempotent DDL + INSERTs) — now only
+// to RE-ANCHOR the rolling time-window at wall-clock now (the seeder re-anchors
+// on now64(9)), then waits for the `up` series to read back through the Prom
+// head before clearing the gate. The rolling seeder's own port-forward respawns
+// once CH is recreated (reconnecting supervisor, see PHASE1's comment) and
+// resumes its 30 s feed; the one-shot closes the freshness gap until the next
+// rolling tick lands. After a non-destructive scenario, CH stays up untouched
+// and only a short settle window is needed.
 const HEAL_SETTLE_MS = 15_000; // OTLP flush headroom for a non-destructive scenario
 const RESEED_DEADLINE_MS = 120_000; // bound the `just e2e-reseed` one-shot (DDL + INSERTs + verify)
 const RESEED_VISIBLE_DEADLINE_MS = 90_000; // wait for the re-seeded `up` series to read back via the Prom head
@@ -958,7 +1254,7 @@ const RESEED_VISIBLE_DEADLINE_MS = 90_000; // wait for the re-seeded `up` series
 // clean exit; logs + returns false otherwise. Bounded so a hung port-forward
 // can't stall the lane past its budget.
 function reseedClickHouse() {
-  log('  heal: re-seeding freshly-recreated (empty) ClickHouse via `just e2e-reseed`...');
+  log('  heal: re-anchoring the rolling window on recreated (PVC-backed) ClickHouse via `just e2e-reseed`...');
   const res = capture('just', ['e2e-reseed'], { timeout: RESEED_DEADLINE_MS });
   if (res.stdout) log(res.stdout.trimEnd());
   if (res.status !== 0) {
@@ -975,14 +1271,15 @@ async function healBetweenScenarios(nextName, priorScenario) {
     return `heal gate before ${nextName}: stack did not return to /readyz 200 + all heads 200 within the recovery budget after the prior scenario`;
   }
 
-  if (priorScenario && priorScenario.wipesCh) {
-    // CH came back empty — re-seed it before the next scenario asserts.
+  if (priorScenario && priorScenario.recreatesCh) {
+    // CH came back with its PVC-backed data intact — re-anchor the rolling
+    // window at now before the next time-windowed scenario asserts.
     if (!reseedClickHouse()) {
-      return `heal gate before ${nextName}: re-seed of the recreated ClickHouse failed; downstream scenarios would query empty tables`;
+      return `heal gate before ${nextName}: re-seed of the recreated ClickHouse failed; downstream scenarios would query a stale window`;
     }
-    // Confirm the seeded data is actually queryable through the Prom head
-    // before clearing the gate (heads can be 200 on an empty table, so a
-    // bare assertHeadsHealthy is not enough — assert the `up` series is back).
+    // Confirm the data is actually queryable + freshly anchored through the
+    // Prom head before clearing the gate (a bare assertHeadsHealthy is not
+    // enough — assert the `up` series reads back).
     const visible = await pollUntil(
       async () => {
         const r = await httpGet('/api/v1/query?query=up');

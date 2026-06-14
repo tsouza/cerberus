@@ -125,6 +125,35 @@ type queryTimeoutKeyType struct{}
 
 var queryTimeoutKey = queryTimeoutKeyType{}
 
+// settingMaxBlockSize names the ClickHouse setting that caps the number of
+// rows a source operator emits per block. A per-request override is
+// threaded via WithMaxBlockSize for callers that need the server to
+// re-check between-block resource caps (e.g. max_execution_time) at a
+// finer granularity than the default 65505-row block — used by the
+// chaos_sleep build so a sleepEachRow over a numbers() source is read as
+// single-row blocks (per-block sleep stays under max_sleep_in_seconds)
+// and max_execution_time aborts it part-way through with code 159.
+const settingMaxBlockSize = "max_block_size"
+
+type maxBlockSizeKeyType struct{}
+
+var maxBlockSizeKey = maxBlockSizeKeyType{}
+
+// WithMaxBlockSize returns a ctx carrying a per-request max_block_size
+// override (rows per source block). A non-positive value is inert (the
+// server default applies). Like WithQueryTimeout it is a context value,
+// not a Client field, so concurrent requests can't cross-contaminate.
+func WithMaxBlockSize(ctx context.Context, rows uint64) context.Context {
+	return context.WithValue(ctx, maxBlockSizeKey, rows)
+}
+
+// maxBlockSizeFromContext returns the per-request override installed by
+// WithMaxBlockSize, or 0 when none was set.
+func maxBlockSizeFromContext(ctx context.Context) uint64 {
+	n, _ := ctx.Value(maxBlockSizeKey).(uint64)
+	return n
+}
+
 // WithQueryTimeout returns a ctx that overrides the Client's configured
 // per-query execution timeout for this one request. The API heads call
 // it when an inbound request carries the standard Prometheus
