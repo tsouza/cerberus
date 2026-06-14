@@ -12,6 +12,35 @@ type Traces struct {
 	// SpansTable is the table holding span records.
 	SpansTable string
 
+	// TraceIDTsTable names the `<spans>_trace_id_ts` lookup table the
+	// OTel-CH exporter populates via a materialized view: one row per
+	// TraceId carrying (Start, End) = (min, max) of the trace's span
+	// Timestamps. Cerberus reads it to inject a Timestamp-window
+	// pre-filter into the trace-by-ID spans scan so the spans table can
+	// Partition/PrimaryKey/MinMax-prune to ~1 granule instead of scanning
+	// every part to apply the bloom filter. Defaults to
+	// `<SpansTable>_trace_id_ts`.
+	TraceIDTsTable string
+	// TraceIDTsStartColumn names the trace-window lower-bound column on
+	// TraceIDTsTable (min of the trace's span Timestamps). OTel-CH default
+	// "Start".
+	TraceIDTsStartColumn string
+	// TraceIDTsEndColumn names the trace-window upper-bound column on
+	// TraceIDTsTable (max of the trace's span Timestamps). OTel-CH default
+	// "End".
+	TraceIDTsEndColumn string
+
+	// TraceIDTsEnabled gates the Timestamp-window pre-filter described on
+	// TraceIDTsTable. OFF by default: the window reads the lookup table via
+	// scalar subqueries, and if the MV is absent or unpopulated those
+	// subqueries yield NULL and the windowed scan matches nothing. The
+	// operator opts in (CERBERUS_SCHEMA_TRACES_TS_LOOKUP) only after
+	// confirming the MV is populated — matching the AutoCreateSchema
+	// "operator owns DDL" posture and avoiding an emit-time table-existence
+	// probe (a layering violation). With the gate off, lowerTraceByID emits
+	// today's plain `TraceId = ?` filter unchanged.
+	TraceIDTsEnabled bool
+
 	// TraceIDColumn names the trace-id column (FixedString(16) hex).
 	TraceIDColumn string
 	// SpanIDColumn names the span-id column (FixedString(8) hex).
@@ -98,6 +127,10 @@ func (t Traces) HasUniqueRowKey() bool { return len(t.RowKey) > 0 }
 func DefaultOTelTraces() Traces {
 	return Traces{
 		SpansTable:               "otel_traces",
+		TraceIDTsTable:           "otel_traces_trace_id_ts",
+		TraceIDTsStartColumn:     "Start",
+		TraceIDTsEndColumn:       "End",
+		TraceIDTsEnabled:         false,
 		TraceIDColumn:            "TraceId",
 		SpanIDColumn:             "SpanId",
 		ParentSpanIDColumn:       "ParentSpanId",

@@ -656,15 +656,84 @@ func classifyTraceByIDErr(err error) int {
 // the WHERE comparison matches the column value regardless of whether the
 // caller sent the stripped or padded form.
 func (h *Handler) lowerTraceByID(traceID string) (chplan.Node, error) {
-	pred := &chplan.Binary{
+	id := normaliseTraceID(traceID)
+	pred := chplan.Expr(&chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.ColumnRef{Name: h.Schema.TraceIDColumn},
-		Right: &chplan.LitString{V: normaliseTraceID(traceID)},
+		Right: &chplan.LitString{V: id},
+	})
+	if h.Schema.TraceIDTsEnabled {
+		pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: h.traceIDTsWindow(id)}
 	}
 	return &chplan.Filter{
 		Input:     &chplan.Scan{Table: h.Schema.SpansTable},
 		Predicate: pred,
 	}, nil
+}
+
+// traceIDTsEndPadSeconds compensates the trace_id_ts MV storing
+// End as a DateTime (1-second precision) computed as `max(Timestamp)`
+// over spans whose Timestamp is DateTime64(9). The DateTime64→DateTime
+// cast floors toward second granularity, so `End` is the second-truncated
+// max; a naive `Timestamp <= End` upper bound would drop every span in the
+// trace's final fractional second. Padding the bound by exactly one second
+// makes it a strict superset of the true max Timestamp (the dropped
+// sub-second carry is < 1s), so no in-trace span can fall above the window.
+// The value is the DateTime-vs-DateTime64 granularity, not a tuning knob.
+const traceIDTsEndPadSeconds = 1
+
+// traceIDTsWindow builds the correctness-preserving Timestamp-window
+// SUPERSET predicate read from the `<spans>_trace_id_ts` lookup MV for the
+// already-normalised trace id. It AND-folds two bounds onto the spans scan
+// so ClickHouse can Partition/PrimaryKey/MinMax-prune the spans table to
+// the trace's day-partition + sort-key range instead of scanning every
+// part to apply the bloom filter:
+//
+//	Timestamp >= (SELECT min(Start) FROM <ts> WHERE TraceId = id)
+//	Timestamp <= addSeconds((SELECT max(End) FROM <ts> WHERE TraceId = id), 1)
+//
+// The lower bound is inherently safe: `Start = floor(min(Timestamp))`
+// already floors DOWNWARD. The upper bound is padded (see
+// traceIDTsEndPadSeconds). Each bound is a scalar subquery over a no-GROUP
+// Aggregate, which projects exactly one column and one row — satisfying
+// chplan.ScalarSubquery's contract. The exact `TraceId = id` Eq stays
+// ANDed in lowerTraceByID, so even a stale/empty MV row only ever
+// over-includes by the window, never under-includes by TraceId.
+func (h *Handler) traceIDTsWindow(id string) chplan.Expr {
+	scalar := func(agg, col string) chplan.Expr {
+		return &chplan.ScalarSubquery{Input: &chplan.Aggregate{
+			Input: &chplan.Filter{
+				Input: &chplan.Scan{Table: h.Schema.TraceIDTsTable},
+				Predicate: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.ColumnRef{Name: h.Schema.TraceIDColumn},
+					Right: &chplan.LitString{V: id},
+				},
+			},
+			AggFuncs: []chplan.AggFunc{{
+				Name:  agg,
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: col}},
+				Alias: col,
+			}},
+		}}
+	}
+	lower := &chplan.Binary{
+		Op:    chplan.OpGe,
+		Left:  &chplan.ColumnRef{Name: h.Schema.TimestampColumn},
+		Right: scalar("min", h.Schema.TraceIDTsStartColumn),
+	}
+	upper := &chplan.Binary{
+		Op:   chplan.OpLe,
+		Left: &chplan.ColumnRef{Name: h.Schema.TimestampColumn},
+		Right: &chplan.FuncCall{
+			Name: "addSeconds",
+			Args: []chplan.Expr{
+				scalar("max", h.Schema.TraceIDTsEndColumn),
+				&chplan.LitInt{V: traceIDTsEndPadSeconds},
+			},
+		},
+	}
+	return &chplan.Binary{Op: chplan.OpAnd, Left: lower, Right: upper}
 }
 
 // normaliseTraceID returns the canonical 32-char lowercase-hex form of
