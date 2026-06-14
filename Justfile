@@ -444,14 +444,21 @@ e2e-up: e2e-down
         echo "    docker pull $img"; \
         docker pull "$img" >/dev/null || { echo "ERROR: docker pull $img failed" >&2; exit 1; }; \
     done
-    @echo "==> importing images into k3d ({{K3D_CLUSTER}})"
-    k3d image import {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} -c {{K3D_CLUSTER}}
-    @echo "==> verifying images landed in the k3d node's containerd"
-    @# `k3d image import` exits 0 on partial/silent failures (observed:
-    @# run 27274975563 — cerberus pods in ImagePullBackOff trying
-    @# docker.io/library/cerberus:e2e because the local-only image never
-    @# reached the node). Verify every image is actually present;
-    @# normalise short names the way containerd stores them
+    @echo "==> importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
+    @# k3d bundles EVERY image into one tarball, mounts it into a transient
+    @# tools node, and runs `ctr image import`. Two failure modes bite:
+    @#   1. the bundled tarball intermittently vanishes mid-import
+    @#      ("ctr: open /k3d/images/...tar: no such file or directory" —
+    @#      run 27511641349), a transient image-volume race whose window
+    @#      grows with the bundle size, so importing ONE image at a time
+    @#      shrinks both the tarball and the race;
+    @#   2. `k3d image import` prints "Successfully imported" and exits 0
+    @#      even when a node-level import failed (run 27274975563 left
+    @#      cerberus:e2e absent → ImagePullBackOff), so success has to be
+    @#      VERIFIED against the node's containerd, not trusted.
+    @# So: import each image on its own, then verify it actually landed,
+    @# retrying the import until it's present or the attempt budget is
+    @# spent. Normalise short names the way containerd stores them
     @# (docker.io/ + library/ prefixes).
     @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}}; do \
         ref="$img"; \
@@ -460,8 +467,17 @@ e2e-up: e2e-down
             */*) ref="docker.io/$ref" ;; \
             *)   ref="docker.io/library/$ref" ;; \
         esac; \
-        if ! docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
-            echo "ERROR: $ref missing from k3d node containerd after import" >&2; \
+        landed=0; \
+        for attempt in 1 2 3 4 5; do \
+            k3d image import "$img" -c {{K3D_CLUSTER}} || true; \
+            if docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
+                landed=1; break; \
+            fi; \
+            echo "    import attempt $attempt: $ref not in containerd yet, retrying after backoff" >&2; \
+            sleep $((attempt * 2)); \
+        done; \
+        if [ "$landed" != "1" ]; then \
+            echo "ERROR: $ref missing from k3d node containerd after 5 import attempts" >&2; \
             exit 1; \
         fi; \
         echo "    ok $ref"; \
