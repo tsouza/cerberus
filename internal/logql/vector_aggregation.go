@@ -210,6 +210,18 @@ func levelAwareRangeGroupKey(label string, s schema.Logs) chplan.Expr {
 	if isDetectedLevelGroupingLabel(label) {
 		return detectedLevelExpr(s)
 	}
+	if matCol, ok := materializedColumnFor(label, s); ok {
+		// At the inner range-aggregation layer the Scan/Filter sits
+		// directly below, so the exporter's MATERIALIZED k8s.* column is
+		// in scope and resolves to a bare ColumnRef — byte-for-byte
+		// equivalent to `ResourceAttributes[<key>]` (the column's
+		// MATERIALIZED expression) while avoiding the wide Map
+		// decompression. NOTE the OUTER post-RangeWindow companion
+		// [levelAwareGroupKey] is deliberately NOT routed here: after the
+		// RangeWindow identity Project only the augmented map survives,
+		// the bare column is out of scope, so it stays a map access.
+		return topLevelColumnRef(matCol)
+	}
 	if col, ok := topLevelLogColumnFor(label, s); ok {
 		// At the inner range-aggregation layer the top-level OTel
 		// column (SeverityText, ServiceName, ...) is still in scope —

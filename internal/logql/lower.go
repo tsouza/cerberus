@@ -1549,22 +1549,41 @@ func buildMatchersPredicate(matchers []*labels.Matcher, s schema.Logs) chplan.Ex
 }
 
 func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
-	var lhs chplan.Expr
-	if isDetectedLevelLabel(m.Name) {
-		lhs = detectedLevelExpr(s)
-	} else {
-		mapLookup := attributeLookupColumn(s.ResourceAttributesColumn, m.Name)
-		if col := resourceFallbackColumn(s, m.Name); col != "" {
-			lhs = resourceAttributeFallbackLHS(col, mapLookup)
-		} else {
-			lhs = mapLookup
-		}
-	}
+	lhs := matcherLHS(m.Name, s)
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
 		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
 	}
+}
+
+// matcherLHS resolves the left-hand side expression a stream-selector
+// matcher on `label` compares against, in reference-Loki precedence:
+//
+//  1. the `detected_level` family → the SeverityText-derived expression;
+//  2. an exporter-MATERIALIZED k8s.* resource column → a bare ColumnRef.
+//     The column's MATERIALIZED expression IS `ResourceAttributes[<key>]`,
+//     so the bare reference is byte-for-byte equivalent to the map access
+//     (including the empty-string default a missing key yields) while
+//     avoiding the wide ResourceAttributes Map decompression. The k8s.*
+//     keys are disjoint from the top-level scalar columns
+//     (SeverityText / ServiceName / …), so this never collides with the
+//     resourceFallbackColumn coalesce below;
+//  3. a top-level scalar column (ServiceName / SeverityText / …) →
+//     `coalesce(nullIf(<col>, ”), ResourceAttributes[<label>])`;
+//  4. otherwise the plain `ResourceAttributes[<label>]` map access.
+func matcherLHS(label string, s schema.Logs) chplan.Expr {
+	if isDetectedLevelLabel(label) {
+		return detectedLevelExpr(s)
+	}
+	if matCol, ok := materializedColumnFor(label, s); ok {
+		return &chplan.ColumnRef{Name: matCol}
+	}
+	mapLookup := attributeLookupColumn(s.ResourceAttributesColumn, label)
+	if col := resourceFallbackColumn(s, label); col != "" {
+		return resourceAttributeFallbackLHS(col, mapLookup)
+	}
+	return mapLookup
 }
 
 // resourceFallbackColumn returns the dedicated top-level CH column name

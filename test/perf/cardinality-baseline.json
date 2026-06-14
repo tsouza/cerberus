@@ -860,6 +860,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "logql/matcher_k8s_namespace_materialized",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "logql/matcher_self_service",
     "fan_factor": 1,
     "scan_rows": 3,
