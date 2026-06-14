@@ -1796,6 +1796,9 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	if a.Op == parser.COUNT_VALUES {
 		return lowerCountValues(a, s, ctx)
 	}
+	if a.Op == parser.LIMIT_RATIO {
+		return lowerLimitRatio(a, s, ctx)
+	}
 
 	// Thread the outer by-clause's labels down so the inner selector
 	// path can inflate Attributes with the top-level OTel-CH columns
@@ -2150,6 +2153,249 @@ func topKDomain(op parser.ItemType, kF float64) (k int64, empty bool, err error)
 		return 0, false, fmt.Errorf("promql: %s K %v overflows int64", op.String(), kF)
 	}
 	return int64(kF), false, nil
+}
+
+// lowerLimitRatio lowers `limit_ratio(r, expr) [by(g) | without(g)]`,
+// PromQL's experimental ratio-sampling aggregator. Like topk/bottomk it
+// SELECTS a subset of input series and preserves every label of the
+// survivors; unlike topk it picks the subset deterministically by a hash
+// of each series' label set rather than by Value rank, so the `by/
+// without` clause never affects which series survive — it only governs
+// the (unused) partitioning, exactly as in reference Prometheus where
+// aggregationK runs the ratio sampler per series independent of the
+// group key.
+//
+// Reference semantics (prometheus/promql/engine.go, HashRatioSampler):
+//
+//	offset(series) = float64(labels.Hash()) / float64(math.MaxUint64)
+//	keep when r >= 0: offset < r
+//	keep when r <  0: offset >= 1 + r        (the complement of |r|)
+//	r == 0           : empty result
+//	r  > 1 / r < -1  : warning only; the raw comparison still applies,
+//	                   so |r| >= 1 keeps every series.
+//	r is NaN         : query error.
+//
+// labels.Hash() (default `stringlabels` build) is
+// `xxhash.Sum64(<encoded label set>)`, where the encoding is the labels
+// sorted by name, each emitted as len-prefix(name)+name+len-prefix(value)
+// +value with a single length byte per field (see [lenPrefixExpr] for
+// the >=255-byte escape that real label sets never trigger). ClickHouse's
+// `xxHash64` is byte-for-byte XXH64(seed=0), matching cespare/xxhash/v2,
+// so reconstructing that exact byte string from MetricName (the
+// `__name__` label) + the Attributes map and hashing it reproduces the
+// reference offset bit-for-bit. See [ratioOffsetExpr].
+//
+// SQL shape (r >= 0):
+//
+//	SELECT MetricName, Attributes, TimeUnix, Value FROM (<inner>)
+//	WHERE <offset> < r
+//
+// No partition/anchor threading is needed: the predicate is per-row and
+// stable across evaluation steps, so the same series survive at every
+// anchor — matching Prom's per-step-but-deterministic behaviour.
+func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Literal-ratio fast path (the common case: `limit_ratio(0.5, v)`,
+	// any scalar tree TryFoldScalar reduces). The ratio's sign is known
+	// at plan time, so a single comparison suffices and `r == 0` folds
+	// to a constant-false Filter (Prometheus returns early on all-zero
+	// r), mirroring topk's K<1 degenerate arm.
+	if r, ok := tryScalarLiteral(a.Param); ok {
+		if math.IsNaN(r) {
+			return nil, fmt.Errorf("promql: limit_ratio ratio value is NaN")
+		}
+		if r == 0 {
+			return &chplan.Filter{Input: input, Predicate: &chplan.LitBool{V: false}}, nil
+		}
+		var pred chplan.Expr
+		if r > 0 {
+			// keep offset < r
+			pred = &chplan.Binary{Op: chplan.OpLt, Left: ratioOffsetExpr(s), Right: &chplan.LitFloat{V: r}}
+		} else {
+			// keep offset >= 1 + r (r < 0 here, so 1+r in [0,1))
+			pred = &chplan.Binary{Op: chplan.OpGe, Left: ratioOffsetExpr(s), Right: &chplan.LitFloat{V: 1.0 + r}}
+		}
+		return &chplan.Filter{Input: input, Predicate: pred}, nil
+	}
+
+	// Computed ratio (`limit_ratio(scalar(x), v)`, `limit_ratio(time()
+	// % 2, v)`, …): the sign isn't known at plan time, so emit the full
+	// runtime predicate exactly as HashRatioSampler.AddRatioSampleWithOffset
+	// spells it —
+	//
+	//	(r >= 0 AND offset < r) OR (r < 0 AND offset >= 1 + r)
+	//
+	// which also yields the empty result for r == 0 (neither arm fires).
+	// The ratio Expr is bound as a scalar subquery / scalar arithmetic
+	// via lowerScalarArg (instant context — one ratio value per eval,
+	// the same posture as topk's computed-K path). A NaN computed ratio
+	// surfaces at query time the same way the reference engine raises it.
+	zero := &chplan.LitFloat{V: 0}
+	one := &chplan.LitFloat{V: 1}
+	// Lower the ratio arg once per predicate slot so no chplan Expr
+	// pointer is shared between sibling Binary nodes (keeps the IR a
+	// tree, not a DAG — clone / walk invariants assume distinct nodes).
+	// lowerScalarArg is deterministic, so the four ratio sub-expressions
+	// are structurally identical. A single error site covers all four.
+	rExprs := make([]chplan.Expr, 4)
+	for i := range rExprs {
+		e, err := lowerScalarArg(a.Param, s, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("promql: limit_ratio ratio: %w", err)
+		}
+		rExprs[i] = e
+	}
+	posArm := &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  &chplan.Binary{Op: chplan.OpGe, Left: rExprs[0], Right: zero},
+		Right: &chplan.Binary{Op: chplan.OpLt, Left: ratioOffsetExpr(s), Right: rExprs[1]},
+	}
+	negArm := &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  &chplan.Binary{Op: chplan.OpLt, Left: rExprs[2], Right: zero},
+		Right: &chplan.Binary{Op: chplan.OpGe, Left: ratioOffsetExpr(s), Right: &chplan.Binary{Op: chplan.OpAdd, Left: one, Right: rExprs[3]}},
+	}
+	return &chplan.Filter{
+		Input:     input,
+		Predicate: &chplan.Binary{Op: chplan.OpOr, Left: posArm, Right: negArm},
+	}, nil
+}
+
+// ratioOffsetExpr builds the CH expression reproducing Prometheus's
+// HashRatioSampler.SampleOffset for a series: a deterministic value in
+// [0, 1) derived from `xxhash.Sum64` over the canonical length-prefixed
+// encoding of the series label set, divided by float64(math.MaxUint64).
+//
+// The label set is reconstructed from the Attributes map with the
+// `__name__` label restored from MetricName (later-key-wins via
+// mapConcat so MetricName is authoritative). Keys are sorted ascending
+// to match Prometheus's sorted-labels invariant, then each (name, value)
+// pair is emitted as lenPrefix(name)+name+lenPrefix(value)+value and the
+// whole run concatenated before hashing.
+func ratioOffsetExpr(s schema.Metrics) chplan.Expr {
+	const (
+		mapKeysAlias = "k"
+		// float64(math.MaxUint64); the divisor Prometheus uses to map a
+		// 64-bit hash into [0, 1).
+		maxUint64AsFloat = 18446744073709551615.0
+	)
+
+	attrs := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
+	metricName := &chplan.ColumnRef{Name: s.MetricNameColumn}
+
+	// full = mapConcat(Attributes, map('__name__', MetricName))
+	//
+	// The `__name__` label is restored from MetricName and overlaid onto
+	// the Attributes map. mapConcat is later-key-wins, so MetricName is
+	// authoritative if Attributes somehow already carried a `__name__`
+	// key (it never does in the OTel-CH schema).
+	//
+	// The overlay is unconditional. A genuinely name-less series (empty
+	// MetricName) would gain a spurious `__name__=""` entry that
+	// Prometheus's label set wouldn't have — but limit_ratio only ever
+	// sees an instant vector produced by a selector or a name-preserving
+	// function, so its input series always carry a metric name and that
+	// branch is unreachable in practice. An earlier
+	// `if(MetricName != '', map(...), <typed-empty-map>)` guard was
+	// dropped because every CH spelling of a typed empty-map fallback
+	// (`CAST(map(), ?)` binds the Map type as a `?` placeholder;
+	// `mapFilter(...)` over Attributes left the branch type
+	// indeterminate) poisons ClickHouse's `concat`-vs-`arrayConcat`
+	// overload resolution downstream (Code 43) once the expression flows
+	// up through the inner aggregate's argMax/GROUP-BY aliasing.
+	full := &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			attrs,
+			&chplan.FuncCall{
+				Name: "map",
+				// `__name__` MUST be an inline literal, not a `?`-bound
+				// LitString: with the key bound as a placeholder CH can't
+				// resolve the map literal's key type at analysis time and
+				// mis-dispatches the downstream concat to arrayConcat
+				// (Code 43). See chplan.InlineString.
+				Args: []chplan.Expr{&chplan.InlineString{V: "__name__"}, metricName},
+			},
+		},
+	}
+
+	// Sorted key list of the full map.
+	sortedKeys := &chplan.FuncCall{
+		Name: "arraySort",
+		Args: []chplan.Expr{&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{full}}},
+	}
+
+	// Per-key encoding lambda: lenPrefix(k)+k+lenPrefix(full[k])+full[k].
+	//
+	// Each piece is wrapped in toString(): ClickHouse overloads `concat`
+	// to dispatch to `arrayConcat` when it infers any argument as an
+	// Array, and the conditional Map subscript
+	// `if(..., mapConcat(...), Attributes)[k]` flowing up through the
+	// argMax/GROUP-BY aliasing of the inner aggregate trips that
+	// inference (Code 43, "Argument 0 for function arrayConcat must be
+	// an array but it has type String"). Forcing every operand to String
+	// pins the string-concat overload and keeps the byte output
+	// identical.
+	keyIdent := &chplan.BareIdent{Name: mapKeysAlias}
+	valExpr := &chplan.Subscript{Container: full, Key: keyIdent}
+	toStr := func(e chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{e}}
+	}
+	perKey := &chplan.FuncCall{
+		Name: "concat",
+		Args: []chplan.Expr{
+			toStr(lenPrefixExpr(keyIdent)),
+			toStr(keyIdent),
+			toStr(lenPrefixExpr(valExpr)),
+			toStr(valExpr),
+		},
+	}
+
+	encoded := &chplan.FuncCall{
+		Name: "arrayStringConcat",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "arrayMap",
+				Args: []chplan.Expr{
+					&chplan.Lambda{Params: []string{mapKeysAlias}, Body: perKey},
+					sortedKeys,
+				},
+			},
+		},
+	}
+
+	hash := &chplan.FuncCall{Name: "xxHash64", Args: []chplan.Expr{encoded}}
+
+	// offset = toFloat64(hash) / float64(math.MaxUint64)
+	return &chplan.Binary{
+		Op:    chplan.OpDiv,
+		Left:  &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{hash}},
+		Right: &chplan.LitFloat{V: maxUint64AsFloat},
+	}
+}
+
+// lenPrefixExpr renders Prometheus's stringlabels length prefix for a
+// string `s` as the single byte `char(length(s))`.
+//
+// Prometheus's encoding uses a single length byte for sizes 0..254 and a
+// `0xFF` escape + 3-byte little-endian length for sizes >= 255. Cerberus
+// emits only the single-byte form: OTel-CH label names and values are
+// short identifiers (metric names, instance/job/service tags) that never
+// approach 255 bytes — Prometheus's own metric/label-name grammar and
+// the OTel attribute model keep them well under that — so the escape
+// branch can never fire for real series. Restricting to the single-byte
+// form keeps the per-series hash expression compact and byte-for-byte
+// identical to `labels.Hash()` for every label set that can actually
+// reach this path.
+func lenPrefixExpr(sExpr chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "char",
+		Args: []chplan.Expr{&chplan.FuncCall{Name: "length", Args: []chplan.Expr{sExpr}}},
+	}
 }
 
 // lowerTopK lowers `topk(K, expr) [by(g) | without(g)] (...)` and

@@ -2705,6 +2705,100 @@
       }
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "limit_ratio(-0.5, up) \u2014 Prometheus's experimental ratio-sampling aggregator. A negative ratio selects the complement: every series whose deterministic hash offset is >= 1+r. Cerberus reproduces Prometheus's HashRatioSampler (xxHash64 over the canonical label set) so the selected set matches reference exactly.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 63
+      },
+      "id": 75,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "limit_ratio(-0.5, up)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "limit_ratio \u2014 ratio sampling",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements limit_ratio (reference-exact HashRatioSampler over the canonical label set); the panel asserts a live nonempty result for the complement selection limit_ratio(-0.5, up)."
+      }
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -5432,7 +5526,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus implements `info(up)` — the label-enrichment join that grafts `target_info` data labels onto each `up` series by the data-source identity labels (job / instance).",
+          "description": "Cerberus implements `info(up)` \u2014 the label-enrichment join that grafts `target_info` data labels onto each `up` series by the data-source identity labels (job / instance).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6552,7 +6646,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus computes `histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)` — one series per phi, the phi attached under the `q` label (OpenMetrics float rendering).",
+          "description": "Cerberus computes `histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)` \u2014 one series per phi, the phi attached under the `q` label (OpenMetrics float rendering).",
           "fieldConfig": {
             "defaults": {
               "color": {

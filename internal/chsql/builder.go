@@ -273,6 +273,14 @@ func (b *Builder) Expr(x chplan.Expr) error {
 	case *chplan.LitString:
 		b.Arg(v.V)
 		return nil
+	case *chplan.InlineString:
+		// Inline single-quoted literal (no `?` binding). Same escaping
+		// as InlineLit's string case — backslash-escape embedded `'`
+		// and `\`. Used where a `?`-bound string would leave a type
+		// indeterminate at CH analysis (e.g. a map-literal key feeding
+		// concat); see chplan.InlineString.
+		InlineLit(v.V)(b)
+		return nil
 	case *chplan.LitInt:
 		b.Arg(v.V)
 		return nil

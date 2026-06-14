@@ -43,6 +43,29 @@ func (l *LitString) Equal(other Expr) bool {
 	return ok && l.V == o.V
 }
 
+// InlineString is a string constant emitted *inline* as a CH-quoted
+// literal (`'...'`) rather than bound through a `?` placeholder.
+//
+// Prefer LitString for user / plan data — the `?` binding is safer and
+// keeps the value out of the SQL text. InlineString is reserved for
+// constants that are part of the query *shape*, where a bound `?` would
+// leave a type indeterminate at ClickHouse analysis time. The motivating
+// case is a map-literal key (`map('__name__', …)`) feeding `concat`:
+// with the key bound as `?`, CH cannot resolve the map's key type and
+// mis-dispatches the downstream `concat` to `arrayConcat` (Code 43). An
+// inline `'__name__'` pins the type. The emitter applies the same
+// single-quote + backslash escaping as chsql.InlineLit's string case.
+type InlineString struct {
+	V string
+}
+
+func (*InlineString) exprNode() {}
+
+func (l *InlineString) Equal(other Expr) bool {
+	o, ok := other.(*InlineString)
+	return ok && l.V == o.V
+}
+
 // LitInt is a signed integer literal.
 type LitInt struct {
 	V int64

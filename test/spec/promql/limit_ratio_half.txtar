@@ -1,0 +1,19 @@
+-- query.promql --
+limit_ratio(0.5, up)
+-- args --
+[0] string = "up"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+[6] float64 = 1.8446744073709552e+19
+[7] float64 = 0.5
+-- chplan --
+Filter predicate=((toFloat64(xxHash64(arrayStringConcat(arrayMap(k -> concat(toString(char(length(k))), toString(k), toString(char(length(mapConcat(Attributes, map(<unknown:*chplan.InlineString>, MetricName))[k]))), toString(mapConcat(Attributes, map(<unknown:*chplan.InlineString>, MetricName))[k])), arraySort(mapKeys(mapConcat(Attributes, map(<unknown:*chplan.InlineString>, MetricName)))))))) / 1.8446744073709552e+19) < 0.5)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) WHERE ((toFloat64(xxHash64(arrayStringConcat(arrayMap(k -> concat(toString(char(length(k))), toString(k), toString(char(length(mapConcat(`Attributes`, map('__name__', `MetricName`))[k]))), toString(mapConcat(`Attributes`, map('__name__', `MetricName`))[k])), arraySort(mapKeys(mapConcat(`Attributes`, map('__name__', `MetricName`)))))))) / toFloat64(?)) < toFloat64(?))
