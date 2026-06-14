@@ -36,7 +36,9 @@ type e2eResult struct {
 
 // e2eDatasetRows is the per-table synthetic row count. Generated
 // server-side via INSERT … SELECT FROM numbers(N) — no row-by-row inserts.
-const e2eDatasetRows = 5_000_000
+// Sized to a realistic dashboard panel scale (~300k–500k samples per
+// signal), not a stress artifact.
+const e2eDatasetRows = 500_000
 
 // measureE2E seeds the large datasets and measures each representative
 // query. Returns the results plus the actual seeded row counts (so the
@@ -221,8 +223,8 @@ func retargetLogs(sql string) string   { return strings.ReplaceAll(sql, "otel_lo
 
 // --- large synthetic seeds (server-side via numbers(N)) -----------------
 
-// seedE2EMetrics builds a 5M-row gauge table: 5000 series × 1000 samples
-// each for one metric. Schema columns match what cerberus's metrics
+// seedE2EMetrics builds the gauge table: up to 5000 series × samples
+// for one metric. Schema columns match what cerberus's metrics
 // lowering reads (ServiceName, MetricName, Attributes, TimeUnix, Value).
 func seedE2EMetrics(s *session) error {
 	ddl := `CREATE OR REPLACE TABLE e2e_metrics_gauge (
@@ -232,9 +234,9 @@ func seedE2EMetrics(s *session) error {
 	if err := s.exec(ddl); err != nil {
 		return err
 	}
-	// 5000 series (instance dim) × 1000 timestamps. Samples span the hour
-	// before the eval anchor (2026-06-01 12:00) at ~3.6s spacing so the
-	// 5m-rate windows have real data.
+	// 5000 series (instance dim) × (rows / 5000) timestamps. Samples span
+	// the hour before the eval anchor (2026-06-01 12:00) at ~3.6s spacing so
+	// the 5m-rate windows have real data.
 	ins := fmt.Sprintf(`INSERT INTO e2e_metrics_gauge SELECT
   concat('svc-', toString(number %% 10)),
   'e2e.http.requests',
@@ -245,7 +247,7 @@ FROM numbers(%d)`, e2eDatasetRows)
 	return s.exec(ins)
 }
 
-// seedE2ELogs builds a 5M-row log table. Half the bodies contain "error"
+// seedE2ELogs builds the log table. Half the bodies contain "error"
 // so the |= "error" filter selects a real subset.
 func seedE2ELogs(s *session) error {
 	ddl := `CREATE OR REPLACE TABLE e2e_logs (
@@ -266,7 +268,7 @@ FROM numbers(%d)`, e2eDatasetRows)
 	return s.exec(ins)
 }
 
-// seedE2ETraces builds a 5M-row span table. ~half the spans carry
+// seedE2ETraces builds the span table. ~half the spans carry
 // http.status_code=500 so the search selects a real subset.
 func seedE2ETraces(s *session) error {
 	ddl := `CREATE OR REPLACE TABLE e2e_traces (
