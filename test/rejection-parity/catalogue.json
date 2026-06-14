@@ -559,7 +559,7 @@
       "site": "internal/promql/lower.go:lowerCall#ab321c46",
       "message": "promql: function %s is not yet supported",
       "class": "rejection",
-      "trigger_query": "sort_by_label(up, \"job\")"
+      "trigger_query": "start()"
     },
     {
       "head": "promql",
@@ -756,6 +756,13 @@
       "message": "promql: %s expects 1 argument, got %d",
       "class": "internal",
       "rationale": "The PromQL parser enforces sort()/sort_desc()'s single-argument arity at parse time."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sort.go:lowerSortByLabel#8f9fe409",
+      "message": "promql: %s expects at least 2 arguments (vector, label[, label…]), got %d",
+      "class": "rejection",
+      "trigger_query": "sort_by_label(http_requests)"
     },
     {
       "head": "promql",

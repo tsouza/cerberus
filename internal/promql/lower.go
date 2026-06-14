@@ -1420,6 +1420,8 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerDateFn(c, s, ctx)
 	case "sort", "sort_desc":
 		return lowerSort(c, s, ctx)
+	case "sort_by_label", "sort_by_label_desc":
+		return lowerSortByLabel(c, s, ctx)
 	case "scalar":
 		return lowerScalarTopLevel(c, s, ctx)
 	case "range", "step":

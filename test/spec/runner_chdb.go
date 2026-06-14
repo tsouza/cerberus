@@ -88,6 +88,80 @@ func isMapColumn(name string) bool {
 	return false
 }
 
+// nestMapOrderBy guards the Map-wrap output against an outer
+// `ORDER BY <MapColumn>[<key>]` clause — the shape the `sort_by_label`
+// / `sort_by_label_desc` lowering emits (`SELECT * FROM (<sub>) ORDER
+// BY ` + "`Attributes`" + `['<label>']`). After [expandStarProjection]
+// + [rewriteMapProjections] rewrite the OUTER projection so the Map
+// column is emitted as `toJSONString(Attributes) AS Attributes`, the
+// ORDER BY's `Attributes[...]` subscript binds to that String-typed
+// SELECT alias (ClickHouse resolves ORDER BY identifiers to SELECT
+// aliases ahead of the source column), so the map subscript fails with
+// `arrayElement … got 'String'`. Production never hits this — the live
+// query path has no toJSONString wrap, so `SELECT * … ORDER BY
+// Attributes[k]` keeps `Attributes` a Map. The collision is purely an
+// artefact of the test harness's parquet-Map workaround.
+//
+// This runs AFTER the wrap passes and pushes the ORDER BY one level
+// below the wrapped projection: rewrite
+//
+//	SELECT <…>, toJSONString(Attributes) AS Attributes, <…>
+//	  FROM (<sub>) ORDER BY `Attributes`['h']
+//
+// into
+//
+//	SELECT <…>, toJSONString(Attributes) AS Attributes, <…>
+//	  FROM (SELECT * FROM (<sub>) ORDER BY `Attributes`['h'])
+//
+// The inner subquery sorts against the still-raw Map; the outer
+// wrapped projection produces the wire shape. ClickHouse preserves the
+// inner ORDER BY's row order through the outer projection (no outer
+// ORDER BY / GROUP BY reshuffles it), so the pinned `expected_rows:`
+// ordering survives.
+//
+// The transform is conservative: it fires only when the query is a
+// `SELECT <projs> FROM (<single subquery>) ORDER BY …` (no WITH head)
+// whose ORDER BY references a known Map column via `[`-subscript, and
+// the FROM clause is exactly one parenthesised subquery. Every other
+// shape passes through untouched.
+func nestMapOrderBy(query string) string {
+	q := strings.TrimSpace(query)
+	head, tail := splitOuterSelect(q)
+	if head == "" {
+		return query
+	}
+	upperTail := strings.ToUpper(tail)
+	obIdx := strings.Index(upperTail, " ORDER BY ")
+	if obIdx < 0 {
+		return query
+	}
+	orderBy := tail[obIdx+len(" ORDER BY "):]
+	if !orderByReferencesMapSubscript(orderBy) {
+		return query
+	}
+	// `tail` is ` FROM (<sub>) ORDER BY <orderBy>`. Carve the
+	// parenthesised subquery out of the FROM so we can re-wrap it with
+	// the ORDER BY pushed inside.
+	fromBody := strings.TrimSpace(strings.TrimPrefix(tail[:obIdx], " FROM "))
+	if !strings.HasPrefix(fromBody, "(") || !strings.HasSuffix(fromBody, ")") {
+		return query
+	}
+	return "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " ORDER BY " + orderBy + ")"
+}
+
+// orderByReferencesMapSubscript reports whether an ORDER BY clause body
+// sorts on a known Map column via `[`-subscript (e.g.
+// "`Attributes`['handler'] DESC"). Used by [nestMapOrderBy] to detect
+// the sort_by_label collision shape.
+func orderByReferencesMapSubscript(orderBy string) bool {
+	for _, name := range mapColumnNames {
+		if strings.Contains(orderBy, "`"+name+"`[") {
+			return true
+		}
+	}
+	return false
+}
+
 // expandStarProjection rewrites a top-level `SELECT * FROM (SELECT
 // <projs> FROM ...) ...` into `SELECT <alias-list> FROM (SELECT
 // <projs> FROM ...) ...` so the subsequent [rewriteMapProjections]
@@ -349,7 +423,7 @@ func stripWithHead(query string) (head, body string) {
 // splitOuterSelect returns the (projection-list, rest) split of a
 // `SELECT <projs> FROM ...` query. If the query doesn't start with
 // SELECT or the FROM is missing at depth 0, returns ("", "").
-func splitOuterSelect(query string) (head string, tail string) {
+func splitOuterSelect(query string) (head, tail string) {
 	upper := strings.ToUpper(query)
 	if !strings.HasPrefix(upper, "SELECT ") {
 		return "", ""
@@ -887,6 +961,7 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
 	query = expandStarProjection(query)
 	query = rewriteMapProjections(query)
+	query = nestMapOrderBy(query)
 	colCount := extractProjectionCount(query)
 
 	rows, err := db.Query(query, queryArgs...)

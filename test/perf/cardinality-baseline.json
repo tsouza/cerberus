@@ -4100,6 +4100,36 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/sort_by_label_ascending",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/sort_by_label_desc_tiebreak",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/sort_by_label_natural_order",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/sort_desc_descending",
     "fan_factor": 1,
     "scan_rows": 3,

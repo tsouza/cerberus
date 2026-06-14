@@ -748,20 +748,18 @@
       "symbol": "fn:sort_by_label",
       "kind": "function",
       "probe": "sort_by_label(up, \"s\")",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: function sort_by_label is not yet supported"
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:sort_by_label_desc",
       "kind": "function",
       "probe": "sort_by_label_desc(up, \"s\")",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: function sort_by_label_desc is not yet supported"
+      "class": "wrong-accept"
     },
     {
       "head": "promql",

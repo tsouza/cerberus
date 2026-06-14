@@ -1,0 +1,45 @@
+-- query.promql --
+sort_by_label_desc(http_requests, "handler", "method")
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('http_requests', map('handler', 'a', 'method', 'get'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_requests', map('handler', 'a', 'method', 'post'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
+    ('http_requests', map('handler', 'b', 'method', 'get'), toDateTime64('2026-01-01 00:00:00', 9), 30.0);
+-- expected_rows --
+[
+  ["http_requests", {"handler": "a", "method": "get"}, "2026-01-01T00:00:00Z", 10],
+  ["http_requests", {"handler": "a", "method": "post"}, "2026-01-01T00:00:00Z", 20],
+  ["http_requests", {"handler": "b", "method": "get"}, "2026-01-01T00:00:00Z", 30]
+]
+-- args --
+[0] string = "http_requests"
+[1] string = "http.requests"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] int64 = 300000000000
+[7] string = "^[0-9]+$"
+[8] int64 = 20
+[9] string = "0"
+[10] string = "handler"
+[11] string = "[0-9]+|[^0-9]+"
+[12] string = "^[0-9]+$"
+[13] int64 = 20
+[14] string = "0"
+[15] string = "method"
+[16] string = "[0-9]+|[^0-9]+"
+-- chplan --
+OrderBy [arrayStringConcat(arrayMap(c -> if(match(c, "^[0-9]+$"), leftPad(c, 20, "0"), c), extractAll(Attributes["handler"], "[0-9]+|[^0-9]+"))) DESC, arrayStringConcat(arrayMap(c -> if(match(c, "^[0-9]+$"), leftPad(c, 20, "0"), c), extractAll(Attributes["method"], "[0-9]+|[^0-9]+"))) DESC]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName IN ("http_requests", "http.requests")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) ORDER BY arrayStringConcat(arrayMap(c -> if(match(c, ?), leftPad(c, ?, ?), c), extractAll(`Attributes`[?], ?))) DESC, arrayStringConcat(arrayMap(c -> if(match(c, ?), leftPad(c, ?, ?), c), extractAll(`Attributes`[?], ?))) DESC

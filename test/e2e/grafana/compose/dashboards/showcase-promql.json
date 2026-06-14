@@ -5808,7 +5808,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `sort_by_label(up, \"job\")` today; this panel pins the rejection.",
+          "description": "`sort_by_label(up, \"job\")` \u2014 returns the `up` series sorted ascending by the `job` label value (api before db).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5890,19 +5890,15 @@
               "refId": "A"
             }
           ],
-          "title": "sort_by_label \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
+          "title": "sort_by_label(up, \"job\")",
+          "type": "timeseries"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `sort_by_label_desc(up, \"job\")` today; this panel pins the rejection.",
+          "description": "`sort_by_label_desc(up, \"job\")` \u2014 returns the `up` series sorted descending by the `job` label value (db before api).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5984,12 +5980,8 @@
               "refId": "A"
             }
           ],
-          "title": "sort_by_label_desc \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
+          "title": "sort_by_label_desc(up, \"job\")",
+          "type": "timeseries"
         },
         {
           "datasource": {
