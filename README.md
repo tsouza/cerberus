@@ -4,14 +4,14 @@
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> **RELEASE CANDIDATE — NOT YET GA.** Cerberus is on the `v1.0.0` release-
-> candidate line (latest tag `v1.0.0-RC3`): the surface is feature-complete
-> for 1.0 and the differential harnesses gate every merge, but correctness,
-> performance, and operational hardening are still being burned down.
-> Evaluate it against your own corpus before standing it in for a running
-> Prom / Loki / Tempo deployment, and expect breaking changes between
-> release candidates. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release
-> breakdown.
+> **EXPERIMENTAL — NOT PRODUCTION-READY.** Cerberus is at `v1.0.0-RC1`,
+> early and under active development. The differential harnesses gate every
+> merge, but correctness, performance, and operational behaviour are still
+> being shaken out, and the surface is evolving. **Validate it against your
+> own corpus before pointing anything real at it** — do not stand it in for
+> a running Prom / Loki / Tempo deployment without that evaluation — and
+> expect breaking changes. See [`CHANGELOG.md`](CHANGELOG.md) for what has
+> landed so far.
 
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
