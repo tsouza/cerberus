@@ -24,7 +24,9 @@ type docInput struct {
 
 	goVersion string
 	goarch    string
+	goos      string
 	numCPU    int
+	host      hostInfo
 
 	// outPath is where benchmarks.md is written; charts are emitted into a
 	// sibling benchmarks/ directory and referenced relative to it.
@@ -161,11 +163,11 @@ func renderEnvironment(b *strings.Builder, in docInput) {
 	b.WriteString("query executor, so the SQL cerberus emits runs exactly as it would against a ")
 	b.WriteString("standalone ClickHouse.\n\n")
 
-	var rows [][]string
-	rows = append(rows, []string{"Query engine", "ClickHouse 25.8 (via chDB / chdb-go, in-process)"})
-	rows = append(rows, []string{"Go toolchain", in.goVersion})
-	rows = append(rows, []string{"Architecture", in.goarch})
-	rows = append(rows, []string{"Logical CPUs", fmt.Sprintf("%d", in.numCPU)})
+	b.WriteString("These numbers were captured on the host below — read directly from ")
+	b.WriteString("`/proc` and `/sys` at generation time, so the spec stays accurate and ")
+	b.WriteString("regenerates with the rest of the document.\n\n")
+
+	rows := environmentRows(in)
 	writeTable(b, []align{alignLeft, alignLeft}, []string{"component", "value"}, rows)
 	b.WriteString("\n")
 
@@ -174,6 +176,63 @@ func renderEnvironment(b *strings.Builder, in docInput) {
 	b.WriteString("*order-of-magnitude*; the **ratios** between shapes (and the deterministic ")
 	b.WriteString("row / granule counts) are what carry across hardware. Regenerate on your own ")
 	b.WriteString("box with `just bench-report`.\n\n")
+}
+
+// environmentRows builds the Environment spec table top to bottom: CPU
+// identity → core/thread topology → clock → cache hierarchy → memory → OS /
+// kernel → Go runtime → query engine. Every host-derived row is gated on a
+// non-empty captured value, so a thinner /proc simply yields a shorter table
+// rather than rows reading "unknown".
+func environmentRows(in docInput) [][]string {
+	var rows [][]string
+	add := func(component, value string) {
+		if value != "" {
+			rows = append(rows, []string{component, value})
+		}
+	}
+	h := in.host
+
+	// CPU identity.
+	add("CPU", h.cpuModel)
+	add("CPU vendor", h.cpuVendor)
+	add("CPU family", h.cpuFamily)
+
+	// Topology: cores / threads (/ sockets when more than one).
+	if h.cores > 0 && h.threads > 0 {
+		topo := fmt.Sprintf("%d physical cores / %d logical threads", h.cores, h.threads)
+		if h.sockets > 1 {
+			topo += fmt.Sprintf(" across %d sockets", h.sockets)
+		}
+		add("CPU topology", topo)
+	}
+	add("Max clock", h.maxMHz)
+
+	// Cache hierarchy as one compact row: "L1d 32 KiB ×4, L2 256 KiB ×4, L3 8 MiB ×1".
+	if len(h.caches) > 0 {
+		parts := make([]string, 0, len(h.caches))
+		for _, c := range h.caches {
+			parts = append(parts, fmt.Sprintf("%s %s ×%d", c.label, c.size, c.instances))
+		}
+		add("CPU cache", strings.Join(parts, ", "))
+	}
+
+	add("Memory", h.memTotal)
+	add("OS", h.osPretty)
+	add("Kernel", h.kernel)
+
+	// Go runtime: version + GOOS/GOARCH + logical CPUs the runtime sees.
+	rows = append(rows, []string{"Go toolchain", in.goVersion})
+	platform := in.goarch
+	if in.goos != "" {
+		platform = in.goos + "/" + in.goarch
+	}
+	rows = append(rows, []string{"Go platform", platform})
+	rows = append(rows, []string{"runtime.NumCPU", fmt.Sprintf("%d", in.numCPU)})
+
+	// The query engine the SQL actually executes on.
+	rows = append(rows, []string{"Query engine", "ClickHouse 25.8 (via chDB / chdb-go, in-process)"})
+
+	return rows
 }
 
 // renderMethodology — the how, explained from first principles.
@@ -413,8 +472,10 @@ func renderSharded(b *strings.Builder, in docInput) {
 	maxShardClears := sh.MaxShardModeledBytes <= sh.CapBytes
 	rows := [][]string{
 		{"A — single statement", "1", fmtInt(sh.RouteAPairs), fmtBytes(sh.RouteAModeledBytes), verdict(routeAClears)},
-		{fmt.Sprintf("B — sharded (K=%d)", sh.K), fmt.Sprintf("%d", sh.K),
-			fmtInt(sh.MaxShardPairs) + " (max)", fmtBytes(sh.MaxShardModeledBytes), verdict(maxShardClears)},
+		{
+			fmt.Sprintf("B — sharded (K=%d)", sh.K), fmt.Sprintf("%d", sh.K),
+			fmtInt(sh.MaxShardPairs) + " (max)", fmtBytes(sh.MaxShardModeledBytes), verdict(maxShardClears),
+		},
 	}
 	writeTable(b, []align{alignLeft, alignRight, alignRight, alignRight, alignLeft},
 		[]string{"route", "statements", "(sample,anchor) pairs", "modeled peak", "vs " + fmtBytes(sh.CapBytes) + " cap"},

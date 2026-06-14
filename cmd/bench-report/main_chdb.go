@@ -125,7 +125,9 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 		traceRows:  traceRows,
 		goVersion:  runtime.Version(),
 		goarch:     runtime.GOARCH,
+		goos:       runtime.GOOS,
 		numCPU:     runtime.NumCPU(),
+		host:       captureHost(),
 		outPath:    outPath,
 	})
 	if err != nil {
