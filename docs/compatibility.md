@@ -1,9 +1,29 @@
 # Compatibility harnesses
 
-Cerberus's correctness is verified by three differential-parity
+Cerberus's correctness is measured by three differential-parity
 harnesses, one per upstream API. Each diffs query results between a
 reference backend and cerberus, both seeded with the same deterministic
 fixture over the same time window.
+
+The strongest of the three is PromQL: it runs the **third-party PromQL
+Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
+Prometheus Conformance Program tooling) against a real `prom/prometheus`
+— not a home-grown diff. LogQL and TraceQL use cerberus-owned drivers
+against real Loki / Tempo; TraceQL additionally has no third-party
+conformance suite to draw on, so its corpus is author-written and its
+numerical confidence is honestly lower (see
+[Per-head confidence](#per-head-confidence) below).
+
+> **What gates vs. what scores.** All three `compatibility/<head>` checks
+> run on every PR and are required, but they fail the check only on
+> **infrastructure breakage** — per-case parity drift is **report-only**
+> by design ([#503](https://github.com/tsouza/cerberus/pull/503)),
+> captured in the report + the live badge score, not in the check's exit
+> code. The one lane that hard-fails on any numeric parity diff is
+> `compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`), which is
+> informational, not a required check. Treat the badges as a
+> continuously re-measured conformance score, not a merge gate on numeric
+> correctness. See [CI integration](#ci-integration).
 
 | Harness | Location                    | Reference backend                  | Corpus source                                                                                |
 | ------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -21,10 +41,23 @@ branch as shields.io badge JSON; the README shows them live. On
 
 ### PromQL — `prometheus/compliance`
 
-- **Driver**: upstream `promql-compliance-tester`.
+- **Driver**: the upstream third-party `promql-compliance-tester` — the
+  PromLabs / CNCF Prometheus Conformance Program tool, vendored as the
+  `prometheus/compliance` submodule under
+  `compatibility/prometheus/upstream/`. Not a cerberus-authored diff.
+- **Reference**: a real `prom/prometheus` container seeded with the
+  *same* fixture as cerberus's ClickHouse (the seeder reads the CH rows
+  back and mirrors them into Prometheus over remote-write — see
+  `cmd/seed/prom_remote.go` — so both backends answer from byte-identical
+  data).
 - **Corpus**: vendored
-  [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance).
-- **Today**: **574/574** cases pass; no allow-list exists.
+  [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
+  template-expanded to 574 concrete cases.
+- **Today**: **574/574** cases pass; no allow-list exists. This is the
+  highest-confidence leg — an industry-standard conformance suite against
+  a real reference. (Parity drift is report-only in CI; the 574/574 is a
+  measured score, not a merge gate — see the note at the top of this
+  page.)
 
 ### LogQL — `grafana/loki:pkg/logql/bench`
 
@@ -35,8 +68,13 @@ branch as shields.io badge JSON; the README shows them live. On
   [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/queries);
   the widened corpus's `${SELECTOR}` / `${LABEL_*}` templates resolve
   off `dataset_metadata.json`.
-- **Today**: shipped and gating as the required `compatibility/loki` PR
-  check; no allow-list exists.
+- **Reference**: a real Loki container on `:23100`, seeded from the same
+  in-memory fixture as cerberus.
+- **Today**: shipped and running as the required `compatibility/loki` PR
+  check; no allow-list exists. Solid confidence — a real backend on a
+  real corpus — but Grafana's `bench` set is a benchmark corpus, not a
+  standardised conformance suite like PromQL's. Parity drift is
+  report-only.
 
 ### TraceQL — cerberus-owned driver
 
@@ -44,11 +82,33 @@ branch as shields.io badge JSON; the README shows them live. On
   (OTLP push to Tempo + direct CH `INSERT` to cerberus, both from one
   in-memory fixture so per-span fields stay 1:1 across both read paths),
   patterned on `cmd/tempo-vulture`.
-- **Corpus**: cerberus-owned TXTAR corpus.
-- **Today**: shipped and gating. `/api/search`, `/api/traces/<id>`, the
+- **Corpus**: cerberus-owned TXTAR corpus. **There is no third-party
+  TraceQL conformance suite** (no TraceQL analogue of
+  `prometheus/compliance`), so this corpus is author-written rather than
+  derived from an external standard — the lightest of the three legs.
+- **Today**: shipped and running. `/api/search`, `/api/traces/<id>`, the
   four tag / tag-values endpoints (V1 + V2), and the metrics endpoints
   (`/api/metrics/query_range` + `/api/metrics/query`) all run under the
-  required `compatibility/tempo` PR check; no allow-list exists.
+  required `compatibility/tempo` PR check; no allow-list exists. Parity
+  drift is report-only, like the other two heads.
+
+## Per-head confidence
+
+The three legs are *not* equally strong, and the docs should not imply
+they are:
+
+| Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
+| ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 574/574, no allow-list                   |
+| LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
+| TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
+
+All three run against a real reference backend on identical seeded data,
+so each catches genuine semantic divergence. The difference is *corpus
+provenance and breadth*: PromQL inherits an externally-curated standard;
+TraceQL's coverage is only as wide as the author wrote it. Raising
+TraceQL's confidence is the top improvement item (see the project
+roadmap / the PR that introduced this section).
 
 ## Local run
 
@@ -206,6 +266,29 @@ real bug rather than a silent wrong-rejection:
 Each harness job uploads its report as a workflow artifact (30-day
 retention). On push-to-main, the per-head pass-rate is appended to the
 orphan `compat-scores` branch so the README badges refresh.
+
+**Required, but report-only on parity.** All three `compatibility/<head>`
+checks are required status checks on `main`, but — per
+[#503](https://github.com/tsouza/cerberus/pull/503) — the required check
+fails only on **infrastructure** errors (compose-up, seed, build,
+unparseable report). Per-case numeric parity drift is captured in
+`report.json` + the badge and **does not** turn the required check red.
+Concretely: the PromQL run script is report-only by default and only
+hard-fails under `FAIL_ON_DIFF=1`
+(`compatibility/prometheus/scripts/run-compatibility.sh`); the LogQL
+driver removed its `os.Exit(1)`-on-diff
+(`compatibility/loki/cmd/loki-compliance-tester/main.go`); and the TraceQL
+differ is report-only by construction
+(`compatibility/tempo/driver/diff.go`) — it ignores the `FAIL_ON_DIFF`
+env the workflow passes it.
+
+The single lane that **hard-fails on any parity diff** is
+`compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`), the
+corpus-wide proof that the sharded solver route is byte-identical to
+reference Prometheus. It is intentionally an *informational* job, not a
+required check, so it doesn't gate every unrelated PR on the full
+forced-route corpus run. Closing this gap — promoting a fail-on-parity
+gate to required — is tracked as an improvement item.
 
 ## Adding new test cases
 

@@ -5,9 +5,10 @@ Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
 > **EXPERIMENTAL — NOT PRODUCTION-READY.** Cerberus is at `v1.0.0-RC1`,
-> early and under active development. The differential harnesses gate every
-> merge, but correctness, performance, and operational behaviour are still
-> being shaken out, and the surface is evolving. **Validate it against your
+> early and under active development. The differential harnesses run on every
+> PR and score parity against real Prometheus / Loki / Tempo, but correctness,
+> performance, and operational behaviour are still being shaken out, and the
+> surface is evolving. **Validate it against your
 > own corpus before pointing anything real at it** — do not stand it in for
 > a running Prom / Loki / Tempo deployment without that evaluation — and
 > expect breaking changes. See [`CHANGELOG.md`](CHANGELOG.md) for what has
@@ -24,7 +25,13 @@ Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 The three `*QL compat` badges are **differential parity scores** —
 `passed / total` cases where cerberus matched a reference Prometheus /
-Loki / Tempo on the same seeded corpus ([details](#compatibility)).
+Loki / Tempo on the same seeded corpus ([details](#compatibility)). The
+PromQL leg runs the third-party
+[PromLabs / CNCF **PromQL Compliance Tester**](https://github.com/prometheus/compliance)
+(`prometheus/compliance`) — the same tool the CNCF Prometheus Conformance
+Program uses — at **574/574 cases passing, no allow-list**, against a real
+`prom/prometheus`. The scores are tracked, not gated: see
+[Compatibility](#compatibility) for exactly what the CI checks enforce.
 
 ---
 
@@ -146,25 +153,49 @@ see [`docs/performance.md`](docs/performance.md).
 
 ## Compatibility
 
-Each query language is gated by a **differential harness**: cerberus and
-a reference engine answer the same corpus against the same seeded data,
-and the responses are diffed case-for-case — pinning *observed semantics
-on real ClickHouse* against an upstream oracle, not just emitted SQL.
+Each query language has a **differential harness**: cerberus and a
+reference engine answer the same corpus against the same seeded data, and
+the responses are diffed case-for-case — pinning *observed semantics on
+real ClickHouse* against an upstream oracle, not just emitted SQL.
 
-| Head    | Reference + corpus                                          | Required gate              |
-| ------- | ----------------------------------------------------------- | -------------------------- |
-| PromQL  | bundled Prometheus engine vs `prometheus/compliance` corpus | `compatibility/prometheus` |
-| LogQL   | reference Loki vs `grafana/loki:pkg/logql/bench` corpus     | `compatibility/loki`       |
-| TraceQL | reference Tempo vs cerberus-owned TXTAR corpus              | `compatibility/tempo`      |
+The strongest leg is **PromQL**, which runs the third-party **PromQL
+Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
+Prometheus Conformance Program tooling) against a real `prom/prometheus`,
+seeded identically on both sides via remote-write. **574/574 cases pass,
+no allow-list.** LogQL diffs against a real Loki on Grafana's own
+`pkg/logql/bench` corpus — solid, but a Grafana bench corpus rather than a
+standardised conformance suite. TraceQL is the lighter leg: there is **no
+third-party TraceQL conformance suite**, so its corpus is cerberus-owned
+(author-written TXTAR), and its numerical confidence is correspondingly
+lower than PromQL's.
+
+| Head    | Reference + corpus                                                  | Required check             | Conformance leg                           |
+| ------- | ------------------------------------------------------------------- | -------------------------- | ----------------------------------------- |
+| PromQL  | real `prom/prometheus` vs `prometheus/compliance` (PromLabs / CNCF) | `compatibility/prometheus` | third-party conformance suite (strongest) |
+| LogQL   | real Loki vs `grafana/loki:pkg/logql/bench` corpus                  | `compatibility/loki`       | real-backend diff, Grafana bench corpus   |
+| TraceQL | real Tempo vs cerberus-owned TXTAR corpus                           | `compatibility/tempo`      | author-written corpus (lightest)          |
 
 ```sh
 just compat-all          # or compat-promql / compat-logql / compat-traceql
 ```
 
+**What the required checks enforce.** The three `compatibility/<head>`
+checks run on every PR and **fail on infrastructure breakage** (stack
+won't boot, seed fails, report unparseable). Per-case **parity drift is
+report-only** by design ([#503](https://github.com/tsouza/cerberus/pull/503)):
+it is recorded in `report.json` and rendered into the live `compat-score.json`
+badge, but does not turn the required check red. The one lane that
+*hard-fails on any parity diff* is `compatibility/prometheus-forced-route`
+(`FAIL_ON_DIFF=1`, proving the sharded solver route is byte-identical to
+reference Prometheus over the whole corpus) — that lane is informational,
+not a required check. The honest reading: the badges are a continuously
+re-measured conformance score, not a merge gate on numeric correctness.
+
 **No allow-lists** — every diff against the reference is a real bug to
-fix at the source. The full playbook (per-head drivers, local
-reproduction, rejection parity, the sole pinned `upstream-skip-baseline`
-contract) is in [`docs/compatibility.md`](docs/compatibility.md).
+fix at the source, not an exception to suppress. The full playbook
+(per-head drivers, local reproduction, rejection parity, the sole pinned
+`upstream-skip-baseline` contract) is in
+[`docs/compatibility.md`](docs/compatibility.md).
 
 ## Testing
 

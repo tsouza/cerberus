@@ -47,6 +47,14 @@ the pinned ledger of every grammar symbol the three upstream parsers expose.
 | TraceQL   | 45             | 45                             | 0                               | 0                 |
 | **Total** | **228**        | **226**                        | **2**                           | **0**             |
 
+> **This is an accept/reject ledger, not a correctness score.** "226/228
+> supported" means cerberus *lowers to SQL that the reference also accepts*
+> for 226 of 228 grammar symbols. It does **not** mean those 226 symbols
+> return numerically correct rows — that is what the
+> [differential harnesses](compatibility.md) measure (an accepted symbol
+> can still emit wrong rows). Cite this number as **surface / rejection
+> parity**, never as numerical correctness coverage.
+
 There are **zero** wrong-rejections across all three heads: cerberus lowers
 every grammar symbol the reference backends accept. The two PromQL parity
 rejections are the bare `start()` / `end()` query-context calls, which the

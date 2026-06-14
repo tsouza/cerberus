@@ -47,6 +47,17 @@ tolerated: a red informational lane is a real failure to fix, it is just
 not wired as a branch-protection gate (typically because it needs the chDB
 substrate, a Docker stack, or a soak streak before promotion).
 
+One subtlety on the three `compatibility/<head>` checks: they are required,
+but the *check* fails only on infrastructure breakage — per-case **numeric
+parity drift is report-only** (rendered into the badge score, not the exit
+code; see [`compatibility.md`](compatibility.md#ci-integration) and
+[#503](https://github.com/tsouza/cerberus/pull/503)). The only lane that
+hard-fails on a numeric parity diff is the *informational*
+`compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`). So the
+required differential checks gate *that the harness runs clean*, while the
+parity number itself is a continuously-measured score rather than a merge
+gate. Promoting a fail-on-parity gate to required is a tracked improvement.
+
 | Gate                                    | Workflow (job)                                       | Trigger                             | Required? | Scope                                                                                                                                                                                                                    |
 | --------------------------------------- | ---------------------------------------------------- | ----------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `check`                                 | `ci.yml` (`check`)                                   | PR + push                           | Required  | `just test` (`go test -race -cover ./...`) + `just build`. Default-tag lanes: 1, 2a, 2b, 3, 4, 5, **6d** (surface / rejection / inventory parity ratchets), 7, 7b stub, 8, 10, 11, 12 solver-decision ratchet            |
