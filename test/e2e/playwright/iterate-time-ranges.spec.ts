@@ -180,6 +180,27 @@ type PromQueryRangeResponse = {
 };
 
 /**
+ * Prometheus error-envelope shape (the subset we read) returned on a
+ * non-2xx `/api/v1/query_range` — `status: "error"` with an
+ * `errorType` + human `error` message. Used to assert the pinned
+ * 422 memory-limit rejection (errorType=execution + MEMORY_LIMIT_MESSAGE)
+ * byte-for-byte. Named (rather than inlined at the cast site) because a
+ * self-referential `JSON.parse(body) as typeof parsed` cast resolves
+ * `typeof parsed` to the variable's control-flow-narrowed type at the
+ * assignment — `null` there, since the only prior write is `= null` —
+ * which collapses the parsed value to `null` and makes every downstream
+ * `parsed?.status === …` comparison narrow to `never` (TS2339). The
+ * specs run via Playwright's transpile-only esbuild loader, so that
+ * latent error never surfaces at runtime; a named cast target keeps the
+ * type honest under the typecheck gate.
+ */
+type PromErrorEnvelope = {
+  status?: string;
+  errorType?: string;
+  error?: string;
+};
+
+/**
  * Lift a Prometheus `/api/v1/query_range` response into the
  * `DsQueryResponse` shape the assertion helpers consume. Mirrors the
  * lift in `iterate-panel-shape.spec.ts` and
@@ -402,13 +423,9 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
         // which tuples took the rejection branch.
         if (resp.status() === 422) {
           const body = await resp.text().catch(() => '<unreadable>');
-          let parsed: {
-            status?: string;
-            errorType?: string;
-            error?: string;
-          } | null = null;
+          let parsed: PromErrorEnvelope | null = null;
           try {
-            parsed = JSON.parse(body) as typeof parsed;
+            parsed = JSON.parse(body) as PromErrorEnvelope;
           } catch {
             parsed = null;
           }
