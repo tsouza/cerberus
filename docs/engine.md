@@ -207,8 +207,13 @@ losing the cause.
 The middle of the pipeline — lower → optimize → emit → schema
 resolution — is the part the three heads share. Each stage is
 described below. The three heads converge on it: each parses with its
-reference upstream parser, lowers to the shared IR, and from there runs
-the same optimize → emit → execute path.
+reference upstream parser, lowers to the shared IR, and runs the same
+optimize step. After optimize, the solver classifies the plan and picks
+an execution route — route A (one ClickHouse statement, the default for
+the overwhelming majority of traffic) or route B (the sharded-pushdown
+solver, for the memory-unbounded anchor-fan-out class). Both routes emit
+through the same `chsql` emitter; route B just emits and executes K
+re-anchored shards and concatenates them behind one cursor.
 
 ```text
    PromQL                LogQL                TraceQL
@@ -234,15 +239,27 @@ promql/parser      pkg/logql/syntax         pkg/traceql        ← reference ups
  └──────────────────────────────────────────────────┘
                        │
                        ▼
- ┌──────────────────────────────────────────────────┐
- │           internal/chsql — typed emitter         │   • parameterised, escape-free
- │  QueryBuilder slots + typed Frag constructors;   │   • PREWHERE promotion on Filter(Scan)
- │  the typed surface is closed — external packages │   • sort-key-aware predicate ordering
- │  cannot compose raw SQL by construction          │   • streaming clickhouse-go/v2 cursor
- └──────────────────────────────────────────────────┘
-                       │
-                       ▼
-                  ClickHouse
+        internal/solver — route decision           ← classifies the post-optimize
+        (hooks the Optimizer.Run → chsql.Emit seam)   plan; PromQL anchor-fan-out
+              │                       │                class routes B, else A
+   route A (default)          route B (sharded-pushdown solver)
+   one plan, one SQL          re-anchor K copies onto disjoint
+              │               anchor slices; emit + execute each
+              │                       │
+              ▼                       ▼
+ ┌────────────────────────────────────────────────┐
+ │           internal/chsql — typed emitter        │   • parameterised, escape-free
+ │  QueryBuilder slots + typed Frag constructors;  │   • PREWHERE promotion on Filter(Scan)
+ │  closed typed surface — no raw SQL. Route B      │   • sort-key-aware predicate ordering
+ │  emits each shard byte-identically to route A.  │   • streaming clickhouse-go/v2 cursor
+ └────────────────────────────────────────────────┘
+              │                       │
+              ▼                       ▼  K statements, bounded parallelism +
+   one ClickHouse statement   connection gate, concatenated behind one
+              │               cursor (all-or-nothing wire contract)
+              └───────────┬───────────┘
+                          ▼
+                      ClickHouse
 ```
 
 ### One IR for three languages — `internal/chplan`
