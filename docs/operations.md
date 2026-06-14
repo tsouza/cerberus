@@ -421,10 +421,11 @@ ServiceName-first key it falls back to a generic-exclusion granule scan
 
 The practical contract for adopters:
 
-- **Cerberus is a correct drop-in against an existing stock OTel-CH
-  deployment.** Pointed at tables that were created by the stock
-  exporter (ServiceName-first metrics key), cerberus returns correct
-  results for every query — it simply forgoes the ~17× metric-query
+- **Cerberus runs against an existing stock OTel-CH deployment without
+  a schema change.** Pointed at tables that were created by the stock
+  exporter (ServiceName-first metrics key), cerberus returns the same
+  results as it does on the optimized key — the sort key changes only
+  performance, not semantics — it simply forgoes the ~17× metric-query
   granule-prune speedup until the metrics tables carry the
   MetricName-first key.
 - **`CERBERUS_AUTO_CREATE_SCHEMA=true`** is what writes the

@@ -2,35 +2,25 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
-## [Unreleased]
+## [v1.0.0-RC1]
 
-Work staged for the next release candidate (post-`v1.0.0-RC3`).
+The first release candidate on the `v1.0.0` line. This is an early,
+experimental cut: the three heads parse → lower → execute and the
+differential harnesses gate every merge, but the surface is still
+evolving and must be validated against your own corpus before any real
+use.
 
 ### Added
 
 - TraceQL nested-set intrinsics in `| select(...)` — the projection Grafana Traces Drilldown's "Structure" tab sends (`… | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)`) now works end-to-end instead of 422ing. A new `chplan.NestedSetAnnotate` node recomputes reference Tempo's ingest-time nested-set numbering at query time (recursive CTE over the `(TraceId, SpanId, ParentSpanId)` adjacency; DFS bounds per `assignNestedSetModelBoundsAndServiceStats` semantics: counter from 1, root parent `-1`, disconnected spans `0/0/0`, counter continues across multiple roots; sibling order is `(Timestamp, sipHash64(SpanId))` since OTel-CH does not record Tempo's ingest order). `/api/search` responses now surface user-selected attribute values inside `spanSets[].spans[].attributes` (OTLP `intValue` for nested-set intrinsics, `stringValue` otherwise, lowercased `status` / `kind` enum casing per Tempo's wire encoding) and populate the per-span `name` field when `select(name)` requests it — exactly reference Tempo's placement. Two more latent bugs on the same Drilldown path are fixed: mixed structural/plain `||` arms are now column-aligned (ClickHouse rejected the positional `UNION DISTINCT` with code 258), and structural-join wrap subqueries expose the columns `select()` can read (`StatusCode`, `SpanAttributes`, …) so `{A} >> {B} | select(status)` resolves. The PLAIN-FILTER arm gets the same plumbing: the optimizer's `ProjectionPushdown` expression walker now descends into every child-bearing `chplan.Expr` kind (`FieldAccess` sources, `Subscript`, `Lambda` bodies, the map-carrier nodes, `NestedArrayExists` values — plus the `NestedArrayExists.Column` string carrier), so `{ status = error } | select(span.http.method, resource.service.name)` no longer prunes `SpanAttributes` out of the narrowed scan (ClickHouse error 47 → HTTP 502 on the showcase "select / by / coalesce" panel).
 
-- Sort-key-aware filter emission + `PREWHERE` promotion (RC3 R3.4). The chsql emitter now fuses `Filter(Scan)` into a single `SELECT … FROM <table> [PREWHERE …] WHERE …` and partitions conjuncts into a sort-prefix bucket / skip-index bucket / rest, then promotes cheap predicates that touch no wide column into `PREWHERE` when the projection reads any wide column. ~219 existing TXTAR fixtures across `test/spec/{chsql,promql,logql,traceql,optimizer}` were re-emitted; the diff is a pure structural rewrite (one less subquery layer, predicates reordered by sort-key rank, optional `PREWHERE` split) and the rendered SQL is semantically equivalent. 29 of the re-emitted fixtures now carry a `PREWHERE` clause. New unit tests cover the predicate classifier (`prewhere_test.go`); new `test/spec/codegen/prewhere/` fixtures pin the four codegen-only behaviours (wide-column-excluded, partial-promotion, no-wide-no-promotion, sort-prefix-order).
+- Sort-key-aware filter emission + `PREWHERE` promotion. The chsql emitter now fuses `Filter(Scan)` into a single `SELECT … FROM <table> [PREWHERE …] WHERE …` and partitions conjuncts into a sort-prefix bucket / skip-index bucket / rest, then promotes cheap predicates that touch no wide column into `PREWHERE` when the projection reads any wide column. ~219 existing TXTAR fixtures across `test/spec/{chsql,promql,logql,traceql,optimizer}` were re-emitted; the diff is a pure structural rewrite (one less subquery layer, predicates reordered by sort-key rank, optional `PREWHERE` split) and the rendered SQL is semantically equivalent. 29 of the re-emitted fixtures now carry a `PREWHERE` clause. New unit tests cover the predicate classifier (`prewhere_test.go`); new `test/spec/codegen/prewhere/` fixtures pin the four codegen-only behaviours (wide-column-excluded, partial-promotion, no-wide-no-promotion, sort-prefix-order).
 
-### Documentation
+#### Advanced QL
 
-- New **per-function / per-construct coverage matrix** ([`docs/coverage.md`](docs/coverage.md)), the user-facing answer to "does cerberus support the queries my dashboards run?". Every PromQL function / aggregation / operator / modifier, every LogQL stage / aggregation / filter, and every TraceQL intrinsic / metrics-op (228 symbols across the three heads) is listed with an honest support status — Supported, Supported (experimental), Supported (cerberus extension), or Rejected (parity with reference). The tables are generated from the `test/surface-parity/inventory.json` conformance ledger (`scripts/gen-coverage.py`), translating the ledger's machine-readable `parity-accept` / `parity-reject` / `wrong-accept` / `wrong-reject` classes into user-facing support language. Current coverage: 226 of 228 symbols supported, 2 intentional parity rejections (bare `start()` / `end()`), and **zero** wrong-rejections. Linked from the README documentation index.
+The advanced-QL surface: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over both classic and native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` template stages with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is the source of truth via the [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl) fork (no hand-maintained DDL).
 
-- **`docs/test-strategy.md` layer map + CI-gate inventory reconciled with reality.** The map is now 12 layers (was understated at 11): added Layer 6d (the function-surface parity ledger — `test/surface-parity/` + `test/rejection-parity/` + `test/inventory/`) and Layer 12 (compute fan-out guards — the static fan-out lint, per-construct scaling harness, cardinality / scale-wall / solver-decision ratchets, and the corpus profiler). The CI-gate table now lists every job that runs — including the previously-omitted `compatibility/promql-surface`, `compatibility/prometheus-forced-route`, `perf-guards`, `perf-profile`, `startup-bench`, and `coverage` lanes — with each one's accurate required-vs-informational status (the eleven required checks are spelled out explicitly).
-
-- **Operations: circuit-breaker blast radius documented.** [`docs/operations.md`](docs/operations.md) now spells out that the ClickHouse circuit breaker is a *single* per-`Client` breaker shared across all three API heads **and** the `/readyz` pinger, so one trip 503s every head and flips `/readyz` red (evicting the pod under Kubernetes) — an all-or-nothing, whole-replica coupling operators must tune against. The per-query wall-clock timeout (`CERBERUS_QUERY_TIMEOUT`) is cross-referenced as the separate bound for slow-but-healthy queries, closing the documented "no query deadline" gap.
-
-- **Configuration file documented.** [`docs/configuration.md`](docs/configuration.md) gains a "Configuration file (optional)" section describing the viper loader's optional `cerberus.yaml` (probed in `.` then `/etc/cerberus`), the env > file > default precedence, and the missing-or-malformed-is-tolerated contract. The stale "there is no YAML file to load" claim in `configuration.md` and `operations.md` is corrected.
-
-- **Native-rate parity prose reconciled** (`operations.md`). The dual-emit ULP-divergence statement now cites the test-enforced bound — at most two cells diverge, each by no more than 1 ULP (`maxDualEmitUlpDivergentCells = 2`) — and the observed pinned-fixture count (8 of 9 cells bit-identical), replacing the unverified "16/18" figure. `performance.md`'s `perf-guards` lane is corrected from "required" to its actual informational status.
-
-## [v1.0.0-RC2]
-
-The advanced-QL release: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over both classic and native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` template stages with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is now the source of truth via the [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl) fork (no more hand-maintained DDL). ~71 PRs merged since `v1.0.0-RC1`.
-
-### Added
-
-#### PromQL (RC2)
+#### PromQL
 
 - Fold scalar-only PromQL in Go for Grafana's health probe (`1+1`-style queries). [#95]
 - `chplan.RangeWindow.OuterRange` + `Identity` for subquery emit. [#98]
@@ -44,12 +34,12 @@ The advanced-QL release: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `
 - `/api/v1/query_exemplars` handler. [#137]
 - `group_left` / `group_right` cardinality + extra-label edges. [#144]
 - `predict_linear`, `holt_winters`, `@start()` / `@end()` modifiers. [#159]
-- `histogram_quantile` on classic histograms (RC2 schema G). [#170]
-- `histogram_quantile` on native (exp) histograms (RC2 schema H). [#171]
+- `histogram_quantile` on classic histograms. [#170]
+- `histogram_quantile` on native (exp) histograms. [#171]
 
-#### LogQL (RC2)
+#### LogQL
 
-- Point stale "not yet supported" LogQL messages at RC3. [#118]
+- Point stale "not yet supported" LogQL messages at the implemented stages. [#118]
 - `| line_format` + `| decolorize` as Go-side post-process. [#124]
 - Handle nil predicate from no-op stages; `line_format` / `decolorize` handler tests. [#127]
 - TXTAR fixtures for `| line_format` and `| decolorize`. [#128]
@@ -60,7 +50,7 @@ The advanced-QL release: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `
 - `/labels`, `/label/values`, `/series`, `/detected_fields`, `/patterns` handlers. [#151]
 - `bytes_*` alignment + `/api/v1/tail` WebSocket. [#157]
 
-#### TraceQL (RC2)
+#### TraceQL
 
 - Lower `status` / `kind` static literals (P0 6). [#96]
 - Lower `sum` / `avg` / `max` / `min` over inner attribute (P0 7). [#99]
@@ -74,15 +64,15 @@ The advanced-QL release: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `
 - Link traversal + span-event queries. [#169]
 - `histogram_over_time(attr)` lowering + emission. [#173]
 
-#### Schema source-of-truth (RC2 schema A–H, plus the `tsouza/opentelemetry-collector-contrib` fork)
+#### Schema source-of-truth (plus the `tsouza/opentelemetry-collector-contrib` fork)
 
 - Wire `tsouza/opentelemetry-collector-contrib:cerberus-ddl` via `replace`. [#154]
 - Mirror upstream OTel CH Exporter columns (exp_histogram + missing classic histogram fields). [#158]
 - Wrap upstream OTel CH Exporter DDL via the `schema/ddl` package. [#161]
-- `CERBERUS_AUTO_CREATE_SCHEMA` env-gated startup hook (RC2 schema D). [#166]
-- Refactor `harness/prometheus-compliance` to seed via `schema/ddl` package (RC2 schema F). [#167]
-- Refactor `test/e2e` to seed via `schema/ddl` package + Go fixture inserts (RC2 schema E). [#168]
-- Self-contained `otel-collector` + `sample-app` for real E2E data (RC2). [#172]
+- `CERBERUS_AUTO_CREATE_SCHEMA` env-gated startup hook. [#166]
+- Refactor `harness/prometheus-compliance` to seed via `schema/ddl` package. [#167]
+- Refactor `test/e2e` to seed via `schema/ddl` package + Go fixture inserts. [#168]
+- Self-contained `otel-collector` + `sample-app` for real E2E data. [#172]
 
 #### Tooling, CI, repo hygiene
 
@@ -95,50 +85,29 @@ The advanced-QL release: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `
 - Consolidate lint into one job + add `bodyclose`, `errorlint`. [#119]
 - Switch `auto-merge-deps` to `workflow_run` trigger. [#120]
 - Bump the github-actions group across 1 directory with 10 updates. [#121]
-- RC6 R6.0 — SQL builder evaluation recommends custom builder. [#125]
+- SQL-builder evaluation (R6.0) recommends custom builder. [#125]
 - Align CLAUDE.md + roadmap with R6.0 custom-builder choice. [#129]
-- Scaffold public `chsql.Builder` + `QueryBuilder` (RC6 R6.1). [#131]
-- Fuzz + perf-benchmark workflow scaffolds (RC3 R3.11). [#133]
-- Scaffold local Go PromQL evaluator (RC3 R3.10). [#134]
-- Pattern-based optimizer `Rule` API scaffold (RC3 R3.1). [#135]
-- Scaffold differential-testing harness (RC3 R3.9). [#136]
-- Port `emitScan` / `Filter` / `Project` / `Limit` to Builder (RC6 R6.2). [#138]
+- Scaffold public `chsql.Builder` + `QueryBuilder` (R6.1). [#131]
+- Fuzz + perf-benchmark workflow scaffolds. [#133]
+- Scaffold local Go PromQL evaluator. [#134]
+- Pattern-based optimizer `Rule` API scaffold. [#135]
+- Scaffold differential-testing harness. [#136]
+- Port `emitScan` / `Filter` / `Project` / `Limit` to Builder (R6.2). [#138]
 - Plan to fork upstream Tempo, retire `unsafe.Pointer` shims. [#139]
-- Port `emitAggregate` + `emitAggFunc` to Builder (RC6 R6.3). [#140]
+- Port `emitAggregate` + `emitAggFunc` to Builder (R6.3). [#140]
 - Wire `tsouza/tempo:cerberus-accessors` fork via `replace` directive. [#143]
 - Run dashboard E2E on merge-to-main only, drop PR trigger. [#145]
 - Actually use `QueryBuilder` for R6.2 / R6.3 ports + repo audit. [#146]
 - Retire `unsafe.Pointer` + reflect shims via `tsouza/tempo` accessors. [#148]
 - Tighten no-raw-SQL rule to forbid `Builder.WriteSQL` clause keywords. [#149]
 - `forbidigo` lint forbids `unsafe.Pointer` + `reflect.FieldByName` in `internal/traceql`, `internal/api/tempo`. [#152]
-- Plan 6 scalability levers across RC3 / RC4 / RC5. [#155]
+- Plan 6 scalability levers. [#155]
 - Add lefthook pre-commit + commit-msg hooks (formatters only; CI owns validation). [#162]
 - Drop empty `pkg/` — cerberus is a service, not a library. [#165]
 
-### Changed
+#### Core slice
 
-- `QueryBuilder.Limit(int64)` and Builder API refactors to thread typed clauses through the chplan emitter (R6.2 / R6.3 audit). [#138, #140, #146]
-- Migrate test seeders (`harness/prometheus-compliance`, `test/e2e`) off hand-rolled `*.sql` files onto the upstream-derived `schema/ddl` package. [#167, #168]
-
-### Security
-
-- Bump `apache/thrift` v0.22.0 → v0.23.0 (CVE-2026-41602). [#164]
-
-### Infrastructure
-
-- `tsouza/tempo:cerberus-accessors` fork wired via `replace` to retire the `unsafe.Pointer` shim ([#143]); shim removed in [#148]; `forbidigo` gate added in [#152].
-- `tsouza/opentelemetry-collector-contrib:cerberus-ddl` fork wired via `replace` so the OTel CH Exporter DDL is the source of truth (no hand-maintained schema). [#154]
-- Lefthook pre-commit + commit-msg hooks (formatters only; CI owns validation). [#162]
-- `auto-merge-deps` switched to `workflow_run` trigger; `dashboard` job moved to merge-to-main only. [#120, #145]
-- Self-contained k3s deployment: per-node OTel Collector DaemonSet + gateway Deployment + sample-app `telemetrygen` for real E2E data. [#172]
-
-## [v1.0.0-RC1]
-
-The seed (PR1–PR7 + admin + v0.1.0) plus M1–M4 (full PromQL / LogQL / TraceQL parsing → lowering → execution) + corpus expansion (TXTAR 122 → 166 fixtures, ~280 new unit-test sub-cases, E2E HTTP 12 → 26, Playwright 10 → 19 scenarios) + RC6 / RC7 plan consolidation.
-
-Six pre-existing cerberus bugs surfaced by the RC1 test-coverage push are tracked on the project board as RC2 deferrals (each with a cross-referenced `t.Skip` / `test.skip` marker in the source): wrap-projection over RangeWindow / StructuralJoin / Filter(Aggregate) column-scope mismatch, and bare-scalar PromQL (`1+1`) not lowering.
-
-### Added
+The seed (PR1–PR7 + admin + v0.1.0) plus M1–M4 (full PromQL / LogQL / TraceQL parsing → lowering → execution) + corpus expansion (TXTAR 122 → 166 fixtures, ~280 new unit-test sub-cases, E2E HTTP 12 → 26, Playwright 10 → 19 scenarios).
 
 #### PromQL (M1.1 – M1.7)
 
@@ -175,7 +144,7 @@ Six pre-existing cerberus bugs surfaced by the RC1 test-coverage push are tracke
 - `| select(span.x, resource.y)` projection: reflects out `SelectOperation.attrs` (Tempo keeps it on an unexported field) and emits one column per requested attribute aliased to its TraceQL name. [#70]
 - Tempo HTTP API: `/api/echo`, `/api/status/version`, `/api/search?q=<TraceQL>`, `/api/traces/{id}`. trace-by-id skips the parser and builds the chplan tree directly. Tempo's distinct error envelope (`{"traceID":"","spanID":"","error":true,"message":"..."}`) drives Grafana's "trace not found" UI. [#71]
 
-#### Test corpus expansion (RC1 prereq)
+#### Test corpus expansion
 
 - TraceQL TXTAR fixtures grow from 8 to 26 — boolean `||`, regex / not-regex matchers, every intrinsic (`name`, `kind`, `statusMessage`, `parent`, scoped `trace:id` / `span:id`), span-attribute scoping variants, scalar-filter thresholds, and resource-scoped select projection. [#72]
 - chsql TXTAR fixtures grow from 15 to 29 — direct tests for every chplan IR node (VectorJoin, StructuralJoin, MapWithoutKeys, LineContent variants, parameterised `quantile`, RangeWindow with `Offset` + LogQL `log_rate`, FieldAccess, FuncCall). [#74]
@@ -185,19 +154,48 @@ Six pre-existing cerberus bugs surfaced by the RC1 test-coverage push are tracke
 #### Engineering / CI
 
 - Required-status checks: `check`, `lint`, `dashboard` (full-stack k3d + cerberus + Grafana + Playwright smoke). `enforce_admins: true`; `gh pr merge --admin` is forbidden. [#56, #59, #60]
-- Compatibility harness drops the `pull_request` trigger until M6; runs nightly + on `main` push as informational baseline. [#56]
-- RC6 roadmap with hard rule: no `fmt.Sprintf` (or string concatenation) for ClickHouse SQL going forward; existing emitter Sprintf is grandfathered until R6.1–R6.10 port it through a typed builder. [#57]
-- RC6 R6.0 — SQL-builder evaluation phase prepended to RC6: a written security + impact + build-vs-buy analysis recommends third-party (`huandu/go-sqlbuilder` + cerberus extension layer), custom (`internal/chsql.Builder`), or defer. [#73]
-- RC7 — `internal/engine/` ExecutionEngine framework planned with the same R7.0 evaluation-first pattern: audit pipeline divergence across 5 callsites before any code lands; recommendation among (a) Build, (b) Partial — helpers-only extraction, (c) Defer. RC2 narrative gains the self-contained-deployment item (OTel Collector + CH exporter creating schema in k3d). [#75]
+- Compatibility harness drops the `pull_request` trigger initially; runs nightly + on `main` push as informational baseline. [#56]
+- Hard rule established: no `fmt.Sprintf` (or string concatenation) for ClickHouse SQL going forward; existing emitter Sprintf is grandfathered until the typed-builder port replaces it. [#57]
+- SQL-builder evaluation: a written security + impact + build-vs-buy analysis recommends third-party (`huandu/go-sqlbuilder` + cerberus extension layer), custom (`internal/chsql.Builder`), or defer. [#73]
+- `internal/engine/` ExecutionEngine framework scoped with the same evaluation-first pattern: audit pipeline divergence across 5 callsites before any code lands; recommendation among (a) Build, (b) Partial — helpers-only extraction, (c) Defer. [#75]
 
-### Deferred to RC2
+### Changed
 
-- PromQL: subqueries, `histogram_quantile` over native histograms, `topk` / `bottomk` / `count_values` (output-shape changes).
-- LogQL: parser stages (`| json`, `| logfmt`, `| regexp`, `| pattern`); `unwrap`-based ops; `tail`; `index/stats`.
-- TraceQL: recursive structural ops `>>` / `<<`, set ops, sibling ops; `status = error` / `kind = client` enum statics (Tempo's typed-static encoding needs Status/Kind enum support in `lowerStatic`); `sum / avg / max / min` over inner attributes (Tempo's `Aggregate.e` is on an unexported field — needs an alternative extraction path).
-- Loki HTTP: `/labels`, `/label/.../values`, `/series` (gated on RC6 R6.1's sqlbuilder integration so the new SQL is type-safe), stream-aware row decoder, `tail`.
-- Tempo HTTP: `/api/search/tags`, `/api/search/tag/<n>/values` (same RC6 gate); `search/recent`, `metrics/query_range`.
-- Self-contained deployment: OTel Collector + CH exporter in k3d creating schemas and collecting real k8s telemetry, replacing synthetic `*.sql` seeding for E2E (synthetic stays for unit / spec tests).
+- `QueryBuilder.Limit(int64)` and Builder API refactors to thread typed clauses through the chplan emitter (R6.2 / R6.3 audit). [#138, #140, #146]
+- Migrate test seeders (`harness/prometheus-compliance`, `test/e2e`) off hand-rolled `*.sql` files onto the upstream-derived `schema/ddl` package. [#167, #168]
+
+### Security
+
+- Bump `apache/thrift` v0.22.0 → v0.23.0 (CVE-2026-41602). [#164]
+
+### Infrastructure
+
+- `tsouza/tempo:cerberus-accessors` fork wired via `replace` to retire the `unsafe.Pointer` shim ([#143]); shim removed in [#148]; `forbidigo` gate added in [#152].
+- `tsouza/opentelemetry-collector-contrib:cerberus-ddl` fork wired via `replace` so the OTel CH Exporter DDL is the source of truth (no hand-maintained schema). [#154]
+- Lefthook pre-commit + commit-msg hooks (formatters only; CI owns validation). [#162]
+- `auto-merge-deps` switched to `workflow_run` trigger; `dashboard` job moved to merge-to-main only. [#120, #145]
+- Self-contained k3s deployment: per-node OTel Collector DaemonSet + gateway Deployment + sample-app `telemetrygen` for real E2E data. [#172]
+
+### Documentation
+
+- New **per-function / per-construct coverage matrix** ([`docs/coverage.md`](docs/coverage.md)), the user-facing answer to "does cerberus support the queries my dashboards run?". Every PromQL function / aggregation / operator / modifier, every LogQL stage / aggregation / filter, and every TraceQL intrinsic / metrics-op (228 symbols across the three heads) is listed with an honest support status — Supported, Supported (experimental), Supported (cerberus extension), or Rejected (parity with reference). The tables are generated from the `test/surface-parity/inventory.json` conformance ledger (`scripts/gen-coverage.py`), translating the ledger's machine-readable `parity-accept` / `parity-reject` / `wrong-accept` / `wrong-reject` classes into user-facing support language. Current coverage: 226 of 228 symbols supported, 2 intentional parity rejections (bare `start()` / `end()`), and **zero** wrong-rejections. Linked from the README documentation index.
+
+- **`docs/test-strategy.md` layer map + CI-gate inventory reconciled with reality.** The map is now 12 layers (was understated at 11): added Layer 6d (the function-surface parity ledger — `test/surface-parity/` + `test/rejection-parity/` + `test/inventory/`) and Layer 12 (compute fan-out guards — the static fan-out lint, per-construct scaling harness, cardinality / scale-wall / solver-decision ratchets, and the corpus profiler). The CI-gate table now lists every job that runs — including the previously-omitted `compatibility/promql-surface`, `compatibility/prometheus-forced-route`, `perf-guards`, `perf-profile`, `startup-bench`, and `coverage` lanes — with each one's accurate required-vs-informational status (the eleven required checks are spelled out explicitly).
+
+- **Operations: circuit-breaker blast radius documented.** [`docs/operations.md`](docs/operations.md) now spells out that the ClickHouse circuit breaker is a *single* per-`Client` breaker shared across all three API heads **and** the `/readyz` pinger, so one trip 503s every head and flips `/readyz` red (evicting the pod under Kubernetes) — an all-or-nothing, whole-replica coupling operators must tune against. The per-query wall-clock timeout (`CERBERUS_QUERY_TIMEOUT`) is cross-referenced as the separate bound for slow-but-healthy queries, closing the documented "no query deadline" gap.
+
+- **Configuration file documented.** [`docs/configuration.md`](docs/configuration.md) gains a "Configuration file (optional)" section describing the viper loader's optional `cerberus.yaml` (probed in `.` then `/etc/cerberus`), the env > file > default precedence, and the missing-or-malformed-is-tolerated contract. The stale "there is no YAML file to load" claim in `configuration.md` and `operations.md` is corrected.
+
+- **Native-rate parity prose reconciled** (`operations.md`). The dual-emit ULP-divergence statement now cites the test-enforced bound — at most two cells diverge, each by no more than 1 ULP (`maxDualEmitUlpDivergentCells = 2`) — and the observed pinned-fixture count (8 of 9 cells bit-identical), replacing the unverified "16/18" figure. `performance.md`'s `perf-guards` lane is corrected from "required" to its actual informational status.
+
+### Known gaps captured at the core-slice point
+
+Tracked at the time the core slice landed; the advanced-QL work above
+delivers most of these. The remainder are honest gaps still to close:
+
+- PromQL: `topk` / `bottomk` / `count_values` (output-shape changes).
+- LogQL: `| json`, `| logfmt`, `| regexp` parser stages; `unwrap`-based ops.
+- TraceQL: recursive structural ops `>>` / `<<` and sibling ops.
 
 ## [v0.1.0] — Seed
 
@@ -212,7 +210,5 @@ First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
 - CI: two-job workflow (`check` + `lint`), commitlint relaxed for Dependabot, markdownlint, mutation testing (gremlins) on a nightly cron.
 - Branch protection on `main`: required checks, linear history, no force pushes / deletions.
 
-[Unreleased]: https://github.com/tsouza/cerberus/compare/v1.0.0-RC2...HEAD
-[v1.0.0-RC2]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC2
 [v1.0.0-RC1]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC1
 [v0.1.0]: https://github.com/tsouza/cerberus/releases/tag/v0.1.0
