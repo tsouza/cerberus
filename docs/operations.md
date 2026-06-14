@@ -349,26 +349,44 @@ opaque query-time errors into a precise, fail-fast boot error:
 - **ClickHouse too old.** The connected server's `version()` is compared
   against `max(base, applicable-feature-floors)` — base **24.8**, raised to
   **25.6** by the native-rate floor when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
-  on. A version below the floor (or an unparseable one) fails startup.
-- **Divergent schema.** The configured tables are introspected via
-  `system.columns`; a missing essential column or a wrong attribute-map type
-  (`Attributes` / `ResourceAttributes` / `ScopeAttributes` must be
-  `Map(String, String)`) fails startup. The check honours every
-  `CERBERUS_SCHEMA_*` table rename — it validates the *active* shape.
+  on. A version below the floor (or an unparseable one) **fails startup
+  fast** — a too-old server is a hard incompatibility that never self-heals.
+- **Wrong-shape schema.** A configured table that **exists** but whose shape
+  is wrong — a missing essential column, or an attribute-map column
+  (`Attributes` / `ResourceAttributes` / `ScopeAttributes`) typed something
+  other than `Map(String, String)` — **fails startup fast.** A wrong shape is
+  a genuine misconfiguration, not a race, so failing fast is the honest
+  signal. The check honours every `CERBERUS_SCHEMA_*` table rename — it
+  validates the *active* shape.
+- **Absent (not-yet-provisioned) schema.** When the configured tables are
+  **entirely absent** (`system.columns` reports zero rows for them), cerberus
+  does **not** crash-loop — it **boots and waits**. This is the cerberus +
+  otel-collector startup race: a drop-in gateway deployed alongside the
+  ingestion pipeline that owns schema creation may legitimately start before
+  any table exists. Cerberus boots, reports **NOT READY** on `/readyz` with a
+  precise reason (`schema not yet provisioned: table otel_logs absent`), and
+  **re-probes** on the same cadence as the auto-create retry. The moment an
+  external writer (the collector, or cerberus' own `CERBERUS_AUTO_CREATE_SCHEMA`)
+  provisions the schema, `/readyz` flips ready **without a restart**.
+  `/healthz` (liveness) stays **200** throughout — only readiness gates.
 
 The ordering is deliberate: running the preflight **after** auto-create
 means a fresh database where cerberus just created the tables passes the
 schema gate (it would fail against tables that don't exist yet if the order
-were reversed). When any gate fails the process exits non-zero with an
-**aggregated** message listing every unmet requirement at once, so an
-operator fixes the deployment in a single pass rather than one error per
-restart. Set `CERBERUS_REQUIREMENTS_CHECK=false` to skip both gates (logged
-as one line) — useful when pointing cerberus at a deliberately non-default
-ClickHouse layout that the shape gate doesn't model. Note this is a
-stricter contract than the best-effort connectivity ping above: the
-preflight needs ClickHouse reachable to read the version and column
-metadata, so a CH that is unreachable at the preflight point fails startup
-rather than booting unready.
+were reversed). When a **fatal** gate (too-old version, wrong-shape table)
+fails, the process exits non-zero with an **aggregated** message listing
+every unmet requirement at once, so an operator fixes the deployment in a
+single pass rather than one error per restart. An **absent** schema is the
+one finding that is *not* fatal — it is the transient case the wait-and-
+reprobe path above handles. Set `CERBERUS_REQUIREMENTS_CHECK=false` to skip
+both gates (logged as one line) — useful when pointing cerberus at a
+deliberately non-default ClickHouse layout that the shape gate doesn't
+model. Note the version + wrong-shape gates are a stricter contract than the
+best-effort connectivity ping above: the preflight needs ClickHouse
+reachable to read the version and column metadata, so a CH that is
+unreachable at the preflight point (or returns an introspection *error*, as
+opposed to a clean zero-row absence) fails startup rather than booting
+unready.
 
 ### Schema divergence: MetricName-first metrics sort key
 

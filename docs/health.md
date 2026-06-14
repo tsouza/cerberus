@@ -62,10 +62,10 @@ Content-Type: application/json
 
 ### Response shape
 
-| Field        | Type    | Values                                                                                                                                        |
-| ------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                      |
-| `schema`     | string  | `"ready"` when the auto-create hook is done (or disabled), `"pending"` while it is still running, `"unknown"` when the CH ping itself failed. |
+| Field        | Type    | Values                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                                                                                                                                                                                                                                                                     |
+| `schema`     | string  | `"ready"` when the schema is provisioned and the auto-create hook is done (or disabled); `"absent: <reason>"` when the boot-time requirements check found the configured tables not yet provisioned (the cerberus + collector startup race — cerberus waits and re-probes, no restart); `"pending"` while the auto-create hook is still running; `"unknown"` when the CH ping itself failed. |
 
 ### HTTP status codes
 

@@ -53,10 +53,13 @@ type Config struct {
 	// minimum (CH 25.8 base, raised to max(base, native-rate floor) when
 	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE is enabled) AND validates the
 	// deployed schema shape (the configured tables' essential columns and
-	// the attribute-map column types) via system.columns. When any gate
-	// fails the process exits non-zero with an aggregated message listing
-	// every unmet requirement, instead of letting a too-old server or a
-	// divergent schema surface as an opaque query-time error later.
+	// the attribute-map column types) via system.columns. A FATAL finding —
+	// a too-old/unreadable server or a table that EXISTS but is wrong-shape —
+	// exits the process non-zero with an aggregated message, instead of
+	// letting it surface as an opaque query-time error later. A schema that is
+	// ENTIRELY ABSENT (not yet provisioned — the cerberus + collector startup
+	// race) is NOT fatal: cerberus boots, reports NOT READY on /readyz, and
+	// re-probes until an external writer creates the schema (no restart).
 	// Setting CERBERUS_REQUIREMENTS_CHECK=false skips both gates.
 	RequirementsCheck bool
 

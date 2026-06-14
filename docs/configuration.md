@@ -174,10 +174,10 @@ also honored by the OTel Go SDK and merge with these. See
 
 ## Schema
 
-| Variable                      | Type | Default | Description                                                                                          |
-| ----------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `CERBERUS_AUTO_CREATE_SCHEMA` | bool | `false` | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins.          |
-| `CERBERUS_REQUIREMENTS_CHECK` | bool | `true`  | Run the boot-time requirements check after the schema-create step; fails startup on any unmet one.   |
+| Variable                      | Type | Default | Description                                                                                                                                                                                                            |
+| ----------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_AUTO_CREATE_SCHEMA` | bool | `false` | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins.                                                                                                                            |
+| `CERBERUS_REQUIREMENTS_CHECK` | bool | `true`  | Run the boot-time requirements check after the schema-create step. Fails startup on a fatal finding (too-old server, wrong-shape table); an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes. |
 
 The preflight runs two gates, both parameterised by the active
 (override-resolved) configuration:
@@ -196,12 +196,24 @@ The preflight runs two gates, both parameterised by the active
   `ResourceAttributes` / `ScopeAttributes`) typed `Map(String, String)`
   (a `Map(String, LowCardinality(String))` value type is accepted). Every
   table and column name comes from the override-resolved schema, so
-  `CERBERUS_SCHEMA_*` renames are respected.
+  `CERBERUS_SCHEMA_*` renames are respected. The gate distinguishes two
+  cases:
+  - A table that **exists but is wrong-shape** (missing column / wrong
+    attribute-map type) is a misconfiguration that never self-heals → it is a
+    **fatal** finding (startup fails).
+  - A table that is **entirely absent** (zero columns reported) is the
+    not-yet-provisioned startup race → it is **not** fatal. Cerberus boots,
+    reports NOT READY on `/readyz` with a precise reason (`schema not yet
+    provisioned: table otel_logs absent`), and **re-probes** on the
+    auto-create retry cadence; readiness flips green once an external writer
+    (the otel-collector, or `CERBERUS_AUTO_CREATE_SCHEMA`) creates the schema
+    — **no restart**. `/healthz` stays 200 throughout. An introspection
+    *error* (as opposed to a clean zero-row absence) remains fatal.
 
 The check runs after the auto-create step on purpose: on a fresh database
 cerberus has just created the tables, so introspecting them before the
 create would fail the schema gate against tables that don't exist yet. When
-any gate fails, the error **aggregates every** unmet requirement, e.g.:
+a **fatal** gate fails, the error **aggregates every** unmet requirement, e.g.:
 
 ```text
 requirements check failed:

@@ -16,7 +16,13 @@
 // Prerequisites:
 //   - ClickHouse reachable at $CH_ADDR (default 127.0.0.1:9000), already
 //     warm. The benchmark explicitly disables auto-create-schema so we
-//     measure HTTP-listener bootstrap, not DDL apply time.
+//     measure HTTP-listener bootstrap, not DDL apply time. The CH it runs
+//     against carries no provisioned schema, so the boot-time requirements
+//     check (ON by default) hits its absent-schema branch: that is a
+//     TRANSIENT not-ready state, not a fatal one, so the process boots and
+//     /healthz answers 200 (only /readyz goes red). The bench therefore
+//     measures liveness cold-start exactly as intended — the requirements
+//     check does not crash-loop on a not-yet-provisioned schema.
 //   - A built `cerberus` binary; the test will `go build` one into a
 //     temp dir when none is supplied via $CERBERUS_BIN.
 package e2e
@@ -69,7 +75,8 @@ func TestStartupSpeed_HealthzUnder2s(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"CERBERUS_HTTP_ADDR="+addr,
 		"CERBERUS_CH_ADDR="+chAddr,
 		"CERBERUS_CH_DATABASE="+chDB,

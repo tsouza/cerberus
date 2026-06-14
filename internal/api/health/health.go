@@ -20,6 +20,16 @@ type Pinger interface {
 // on the ClickHouse ping.
 type SchemaReadyFunc func() bool
 
+// SchemaPresentFunc reports whether the configured schema has been
+// provisioned (every required table exists). When the schema is not yet
+// present it returns present=false plus a precise reason for the /readyz
+// body (e.g. "schema not yet provisioned: table otel_logs absent"). It
+// models the absent-schema startup race: a cerberus deployed alongside the
+// otel-collector that owns schema creation can boot before any table
+// exists, so readiness waits for the external writer rather than the
+// process crash-looping. When nil the schema is treated as present.
+type SchemaPresentFunc func() (present bool, reason string)
+
 // Options configure Handler.
 type Options struct {
 	// Pinger is the ClickHouse health check. Required.
@@ -28,6 +38,13 @@ type Options struct {
 	// SchemaReady is consulted on every readiness check. When nil the
 	// schema status is treated as ready (i.e. only the CH ping matters).
 	SchemaReady SchemaReadyFunc
+
+	// SchemaPresent is consulted on every readiness check, BEFORE
+	// SchemaReady. When it reports not-present the probe returns 503 with
+	// the absent reason — the schema has not been provisioned yet and
+	// cerberus waits (no restart) for the external writer to create it.
+	// When nil the schema is treated as present.
+	SchemaPresent SchemaPresentFunc
 
 	// PingTimeout caps the per-probe ClickHouse ping. Defaults to 1s.
 	PingTimeout time.Duration
@@ -45,11 +62,12 @@ type Options struct {
 // Handler exposes /healthz (liveness) and /readyz (readiness) HTTP
 // handlers. Construct via New and register via Mount.
 type Handler struct {
-	pinger      Pinger
-	schemaReady SchemaReadyFunc
-	pingTimeout time.Duration
-	cacheTTL    time.Duration
-	now         func() time.Time
+	pinger        Pinger
+	schemaReady   SchemaReadyFunc
+	schemaPresent SchemaPresentFunc
+	pingTimeout   time.Duration
+	cacheTTL      time.Duration
+	now           func() time.Time
 
 	mu         sync.Mutex
 	cachedAt   time.Time
@@ -68,11 +86,12 @@ type readyResponse struct {
 // the safe default if startup wiring forgot to plug a real client in.
 func New(opts Options) *Handler {
 	h := &Handler{
-		pinger:      opts.Pinger,
-		schemaReady: opts.SchemaReady,
-		pingTimeout: opts.PingTimeout,
-		cacheTTL:    opts.CacheTTL,
-		now:         opts.Now,
+		pinger:        opts.Pinger,
+		schemaReady:   opts.SchemaReady,
+		schemaPresent: opts.SchemaPresent,
+		pingTimeout:   opts.PingTimeout,
+		cacheTTL:      opts.CacheTTL,
+		now:           opts.Now,
 	}
 	if h.pingTimeout <= 0 {
 		h.pingTimeout = time.Second
@@ -152,6 +171,23 @@ func (h *Handler) runCheck(ctx context.Context) (readyResponse, int) {
 			ClickHouse: "error: " + err.Error(),
 			Schema:     "unknown",
 		}, http.StatusServiceUnavailable
+	}
+
+	// Absent-schema gate first: a schema that has not been provisioned yet
+	// (the cerberus+collector startup race) reports the precise absent
+	// reason so the operator sees WHY readiness is held, distinct from the
+	// auto-create "pending" state below.
+	if h.schemaPresent != nil {
+		if present, reason := h.schemaPresent(); !present {
+			schema := "absent"
+			if reason != "" {
+				schema = "absent: " + reason
+			}
+			return readyResponse{
+				ClickHouse: "ok",
+				Schema:     schema,
+			}, http.StatusServiceUnavailable
+		}
 	}
 
 	if h.schemaReady != nil && !h.schemaReady() {

@@ -215,6 +215,73 @@ func TestRetrySchemaApply_StopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestStartup_AbsentSchema_HealthzUpReadyzUnready pins the absent-schema
+// boot-but-wait contract: when the boot-time requirements check finds the
+// configured tables not yet provisioned (the cerberus + collector startup
+// race), the schemaPresentSignal carrier reports not-present, so the same
+// root-mux run() builds serves /healthz 200 (liveness — the process is up)
+// while /readyz is 503 with the precise absent reason. The process never
+// exits — k8s keeps it alive and out of the Service endpoints, not
+// crash-looping.
+func TestStartup_AbsentSchema_HealthzUpReadyzUnready(t *testing.T) {
+	const reason = "schema not yet provisioned: table otel_logs absent"
+	signal := newSchemaPresentSignal(reason)
+
+	healthHandler := health.New(health.Options{
+		Pinger:        newHealthyPinger(),
+		SchemaPresent: signal.Func(),
+		CacheTTL:      -1,
+	})
+	rootMux := http.NewServeMux()
+	healthHandler.Mount(rootMux)
+	srv := httptest.NewServer(rootMux)
+	t.Cleanup(srv.Close)
+
+	if got := getStatus(t, srv.URL+"/healthz"); got != http.StatusOK {
+		t.Errorf("/healthz with absent schema = %d; want 200 (liveness must not gate on schema)", got)
+	}
+	if got := getStatus(t, srv.URL+"/readyz"); got != http.StatusServiceUnavailable {
+		t.Errorf("/readyz with absent schema = %d; want 503 (boot-but-wait)", got)
+	}
+}
+
+// TestStartup_AbsentSchema_FlipsReadyOncePresent pins the recovery half:
+// once an external writer provisions the schema, markPresent flips the
+// carrier and /readyz returns 200 — no restart.
+func TestStartup_AbsentSchema_FlipsReadyOncePresent(t *testing.T) {
+	signal := newSchemaPresentSignal("schema not yet provisioned: table otel_logs absent")
+
+	healthHandler := health.New(health.Options{
+		Pinger:        newHealthyPinger(),
+		SchemaPresent: signal.Func(),
+		CacheTTL:      -1,
+	})
+	rootMux := http.NewServeMux()
+	healthHandler.Mount(rootMux)
+	srv := httptest.NewServer(rootMux)
+	t.Cleanup(srv.Close)
+
+	if got := getStatus(t, srv.URL+"/readyz"); got != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz before provisioning = %d; want 503", got)
+	}
+
+	// External writer (collector / auto-create) provisions the schema.
+	signal.markPresent()
+
+	if got := getStatus(t, srv.URL+"/readyz"); got != http.StatusOK {
+		t.Errorf("/readyz after provisioning = %d; want 200 (flips ready, no restart)", got)
+	}
+}
+
+// newHealthyPinger returns a flipPinger preset to report ClickHouse
+// reachable, so absent-schema tests isolate the schema gate from the CH
+// ping.
+func newHealthyPinger() *flipPinger {
+	p := &flipPinger{}
+	p.healthy.Store(true)
+	return p
+}
+
 // getStatus GETs url and returns the status code.
 func getStatus(t *testing.T, url string) int {
 	t.Helper()
