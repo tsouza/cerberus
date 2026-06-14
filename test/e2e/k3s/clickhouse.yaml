@@ -17,6 +17,36 @@ spec:
   selector:
     app: clickhouse
 ---
+# Durable data volume for ClickHouse. The chaos lane's `ch-pod-kill` scenario
+# deletes the CH *pod* (`kubectl delete pod -l app=clickhouse`) to simulate a
+# brief CH outage — WITHOUT this PVC, the Deployment ran on container-ephemeral
+# storage, so the recreated pod came back EMPTY (no schema, no data) and every
+# downstream query 502'd with `code:60 Unknown table … otel_*`, leaving the
+# breaker stuck oscillating and failing the whole lane.
+#
+# Backing the data dir with a PVC makes the pod-kill the REALISTIC scenario the
+# assertions expect: CH goes away briefly, then comes back WITH its data intact,
+# so the breaker trips during the gap and CLOSES once CH is reachable again. The
+# PVC is NOT labelled `app=clickhouse`, so `kubectl delete pod -l app=clickhouse`
+# never touches it — the volume survives every pod recreation.
+#
+# StorageClass is left unset: k3d's built-in `local-path` provisioner is the
+# cluster-default StorageClass, so the claim is dynamically provisioned on the
+# node's local disk out of the box.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  namespace: cerberus
+  labels:
+    app: clickhouse-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,6 +56,9 @@ metadata:
     app: clickhouse
 spec:
   replicas: 1
+  # Recreate (not RollingUpdate) is REQUIRED: the data dir is backed by a single
+  # ReadWriteOnce PVC, which cannot be multi-attached. Recreate tears the old
+  # pod down (releasing the volume) before the replacement attaches it.
   strategy:
     type: Recreate
   selector:
@@ -36,6 +69,10 @@ spec:
       labels:
         app: clickhouse
     spec:
+      volumes:
+        - name: clickhouse-data
+          persistentVolumeClaim:
+            claimName: clickhouse-data
       containers:
         - name: clickhouse
           image: clickhouse/clickhouse-server:25.8-alpine
@@ -53,6 +90,13 @@ spec:
               value: cerberus
             - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
               value: "1"
+          volumeMounts:
+            # CH persists every table + part under /var/lib/clickhouse; mounting
+            # the PVC here is what survives a pod-kill. (The server log dir under
+            # /var/log/clickhouse-server is intentionally NOT persisted — logs
+            # are disposable and a pod-kill is expected to start a fresh log.)
+            - name: clickhouse-data
+              mountPath: /var/lib/clickhouse
           resources:
             requests:
               cpu: 100m

@@ -387,14 +387,14 @@ async function scenarioChPodKill() {
   // breaker trip is already bindingly asserted DURING the fault via the
   // 503 + Retry-After:5 HTTP path above. The self-metric flows OTLP ->
   // collector -> CH -> Prom head, so it rides the very CH the outage knocked
-  // out; on the e2e fixture CH uses ephemeral storage with a Recreate
-  // strategy (test/e2e/k3s/clickhouse.yaml), so the trip counter written
-  // mid-outage can be lost when CH is recreated and never read back —
-  // surfacing as a NULL series (metric absent), not a 0. We therefore
-  // tolerate NULL (absent, OTLP-lag / ephemeral-CH-wipe — same tolerance the
-  // sibling state check already applies) but still FAIL if the series IS
-  // present and reads < 1, which would mean the trip genuinely wasn't
-  // recorded despite CH being queryable.
+  // out: CH now persists its data across the pod-kill (a PVC backs
+  // /var/lib/clickhouse — test/e2e/k3s/clickhouse.yaml), so the trip counter
+  // written mid-outage survives, but it can still be lagging the OTLP flush
+  // right after recovery — surfacing transiently as a NULL series (metric
+  // absent), not a 0. We therefore tolerate NULL (absent, OTLP-lag — same
+  // tolerance the sibling state check already applies) but still FAIL if the
+  // series IS present and reads < 1, which would mean the trip genuinely
+  // wasn't recorded despite CH being queryable.
   log('  corroborating breaker self-metrics via Prom head (settle poll)...');
   let tripsSeen = null;
   await pollUntil(
@@ -408,7 +408,7 @@ async function scenarioChPodKill() {
   if (tripsSeen !== null && tripsSeen < 1) {
     failures.push(`cerberus_ch_breaker_trips_total present but < 1 (${tripsSeen}) — breaker trip not recorded despite CH being queryable`);
   } else {
-    log(`    cerberus_ch_breaker_trips_total == ${tripsSeen === null ? '(absent; OTLP lag / ephemeral-CH wipe, tolerated — trip already asserted via 503)' : tripsSeen}`);
+    log(`    cerberus_ch_breaker_trips_total == ${tripsSeen === null ? '(absent; OTLP lag, tolerated — trip already asserted via 503)' : tripsSeen}`);
   }
   const state = await queryBreakerMetric('cerberus_ch_breaker_state');
   if (state !== null && state !== BREAKER_STATE_CLOSED) {
@@ -877,23 +877,25 @@ async function endOfRunHealthGate() {
 
 // ---- scenario registry + driver --------------------------------------
 
-// `wipesCh: true` marks a scenario that destroys the ClickHouse pod. Because
-// CH runs `strategy: Recreate` on container-ephemeral storage
-// (test/e2e/k3s/clickhouse.yaml), the pod comes back EMPTY — every seeded
-// table is gone. The heal gate after such a scenario RE-SEEDS via a one-shot
-// `just e2e-reseed` through a FRESH port-forward, giving the next scenario an
-// IMMEDIATELY repopulated data plane (otherwise downstream queries hit
-// `code:60 Unknown table … otel_*`).
+// `recreatesCh: true` marks a scenario that deletes the ClickHouse pod. CH now
+// backs /var/lib/clickhouse with a PersistentVolumeClaim
+// (test/e2e/k3s/clickhouse.yaml), so the recreated pod comes back WITH its
+// schema + data INTACT — the pod-kill is the realistic "CH briefly away, then
+// back with its data" outage the breaker assertions expect, NOT an empty-table
+// wipe. The heal gate after such a scenario still runs a one-shot
+// `just e2e-reseed` through a FRESH port-forward, but only to RE-ANCHOR the
+// rolling time-window at wall-clock now (the seeder's INSERTs re-anchor on
+// now64(9)); it is no longer restoring lost tables.
 //
-// This one-shot is COMPLEMENTARY to the rolling seeder, not a substitute for
-// it. As of the reconnecting-supervisor fix (test/e2e/seed/
-// port_forward_supervisor.sh) the rolling seeder's port-forward respawns once
-// CH is recreated, so the 30 s rolling feed resumes on its own and keeps the
-// data anchored at wall-clock now for the time-windowed assertions of the
-// scenarios that follow. The one-shot closes the gap between CH coming back
-// and the next rolling tick landing; the rolling feed keeps it fresh after.
+// This one-shot is COMPLEMENTARY to the rolling seeder. As of the
+// reconnecting-supervisor fix (test/e2e/seed/port_forward_supervisor.sh) the
+// rolling seeder's port-forward respawns once CH is recreated, so the 30 s
+// rolling feed resumes on its own and keeps the data anchored at wall-clock now
+// for the time-windowed assertions of the scenarios that follow. The one-shot
+// closes the freshness gap between CH coming back and the next rolling tick
+// landing; the PVC guarantees the schema + historical data are already there.
 const PHASE1 = [
-  { name: 'ch-pod-kill', run: scenarioChPodKill, wipesCh: true },
+  { name: 'ch-pod-kill', run: scenarioChPodKill, recreatesCh: true },
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
   { name: 'cerberus-pod-kill', run: scenarioCerberusPodKill },
 ];
@@ -938,26 +940,27 @@ async function preflight() {
 }
 
 // healBetweenScenarios re-establishes the green-stack precondition each
-// scenario assumes. The lane is sequential and a CH-destructive scenario tears
-// CH down (Recreate + ephemeral storage), so the NEXT scenario must not start
-// until /readyz + all heads are green again AND the data plane has been
-// REPOPULATED — otherwise a still-recovering or EMPTY stack from the prior
-// fault masquerades as the next scenario's failure (e.g. cerberus-pod-kill's
-// aggregate-success loop running while CH is empty, or ch-slow-query's nested
-// subquery 502'ing on a missing `otel_metrics_histogram` table). This
+// scenario assumes. The lane is sequential and a CH-recreating scenario tears
+// the CH pod down (Recreate, but its /var/lib/clickhouse PVC survives), so the
+// NEXT scenario must not start until /readyz + all heads are green again AND
+// the data plane is queryable + freshly anchored — otherwise a still-recovering
+// stack from the prior fault masquerades as the next scenario's failure (e.g.
+// cerberus-pod-kill's aggregate-success loop running before CH is back, or
+// ch-slow-query's nested subquery hitting a still-rolling-out CH). This
 // implements the heal-between-each-scenario invariant the lane's header
 // documents.
 //
-// CH recreates EMPTY (container-ephemeral storage). After a `wipesCh`
-// scenario the heal gate RE-SEEDS via a one-shot `just e2e-reseed` (fresh
-// port-forward, idempotent DDL + INSERTs) for an IMMEDIATE repopulation, then
-// waits for the seeded fixtures to be visible through the Prom head before
-// clearing the gate. The rolling seeder's own port-forward respawns once CH
-// is recreated (reconnecting supervisor, see PHASE1's comment) and resumes
-// its 30 s feed, but the one-shot closes the gap until the next rolling tick
-// lands so the next scenario never starts against an empty table. After a
-// non-destructive scenario, CH data survives and only a short settle window
-// is needed.
+// CH's schema + historical data PERSIST across the pod-kill (PVC-backed data
+// dir — test/e2e/k3s/clickhouse.yaml), so the recreated pod is never empty.
+// After a `recreatesCh` scenario the heal gate still runs a one-shot
+// `just e2e-reseed` (fresh port-forward, idempotent DDL + INSERTs) — now only
+// to RE-ANCHOR the rolling time-window at wall-clock now (the seeder re-anchors
+// on now64(9)), then waits for the `up` series to read back through the Prom
+// head before clearing the gate. The rolling seeder's own port-forward respawns
+// once CH is recreated (reconnecting supervisor, see PHASE1's comment) and
+// resumes its 30 s feed; the one-shot closes the freshness gap until the next
+// rolling tick lands. After a non-destructive scenario, CH stays up untouched
+// and only a short settle window is needed.
 const HEAL_SETTLE_MS = 15_000; // OTLP flush headroom for a non-destructive scenario
 const RESEED_DEADLINE_MS = 120_000; // bound the `just e2e-reseed` one-shot (DDL + INSERTs + verify)
 const RESEED_VISIBLE_DEADLINE_MS = 90_000; // wait for the re-seeded `up` series to read back via the Prom head
@@ -967,7 +970,7 @@ const RESEED_VISIBLE_DEADLINE_MS = 90_000; // wait for the re-seeded `up` series
 // clean exit; logs + returns false otherwise. Bounded so a hung port-forward
 // can't stall the lane past its budget.
 function reseedClickHouse() {
-  log('  heal: re-seeding freshly-recreated (empty) ClickHouse via `just e2e-reseed`...');
+  log('  heal: re-anchoring the rolling window on recreated (PVC-backed) ClickHouse via `just e2e-reseed`...');
   const res = capture('just', ['e2e-reseed'], { timeout: RESEED_DEADLINE_MS });
   if (res.stdout) log(res.stdout.trimEnd());
   if (res.status !== 0) {
@@ -984,14 +987,15 @@ async function healBetweenScenarios(nextName, priorScenario) {
     return `heal gate before ${nextName}: stack did not return to /readyz 200 + all heads 200 within the recovery budget after the prior scenario`;
   }
 
-  if (priorScenario && priorScenario.wipesCh) {
-    // CH came back empty — re-seed it before the next scenario asserts.
+  if (priorScenario && priorScenario.recreatesCh) {
+    // CH came back with its PVC-backed data intact — re-anchor the rolling
+    // window at now before the next time-windowed scenario asserts.
     if (!reseedClickHouse()) {
-      return `heal gate before ${nextName}: re-seed of the recreated ClickHouse failed; downstream scenarios would query empty tables`;
+      return `heal gate before ${nextName}: re-seed of the recreated ClickHouse failed; downstream scenarios would query a stale window`;
     }
-    // Confirm the seeded data is actually queryable through the Prom head
-    // before clearing the gate (heads can be 200 on an empty table, so a
-    // bare assertHeadsHealthy is not enough — assert the `up` series is back).
+    // Confirm the data is actually queryable + freshly anchored through the
+    // Prom head before clearing the gate (a bare assertHeadsHealthy is not
+    // enough — assert the `up` series reads back).
     const visible = await pollUntil(
       async () => {
         const r = await httpGet('/api/v1/query?query=up');

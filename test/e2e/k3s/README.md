@@ -10,7 +10,7 @@ whole `kustomization.yaml` via `kubectl apply -k`.
 | Manifest                  | What it deploys                                                                      |
 | ------------------------- | ------------------------------------------------------------------------------------ |
 | `namespace.yaml`          | The `cerberus` namespace everything lives in.                                        |
-| `clickhouse.yaml`         | Single-node ClickHouse (Deployment + Service) backing the `otel` database.           |
+| `clickhouse.yaml`         | Single-node ClickHouse (Deployment + Service + PVC-backed data dir) for `otel`.      |
 | `cerberus.yaml`           | Cerberus Deployment + NodePort Service (host `:8080`).                               |
 | `cerberus-hpa.yaml`       | HorizontalPodAutoscaler scaling cerberus on CPU utilisation (2–10 replicas).         |
 | `grafana.yaml`            | Grafana 11 with provisioned Cerberus-{Prometheus,Loki,Tempo} datasources.            |

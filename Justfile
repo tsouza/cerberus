@@ -506,23 +506,22 @@ e2e-seed:
     @echo "==> seed done"
 
 # One-shot RE-seed through a fresh, self-contained port-forward — used by the
-# chaos lane's heal step after a CH-destructive scenario recreates ClickHouse
-# EMPTY (test/e2e/k3s/clickhouse.yaml: `strategy: Recreate`, no volumes ⇒
-# container-ephemeral storage). The rolling seeder's long-lived port-forward
-# (`e2e-seed-rolling`) is bound to a single backing pod, so `ch-pod-kill`
-# breaks that tunnel and it never reconnects — the rolling seeder then writes
-# into a dead socket for the rest of the run and CH stays empty, so every
-# downstream scenario fails with `code:60 Unknown table … otel_*`. This recipe
-# stands up its OWN throwaway forward on a DISTINCT local port (so it never
-# races the rolling forward's 19000 socket), re-applies the idempotent
+# chaos lane's heal step after a CH-recreating scenario kills + recreates the
+# ClickHouse pod. CH's data dir is PVC-backed (test/e2e/k3s/clickhouse.yaml:
+# `strategy: Recreate` + a ReadWriteOnce PersistentVolumeClaim on
+# /var/lib/clickhouse), so the recreated pod comes back WITH its schema +
+# historical data — this re-seed no longer RESTORES lost tables, it RE-ANCHORS
+# the rolling metric/log window on now64(9) so the next scenario's time-windowed
+# asserts see fresh data. (The rolling seeder's long-lived port-forward,
+# `e2e-seed-rolling`, is bound to a single backing pod, so `ch-pod-kill` breaks
+# that tunnel; the reconnecting supervisor respawns it once CH is recreated, and
+# this one-shot closes the freshness gap until the next rolling tick lands.)
+# This recipe stands up its OWN throwaway forward on a DISTINCT local port (so it
+# never races the rolling forward's 19000 socket), re-applies the idempotent
 # OTel-CH DDL, re-inserts every fixture, verifies the rowcounts, and tears the
-# forward down — exactly the one-shot the seeder already performs on boot, so
-# a freshly-recreated empty CH is repopulated before the next scenario asserts.
-# Idempotent + re-runnable: the seeder's DDL is CREATE … IF NOT EXISTS and the
-# INSERTs re-anchor on now64(9), so running it against either an empty or an
-# already-populated CH is safe.
-#
-# One-shot re-seed of a recreated (empty) ClickHouse for the chaos heal step.
+# forward down. Idempotent + re-runnable: the seeder's DDL is CREATE … IF NOT
+# EXISTS and the INSERTs re-anchor on now64(9), so running it against either an
+# empty or an already-populated CH is safe.
 e2e-reseed:
     @echo "==> re-seeding OTel data (one-shot, fresh port-forward) after CH recreation"
     @kubectl -n cerberus port-forward svc/clickhouse 19001:9000 > /tmp/cerberus-e2e-reseed-pf.log 2>&1 & \
@@ -559,15 +558,16 @@ e2e-reseed:
 # `setsid` so it is its own process-group leader. A bare `kubectl
 # port-forward` is bound to one backing pod, so the chaos `ch-pod-kill`
 # scenario breaks the tunnel and it never reconnects — the seeder then writes
-# into a dead socket for the rest of the run and CH stays empty. The
-# supervisor respawns the forward when it dies, so once CH is recreated the
+# into a dead socket for the rest of the run, so the rolling window goes stale
+# (the PVC keeps CH's historical data, but no fresh tick re-anchors it at now).
+# The supervisor respawns the forward when it dies, so once CH is recreated the
 # tunnel re-establishes and the 30 s rolling ticks resume (the seeder's
 # clickhouse-go pool re-dials a fresh connection per tick). We stash the
 # supervisor's PGID so e2e-seed-stop can kill the whole group (supervisor +
 # its current kubectl child) atomically. This complements the chaos heal
-# step's one-shot `just e2e-reseed`: the one-shot repopulates immediately,
-# the supervised rolling feed keeps data anchored at wall-clock now for the
-# time-windowed assertions of the scenarios that follow.
+# step's one-shot `just e2e-reseed`: the one-shot re-anchors the window
+# immediately, the supervised rolling feed keeps data anchored at wall-clock now
+# for the time-windowed assertions of the scenarios that follow.
 e2e-seed-rolling:
     @echo "==> launching rolling seeder (30s tick) in background"
     @# 1) start the reconnecting port-forward supervisor in its own process
