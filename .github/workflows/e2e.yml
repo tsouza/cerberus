@@ -537,10 +537,16 @@ jobs:
   #                       coverage-discipline guard mirror compose-smoke.
   dashboard-setup:
     name: dashboard-setup
-    # Push-to-main + nightly + manual dispatch only — informational on merges,
-    # not a PR gate. The PR fast-feedback loop stays on `check` + `lint` +
-    # `compose-smoke`.
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    # Runs on pull_request (skipping docs-only PRs) so the parallel smoke shards
+    # are exercised per-change, plus push + nightly + manual dispatch. The crawl
+    # shard is the ~50min long pole and is dispatched only on schedule + manual
+    # (INCLUDE_CRAWL below) — so PR/push get a fast smoke-only matrix with no
+    # all-skipped crawl leg. Informational on merges, not a required PR gate.
+    if: |
+      always() &&
+      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -567,6 +573,10 @@ jobs:
         run: node .github/scripts/dashboard-matrix.mjs
         env:
           MODE: emit
+          # Include the ~50min crawl shard only on schedule + manual dispatch;
+          # pull_request + push get a smoke-only matrix (fast, testable, no
+          # all-skipped crawl leg).
+          INCLUDE_CRAWL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
   dashboard-shard:
     name: dashboard-shard
@@ -677,11 +687,14 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           # iterate-all-dashboards reads dashboard JSON from disk; point it at
           # the k3d stack's provisioning dir (the spec default is the compose
-          # stack's). The compose-only dashboards (clickhouse / host / otelcol)
-          # are fed by receivers the k3d collector intentionally doesn't run,
-          # so probing them here reports empty panels for data this stack never
-          # ships; the compose set is covered per-PR by the required
-          # compose-smoke job.
+          # stack's). The host / otelcol dashboards are fed by receivers the
+          # k3d collector intentionally doesn't run (host_metrics, prometheus
+          # self-scrape), so probing them here reports empty panels for data
+          # this stack never ships; that compose set is covered per-PR by the
+          # required compose-smoke job. ClickHouse query_log IS seeded on k3d
+          # (the gateway's sqlquery/clickhouse-logs receiver mirrors compose),
+          # so loki_explore_columns.spec.ts — the #908 Logs-Drilldown column
+          # gate that queries {service_name="clickhouse"} directly — runs here.
           DASHBOARDS_DIR: ${{ github.workspace }}/test/e2e/grafana/dashboards
         run: npx playwright test ${{ matrix.specs }} --reporter=list
 
@@ -832,11 +845,12 @@ jobs:
         run: |
           echo "setup  = ${{ needs.dashboard-setup.result }}"
           echo "shards = ${{ needs.dashboard-shard.result }}"
-          # The lane is off on pull_request (and any path that skipped setup):
-          # report green without work — the dashboard lane is informational and
-          # never a PR gate.
+          # If setup was skipped (docs-only PR, or a non-PR/push/schedule/
+          # dispatch path), there is nothing to aggregate — report green
+          # without work. On a code PR setup runs, so this branch does not fire
+          # and the shard roll-up below is the real gate.
           if [ "${{ needs.dashboard-setup.result }}" = "skipped" ]; then
-            echo "dashboard lane skipped (not push/schedule/dispatch) — nothing to aggregate."
+            echo "dashboard lane skipped (docs-only or unsupported event) — nothing to aggregate."
             exit 0
           fi
           # Otherwise setup must have succeeded and the matrix must be a clean
