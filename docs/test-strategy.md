@@ -1,11 +1,12 @@
 # Test strategy
 
-Cerberus is tested in 12 layers, ordered roughly cheapest-and-fastest
+Cerberus is tested in 13 layers, ordered roughly cheapest-and-fastest
 to slowest-and-most-realistic. Each layer pins a different class of
 contract: AST shape, plan-IR invariants, optimizer behaviour, emitted
 SQL bytes, semantic equivalence under chDB execution, function-surface
 parity, HTTP wire conformance, process lifecycle, browser UX,
-failure-mode resilience, performance ceilings.
+deterministic failure-mode resilience, performance ceilings,
+compute-fan-out guards, and live-stack chaos resilience.
 
 This document is the canonical map of what each layer covers, where
 the tests live, which CI gates run them, and how to add a new test
@@ -13,25 +14,26 @@ inside each layer.
 
 ## At a glance
 
-| Layer | Name                                | Lives in                                                                                          | Catches                                                                                                              | Misses                                                                       |
-| ----- | ----------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 1     | Parser smoke / AST-shape pinning    | `internal/{promql,logql,traceql}/parser_*_test.go`                                                | Upstream parser renames a field, swaps an enum, changes a root-node type after a fork rebase                         | Semantic divergence below the AST surface                                    |
-| 2a    | chplan IR snapshots in TXTAR        | `test/spec/<head>/*.txtar` (`-- chplan --` sections)                                              | Lowering regressions that don't change emitted SQL bytes                                                             | Optimizer-introduced regressions (covered by `-- chplan_optimized --` pair)  |
-| 2b    | Lowering edge cases                 | `internal/{promql,logql,traceql}/lower_*_test.go`                                                 | Edge inputs (NaN, empty matrix, scalar coercions) that don't appear in golden fixtures                               | Combinatoric blow-up — keep table-driven                                     |
-| 3     | chplan IR invariants                | `internal/chplan/{equal,walk}_invariants_test.go`                                                 | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity                          | Lowering bugs — IR is generic                                                |
-| 4     | Optimizer rule properties           | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank}_test.go`         | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                                       | Cross-rule chDB row drift (covered by Layer 6 chDB property)                 |
-| 5     | chsql Frag + QueryBuilder goldens   | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go`                | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency                             | SQL that compiles but executes incorrectly — covered by Layer 6              |
-| 6a    | PromQL chDB roundtrip               | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                 | Optimizer/emitter rewrites that change the row set                                                                   | Behaviour outside the seeded corpus                                          |
-| 6b    | LogQL chDB roundtrip                | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                 | Same as 6a                                                                   |
-| 6c    | TraceQL chDB roundtrip              | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                   |
-| 6d    | Function-surface parity ledger      | `test/surface-parity/`, `test/rejection-parity/`, `test/inventory/`                               | A symbol cerberus fails to lower (wrong-reject) or answers when the reference rejects (wrong-accept)                 | Whether an accepted symbol returns the *right rows* (Layer 6a-c)             |
-| 7     | HTTP handler conformance            | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (Layer 10) and UX flows (Layer 9)                 |
-| 7b    | Consumer-corpus replay              | `test/consumer-corpus/`                                                                           | Consumer-decode drift on captured Grafana request shapes (proto envelopes, bare JSON, drilldown queries)             | Shapes Grafana hasn't been observed sending — crawler mines captures         |
-| 8     | System / process lifecycle          | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 9)                            |
-| 9     | Playwright UX flows                 | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                              |
-| 10    | Chaos / failure-mode                | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                         |
-| 11    | Perf benchmarks + alloc regressions | `internal/*/*_bench_test.go`                                                                      | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat         |
-| 12    | Compute fan-out guards              | `internal/perf/fanout`, `test/perf/` (scaling harness; cardinality / wall / decision ratchets)    | Upward fan-factor regression, a new unbounded shape (`CrossJoin` / uncapped `WITH RECURSIVE`), super-linear scaling  | A fan-out in a construct with no guard and no fixture (the nightly profiler) |
+| Layer | Name                                 | Lives in                                                                                          | Catches                                                                                                                                                                              | Misses                                                                                     |
+| ----- | ------------------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| 1     | Parser smoke / AST-shape pinning     | `internal/{promql,logql,traceql}/parser_*_test.go`                                                | Upstream parser renames a field, swaps an enum, changes a root-node type after a fork rebase                                                                                         | Semantic divergence below the AST surface                                                  |
+| 2a    | chplan IR snapshots in TXTAR         | `test/spec/<head>/*.txtar` (`-- chplan --` sections)                                              | Lowering regressions that don't change emitted SQL bytes                                                                                                                             | Optimizer-introduced regressions (covered by `-- chplan_optimized --` pair)                |
+| 2b    | Lowering edge cases                  | `internal/{promql,logql,traceql}/lower_*_test.go`                                                 | Edge inputs (NaN, empty matrix, scalar coercions) that don't appear in golden fixtures                                                                                               | Combinatoric blow-up — keep table-driven                                                   |
+| 3     | chplan IR invariants                 | `internal/chplan/{equal,walk}_invariants_test.go`                                                 | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity                                                                                          | Lowering bugs — IR is generic                                                              |
+| 4     | Optimizer rule properties            | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank}_test.go`         | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                                                                                                       | Cross-rule chDB row drift (covered by Layer 6 chDB property)                               |
+| 5     | chsql Frag + QueryBuilder goldens    | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go`                | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency                                                                                             | SQL that compiles but executes incorrectly — covered by Layer 6                            |
+| 6a    | PromQL chDB roundtrip                | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                 | Optimizer/emitter rewrites that change the row set                                                                                                                                   | Behaviour outside the seeded corpus                                                        |
+| 6b    | LogQL chDB roundtrip                 | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                                                                                 | Same as 6a                                                                                 |
+| 6c    | TraceQL chDB roundtrip               | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                                                                                               | Same as 6a                                                                                 |
+| 6d    | Function-surface parity ledger       | `test/surface-parity/`, `test/rejection-parity/`, `test/inventory/`                               | A symbol cerberus fails to lower (wrong-reject) or answers when the reference rejects (wrong-accept)                                                                                 | Whether an accepted symbol returns the *right rows* (Layer 6a-c)                           |
+| 7     | HTTP handler conformance             | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                                                                                         | Real-network failure modes (Layer 10) and UX flows (Layer 9)                               |
+| 7b    | Consumer-corpus replay               | `test/consumer-corpus/`                                                                           | Consumer-decode drift on captured Grafana request shapes (proto envelopes, bare JSON, drilldown queries)                                                                             | Shapes Grafana hasn't been observed sending — crawler mines captures                       |
+| 8     | System / process lifecycle           | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                                                                                        | Cross-process behaviour — Compose / k3d (Layer 9)                                          |
+| 9     | Playwright UX flows                  | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                                                                                      | Pure backend logic — Layers 1–8                                                            |
+| 10    | Chaos / failure-mode (deterministic) | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker (stubbed-querier injection)                                     | Long-tail platform-specific failures; real-deployment fault behaviour (Layer 13)           |
+| 11    | Perf benchmarks + alloc regressions  | `internal/*/*_bench_test.go`                                                                      | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                                                                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat                       |
+| 12    | Compute fan-out guards               | `internal/perf/fanout`, `test/perf/` (scaling harness; cardinality / wall / decision ratchets)    | Upward fan-factor regression, a new unbounded shape (`CrossJoin` / uncapped `WITH RECURSIVE`), super-linear scaling                                                                  | A fan-out in a construct with no guard and no fixture (the nightly profiler)               |
+| 13    | Live-stack chaos (real faults)       | `.github/scripts/chaos-run.mjs`, `test/e2e/chaos/manifests/`                                      | Resilience contracts under REAL faults against the k3d stack: CH-outage breaker trip + recovery, query-timeout breaker-neutrality, replica resilience, admit shed, network partition | Pure backend logic (Layers 1-8); steady-state UX (Layer 9) — chaos is fault-injection only |
 
 ## CI gates
 
@@ -62,6 +64,7 @@ substrate, a Docker stack, or a soak streak before promotion).
 | `perf-profile`                          | `perf-profile.yml` (`profile`)                       | push + nightly + dispatch           | Info      | Corpus-wide compute-fan-out profiler over every executable TXTAR fixture (EXPLAIN + per-subquery `count()` fan-factor); top-40 to step summary (Layer 12, Component B)                                                   |
 | `perf-benchmark`                        | `perf-benchmark.yml` (`benchstat diff`)              | PR (path-match) + weekly + dispatch | Info      | benchstat wall-clock regression vs baseline (Layer 11)                                                                                                                                                                   |
 | `dashboard`                             | `e2e.yml` (`dashboard`)                              | push + nightly + dispatch           | Info      | k3d + cerberus + Grafana + Playwright full smoke + `k3d` crawl (Layer 9)                                                                                                                                                 |
+| `chaos`                                 | `e2e.yml` (`chaos`)                                  | push + nightly + dispatch           | Info      | k3d live-stack fault injection — resilience contracts under real faults (Layer 13). Phase-1 on push; full set on nightly/dispatch                                                                                        |
 | `startup-bench`                         | `e2e.yml` (`startup-bench`)                          | push + nightly + dispatch           | Info      | cerberus reaches `/healthz` under 2 s against an inline ClickHouse                                                                                                                                                       |
 | `mutation` (per phase)                  | `mutation.yml` (matrix)                              | push + nightly + dispatch           | Info      | gremlins per package (`chplan` / `chsql` / `optimizer` / `promql` / `logql` x4 / `traceql` / `qlcommon`) at the phase efficacy floor                                                                                     |
 | `property`                              | `property.yml`                                       | push + nightly + dispatch           | Info      | rapid-driven oracle property tests, PromQL / LogQL / TraceQL (Layer 4 + 6 cross-check)                                                                                                                                   |
@@ -253,13 +256,16 @@ ClickHouse + Grafana + telemetrygen), provisions the cerberus
 datasources, and walks Explore / Dashboard / Logs / Trace panel
 flows.
 
-### Layer 10 — Chaos / failure-mode
+### Layer 10 — Chaos / failure-mode (deterministic)
 
 `internal/{chclient,api/...}/chaos_test.go` injects CH connection
 drops, mid-stream cursor faults, panic-mid-handler, and the
-`goleak`-pinned no-goroutine-leak invariant. The CH-disconnect circuit
-breaker shields cerberus from amplifying transient CH outages into a
-503 storm.
+`goleak`-pinned no-goroutine-leak invariant via a **stubbed querier** —
+deterministic, in-process, on the required `check` lane. The
+CH-disconnect circuit breaker shields cerberus from amplifying transient
+CH outages into a 503 storm. This layer proves the *logic* of each
+resilience contract; Layer 13 proves the same contracts hold against a
+*real deployment* under *real faults*.
 
 ### Layer 11 — Perf + alloc regressions
 
@@ -302,6 +308,78 @@ for the strategy):
   TXTAR fixture via in-process chDB `EXPLAIN` + per-subquery `count()`,
   ranks by fan factor, and surfaces the worst as a job step-summary. The
   wide net for a fan-out in a construct nobody wrote a guard for.
+
+### Layer 13 — Live-stack chaos (real faults)
+
+The robustness layer *above* Layer 10's deterministic unit chaos: it
+fault-injects against the running k3d e2e stack (cerberus + ClickHouse +
+Grafana + OTel collector that `just e2e-up` stood up) and asserts the
+landed resilience contracts hold under **real** faults, not
+stubbed-querier injection. Lives as the `chaos` job in
+`.github/workflows/e2e.yml`, driven by `.github/scripts/chaos-run.mjs`
+(node ESM, kubectl + `fetch`) with the overlay/NetworkPolicy manifests
+under `test/e2e/chaos/manifests/`. Locally: `just e2e-up &&
+just e2e-seed-rolling && just e2e-wait-otel && just e2e-chaos-overlay &&
+just e2e-chaos`.
+
+What it proves (the contracts, mapped to their landing PRs):
+
+- **Circuit breaker (#883).** `ch-pod-kill` deletes the single-replica
+  CH Deployment (Recreate → clean outage). Under fault, a tight query
+  loop forces the shared breaker OPEN: every head returns 503 +
+  `Retry-After: 5` `errorType=unavailable` (accepting the documented
+  502-then-503 ordering), `/readyz` goes 503 with `circuit` in the body,
+  and `/healthz` stays 200 (liveness is breaker-independent — a CH
+  outage must NEVER restart cerberus). After CH auto-recreates, the
+  HALF-OPEN probe closes the breaker, `/readyz` and all heads return to
+  200, `cerberus_ch_breaker_trips_total >= 1` (monotonic) and
+  `cerberus_ch_breaker_state == 0`.
+- **Per-query wall-clock timeout (#886).** `ch-slow-query-timeout`
+  issues a deliberately slow `query_range` (wide range, 1 s step →
+  millions of anchors) that blows past the small `CERBERUS_QUERY_TIMEOUT`
+  the overlay set → clean 503 `errorType=timeout`. Critically
+  **breaker-neutral**: CH code-159 `TIMEOUT_EXCEEDED` is coerced to
+  success in `breaker.record`, so a burst of slow queries does NOT trip
+  the breaker (`state == 0`, `trips_total` unchanged), `/readyz` stays
+  200, and a separate fast query still 200s (admit slot + pooled
+  connection released).
+- **Replica resilience.** `cerberus-pod-kill` deletes ONE of the ≥2
+  HPA-floor replicas (scoped by name, never both); the Service keeps
+  serving from the survivor (aggregate success ≥ 95 %, retrying a single
+  mid-drain connection reset). The replacement rejoins endpoints; the
+  surviving replica set shows no unexpected restart (the killed pod is
+  *replaced*, not restarted in place — so the lane deliberately does NOT
+  inherit the dashboard job's blanket `restartCount == 0` assert).
+- **Network partition (phase-2).** `ch-network-partition` applies a
+  deny-egress NetworkPolicy (kube-router) to blackhole cerberus → CH —
+  the slower path to the same breaker-OPEN end state. **Gated** on a
+  runtime enforcement probe: if kube-router is not enforcing
+  NetworkPolicy in the pinned k3d image, the scenario is recorded
+  not-applicable (`::notice::`) and the breaker contract is covered by
+  `ch-pod-kill` instead — never a vacuous pass.
+- **Admission control + pool (phase-2).** `load-admit-saturation`
+  bursts concurrency beyond the small overlay admit cap → some requests
+  shed cleanly with 503 + `Retry-After: 1` `server saturated` while a
+  below-cap request still 200s; `cerberus_admit_rejected_total` climbs;
+  the breaker stays CLOSED (admit + pool-acquire rejections are
+  breaker-neutral).
+- **Handler panic (#885).** Already pinned deterministically by Layer 10
+  — the live lane only corroborates that the process recovered cleanly
+  from the cumulative fault storm (all 3 heads 200, no lingering 5xx) as
+  a passive end-of-run health gate, not a dedicated scenario.
+
+Design notes (flake resistance): every recovery check polls to a
+**generous bounded deadline** (never asserts immediately after a fault);
+faults are one-shot + idempotent (`kubectl delete pod` / `apply`
+policy), retries live on the ASSERT side only; scenarios run
+**sequentially with heal-between-each** so one scenario's residue can't
+poison the next; metric-based asserts (read back through cerberus's own
+Prom head — cerberus has no `/metrics` endpoint) are POST-recovery
+corroboration with a settle poll, because OTLP → collector → CH flush
+lags the fault by seconds, so during-fault timing keys on immediate HTTP
+status + `/readyz` body + kubectl state. The lane is **informational**:
+push-to-main + nightly + manual only, never a PR gate, never a
+branch-protection required check (k3d is heavy and chaos flakes).
 
 ## Property tests
 

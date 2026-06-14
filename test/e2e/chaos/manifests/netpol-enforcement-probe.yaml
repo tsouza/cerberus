@@ -1,0 +1,35 @@
+# netpol-enforcement-probe.yaml — the kube-router enforcement canary the
+# ch-network-partition scenario gates on. A deny-ALL-egress policy scoped
+# to a throwaway probe pod (app=chaos-netpol-probe). If kube-router
+# enforces it, a dial from the probe pod to ClickHouse fails (timeout); if
+# enforcement is absent (NetworkPolicy not wired in this k3d image), the
+# dial succeeds and the partition scenario is recorded not-applicable
+# rather than passing vacuously.
+#
+# The driver applies this alongside a short-lived probe pod, runs one CH
+# dial from inside it, and removes both regardless of outcome.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chaos-netpol-enforcement-probe
+  namespace: cerberus
+  labels:
+    app.kubernetes.io/part-of: cerberus
+    chaos.cerberus.io/scenario: netpol-enforcement-probe
+spec:
+  podSelector:
+    matchLabels:
+      app: chaos-netpol-probe
+  policyTypes:
+    - Egress
+  egress:
+    # DNS only — everything else (including ClickHouse) is denied. If the
+    # CH dial from the probe pod STILL succeeds, NetworkPolicy is not
+    # being enforced.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

@@ -42,6 +42,21 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,
     `baseline_sha`, and `baseline_ref` to `$GITHUB_OUTPUT`.
   - Exit: `0` resolved, `1` on baseline `==` ref or a git error.
+- **`chaos-run.mjs`** — `e2e.yml`, the `chaos` job (live-stack
+  chaos-engineering lane, Layer 12). Fault-injects against the running
+  k3d e2e stack (kubectl pod-kill / NetworkPolicy partition / slow-query
+  timeout / concurrency burst) and asserts the gateway's resilience
+  contracts (circuit breaker, per-query wall-clock timeout, admission
+  control, replica resilience) hold under real faults. Phase-1 scenarios
+  run sequentially with heal-between-each; metric corroboration is read
+  back through cerberus's own Prom head (settle poll). INFORMATIONAL —
+  never a PR gate.
+  - Env: `CERBERUS_URL` (default `http://localhost:8080`), `CHAOS_NS`
+    (default `cerberus`), `CHAOS_PHASE` (`phase-1` | `all`, default
+    `phase-1`), `CHAOS_SCENARIOS` (comma list to run a subset),
+    `CHAOS_MANIFESTS` (default `test/e2e/chaos/manifests`).
+  - Exit: `0` all selected scenarios passed (or recorded not-applicable
+    with a `::notice::`), `1` on any contract-assertion failure.
 - **`promql-surface-gate.mjs`** — `compatibility.yml`, the
   `compatibility/promql-surface` job (reference-backed full-surface PromQL
   rejection-completeness gate, #106). Stands up a flag-enabled reference

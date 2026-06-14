@@ -658,3 +658,121 @@ jobs:
       - name: Stop ClickHouse
         if: always()
         run: docker rm -f clickhouse || true
+
+  chaos:
+    name: chaos
+    # Live-stack chaos-engineering lane: fault-inject against the running
+    # k3d stack and assert the gateway's landed resilience contracts hold
+    # under REAL faults (circuit breaker #883, per-query wall-clock
+    # timeout #886, handler-panic envelope #885, admission control #4).
+    # This is the robustness layer ABOVE Layer 10's deterministic
+    # stubbed-querier unit chaos (in the required `check` lane) — it
+    # exercises real faults against a real deployment.
+    #
+    # INFORMATIONAL, never a PR gate. k3d is heavy and chaos flakes, so —
+    # exactly like the `dashboard` job — this runs on push-to-main +
+    # nightly + manual dispatch ONLY, never on pull_request, and is NOT a
+    # branch-protection required check. A regression is caught at
+    # merge-to-main time and reverted from main, not blocked pre-merge.
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # 40 to match the dashboard budget. Shared bring-up (e2e-up +
+    # seed-rolling + wait-otel) is ~10-15 min; the phase-1 fault scenarios
+    # are ~3-5 min each including heal + bounded recovery polling, fitting
+    # comfortably under the cap (~25-30 min target wall-clock).
+    timeout-minutes: 40
+    concurrency:
+      # Never cancel-in-progress — a half-killed k3d teardown leaks Docker
+      # volumes (same posture as the dashboard job).
+      group: e2e-chaos-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # node for chaos-run.mjs (node: builtins only — no npm install).
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install k3d
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      # Reuse the e2e k3d bring-up VERBATIM (identical first steps to the
+      # dashboard job): cluster, cerberus:e2e image, manifests, host port
+      # maps (localhost:8080 cerberus), and live OTel data.
+      - name: Bring up k3d stack
+        run: just e2e-up
+
+      - name: Seed OTel data (deterministic synthetic rows; rolling)
+        run: just e2e-seed-rolling
+
+      - name: Wait for real OTel data from the collector pipeline
+        run: just e2e-wait-otel
+
+      # Apply the chaos overlay (low breaker threshold + small
+      # CERBERUS_QUERY_TIMEOUT + small admit/pool caps) so faults trip
+      # FAST + DETERMINISTICALLY within the per-scenario budget.
+      - name: Apply chaos overlay (resilience knobs)
+        run: just e2e-chaos-overlay
+
+      # Phase-1 scenarios sequentially with heal-between-each:
+      # ch-pod-kill, ch-slow/query-timeout, cerberus-pod-kill. On the
+      # nightly schedule + manual dispatch, run the full phase set
+      # (adds ch-network-partition + load/admit-saturation).
+      - name: Run live-stack chaos lane
+        env:
+          CERBERUS_URL: http://localhost:8080
+          CHAOS_PHASE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'all' || 'phase-1' }}
+        run: just e2e-chaos
+
+      # Cluster-state evidence dump on failure — copied from the dashboard
+      # job so a red chaos run stays actionable (reviewers don't learn to
+      # ignore the lane). Per-pod current + previous-container logs are the
+      # crash evidence; the chaos lane deliberately does NOT inherit the
+      # dashboard job's blanket `Assert zero cerberus restarts` step (a
+      # breaker-trip-by-design flips /readyz red and cerberus-pod-kill
+      # replaces a replica — both fold into each scenario's chaos-aware
+      # recovery assertion instead).
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== pods ==="
+          kubectl -n cerberus get pods -o wide || true
+          echo "=== events (last 50) ==="
+          kubectl -n cerberus get events --sort-by=.lastTimestamp | tail -50 || true
+          echo "=== networkpolicies ==="
+          kubectl -n cerberus get networkpolicies -o wide || true
+          echo "=== cerberus logs ==="
+          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
+          for p in $(kubectl -n cerberus get pods -l app=cerberus -o name); do
+            echo "=== $p (current) ==="
+            kubectl -n cerberus logs "$p" --tail 50 || true
+            echo "=== $p (previous container, if restarted) ==="
+            kubectl -n cerberus logs "$p" --previous --tail 100 || true
+          done
+          echo "=== cerberus pod describes ==="
+          kubectl -n cerberus describe pods -l app=cerberus || true
+          echo "=== clickhouse logs ==="
+          kubectl -n cerberus logs deploy/clickhouse --tail 200 || true
+          echo "=== clickhouse pod describes ==="
+          kubectl -n cerberus describe pods -l app=clickhouse || true
+          echo "=== otel-collector gateway logs ==="
+          kubectl -n cerberus logs deploy/otel-collector-gateway --tail 200 || true
+          echo "=== otel-collector agent logs ==="
+          kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
+          echo "=== rolling seeder log (tail 200) ==="
+          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        run: just e2e-down

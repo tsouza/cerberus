@@ -658,6 +658,41 @@ e2e-playwright:
         echo "    (no playwright suite yet — landing in M0.2)"; \
     fi
 
+# Apply the chaos overlay onto the running cerberus Deployment: the
+# resilience knobs in test/e2e/chaos/manifests/chaos-overlay.env (low
+# breaker threshold + small CERBERUS_QUERY_TIMEOUT + small admit/pool
+# caps) so the live-stack chaos faults trip FAST + DETERMINISTICALLY
+# within budget. Patches the Deployment's pod env via `kubectl set env`
+# (one rollout), then waits for it to roll out so every cerberus pod
+# carries the overlay before fault injection. Idempotent — re-applying
+# the same env values is a no-op rollout.
+e2e-chaos-overlay:
+    @echo "==> applying chaos overlay (resilience knobs) to deploy/cerberus"
+    @env_args=""; \
+        while IFS= read -r line; do \
+            case "$line" in ''|\#*) continue ;; esac; \
+            env_args="$env_args $line"; \
+        done < test/e2e/chaos/manifests/chaos-overlay.env; \
+        echo "    kubectl set env deploy/cerberus$env_args"; \
+        kubectl -n cerberus set env deployment/cerberus $env_args
+    @echo "==> waiting for the overlay rollout"
+    kubectl -n cerberus rollout status deployment/cerberus --timeout=120s
+
+# Run the live-stack chaos lane: fault-inject against the running k3d
+# stack and assert the gateway's resilience contracts (circuit breaker,
+# per-query wall-clock timeout, admission control, replica resilience)
+# hold under REAL faults. Drives .github/scripts/chaos-run.mjs (node ESM,
+# kubectl + fetch). Assumes `e2e-up` + `e2e-seed-rolling` + `e2e-wait-otel`
+# already ran AND the chaos overlay is applied (`e2e-chaos-overlay`).
+# CHAOS_PHASE=phase-1 by default (ch-pod-kill, ch-slow/query-timeout,
+# cerberus-pod-kill); CHAOS_PHASE=all adds the phase-2 scenarios.
+# Mirrors the `e2e-run` / `e2e-playwright` shape — locally reproducible.
+e2e-chaos:
+    @echo "==> running live-stack chaos lane (chaos-run.mjs)"
+    CERBERUS_URL=http://localhost:8080 \
+        CHAOS_PHASE="${CHAOS_PHASE:-phase-1}" \
+        node .github/scripts/chaos-run.mjs
+
 # Tear down the cluster. Also stops the rolling seeder + port-forward
 # if either was started by `e2e-seed-rolling` — idempotent and silent
 # when the PID files don't exist.
