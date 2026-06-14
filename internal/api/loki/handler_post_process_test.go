@@ -163,6 +163,109 @@ func TestHandler_LineFormat_WithTemplateFuncs(t *testing.T) {
 	}
 }
 
+// TestHandler_LineFormat_SprigPipeline_NowExecutes pins the
+// deliberate-subset reversal: templates that used the full Loki funcmap
+// (sprig math/encoding, Loki-native bytes/duration/align) previously
+// failed at text/template PARSE time with "function ... not defined",
+// which handler.go wrapped as a 400. They now parse + execute, so
+// getStreams (which fails on any non-200) proves the 400→200 closure
+// AND the rendered output matches Loki.
+func TestHandler_LineFormat_SprigPipeline_NowExecutes(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		expr string
+		line string
+		want string
+	}{
+		{
+			name: "int|add",
+			expr: "{job=\"api\"} | line_format `{{ .count | int | add 1 }}`",
+			line: "x",
+			want: "42", // .count = "41"
+		},
+		{
+			name: "b64enc",
+			expr: "{job=\"api\"} | line_format `{{ b64enc __line__ }}`",
+			line: "hello",
+			want: "aGVsbG8=",
+		},
+		{
+			name: "bytes_div",
+			expr: "{job=\"api\"} | line_format `{{ div (bytes \"2KB\") 1000 }}`",
+			line: "x",
+			want: "2",
+		},
+		{
+			name: "duration_seconds",
+			expr: "{job=\"api\"} | line_format `{{ duration_seconds \"90s\" }}`",
+			line: "x",
+			want: "90",
+		},
+		{
+			name: "alignRight",
+			expr: "{job=\"api\"} | line_format `{{ alignRight 6 __line__ }}`",
+			line: "hi",
+			want: "    hi",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{
+				samples: []chclient.Sample{
+					{MetricName: tc.line, Labels: map[string]string{"job": "api", "count": "41"}, Timestamp: ts},
+				},
+			}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			streams := getStreams(t, srv.URL, tc.expr)
+			if len(streams) != 1 || len(streams[0].Values) != 1 {
+				t.Fatalf("unexpected shape: %+v", streams)
+			}
+			if got := streams[0].Values[0][1]; got != tc.want {
+				t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandler_LineFormat_Timestamp_RendersRealValue pins the
+// __timestamp__ fix end-to-end: previously hardwired to func() string {
+// return "" } (always blank), it now returns the sample's timestamp as
+// a time.Time so `{{ __timestamp__ | date "..." }}` formats the real
+// value threaded through toStreamsWithTransform.
+func TestHandler_LineFormat_Timestamp_RendersRealValue(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "x", Labels: map[string]string{"job": "api"}, Timestamp: ts},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	streams := getStreams(t, srv.URL,
+		"{job=\"api\"} | line_format `{{ __timestamp__ | date \"2006-01-02T15:04:05Z07:00\" }}`")
+	if len(streams) != 1 || len(streams[0].Values) != 1 {
+		t.Fatalf("unexpected shape: %+v", streams)
+	}
+	got := streams[0].Values[0][1]
+	want := ts.Format("2006-01-02T15:04:05Z07:00")
+	if got != want {
+		t.Errorf("__timestamp__ render: got %q, want %q (must NOT be blank)", got, want)
+	}
+	if got == "" {
+		t.Error("__timestamp__ rendered blank — the old hardwired stub regressed")
+	}
+}
+
 // TestHandler_LabelFormat_GroupsByOutputLabels — when `| label_format`
 // renames a label, the streams response must group rows by the
 // POST-format label set. Without this, the rename would be visible in

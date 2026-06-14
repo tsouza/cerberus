@@ -25,7 +25,7 @@ func TestLabelFormat_Rename(t *testing.T) {
 		t.Fatalf("expected non-nil transform for label_format query")
 	}
 
-	gotLine, gotLabels := tx("hello", map[string]string{"job": "api", "env": "prod"})
+	gotLine, gotLabels := tx("hello", 0, map[string]string{"job": "api", "env": "prod"})
 	if gotLine != "hello" {
 		t.Errorf("line should pass through, got %q", gotLine)
 	}
@@ -46,7 +46,7 @@ func TestLabelFormat_RenameMissingSource(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	_, labels := tx("hello", map[string]string{"job": "api"})
+	_, labels := tx("hello", 0, map[string]string{"job": "api"})
 	if _, ok := labels["svc"]; ok {
 		t.Errorf("svc should not be set when source missing; got %v", labels)
 	}
@@ -69,7 +69,7 @@ func TestLabelFormat_Template(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	_, labels := tx("hello", map[string]string{"job": "api", "severity": "error"})
+	_, labels := tx("hello", 0, map[string]string{"job": "api", "severity": "error"})
 	if labels["lvl"] != "error-suffix" {
 		t.Errorf("expected lvl=error-suffix, got %q (labels=%v)", labels["lvl"], labels)
 	}
@@ -86,7 +86,7 @@ func TestLabelFormat_TemplateMissingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	_, labels := tx("hello", map[string]string{"job": "api"})
+	_, labels := tx("hello", 0, map[string]string{"job": "api"})
 	if labels["lvl"] != "<no value>" {
 		t.Errorf("expected <no value> sentinel, got %q", labels["lvl"])
 	}
@@ -107,7 +107,7 @@ func TestLabelFormat_RenameThenLineFormat(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	gotLine, _ := tx("hello", map[string]string{"job": "api"})
+	gotLine, _ := tx("hello", 0, map[string]string{"job": "api"})
 	want := "[api] hello"
 	if gotLine != want {
 		t.Errorf("got %q, want %q", gotLine, want)
@@ -128,7 +128,7 @@ func TestLabelFormat_DoesNotMutateInput(t *testing.T) {
 	}
 
 	input := map[string]string{"job": "api", "env": "prod"}
-	tx("hello", input)
+	tx("hello", 0, input)
 	if input["job"] != "api" {
 		t.Errorf("input.job mutated to %q", input["job"])
 	}
