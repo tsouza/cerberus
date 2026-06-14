@@ -9,6 +9,62 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// secondsPerMilli scales a Unix-millisecond timestamp to fractional
+// Unix seconds (matching upstream's `timestamp.FromTime(t) / 1000`).
+const secondsPerMilli = 1000.0
+
+// lowerQueryContextFold implements the four query-context PromQL
+// functions — `start()`, `end()`, `range()`, `step()` — that the
+// reference engine constant-folds per query execution
+// (engine.foldQueryContextFunctions). Their values depend only on the
+// query's eval range (ctx.start / ctx.end / ctx.step), not on any
+// series data, so cerberus folds them to a single synthetic scalar
+// vector at lowering time — exactly mirroring how `time()` and
+// `vector(N)` materialise a constant-per-step stream via
+// [syntheticScalarVector].
+//
+// Reference semantics (Unix-second floats, matching upstream exactly):
+//
+//   - start() → epoch seconds of the query start  (FromTime(start)/1000)
+//   - end()   → epoch seconds of the query end    (FromTime(end)/1000)
+//   - range() → (end - start) in seconds
+//   - step()  → the query_range step in seconds, or 0 for an instant
+//     query (start == end). Upstream gates on `!start.Equal(end)`.
+//
+// All four take zero arguments (the parser's function table pins
+// ArgTypes to the empty slice); a non-zero arg count is a caller /
+// parser bug and surfaces as an error rather than a silent fold.
+//
+// The folded float flows through [syntheticScalarVector] as a
+// LitFloat, so the central Builder.Expr path wraps it in `toFloat64(?)`
+// for the Float64 wire-shape pin — identical to `vector(N)`. In range
+// mode the constant is fanned across the StepGrid; in instant mode it
+// is a single OneRow sample.
+func lowerQueryContextFold(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if len(c.Args) != 0 {
+		return nil, fmt.Errorf("promql: %s() takes no arguments, got %d", c.Func.Name, len(c.Args))
+	}
+	var val float64
+	switch c.Func.Name {
+	case "start":
+		val = float64(ctx.start.UnixMilli()) / secondsPerMilli
+	case "end":
+		val = float64(ctx.end.UnixMilli()) / secondsPerMilli
+	case "range":
+		val = ctx.end.Sub(ctx.start).Seconds()
+	case "step":
+		// Instant queries (start == end) have no step; upstream folds
+		// step() to 0 in that case. Range queries fold to the request's
+		// step duration in seconds.
+		if !ctx.start.Equal(ctx.end) {
+			val = ctx.step.Seconds()
+		}
+	default:
+		return nil, fmt.Errorf("promql: %s is not a query-context function", c.Func.Name)
+	}
+	return syntheticScalarVector(&chplan.LitFloat{V: val}, nil, s, ctx), nil
+}
+
 // syntheticScalarVector builds a Project-over-(OneRow|StepGrid) plan
 // that materialises a synthetic sample with empty labels and the
 // supplied value/timestamp expressions. Used by `time()`,

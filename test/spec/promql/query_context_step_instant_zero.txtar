@@ -1,0 +1,30 @@
+# Query-context function `step()` in instant mode. The reference engine
+# folds step() to 0 for an instant query (start == end), since an
+# instant query has no step interval. Cerberus folds it at lowering to a
+# single synthetic scalar row (OneRow) with Value 0, mirroring `pi()` /
+# `vector(N)`. The eval anchor is the deterministic instant-eval ts
+# (2026-01-01 00:00:01Z).
+
+-- query.promql --
+step()
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 0]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] float64 = 0
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, 0 AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)

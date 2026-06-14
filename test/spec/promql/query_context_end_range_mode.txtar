@@ -1,0 +1,35 @@
+# Query-context function `end()` in range (query_range) mode. The
+# reference engine folds end() to the query end time in Unix seconds.
+# The fixture window ends at `2026-01-01 00:05:00Z` = 1767225900.
+# Cerberus folds it at lowering to a constant fanned across the StepGrid
+# (6 anchors at the 1m step, end-inclusive).
+
+-- query.promql --
+end()
+-- range_step --
+1m
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:00Z", 1767225900],
+  ["", {}, "2026-01-01T00:01:00Z", 1767225900],
+  ["", {}, "2026-01-01T00:02:00Z", 1767225900],
+  ["", {}, "2026-01-01T00:03:00Z", 1767225900],
+  ["", {}, "2026-01-01T00:04:00Z", 1767225900],
+  ["", {}, "2026-01-01T00:05:00Z", 1767225900]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1.7672259e+09
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 1.7672259e+09 AS Value]
+  StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`)

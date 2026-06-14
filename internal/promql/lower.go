@@ -1418,6 +1418,14 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerSort(c, s, ctx)
 	case "scalar":
 		return lowerScalarTopLevel(c, s, ctx)
+	case "start", "end", "range", "step":
+		// Query-context functions: their value is constant for a given
+		// query execution (it depends only on the eval range, not on
+		// series data). The reference engine constant-folds these into
+		// NumberLiterals before evaluation; cerberus folds them at
+		// lowering into a synthetic scalar vector, mirroring `time()` /
+		// `vector(N)`. See [lowerQueryContextFold].
+		return lowerQueryContextFold(c, s, ctx)
 	case "pi":
 		// Bare top-level `pi()` (or any scalar-foldable call the parser
 		// admits as a top-level expression). The /api/v1/query handler
