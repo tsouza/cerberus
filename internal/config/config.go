@@ -1,17 +1,22 @@
-// Package config loads cerberus runtime configuration from environment
-// variables (the seed source — YAML loading lands when there's an actual
-// need for nested config).
+// Package config loads cerberus runtime configuration. The value source
+// is a github.com/spf13/viper instance (per-loader, not the global
+// singleton) wired with the CERBERUS_ env prefix; an optional
+// `cerberus.yaml` config file may supply values, but environment
+// variables always win over the file and explicit defaults sit beneath
+// both. The CERBERUS_* environment-variable contract — names, Go types,
+// defaults, and fail-fast validation — is unchanged from the prior
+// hand-rolled env parser; viper is a mechanism swap, not a redesign.
 package config
 
 import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/spf13/viper"
 	otellog "go.opentelemetry.io/otel/log"
 
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -151,8 +156,51 @@ type OTLPConfig struct {
 	ExportInterval time.Duration
 }
 
-// FromEnv reads configuration from environment variables, falling back to
-// reasonable defaults for local development.
+// Environment-variable keys. Centralised so the viper SetDefault /
+// BindEnv wiring and the per-field reads reference the exact same
+// strings — the CERBERUS_* contract is load-bearing (docs + surface
+// tests pin these names).
+const (
+	envHTTPAddr            = "CERBERUS_HTTP_ADDR"
+	envCHAddr              = "CERBERUS_CH_ADDR"
+	envCHDatabase          = "CERBERUS_CH_DATABASE"
+	envCHUsername          = "CERBERUS_CH_USERNAME"
+	envCHPassword          = "CERBERUS_CH_PASSWORD"
+	envCHDialTimeout       = "CERBERUS_CH_DIAL_TIMEOUT"
+	envCHMaxOpenConns      = "CERBERUS_CH_MAX_OPEN_CONNS"
+	envCHMaxIdleConns      = "CERBERUS_CH_MAX_IDLE_CONNS"
+	envCHConnMaxLifetime   = "CERBERUS_CH_CONN_MAX_LIFETIME"
+	envQueryMaxSamples     = "CERBERUS_QUERY_MAX_SAMPLES"
+	envCHQueryMaxMemory    = "CERBERUS_CH_QUERY_MAX_MEMORY"
+	envCHBreakerEnabled    = "CERBERUS_CH_BREAKER_ENABLED"
+	envCHBreakerThreshold  = "CERBERUS_CH_BREAKER_THRESHOLD"
+	envCHBreakerWindow     = "CERBERUS_CH_BREAKER_WINDOW"
+	envCHBreakerOpenIntrvl = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
+	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envLogFormat           = "CERBERUS_LOG_FORMAT"
+	envLogLevel            = "CERBERUS_LOG_LEVEL"
+	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
+	envOTLPInsecure        = "CERBERUS_OTLP_INSECURE"
+	envOTLPHeaders         = "CERBERUS_OTLP_HEADERS"
+	envOTLPTimeout         = "CERBERUS_OTLP_TIMEOUT"
+	envOTLPExportInterval  = "CERBERUS_OTLP_EXPORT_INTERVAL"
+	envAdmitDisabled       = "CERBERUS_ADMIT_DISABLED"
+	envAdmitProm           = "CERBERUS_ADMIT_PROM"
+	envAdmitLoki           = "CERBERUS_ADMIT_LOKI"
+	envAdmitTempo          = "CERBERUS_ADMIT_TEMPO"
+)
+
+// configFileBaseName is the base name (without extension) viper looks
+// for when probing for an optional config file: cerberus.yaml.
+const configFileBaseName = "cerberus"
+
+// FromEnv reads configuration via a per-call viper loader. Values are
+// resolved with viper's standard precedence — environment variable >
+// config file > built-in default — so the CERBERUS_* environment
+// contract always wins. An optional `cerberus.yaml` in the working
+// directory (or /etc/cerberus) supplies file-level defaults; its
+// absence is not an error.
 //
 //	CERBERUS_HTTP_ADDR             default ":8080"
 //	CERBERUS_CH_ADDR               default "localhost:9000"
@@ -199,76 +247,78 @@ type OTLPConfig struct {
 //	CERBERUS_SCHEMA_LOGS_TABLE                  default "otel_logs"
 //	CERBERUS_SCHEMA_TRACES_TABLE                default "otel_traces"
 func FromEnv() (Config, error) {
-	dial, err := time.ParseDuration(envDefault("CERBERUS_CH_DIAL_TIMEOUT", "5s"))
+	v := newLoader()
+
+	dial, err := getDuration(v, envCHDialTimeout)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_CH_DIAL_TIMEOUT: %w", err)
+		return Config{}, err
 	}
-	autoCreate, err := envBool("CERBERUS_AUTO_CREATE_SCHEMA", false)
+	autoCreate, err := getBool(v, envAutoCreateSchema)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_AUTO_CREATE_SCHEMA: %w", err)
+		return Config{}, err
 	}
-	tsGridRange, err := envBool("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", false)
+	tsGridRange, err := getBool(v, envExperimentalTSGrid)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE: %w", err)
+		return Config{}, err
 	}
-	maxOpenConns, err := envInt("CERBERUS_CH_MAX_OPEN_CONNS", defaultCHMaxOpenConns)
+	maxOpenConns, err := getInt(v, envCHMaxOpenConns)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_OPEN_CONNS: %w", err)
+		return Config{}, err
 	}
 	if maxOpenConns <= 0 {
-		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_OPEN_CONNS: must be > 0, got %d", maxOpenConns)
+		return Config{}, fmt.Errorf("%s: must be > 0, got %d", envCHMaxOpenConns, maxOpenConns)
 	}
-	maxIdleConns, err := envInt("CERBERUS_CH_MAX_IDLE_CONNS", defaultCHMaxIdleConns)
+	maxIdleConns, err := getInt(v, envCHMaxIdleConns)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_IDLE_CONNS: %w", err)
+		return Config{}, err
 	}
 	if maxIdleConns <= 0 {
-		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_IDLE_CONNS: must be > 0, got %d", maxIdleConns)
+		return Config{}, fmt.Errorf("%s: must be > 0, got %d", envCHMaxIdleConns, maxIdleConns)
 	}
-	connMaxLifetime, err := time.ParseDuration(envDefault("CERBERUS_CH_CONN_MAX_LIFETIME", defaultCHConnMaxLifetime.String()))
+	connMaxLifetime, err := getDuration(v, envCHConnMaxLifetime)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_CH_CONN_MAX_LIFETIME: %w", err)
+		return Config{}, err
 	}
 	if connMaxLifetime <= 0 {
-		return Config{}, fmt.Errorf("CERBERUS_CH_CONN_MAX_LIFETIME: must be > 0, got %s", connMaxLifetime)
+		return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHConnMaxLifetime, connMaxLifetime)
 	}
-	maxSamples, err := envInt64("CERBERUS_QUERY_MAX_SAMPLES", defaultQueryMaxSamples)
+	maxSamples, err := getInt64(v, envQueryMaxSamples)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_QUERY_MAX_SAMPLES: %w", err)
+		return Config{}, err
 	}
 	if maxSamples < 0 {
-		return Config{}, fmt.Errorf("CERBERUS_QUERY_MAX_SAMPLES: must be >= 0, got %d", maxSamples)
+		return Config{}, fmt.Errorf("%s: must be >= 0, got %d", envQueryMaxSamples, maxSamples)
 	}
-	maxMemory, err := envInt64("CERBERUS_CH_QUERY_MAX_MEMORY", defaultCHQueryMaxMemory)
+	maxMemory, err := getInt64(v, envCHQueryMaxMemory)
 	if err != nil {
-		return Config{}, fmt.Errorf("CERBERUS_CH_QUERY_MAX_MEMORY: %w", err)
+		return Config{}, err
 	}
 	if maxMemory < 0 {
-		return Config{}, fmt.Errorf("CERBERUS_CH_QUERY_MAX_MEMORY: must be >= 0, got %d", maxMemory)
+		return Config{}, fmt.Errorf("%s: must be >= 0, got %d", envCHQueryMaxMemory, maxMemory)
 	}
-	breaker, err := breakerFromEnv()
+	breaker, err := breakerFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
-	logCfg, err := envLog()
+	logCfg, err := envLog(v)
 	if err != nil {
 		return Config{}, err
 	}
-	otlp, err := otlpFromEnv()
+	otlp, err := otlpFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
-	admit, err := admitFromEnv()
+	admit, err := admitFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
 	return Config{
-		HTTPAddr: envDefault("CERBERUS_HTTP_ADDR", ":8080"),
+		HTTPAddr: v.GetString(envHTTPAddr),
 		ClickHouse: chclient.Config{
-			Addr:                envDefault("CERBERUS_CH_ADDR", "localhost:9000"),
-			Database:            envDefault("CERBERUS_CH_DATABASE", "otel"),
-			Username:            envDefault("CERBERUS_CH_USERNAME", "default"),
-			Password:            envDefault("CERBERUS_CH_PASSWORD", ""),
+			Addr:                v.GetString(envCHAddr),
+			Database:            v.GetString(envCHDatabase),
+			Username:            v.GetString(envCHUsername),
+			Password:            v.GetString(envCHPassword),
 			DialTimeout:         dial,
 			MaxOpenConns:        maxOpenConns,
 			MaxIdleConns:        maxIdleConns,
@@ -290,6 +340,141 @@ func FromEnv() (Config, error) {
 		Admit:                   admit,
 	}, nil
 }
+
+// allEnvKeys is every CERBERUS_* var the loader resolves. Each is both
+// the viper key and the literal environment-variable name — they are
+// identical by design so the historical CERBERUS_* contract is byte-exact.
+var allEnvKeys = []string{
+	envHTTPAddr,
+	envCHAddr,
+	envCHDatabase,
+	envCHUsername,
+	envCHPassword,
+	envCHDialTimeout,
+	envCHMaxOpenConns,
+	envCHMaxIdleConns,
+	envCHConnMaxLifetime,
+	envQueryMaxSamples,
+	envCHQueryMaxMemory,
+	envCHBreakerEnabled,
+	envCHBreakerThreshold,
+	envCHBreakerWindow,
+	envCHBreakerOpenIntrvl,
+	envAutoCreateSchema,
+	envExperimentalTSGrid,
+	envLogFormat,
+	envLogLevel,
+	envOTLPEndpoint,
+	envOTLPInsecure,
+	envOTLPHeaders,
+	envOTLPTimeout,
+	envOTLPExportInterval,
+	envAdmitDisabled,
+	envAdmitProm,
+	envAdmitLoki,
+	envAdmitTempo,
+}
+
+// newLoader builds the per-call viper instance: a fresh viper.New()
+// (never the package-global singleton, so the loader is testable and
+// embeddable), with every CERBERUS_* key explicitly bound to its
+// identically-named environment variable via BindEnv(key, key) and seeded
+// with the exact historical default. Per-key BindEnv (rather than
+// SetEnvPrefix + AutomaticEnv) is deliberate: our viper keys are already
+// the full CERBERUS_<NAME> strings, and AutomaticEnv would re-apply the
+// prefix and look up CERBERUS_CERBERUS_<NAME>, breaking the contract.
+// An optional `cerberus.yaml` config file is merged in beneath env vars;
+// its absence is silently tolerated. Precedence is viper's native
+// ordering — env var > config file > default — so a CERBERUS_* env var
+// always wins over a file value.
+func newLoader() *viper.Viper {
+	v := viper.New()
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	for _, key := range allEnvKeys {
+		// Two-arg BindEnv binds the viper key to the literal env-var
+		// name with no prefix munging — key and env var are the same
+		// CERBERUS_<NAME> string. BindEnv only errors on an empty key,
+		// which is impossible here.
+		_ = v.BindEnv(key, key)
+	}
+
+	// Defaults — the exact historical values. Durations/bools are stored
+	// as their typed Go values so viper's getters and config-file
+	// unmarshalling agree.
+	v.SetDefault(envHTTPAddr, defaultHTTPAddr)
+	v.SetDefault(envCHAddr, defaultCHAddr)
+	v.SetDefault(envCHDatabase, defaultCHDatabase)
+	v.SetDefault(envCHUsername, defaultCHUsername)
+	v.SetDefault(envCHPassword, defaultCHPassword)
+	v.SetDefault(envCHDialTimeout, defaultCHDialTimeout.String())
+	v.SetDefault(envCHMaxOpenConns, defaultCHMaxOpenConns)
+	v.SetDefault(envCHMaxIdleConns, defaultCHMaxIdleConns)
+	v.SetDefault(envCHConnMaxLifetime, defaultCHConnMaxLifetime.String())
+	v.SetDefault(envQueryMaxSamples, defaultQueryMaxSamples)
+	v.SetDefault(envCHQueryMaxMemory, defaultCHQueryMaxMemory)
+	v.SetDefault(envCHBreakerEnabled, defaultCHBreakerEnabled)
+	v.SetDefault(envCHBreakerThreshold, defaultCHBreakerThreshold)
+	v.SetDefault(envCHBreakerWindow, defaultCHBreakerWindow.String())
+	v.SetDefault(envCHBreakerOpenIntrvl, defaultCHBreakerOpenInterval.String())
+	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
+	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
+	v.SetDefault(envLogFormat, defaultLogFormat)
+	v.SetDefault(envLogLevel, defaultLogLevel)
+	v.SetDefault(envOTLPEndpoint, defaultOTLPEndpoint)
+	v.SetDefault(envOTLPInsecure, defaultOTLPInsecure)
+	v.SetDefault(envOTLPHeaders, defaultOTLPHeaders)
+	v.SetDefault(envOTLPTimeout, defaultOTLPTimeout.String())
+	v.SetDefault(envOTLPExportInterval, defaultOTLPExportInterval.String())
+	v.SetDefault(envAdmitDisabled, defaultAdmitDisabled)
+	v.SetDefault(envAdmitProm, defaultAdmitProm)
+	v.SetDefault(envAdmitLoki, defaultAdmitLoki)
+	v.SetDefault(envAdmitTempo, defaultAdmitTempo)
+
+	// Optional config file: cerberus.yaml in the working directory or
+	// /etc/cerberus. Env vars always win (viper precedence: explicit
+	// Set > env > config file > default), so the file is purely additive
+	// and never overrides an operator's environment. A missing file is
+	// not an error; a malformed file is tolerated here and surfaces later
+	// only if a value fails the same fail-fast validation env values get.
+	v.SetConfigName(configFileBaseName)
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("/etc/cerberus")
+	// Every ReadInConfig error is tolerated, not just file-not-found: the
+	// CERBERUS_* env contract is the source of truth, and a missing OR
+	// malformed cerberus.yaml must never take cerberus down. Values still
+	// resolve from env vars and built-in defaults, and each one is run
+	// through the same fail-fast typed validation regardless of source.
+	_ = v.ReadInConfig()
+	return v
+}
+
+// Built-in defaults, kept as named constants so newLoader's SetDefault
+// calls and the doc comment can't drift. String/bool defaults that have
+// no other natural home live here; the int / duration budget defaults
+// keep their original homes below (they carry longer rationale comments).
+const (
+	defaultHTTPAddr           = ":8080"
+	defaultCHAddr             = "localhost:9000"
+	defaultCHDatabase         = "otel"
+	defaultCHUsername         = "default"
+	defaultCHPassword         = ""
+	defaultAutoCreateSchema   = false
+	defaultExperimentalTSGrid = false
+	defaultLogFormat          = "text"
+	defaultLogLevel           = "info"
+	defaultOTLPEndpoint       = ""
+	defaultOTLPInsecure       = false
+	defaultOTLPHeaders        = ""
+	defaultCHBreakerEnabled   = true
+	defaultAdmitDisabled      = false
+)
+
+const (
+	defaultCHDialTimeout      time.Duration = 5 * time.Second
+	defaultOTLPTimeout        time.Duration = 10 * time.Second
+	defaultOTLPExportInterval time.Duration = 10 * time.Second
+)
 
 // defaultQueryMaxSamples is the default per-query sample budget,
 // mirroring upstream Prometheus's --query.max-samples default
@@ -356,8 +541,8 @@ type breakerConfig struct {
 	OpenInterval time.Duration
 }
 
-// breakerFromEnv reads the CERBERUS_CH_BREAKER_* env vars into a
-// breakerConfig. Unset values use the defaults above, which reproduce the
+// breakerFromEnv reads the CERBERUS_CH_BREAKER_* knobs from the viper
+// loader. Unset values use the defaults above, which reproduce the
 // pre-#95 hardcoded breaker constants exactly (so defaults are
 // byte-unchanged). CERBERUS_CH_BREAKER_ENABLED=false disables the breaker
 // entirely (always-allow, never trips); when disabled the threshold /
@@ -365,31 +550,31 @@ type breakerConfig struct {
 // silently, but they have no runtime effect.
 //
 // Fail-fast validation: threshold must be >= 1, window > 0, interval > 0.
-func breakerFromEnv() (breakerConfig, error) {
-	enabled, err := envBool("CERBERUS_CH_BREAKER_ENABLED", true)
+func breakerFromEnv(v *viper.Viper) (breakerConfig, error) {
+	enabled, err := getBool(v, envCHBreakerEnabled)
 	if err != nil {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_ENABLED: %w", err)
+		return breakerConfig{}, err
 	}
-	threshold, err := envInt("CERBERUS_CH_BREAKER_THRESHOLD", defaultCHBreakerThreshold)
+	threshold, err := getInt(v, envCHBreakerThreshold)
 	if err != nil {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_THRESHOLD: %w", err)
+		return breakerConfig{}, err
 	}
 	if threshold < 1 {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_THRESHOLD: must be >= 1, got %d", threshold)
+		return breakerConfig{}, fmt.Errorf("%s: must be >= 1, got %d", envCHBreakerThreshold, threshold)
 	}
-	window, err := time.ParseDuration(envDefault("CERBERUS_CH_BREAKER_WINDOW", defaultCHBreakerWindow.String()))
+	window, err := getDuration(v, envCHBreakerWindow)
 	if err != nil {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_WINDOW: %w", err)
+		return breakerConfig{}, err
 	}
 	if window <= 0 {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_WINDOW: must be > 0, got %s", window)
+		return breakerConfig{}, fmt.Errorf("%s: must be > 0, got %s", envCHBreakerWindow, window)
 	}
-	openInterval, err := time.ParseDuration(envDefault("CERBERUS_CH_BREAKER_OPEN_INTERVAL", defaultCHBreakerOpenInterval.String()))
+	openInterval, err := getDuration(v, envCHBreakerOpenIntrvl)
 	if err != nil {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_OPEN_INTERVAL: %w", err)
+		return breakerConfig{}, err
 	}
 	if openInterval <= 0 {
-		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_OPEN_INTERVAL: must be > 0, got %s", openInterval)
+		return breakerConfig{}, fmt.Errorf("%s: must be > 0, got %s", envCHBreakerOpenIntrvl, openInterval)
 	}
 	return breakerConfig{
 		Disabled:     !enabled,
@@ -408,36 +593,36 @@ const (
 	defaultAdmitTempo = 32
 )
 
-// admitFromEnv reads CERBERUS_ADMIT_* env vars into an AdmitConfig.
+// admitFromEnv reads CERBERUS_ADMIT_* knobs from the viper loader.
 // Unset values use the conservative defaults above. Setting any cap
 // to 0 disables admission control for that head specifically (a
 // finer-grained alternative to CERBERUS_ADMIT_DISABLED, which kills
 // every head). Negative caps are rejected — they almost certainly
 // mean a typo.
-func admitFromEnv() (AdmitConfig, error) {
-	disabled, err := envBool("CERBERUS_ADMIT_DISABLED", false)
+func admitFromEnv(v *viper.Viper) (AdmitConfig, error) {
+	disabled, err := getBool(v, envAdmitDisabled)
 	if err != nil {
-		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_DISABLED: %w", err)
+		return AdmitConfig{}, err
 	}
-	prom, err := envInt("CERBERUS_ADMIT_PROM", defaultAdmitProm)
+	prom, err := getInt(v, envAdmitProm)
 	if err != nil {
-		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_PROM: %w", err)
+		return AdmitConfig{}, err
 	}
-	loki, err := envInt("CERBERUS_ADMIT_LOKI", defaultAdmitLoki)
+	loki, err := getInt(v, envAdmitLoki)
 	if err != nil {
-		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_LOKI: %w", err)
+		return AdmitConfig{}, err
 	}
-	tempo, err := envInt("CERBERUS_ADMIT_TEMPO", defaultAdmitTempo)
+	tempo, err := getInt(v, envAdmitTempo)
 	if err != nil {
-		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_TEMPO: %w", err)
+		return AdmitConfig{}, err
 	}
-	for name, v := range map[string]int{
-		"CERBERUS_ADMIT_PROM":  prom,
-		"CERBERUS_ADMIT_LOKI":  loki,
-		"CERBERUS_ADMIT_TEMPO": tempo,
+	for name, val := range map[string]int{
+		envAdmitProm:  prom,
+		envAdmitLoki:  loki,
+		envAdmitTempo: tempo,
 	} {
-		if v < 0 {
-			return AdmitConfig{}, fmt.Errorf("%s: must be >= 0, got %d", name, v)
+		if val < 0 {
+			return AdmitConfig{}, fmt.Errorf("%s: must be >= 0, got %d", name, val)
 		}
 	}
 	return AdmitConfig{
@@ -503,28 +688,28 @@ func newLocalHandler(w io.Writer, cfg LogConfig) slog.Handler {
 	}
 }
 
-// otlpFromEnv parses the CERBERUS_OTLP_* env vars into an OTLPConfig.
+// otlpFromEnv parses the CERBERUS_OTLP_* knobs from the viper loader.
 // Empty endpoint is the documented "disabled" state and not an error —
 // the caller installs noop providers in that case.
-func otlpFromEnv() (OTLPConfig, error) {
-	timeout, err := time.ParseDuration(envDefault("CERBERUS_OTLP_TIMEOUT", "10s"))
+func otlpFromEnv(v *viper.Viper) (OTLPConfig, error) {
+	timeout, err := getDuration(v, envOTLPTimeout)
 	if err != nil {
-		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_TIMEOUT: %w", err)
+		return OTLPConfig{}, err
 	}
-	insecure, err := envBool("CERBERUS_OTLP_INSECURE", false)
+	insecure, err := getBool(v, envOTLPInsecure)
 	if err != nil {
-		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_INSECURE: %w", err)
+		return OTLPConfig{}, err
 	}
-	headers, err := parseHeaders(os.Getenv("CERBERUS_OTLP_HEADERS"))
+	headers, err := parseHeaders(v.GetString(envOTLPHeaders))
 	if err != nil {
-		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_HEADERS: %w", err)
+		return OTLPConfig{}, fmt.Errorf("%s: %w", envOTLPHeaders, err)
 	}
-	exportInterval, err := time.ParseDuration(envDefault("CERBERUS_OTLP_EXPORT_INTERVAL", "10s"))
+	exportInterval, err := getDuration(v, envOTLPExportInterval)
 	if err != nil {
-		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_EXPORT_INTERVAL: %w", err)
+		return OTLPConfig{}, err
 	}
 	return OTLPConfig{
-		Endpoint:       strings.TrimSpace(os.Getenv("CERBERUS_OTLP_ENDPOINT")),
+		Endpoint:       strings.TrimSpace(v.GetString(envOTLPEndpoint)),
 		Insecure:       insecure,
 		Headers:        headers,
 		Timeout:        timeout,
@@ -552,79 +737,95 @@ func parseHeaders(raw string) (map[string]string, error) {
 			return nil, fmt.Errorf("entry %q: missing '='", part)
 		}
 		k := strings.TrimSpace(part[:eq])
-		v := strings.TrimSpace(part[eq+1:])
+		val := strings.TrimSpace(part[eq+1:])
 		if k == "" {
 			return nil, fmt.Errorf("entry %q: empty key", part)
 		}
-		out[k] = v
+		out[k] = val
 	}
 	return out, nil
 }
 
-func envDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+// getString returns the resolved string value for key (env > file >
+// default), trimmed of surrounding whitespace so a pasted newline /
+// space is treated the same as the historical os.Getenv-based parser.
+func getString(v *viper.Viper, key string) string {
+	return strings.TrimSpace(v.GetString(key))
 }
 
-// envInt parses an integer env var. An unset or empty value returns
-// def. Anything that fails strconv.Atoi is rejected with an error so
-// misconfiguration fails fast at startup.
-func envInt(key string, def int) (int, error) {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def, nil
+// getInt resolves key and parses it as a base-10 int, preserving the
+// historical fail-fast contract: a non-integer value is rejected with
+// an error that names the offending env var. An empty resolved value
+// falls back to the parsed default (viper SetDefault guarantees a
+// non-empty default exists for every int key).
+func getInt(v *viper.Viper, key string) (int, error) {
+	raw := getString(v, key)
+	if raw == "" {
+		return 0, fmt.Errorf("%s: missing value", key)
 	}
-	n, err := strconv.Atoi(v)
+	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, fmt.Errorf("invalid integer %q: %w", v, err)
+		return 0, fmt.Errorf("%s: invalid integer %q: %w", key, raw, err)
 	}
 	return n, nil
 }
 
-// envInt64 parses a 64-bit integer env var. An unset or empty value
-// returns def. Anything that fails strconv.ParseInt is rejected with
-// an error so misconfiguration fails fast at startup.
-func envInt64(key string, def int64) (int64, error) {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def, nil
+// getInt64 resolves key and parses it as a base-10 int64 with the same
+// fail-fast, env-var-naming contract as getInt.
+func getInt64(v *viper.Viper, key string) (int64, error) {
+	raw := getString(v, key)
+	if raw == "" {
+		return 0, fmt.Errorf("%s: missing value", key)
 	}
-	n, err := strconv.ParseInt(v, 10, 64)
+	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid integer %q: %w", v, err)
+		return 0, fmt.Errorf("%s: invalid integer %q: %w", key, raw, err)
 	}
 	return n, nil
 }
 
-// envBool parses a boolean env var. Accepts the standard strconv.ParseBool
-// vocabulary: "1"/"0", "t"/"f", "true"/"false", "TRUE"/"FALSE",
-// case-insensitive. An unset or empty value returns def. Anything else is
-// rejected with an error so misconfiguration fails fast at startup.
-func envBool(key string, def bool) (bool, error) {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def, nil
+// getBool resolves key and parses it with the standard strconv.ParseBool
+// vocabulary ("1"/"0", "t"/"f", "true"/"false", case-insensitive). A
+// value that fails to parse is rejected with an error naming the env
+// var — preserving the historical fail-fast-on-misconfiguration contract.
+func getBool(v *viper.Viper, key string) (bool, error) {
+	raw := getString(v, key)
+	if raw == "" {
+		return false, fmt.Errorf("%s: missing value", key)
 	}
-	b, err := strconv.ParseBool(v)
+	b, err := strconv.ParseBool(raw)
 	if err != nil {
-		return false, fmt.Errorf("invalid boolean %q: %w", v, err)
+		return false, fmt.Errorf("%s: invalid boolean %q: %w", key, raw, err)
 	}
 	return b, nil
 }
 
-// envLog parses CERBERUS_LOG_FORMAT + CERBERUS_LOG_LEVEL into a LogConfig.
-// Unset values default to "text" / "info"; invalid values fail fast at
-// startup so a typo never silently downgrades observability.
-func envLog() (LogConfig, error) {
-	format := strings.ToLower(strings.TrimSpace(envDefault("CERBERUS_LOG_FORMAT", "text")))
+// getDuration resolves key and parses it with time.ParseDuration,
+// rejecting a malformed value with an error naming the env var.
+func getDuration(v *viper.Viper, key string) (time.Duration, error) {
+	raw := getString(v, key)
+	if raw == "" {
+		return 0, fmt.Errorf("%s: missing value", key)
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return d, nil
+}
+
+// envLog parses CERBERUS_LOG_FORMAT + CERBERUS_LOG_LEVEL from the viper
+// loader into a LogConfig. Unset values default to "text" / "info";
+// invalid values fail fast at startup so a typo never silently downgrades
+// observability.
+func envLog(v *viper.Viper) (LogConfig, error) {
+	format := strings.ToLower(getString(v, envLogFormat))
 	switch format {
 	case "text", "json":
 	default:
-		return LogConfig{}, fmt.Errorf("CERBERUS_LOG_FORMAT: invalid value %q (want \"text\" or \"json\")", format)
+		return LogConfig{}, fmt.Errorf("%s: invalid value %q (want \"text\" or \"json\")", envLogFormat, format)
 	}
-	levelStr := strings.ToLower(strings.TrimSpace(envDefault("CERBERUS_LOG_LEVEL", "info")))
+	levelStr := strings.ToLower(getString(v, envLogLevel))
 	var level slog.Level
 	switch levelStr {
 	case "debug":
@@ -636,7 +837,7 @@ func envLog() (LogConfig, error) {
 	case "error":
 		level = slog.LevelError
 	default:
-		return LogConfig{}, fmt.Errorf("CERBERUS_LOG_LEVEL: invalid value %q (want \"debug\", \"info\", \"warn\", or \"error\")", levelStr)
+		return LogConfig{}, fmt.Errorf("%s: invalid value %q (want \"debug\", \"info\", \"warn\", or \"error\")", envLogLevel, levelStr)
 	}
 	return LogConfig{Format: format, Level: level}, nil
 }
