@@ -15,15 +15,18 @@ numerical confidence is honestly lower (see
 [Per-head confidence](#per-head-confidence) below).
 
 > **What gates vs. what scores.** All three `compatibility/<head>` checks
-> run on every PR and are required, but they fail the check only on
-> **infrastructure breakage** — per-case parity drift is **report-only**
-> by design ([#503](https://github.com/tsouza/cerberus/pull/503)),
-> captured in the report + the live badge score, not in the check's exit
-> code. The one lane that hard-fails on any numeric parity diff is
-> `compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`), which is
-> informational, not a required check. Treat the badges as a
-> continuously re-measured conformance score, not a merge gate on numeric
-> correctness. See [CI integration](#ci-integration).
+> run on every PR and are required. The *harness* is report-only on
+> per-case parity drift by design
+> ([#503](https://github.com/tsouza/cerberus/pull/503)) — drift is
+> captured in the report + the live badge score, not in the harness exit
+> code — but the required check also runs a **parity-regression ratchet**
+> that fails the job if the score drops below a committed per-head floor.
+> So the badges are a continuously re-measured conformance score, *and* a
+> drop below baseline is a merge gate: noise within the baseline is
+> tolerated, a real regression is not. The
+> `compatibility/prometheus-forced-route` lane additionally hard-fails on
+> *any* numeric parity diff (`FAIL_ON_DIFF=1`) but is informational, not a
+> required check. See [CI integration](#ci-integration).
 
 | Harness | Location                    | Reference backend                  | Corpus source                                                                                |
 | ------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -267,28 +270,68 @@ Each harness job uploads its report as a workflow artifact (30-day
 retention). On push-to-main, the per-head pass-rate is appended to the
 orphan `compat-scores` branch so the README badges refresh.
 
-**Required, but report-only on parity.** All three `compatibility/<head>`
-checks are required status checks on `main`, but — per
-[#503](https://github.com/tsouza/cerberus/pull/503) — the required check
-fails only on **infrastructure** errors (compose-up, seed, build,
-unparseable report). Per-case numeric parity drift is captured in
-`report.json` + the badge and **does not** turn the required check red.
-Concretely: the PromQL run script is report-only by default and only
-hard-fails under `FAIL_ON_DIFF=1`
-(`compatibility/prometheus/scripts/run-compatibility.sh`); the LogQL
-driver removed its `os.Exit(1)`-on-diff
-(`compatibility/loki/cmd/loki-compliance-tester/main.go`); and the TraceQL
-differ is report-only by construction
-(`compatibility/tempo/driver/diff.go`) — it ignores the `FAIL_ON_DIFF`
-env the workflow passes it.
+**Required: scored, plus a regression ratchet.** All three
+`compatibility/<head>` checks are required status checks on `main`. The
+*harness* step itself is report-only on parity — per
+[#503](https://github.com/tsouza/cerberus/pull/503) it captures per-case
+numeric drift in `report.json` + the badge and exits 0, failing only on
+**infrastructure** errors (compose-up, seed, build, unparseable report).
+But the required job no longer passes on a numeric regression: a
+**parity-regression ratchet** step (next section) runs after the harness
+and fails the job when the run's score drops below the committed
+per-head floor. So the required check gates **both** infrastructure
+breakage **and** a parity *regression* — while still tolerating noise
+within the baseline, which is what #503 was protecting against.
 
-The single lane that **hard-fails on any parity diff** is
-`compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`), the
-corpus-wide proof that the sharded solver route is byte-identical to
-reference Prometheus. It is intentionally an *informational* job, not a
-required check, so it doesn't gate every unrelated PR on the full
-forced-route corpus run. Closing this gap — promoting a fail-on-parity
-gate to required — is tracked as an improvement item.
+The `compatibility/prometheus-forced-route` lane additionally
+**hard-fails on any parity diff** (`FAIL_ON_DIFF=1` in
+`run-compatibility.sh`) as the corpus-wide proof that the sharded solver
+route is byte-identical to reference Prometheus; it is intentionally an
+*informational* job, not a required check, so it doesn't gate every
+unrelated PR on the full forced-route corpus run.
+
+### Parity-regression ratchet (the gate)
+
+The three differs are **scored** — they accumulate per-case results,
+write `compat-score.json`, and exit 0 even when a case diverges, so the
+harness step turns the job red only on infrastructure breakage (corpus
+load, compose-up, missing report). On its own that makes the score an
+informational badge, not a gate: a real numeric regression on the main
+route would merge green.
+
+The **parity-regression ratchet** closes that hole and makes
+"compatibility is the source of truth" a real gate. After each harness
+runs, `.github/scripts/compat-ratchet.mjs` reads the run's
+`compat-score.json` and the committed floor in
+`compatibility/parity-baseline.json`, and **fails the required job when
+the run drops below baseline** — either fewer passing cases (a real
+regression) or a corpus smaller than baseline (which could otherwise
+mask a regression by dropping a failing case). A run that matches or
+exceeds the floor passes; noise *within* the baseline is tolerated.
+
+The floors today (`heads.<name>.{passed,total}`):
+
+| head       | passed/total |
+| ---------- | ------------ |
+| prometheus | 574 / 574    |
+| loki       | 116 / 116    |
+| tempo      | 48 / 48      |
+
+This is **not** an allow-list and does not resurrect the deleted
+`expected-failures.json`: it never names an individual case or excuses a
+specific failure — it pins only the aggregate floor and rejects any drop
+below it. It cannot flake because the differs compare with
+absolute + relative epsilon tolerance over canonical-key-sorted result
+sets against a deterministic seed, so `passed`/`total` are stable run to
+run (verified: three consecutive green main runs produced byte-identical
+574/574, 116/116, 48/48); the ratchet then compares **integers**, with
+no float/timing/ordering surface left to jitter.
+
+When the harness legitimately gains passing cases or the corpus grows,
+**raise the matching floor** in `compatibility/parity-baseline.json` in
+the same PR — the ratchet's pass log prints the exact new numbers. Never
+*lower* a floor to make a real parity bug merge; fix the bug at the
+source instead.
 
 ## Adding new test cases
 

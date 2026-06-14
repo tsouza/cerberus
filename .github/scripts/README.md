@@ -37,6 +37,19 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
     head's `compat-score.json`).
   - Exit: always `0` (housekeeping; never gates).
+- **`compat-ratchet.mjs`** — `compatibility.yml`, the three
+  `Parity-regression ratchet` steps. The GATE that makes the required
+  `compatibility/{prometheus,loki,tempo}` checks fail on a numeric parity
+  regression (not just on infra breakage). Compares the run's
+  `compat-score.json` against the committed floor in
+  `compatibility/parity-baseline.json` and fails when `passed` or `total`
+  drops below baseline. Integer comparison only, so it can't flake. Not
+  an allow-list — pins the aggregate floor, never individual cases.
+  - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
+    head's `compat-score.json`), `BASELINE` (optional; default
+    `compatibility/parity-baseline.json`).
+  - Exit: `0` at or above baseline, `1` on a below-baseline regression or
+    a missing/malformed score or baseline.
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,
