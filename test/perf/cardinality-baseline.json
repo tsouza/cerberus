@@ -2330,6 +2330,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/double_exponential_smoothing",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/edge_abs_over_rate",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -2674,6 +2684,16 @@
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/first_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,

@@ -1096,7 +1096,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "The window-edge selector. first_over_time / present_over_time live in the parity-rejection row until their emitter support lands.",
+      "description": "The window-edge selector. Its siblings first_over_time / present_over_time are also implemented and showcased in this over-time row.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6834,100 +6834,6 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `first_over_time(up[5m])` today; this panel pins the rejection.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 16,
-            "y": 179
-          },
-          "id": 78,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "first_over_time(up[5m])",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "first_over_time \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
           "description": "Cerberus implements `present_over_time(up[5m])` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
@@ -7110,101 +7016,6 @@
           "cerberus": {
             "expect": "error:exceeded maximum resolution",
             "why": "Pins the #744 parity contract: cerberus mirrors upstream Prometheus's 11,000-points-per-timeseries query_range cap. The probe honours the target's 1ms min interval, producing a grid far over the cap; success here would mean the cap regressed."
-          }
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "cerberus-prometheus"
-          },
-          "description": "double_exponential_smoothing (a.k.a. holt_winters) is an experimental PromQL function reference Prometheus rejects without the experimental-functions feature flag; the PromQL head gates it for strict reference parity.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 8,
-            "x": 0,
-            "y": 200
-          },
-          "id": 110,
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "cerberus-prometheus"
-              },
-              "editorMode": "code",
-              "expr": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "double_exponential_smoothing \u2014 parity rejection",
-          "type": "timeseries",
-          "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
           }
         }
       ],
@@ -7692,6 +7503,194 @@
       "cerberus": {
         "expect": "nonempty",
         "why": "Cerberus implements this construct (lowering + chsql reducer landed); the panel asserts a live nonempty result. Previously a parity-rejection pin in the collapsed rejection row \u2014 the moment lowering/emitter support landed, the contract was upgraded to nonempty and the panel moved into the over-time showcase row."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Value of the time-earliest sample in a 5m window (preserves __name__, reference-exact vs funcFirstOverTime).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 215
+      },
+      "id": 78,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "first_over_time(up[5m])",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "first_over_time",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer, reference-exact against the flag-enabled reference Prometheus). Previously a parity-rejection pin in the collapsed rejection row \u2014 the maintainer flipped first_over_time / double_exponential_smoothing from gated to supported, so the contract was upgraded to a live nonempty result and the panel moved into the over-time showcase row."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Holt-Winters double-exponential smoothing (sf=0.5, tf=0.5) over a 5m window; reference-exact vs funcDoubleExponentialSmoothing.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 222
+      },
+      "id": 110,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "double_exponential_smoothing",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "Cerberus implements this construct (lowering + chsql reducer, reference-exact against the flag-enabled reference Prometheus). Previously a parity-rejection pin in the collapsed rejection row \u2014 the maintainer flipped first_over_time / double_exponential_smoothing from gated to supported, so the contract was upgraded to a live nonempty result and the panel moved into the over-time showcase row."
       }
     }
   ],

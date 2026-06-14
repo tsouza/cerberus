@@ -357,10 +357,9 @@
       "symbol": "fn:double_exponential_smoothing",
       "kind": "function",
       "probe": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "unsupported: range function \"double_exponential_smoothing\" is experimental and not supported by the PromQL head"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -386,10 +385,9 @@
       "symbol": "fn:first_over_time",
       "kind": "function",
       "probe": "first_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "unsupported: range function \"first_over_time\" is experimental and not supported by the PromQL head"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
