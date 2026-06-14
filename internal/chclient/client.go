@@ -404,6 +404,19 @@ func dialContext(dial time.Duration, cfg Config) func(context.Context, string) (
 //
 // The returned Client is safe for concurrent use.
 func New(cfg Config) (*Client, error) {
+	conn, err := clickhouse.Open(buildOptions(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("chclient: open: %w", err)
+	}
+	return assembleClientFromConn(cfg, conn), nil
+}
+
+// buildOptions translates a Config into the clickhouse.Options that New
+// passes to clickhouse.Open. It is factored out of New so the option
+// mapping — pool sizing, the keepalive dialer, and the ReadTimeout ceiling —
+// is unit-testable without a live ClickHouse (clickhouse.Open is lazy and
+// never dials, but it also doesn't expose the resolved Options back to us).
+func buildOptions(cfg Config) *clickhouse.Options {
 	dial := cfg.DialTimeout
 	if dial == 0 {
 		dial = 5 * time.Second
@@ -440,10 +453,40 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ConnMaxLifetime > 0 {
 		opts.ConnMaxLifetime = cfg.ConnMaxLifetime
 	}
-	conn, err := clickhouse.Open(opts)
-	if err != nil {
-		return nil, fmt.Errorf("chclient: open: %w", err)
+	// ReadTimeout caps how long a single socket read may block waiting for
+	// data from ClickHouse. clickhouse-go's native read does NOT reliably
+	// honour the request ctx deadline at the socket layer; when unset the
+	// driver falls back to its own 300s default (clickhouse_options.go).
+	// We tie ReadTimeout to the per-query wall-clock budget (QueryTimeout =
+	// CERBERUS_QUERY_TIMEOUT, stamped as max_execution_time): the longest
+	// legitimate single read is the wait for a query's first block, which
+	// max_execution_time already bounds, so ReadTimeout = QueryTimeout is the
+	// correct tight upper bound — never shorter than any healthy read.
+	//
+	// It ALSO bounds the failure mode that made breaker recovery flaky after
+	// a CH restart: a force-killed pod leaves a half-open socket (ESTABLISHED,
+	// no FIN/RST). A pooled conn handed to a recovery query blocks on a READ
+	// that, without ReadTimeout, hangs for the driver's full 300s — so the
+	// breaker only re-closes ~300s after the kill (CI chaos run 27513891381:
+	// kill→CLOSED took 339s). With ReadTimeout = QueryTimeout the stale read
+	// fails in ~QueryTimeout regardless of whether TCP keepalive fired,
+	// making recovery deterministic. The keepalive dialer is complementary —
+	// it detects the dead peer faster when the kernel probes fire; ReadTimeout
+	// is the hard ceiling when they don't.
+	//
+	// Zero is left unset (driver default applies) so a bare Config — notably
+	// the ones tests build — keeps the driver's out-of-the-box behaviour.
+	if cfg.QueryTimeout > 0 {
+		opts.ReadTimeout = cfg.QueryTimeout
 	}
+	return opts
+}
+
+// assembleClientFromConn wires the per-head breaker registry around an
+// already-opened driver conn and returns the production *Client. It is the
+// shared tail of New, factored out so option-building (buildOptions) and
+// breaker/Client assembly read as two distinct concerns.
+func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 	// Per-head breaker registry (#94) sharing one telemetry set (#95 tuning
 	// + disable config flows to every head). Zero tuning fields resolve to
 	// the GA defaults inside each breaker (resolveThreshold / resolveWindow /
@@ -467,7 +510,7 @@ func New(cfg Config) (*Client, error) {
 		maxSamples:   cfg.MaxQuerySamples,
 		maxMemory:    cfg.MaxQueryMemoryBytes,
 		queryTimeout: cfg.QueryTimeout,
-	}, nil
+	}
 }
 
 // querySettings returns the per-query ClickHouse settings map applied
