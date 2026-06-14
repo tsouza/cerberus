@@ -174,9 +174,41 @@ also honored by the OTel Go SDK and merge with these. See
 
 ## Schema
 
-| Variable                      | Type | Default | Description                                                                                 |
-| ----------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------- |
-| `CERBERUS_AUTO_CREATE_SCHEMA` | bool | `false` | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. |
+| Variable                      | Type | Default | Description                                                                                          |
+| ----------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `CERBERUS_AUTO_CREATE_SCHEMA` | bool | `false` | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins.          |
+| `CERBERUS_STARTUP_PREFLIGHT`  | bool | `true`  | Run the boot-time requirements check after the schema-create step; fails startup on any unmet one.   |
+
+The preflight runs two gates, both parameterised by the active
+(override-resolved) configuration:
+
+- **Version gate.** `SELECT version()` is compared against
+  `max(base, applicable-feature-floors)`. The base floor is **ClickHouse
+  25.8** (the supported / CI-tested floor — the chDB substrate is
+  `25.8.2.1-lts`). Enabling `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` adds the
+  native-rate floor (CH 25.6); the effective requirement is the maximum, so
+  it stays 25.8 today but rises automatically if a future feature floor
+  exceeds the base. An unreadable or unparseable version is a failure, never
+  a silent pass.
+- **Schema-shape gate.** The configured tables are introspected via
+  `system.columns` and validated to carry the essential columns the emitters
+  read, with the attribute-map columns (`Attributes` /
+  `ResourceAttributes` / `ScopeAttributes`) typed `Map(String, String)`
+  (a `Map(String, LowCardinality(String))` value type is accepted). Every
+  table and column name comes from the override-resolved schema, so
+  `CERBERUS_SCHEMA_*` renames are respected.
+
+The check runs after the auto-create step on purpose: on a fresh database
+cerberus has just created the tables, so introspecting them before the
+create would fail the schema gate against tables that don't exist yet. When
+any gate fails, the error **aggregates every** unmet requirement, e.g.:
+
+```text
+startup preflight failed:
+  - clickhouse version 25.4.1 is below the required minimum 25.8 (native rate disabled)
+  - table otel_metrics_gauge column Attributes: expected Map(String,String), found JSON
+  - table otel_traces: missing required column ServiceName
+```
 
 Schema-shape overrides — the table names cerberus reads when the ClickHouse
 layout deviates from the OTel-CH exporter defaults (`CERBERUS_SCHEMA_METRICS_*`,

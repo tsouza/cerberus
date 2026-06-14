@@ -899,3 +899,51 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	}
 	return out, nil
 }
+
+// NameTypePair is one (name, type) row decoded from a two-string-column
+// result set — the shape `system.columns` returns when projected as
+// (name, type). Used by the startup schema preflight to introspect the
+// deployed column layout of the configured tables.
+type NameTypePair struct {
+	Name string
+	Type string
+}
+
+// QueryNameTypePairs runs sql and decodes a two-string-column result
+// (name, type) into a flat slice. Used by the startup preflight to read
+// `system.columns` for the configured tables — the projection is
+// (name, type) and Scan binds positionally.
+//
+// Guarded by the circuit breaker: returns ErrCircuitOpen instantly when
+// the breaker is OPEN, no execute span opened.
+func (c *Client) QueryNameTypePairs(ctx context.Context, sql string, args ...any) ([]NameTypePair, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
+	ctx = c.queryContext(ctx)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
+	defer span.End()
+	defer flushProgress(ctx)
+	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(ctx, err)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var out []NameTypePair
+	for rows.Next() {
+		var p NameTypePair
+		if err := rows.Scan(&p.Name, &p.Type); err != nil {
+			return nil, fmt.Errorf("chclient: scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
+	}
+	return out, nil
+}

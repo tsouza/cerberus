@@ -47,6 +47,19 @@ type Config struct {
 	// the flag on an already-populated ClickHouse is a no-op.
 	AutoCreateSchema bool
 
+	// StartupPreflight, when true (the default), runs the boot-time
+	// requirements check after the schema-create step: it inspects the
+	// connected ClickHouse server version against the config-derived
+	// minimum (CH 25.8 base, raised to max(base, native-rate floor) when
+	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE is enabled) AND validates the
+	// deployed schema shape (the configured tables' essential columns and
+	// the attribute-map column types) via system.columns. When any gate
+	// fails the process exits non-zero with an aggregated message listing
+	// every unmet requirement, instead of letting a too-old server or a
+	// divergent schema surface as an opaque query-time error later.
+	// Setting CERBERUS_STARTUP_PREFLIGHT=false skips both gates.
+	StartupPreflight bool
+
 	// ExperimentalTSGridRange, when true, makes the PromQL lowering emit
 	// ClickHouse-native `timeSeriesRateToGrid` for eligible
 	// `rate(<counter>[<range>])` query_range expressions instead of the
@@ -178,6 +191,7 @@ const (
 	envCHBreakerWindow     = "CERBERUS_CH_BREAKER_WINDOW"
 	envCHBreakerOpenIntrvl = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envStartupPreflight    = "CERBERUS_STARTUP_PREFLIGHT"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
 	envLogLevel            = "CERBERUS_LOG_LEVEL"
@@ -222,6 +236,11 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_BREAKER_WINDOW        default "10s" (rolling failure window)
 //	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a probe)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
+//	CERBERUS_STARTUP_PREFLIGHT     default "true" — run the boot-time
+//	    requirements check (CH server version >= the config-derived minimum
+//	    AND deployed schema shape) AFTER the schema-create step; any unmet
+//	    requirement fails startup non-zero with an aggregated message.
+//	    Set to "false" to skip both gates.
 //	CERBERUS_EXPERIMENTAL_TS_GRID_RANGE default "false" — emit ClickHouse-native
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
 //	    >= 25.6 (prod / compose / e2e are on 25.8, so this floor is met by
@@ -258,6 +277,10 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 	autoCreate, err := getBool(v, envAutoCreateSchema)
+	if err != nil {
+		return Config{}, err
+	}
+	startupPreflight, err := getBool(v, envStartupPreflight)
 	if err != nil {
 		return Config{}, err
 	}
@@ -346,6 +369,7 @@ func FromEnv() (Config, error) {
 		Logs:                    schema.DefaultOTelLogsFromEnv(),
 		Traces:                  schema.DefaultOTelTracesFromEnv(),
 		AutoCreateSchema:        autoCreate,
+		StartupPreflight:        startupPreflight,
 		ExperimentalTSGridRange: tsGridRange,
 		Log:                     logCfg,
 		OTLP:                    otlp,
@@ -374,6 +398,7 @@ var allEnvKeys = []string{
 	envCHBreakerWindow,
 	envCHBreakerOpenIntrvl,
 	envAutoCreateSchema,
+	envStartupPreflight,
 	envExperimentalTSGrid,
 	envLogFormat,
 	envLogLevel,
@@ -431,6 +456,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envCHBreakerWindow, defaultCHBreakerWindow.String())
 	v.SetDefault(envCHBreakerOpenIntrvl, defaultCHBreakerOpenInterval.String())
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
+	v.SetDefault(envStartupPreflight, defaultStartupPreflight)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
@@ -474,6 +500,7 @@ const (
 	defaultCHUsername         = "default"
 	defaultCHPassword         = ""
 	defaultAutoCreateSchema   = false
+	defaultStartupPreflight   = true
 	defaultExperimentalTSGrid = false
 	defaultLogFormat          = "text"
 	defaultLogLevel           = "info"
