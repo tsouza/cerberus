@@ -177,7 +177,7 @@ also honored by the OTel Go SDK and merge with these. See
 | Variable                      | Type | Default | Description                                                                                          |
 | ----------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------- |
 | `CERBERUS_AUTO_CREATE_SCHEMA` | bool | `false` | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins.          |
-| `CERBERUS_STARTUP_PREFLIGHT`  | bool | `true`  | Run the boot-time requirements check after the schema-create step; fails startup on any unmet one.   |
+| `CERBERUS_REQUIREMENTS_CHECK` | bool | `true`  | Run the boot-time requirements check after the schema-create step; fails startup on any unmet one.   |
 
 The preflight runs two gates, both parameterised by the active
 (override-resolved) configuration:
@@ -204,7 +204,7 @@ create would fail the schema gate against tables that don't exist yet. When
 any gate fails, the error **aggregates every** unmet requirement, e.g.:
 
 ```text
-startup preflight failed:
+requirements check failed:
   - clickhouse version 25.4.1 is below the required minimum 25.8 (native rate disabled)
   - table otel_metrics_gauge column Attributes: expected Map(String,String), found JSON
   - table otel_traces: missing required column ServiceName

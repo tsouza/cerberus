@@ -21,22 +21,22 @@ func TestFromEnv_AutoCreateSchema_Default(t *testing.T) {
 	}
 }
 
-// TestFromEnv_StartupPreflight_Default confirms the preflight knob defaults
-// to true (ON) when CERBERUS_STARTUP_PREFLIGHT is unset.
-func TestFromEnv_StartupPreflight_Default(t *testing.T) {
-	t.Setenv("CERBERUS_STARTUP_PREFLIGHT", "")
+// TestFromEnv_RequirementsCheck_Default confirms the preflight knob defaults
+// to true (ON) when CERBERUS_REQUIREMENTS_CHECK is unset.
+func TestFromEnv_RequirementsCheck_Default(t *testing.T) {
+	t.Setenv("CERBERUS_REQUIREMENTS_CHECK", "")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
 	}
-	if !cfg.StartupPreflight {
-		t.Errorf("StartupPreflight = false; want true (default ON)")
+	if !cfg.RequirementsCheck {
+		t.Errorf("RequirementsCheck = false; want true (default ON)")
 	}
 }
 
-// TestFromEnv_StartupPreflight_Parsing covers the ParseBool vocabulary and
+// TestFromEnv_RequirementsCheck_Parsing covers the ParseBool vocabulary and
 // confirms the knob can be turned off.
-func TestFromEnv_StartupPreflight_Parsing(t *testing.T) {
+func TestFromEnv_RequirementsCheck_Parsing(t *testing.T) {
 	cases := []struct {
 		val  string
 		want bool
@@ -51,21 +51,21 @@ func TestFromEnv_StartupPreflight_Parsing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.val, func(t *testing.T) {
-			t.Setenv("CERBERUS_STARTUP_PREFLIGHT", tc.val)
+			t.Setenv("CERBERUS_REQUIREMENTS_CHECK", tc.val)
 			cfg, err := FromEnv()
 			if err != nil {
 				t.Fatalf("FromEnv: %v", err)
 			}
-			if cfg.StartupPreflight != tc.want {
-				t.Errorf("StartupPreflight = %v; want %v", cfg.StartupPreflight, tc.want)
+			if cfg.RequirementsCheck != tc.want {
+				t.Errorf("RequirementsCheck = %v; want %v", cfg.RequirementsCheck, tc.want)
 			}
 		})
 	}
 }
 
-// TestFromEnv_StartupPreflight_Invalid confirms a bad boolean fails fast.
-func TestFromEnv_StartupPreflight_Invalid(t *testing.T) {
-	t.Setenv("CERBERUS_STARTUP_PREFLIGHT", "maybe")
+// TestFromEnv_RequirementsCheck_Invalid confirms a bad boolean fails fast.
+func TestFromEnv_RequirementsCheck_Invalid(t *testing.T) {
+	t.Setenv("CERBERUS_REQUIREMENTS_CHECK", "maybe")
 	if _, err := FromEnv(); err == nil {
 		t.Fatal("FromEnv: want error for invalid bool, got nil")
 	}

@@ -414,7 +414,7 @@ func TestRunAggregatesAllFailures(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"startup preflight failed:",
+		"requirements check failed:",
 		"clickhouse version 25.4.1 is below the required minimum 25.8",
 		"table otel_metrics_gauge column Attributes: expected Map(String,String), found JSON",
 		"table otel_traces: missing required column ServiceName",

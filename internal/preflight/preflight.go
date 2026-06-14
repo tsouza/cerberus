@@ -131,7 +131,7 @@ func RunIfEnabled(ctx context.Context, enabled bool, q Querier, req Requirements
 // Run executes both gates against q and returns an aggregated error
 // listing every unmet requirement, or nil when all requirements hold.
 // The caller is responsible for turning a non-nil error into a non-zero
-// process exit. Use RunIfEnabled for the CERBERUS_STARTUP_PREFLIGHT gate.
+// process exit. Use RunIfEnabled for the CERBERUS_REQUIREMENTS_CHECK gate.
 func Run(ctx context.Context, q Querier, req Requirements) error {
 	var problems []string
 
@@ -142,7 +142,7 @@ func Run(ctx context.Context, q Querier, req Requirements) error {
 		return nil
 	}
 	var b strings.Builder
-	b.WriteString("startup preflight failed:")
+	b.WriteString("requirements check failed:")
 	for _, p := range problems {
 		b.WriteString("\n  - ")
 		b.WriteString(p)

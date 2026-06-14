@@ -327,7 +327,7 @@ connection options abort startup with a clear error.
 
 ### Startup requirements preflight
 
-`CERBERUS_STARTUP_PREFLIGHT` (**on by default**) runs a boot-time
+`CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time
 requirements check immediately **after** the schema-create step. It
 converts two classes of misconfiguration that would otherwise surface as
 opaque query-time errors into a precise, fail-fast boot error:
@@ -348,7 +348,7 @@ schema gate (it would fail against tables that don't exist yet if the order
 were reversed). When any gate fails the process exits non-zero with an
 **aggregated** message listing every unmet requirement at once, so an
 operator fixes the deployment in a single pass rather than one error per
-restart. Set `CERBERUS_STARTUP_PREFLIGHT=false` to skip both gates (logged
+restart. Set `CERBERUS_REQUIREMENTS_CHECK=false` to skip both gates (logged
 as one line) — useful when pointing cerberus at a deliberately non-default
 ClickHouse layout that the shape gate doesn't model. Note this is a
 stricter contract than the best-effort connectivity ping above: the

@@ -123,8 +123,8 @@ func run() error {
 	// startup (returns an error → exit 1) when the connected server is
 	// older than the config-derived floor or the deployed schema diverges
 	// from the active shape, converting an opaque query-time failure into a
-	// precise boot-time one. CERBERUS_STARTUP_PREFLIGHT=false skips it.
-	if err := runStartupPreflight(ctx, logger, client, cfg); err != nil {
+	// precise boot-time one. CERBERUS_REQUIREMENTS_CHECK=false skips it.
+	if err := runRequirementsCheck(ctx, logger, client, cfg); err != nil {
 		return err
 	}
 
@@ -433,8 +433,8 @@ func setupSchema(
 	return ready.Load
 }
 
-// runStartupPreflight runs the boot-time requirements check (gated ON by
-// default via CERBERUS_STARTUP_PREFLIGHT). It validates the connected
+// runRequirementsCheck runs the boot-time requirements check (gated ON by
+// default via CERBERUS_REQUIREMENTS_CHECK). It validates the connected
 // ClickHouse server version against the config-derived minimum AND the
 // deployed schema shape of the configured (override-resolved) tables. The
 // check is parameterised by the active config: the native-rate knob raises
@@ -444,14 +444,14 @@ func setupSchema(
 // caller exits non-zero — the precise boot-time failure replaces the
 // opaque query-time error a too-old server or divergent schema would
 // otherwise produce. When disabled, both gates are bypassed (one log line).
-func runStartupPreflight(
+func runRequirementsCheck(
 	ctx context.Context,
 	logger *slog.Logger,
 	client *chclient.Client,
 	cfg config.Config,
 ) error {
-	if !cfg.StartupPreflight {
-		logger.Info("startup preflight disabled (CERBERUS_STARTUP_PREFLIGHT=false)")
+	if !cfg.RequirementsCheck {
+		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
 		return nil
 	}
 	req := preflight.Requirements{
@@ -461,11 +461,11 @@ func runStartupPreflight(
 		Logs:              cfg.Logs,
 		Traces:            cfg.Traces,
 	}
-	if err := preflight.RunIfEnabled(ctx, cfg.StartupPreflight, client, req); err != nil {
+	if err := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req); err != nil {
 		return err
 	}
 	logger.Info(
-		"startup preflight passed",
+		"requirements check passed",
 		"database", cfg.ClickHouse.Database,
 		"native_rate", cfg.ExperimentalTSGridRange,
 	)

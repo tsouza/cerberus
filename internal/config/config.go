@@ -47,7 +47,7 @@ type Config struct {
 	// the flag on an already-populated ClickHouse is a no-op.
 	AutoCreateSchema bool
 
-	// StartupPreflight, when true (the default), runs the boot-time
+	// RequirementsCheck, when true (the default), runs the boot-time
 	// requirements check after the schema-create step: it inspects the
 	// connected ClickHouse server version against the config-derived
 	// minimum (CH 25.8 base, raised to max(base, native-rate floor) when
@@ -57,8 +57,8 @@ type Config struct {
 	// fails the process exits non-zero with an aggregated message listing
 	// every unmet requirement, instead of letting a too-old server or a
 	// divergent schema surface as an opaque query-time error later.
-	// Setting CERBERUS_STARTUP_PREFLIGHT=false skips both gates.
-	StartupPreflight bool
+	// Setting CERBERUS_REQUIREMENTS_CHECK=false skips both gates.
+	RequirementsCheck bool
 
 	// ExperimentalTSGridRange, when true, makes the PromQL lowering emit
 	// ClickHouse-native `timeSeriesRateToGrid` for eligible
@@ -191,7 +191,7 @@ const (
 	envCHBreakerWindow     = "CERBERUS_CH_BREAKER_WINDOW"
 	envCHBreakerOpenIntrvl = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
-	envStartupPreflight    = "CERBERUS_STARTUP_PREFLIGHT"
+	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
 	envLogLevel            = "CERBERUS_LOG_LEVEL"
@@ -236,7 +236,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_BREAKER_WINDOW        default "10s" (rolling failure window)
 //	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a probe)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
-//	CERBERUS_STARTUP_PREFLIGHT     default "true" — run the boot-time
+//	CERBERUS_REQUIREMENTS_CHECK     default "true" — run the boot-time
 //	    requirements check (CH server version >= the config-derived minimum
 //	    AND deployed schema shape) AFTER the schema-create step; any unmet
 //	    requirement fails startup non-zero with an aggregated message.
@@ -280,7 +280,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	startupPreflight, err := getBool(v, envStartupPreflight)
+	requirementsCheck, err := getBool(v, envRequirementsCheck)
 	if err != nil {
 		return Config{}, err
 	}
@@ -369,7 +369,7 @@ func FromEnv() (Config, error) {
 		Logs:                    schema.DefaultOTelLogsFromEnv(),
 		Traces:                  schema.DefaultOTelTracesFromEnv(),
 		AutoCreateSchema:        autoCreate,
-		StartupPreflight:        startupPreflight,
+		RequirementsCheck:       requirementsCheck,
 		ExperimentalTSGridRange: tsGridRange,
 		Log:                     logCfg,
 		OTLP:                    otlp,
@@ -398,7 +398,7 @@ var allEnvKeys = []string{
 	envCHBreakerWindow,
 	envCHBreakerOpenIntrvl,
 	envAutoCreateSchema,
-	envStartupPreflight,
+	envRequirementsCheck,
 	envExperimentalTSGrid,
 	envLogFormat,
 	envLogLevel,
@@ -456,7 +456,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envCHBreakerWindow, defaultCHBreakerWindow.String())
 	v.SetDefault(envCHBreakerOpenIntrvl, defaultCHBreakerOpenInterval.String())
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
-	v.SetDefault(envStartupPreflight, defaultStartupPreflight)
+	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
@@ -500,7 +500,7 @@ const (
 	defaultCHUsername         = "default"
 	defaultCHPassword         = ""
 	defaultAutoCreateSchema   = false
-	defaultStartupPreflight   = true
+	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
 	defaultLogFormat          = "text"
 	defaultLogLevel           = "info"
