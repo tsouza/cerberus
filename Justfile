@@ -553,10 +553,28 @@ e2e-reseed:
 # PID files at /tmp/cerberus-e2e-seed-*.pid let `e2e-seed-stop` find the
 # processes for clean teardown. Logs land at /tmp/cerberus-e2e-seed-rolling.log
 # so a failing tick is visible in CI artefacts.
+#
+# Port-forward durability (chaos lane): the forward is run through a
+# RECONNECTING supervisor (test/e2e/seed/port_forward_supervisor.sh) under
+# `setsid` so it is its own process-group leader. A bare `kubectl
+# port-forward` is bound to one backing pod, so the chaos `ch-pod-kill`
+# scenario breaks the tunnel and it never reconnects — the seeder then writes
+# into a dead socket for the rest of the run and CH stays empty. The
+# supervisor respawns the forward when it dies, so once CH is recreated the
+# tunnel re-establishes and the 30 s rolling ticks resume (the seeder's
+# clickhouse-go pool re-dials a fresh connection per tick). We stash the
+# supervisor's PGID so e2e-seed-stop can kill the whole group (supervisor +
+# its current kubectl child) atomically. This complements the chaos heal
+# step's one-shot `just e2e-reseed`: the one-shot repopulates immediately,
+# the supervised rolling feed keeps data anchored at wall-clock now for the
+# time-windowed assertions of the scenarios that follow.
 e2e-seed-rolling:
     @echo "==> launching rolling seeder (30s tick) in background"
-    @# 1) start a long-lived port-forward and stash its PID.
-    @kubectl -n cerberus port-forward svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
+    @# 1) start the reconnecting port-forward supervisor in its own process
+    @#    group (setsid) and stash its PGID (== leader PID under setsid) so
+    @#    teardown can signal the whole group.
+    @setsid bash test/e2e/seed/port_forward_supervisor.sh \
+        cerberus svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
         echo $! > /tmp/cerberus-e2e-seed-pf.pid
     @# 2) wait for the forward to come up.
     @for i in 1 2 3 4 5 6 7 8 9 10; do \
@@ -591,11 +609,14 @@ e2e-seed-rolling:
         cat /tmp/cerberus-e2e-seed-rolling.log; \
         exit 1
 
-# Stop the rolling seeder + its port-forward (idempotent). Called from
-# CI teardown so the dashboard job tears down cleanly even when the
-# Playwright step failed before reaching `e2e-down`. SIGTERM gives the
+# Stop the rolling seeder + its port-forward supervisor (idempotent).
+# Called from CI teardown so the dashboard job tears down cleanly even when
+# the Playwright step failed before reaching `e2e-down`. SIGTERM gives the
 # seeder a chance to log the exit reason; the port-forward never has any
-# state to flush.
+# state to flush. The port-forward PID file holds the supervisor's setsid
+# leader PID (== its PGID), so `kill -TERM -<pid>` signals the whole group —
+# the supervisor AND its current kubectl child — instead of orphaning the
+# kubectl child while the supervisor respawns it.
 e2e-seed-stop:
     @echo "==> stopping rolling seeder"
     @if [ -f /tmp/cerberus-e2e-seed-rolling.pid ]; then \
@@ -605,7 +626,7 @@ e2e-seed-stop:
     fi
     @if [ -f /tmp/cerberus-e2e-seed-pf.pid ]; then \
         pid=$(cat /tmp/cerberus-e2e-seed-pf.pid); \
-        kill -TERM "$pid" 2>/dev/null || true; \
+        kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; \
         rm -f /tmp/cerberus-e2e-seed-pf.pid; \
     fi
 

@@ -880,12 +880,18 @@ async function endOfRunHealthGate() {
 // `wipesCh: true` marks a scenario that destroys the ClickHouse pod. Because
 // CH runs `strategy: Recreate` on container-ephemeral storage
 // (test/e2e/k3s/clickhouse.yaml), the pod comes back EMPTY — every seeded
-// table is gone. The heal gate after such a scenario must RE-SEED before the
-// next scenario asserts, otherwise downstream queries hit `code:60 Unknown
-// table … otel_*`. The rolling seeder (e2e-seed-rolling) cannot do this: its
-// long-lived port-forward is bound to the killed pod and never reconnects, so
-// it writes into a dead socket for the rest of the run. The heal step issues a
-// one-shot `just e2e-reseed` through a FRESH port-forward instead.
+// table is gone. The heal gate after such a scenario RE-SEEDS via a one-shot
+// `just e2e-reseed` through a FRESH port-forward, giving the next scenario an
+// IMMEDIATELY repopulated data plane (otherwise downstream queries hit
+// `code:60 Unknown table … otel_*`).
+//
+// This one-shot is COMPLEMENTARY to the rolling seeder, not a substitute for
+// it. As of the reconnecting-supervisor fix (test/e2e/seed/
+// port_forward_supervisor.sh) the rolling seeder's port-forward respawns once
+// CH is recreated, so the 30 s rolling feed resumes on its own and keeps the
+// data anchored at wall-clock now for the time-windowed assertions of the
+// scenarios that follow. The one-shot closes the gap between CH coming back
+// and the next rolling tick landing; the rolling feed keeps it fresh after.
 const PHASE1 = [
   { name: 'ch-pod-kill', run: scenarioChPodKill, wipesCh: true },
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
@@ -942,13 +948,16 @@ async function preflight() {
 // implements the heal-between-each-scenario invariant the lane's header
 // documents.
 //
-// CH recreates EMPTY (container-ephemeral storage), and the rolling seeder
-// cannot refill it: its long-lived port-forward died with the killed pod and
-// never reconnects. So after a `wipesCh` scenario the heal gate RE-SEEDS via a
-// one-shot `just e2e-reseed` (fresh port-forward, idempotent DDL + INSERTs),
-// then waits for the seeded fixtures to be visible through the Prom head
-// before clearing the gate. After a non-destructive scenario, CH data
-// survives and only a short settle window is needed.
+// CH recreates EMPTY (container-ephemeral storage). After a `wipesCh`
+// scenario the heal gate RE-SEEDS via a one-shot `just e2e-reseed` (fresh
+// port-forward, idempotent DDL + INSERTs) for an IMMEDIATE repopulation, then
+// waits for the seeded fixtures to be visible through the Prom head before
+// clearing the gate. The rolling seeder's own port-forward respawns once CH
+// is recreated (reconnecting supervisor, see PHASE1's comment) and resumes
+// its 30 s feed, but the one-shot closes the gap until the next rolling tick
+// lands so the next scenario never starts against an empty table. After a
+// non-destructive scenario, CH data survives and only a short settle window
+// is needed.
 const HEAL_SETTLE_MS = 15_000; // OTLP flush headroom for a non-destructive scenario
 const RESEED_DEADLINE_MS = 120_000; // bound the `just e2e-reseed` one-shot (DDL + INSERTs + verify)
 const RESEED_VISIBLE_DEADLINE_MS = 90_000; // wait for the re-seeded `up` series to read back via the Prom head
