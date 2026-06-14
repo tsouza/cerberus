@@ -739,6 +739,101 @@ export function diffInventory(
 }
 
 // ---------------------------------------------------------------------------
+// ds/query supersession reconciliation
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal structural view of a captured datasource-API response the
+ * supersession reconciler needs. Mirrors the wire-capture shape in
+ * crawl.spec.ts without coupling to its full type.
+ */
+export type DsResponseView = {
+  url: string;
+  status: number;
+  requestBody: string;
+};
+
+/**
+ * Map refId → expr/query from a ds/query request body. Returns an
+ * empty map for non-JSON bodies. Both the Prom/Loki `expr` shape and
+ * the Tempo `query` (TraceQL) shape are handled.
+ */
+export function refIdToExpr(requestBody: string): Map<string, string> {
+  const out = new Map<string, string>();
+  try {
+    const parsed = JSON.parse(requestBody) as {
+      queries?: Array<{ refId?: string; expr?: string; query?: string }>;
+    };
+    for (const q of parsed.queries ?? []) {
+      const expr = (q.expr ?? q.query ?? '').trim();
+      if (q.refId) out.set(q.refId, expr);
+    }
+  } catch {
+    // fallthrough — empty map; caller treats every refId as undeclared
+  }
+  return out;
+}
+
+/**
+ * Stable signature of a ds/query request by its LOGICAL query payload
+ * — the datasource-typed set of `refId=expr` pairs — with the
+ * per-request `requestId`/`SQR…` nonce deliberately excluded. Two
+ * ds/query requests carrying the same query set over the same
+ * datasource type share a signature even though their unique
+ * `requestId` differs.
+ */
+export function dsQuerySignature(resp: DsResponseView): string {
+  const dsType =
+    new URL(resp.url, 'http://x').searchParams.get('ds_type') ?? '';
+  const pairs = [...refIdToExpr(resp.requestBody).entries()]
+    .map(([refId, expr]) => `${refId}=${expr}`)
+    .sort();
+  return `${dsType} ${pairs.join(' ')}`;
+}
+
+/**
+ * Set of ds/query signatures that ultimately SUCCEEDED (2xx) anywhere
+ * in a capture window.
+ *
+ * Reconciles Grafana's last-write-wins query supersession: a Scenes
+ * app (Explore Traces, Metrics Drilldown, …) re-fires a panel's query
+ * whenever a variable resolves, and ABORTS the older in-flight request
+ * the instant the newer one is issued. The aborted request surfaces to
+ * the browser as a transient `plugin.requestFailureError` 500 (the
+ * backend call ate a `context canceled`), but it is invisible to the
+ * user — the panel renders the newer request's result. A non-2xx whose
+ * signature appears here is one of those superseded ghosts, not a
+ * server fault. A genuinely-broken query never has a 2xx sibling, so it
+ * is NOT suppressed — this is reconciliation, not an escape hatch.
+ */
+export function succeededDsQuerySignatures(
+  captured: ReadonlyArray<DsResponseView>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const resp of captured) {
+    if (!resp.url.includes('/api/ds/query')) continue;
+    if (resp.status >= 200 && resp.status <= 299) {
+      out.add(dsQuerySignature(resp));
+    }
+  }
+  return out;
+}
+
+/**
+ * True iff `resp` is a non-2xx ds/query whose exact query signature
+ * later (or earlier) succeeded in the same window — i.e. a superseded,
+ * Grafana-aborted in-flight request that the user never saw fail.
+ */
+export function isSupersededDsQueryFailure(
+  resp: DsResponseView,
+  succeededSigs: ReadonlySet<string>,
+): boolean {
+  if (!resp.url.includes('/api/ds/query')) return false;
+  if (resp.status >= 200 && resp.status <= 299) return false;
+  return succeededSigs.has(dsQuerySignature(resp));
+}
+
+// ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------
 
