@@ -19,13 +19,22 @@ name: e2e
 #     children report as `compose-smoke-shard (shard-x)` and are NOT
 #     the gate).
 #   - `dashboard` — full-stack k3d + cerberus + Grafana + Playwright
-#     smoke. Runs on push-to-main + nightly + manual dispatch only.
-#     Informational on merges, not a PR gate; regressions are caught
-#     at merge-to-main time and reverted from main if they break.
-#     On schedule + dispatch it additionally runs the Grafana surface
-#     crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
+#     smoke, SHARDED across a modest matrix of isolated-k3d-cluster jobs
+#     (dashboard-setup emits the matrix from the single-source-of-truth
+#     .github/scripts/dashboard-matrix.mjs; dashboard-shard runs each
+#     shard's specs against its own k3d cluster; the aggregator job
+#     literally named `dashboard` needs the matrix and rolls it up).
+#     Runs on push-to-main + nightly + manual dispatch only.
+#     Informational on merges, not a PR gate (never runs on
+#     pull_request, so NOT a branch-protection check); regressions are
+#     caught at merge-to-main time and reverted from main if they break.
+#     On schedule + dispatch the DEDICATED crawl shard runs the Grafana
+#     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
-#     test/e2e/playwright/crawl/stacks.ts).
+#     test/e2e/playwright/crawl/stacks.ts) at SWEEP_DEPTH=full,
+#     CONCURRENTLY with the smoke shards. The ~50min crawl BFS is a single
+#     indivisible test(); splitting its frontier across shards is the
+#     follow-up that beats the 50min wall-clock floor.
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #
@@ -196,6 +205,14 @@ jobs:
       # the test imports only node: builtins + the matrix module's pure fns.
       - name: compose-smoke shard coverage (unit guard)
         run: node --test .github/scripts/compose-smoke-matrix.test.mjs
+
+      # dashboard (k3d) shard partition coverage guard. The dashboard lane
+      # never runs on pull_request, so without this a PR that adds a spec but
+      # forgets to shard it for the k3d lane would only fail later on a
+      # push/nightly run. Running the unit guard here catches it on the cheap
+      # PR gate, same as the compose-smoke guard above.
+      - name: dashboard shard coverage (unit guard)
+        run: node --test .github/scripts/dashboard-matrix.test.mjs
 
   # compose-smoke is sharded into a balanced matrix of isolated-compose-stack
   # jobs. The three heaviest specs are each a SINGLE async test() that loops
@@ -478,48 +495,142 @@ jobs:
           fi
           echo "all compose-smoke shards passed."
 
-  dashboard:
-    name: dashboard
-    # Push-to-main + nightly + manual dispatch only — informational on
-    # merges, not a PR gate. The PR fast-feedback loop stays on
-    # `check` + `lint` + `compose-smoke`.
+  # ---------------------------------------------------------------------------
+  # dashboard (k3d) lane — SHARDED across a modest matrix of isolated k3d
+  # clusters, mirroring the compose-smoke split.
+  #
+  # The dominant cost is crawl/crawl.spec.ts: a SINGLE async BFS test() (the
+  # ~50min long pole at SWEEP_DEPTH=full) that is indivisible by Playwright's
+  # native --shard AND by spec-file sharding (one file, one test). So spec-file
+  # sharding alone can't beat the 50min floor; the win this lane buys is COARSE
+  # and LOGICAL: run the non-crawl smoke specs on their own k3d clusters
+  # CONCURRENTLY with a DEDICATED crawl cluster, so the ~50min crawl no longer
+  # runs serially after the smoke set. Wall-clock drops from
+  # (smoke serial + crawl) toward max(crawl ~50min, slowest smoke shard).
+  #
+  # Beating the 50min floor itself needs the crawl ENGINE to partition its
+  # discovered BFS frontier across shards (a CRAWL_SHARD_INDEX/COUNT contract +
+  # a final union-merge-and-assert against the pinned inventory). That is a deep
+  # change to the 1383-line BFS + the inventory ratchet, blocked today by the
+  # k3d inventory being unbootstrapped — tracked as the explicit follow-up in
+  # this lane's PR. This sharding is the safe coarse win that lands first.
+  #
+  # k3d cost/flake: a cluster is heavy (~3-5min bring-up) and flaky
+  # (telemetrygen / otel-collector-gateway readiness BackOff). A matrix of N
+  # clusters multiplies BOTH, so the shard count is kept MODEST (3) — two smoke
+  # shards + one crawl shard. The partition + coverage assertion live in the
+  # single source of truth .github/scripts/dashboard-matrix.mjs — never
+  # hand-listed in YAML, so a new spec that isn't sharded is a HARD failure
+  # (verify step below), never a silent no-run.
+  #
+  # Topology:
+  #   dashboard-setup   — verify the partition covers every k3d-lane spec, then
+  #                       emit the strategy.matrix JSON.
+  #   dashboard-shard   — the matrix; each shard boots its OWN k3d cluster and
+  #                       runs only its assigned specs (smoke shards with
+  #                       CRAWL_STACK unset = crawl/** ignored, exactly as the
+  #                       old unfiltered smoke step; the crawl shard with
+  #                       CRAWL_STACK=k3d SWEEP_DEPTH=full = the crawl trio).
+  #   dashboard         — the AGGREGATOR; a single clean pass/fail over every
+  #                       shard. NOT a branch-protection check (the lane never
+  #                       runs on pull_request), but a clean roll-up + the
+  #                       coverage-discipline guard mirror compose-smoke.
+  dashboard-setup:
+    name: dashboard-setup
+    # Push-to-main + nightly + manual dispatch only — informational on merges,
+    # not a PR gate. The PR fast-feedback loop stays on `check` + `lint` +
+    # `compose-smoke`.
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # 40 (was 25): the schedule/dispatch lanes now also run the k3d
-    # crawl suite (CRAWL_STACK=k3d at SWEEP_DEPTH=full — exhaustive
-    # BFS + ds/query replays + data-quality lints) after the
-    # auto-discovery smoke. Push-to-main runs skip the crawl step and
-    # stay well under the old 25-minute ceiling.
-    timeout-minutes: 40
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Coverage gate FIRST: ::error:: + exit 1 if any k3d-lane spec is
+      # unassigned to a shard (the forbidden silent-coverage-gap) or any
+      # assigned/excluded entry is stale. Runs ~50ms, boots no cluster — so a
+      # dropped spec costs seconds, not a 3-5min k3d boot running the wrong
+      # spec set. ubuntu-latest ships node; the module imports only node:
+      # builtins, so no setup-node step is needed.
+      - name: assert shard coverage of every dashboard-lane spec
+        run: node .github/scripts/dashboard-matrix.mjs
+        env:
+          MODE: verify
+
+      # Emit the strategy.matrix JSON to $GITHUB_OUTPUT. emit re-runs the
+      # assertions internally, so even without the verify step above it can
+      # never ship a matrix that silently drops a spec.
+      - id: emit
+        name: emit shard matrix
+        run: node .github/scripts/dashboard-matrix.mjs
+        env:
+          MODE: emit
+
+  dashboard-shard:
+    name: dashboard-shard
+    needs: [dashboard-setup]
+    if: needs.dashboard-setup.result == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      # MANDATORY: one shard's failure must NOT cancel its siblings — each
+      # boots its own k3d cluster, and a cancelled-in-flight teardown leaks
+      # Docker volumes. false => each shard runs to completion + the aggregator
+      # sees a clean failure rather than an ambiguous cancelled.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.dashboard-setup.outputs.matrix) }}
+    # 40 to match the old monolith. Per-shard now: the crawl shard's single BFS
+    # test() is the ~50min long pole at SWEEP_DEPTH=full and needs the headroom;
+    # because it runs ALONE on its own cluster, the smoke shards no longer wait
+    # behind it. The crawl shard's own internal testInfo.setTimeout (75min in
+    # crawl.spec.ts) governs the BFS; this job cap is the cluster-lifetime bound.
+    timeout-minutes: 75
     concurrency:
-      group: e2e-dashboard-${{ github.ref }}
+      # Per-shard-keyed: sibling shards in the SAME run must not cancel each
+      # other; never cancel-in-progress (a half-killed k3d teardown leaks
+      # Docker volumes — same posture as the old dashboard job).
+      group: e2e-dashboard-${{ github.ref }}-${{ matrix.name }}
       cancel-in-progress: false
+    env:
+      # The crawl shard (CRAWL_STACK=k3d) only does work on schedule + manual
+      # dispatch — the per-PR/per-merge crawl fast lane is the compose stack's
+      # job. On push-to-main the crawl shard is a near-instant green no-op: every
+      # expensive step below is gated on RUN_SHARD, which is false for the crawl
+      # shard on a push event. The smoke shards always run.
+      RUN_SHARD: ${{ matrix.crawlStack != 'k3d' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v6
+        if: env.RUN_SHARD == 'true'
         with:
           go-version-file: 'go.mod'
           cache: true
 
       - uses: actions/setup-node@v6
+        if: env.RUN_SHARD == 'true'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: 'test/e2e/playwright/package.json'
 
       - uses: taiki-e/install-action@v2
+        if: env.RUN_SHARD == 'true'
         with:
           tool: just
 
       - name: Install k3d
+        if: env.RUN_SHARD == 'true'
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
       - name: Bring up k3d stack
+        if: env.RUN_SHARD == 'true'
         run: just e2e-up
 
       - name: Seed OTel data (deterministic synthetic rows; rolling)
+        if: env.RUN_SHARD == 'true'
         # `e2e-seed-rolling` runs the same INSERTs as `e2e-seed` once
         # synchronously (the next CI step sees a populated DB), then
         # leaves the seeder running in the background re-anchoring the
@@ -533,108 +644,95 @@ jobs:
         run: just e2e-seed-rolling
 
       - name: Wait for real OTel data from the collector pipeline
+        if: env.RUN_SHARD == 'true'
         run: just e2e-wait-otel
 
+      # Go e2e tests run ONCE across the matrix — on the single shard the
+      # manifest marks runGoE2E:true. They're stack-health Go tests, not
+      # Playwright; re-running them on every cluster would just burn minutes.
       - name: Run Go E2E tests
+        if: env.RUN_SHARD == 'true' && matrix.runGoE2E
         run: just e2e-run
 
       - name: Install Playwright + browsers
+        if: env.RUN_SHARD == 'true'
         working-directory: test/e2e/playwright
         run: |
           npm ci || npm install
           npx playwright install --with-deps chromium
 
-      - name: Run Playwright smoke
+      # ---- smoke shards (CRAWL_STACK unset => crawl/** ignored) ----
+      # Runs this shard's assigned non-crawl spec subset (the space-joined list
+      # .github/scripts/dashboard-matrix.mjs assigned, verified a total disjoint
+      # cover by the setup job). CRAWL_STACK is unset here, so
+      # playwright.config.ts ignores crawl/** — byte-for-byte the consumption
+      # mode of the old unfiltered "Run Playwright smoke" step, just over a
+      # spec subset instead of every spec serially.
+      - name: Run Playwright smoke (${{ matrix.name }})
+        id: playwright_smoke
+        if: env.RUN_SHARD == 'true' && matrix.crawlStack != 'k3d'
         working-directory: test/e2e/playwright
         env:
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
-          # iterate-all-dashboards reads dashboard JSON from disk;
-          # point it at the k3d stack's provisioning dir (the spec
-          # default is the compose stack's). The compose-only
-          # dashboards (clickhouse / host / otelcol) are fed by
-          # receivers the k3d collector intentionally doesn't run, so
-          # probing them here reports empty panels for data this stack
-          # never ships; the compose set is covered per-PR by the
-          # required compose-smoke job.
+          # iterate-all-dashboards reads dashboard JSON from disk; point it at
+          # the k3d stack's provisioning dir (the spec default is the compose
+          # stack's). The compose-only dashboards (clickhouse / host / otelcol)
+          # are fed by receivers the k3d collector intentionally doesn't run,
+          # so probing them here reports empty panels for data this stack never
+          # ships; the compose set is covered per-PR by the required
+          # compose-smoke job.
           DASHBOARDS_DIR: ${{ github.workspace }}/test/e2e/grafana/dashboards
-        # `npx playwright test` with no spec filter auto-discovers
-        # every `*.spec.ts` under test/e2e/playwright/. That includes
-        # the phase-5 `iterate-time-ranges.spec.ts` matrix sweep,
-        # which is deliberately NOT in the compose-smoke job's
-        # explicit invocation list (Q2 decision — too expensive for
-        # PR gate; nightly-only per
-        # /home/thiago/.claude/plans/e2e-enhance.md §9). Any future
-        # nightly-only spec should follow the same pattern: just add
-        # the file here and skip it from the compose-smoke job's
-        # explicit invocation list.
-        #
-        # Auto-discovered specs of note (each is hard-fail in this
-        # informational dashboard job; the job itself is not a PR gate):
-        #   - iterate-all-dashboards.spec.ts: reads the DASHBOARDS_DIR
-        #       JSON at spec-build time and probes every panel against
-        #       the real cerberus stack.
-        #   - iterate-metrics-explorer.spec.ts: enumerates every
-        #       metric cerberus publishes and probes /api/v1/series for
-        #       each. Pins the user's #8 sweep finding: the labels chip
-        #       must not surface "Unable to fetch labels".
-        run: npx playwright test
+        run: npx playwright test ${{ matrix.specs }} --reporter=list
 
-      # ---- k3d crawl lane (one engine, N stack configs) ----
+      # ---- crawl shard (CRAWL_STACK=k3d) ----
       # The same crawl framework the compose-smoke job runs per-PR
-      # (test/e2e/playwright/crawl/ — BFS + universal oracles +
-      # inventory ratchet, ds/query replays, data-quality lints),
-      # pointed at THIS stack via CRAWL_STACK=k3d. Schedule + manual
-      # dispatch only: the per-PR / per-merge fast lane is the compose
-      # stack's job, and the k3d lane always crawls at SWEEP_DEPTH=full
-      # (its inventory has no separate CI lean lane).
+      # (test/e2e/playwright/crawl/ — BFS + universal oracles + inventory
+      # ratchet, ds/query replays, data-quality lints), pointed at THIS stack
+      # via CRAWL_STACK=k3d. Runs only on schedule + manual dispatch (RUN_SHARD
+      # is false for the crawl shard on push), always at SWEEP_DEPTH=full (the
+      # k3d inventory has no separate CI lean lane).
       #
       # Bootstrap convention: the committed k3d inventory
-      # (test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json)
-      # starts EMPTY, and the crawl FAILS LOUDLY on it (see
-      # assertInventoryBootstrapped in crawl/lib.ts) until a real
-      # inventory is committed — the red lane is the pressure that
-      # keeps bootstrap from silently becoming permanent. To
-      # bootstrap (or deliberately regenerate after surface growth):
-      # dispatch this workflow with update_crawl_inventory=true, then
-      # commit the uploaded artifact.
-      - name: Run Playwright crawl (CRAWL_STACK=k3d)
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      # (test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json) starts
+      # EMPTY, and the crawl FAILS LOUDLY on it (see assertInventoryBootstrapped
+      # in crawl/lib.ts) until a real inventory is committed — the red lane is
+      # the pressure that keeps bootstrap from silently becoming permanent. To
+      # bootstrap (or deliberately regenerate after surface growth): dispatch
+      # this workflow with update_crawl_inventory=true, then commit the uploaded
+      # artifact.
+      - name: Run Playwright crawl (${{ matrix.name }}, CRAWL_STACK=k3d)
+        id: playwright_crawl
+        if: env.RUN_SHARD == 'true' && matrix.crawlStack == 'k3d'
         working-directory: test/e2e/playwright
         env:
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
-          CRAWL_STACK: k3d
+          CRAWL_STACK: ${{ matrix.crawlStack }}
           SWEEP_DEPTH: full
           CERBERUS_UPDATE_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory && '1' || '' }}
-        run: |
-          npx playwright test \
-            crawl/crawl.spec.ts \
-            crawl/dsquery.spec.ts \
-            crawl/lints.spec.ts \
-            --reporter=list
+        run: npx playwright test ${{ matrix.specs }} --reporter=list
 
       - name: Upload regenerated k3d crawl inventory
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory
+        if: always() && matrix.crawlStack == 'k3d' && github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory
         uses: actions/upload-artifact@v7
         with:
           name: grafana-surface-inventory-k3d
           path: test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json
           retention-days: 14
 
-      # Hard gate: zero cerberus container restarts across the whole
-      # job, asserted even when every spec passed. The nightly at run
-      # 27253909069 went GREEN while attempt 1 of the kiosk sweep hit
-      # "dial tcp …:8080: connect: connection refused" — Playwright's
-      # retries rode out a window where every cerberus pod was being
-      # probe-killed/unready at once, so the lane silently shipped a
-      # restart-looping gateway. A restart is a failure to fix at the
-      # source (probe budgets, resources, or a real crash); never a
-      # thing retries may absorb. On violation the step prints the
-      # previous-container logs + describes + events — the crash
-      # evidence — then fails the job.
+      # Hard gate: zero cerberus container restarts across this shard,
+      # asserted even when every spec passed. The nightly at run 27253909069
+      # went GREEN while attempt 1 of the kiosk sweep hit "dial tcp …:8080:
+      # connect: connection refused" — Playwright's retries rode out a window
+      # where every cerberus pod was being probe-killed/unready at once, so the
+      # lane silently shipped a restart-looping gateway. A restart is a failure
+      # to fix at the source (probe budgets, resources, or a real crash); never
+      # a thing retries may absorb. On violation the step prints the
+      # previous-container logs + describes + events — the crash evidence —
+      # then fails the job.
       - name: Assert zero cerberus restarts
-        if: always()
+        if: always() && env.RUN_SHARD == 'true'
         run: |
           total=0
           for c in $(kubectl -n cerberus get pods -l app=cerberus \
@@ -658,12 +756,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-report
+          # Per-shard name — a static name 409s across the matrix
+          # (upload-artifact@v4+ rejects a second upload to a used name).
+          name: playwright-report-${{ matrix.name }}
           path: test/e2e/playwright/playwright-report
           retention-days: 14
 
       - name: Dump cluster state on failure
-        if: failure()
+        if: failure() && env.RUN_SHARD == 'true'
         run: |
           echo "=== pods ==="
           kubectl -n cerberus get pods -o wide || true
@@ -710,8 +810,50 @@ jobs:
           tail -50 /tmp/cerberus-e2e-seed-pf.log 2>/dev/null || true
 
       - name: Tear down
-        if: always()
+        if: always() && env.RUN_SHARD == 'true'
         run: just e2e-down
+
+  # The AGGREGATOR — a single clean pass/fail over every dashboard shard. The
+  # dashboard lane never runs on pull_request, so this is NOT a
+  # branch-protection required check (unlike compose-smoke's aggregator); it
+  # exists so a merge/nightly/dispatch run has one rolled-up dashboard verdict
+  # instead of N per-shard contexts, and so the coverage-discipline guard
+  # (dashboard-setup) gates the fan-out. always() so it still reports when the
+  # setup/shards were skipped (e.g. a pull_request event, where the whole lane
+  # is off).
+  dashboard:
+    name: dashboard
+    needs: [dashboard-setup, dashboard-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: gate on every shard
+        run: |
+          echo "setup  = ${{ needs.dashboard-setup.result }}"
+          echo "shards = ${{ needs.dashboard-shard.result }}"
+          # The lane is off on pull_request (and any path that skipped setup):
+          # report green without work — the dashboard lane is informational and
+          # never a PR gate.
+          if [ "${{ needs.dashboard-setup.result }}" = "skipped" ]; then
+            echo "dashboard lane skipped (not push/schedule/dispatch) — nothing to aggregate."
+            exit 0
+          fi
+          # Otherwise setup must have succeeded and the matrix must be a clean
+          # success. A matrix exposes ONE rolled-up .result: `success` only if
+          # EVERY child succeeded; `failure` if any failed; `cancelled` if any
+          # was cancelled. The strict `!= 'success'` form catches failure AND
+          # cancelled AND skipped — fail-fast:false keeps a real spec failure a
+          # clean `failure`, not an ambiguous `cancelled`.
+          if [ "${{ needs.dashboard-setup.result }}" != "success" ]; then
+            echo "::error::dashboard-setup did not succeed (${{ needs.dashboard-setup.result }})."
+            exit 1
+          fi
+          if [ "${{ needs.dashboard-shard.result }}" != "success" ]; then
+            echo "::error::one or more dashboard shards failed/cancelled (rolled-up: ${{ needs.dashboard-shard.result }})."
+            exit 1
+          fi
+          echo "all dashboard shards passed."
 
   startup-bench:
     # Startup-speed benchmark: spawn cerberus and assert <2 s to /healthz.
