@@ -4,13 +4,14 @@
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> **RELEASE CANDIDATE — NOT YET GA.** Cerberus is at `v1.0.0-RC1`: the
-> surface is feature-complete for 1.0 and three differential harnesses
-> gate every merge, but correctness, performance, and operational
-> hardening are still being burned down. Evaluate it against your own
-> corpus before standing it in for a running Prom / Loki / Tempo
-> deployment, and expect breaking changes between release candidates.
-> See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
+> **RELEASE CANDIDATE — NOT YET GA.** Cerberus is on the `v1.0.0` release-
+> candidate line (latest tag `v1.0.0-RC3`): the surface is feature-complete
+> for 1.0 and the differential harnesses gate every merge, but correctness,
+> performance, and operational hardening are still being burned down.
+> Evaluate it against your own corpus before standing it in for a running
+> Prom / Loki / Tempo deployment, and expect breaking changes between
+> release candidates. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release
+> breakdown.
 
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
@@ -133,10 +134,11 @@ contract) is in [`docs/compatibility.md`](docs/compatibility.md).
 
 ## Testing
 
-Cerberus is tested in an 11-layer map spanning AST-shape pinning, plan-IR
+Cerberus is tested in a 12-layer map spanning AST-shape pinning, plan-IR
 invariants, optimiser properties, emitted-SQL goldens, chDB roundtrips,
-HTTP wire conformance, differential harnesses, Playwright UX flows,
-chaos / goleak, perf benchmarks, and an oracle-based property framework.
+function-surface parity, HTTP wire conformance, differential harnesses,
+Playwright UX flows, chaos / goleak, perf benchmarks + compute-fan-out
+guards, and an oracle-based property framework.
 `just test` runs the core lanes; see
 [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical layer
 map, the CI-gate inventory, and the gremlins rollout.
@@ -146,13 +148,14 @@ map, the CI-gate inventory, and the gremlins rollout.
 | Doc                                                | What's in it                                                                                    |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [`docs/engine.md`](docs/engine.md)                 | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                    |
+| [`docs/coverage.md`](docs/coverage.md)             | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                    |
 | [`docs/configuration.md`](docs/configuration.md)   | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults. |
 | [`docs/operations.md`](docs/operations.md)         | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.             |
 | [`docs/performance.md`](docs/performance.md)       | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression. |
 | [`docs/solver.md`](docs/solver.md)                 | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.    |
 | [`docs/benchmarks.md`](docs/benchmarks.md)         | Benchmark methodology and the recorded numbers (regenerable).                                   |
 | [`docs/compatibility.md`](docs/compatibility.md)   | The differential-harness playbook for all three heads.                                          |
-| [`docs/test-strategy.md`](docs/test-strategy.md)   | The 11-layer test map and CI-gate inventory.                                                    |
+| [`docs/test-strategy.md`](docs/test-strategy.md)   | The 12-layer test map and CI-gate inventory.                                                    |
 | [`docs/observability.md`](docs/observability.md)   | Self-observability across logs / metrics / traces (OTLP export).                                |
 | [`docs/health.md`](docs/health.md)                 | `/readyz` / `/healthz` probe semantics.                                                         |
 | [`docs/upstream-forks.md`](docs/upstream-forks.md) | The `tsouza/*` parser-fork + Dependabot-watch flow.                                             |
