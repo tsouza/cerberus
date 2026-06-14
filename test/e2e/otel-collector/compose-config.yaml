@@ -287,6 +287,25 @@ receivers:
             type,
             query_kind,
             user,
+            -- Map the query_log row's terminal `type` (and a non-empty
+            -- exception) onto an OTel-style severity so cerberus's Loki
+            -- head derives a real `detected_level` instead of "unknown".
+            -- ExceptionBeforeStart / ExceptionWhileProcessing are
+            -- failures (error); a clean QueryFinish is info. Carried as a
+            -- `severity_text` structured-metadata attribute below, which
+            -- cerberus's detected_level cascade resolves.
+            multiIf(
+              type LIKE 'Exception%' OR exception != '', 'error',
+              'info'
+            )                           AS severity_text,
+            -- Standard-named structured-metadata duplicates of the
+            -- ClickHouse-specific counters, so Grafana's Logs Drilldown
+            -- generic `duration` / `bytes` columns populate (the app
+            -- surfaces these by their conventional names). The
+            -- ClickHouse-specific keys (query_duration_ms / read_bytes)
+            -- stay alongside for operators who query them directly.
+            concat(toString(query_duration_ms), 'ms') AS duration,
+            toString(read_bytes)        AS bytes,
             toString(query_duration_ms) AS query_duration_ms,
             toString(read_rows)         AS read_rows,
             toString(read_bytes)        AS read_bytes,
@@ -309,11 +328,20 @@ receivers:
         tracking_column: event_us
         logs:
           - body_column: query
+            # `severity_text` rides as a structured-metadata attribute —
+            # the pinned collector's sqlquery `logs` config has no severity
+            # column. cerberus's detected_level cascade reads
+            # LogAttributes['severity_text'], so the level resolves per
+            # record (info for clean queries, error for failures) instead of
+            # collapsing every line to "unknown".
             attribute_columns:
+              - severity_text
               - query_id
               - type
               - query_kind
               - user
+              - duration
+              - bytes
               - query_duration_ms
               - read_rows
               - read_bytes

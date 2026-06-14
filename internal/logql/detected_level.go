@@ -35,18 +35,22 @@ import (
 //     then fall back to a keyword scan (ERROR / WARN / INFO / DEBUG /
 //     TRACE / FATAL / CRITICAL with word-boundary awareness).
 //
-// Cerberus emits a CH expression that covers step (1) — read through
-// the OTel `SeverityText` column, normalised to Loki's canonical
-// lowercase set. Production OTel-CH ingestion always populates
-// SeverityText (and cerberus's loki-compat seeder mirrors that), so
-// this single path catches the common case. The content-scan path
-// (step 3 — JSON / logfmt / keyword scan against the log Body) and
-// the structured-metadata flavour of step (1)
-// (`LogAttributes['detected_level']` written by an upstream processor)
-// are out of scope for this implementation: the seed datasets the
-// harness exercises rely on SeverityText, and emitting the broader
-// shape would double the CH expression size without changing the
-// observable result.
+// Cerberus emits a CH `multiIf(...)` precedence cascade (see
+// [detectedLevelSourceExpr]) that covers steps (1) and (2): the
+// structured-metadata `detected_level` key wins, then the allowed
+// level/severity keys ([allowedLevelFields]) in the LogAttributes map,
+// then the dedicated OTel `SeverityText` column as the terminal source.
+// The resolved value is normalised to Loki's canonical lowercase set
+// ([normaliseLevelExpr]); an all-empty resolution maps to `unknown`,
+// matching reference Loki's `constants.LogLevelUnknown` stamping.
+//
+// The content-scan path (step 3 — JSON / logfmt / keyword scan against
+// the log Body) remains out of scope: it would require parsing the
+// (arbitrarily large) line body inside the level expression, where the
+// OTel-CH model already routes a record's level into SeverityText or a
+// structured-metadata key at ingest. A record whose level lives only in
+// the body text maps to `unknown` here, where a reference Loki with
+// content discovery enabled would refine it.
 const (
 	detectedLevelLabel = "detected_level"
 	// levelLabelAlias is the short alias Loki accepts as equivalent to
@@ -83,31 +87,118 @@ func isDetectedLevelGroupingLabel(name string) bool {
 	return name == detectedLevelLabel || name == levelLabelAlias
 }
 
+// allowedLevelFields is the structured-metadata key set cerberus scans
+// for a log level before falling back to the dedicated SeverityText
+// column. It is the OTel-relevant subset of reference Loki's
+// `validation.DefaultAllowedLevelFields` (pkg/validation/limits.go): a
+// record whose LogAttributes map carries any of these keys with a
+// non-empty value resolves `detected_level` from that value
+// (normalised), matching the distributor-side `extractLogLevel`
+// precedence (pkg/distributor/field_detection.go).
+//
+// Upstream's full list also enumerates pure case variants (`LEVEL`,
+// `Level`, `Lvl`, `Severity`, …). Those are dropped here on purpose:
+// OTel structured metadata reaches the OTel-CH LogAttributes map after
+// the collector's attribute processing, where level/severity keys are
+// conventionally lowercase, and `normaliseLevelExpr` is already
+// case-insensitive on the VALUE (it lowercases before matching). Adding
+// a dozen case-variant KEY probes would multiply the per-query map
+// lookups (and the emitted SQL size) for cases OTel-CH data doesn't
+// produce. `SeverityText` is upstream's final map key too; cerberus
+// resolves it from the dedicated column instead, as the terminal branch
+// of [detectedLevelSourceExpr].
+var allowedLevelFields = []string{
+	"level",
+	"log.level",
+	"severity",
+	"severity_text",
+}
+
 // detectedLevelExpr returns the chplan expression that computes the
-// synthesized `detected_level` value for the current row. The emitted
-// shape normalises `SeverityText` to Loki's canonical lowercase level
-// set via a `multiIf(...)` chain:
+// synthesized `detected_level` value for the current row. The source
+// value is resolved with reference Loki's `extractLogLevel` precedence
+// (see [detectedLevelSourceExpr]) and then normalised to Loki's
+// canonical lowercase level set via [normaliseLevelExpr]'s `multiIf(...)`
+// chain:
 //
 //	multiIf(
-//	  lower(SeverityText) IN ('trace', 'trc'),                 'trace',
-//	  lower(SeverityText) IN ('debug', 'dbg'),                 'debug',
-//	  lower(SeverityText) IN ('info', 'inf', 'information'),   'info',
-//	  lower(SeverityText) IN ('warn', 'wrn', 'warning'),       'warn',
-//	  lower(SeverityText) IN ('error', 'err'),                 'error',
-//	  lower(SeverityText) =  'critical',                        'critical',
-//	  lower(SeverityText) =  'fatal',                           'fatal',
-//	  lower(SeverityText))
+//	  lower(src) IN ('trace', 'trc'),                 'trace',
+//	  lower(src) IN ('debug', 'dbg'),                 'debug',
+//	  lower(src) IN ('info', 'inf', 'information'),   'info',
+//	  lower(src) IN ('warn', 'wrn', 'warning'),       'warn',
+//	  lower(src) IN ('error', 'err'),                 'error',
+//	  lower(src) =  'critical',                        'critical',
+//	  lower(src) =  'fatal',                           'fatal',
+//	  lower(src))
 //
 // Inputs that don't match any group fall through to the lowercased
 // original — matching upstream `normalizeLogLevel`'s default branch.
-// Empty SeverityText emits the empty string (lower(”) = ”).
+// An empty resolved source maps to `unknown` (see [normaliseLevelExpr]).
 //
 // chplan's typed `Expr` surface has no IN frag; the IN clauses above
 // are encoded as left-folded OR-chains of equality comparisons. The
 // emitted SQL is byte-identical to a hand-written `multiIf(... OR ...,
 // ..., ... OR ...)` expression.
 func detectedLevelExpr(s schema.Logs) chplan.Expr {
-	return normaliseLevelExpr(&chplan.ColumnRef{Name: s.SeverityColumn})
+	return normaliseLevelExpr(detectedLevelSourceExpr(s))
+}
+
+// detectedLevelSourceExpr resolves the raw (pre-normalisation) log-level
+// source string for the current row, mirroring reference Loki's
+// `extractLogLevel` precedence (pkg/distributor/field_detection.go):
+//
+//  1. `LogAttributes['detected_level']` — an upstream processor already
+//     stamped the canonical key, pass it through.
+//  2. The first non-empty allowed level field
+//     ([allowedLevelFields] — `level` / `severity` / `lvl` / …) present
+//     in the LogAttributes (structured-metadata) map.
+//  3. The dedicated `SeverityText` column — cerberus's stand-in for the
+//     OTLP severity source reference Loki reads from
+//     `__otlp_severity_number__` structured metadata.
+//
+// The shape is a `multiIf(...)` cascade that returns the first non-empty
+// candidate; an all-empty row yields `”`, which [normaliseLevelExpr]
+// maps to `unknown`. When the schema carries no structured-metadata
+// column (custom-schema opt-out, `AttributesColumn == ""`) the cascade
+// collapses to the bare `SeverityText` column — byte-identical to the
+// prior single-source behaviour, so custom schemas without LogAttributes
+// see zero churn.
+//
+// Why this matters: production OTel pipelines that route a `level` /
+// `severity` structured-metadata attribute (without populating the
+// dedicated SeverityText column) previously collapsed to
+// `detected_level="unknown"` because cerberus only read SeverityText.
+// Reference Loki resolves those records' level from the structured-
+// metadata field — this cascade restores that parity.
+func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
+	severity := chplan.Expr(&chplan.ColumnRef{Name: s.SeverityColumn})
+	if s.AttributesColumn == "" {
+		return severity
+	}
+
+	// Each candidate contributes a (LogAttributes[key] != '', LogAttributes[key])
+	// pair to the multiIf cascade. The detected_level key leads, then the
+	// allowed level fields, then SeverityText as the final fallback branch.
+	// The keys are Loki/OTLP-convention structured-metadata names stored
+	// verbatim — NOT OTel dotted resource attributes — so a plain
+	// MapAccess (no dotted-form fallback) is the correct, lean lookup.
+	keys := make([]string, 0, len(allowedLevelFields)+1)
+	keys = append(keys, detectedLevelLabel)
+	keys = append(keys, allowedLevelFields...)
+
+	attrCol := &chplan.ColumnRef{Name: s.AttributesColumn}
+	args := make([]chplan.Expr, 0, len(keys)*2+1)
+	for _, key := range keys {
+		lookup := &chplan.MapAccess{Map: attrCol, Key: &chplan.LitString{V: key}}
+		args = append(
+			args,
+			&chplan.Binary{Op: chplan.OpNe, Left: lookup, Right: &chplan.LitString{V: ""}},
+			lookup,
+		)
+	}
+	// Final fallback: the dedicated severity column.
+	args = append(args, severity)
+	return &chplan.FuncCall{Name: "multiIf", Args: args}
 }
 
 // normaliseLevelExpr returns a CH `multiIf(...)` chain that maps the

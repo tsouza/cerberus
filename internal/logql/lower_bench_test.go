@@ -76,10 +76,15 @@ func TestAllocs_Lower(t *testing.T) {
 		// `metric_form` was lifted from 80 → 100 when detected_level was
 		// added as a synthesised identity dimension on bare range
 		// aggregations (mapConcat + mapFilter + multiIf nodes added to
-		// every count_over_time / rate / ... lowering).
+		// every count_over_time / rate / ... lowering), then 100 → 130
+		// when the detected_level source gained reference Loki's
+		// structured-metadata precedence cascade (a multiIf over the
+		// LogAttributes level/severity keys ahead of the SeverityText
+		// fallback — see detectedLevelSourceExpr). Current observed
+		// value is 119; the 130 ceiling keeps ~10% slack.
 		{"stream_matcher", `{job="api"}`, 45},
 		{"line_filter_chain", `{job="api"} |= "error" |~ "5[0-9]{2}"`, 70},
-		{"metric_form", `count_over_time({job="api"}[5m])`, 100},
+		{"metric_form", `count_over_time({job="api"}[5m])`, 130},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
