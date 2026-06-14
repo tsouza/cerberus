@@ -2,6 +2,7 @@ package tempo_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -21,12 +22,16 @@ type chaosQuerier struct {
 	samples      []chclient.Sample
 	strings      []string
 	err          error
+	wrapPanic    bool
 	queryLatency time.Duration
 	calls        atomic.Int32
 }
 
 func (c *chaosQuerier) Query(ctx context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
 	c.calls.Add(1)
+	if c.wrapPanic {
+		panic("chaos: simulated panic in Query")
+	}
 	if c.queryLatency > 0 {
 		select {
 		case <-time.After(c.queryLatency):
@@ -49,6 +54,46 @@ func (c *chaosQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([]st
 }
 
 var _ tempo.Querier = (*chaosQuerier)(nil)
+
+// assertTempoErrorEnvelope decodes body as Tempo's distinct error shape
+// (`{traceID, spanID, error, message}`) and asserts error=true with a
+// non-empty message — the fields Grafana's Tempo datasource reads.
+func assertTempoErrorEnvelope(t *testing.T, body string) {
+	t.Helper()
+	var env tempo.ErrorResponse
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("error body not parseable JSON: %v; body=%s", err, body)
+	}
+	if !env.Error {
+		t.Errorf("envelope.error: got false, want true; body=%s", body)
+	}
+	if env.Message == "" {
+		t.Errorf("envelope.message: empty (Grafana renders this string); body=%s", body)
+	}
+}
+
+// TestTempoCH_PanicQuerier_Returns500Envelope — RC1 robustness contract
+// for the Tempo head, mirroring the Prom + Loki panic tests. A panicking
+// Querier must NOT drop the TCP connection: the shared
+// telemetry.QueryMiddleware recover path renders a clean Tempo 500 error
+// envelope and counts the failed query, instead of unwinding through
+// net/http and leaving a bare conn-reset.
+func TestTempoCH_PanicQuerier_Returns500Envelope(t *testing.T) {
+	t.Parallel()
+	q := &chaosQuerier{wrapPanic: true}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/api/search?q=%7B%7D`)
+	if err != nil {
+		t.Fatalf("GET: connection dropped on panic (want clean 500): %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500; body=%s", resp.StatusCode, body)
+	}
+	assertTempoErrorEnvelope(t, body)
+}
 
 // TestTempoCH_SearchUpstreamError_Returns502 — CH-side failure on
 // /api/search must surface as 502 with the Tempo error envelope.

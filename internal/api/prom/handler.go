@@ -132,7 +132,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		// Rejections are not counted by QueryMiddleware (the inner
 		// handler never runs); they show up on
 		// cerberus.admit.rejected_total instead.
-		handler := promHeadersMiddleware(telemetry.QueryMiddleware("promql", hf))
+		handler := promHeadersMiddleware(telemetry.QueryMiddleware("promql", panicEnvelope, hf))
 		mux.Handle(pattern, h.Limiter.Middleware(1, handler))
 	}
 	register("GET /api/v1/query", h.handleQuery)
@@ -1073,6 +1073,17 @@ func (h *Handler) respondError(w http.ResponseWriter, err error) {
 // encoding identically across all three handlers.
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	httperr.WriteJSON(w, status, body)
+}
+
+// panicEnvelope is the [telemetry.PanicRenderer] for the Prom head: when
+// QueryMiddleware recovers a handler panic before any response was
+// committed, it renders the canonical Prom 500 envelope so Grafana sees
+// `{status:"error", errorType:"internal"}` instead of a dropped
+// connection. The recovered value + stack are logged by the middleware
+// via the OTLP slog bridge; this only shapes the wire response.
+func panicEnvelope(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusInternalServerError, ErrInternal,
+		errors.New("internal server error"))
 }
 
 // writeError emits the Prom JSON envelope `{status, errorType, error}`.

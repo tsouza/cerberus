@@ -175,7 +175,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		// admit.Middleware (outer) → telemetry.QueryMiddleware (inner)
 		// — same layering as the Prom + Loki heads. Rejections land
 		// on cerberus.admit.rejected_total, not cerberus.queries.*.
-		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("traceql", hf)))
+		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("traceql", panicEnvelope, hf)))
 	}
 	register("GET /api/echo", h.handleEcho)
 	register("GET /api/status/version", h.handleVersion)
@@ -1943,4 +1943,16 @@ func writeError(w http.ResponseWriter, status int, traceID, spanID string, err e
 		TraceID: traceID, SpanID: spanID, Error: true,
 		Message: err.Error(),
 	})
+}
+
+// panicEnvelope is the [telemetry.PanicRenderer] for the Tempo head:
+// when QueryMiddleware recovers a handler panic before any response was
+// committed, it renders Tempo's distinct error shape
+// (`{traceID, spanID, error, message}`) with a 500 status so Grafana's
+// Tempo datasource sees a clean error instead of a dropped connection.
+// The recovered value + stack are logged by the middleware via the OTLP
+// slog bridge; this only shapes the wire response.
+func panicEnvelope(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusInternalServerError, "", "",
+		errors.New("internal server error"))
 }

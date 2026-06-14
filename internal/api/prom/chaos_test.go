@@ -239,10 +239,15 @@ func TestCH_SlowResponse_RespectsClientCancel(t *testing.T) {
 	}
 }
 
-// TestCH_NoPanicOnPanicQuerier — a panicking Querier must not crash
-// the test server; the handler / runtime recovers and the connection
-// is closed.
-func TestCH_NoPanicOnPanicQuerier(t *testing.T) {
+// TestCH_PanicQuerier_Returns500Envelope — a panicking Querier must NOT
+// drop the TCP connection. The shared telemetry.QueryMiddleware recover
+// path renders a clean Prom 500 error envelope and counts the failed
+// query. This is the RC1 robustness contract: the pre-fix behaviour was
+// a bare conn-reset (the panic unwound through net/http invisibly,
+// rendering no envelope and skipping the metric), and this test
+// previously lenient-accepted EITHER a conn-reset OR a 5xx. It now pins
+// the clean-500 outcome unconditionally.
+func TestCH_PanicQuerier_Returns500Envelope(t *testing.T) {
 	t.Parallel()
 	q := &chaosQuerier{wrapPanic: true}
 	srv := newServer(q)
@@ -250,16 +255,13 @@ func TestCH_NoPanicOnPanicQuerier(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 	if err != nil {
-		// net/http recovers; the connection may be reset depending on
-		// timing. Either failure is acceptable: no test crash.
-		t.Logf("Get returned err on panic path: %v (acceptable)", err)
-		return
+		t.Fatalf("GET: connection dropped on panic (want clean 500): %v", err)
 	}
-	defer resp.Body.Close()
-	// If we got a response, it should be 500-class.
-	if resp.StatusCode < 500 {
-		t.Errorf("status: got %d, want 5xx", resp.StatusCode)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500; body=%s", resp.StatusCode, body)
 	}
+	assertPromErrorEnvelope(t, body, prom.ErrInternal)
 }
 
 // TestCH_OversizeQuery_Tolerated — a very long query string should not

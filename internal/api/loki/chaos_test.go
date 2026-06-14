@@ -2,6 +2,7 @@ package loki_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,12 +32,16 @@ type chaosQuerier struct {
 	statsRow     chclient.IndexStatsRow
 	volumeRows   []chclient.IndexVolumeRow
 	err          error
+	wrapPanic    bool
 	queryLatency time.Duration
 	calls        atomic.Int32
 }
 
 func (c *chaosQuerier) Query(ctx context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
 	c.calls.Add(1)
+	if c.wrapPanic {
+		panic("chaos: simulated panic in Query")
+	}
 	if c.queryLatency > 0 {
 		select {
 		case <-time.After(c.queryLatency):
@@ -316,6 +321,49 @@ func TestLokiCH_MissingQuery_400(t *testing.T) {
 	if !strings.Contains(body, "missing query") {
 		t.Errorf("body: missing %q in %s", "missing query", body)
 	}
+}
+
+// assertLokiErrorEnvelope decodes body as a Loki error response and
+// asserts the fields Grafana reads: status = "error", errorType matches,
+// and the message is non-empty.
+func assertLokiErrorEnvelope(t *testing.T, body, wantKind string) {
+	t.Helper()
+	var env loki.Response
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("error body not parseable JSON: %v; body=%s", err, body)
+	}
+	if env.Status != "error" {
+		t.Errorf("envelope.status: got %q, want \"error\"; body=%s", env.Status, body)
+	}
+	if env.ErrorType != wantKind {
+		t.Errorf("envelope.errorType: got %q, want %q; body=%s", env.ErrorType, wantKind, body)
+	}
+	if env.Error == "" {
+		t.Errorf("envelope.error: empty (Grafana renders this string); body=%s", body)
+	}
+}
+
+// TestLokiCH_PanicQuerier_Returns500Envelope — RC1 robustness contract
+// for the Loki head, mirroring the Prom + Tempo panic tests. A panicking
+// Querier must NOT drop the TCP connection: the shared
+// telemetry.QueryMiddleware recover path renders a clean Loki 500 error
+// envelope and counts the failed query, instead of unwinding through
+// net/http and leaving a bare conn-reset.
+func TestLokiCH_PanicQuerier_Returns500Envelope(t *testing.T) {
+	t.Parallel()
+	q := &chaosQuerier{wrapPanic: true}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: connection dropped on panic (want clean 500): %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500; body=%s", resp.StatusCode, body)
+	}
+	assertLokiErrorEnvelope(t, body, loki.ErrInternal)
 }
 
 // TestLokiCH_Pointer_Querier_AssertedInterface — compile-time sanity

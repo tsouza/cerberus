@@ -114,7 +114,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		// — rejections are accounted on cerberus.admit.rejected_total,
 		// not on cerberus.queries.*. See prom.Handler.Mount for the
 		// full layering note.
-		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("logql", hf)))
+		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("logql", panicEnvelope, hf)))
 	}
 	register("GET /loki/api/v1/query", h.handleQuery)
 	register("POST /loki/api/v1/query", h.handleQuery)
@@ -749,6 +749,17 @@ func (h *Handler) respondError(w http.ResponseWriter, err error) {
 // encoding identically across all three handlers.
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	httperr.WriteJSON(w, status, body)
+}
+
+// panicEnvelope is the [telemetry.PanicRenderer] for the Loki head: when
+// QueryMiddleware recovers a handler panic before any response was
+// committed, it renders the canonical Loki 500 envelope so Grafana sees
+// `{status:"error", errorType:"internal"}` instead of a dropped
+// connection. The recovered value + stack are logged by the middleware
+// via the OTLP slog bridge; this only shapes the wire response.
+func panicEnvelope(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusInternalServerError, ErrInternal,
+		errors.New("internal server error"))
 }
 
 // writeError emits the Loki JSON envelope `{status, errorType, error}`.
