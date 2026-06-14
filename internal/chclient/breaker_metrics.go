@@ -15,11 +15,6 @@ import (
 // trip events.
 const breakerMeterName = "github.com/tsouza/cerberus/internal/chclient"
 
-// attrBreakerState labels the gauge with the lifecycle phase the gauge sample
-// corresponds to — "closed" / "open" / "half-open" — using the same stable
-// vocabulary peek() / currentState() / observeLevel() return.
-const attrBreakerState = attribute.Key("state")
-
 // attrBreakerHead labels every breaker sample with the logical head the
 // breaker fronts — "prom" / "loki" / "tempo" / "probe". Adding this label
 // (per-head isolation, #94) turns the single cerberus_ch_breaker_state /
@@ -55,10 +50,21 @@ type breakerMetrics struct {
 	// lifecycle phase (closed/open/half-open). It is reported by a callback
 	// on every collection interval, reading each live breaker's current
 	// state, so the exported series always reflects the breaker's real state
-	// and can NEVER go stale — the failure mode of a synchronous gauge
-	// recorded only on transitions, which lingers at the last-transitioned
-	// value (e.g. a transient HALF-OPEN) long after the breaker has actually
-	// closed.
+	// and can NEVER go stale. Two distinct staleness traps are avoided:
+	//
+	//   1. A SYNCHRONOUS gauge recorded only on transitions lingers at the
+	//      last-transitioned value (e.g. a transient HALF-OPEN) long after the
+	//      breaker has closed. The OBSERVABLE callback re-reads live state
+	//      every interval, so it can't.
+	//   2. Keying the phase as a metric LABEL (state="open" / "closed") makes
+	//      every transition mint a NEW series and ORPHAN the previous one. An
+	//      OTel observable gauge only overwrites series it re-observes, so the
+	//      orphaned series lingers at its last value over OTLP forever — a
+	//      recovered breaker would still export a stale state="open"=1 next to
+	//      the live state="closed"=0, and a max()-across-series read (the chaos
+	//      lane's recovery assert) would read the breaker as permanently OPEN.
+	//      So the phase rides ONLY the numeric level; the gauge is keyed on
+	//      `head` alone — one series per head, overwritten in place.
 	state metric.Int64ObservableGauge
 	// trips is the cumulative count of CLOSED->OPEN trips — the
 	// highest-blast-radius event (one trip 503s all three heads and
@@ -142,10 +148,21 @@ func (m *breakerMetrics) registerStateCallback(breakers ...*breaker) {
 	_, err := m.meter.RegisterCallback(
 		func(_ context.Context, observer metric.Observer) error {
 			for _, b := range breakers {
-				level, label := b.observeLevel()
-				observer.ObserveInt64(m.state, level, metric.WithAttributes(
+				// The level (0/1/2) IS the phase — do NOT also stamp the
+				// phase as a `state` label. A leveled gauge must keep ONE
+				// series per head: if the phase rode a label, every
+				// transition would mint a NEW series (state="open" →
+				// state="closed") and ORPHAN the previous one. An OTel
+				// observable gauge only overwrites series it re-observes each
+				// interval, so an orphaned series lingers at its last value
+				// forever — a recovered breaker would still export a stale
+				// state="open"=1 alongside the live state="closed"=0, and any
+				// max()-across-series read (the chaos lane's recovery assert)
+				// would read the breaker as permanently OPEN. One series per
+				// head, keyed only on head, overwrites in place every interval
+				// and is the only encoding that can never go stale.
+				observer.ObserveInt64(m.state, b.observeLevel(), metric.WithAttributes(
 					attrBreakerHead.String(b.head.String()),
-					attrBreakerState.String(label),
 				))
 			}
 			return nil
