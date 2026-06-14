@@ -53,17 +53,35 @@ const chaosSleepHeader = "X-Cerberus-Chaos-Sleep-Seconds"
 // 503 errorType=timeout AND a breaker that stays CLOSED.
 const chaosCHExecutionCap = 3 * time.Second
 
+// chaosSleepMaxBlockSize is the per-request ClickHouse max_block_size the
+// chaos hook narrows the data-plane query to. ClickHouse caps a single
+// sleepEachRow evaluation at max_sleep_in_seconds (3s) PER BLOCK —
+// (per-row seconds × rows-in-block) — and a numbers() source defaults to
+// one ~65k-row block, so the injected sleep would request its full
+// cumulative duration in ONE block and be rejected UP FRONT with code 160
+// (rendered 502, never sleeping, never timing out). Forcing single-row
+// blocks keeps each block's request at the per-row sleep magnitude
+// (chaosSleepPerCallSeconds, 2s < 3s cap) and lets ClickHouse re-check
+// max_execution_time BETWEEN blocks, so the query is aborted ~3s in with
+// code 159 (TIMEOUT_EXCEEDED → breaker-neutral → 503 errorType=timeout) —
+// the path the scenario asserts. See PR #915 / chaos run 27507299606.
+const chaosSleepMaxBlockSize uint64 = 1
+
 // applyChaosSleep reads the undocumented chaos sleep header and, when it
 // names a positive duration:
 //   - stamps the sleep seconds onto ctx so chsql.Emit splices a blocking
-//     server-side ClickHouse sleep into the emitted SQL, and
+//     server-side ClickHouse sleep into the emitted SQL,
 //   - narrows the data-plane query's ClickHouse max_execution_time to
 //     chaosCHExecutionCap (strictly below the Go deadline) so ClickHouse
-//     aborts with code 159 (breaker-neutral) before the Go deadline fires.
+//     aborts with code 159 (breaker-neutral) before the Go deadline fires,
+//     and
+//   - narrows max_block_size to chaosSleepMaxBlockSize (single-row blocks)
+//     so each injected sleepEachRow block stays under CH's per-block sleep
+//     cap (code 160 avoided) and max_execution_time can abort it mid-scan.
 //
 // When the header is absent or non-positive the ctx is returned unchanged,
 // so a trivial `up` query (which the scenario also fires) takes neither the
-// sleep nor the narrowed cap and returns 200.
+// sleep nor the narrowed caps and returns 200.
 func (h *Handler) applyChaosSleep(ctx context.Context, r *http.Request) context.Context {
 	raw := r.Header.Get(chaosSleepHeader)
 	if raw == "" {
@@ -75,5 +93,6 @@ func (h *Handler) applyChaosSleep(ctx context.Context, r *http.Request) context.
 	}
 	ctx = chsql.WithChaosSleepSeconds(ctx, seconds)
 	ctx = chclient.WithQueryTimeout(ctx, chaosCHExecutionCap)
+	ctx = chclient.WithMaxBlockSize(ctx, chaosSleepMaxBlockSize)
 	return ctx
 }

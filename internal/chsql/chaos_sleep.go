@@ -49,38 +49,88 @@ func chaosSleepSecondsFromContext(ctx context.Context) int {
 	return s
 }
 
+// ClickHouse hard-caps a SINGLE sleep / sleepEachRow evaluation at
+// max_sleep_in_seconds (default 3s). The cap is checked PER BLOCK as
+// (per-row seconds × rows-in-block): a sleepEachRow(s) over an N-row
+// block requests s·N seconds for that block and is rejected UP FRONT with
+//
+//	code 160 — "The maximum sleep time is 3000000 microseconds. Requested:
+//	            <s·N×1e6> microseconds per block"
+//
+// before any sleeping happens (so it can never time out — it 502s as a
+// plain internal error). The old splice emitted sleepEachRow(1) over
+// numbers(<seconds>); for seconds=10 that is a single 10-row block, so
+// the per-block request was 1·10 = 10s > 3s → code 160, NOT the intended
+// max_execution_time abort. See PR #915 / chaos run 27507299606.
+const (
+	// chMaxSleepSeconds is ClickHouse's per-block sleep cap
+	// (max_sleep_in_seconds, default 3s). Each individual sleepEachRow
+	// evaluation must request strictly less than this.
+	chMaxSleepSeconds int64 = 3
+
+	// chaosSleepPerCallSeconds is the per-ROW sleep each block requests.
+	// It must be < chMaxSleepSeconds so a single per-row block
+	// (guaranteed by the max_block_size=1 chaos setting, see
+	// internal/api/prom/chaos_sleep.go) stays under CH's per-block cap and
+	// is NOT rejected with code 160.
+	chaosSleepPerCallSeconds int64 = 2
+
+	// chaosSleepRows is the row count of the numbers() source. With
+	// max_block_size=1 each row is its own block sleeping
+	// chaosSleepPerCallSeconds; CH re-checks max_execution_time BETWEEN
+	// blocks, so the cumulative block time (chaosSleepPerCallSeconds ×
+	// chaosSleepRows) must comfortably exceed the chaos build's
+	// max_execution_time (chaosCHExecutionCap, 3s) for CH to abort with
+	// code 159 (TIMEOUT_EXCEEDED → breaker-neutral → 503 errorType=timeout)
+	// part-way through. 2s × 10 rows = up to 20s cumulative, aborted at ~3s.
+	chaosSleepRows int64 = 10
+)
+
+// Compile-time guard: the per-call sleep must stay strictly under CH's
+// per-block cap, else every block trips code 160 (502) instead of letting
+// max_execution_time abort with code 159 (503). The blank-array index
+// fails to compile if the invariant ever regresses.
+var _ = [1]struct{}{}[chaosSleepPerCallSeconds/chMaxSleepSeconds]
+
 // chaosSleepWrap wraps an already-rendered (sql, args) pair in an outer
 // `SELECT * FROM (<inner>) WHERE <blocking-sleep> >= 0` when the request
 // ctx carries a positive chaos sleep duration; otherwise it returns the
 // pair unchanged. The sleep is composed entirely from typed chsql Frags —
 // no raw SQL strings — and runs SERVER-SIDE so ClickHouse genuinely
-// blocks for the configured duration.
+// blocks until its own max_execution_time aborts the query.
 //
 // The blocking predicate is a correlated-free scalar subquery:
 //
-//	WHERE (SELECT sum(sleepEachRow(1)) FROM numbers(<seconds>)) >= 0
+//	WHERE (SELECT sum(sleepEachRow(2)) FROM numbers(10)) >= 0
 //
 // ClickHouse evaluates this scalar subquery exactly once, BEFORE streaming
 // the outer rows, independent of how many rows the inner plan returns (so
 // the block is guaranteed even for a 0-row inner result — e.g. a series
-// matcher with no data). `numbers(n)` yields n rows; `sleepEachRow(1)`
-// sleeps 1s per row, so the subquery blocks for `seconds` seconds total.
-// `sleepEachRow` (per-row) sidesteps the single-`sleep()` 3s cap, letting
-// the block exceed any wall-clock timeout cleanly. The `>= 0` comparison
-// is always true (the sum is non-negative), so no outer row is filtered:
-// the query's RESULT SET is unchanged, only its wall-clock latency grows.
+// matcher with no data). Paired with the chaos build's max_block_size=1
+// setting, numbers(10) is read as 10 single-row blocks, each requesting
+// only chaosSleepPerCallSeconds (2s) — strictly under CH's 3s per-block
+// max_sleep_in_seconds cap, so no block is rejected with code 160. CH
+// re-checks max_execution_time (3s on the chaos build) between blocks, so
+// the query is aborted ~3s in with code 159 (TIMEOUT_EXCEEDED) — the path
+// the scenario asserts (503 errorType=timeout, breaker stays CLOSED). The
+// `>= 0` comparison is always true (the sum is non-negative), so no outer
+// row is filtered: the query's RESULT SET is unchanged, only its
+// wall-clock latency grows — until CH aborts it.
+//
+// The ctx-carried seconds value is no longer used as the per-call sleep
+// magnitude (that was the code-160 bug): the cumulative block time is
+// fixed at chaosSleepPerCallSeconds × chaosSleepRows, which any chaos
+// max_execution_time below it will abort. A positive ctx value still
+// gates whether the splice happens at all.
 func chaosSleepWrap(ctx context.Context, sql string, args []any) (string, []any) {
-	seconds := chaosSleepSecondsFromContext(ctx)
-	if seconds <= 0 {
+	if chaosSleepSecondsFromContext(ctx) <= 0 {
 		return sql, args
 	}
 
-	const sleepSecondsPerRow int64 = 1
-
-	// (SELECT sum(sleepEachRow(1)) FROM numbers(<seconds>))
+	// (SELECT sum(sleepEachRow(<perCall>)) FROM numbers(<rows>))
 	sleepSubquery := NewQuery().
-		Select(Call("sum", Call("sleepEachRow", InlineLit(sleepSecondsPerRow)))).
-		From(Call("numbers", InlineLit(int64(seconds))))
+		Select(Call("sum", Call("sleepEachRow", InlineLit(chaosSleepPerCallSeconds)))).
+		From(Call("numbers", InlineLit(chaosSleepRows)))
 
 	// SELECT * FROM (<inner>) WHERE (<sleepSubquery>) >= 0
 	wrapped := NewQuery().

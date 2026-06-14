@@ -28,7 +28,13 @@ func TestApplyChaosSleep_HeaderThreadsSleepIntoEmit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "sleepEachRow") || !strings.Contains(sql, "numbers(8)") {
+	// The spliced sleep uses a FIXED per-call magnitude + row count (the
+	// header value only gates whether the splice happens) — it is no
+	// longer scaled to the header seconds, since a per-block request of
+	// the raw header value (e.g. 10s) exceeds CH's 3s per-block cap and is
+	// rejected with code 160 instead of timing out (code 159). See
+	// internal/chsql/chaos_sleep.go.
+	if !strings.Contains(sql, "sleepEachRow(") || !strings.Contains(sql, "numbers(") {
 		t.Fatalf("chaos header did not thread a sleep into Emit; got: %q", sql)
 	}
 }

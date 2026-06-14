@@ -420,7 +420,8 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	wantTSGrid := wantTSGridSetting(ctx)
 	timeout := c.effectiveQueryTimeout(ctx)
-	if c.maxMemory <= 0 && timeout <= 0 && !wantTSGrid {
+	blockSize := maxBlockSizeFromContext(ctx)
+	if c.maxMemory <= 0 && timeout <= 0 && !wantTSGrid && blockSize == 0 {
 		return nil
 	}
 	s := clickhouse.Settings{}
@@ -437,6 +438,12 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	}
 	if wantTSGrid {
 		s[SettingExperimentalTSGridAggregate] = 1
+	}
+	if blockSize > 0 {
+		// Per-request override (WithMaxBlockSize) — only ever set by the
+		// chaos_sleep build so its injected sleepEachRow source is read as
+		// small blocks and max_execution_time can abort it mid-scan.
+		s[settingMaxBlockSize] = blockSize
 	}
 	return s
 }

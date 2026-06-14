@@ -4,6 +4,7 @@ package chsql
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,9 +13,13 @@ import (
 
 // TestChaosSleep_SplicedWhenSet asserts that, in the chaos_sleep build,
 // Emit wraps the plan SQL in an outer SELECT whose WHERE blocks on a
-// server-side ClickHouse sleep scaled to the ctx-carried duration — and
-// that the inner plan's own SQL is preserved verbatim inside the wrap (so
-// the result set is unchanged, only the latency grows).
+// server-side ClickHouse sleep — and that the inner plan's own SQL is
+// preserved verbatim inside the wrap (so the result set is unchanged, only
+// the latency grows). The per-call sleep magnitude must stay STRICTLY
+// under CH's per-block max_sleep_in_seconds cap (chMaxSleepSeconds, 3s)
+// while the cumulative block time (perCall × rows) exceeds the chaos
+// build's max_execution_time, so CH aborts the query with code 159 (503
+// timeout) rather than rejecting it up front with code 160 (502).
 func TestChaosSleep_SplicedWhenSet(t *testing.T) {
 	const sleepSeconds = 7
 
@@ -28,12 +33,30 @@ func TestChaosSleep_SplicedWhenSet(t *testing.T) {
 	if !strings.Contains(sql, "SELECT 1") {
 		t.Fatalf("inner plan SQL not preserved in wrap: %q", sql)
 	}
-	// A genuinely server-side, per-row sleep over numbers(<seconds>).
-	if !strings.Contains(sql, "sleepEachRow") {
-		t.Fatalf("expected sleepEachRow splice, got: %q", sql)
+	// A genuinely server-side, per-row sleep over numbers(<rows>) at the
+	// fixed per-call magnitude — NOT the raw ctx seconds (that was the
+	// code-160 bug: a 10s per-block request > CH's 3s cap).
+	wantSleep := fmt.Sprintf("sleepEachRow(%d)", chaosSleepPerCallSeconds)
+	if !strings.Contains(sql, wantSleep) {
+		t.Fatalf("expected %q splice, got: %q", wantSleep, sql)
 	}
-	if !strings.Contains(sql, "numbers(7)") {
-		t.Fatalf("expected numbers(7) (sleep scaled to ctx seconds), got: %q", sql)
+	wantNumbers := fmt.Sprintf("numbers(%d)", chaosSleepRows)
+	if !strings.Contains(sql, wantNumbers) {
+		t.Fatalf("expected %q (fixed cumulative sleep, NOT ctx seconds), got: %q", wantNumbers, sql)
+	}
+	// The per-call sleep must be strictly under CH's per-block cap, else a
+	// single block trips code 160 (502) instead of letting
+	// max_execution_time abort with code 159 (503).
+	if chaosSleepPerCallSeconds >= chMaxSleepSeconds {
+		t.Fatalf("per-call sleep %ds must be < CH per-block cap %ds (else code 160)",
+			chaosSleepPerCallSeconds, chMaxSleepSeconds)
+	}
+	// The cumulative block time must exceed the chaos build's
+	// max_execution_time (chaosCHExecutionCap, 3s) so CH aborts mid-scan.
+	const chaosMaxExecutionSeconds = 3
+	if cumulative := chaosSleepPerCallSeconds * chaosSleepRows; cumulative <= chaosMaxExecutionSeconds {
+		t.Fatalf("cumulative sleep %ds must exceed max_execution_time %ds (else no 159 abort)",
+			cumulative, chaosMaxExecutionSeconds)
 	}
 	// The blocking predicate must be a non-filtering scalar comparison
 	// so the outer result set is unchanged.
