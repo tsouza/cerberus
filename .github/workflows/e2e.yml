@@ -113,9 +113,78 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # `gate` is the cheap-first tripwire for the `compose-smoke` required
+  # check. compose-smoke is the single most expensive PR lane (~14-45 min
+  # full Docker compose stack + Grafana Playwright catch-net), so we
+  # DON'T want to burn that runner time when a trivial discipline-grep or
+  # a compile break would have failed the PR anyway. `gate` runs the same
+  # fast checks ci.yml's `forbid-skip` job runs (pure `git grep`, seconds)
+  # plus a `go build ./...` compile sanity check (~1-2 min with the module
+  # cache); compose-smoke `needs: gate` and refuses to start on a PR until
+  # gate is green.
+  #
+  # PR-ONLY by design (mirrors `changes`): on push / schedule / dispatch
+  # the gate is skipped and compose-smoke's `if:` short-circuits the gate
+  # clause to true, so the nightly + push lanes keep running unconditionally
+  # (a nightly run has no diff to gate on, and push-to-main already merged).
+  #
+  # SAFETY: when gate FAILS on a PR, compose-smoke is SKIPPED — which
+  # branch protection treats as satisfied — but that is NOT a merge hole,
+  # because ci.yml's own `forbid-skip` / `check` go RED on the same
+  # breakage and block the merge. The gate only saves runner minutes.
+  gate:
+    name: gate
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The discipline scans diff against origin/main, so we need
+          # both refs reachable (mirrors ci.yml's forbid-skip checkout).
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # The six discipline scans (pure `git grep` / `perl`, no Go
+      # toolchain) — byte-identical to ci.yml's `forbid-skip` job.
+      - name: Reject t.Skip in test files
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: t-skip
+      - name: Reject "not implemented" / "skipped" / "deferred" in tests + fixtures
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: wording-tests
+      - name: Reject "not implemented" in production code
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: not-implemented
+      - name: Reject soft-assertion / silent-recover patterns
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: soft-assert
+      - name: Reject should_skip overlay entries
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: should-skip
+      - name: Reject test escape-hatch patterns
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: escape-hatch
+
+      # Compile sanity check. Far cheaper than the full compose stack;
+      # catches a non-building tree before Docker buildx + k3d spin up.
+      - name: go build (compile sanity)
+        run: go build ./...
+
   compose-smoke:
     name: compose-smoke
-    needs: changes
+    needs: [changes, gate]
     # Lane doctrine: PR + push run at SWEEP_DEPTH=lean (the required
     # fast-feedback gate); the nightly schedule runs at
     # SWEEP_DEPTH=full. The schedule lane exists because the
@@ -129,7 +198,8 @@ jobs:
     if: |
       always() &&
       (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.gate.result == 'success')
     runs-on: ubuntu-latest
     # Timeout is per-lane. PR/push run SWEEP_DEPTH=lean: the catch-net
     # smoke + the iterate-* specs + the lean crawl (root + nav + one
