@@ -442,10 +442,9 @@
       "symbol": "fn:histogram_quantiles",
       "kind": "function",
       "probe": "histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)",
-      "cerberus": "reject",
-      "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: function histogram_quantiles is not yet supported"
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",

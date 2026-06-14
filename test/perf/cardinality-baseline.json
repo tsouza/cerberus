@@ -3110,6 +3110,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantiles_classic_multi_phi",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantiles_native_multi_phi",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_stddev_exp",
     "fan_factor": 1,
     "scan_rows": 1,

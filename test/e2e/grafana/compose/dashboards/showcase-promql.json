@@ -6560,7 +6560,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)` — one series per phi, the phi attached under the `q` label (OpenMetrics float rendering).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6642,11 +6642,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_quantiles \u2014 parity rejection",
+          "title": "histogram_quantiles",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 the variadic histogram_quantiles lowering (per-phi histogram_quantile kernel + q-label injection + UNION ALL) has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {

@@ -206,6 +206,25 @@ var promModifiers = []struct {
 	{"at_end", promGauge + " @ end()"},
 }
 
+// referenceImplementedExperimentalFns is the set of parser-experimental
+// PromQL functions the REFERENCE engine actually IMPLEMENTS (and returns
+// data for) once EnableExperimentalFunctions is set — the posture every
+// Grafana/Prometheus deployment that opts in sees. The parser's
+// `Experimental` flag alone models only the default-OFF parse gate, not
+// whether a result exists; for these symbols the reference verdict is
+// ACCEPT, so a cerberus implementation lands parity-accept rather than a
+// spurious wrong-accept. Membership is added the moment cerberus grows a
+// real lowering+emit for the symbol (mirrored by a live showcase panel +
+// chDB parity fixture).
+var referenceImplementedExperimentalFns = map[string]bool{
+	// histogram_quantiles(<vector>, "<label>", phi...) — variadic
+	// multi-quantile sibling of histogram_quantile. Implemented in
+	// internal/promql/histogram_quantile.go (per-phi kernel + q-label
+	// injection + UNION ALL); pinned by the histogram_quantiles_*
+	// fixtures under test/spec/promql and the showcase-promql panel.
+	"histogram_quantiles": true,
+}
+
 // probePromQL enumerates the PromQL parser symbol table, synthesizes a
 // domain-aware probe per symbol, runs the cerberus verdict, models the
 // reference verdict from the parser's experimental flags, and
@@ -225,7 +244,7 @@ func probePromQL() ([]Entry, error) {
 		probe := promQLFunctionProbe(fn)
 		cv, cerr := cerberusVerdictPromQL(probe)
 		ref := VerdictAccept
-		if fn.Experimental {
+		if fn.Experimental && !referenceImplementedExperimentalFns[name] {
 			ref = VerdictReject
 		}
 		entries = append(entries, Entry{
