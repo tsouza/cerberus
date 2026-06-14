@@ -1,0 +1,65 @@
+# deny-egress-clickhouse.yaml — the ch-network-partition fault primitive
+# (phase-2 scenario). A Kubernetes NetworkPolicy that BLACKHOLES egress
+# from every cerberus pod to ClickHouse, enforced by k3s's bundled
+# kube-router. Packets are dropped (not RST), so ClickHouse stays alive
+# and cerberus's dials time out at CERBERUS_CH_DIAL_TIMEOUT — the slower
+# path to the same breaker-OPEN end state as ch-pod-kill.
+#
+# Applied with `kubectl apply -f` to partition, removed with
+# `kubectl delete -f` to heal. The chaos driver gates this scenario on a
+# runtime enforcement probe first (a deny-all egress canary): if
+# kube-router is not actually enforcing NetworkPolicy in the pinned k3d
+# image, the scenario is recorded not-applicable (::notice::) and the
+# breaker contract is covered by ch-pod-kill instead — never a vacuous
+# pass.
+#
+# The policy keeps DNS (UDP/TCP 53 to kube-system) open so unrelated pod
+# machinery is unaffected; only the CH native port (9000) + HTTP port
+# (8123) are blackholed. Default-deny semantics apply ONLY to the egress
+# the policy enumerates because podSelector scopes it to app=cerberus and
+# the policyType is Egress — a cerberus pod with this policy may still
+# reach every destination EXCEPT the two CH ports, because the allow rules
+# below whitelist everything else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chaos-deny-egress-clickhouse
+  namespace: cerberus
+  labels:
+    app.kubernetes.io/part-of: cerberus
+    chaos.cerberus.io/scenario: ch-network-partition
+spec:
+  podSelector:
+    matchLabels:
+      app: cerberus
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS so name resolution + the rest of the pod's egress is
+    # unaffected; only the explicit CH-port deny (the ABSENCE of a CH
+    # allow rule below) blackholes the data plane.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow OTLP export to the collector gateway (4317) so self-telemetry
+    # keeps flowing during the partition — the breaker/state metrics are
+    # read back AFTER heal, but keeping the export path open avoids a
+    # secondary fault confounding the scenario.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+    # Everything else EXCEPT ClickHouse: a broad allow to all pods on all
+    # ports OTHER than the CH native/HTTP ports would require enumerating
+    # ports, so instead the deny is expressed as the absence of a
+    # clickhouse allow rule — kube-router drops any egress not matched by
+    # an allow rule once a podSelector+Egress policy exists. The two rules
+    # above are the only whitelisted destinations; CH (app=clickhouse,
+    # 9000/8123) is therefore blackholed.

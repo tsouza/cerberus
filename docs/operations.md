@@ -88,6 +88,19 @@ problem is bounded separately by the per-query wall-clock timeout
 so a single slow query is cancelled without advancing the breaker toward a
 replica-wide trip.
 
+These resilience contracts — the breaker trip + recovery (and the
+whole-replica `/readyz`-eviction blast radius above), the
+breaker-neutrality of query timeouts / admit + pool rejections, the
+`/healthz`-stays-green-on-CH-outage invariant, and replica resilience
+under a single-pod kill — are validated against a *real* k3d deployment
+under *real* faults by the **live-stack chaos lane** (the `chaos` job in
+`.github/workflows/e2e.yml`, driven by `.github/scripts/chaos-run.mjs`;
+locally `just e2e-chaos`). It is informational (push-to-main + nightly +
+manual only, never a PR gate) and sits above the deterministic
+stubbed-querier unit chaos in the required `check` lane. See
+[`docs/test-strategy.md`](test-strategy.md) Layer 13 for the full
+scenario + contract map.
+
 ### Sharded-pushdown solver
 
 The sharded-pushdown solver (`internal/solver`,

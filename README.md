@@ -134,11 +134,12 @@ contract) is in [`docs/compatibility.md`](docs/compatibility.md).
 
 ## Testing
 
-Cerberus is tested in a 12-layer map spanning AST-shape pinning, plan-IR
+Cerberus is tested in a 13-layer map spanning AST-shape pinning, plan-IR
 invariants, optimiser properties, emitted-SQL goldens, chDB roundtrips,
 function-surface parity, HTTP wire conformance, differential harnesses,
-Playwright UX flows, chaos / goleak, perf benchmarks + compute-fan-out
-guards, and an oracle-based property framework.
+Playwright UX flows, deterministic chaos / goleak, perf benchmarks +
+compute-fan-out guards, live-stack chaos against the k3d deployment, and
+an oracle-based property framework.
 `just test` runs the core lanes; see
 [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical layer
 map, the CI-gate inventory, and the gremlins rollout.
@@ -155,7 +156,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | [`docs/solver.md`](docs/solver.md)                 | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.    |
 | [`docs/benchmarks.md`](docs/benchmarks.md)         | Benchmark methodology and the recorded numbers (regenerable).                                   |
 | [`docs/compatibility.md`](docs/compatibility.md)   | The differential-harness playbook for all three heads.                                          |
-| [`docs/test-strategy.md`](docs/test-strategy.md)   | The 12-layer test map and CI-gate inventory.                                                    |
+| [`docs/test-strategy.md`](docs/test-strategy.md)   | The 13-layer test map and CI-gate inventory.                                                    |
 | [`docs/observability.md`](docs/observability.md)   | Self-observability across logs / metrics / traces (OTLP export).                                |
 | [`docs/health.md`](docs/health.md)                 | `/readyz` / `/healthz` probe semantics.                                                         |
 | [`docs/upstream-forks.md`](docs/upstream-forks.md) | The `tsouza/*` parser-fork + Dependabot-watch flow.                                             |
