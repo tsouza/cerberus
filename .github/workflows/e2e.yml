@@ -687,11 +687,14 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           # iterate-all-dashboards reads dashboard JSON from disk; point it at
           # the k3d stack's provisioning dir (the spec default is the compose
-          # stack's). The compose-only dashboards (clickhouse / host / otelcol)
-          # are fed by receivers the k3d collector intentionally doesn't run,
-          # so probing them here reports empty panels for data this stack never
-          # ships; the compose set is covered per-PR by the required
-          # compose-smoke job.
+          # stack's). The host / otelcol dashboards are fed by receivers the
+          # k3d collector intentionally doesn't run (host_metrics, prometheus
+          # self-scrape), so probing them here reports empty panels for data
+          # this stack never ships; that compose set is covered per-PR by the
+          # required compose-smoke job. ClickHouse query_log IS seeded on k3d
+          # (the gateway's sqlquery/clickhouse-logs receiver mirrors compose),
+          # so loki_explore_columns.spec.ts — the #908 Logs-Drilldown column
+          # gate that queries {service_name="clickhouse"} directly — runs here.
           DASHBOARDS_DIR: ${{ github.workspace }}/test/e2e/grafana/dashboards
         run: npx playwright test ${{ matrix.specs }} --reporter=list
 

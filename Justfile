@@ -622,12 +622,15 @@ e2e-seed-stop:
 # host-side port-forward. Spread is asserted on whichever metric table
 # (sum or gauge) carries non-zero rows first.
 e2e-wait-otel:
-    @echo "==> waiting for real OTel data + ≥60s metric history in ClickHouse"
+    @echo "==> waiting for real OTel data (incl. clickhouse query_log stream) + ≥60s metric history in ClickHouse"
     @deadline=$(($(date +%s) + 180)); \
         while [ $(date +%s) -lt $deadline ]; do \
             logs=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
                 --user cerberus --password cerberus --database otel \
                 --query "SELECT count() FROM otel_logs" 2>/dev/null || echo 0); \
+            chlogs=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                --user cerberus --password cerberus --database otel \
+                --query "SELECT count() FROM otel_logs WHERE ServiceName = 'clickhouse'" 2>/dev/null || echo 0); \
             traces=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
                 --user cerberus --password cerberus --database otel \
                 --query "SELECT count() FROM otel_traces" 2>/dev/null || echo 0); \
@@ -656,9 +659,9 @@ e2e-wait-otel:
                     --user cerberus --password cerberus --database otel \
                     --query "SELECT toUInt64(dateDiff('second', min(TimeUnix), max(TimeUnix))) FROM otel_metrics_gauge" 2>/dev/null || echo 0); \
             fi; \
-            echo "    logs=$logs traces=$traces metrics_sum=$sum metrics_gauge=$gauge metrics_histogram=$histogram spread=${spread}s hist_spread=${hist_spread}s"; \
-            if [ "$logs" -gt 0 ] && [ "$traces" -gt 0 ] && { [ "$sum" -gt 0 ] || [ "$gauge" -gt 0 ]; } && [ "$spread" -ge 60 ] && [ "$histogram" -gt 0 ] && [ "$hist_spread" -ge 60 ]; then \
-                echo "==> OTel pipeline is live with ≥60s of metric history (incl. histogram companion)"; \
+            echo "    logs=$logs chlogs=$chlogs traces=$traces metrics_sum=$sum metrics_gauge=$gauge metrics_histogram=$histogram spread=${spread}s hist_spread=${hist_spread}s"; \
+            if [ "$logs" -gt 0 ] && [ "$chlogs" -gt 0 ] && [ "$traces" -gt 0 ] && { [ "$sum" -gt 0 ] || [ "$gauge" -gt 0 ]; } && [ "$spread" -ge 60 ] && [ "$histogram" -gt 0 ] && [ "$hist_spread" -ge 60 ]; then \
+                echo "==> OTel pipeline is live with ≥60s of metric history (incl. histogram companion + clickhouse query_log stream)"; \
                 exit 0; \
             fi; \
             sleep 5; \

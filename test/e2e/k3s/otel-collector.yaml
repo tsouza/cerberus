@@ -90,6 +90,67 @@ data:
         allocatable_types_to_report: [cpu, memory, ephemeral-storage, storage]
       k8s_events:
         auth_type: serviceAccount
+      # ClickHouse's own query log -> OTLP logs, mirroring the compose stack
+      # (test/e2e/otel-collector/compose-config.yaml). Every server-side query
+      # (duration, rows read, memory, exception) becomes a structured log
+      # record tagged service.name=clickhouse, so cerberus's Loki head surfaces
+      # it as `{service_name="clickhouse"}`. Without this the k3d dashboard
+      # lane has no clickhouse query_log stream and loki_explore_columns.spec.ts
+      # (the #908 Logs-Drilldown column gate) finds zero results.
+      #
+      # Incremental tailing: `tracking_column: event_us` keeps a high-water
+      # mark so each poll only pulls rows newer than the last. The
+      # `query NOT LIKE %query_log%` guard drops the receiver's own polling
+      # SELECTs; `type != 'QueryStart'` keeps one terminal record per query.
+      sqlquery/clickhouse-logs:
+        driver: clickhouse
+        datasource: clickhouse://cerberus:cerberus@clickhouse:9000/otel?dial_timeout=5s
+        collection_interval: 15s
+        queries:
+          - sql: |-
+              SELECT
+                toUnixTimestamp64Micro(event_time_microseconds) AS event_us,
+                query_id,
+                type,
+                query_kind,
+                user,
+                multiIf(
+                  type LIKE 'Exception%' OR exception != '', 'error',
+                  'info'
+                )                           AS severity_text,
+                concat(toString(query_duration_ms), 'ms') AS duration,
+                toString(read_bytes)        AS bytes,
+                toString(query_duration_ms) AS query_duration_ms,
+                toString(read_rows)         AS read_rows,
+                toString(read_bytes)        AS read_bytes,
+                toString(result_rows)       AS result_rows,
+                toString(memory_usage)      AS memory_usage,
+                exception,
+                query
+              FROM system.query_log
+              WHERE toUnixTimestamp64Micro(event_time_microseconds) > ?
+                AND type != 'QueryStart'
+                AND query NOT LIKE '%system.query_log%'
+                AND NOT (query_kind = 'Insert' AND query LIKE '%otel_logs%')
+              ORDER BY event_us ASC
+            tracking_start_value: "0"
+            tracking_column: event_us
+            logs:
+              - body_column: query
+                attribute_columns:
+                  - severity_text
+                  - query_id
+                  - type
+                  - query_kind
+                  - user
+                  - duration
+                  - bytes
+                  - query_duration_ms
+                  - read_rows
+                  - read_bytes
+                  - result_rows
+                  - memory_usage
+                  - exception
 
     processors:
       memory_limiter:
@@ -112,6 +173,14 @@ data:
             action: upsert
           - key: k8s.cluster.name
             value: cerberus-e2e
+            action: upsert
+      # Stamp service.name=clickhouse on the sqlquery/clickhouse-logs output so
+      # cerberus's Loki head surfaces it as `{service_name="clickhouse"}`,
+      # matching the compose stack's resource/clickhouse processor.
+      resource/clickhouse:
+        attributes:
+          - key: service.name
+            value: clickhouse
             action: upsert
     connectors:
       # The service_graph connector reads spans off the `traces` pipeline,
@@ -176,6 +245,14 @@ data:
         logs:
           receivers: [otlp, k8s_events]
           processors: [memory_limiter, resource, batch]
+          exporters: [clickhouse]
+        # ClickHouse query log -> CH (tagged service.name=clickhouse so the
+        # Loki head surfaces it as `{service_name="clickhouse"}`). Mirrors the
+        # compose stack's logs/clickhouse pipeline; feeds the #908
+        # loki_explore_columns Logs-Drilldown column gate on the k3d lane.
+        logs/clickhouse:
+          receivers: [sqlquery/clickhouse-logs]
+          processors: [memory_limiter, resource/clickhouse, batch]
           exporters: [clickhouse]
         traces:
           receivers: [otlp]
