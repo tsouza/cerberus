@@ -78,8 +78,11 @@ ships a [SLSA build provenance](https://slsa.dev) attestation:
 gh attestation verify cerberus_*_linux_amd64.tar.gz --owner tsouza --repo cerberus
 ```
 
-The runtime + env-var contract (config, lifecycle, scaling, the solver
-and experimental knobs) lives in [`docs/operations.md`](docs/operations.md).
+Cerberus is configured **entirely** through `CERBERUS_*` environment
+variables — see the full [configuration reference](docs/configuration.md).
+The surrounding runtime contract (lifecycle, scaling, the solver and
+experimental knobs in context) lives in
+[`docs/operations.md`](docs/operations.md).
 
 ## Architecture
 
@@ -136,7 +139,8 @@ map, the CI-gate inventory, and the gremlins rollout.
 | Doc                                                | What's in it                                                                                    |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [`docs/engine.md`](docs/engine.md)                 | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                    |
-| [`docs/operations.md`](docs/operations.md)         | Runtime contract: configuration, env vars, lifecycle, scaling, the solver, experimental knobs.  |
+| [`docs/configuration.md`](docs/configuration.md)   | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults. |
+| [`docs/operations.md`](docs/operations.md)         | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.             |
 | [`docs/performance.md`](docs/performance.md)       | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression. |
 | [`docs/solver.md`](docs/solver.md)                 | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.    |
 | [`docs/benchmarks.md`](docs/benchmarks.md)         | Benchmark methodology and the recorded numbers (regenerable).                                   |
