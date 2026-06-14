@@ -23,7 +23,32 @@ const (
 	EnvLogsTable = "CERBERUS_SCHEMA_LOGS_TABLE"
 	// EnvTracesTable overrides Traces.SpansTable.
 	EnvTracesTable = "CERBERUS_SCHEMA_TRACES_TABLE"
+	// EnvTracesTsLookup opts into the trace_id_ts window pre-filter
+	// (Traces.TraceIDTsEnabled). Truthy values ("1", "true", "yes", "on")
+	// enable it; unset/empty/falsey leaves it off. The operator sets it
+	// only after confirming the `<spans>_trace_id_ts` MV is populated.
+	EnvTracesTsLookup = "CERBERUS_SCHEMA_TRACES_TS_LOOKUP"
 )
+
+// traceIDTsSuffix is the fixed suffix the OTel-CH exporter's DDL template
+// appends to the spans table name for the trace-id→timestamp lookup table
+// (`<spans>_trace_id_ts`). It is baked into the upstream template, so
+// cerberus derives the lookup-table name the same way when the spans
+// table is overridden.
+const traceIDTsSuffix = "_trace_id_ts"
+
+// envBool reports whether key is set to a truthy value ("1", "true",
+// "yes", "on"; case-insensitive). Unset, empty, or any other value is
+// false — the opt-in gate stays off unless the operator affirmatively
+// enables it.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // envOverride returns the trimmed value of key when set to a non-empty
 // string, else def. An env var set to whitespace-only is treated as
@@ -67,5 +92,10 @@ func DefaultOTelLogsFromEnv() Logs {
 func DefaultOTelTracesFromEnv() Traces {
 	t := DefaultOTelTraces()
 	t.SpansTable = envOverride(EnvTracesTable, t.SpansTable)
+	// The lookup table name tracks the spans table: the OTel-CH DDL
+	// template hard-codes the `_trace_id_ts` suffix, so when the operator
+	// overrides the spans table the lookup table is `<spans>_trace_id_ts`.
+	t.TraceIDTsTable = t.SpansTable + traceIDTsSuffix
+	t.TraceIDTsEnabled = envBool(EnvTracesTsLookup)
 	return t
 }

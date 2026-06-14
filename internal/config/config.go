@@ -269,6 +269,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE       default "otel_metrics_summary"
 //	CERBERUS_SCHEMA_LOGS_TABLE                  default "otel_logs"
 //	CERBERUS_SCHEMA_TRACES_TABLE                default "otel_traces"
+//	CERBERUS_SCHEMA_TRACES_TS_LOOKUP            default off (opt-in trace_id_ts window prune)
 func FromEnv() (Config, error) {
 	v := newLoader()
 
