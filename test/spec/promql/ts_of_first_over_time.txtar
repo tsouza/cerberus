@@ -1,0 +1,25 @@
+-- query.promql --
+ts_of_first_over_time(temperature[10m])
+-- args --
+[0] string = "temperature"
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2025-12-31 23:55:00', 9), 5.0),
+    ('temperature', map('host', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 3.0),
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 7.0);
+-- expected_rows --
+[
+  [{"host": "a"}, 1767225300]
+]
+-- chplan --
+RangeWindow func=ts_of_first_over_time range=10m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
+  Filter predicate=(MetricName = "temperature")
+    Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `Attributes`, toFloat64(toUnixTimestamp64Milli(tupleElement(window_pairs[1], 1))) / 1000 AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` = ?)) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 1

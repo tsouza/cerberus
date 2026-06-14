@@ -287,8 +287,10 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowDelta(r)
 	case "idelta":
 		return e.emitRangeWindowIDelta(r)
-	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "first_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time", "present_over_time":
+	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "first_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time", "present_over_time", "mad_over_time":
 		return e.emitRangeWindowOverTime(r)
+	case "ts_of_first_over_time", "ts_of_last_over_time", "ts_of_max_over_time", "ts_of_min_over_time":
+		return e.emitRangeWindowTsOfOverTime(r)
 	case "quantile_over_time":
 		return e.emitRangeWindowQuantileOverTime(r)
 	case "log_rate":
@@ -1836,9 +1838,15 @@ func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
 // sum_over_time, avg_over_time, min_over_time, max_over_time,
 // count_over_time, first_over_time, last_over_time, stddev_over_time,
-// stdvar_over_time.
+// stdvar_over_time, mad_over_time.
 // These don't need counter-reset handling — they're straight array
 // aggregations over the window's values.
+//
+// mad_over_time is the experimental median-absolute-deviation reducer
+// (median(|x - median(x)|)); it reuses the linear-interpolation median
+// helper (medianOverArrayFrag) over window_vals. The timestamp-returning
+// siblings (ts_of_*_over_time) need the per-sample timestamps and so route
+// through emitRangeWindowTsOfOverTime, not this values-only path.
 //
 // stddev_over_time / stdvar_over_time use a manual two-pass population
 // variance expression — `arraySum((x - μ)²) / N` with `μ = arrayAvg(vals)`
@@ -1903,6 +1911,22 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		inner = nonEmptyWindowOrNaNFrag(Subscript(BareIdent("window_vals"), InlineLit(int64(1))))
 	case "last_over_time":
 		inner = lastWindowValOrNaNFrag()
+	case "mad_over_time":
+		// PromQL mad_over_time(v[range]) = median(|x - median(x)|)
+		// (prometheus/promql/functions.go::funcMadOverTime). Prometheus's
+		// median is the linear-interpolation quantile(0.5) over the SORTED
+		// values, so we mirror it with the same lower/upper blend the
+		// computed-phi quantile_over_time path uses (phi=0.5), applied
+		// twice: once over window_vals for the inner median, once over the
+		// absolute deviations. Empty windows are dropped by the shared
+		// outer WHERE length(window_vals) >= 1 below.
+		med := medianOverArrayFrag(BareIdent("window_vals"))
+		devs := Call(
+			"arrayMap",
+			Lambda1("x", Call("abs", Sub(BareIdent("x"), med))),
+			BareIdent("window_vals"),
+		)
+		inner = nonEmptyWindowOrNaNFrag(medianOverArrayFrag(devs))
 	case "stddev_over_time":
 		// Empty window → drop the series (Prom returns no sample).
 		// We mirror with NaN; the engine layer treats NaN as "drop"
@@ -1974,6 +1998,156 @@ func varPopTwoPassFrag() Frag {
 	sumSq := Call("arraySum",
 		Call("arrayMap", Lambda2("x", "m", body), BareIdent("window_vals"), means))
 	return Div(sumSq, Call("length", BareIdent("window_vals")))
+}
+
+// medianOverArrayFrag renders Prometheus's `quantile(0.5, values)`
+// (prometheus/promql/quantile.go) — a linear-interpolation median over
+// the SORTED array `arr`:
+//
+//	rank   = 0.5 * (N - 1)
+//	lower  = sorted[floor(rank) + 1]            (1-based CH index)
+//	upper  = sorted[least(N-1, floor(rank)+1) + 1]
+//	median = lower*(1-weight) + upper*weight,   weight = rank - floor(rank)
+//
+// Mirrors the computed-phi quantile_over_time interpolation
+// (emitRangeWindowQuantileOverTime) specialised to phi=0.5, so
+// mad_over_time's inner/outer medians match Prom bit-for-bit on finite
+// windows. `arr` is any Array(Float64) expression; it is sorted here, so
+// callers pass the raw values (the absolute-deviation array for the
+// outer median) without pre-sorting.
+func medianOverArrayFrag(arr Frag) Frag {
+	const medianPhi = 0.5
+	sorted := Call("arraySort", arr)
+	nMinus := Call("toFloat64", Sub(Call("length", arr), InlineLit(int64(1))))
+	rank := func() Frag { return Paren(Mul(InlineLit(medianPhi), nMinus)) }
+	floorRank := func() Frag { return Call("floor", rank()) }
+	lowerIdx := Add(Call("toUInt32", floorRank()), InlineLit(int64(1)))
+	upperIdx := Add(
+		Call("toUInt32", Call("least", nMinus, Add(floorRank(), InlineLit(int64(1))))),
+		InlineLit(int64(1)),
+	)
+	weight := func() Frag { return Paren(Sub(rank(), floorRank())) }
+	lowerTerm := Mul(Subscript(sorted, lowerIdx), Paren(Sub(InlineLit(int64(1)), weight())))
+	upperTerm := Mul(Subscript(sorted, upperIdx), weight())
+	return Add(lowerTerm, upperTerm)
+}
+
+// emitRangeWindowTsOfOverTime emits SQL for the experimental timestamp
+// `ts_of_*_over_time` family:
+//
+//   - ts_of_first_over_time(v[r]) → epoch-seconds timestamp of the
+//     time-EARLIEST sample in the window.
+//   - ts_of_last_over_time(v[r])  → epoch-seconds timestamp of the
+//     time-LATEST sample in the window.
+//   - ts_of_max_over_time(v[r])   → epoch-seconds timestamp of the
+//     MAXIMUM-valued sample (argmax; ties resolve to the LAST equal-max
+//     sample in time order — Prom's `cur >= maxVal` forward scan).
+//   - ts_of_min_over_time(v[r])   → epoch-seconds timestamp of the
+//     MINIMUM-valued sample (argmin; ties → last equal-min, Prom's
+//     `cur <= minVal`).
+//
+// Reference: prometheus/promql/functions.go::funcTsOf{First,Last}OverTime
+// + compareOverTime(returnTimestamp=true). Prometheus returns the
+// millisecond sample timestamp divided by 1000 (epoch seconds, ms
+// precision); we mirror with `toFloat64(toUnixTimestamp64Milli(ts)) / 1000`
+// so a whole-second seed renders an exact integer and sub-second scrapes
+// keep ms precision. These reducers need the per-sample timestamps, so
+// they route through the window_pairs path (Array(Tuple(ts, value)))
+// rather than the values-only window_vals path. Empty windows are
+// dropped (minWindowSize = 1) — Prom's matrix selector excludes
+// sample-less series before the function runs.
+func (e *emitter) emitRangeWindowTsOfOverTime(r *chplan.RangeWindow) error {
+	var tsExpr Frag
+	switch r.Func {
+	case "ts_of_first_over_time":
+		// window_pairs is arraySort-ordered by (ts, value), so element 1
+		// is the earliest sample; tuple element 1 is its timestamp.
+		tsExpr = tupleTsFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))))
+	case "ts_of_last_over_time":
+		tsExpr = tupleTsFrag(
+			Subscript(BareIdent("window_pairs"), Call("length", BareIdent("window_pairs"))),
+		)
+	case "ts_of_max_over_time":
+		// Timestamp of the max-valued sample; on a value tie the LATEST
+		// sample wins (Prom's forward `cur >= maxVal`). See tsOfExtremeFrag
+		// for why a composite (value, tsNanos) key is needed (plain CH
+		// argMax keeps the FIRST tie, diverging from Prom).
+		tsExpr = tsOfExtremeFrag(true)
+	case "ts_of_min_over_time":
+		// Timestamp of the min-valued sample; latest wins on a value tie
+		// (Prom's `cur <= minVal`).
+		tsExpr = tsOfExtremeFrag(false)
+	default:
+		return fmt.Errorf("%w: ts-of-over-time function %q", ErrUnsupported, r.Func)
+	}
+	return e.emitWindowedArrayPairs(r, tsExpr, 1)
+}
+
+// tupleTsFrag renders the epoch-seconds (ms-precision) value of a
+// window-pair tuple's timestamp element (tuple element 1, a
+// DateTime64(9)): `toFloat64(toUnixTimestamp64Milli(tupleElement(p, 1))) / 1000`.
+// Matches Prometheus's `float64(sample.T) / 1000` (T is the ms
+// timestamp). Shared by ts_of_first / ts_of_last.
+func tupleTsFrag(pair Frag) Frag {
+	ts := Call("tupleElement", pair, InlineLit(int64(1)))
+	return tsEpochSecondsFrag(ts)
+}
+
+// tsEpochSecondsFrag renders `toFloat64(toUnixTimestamp64Milli(<ts>)) / 1000`
+// — the DateTime64(9) → epoch-seconds (ms-precision) conversion the
+// ts_of_*_over_time family returns. toUnixTimestamp64Milli truncates to
+// milliseconds first so the result equals Prometheus's millisecond
+// `sample.T / 1000` exactly (no DateTime64 nanosecond tail leaking a
+// sub-millisecond fraction Prom never sees).
+func tsEpochSecondsFrag(ts Frag) Frag {
+	const millisPerSecond = 1000
+	return Div(
+		Call("toFloat64", Call("toUnixTimestamp64Milli", ts)),
+		InlineLit(int64(millisPerSecond)),
+	)
+}
+
+// tsOfExtremeFrag renders the epoch-seconds timestamp of the
+// value-extreme sample in the window via CH's argMax over a COMPOSITE
+// (value, timestamp) comparison key, matching Prometheus's tie-break:
+//
+//	toFloat64(toUnixTimestamp64Milli(
+//	  arrayReduce('argMax',
+//	              arrayMap(p -> tupleElement(p, 1), window_pairs),       -- the ts to return
+//	              arrayMap(p -> (<keyVal>, toUnixTimestamp64Nano(tupleElement(p, 1))), window_pairs)
+//	  ))) / 1000
+//
+// Prometheus's compareOverTime scans the window in time order and
+// updates on `cur >= maxVal` (ts_of_max) / `cur <= minVal` (ts_of_min),
+// so on a VALUE tie the LATEST sample wins. CH's plain
+// `argMax(ts, value)` instead returns the FIRST tie (verified on chDB:
+// argMax([10,20,30],[7,9,9]) = 20, not 30), which would diverge from
+// Prom. To recover Prom's last-equal tie-break we maximise a composite
+// key `(keyVal, tsNanos)`: the timestamp component breaks value ties in
+// favour of the larger timestamp, i.e. the time-latest equal-extreme
+// sample. ts_of_max uses keyVal = value (maximise value); ts_of_min
+// uses keyVal = -value (maximise -value = minimise value), keeping the
+// SAME `(…, +tsNanos)` tie component so the latest equal-min wins —
+// exactly Prom's `cur <= minVal` forward scan.
+func tsOfExtremeFrag(wantMax bool) Frag {
+	val := func() Frag { return Call("tupleElement", BareIdent("p"), InlineLit(int64(2))) }
+	keyVal := val()
+	if !wantMax {
+		keyVal = Neg(val())
+	}
+	tsNanos := Call("toUnixTimestamp64Nano", Call("tupleElement", BareIdent("p"), InlineLit(int64(1))))
+	tsArr := Call(
+		"arrayMap",
+		Lambda1("p", Call("tupleElement", BareIdent("p"), InlineLit(int64(1)))),
+		BareIdent("window_pairs"),
+	)
+	keyArr := Call(
+		"arrayMap",
+		Lambda1("p", Tuple(keyVal, tsNanos)),
+		BareIdent("window_pairs"),
+	)
+	extremeTs := Call("arrayReduce", InlineLit("argMax"), tsArr, keyArr)
+	return tsEpochSecondsFrag(extremeTs)
 }
 
 // overTimeDirectAggFrag returns the direct CH group-aggregate Frag for an
