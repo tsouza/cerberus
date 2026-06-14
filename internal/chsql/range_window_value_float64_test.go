@@ -77,31 +77,62 @@ var integerLeakTokens = []string{
 // `1`).
 var bareIntLiteralRe = regexp.MustCompile(`^-?\d+$`)
 
-// allPromQLOverTimeReducers is the full set of PromQL range-vector
+// overTimeReducer is one entry in the guard table: the IR Func name plus
+// any scalar args that emitter requires. Most reducers take no scalars;
+// holt_winters needs its (sf, tf) pair on r.Scalars or the emitter
+// returns ErrUnsupported before it ever projects a Value.
+type overTimeReducer struct {
+	name    string
+	scalars []float64
+}
+
+// allPromQLOverTimeReducers is the full set of PromQL/LogQL range-vector
 // functions cerberus's over-time emitter renders through
-// emitRangeWindowOverTime / the dedicated reducer emitters. present_over_time
-// leads the list because it is the function whose UInt8 leak motivated
-// this guard. last/first_over_time go through the same windowed-array
-// path. rate / increase / delta / irate / idelta / deriv / resets /
-// changes are the derived-shape reducers; each must also project Float64.
-var allPromQLOverTimeReducers = []string{
-	"present_over_time",
-	"sum_over_time",
-	"avg_over_time",
-	"min_over_time",
-	"max_over_time",
-	"count_over_time",
-	"last_over_time",
-	"stddev_over_time",
-	"stdvar_over_time",
-	"rate",
-	"increase",
-	"delta",
-	"irate",
-	"idelta",
-	"deriv",
-	"resets",
-	"changes",
+// emitRangeWindowOverTime / emitRangeWindowTsOfOverTime / the dedicated
+// reducer emitters. present_over_time leads the list because it is the
+// function whose UInt8 leak motivated this guard. first/last_over_time go
+// through the same windowed-array path. rate / increase / delta / irate /
+// idelta / deriv / resets / changes are the derived-shape reducers; each
+// must also project Float64.
+//
+// The experimental reducers — first_over_time, mad_over_time, the four
+// ts_of_*_over_time timestamp reducers, and holt_winters (the canonical IR
+// name for both `holt_winters` and its `double_exponential_smoothing`
+// alias; PromQL lowering rewrites the alias to this name, so the emitter
+// only ever sees `holt_winters`) — are in the list because they are
+// now-implemented and appear in NEITHER the strict-CH compat corpus NOR
+// this guard otherwise, so nothing else pins their Value column to
+// float64. The ts_of_* family returns epoch-seconds (toFloat64(...)/1000);
+// holt_winters folds over the Float64 window_vals array.
+var allPromQLOverTimeReducers = []overTimeReducer{
+	{name: "present_over_time"},
+	{name: "sum_over_time"},
+	{name: "avg_over_time"},
+	{name: "min_over_time"},
+	{name: "max_over_time"},
+	{name: "count_over_time"},
+	{name: "first_over_time"},
+	{name: "last_over_time"},
+	{name: "mad_over_time"},
+	{name: "stddev_over_time"},
+	{name: "stdvar_over_time"},
+	{name: "ts_of_first_over_time"},
+	{name: "ts_of_last_over_time"},
+	{name: "ts_of_max_over_time"},
+	{name: "ts_of_min_over_time"},
+	// holt_winters / double_exponential_smoothing — needs the (sf, tf)
+	// smoothing factors on r.Scalars (mirrors the PromQL lowering, which
+	// populates Scalars{sf, tf}); without them the emitter rejects the
+	// plan before projecting a Value.
+	{name: "holt_winters", scalars: []float64{0.5, 0.5}},
+	{name: "rate"},
+	{name: "increase"},
+	{name: "delta"},
+	{name: "irate"},
+	{name: "idelta"},
+	{name: "deriv"},
+	{name: "resets"},
+	{name: "changes"},
 }
 
 // TestOverTimeValueColumnIsFloat64 is the shift-left guard for the
@@ -123,24 +154,25 @@ var allPromQLOverTimeReducers = []string{
 func TestOverTimeValueColumnIsFloat64(t *testing.T) {
 	t.Parallel()
 
-	for _, fn := range allPromQLOverTimeReducers {
-		fn := fn
-		t.Run(fn, func(t *testing.T) {
+	for _, rd := range allPromQLOverTimeReducers {
+		rd := rd
+		t.Run(rd.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
 				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
-				Func:            fn,
+				Func:            rd.name,
+				Scalars:         rd.scalars,
 				TimestampColumn: "TimeUnix",
 				ValueColumn:     "Value",
 				GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			}
 			sql, _, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
-				t.Fatalf("Emit(%s): %v", fn, err)
+				t.Fatalf("Emit(%s): %v", rd.name, err)
 			}
 
-			valueExpr := extractValueExpr(t, fn, sql)
-			assertFloat64ValueExpr(t, fn, valueExpr, sql)
+			valueExpr := extractValueExpr(t, rd.name, sql)
+			assertFloat64ValueExpr(t, rd.name, valueExpr, sql)
 		})
 	}
 }
