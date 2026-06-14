@@ -595,9 +595,9 @@ const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 // cheap to redial, so recycling the idle pool every 30s is negligible churn —
 // the steady-state trade-off the short window costs.
 const (
-	defaultCHMaxOpenConns                       = 10
-	defaultCHMaxIdleConns                       = 5
-	defaultCHConnMaxLifetime      time.Duration = 30 * time.Second
+	defaultCHMaxOpenConns                  = 10
+	defaultCHMaxIdleConns                  = 5
+	defaultCHConnMaxLifetime time.Duration = 30 * time.Second
 )
 
 // Circuit-breaker defaults (#95). These reproduce the previously-
