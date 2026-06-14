@@ -177,6 +177,8 @@ func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 		return lowerBinary(e, s, lc)
 	case *syntax.LabelReplaceExpr:
 		return lowerLabelReplace(e, s, lc)
+	case *syntax.MultiVariantExpr:
+		return lowerMultiVariant(e, s, lc)
 	default:
 		return nil, fmt.Errorf("logql: unsupported expression %T", expr)
 	}

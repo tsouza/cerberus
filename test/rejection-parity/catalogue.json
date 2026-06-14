@@ -117,8 +117,8 @@
       "head": "logql",
       "site": "internal/logql/lower.go:lower#5da77ba7",
       "message": "logql: unsupported expression %T",
-      "class": "rejection",
-      "trigger_query": "variants(count_over_time({app=\"x\"}[5m])) of ({app=\"x\"}[5m])"
+      "class": "internal",
+      "rationale": "type-switch default: every top-level expression the pinned parser produces is handled (matchers / pipeline / range- and vector-aggregation / literal / vector / binop / label_replace / multi-variant); the default arm is unreachable from any wire query"
     },
     {
       "head": "logql",
@@ -245,6 +245,27 @@
       "message": "logql: unsupported unwrap conversion %q",
       "class": "internal",
       "rationale": "every conversion the grammar accepts (bytes / duration / duration_seconds) is handled"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/variants.go:lowerMultiVariant#9a618675",
+      "message": "logql: variants(...) has no variant arms",
+      "class": "internal",
+      "rationale": "the LogQL grammar (metricExprs) requires at least one variant arm inside `variants(...)`; a zero-arm MultiVariantExpr is unreachable from the pinned parser"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/variants.go:lowerMultiVariant#b3f11e2a",
+      "message": "logql: variant %d is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "every SampleExpr the parser stores in MultiVariantExpr.Variants() also satisfies syntax.Expr; the type assertion is a defensive guard the pinned parser never trips"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/variants.go:lowerMultiVariant#c6a4748a",
+      "message": "logql: variant %d: %w",
+      "class": "internal",
+      "rationale": "wraps the per-arm lowering error of an inner SampleExpr — the underlying failure is catalogued at its own lowering site, so this wrapper adds no new wire-reachable rejection"
     },
     {
       "head": "logql",

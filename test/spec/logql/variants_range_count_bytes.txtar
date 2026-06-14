@@ -1,0 +1,121 @@
+-- query.logql --
+variants(count_over_time({service_name="web-server"}[5m]), bytes_over_time({service_name="web-server"}[5m])) of ({service_name="web-server"}[5m])
+-- start --
+2026-01-01T00:00:00Z
+-- end --
+2026-01-01T00:01:00Z
+-- step --
+30s
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    ServiceName String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2026-01-01 00:00:00', 9), 'ab', map('service_name', 'web-server')),
+    (toDateTime64('2026-01-01 00:00:15', 9), 'cde', map('service_name', 'web-server')),
+    (toDateTime64('2026-01-01 00:00:30', 9), 'fghi', map('service_name', 'web-server')),
+    (toDateTime64('2026-01-01 00:00:45', 9), 'jk', map('service_name', 'web-server')),
+    (toDateTime64('2026-01-01 00:01:00', 9), 'lmno', map('service_name', 'web-server'));
+-- expected_rows --
+[
+  ["", {"__variant__": "0", "detected_level": "unknown", "service_name": "web-server"}, "2026-01-01T00:00:00Z", 1],
+  ["", {"__variant__": "0", "detected_level": "unknown", "service_name": "web-server"}, "2026-01-01T00:00:30Z", 3],
+  ["", {"__variant__": "0", "detected_level": "unknown", "service_name": "web-server"}, "2026-01-01T00:01:00Z", 5],
+  ["", {"__variant__": "1", "detected_level": "unknown", "service_name": "web-server"}, "2026-01-01T00:00:00Z", 2],
+  ["", {"__variant__": "1", "detected_level": "unknown", "service_name": "web-server"}, "2026-01-01T00:00:30Z", 9],
+  ["", {"__variant__": "1", "detected_level": "unknown", "service_name": "web-server"}, "2026-01-01T00:01:00Z", 15]
+]
+-- args --
+[0] string = ""
+[1] string = "__variant__"
+[2] string = "0"
+[3] string = ""
+[4] string = "detected_level"
+[5] string = ""
+[6] string = "unknown"
+[7] string = "trace"
+[8] string = "trc"
+[9] string = "trace"
+[10] string = "debug"
+[11] string = "dbg"
+[12] string = "debug"
+[13] string = "info"
+[14] string = "inf"
+[15] string = "information"
+[16] string = "info"
+[17] string = "warn"
+[18] string = "wrn"
+[19] string = "warning"
+[20] string = "warn"
+[21] string = "error"
+[22] string = "err"
+[23] string = "error"
+[24] string = "critical"
+[25] string = "critical"
+[26] string = "fatal"
+[27] string = "fatal"
+[28] int64 = 1
+[29] string = "2025-12-31 23:55:00.000000000"
+[30] int64 = 9
+[31] string = "2026-01-01 00:01:00.000000000"
+[32] int64 = 9
+[33] string = ""
+[34] string = "service_name"
+[35] string = "service_name"
+[36] string = "service.name"
+[37] string = "web-server"
+[38] string = ""
+[39] string = "__variant__"
+[40] string = "1"
+[41] string = ""
+[42] string = "detected_level"
+[43] string = ""
+[44] string = "unknown"
+[45] string = "trace"
+[46] string = "trc"
+[47] string = "trace"
+[48] string = "debug"
+[49] string = "dbg"
+[50] string = "debug"
+[51] string = "info"
+[52] string = "inf"
+[53] string = "information"
+[54] string = "info"
+[55] string = "warn"
+[56] string = "wrn"
+[57] string = "warning"
+[58] string = "warn"
+[59] string = "error"
+[60] string = "err"
+[61] string = "error"
+[62] string = "critical"
+[63] string = "critical"
+[64] string = "fatal"
+[65] string = "fatal"
+[66] string = "2025-12-31 23:55:00.000000000"
+[67] int64 = 9
+[68] string = "2026-01-01 00:01:00.000000000"
+[69] int64 = 9
+[70] string = ""
+[71] string = "service_name"
+[72] string = "service_name"
+[73] string = "service.name"
+[74] string = "web-server"
+-- chplan --
+UnionAll arms=2
+  Project ["" AS MetricName, mapConcat(ResourceAttributes, map("__variant__", "0")) AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+    RangeWindow func=count_over_time range=5m0s step=30s outerRange=1m0s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:01:00Z
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "web-server") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
+          Scan(otel_logs)
+  Project ["" AS MetricName, mapConcat(ResourceAttributes, map("__variant__", "1")) AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+    RangeWindow func=sum_over_time range=5m0s step=30s outerRange=1m0s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:01:00Z
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, toFloat64(length(Body)) AS Value]
+        Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "web-server") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
+          Scan(otel_logs)
+-- sql --
+(SELECT ? AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, ?)) AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, anchor_ts AS `Timestamp`, toFloat64(count()) AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) WHERE `Timestamp` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= toDateTime64('2026-01-01 00:01:00.000000000', 9)) GROUP BY `ResourceAttributes`, `anchor_ts`)) UNION ALL (SELECT ? AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, ?)) AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, anchor_ts AS `Timestamp`, arraySum(window_vals) AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arraySort(groupArray((`Timestamp`, `Value`))) AS `window_pairs` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, toFloat64(length(`Body`)) AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) WHERE `Timestamp` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= toDateTime64('2026-01-01 00:01:00.000000000', 9)) GROUP BY `ResourceAttributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1))

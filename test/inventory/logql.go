@@ -263,6 +263,8 @@ func logQLBinaryAndFeatureRows() []Row {
 		mk("feature:label_replace", "feature", "label_replace",
 			`label_replace(rate({service_name="api"}[5m]), "svc", "$1", "service_name", "(.*)")`),
 		mk("feature:vector", "feature", "vector", `vector(1)`),
+		mk("feature:variants", "feature", "variants",
+			`variants(count_over_time({service_name="api"}[5m]), bytes_over_time({service_name="api"}[5m])) of ({service_name="api"}[5m])`),
 	)
 	return rows
 }
@@ -380,6 +382,15 @@ func CollectLogQLFeatureIDs(expr syntax.Expr) map[string]bool {
 	}
 	v.VisitVectorFn = func(_ syntax.RootVisitor, _ *syntax.VectorExpr) {
 		ids["feature:vector"] = true
+	}
+	v.VisitVariantsFn = func(rv syntax.RootVisitor, e *syntax.MultiVariantExpr) {
+		ids["feature:variants"] = true
+		// Mirror the default recursion so the variant arms and the shared
+		// `of (...)` selector still contribute their own feature IDs.
+		e.LogRange().Accept(rv)
+		for _, vrt := range e.Variants() {
+			vrt.Accept(rv)
+		}
 	}
 
 	expr.Accept(v)

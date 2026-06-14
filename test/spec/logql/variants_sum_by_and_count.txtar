@@ -1,0 +1,139 @@
+-- query.logql --
+variants(sum by (service_name) (count_over_time({service_name="web-server"}[5m])), count_over_time({service_name="web-server"}[5m])) of ({service_name="web-server"}[5m])
+-- start --
+2026-01-01T00:01:00Z
+-- end --
+2026-01-01T00:01:00Z
+-- step --
+30s
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String),
+    ServiceName String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2026-01-01 00:01:00', 9), 'a', map('service_name', 'web-server', 'pod', 'p1')),
+    (toDateTime64('2026-01-01 00:01:00', 9), 'b', map('service_name', 'web-server', 'pod', 'p1')),
+    (toDateTime64('2026-01-01 00:01:00', 9), 'c', map('service_name', 'web-server', 'pod', 'p2'));
+-- expected_rows --
+[
+  ["", {"__variant__": "0", "service_name": "web-server"}, "2026-01-01T00:00:01Z", 3],
+  ["", {"__variant__": "1", "detected_level": "unknown", "pod": "p1", "service_name": "web-server"}, "2026-01-01T00:01:00Z", 2],
+  ["", {"__variant__": "1", "detected_level": "unknown", "pod": "p2", "service_name": "web-server"}, "2026-01-01T00:01:00Z", 1]
+]
+-- args --
+[0] string = "__variant__"
+[1] string = "0"
+[2] string = ""
+[3] string = "service_name"
+[4] int64 = 9
+[5] string = "service_name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = ""
+[9] string = "detected_level"
+[10] string = ""
+[11] string = "unknown"
+[12] string = "trace"
+[13] string = "trc"
+[14] string = "trace"
+[15] string = "debug"
+[16] string = "dbg"
+[17] string = "debug"
+[18] string = "info"
+[19] string = "inf"
+[20] string = "information"
+[21] string = "info"
+[22] string = "warn"
+[23] string = "wrn"
+[24] string = "warning"
+[25] string = "warn"
+[26] string = "error"
+[27] string = "err"
+[28] string = "error"
+[29] string = "critical"
+[30] string = "critical"
+[31] string = "fatal"
+[32] string = "fatal"
+[33] string = "service_name"
+[34] string = "service_name"
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = "service_name"
+[38] string = "service.name"
+[39] string = "service_name"
+[40] string = "service_name"
+[41] string = "service.name"
+[42] int64 = 1
+[43] string = "2025-12-31 23:56:00.000000000"
+[44] int64 = 9
+[45] string = "2026-01-01 00:01:00.000000000"
+[46] int64 = 9
+[47] string = ""
+[48] string = "service_name"
+[49] string = "service_name"
+[50] string = "service.name"
+[51] string = "web-server"
+[52] string = "service_name"
+[53] string = "service_name"
+[54] string = "service.name"
+[55] string = ""
+[56] string = "__variant__"
+[57] string = "1"
+[58] string = "2026-01-01 00:01:00.000000000"
+[59] int64 = 9
+[60] string = ""
+[61] string = "detected_level"
+[62] string = ""
+[63] string = "unknown"
+[64] string = "trace"
+[65] string = "trc"
+[66] string = "trace"
+[67] string = "debug"
+[68] string = "dbg"
+[69] string = "debug"
+[70] string = "info"
+[71] string = "inf"
+[72] string = "information"
+[73] string = "info"
+[74] string = "warn"
+[75] string = "wrn"
+[76] string = "warning"
+[77] string = "warn"
+[78] string = "error"
+[79] string = "err"
+[80] string = "error"
+[81] string = "critical"
+[82] string = "critical"
+[83] string = "fatal"
+[84] string = "fatal"
+[85] int64 = 1
+[86] string = "2025-12-31 23:56:00.000000000"
+[87] int64 = 9
+[88] string = "2026-01-01 00:01:00.000000000"
+[89] int64 = 9
+[90] string = ""
+[91] string = "service_name"
+[92] string = "service_name"
+[93] string = "service.name"
+[94] string = "web-server"
+-- chplan --
+UnionAll arms=2
+  Project [MetricName AS MetricName, mapConcat(Attributes, map("__variant__", "0")) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, map("service_name", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"]) AS gkey_0] funcs=[sum(Value) AS Value]
+        RangeWindow func=count_over_time range=5m0s step=30s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:01:00Z end=2026-01-01T00:01:00Z
+          Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)), "service_name", if((mapContains(LogAttributes, "service_name") OR mapContains(LogAttributes, "service.name")), if(mapContains(LogAttributes, "service_name"), LogAttributes["service_name"], LogAttributes["service.name"]), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"]))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+            Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "web-server") AND ((Timestamp >= toDateTime64("2025-12-31 23:56:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
+              Scan(otel_logs)
+  Project ["" AS MetricName, mapConcat(ResourceAttributes, map("__variant__", "1")) AS Attributes, toDateTime64("2026-01-01 00:01:00.000000000", 9) AS TimeUnix, Value AS Value]
+    RangeWindow func=count_over_time range=5m0s step=30s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:01:00Z end=2026-01-01T00:01:00Z
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "web-server") AND ((Timestamp >= toDateTime64("2025-12-31 23:56:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
+          Scan(otel_logs)
+-- sql --
+(SELECT `MetricName` AS `MetricName`, mapConcat(`Attributes`, map(?, ?)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)), ?, if((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) WHERE `Timestamp` > toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= toDateTime64('2026-01-01 00:01:00.000000000', 9) GROUP BY `ResourceAttributes`) GROUP BY if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])))) UNION ALL (SELECT ? AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, ?)) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) WHERE `Timestamp` > toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= toDateTime64('2026-01-01 00:01:00.000000000', 9) GROUP BY `ResourceAttributes`))

@@ -99,6 +99,12 @@
       "pin": "count_over_time({service_name=\"api\"}[5m] offset 5m)"
     },
     {
+      "id": "feature:variants",
+      "class": "feature",
+      "token": "variants",
+      "pin": "variants(count_over_time({service_name=\"api\"}[5m]), bytes_over_time({service_name=\"api\"}[5m])) of ({service_name=\"api\"}[5m])"
+    },
+    {
       "id": "feature:vector",
       "class": "feature",
       "token": "vector",

@@ -2729,6 +2729,98 @@
    "type": "timeseries"
   },
   {
+   "cerberus": {
+    "expect": "nonempty"
+   },
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Multi-variant metric query: count_over_time and bytes_over_time computed over one gateway log selector in a single pass. Each variant's series is tagged with the synthetic __variant__ label (\"0\" for the count arm, \"1\" for the bytes arm), matching reference Loki's constants.VariantLabel labelling.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 106
+   },
+   "id": 64,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "variants(count_over_time({service_name=\"gateway\"}[5m]), bytes_over_time({service_name=\"gateway\"}[5m])) of ({service_name=\"gateway\"}[5m])",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "variants() of () — multi-variant metric",
+   "type": "timeseries"
+  },
+  {
    "collapsed": true,
    "gridPos": {
     "h": 1,

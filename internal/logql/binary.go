@@ -414,21 +414,30 @@ type logSampleShape struct {
 	metricName chplan.Expr
 	attrsCol   string
 	timeExpr   chplan.Expr
+	// hasNativeTime reports whether timeExpr forwards a real per-row
+	// timestamp column the inner plan exposes (a vector-aggregate
+	// `TimeUnix` or a matrix `anchor_ts`) rather than a synthesised
+	// `now64(9)`. Callers that anchor instant samples at the request
+	// window (e.g. the variant lowering) gate on this so they only
+	// override the synthetic-now case.
+	hasNativeTime bool
 }
 
 func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
 	if isVectorAggregateSampleShape(inner) {
 		return logSampleShape{
-			metricName: &chplan.ColumnRef{Name: "MetricName"},
-			attrsCol:   "Attributes",
-			timeExpr:   &chplan.ColumnRef{Name: "TimeUnix"},
+			metricName:    &chplan.ColumnRef{Name: "MetricName"},
+			attrsCol:      "Attributes",
+			timeExpr:      &chplan.ColumnRef{Name: "TimeUnix"},
+			hasNativeTime: true,
 		}
 	}
 	if isMatrixRangeWindow(inner) {
 		return logSampleShape{
-			metricName: &chplan.LitString{V: ""},
-			attrsCol:   s.ResourceAttributesColumn,
-			timeExpr:   &chplan.ColumnRef{Name: matrixBucketColumn(inner)},
+			metricName:    &chplan.LitString{V: ""},
+			attrsCol:      s.ResourceAttributesColumn,
+			timeExpr:      &chplan.ColumnRef{Name: matrixBucketColumn(inner)},
+			hasNativeTime: true,
 		}
 	}
 	return logSampleShape{

@@ -118,6 +118,17 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	s := l.Schema
 	if meta.IsMetric {
+		// A multi-variant union (`variants(...) of (...)`) already shaped
+		// every arm into the canonical (MetricName, Attributes, TimeUnix,
+		// Value) Sample contract — with `__variant__` folded into
+		// Attributes and the per-arm timestamp resolved (matrix anchor /
+		// vector-aggregate TimeUnix / request-End instant). Wrapping it in
+		// the generic metric reshape below would re-reference the
+		// `ResourceAttributes` column the per-arm Project has already
+		// consumed into `Attributes`, so forward the union untouched.
+		if isVariantUnion(plan) {
+			return plan
+		}
 		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),
 		// whose output is (group-keys…, <metric-value>). MetricName + TimeUnix
 		// don't exist in that scope — synthesise them so the chclient
@@ -267,7 +278,10 @@ func IsMetricQuery(expr syntax.Expr) bool {
 	switch expr.(type) {
 	case *syntax.RangeAggregationExpr, *syntax.VectorAggregationExpr,
 		*syntax.LiteralExpr, *syntax.BinOpExpr, *syntax.LabelReplaceExpr,
-		*syntax.VectorExpr:
+		*syntax.VectorExpr, *syntax.MultiVariantExpr:
+		// MultiVariantExpr (`variants(...) of (...)`) produces a matrix of
+		// metric samples, each tagged with the synthetic `__variant__`
+		// label — a metric query like any other range/vector aggregation.
 		// VectorExpr (`vector(1)`) produces a numeric sample, same as
 		// LiteralExpr. Omitting it routed the query down the
 		// log-stream wrap, which references Body / Timestamp — columns
