@@ -150,7 +150,7 @@ func TestRunIfEnabledOffSkipsBothGates(t *testing.T) {
 		t.Fatalf("knob off must return no fatal, got: %v", res.Fatal)
 	}
 	if !res.SchemaProvisioned() {
-		t.Fatalf("knob off must report schema provisioned (gates skipped), got absent: %v", res.AbsentTables)
+		t.Fatalf("knob off must report schema provisioned (gates bypassed), got absent: %v", res.AbsentTables)
 	}
 }
 
