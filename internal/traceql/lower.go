@@ -720,8 +720,47 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr
 		return lowerNilComparison(u.Op, attr, s)
 	case traceql.OpNot:
 		return lowerUnaryNot(u, s)
+	case traceql.OpSub:
+		return lowerUnaryMinus(u, s)
 	}
 	return nil, fmt.Errorf("traceql: unary operator %s is unsupported", u.Op)
+}
+
+// lowerUnaryMinus lowers the arithmetic negation `-<numeric-expr>`
+// (UnaryOperation{OpSub}) — e.g. `{ -span.foo > 0 }`,
+// `{ -(span.a + span.b) = -5 }`, `{ -span.duration < 0ns }`.
+//
+// Reference semantics (tsouza/tempo fork, ast_execute.go
+// UnaryOperation.execute, OpSub branch): the operand executes to a
+// Static; if its type is not numeric (int / float / duration) the
+// reference returns an error, otherwise it returns `-1 * n` preserving
+// the operand's numeric type (NewStaticInt / NewStaticFloat /
+// NewStaticDuration). The parser AST-rewrites a unary minus over a
+// constant operand into a folded negative Static (newUnaryOperation's
+// `!referencesSpan()` simplification), so a UnaryOperation{OpSub} that
+// survives to lowering always references a span — its operand is an
+// attribute (or arithmetic over attributes), never a bare literal.
+//
+// We mirror reference `-1 * n` as `0 - <operand>`: a Binary{OpSub} with
+// a zero-int left arm. This reuses the existing numeric-coercion path —
+// the operand's FieldAccess children are wrapped in toFloat64OrNull by
+// coerceFieldAccess so the Map(String,String) subscript computes as a
+// number server-side, with absent/non-numeric values folding to NULL
+// exactly as the binary-arithmetic path does. The enclosing comparison
+// (or outer arithmetic) then coerces the whole `0 - operand` Binary via
+// coerceNumericFieldAccess, so duration/int/float operands all land as
+// Float64 — numerically identical to reference's typed negation for the
+// comparisons TraceQL allows (`<neg-expr> <op> <numeric-literal>`).
+func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
+	operand, err := lowerFieldExpr(u.Expression, s)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.LitInt{V: 0},
+		Right: coerceFieldAccess(operand),
+	}, nil
 }
 
 // lowerUnaryNot lowers the boolean negation `!( <bool-expr> )`. Tempo's

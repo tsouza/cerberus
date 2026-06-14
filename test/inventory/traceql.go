@@ -115,6 +115,11 @@ func curatedTraceQLRows() []Row {
 
 		// --- Field-expression arithmetic ---
 		mk("op:add", "arithmetic", "+", `{ .payload_bytes + 1 > 100 }`),
+		// Unary minus (arithmetic negation). The operand must reference a
+		// span (a bare `-5` is constant-folded by the parser into a
+		// negative Static, which would never reach the UnaryOperation
+		// matcher), so the pin negates an attribute.
+		mk("op:unary-minus", "arithmetic", "-x", `{ -.payload_bytes < 0 }`),
 		mk("op:sub", "arithmetic", "-", `{ .payload_bytes - 1 > 100 }`),
 		mk("op:mult", "arithmetic", "*", `{ .payload_bytes * 2 > 100 }`),
 		mk("op:div", "arithmetic", "/", `{ .payload_bytes / 2 > 100 }`),
@@ -455,6 +460,13 @@ func collectTraceQLUnary(ids map[string]bool, u traceql.UnaryOperation) {
 		ids["op:not-exists"] = true
 	case traceql.OpNot:
 		ids["op:not"] = true
+	case traceql.OpSub:
+		// Unary minus (arithmetic negation `-<expr>`). The same OpSub
+		// token reaches binaryOpRowID for the binary `a - b` form; the
+		// two never collide because the parser emits distinct
+		// BinaryOperation vs UnaryOperation nodes, so a UnaryOperation
+		// carrying OpSub is unambiguously the negation row.
+		ids["op:unary-minus"] = true
 	}
 	collectTraceQLFieldExpr(ids, u.Expression)
 }

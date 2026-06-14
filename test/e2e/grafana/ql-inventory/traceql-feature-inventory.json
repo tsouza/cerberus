@@ -369,6 +369,12 @@
       "pin": "{ .payload_bytes - 1 \u003e 100 }"
     },
     {
+      "id": "op:unary-minus",
+      "class": "arithmetic",
+      "token": "-x",
+      "pin": "{ -.payload_bytes \u003c 0 }"
+    },
+    {
       "id": "pipe:avg",
       "class": "spanset-aggregate",
       "token": "avg()",

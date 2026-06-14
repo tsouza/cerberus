@@ -1,0 +1,21 @@
+-- query.traceql --
+{ -span.x > -3 }
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED map('x', if(_idx = 0, '5', '1'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [1]
+]
+-- args --
+[0] int64 = 0
+[1] string = "x"
+[2] int64 = -3
+-- chplan --
+Filter predicate=((0 - toFloat64OrNull(SpanAttributes["x"])) > -3)
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE ((? - toFloat64OrNull(`SpanAttributes`[?])) > ?)
