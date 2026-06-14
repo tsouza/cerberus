@@ -652,9 +652,21 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // (MetricName, Attributes, TimeUnix, Value) and we read the `Value`
 // column. The integer cast guards against the (rare) case where the
 // scalar evaluates to a non-integer; PromQL semantics truncate.
+//
+// When t.Unordered (PromQL `limitk(K, v)`), the ORDER BY is omitted
+// entirely: the result is K *arbitrary* rows per partition, no ranking.
+// CH's `LIMIT K BY <by>` already returns the first K rows it encounters
+// per group, which is exactly limitk's "any K series" contract. SortExpr
+// is nil in this shape, so the pre-flight and ORDER BY clause are skipped.
 func (e *emitter) emitTopK(t *chplan.TopK) error {
-	if t.SortExpr == nil {
+	if !t.Unordered && t.SortExpr == nil {
 		return fmt.Errorf("%w: TopK with nil SortExpr", ErrUnsupported)
+	}
+	if t.Unordered && t.SortExpr != nil {
+		return fmt.Errorf("%w: limitk TopK must not carry a SortExpr", ErrUnsupported)
+	}
+	if t.Unordered && t.KExpr != nil {
+		return fmt.Errorf("%w: limitk TopK does not support computed K", ErrUnsupported)
 	}
 	if t.KExpr == nil && t.K <= 0 {
 		return fmt.Errorf("%w: TopK with non-positive K=%d", ErrUnsupported, t.K)
@@ -663,8 +675,10 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 		return fmt.Errorf("%w: TopK with both literal K=%d and KExpr set", ErrUnsupported, t.K)
 	}
 	// Pre-flight expressions so chplan errors surface synchronously.
-	if err := (&Builder{}).Expr(t.SortExpr); err != nil {
-		return err
+	if t.SortExpr != nil {
+		if err := (&Builder{}).Expr(t.SortExpr); err != nil {
+			return err
+		}
 	}
 	for _, by := range t.By {
 		if err := (&Builder{}).Expr(by); err != nil {
@@ -680,21 +694,24 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 	if err != nil {
 		return err
 	}
-	sortExpr := t.SortExpr
 
-	// Inner SELECT applies the ORDER BY + LIMIT BY combo. We keep it as
-	// `SELECT *` so the inner subquery's column names flow through to
-	// LIMIT BY's resolution unambiguously. If we instead aliased the
-	// columns here (e.g. `Attributes AS Attributes`), CH's name
-	// resolution for `LIMIT BY Attributes['key']` would prefer the
+	// Inner SELECT applies the (optional) ORDER BY + LIMIT BY combo. We
+	// keep it as `SELECT *` so the inner subquery's column names flow
+	// through to LIMIT BY's resolution unambiguously. If we instead
+	// aliased the columns here (e.g. `Attributes AS Attributes`), CH's
+	// name resolution for `LIMIT BY Attributes['key']` would prefer the
 	// SELECT-list alias over the FROM subquery's column — fine when
 	// they're the same type, but fragile when an outer wrapper rewrites
 	// the alias's type (e.g. the chDB roundtrip runner wraps Map columns
 	// in toJSONString(...) on the outermost SELECT).
-	inner := NewQuery().From(sub).OrderBy(
-		func(b *Builder) { _ = b.Expr(sortExpr) },
-		t.Desc,
-	).Limit(t.K)
+	inner := NewQuery().From(sub)
+	if t.SortExpr != nil {
+		// topk/bottomk: rank by Value before truncating. limitk
+		// (Unordered) skips this — its surviving series are arbitrary.
+		sortExpr := t.SortExpr
+		inner.OrderBy(func(b *Builder) { _ = b.Expr(sortExpr) }, t.Desc)
+	}
+	inner.Limit(t.K)
 	if len(t.By) > 0 {
 		byFrags := make([]Frag, 0, len(t.By))
 		for _, by := range t.By {

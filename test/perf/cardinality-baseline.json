@@ -3330,6 +3330,46 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/limitk_below_one_empty",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/limitk_by_job_all_survive",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/limitk_by_job_truncates",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/limitk_without_instance",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/ln_metric",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -4264,6 +4304,16 @@
     "fan_factor": 3,
     "scan_rows": 2,
     "peak_intermediate": 6,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/subquery_over_limitk",
+    "fan_factor": 1.3333333333333333,
+    "scan_rows": 6,
+    "peak_intermediate": 8,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": false,

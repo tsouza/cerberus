@@ -77,26 +77,31 @@ func TestLang_Parse_ParseError(t *testing.T) {
 }
 
 // TestLang_Parse_LowerError — a parseable but unsupported PromQL form
-// (`limitk`, an experimental aggregation cerberus rejects at lowering) surfaces as a parseStageError tagged
-// "lower". Verifies the parse → lower split is preserved through the
-// adapter.
+// (`limit_ratio`, an experimental aggregation cerberus rejects at
+// lowering) surfaces as a parseStageError tagged "lower". Verifies the
+// parse → lower split is preserved through the adapter.
+//
+// `limitk` was the original example here; it now lowers (the
+// experimental-aggregator burndown wired limitk → LIMIT K BY), so the
+// still-unsupported sibling `limit_ratio` carries the parse→lower-split
+// assertion forward.
 func TestLang_Parse_LowerError(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	_, _, err := l.Parse(context.Background(), `limitk(2, up)`)
+	_, _, err := l.Parse(context.Background(), `limit_ratio(0.5, up)`)
 	if err == nil {
-		t.Fatalf("Parse(limitk): expected lower failure, got nil")
+		t.Fatalf("Parse(limit_ratio): expected lower failure, got nil")
 	}
 	var ps *parseStageError
 	if !errors.As(err, &ps) {
-		t.Fatalf("Parse(limitk): err type = %T, want *parseStageError; err=%v", err, err)
+		t.Fatalf("Parse(limit_ratio): err type = %T, want *parseStageError; err=%v", err, err)
 	}
 	if ps.stage != "lower" {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
-	if !strings.Contains(err.Error(), "limitk") {
-		t.Errorf("err message: got %q, want it to mention limitk", err.Error())
+	if !strings.Contains(err.Error(), "limit_ratio") {
+		t.Errorf("err message: got %q, want it to mention limit_ratio", err.Error())
 	}
 }
 

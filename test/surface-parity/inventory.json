@@ -61,10 +61,9 @@
       "symbol": "agg:limitk",
       "kind": "aggregator",
       "probe": "limitk(3, up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: aggregation op limitk is not yet supported"
+      "class": "wrong-accept"
     },
     {
       "head": "promql",

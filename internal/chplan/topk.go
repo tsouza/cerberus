@@ -10,9 +10,13 @@ package chplan
 // every input column — `by(g1, g2)` only partitions, it does not drop
 // labels.
 //
-// SQL form (literal-K, KExpr == nil):
+// SQL form (literal-K, KExpr == nil, Unordered == false):
 //
 //	SELECT <Columns> FROM (<input>) ORDER BY <SortExpr> [DESC] LIMIT K [BY <By>...]
+//
+// SQL form (literal-K, Unordered == true — limitk):
+//
+//	SELECT <Columns> FROM (<input>) LIMIT K [BY <By>...]
 //
 // SQL form (computed-K, KExpr != nil):
 //
@@ -47,14 +51,24 @@ package chplan
 // K integer; the emitter wraps it as `(SELECT toUInt64(Value) FROM
 // <KExpr> LIMIT 1)`. `K` and `KExpr` are mutually exclusive — set one
 // or the other, never both.
+//
+// `Unordered` models PromQL's experimental `limitk(K, v)` aggregator:
+// per group, return up to K *arbitrary* series — no ranking, no value
+// ordering, the surviving series keep their original samples unchanged.
+// When `Unordered` is true the emitter omits the ORDER BY entirely and
+// renders a bare `LIMIT K BY <By>` (or `LIMIT K` when `By` is empty),
+// and `SortExpr` is nil. `Unordered` only composes with the literal-K
+// path (`K > 0`, `KExpr == nil`); the ranking variants (topk/bottomk,
+// computed-K) keep `Unordered == false`.
 type TopK struct {
-	Input    Node
-	K        int64
-	KExpr    Node // computed-K subtree (mutually exclusive with K > 0)
-	By       []Expr
-	SortExpr Expr     // value column reference used as the ORDER BY key
-	Desc     bool     // true = topk (DESC), false = bottomk (ASC)
-	Columns  []string // explicit outer SELECT column list; empty = `SELECT *`
+	Input     Node
+	K         int64
+	KExpr     Node // computed-K subtree (mutually exclusive with K > 0)
+	By        []Expr
+	SortExpr  Expr     // value column reference used as the ORDER BY key; nil when Unordered
+	Desc      bool     // true = topk (DESC), false = bottomk (ASC)
+	Unordered bool     // true = limitk (no ORDER BY, arbitrary K-per-group)
+	Columns   []string // explicit outer SELECT column list; empty = `SELECT *`
 }
 
 func (*TopK) planNode() {}
@@ -68,7 +82,7 @@ func (t *TopK) Children() []Node {
 
 func (t *TopK) Equal(other Node) bool {
 	o, ok := other.(*TopK)
-	if !ok || t.K != o.K || t.Desc != o.Desc ||
+	if !ok || t.K != o.K || t.Desc != o.Desc || t.Unordered != o.Unordered ||
 		len(t.By) != len(o.By) || len(t.Columns) != len(o.Columns) {
 		return false
 	}

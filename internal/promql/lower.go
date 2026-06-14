@@ -1784,6 +1784,9 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	if a.Op == parser.TOPK || a.Op == parser.BOTTOMK {
 		return lowerTopK(a, s, ctx)
 	}
+	if a.Op == parser.LIMITK {
+		return lowerLimitK(a, s, ctx)
+	}
 	if a.Op == parser.COUNT_VALUES {
 		return lowerCountValues(a, s, ctx)
 	}
@@ -2214,6 +2217,75 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,
+		Columns: []string{
+			s.MetricNameColumn,
+			s.AttributesColumn,
+			s.TimestampColumn,
+			s.ValueColumn,
+		},
+	}, nil
+}
+
+// lowerLimitK lowers PromQL's experimental `limitk(K, expr) [by(g) |
+// without(g)] (...)` aggregator. Unlike topk/bottomk, limitk does NOT
+// rank: per aggregation group it returns up to K *arbitrary* series,
+// with their samples unchanged. The result vector keeps every original
+// label of the surviving series — `by(...)` only partitions, it does
+// not drop labels (same shape contract as topk).
+//
+// SQL shape:
+//
+//	SELECT MetricName, Attributes, TimeUnix, Value FROM (<inner>)
+//	  LIMIT K [BY <partition_exprs>]
+//
+// There is no ORDER BY — CH's `LIMIT K BY <group>` returns the first K
+// rows it encounters per partition, which is exactly limitk's "any K
+// series per group" contract. The partition shape and the K-domain
+// rules are shared verbatim with topk/bottomk (topKPartition /
+// topKDomain): K < 1 short-circuits to an empty result, fractional
+// K >= 1 truncates toward zero, NaN / int64-overflow K are rejected.
+//
+// Computed K (`limitk(scalar(<vector>), v)`) is not modelled — CH's
+// LIMIT requires a constant and limitk's arbitrary-selection contract
+// gives no natural row_number() ordering to filter on. The literal-K
+// fast path is the only supported shape; a scalar()-K form is rejected
+// with a clear error rather than silently mis-lowered.
+//
+// Range mode (ctx.step > 0): like topk, limitk selects K series per
+// evaluation step. topKPartition appends the per-step TimeUnix anchor
+// so `LIMIT K BY (<user-partition>, TimeUnix)` fires per anchor.
+func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	kF, ok := tryScalarLiteral(a.Param)
+	if !ok {
+		return nil, fmt.Errorf("promql: limitk K must be a scalar literal; computed-K (e.g. scalar(<vector>)) is not supported")
+	}
+	k, empty, err := topKDomain(a.Op, kF)
+	if err != nil {
+		return nil, err
+	}
+
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if empty {
+		// K < 1 → empty result per reference semantics (see
+		// topKDomain). Filter the lowered input to zero rows so the
+		// plan keeps the canonical column shape — same posture as
+		// lowerTopK's K-too-small fold.
+		return &chplan.Filter{
+			Input:     input,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
+	}
+
+	by := topKPartition(a, s, ctx)
+
+	return &chplan.TopK{
+		Input:     input,
+		K:         k,
+		By:        by,
+		Unordered: true,
 		Columns: []string{
 			s.MetricNameColumn,
 			s.AttributesColumn,
