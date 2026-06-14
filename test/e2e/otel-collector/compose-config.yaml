@@ -221,9 +221,9 @@ receivers:
             -- exception) onto an OTel-style severity so cerberus's Loki
             -- head derives a real `detected_level` instead of "unknown".
             -- ExceptionBeforeStart / ExceptionWhileProcessing are
-            -- failures (error); a clean QueryFinish is info. The
-            -- collector writes this into the OTel-CH `SeverityText`
-            -- column via severity_text_column below.
+            -- failures (error); a clean QueryFinish is info. Carried as a
+            -- `severity_text` structured-metadata attribute below, which
+            -- cerberus's detected_level cascade resolves.
             multiIf(
               type LIKE 'Exception%' OR exception != '', 'error',
               'info'
@@ -258,12 +258,14 @@ receivers:
         tracking_column: event_us
         logs:
           - body_column: query
-            # Populate the OTel-CH SeverityText column so the Loki head's
-            # detected_level derivation resolves a real level per record
-            # (info for clean queries, error for failures) instead of
+            # `severity_text` rides as a structured-metadata attribute —
+            # the pinned collector's sqlquery `logs` config has no severity
+            # column. cerberus's detected_level cascade reads
+            # LogAttributes['severity_text'], so the level resolves per
+            # record (info for clean queries, error for failures) instead of
             # collapsing every line to "unknown".
-            severity_text_column: severity_text
             attribute_columns:
+              - severity_text
               - query_id
               - type
               - query_kind
