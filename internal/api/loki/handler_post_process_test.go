@@ -39,7 +39,7 @@ func TestHandler_LineFormat_AppliesTemplate(t *testing.T) {
 	if len(streams[0].Values) != 1 {
 		t.Fatalf("expected 1 value, got %d", len(streams[0].Values))
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	want := "[api] hello world"
 	if got != want {
 		t.Errorf("line value: got %q, want %q", got, want)
@@ -69,7 +69,7 @@ func TestHandler_Decolorize_StripsAnsi(t *testing.T) {
 	if len(streams) != 1 || len(streams[0].Values) != 1 {
 		t.Fatalf("unexpected stream shape: %+v", streams)
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	want := "ERROR: connect refused"
 	if got != want {
 		t.Errorf("decolorize output: got %q, want %q", got, want)
@@ -104,7 +104,7 @@ func TestHandler_DecolorizeThenLineFormat_Composes(t *testing.T) {
 	if len(streams) != 1 || len(streams[0].Values) != 1 {
 		t.Fatalf("unexpected stream shape: %+v", streams)
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	want := "[api] ERROR: oops"
 	if got != want {
 		t.Errorf("compose output: got %q, want %q", got, want)
@@ -156,7 +156,7 @@ func TestHandler_LineFormat_WithTemplateFuncs(t *testing.T) {
 	if len(streams) != 1 || len(streams[0].Values) != 1 {
 		t.Fatalf("unexpected shape: %+v", streams)
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	want := "[api] HELLO WORLD"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -227,7 +227,7 @@ func TestHandler_LineFormat_SprigPipeline_NowExecutes(t *testing.T) {
 			if len(streams) != 1 || len(streams[0].Values) != 1 {
 				t.Fatalf("unexpected shape: %+v", streams)
 			}
-			if got := streams[0].Values[0][1]; got != tc.want {
+			if got := streams[0].Values[0].Line; got != tc.want {
 				t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 			}
 		})
@@ -256,7 +256,7 @@ func TestHandler_LineFormat_Timestamp_RendersRealValue(t *testing.T) {
 	if len(streams) != 1 || len(streams[0].Values) != 1 {
 		t.Fatalf("unexpected shape: %+v", streams)
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	want := ts.Format("2006-01-02T15:04:05Z07:00")
 	if got != want {
 		t.Errorf("__timestamp__ render: got %q, want %q (must NOT be blank)", got, want)
@@ -321,7 +321,7 @@ func TestHandler_LabelFormat_TemplateThenLineFormat(t *testing.T) {
 	if len(streams) != 1 || len(streams[0].Values) != 1 {
 		t.Fatalf("unexpected shape: %+v", streams)
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	if got != "[ERROR] boom" {
 		t.Errorf("line: got %q, want %q", got, "[ERROR] boom")
 	}
@@ -346,7 +346,7 @@ func TestHandler_NoLineFormat_PassThrough(t *testing.T) {
 	if len(streams) != 1 || len(streams[0].Values) != 1 {
 		t.Fatalf("unexpected stream shape: %+v", streams)
 	}
-	got := streams[0].Values[0][1]
+	got := streams[0].Values[0].Line
 	if got != "untouched line" {
 		t.Errorf("expected pass-through; got %q", got)
 	}

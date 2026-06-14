@@ -254,18 +254,37 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	if queryShouldSurfaceDetectedLevel(expr) {
 		attrsExpr = withDetectedLevel(s, attrsExpr)
 	}
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
+		{Expr: attrsExpr, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		// LitFloat is wrapped centrally in toFloat64(?) by
+		// internal/chsql/Builder.Expr; without that pin CH would
+		// narrow the bare `0` placeholder to UInt8 and clickhouse-go's
+		// Sample Scan would reject UInt8 → *float64.
+		{Expr: &chplan.LitFloat{V: 0}, Alias: "Value"},
+	}
+	// Surface the OTel-CH LogAttributes map as Loki structured metadata —
+	// the third element of each `[ts, line, {metadata}]` value tuple. The
+	// stream identity (Attributes) stays the low-cardinality
+	// ResourceAttributes + detected_level set so streams don't fragment;
+	// the genuinely per-line keys (duration / bytes / query_id / …) ride
+	// here instead, which is exactly the shape Grafana's Logs Drilldown
+	// reads to render clean, well-formed columns. The chclient cursor
+	// detects this fifth `Metadata` column and binds a five-destination
+	// scan; the four-column metric / prom / tempo paths are untouched.
+	// Schemas without a structured-metadata column (AttributesColumn == "")
+	// skip the projection entirely, falling back to the prior four-column
+	// shape byte-for-byte.
+	if s.AttributesColumn != "" {
+		projections = append(projections, chplan.Projection{
+			Expr:  structuredMetadataExpr(s),
+			Alias: "Metadata",
+		})
+	}
 	return &chplan.Project{
-		Input: plan,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
-			{Expr: attrsExpr, Alias: "Attributes"},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			// LitFloat is wrapped centrally in toFloat64(?) by
-			// internal/chsql/Builder.Expr; without that pin CH would
-			// narrow the bare `0` placeholder to UInt8 and clickhouse-go's
-			// Sample Scan would reject UInt8 → *float64.
-			{Expr: &chplan.LitFloat{V: 0}, Alias: "Value"},
-		},
+		Input:       plan,
+		Projections: projections,
 	}
 }
 

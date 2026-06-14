@@ -225,6 +225,285 @@ func TestQuery_Streams(t *testing.T) {
 	}
 }
 
+// TestQuery_Streams_StructuredMetadata pins the per-line structured
+// metadata surface (PR #903 follow-up): a log-stream entry carries the
+// OTel-CH LogAttributes map as the optional third tuple element
+// (`[ts, line, {metadata}]`), which Grafana's Logs Drilldown reads to
+// render clean per-line columns. The assertions cover all three #903
+// regressions at the wire boundary:
+//
+//   - the useful CH-query-log keys (duration / read_bytes / query_id)
+//     surface with non-empty, well-formed values;
+//   - an empty-valued attribute is DROPPED, so no blank `_method`-style
+//     column appears;
+//   - a value with a trailing comma is carried verbatim (cerberus never
+//     mangles it into an `8192,` artefact — the join-with-comma bug that
+//     #903 was accused of doesn't exist on cerberus's side: each value is
+//     a single map entry, not a stray-delimiter join).
+func TestQuery_Streams_StructuredMetadata(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "SELECT count() FROM otel_logs",
+				Labels:     map[string]string{"service_name": "clickhouse"},
+				Timestamp:  ts,
+				Metadata: map[string]string{
+					"duration":   "12ms",
+					"read_bytes": "4096",
+					"query_id":   "abc-123",
+					// An empty attribute must NOT surface as a column.
+					"exception": "",
+				},
+			},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// Grafana's Loki datasource always negotiates `categorize-labels`; only
+	// then does cerberus surface the structured-metadata third element.
+	req, err := http.NewRequest(http.MethodGet, srv.URL+`/loki/api/v1/query?query=%7Bservice_name%3D%22clickhouse%22%7D`, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Loki-Response-Encoding-Flags", "categorize-labels")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The response must advertise the categorize-labels encoding flag so
+	// Grafana's shared Prometheus-style converter takes the
+	// `readCategorizedStream` branch instead of the plain `readStream` one.
+	if got := parsed.Data.EncodingFlags; len(got) != 1 || got[0] != "categorize-labels" {
+		t.Fatalf("encodingFlags=%v, want [categorize-labels]", got)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	// Assert the RAW wire arity first: under the advertised flag Grafana's
+	// readCategorizedStream reads a MANDATORY third element from every
+	// value, so each tuple must be exactly three elements. Decoding through
+	// the lenient loki.Stream would hide a two-element value (the #908
+	// shard-smoke 400), so inspect the raw JSON.
+	var rawStreams []struct {
+		Values [][]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &rawStreams); err != nil {
+		t.Fatalf("decode raw streams: %v", err)
+	}
+	if len(rawStreams) != 1 || len(rawStreams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %+v", rawStreams)
+	}
+	if n := len(rawStreams[0].Values[0]); n != 3 {
+		t.Fatalf("categorized stream value must be a 3-element [ts, line, {…}] tuple, got %d elements: %s", n, raw)
+	}
+	// The third element must be the categorized `{"structuredMetadata": {…}}`
+	// envelope — not a bare metadata map and not `null`.
+	var third categorizedThird
+	if err := json.Unmarshal(rawStreams[0].Values[0][2], &third); err != nil {
+		t.Fatalf("decode categorized third element: %v (raw: %s)", err, rawStreams[0].Values[0][2])
+	}
+	if third.StructuredMetadata == nil {
+		t.Fatalf("third element missing structuredMetadata object: %s", rawStreams[0].Values[0][2])
+	}
+
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+
+	md := streams[0].Values[0].Metadata
+	for k, want := range map[string]string{
+		"duration":   "12ms",
+		"read_bytes": "4096",
+		"query_id":   "abc-123",
+	} {
+		if got := md[k]; got != want {
+			t.Errorf("metadata[%q]=%q, want %q", k, got, want)
+		}
+	}
+	// Empty-valued attribute dropped — no blank column.
+	if _, ok := md["exception"]; ok {
+		t.Errorf("empty-valued attribute leaked into structured metadata: %v", md)
+	}
+	// No leading-underscore / single-underscore garbage keys (the
+	// `_method` / `_` / `_id` Drilldown line-parse artefacts must never
+	// originate from cerberus's structured-metadata surface).
+	for k := range md {
+		if k == "_" || strings.HasPrefix(k, "_") {
+			t.Errorf("garbage structured-metadata key surfaced: %q", k)
+		}
+	}
+}
+
+// TestQuery_Streams_PlainShapeNoCategorize is the regression guard for
+// the #908 compose-smoke break: a log-stream query WITHOUT the
+// `X-Loki-Response-Encoding-Flags: categorize-labels` request header must
+// return strictly two-element `[ts, line]` value tuples and NO
+// `encodingFlags` field — byte-identical to reference Loki's default wire
+// format. Grafana's shared Prometheus-style response converter takes the
+// `readStream` branch for such responses, and that branch rejects a third
+// `{...}` element with `ReadArray: expect [ or , or ] or n, but found {`.
+// #908 unconditionally appended the metadata object, 400-ing every plain
+// Grafana log query; this test fails fast if that ever regresses again
+// off-compose (the chDB probe + the narrow categorize test both pass even
+// when this shape is wrong, which is exactly why the original break
+// reached compose-only).
+func TestQuery_Streams_PlainShapeNoCategorize(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "request started",
+				Labels:     map[string]string{"service_name": "api"},
+				Timestamp:  ts,
+				Metadata:   map[string]string{"thread": "worker-0"},
+			},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// Plain GET — no categorize-labels header, the loki-compat-harness /
+	// curl shape.
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22api%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(parsed.Data.EncodingFlags) != 0 {
+		t.Fatalf("plain request must not advertise encodingFlags, got %v", parsed.Data.EncodingFlags)
+	}
+
+	// Assert the RAW wire shape: each value array must have exactly two
+	// elements. Decoding through loki.StreamValue would hide a stray third
+	// element, so inspect the raw JSON.
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var rawStreams []struct {
+		Values [][]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(rawResult, &rawStreams); err != nil {
+		t.Fatalf("decode raw streams: %v", err)
+	}
+	if len(rawStreams) != 1 || len(rawStreams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %+v", rawStreams)
+	}
+	if n := len(rawStreams[0].Values[0]); n != 2 {
+		t.Fatalf("plain stream value must be a 2-element [ts, line] tuple, got %d elements: %s",
+			n, rawResult)
+	}
+}
+
+// categorizedThird mirrors the `{"structuredMetadata": {…}}` shape
+// Grafana's readCategorizedStreamField reads from the third element of a
+// categorized stream value. Used by the wire-shape assertions to confirm
+// the envelope is present and correctly keyed.
+type categorizedThird struct {
+	StructuredMetadata map[string]string `json:"structuredMetadata"`
+}
+
+// TestQuery_Streams_CategorizeEmptyMetadataStillThreeTuple is the unit-level
+// guard for the #908 shard-smoke 400 (run 27503329607): a categorize-labels
+// request over a row that carries NO structured metadata must STILL emit a
+// three-element `[ts, line, {"structuredMetadata": {}}]` tuple — never the
+// two-element shape. Grafana's readCategorizedStream reads the third element
+// unconditionally once the response advertises the flag, so a two-element
+// value (a closing `]` where the object is expected) 400s its parser with
+// `ReadObject: expect { or , or } or n, but found ]`. The prior empty-drop
+// (`!v.Categorize || len(v.Metadata) == 0 → two-element`) emitted exactly
+// that illegal mix, which is the regression this pins.
+func TestQuery_Streams_CategorizeEmptyMetadataStillThreeTuple(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "a line with no structured metadata",
+				Labels:     map[string]string{"service_name": "api"},
+				Timestamp:  ts,
+				// No Metadata: the empty-metadata row that the old gate
+				// collapsed to a two-element tuple.
+			},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+`/loki/api/v1/query?query=%7Bservice_name%3D%22api%22%7D`, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Loki-Response-Encoding-Flags", "categorize-labels")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The flag is advertised whenever the client requested it — independent
+	// of whether any value carried metadata.
+	if got := parsed.Data.EncodingFlags; len(got) != 1 || got[0] != "categorize-labels" {
+		t.Fatalf("encodingFlags=%v, want [categorize-labels]", got)
+	}
+
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var rawStreams []struct {
+		Values [][]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &rawStreams); err != nil {
+		t.Fatalf("decode raw streams: %v", err)
+	}
+	if len(rawStreams) != 1 || len(rawStreams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %+v", rawStreams)
+	}
+	if n := len(rawStreams[0].Values[0]); n != 3 {
+		t.Fatalf("empty-metadata categorized value must STILL be a 3-element tuple, got %d elements: %s", n, raw)
+	}
+	// The third element is the categorized envelope with an empty (non-nil)
+	// structuredMetadata object — `{}`, never `null` and never a bare map.
+	var third categorizedThird
+	if err := json.Unmarshal(rawStreams[0].Values[0][2], &third); err != nil {
+		t.Fatalf("decode third element: %v (raw: %s)", err, rawStreams[0].Values[0][2])
+	}
+	if third.StructuredMetadata == nil {
+		t.Fatalf("structuredMetadata must be an empty object {}, got null/absent: %s", rawStreams[0].Values[0][2])
+	}
+	if len(third.StructuredMetadata) != 0 {
+		t.Fatalf("structuredMetadata must be empty for a metadata-free row, got %v", third.StructuredMetadata)
+	}
+}
+
 // TestQuery_MetricVector covers the metric-form query path: rate(...)
 // returns a "vector" result.
 func TestQuery_MetricVector(t *testing.T) {
@@ -608,7 +887,7 @@ func TestQuery_Streams_RespectsLimitParameter(t *testing.T) {
 	// (the second tuple slot in each value).
 	got := map[string]bool{}
 	for _, v := range streams[0].Values {
-		got[v[1]] = true
+		got[v.Line] = true
 	}
 	for _, want := range []string{"line-3", "line-4", "line-5"} {
 		if !got[want] {
@@ -773,7 +1052,7 @@ func TestQuery_Streams_RespectsForwardDirection(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, v := range streams[0].Values {
-		got[v[1]] = true
+		got[v.Line] = true
 	}
 	for _, want := range []string{"line-1", "line-2"} {
 		if !got[want] {

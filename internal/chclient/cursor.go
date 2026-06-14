@@ -2,6 +2,7 @@ package chclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -124,7 +125,21 @@ type rowsCursor struct {
 	// path that also calls Close).
 	closeOnce sync.Once
 	closeErr  error
+	// metadataProbed latches the one-time column-shape probe (see
+	// [rowsCursor.scanRow]). hasMetadata records whether the projection
+	// carries a fifth `Metadata` column — the Loki log-stream path — so
+	// the scan binds five destinations (…, &metadata) instead of four.
+	// Every metric query and the prom / tempo heads project four columns,
+	// leaving hasMetadata false and the scan byte-identical to before.
+	metadataProbed bool
+	hasMetadata    bool
 }
+
+// metadataColumn is the projection alias the Loki log-stream path appends
+// as a fifth column to carry per-row structured metadata (the OTel-CH
+// LogAttributes map) into [Sample.Metadata]. The shared cursor probes the
+// result-set columns for this name once and adapts its positional scan.
+const metadataColumn = "Metadata"
 
 // Next advances the cursor to the next row. Returns false when the
 // stream is exhausted or when a decode error occurred; in the error case
@@ -148,7 +163,29 @@ func (c *rowsCursor) Next() bool {
 	}
 	var s Sample
 	var labels map[string]string
-	if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
+	// metadataJSON receives the fifth `Metadata` column when present: the
+	// log-stream projection renders the filtered LogAttributes map via
+	// `toJSONString(...)`, so it scans as a plain `String` (a JSON object)
+	// rather than a raw `Map(String, String)`. A native Map column scans
+	// on prod ClickHouse but NOT under the chDB probe lane (chdb-go's
+	// Parquet driver can't cast a Map — see chdb_probe_test.go); the JSON
+	// string scans cleanly on both, and is json.Unmarshal'd back below.
+	var metadataJSON string
+	// Probe the result-set shape once: the Loki log-stream projection
+	// appends a fifth `Metadata` column, every other path projects four.
+	// driver.Rows.Columns() is stable across the stream, so latch the
+	// decision on the first row and bind the scan accordingly.
+	if !c.metadataProbed {
+		cols := c.rows.Columns()
+		c.hasMetadata = len(cols) > 0 && cols[len(cols)-1] == metadataColumn
+		c.metadataProbed = true
+	}
+	if c.hasMetadata {
+		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value, &metadataJSON); err != nil {
+			c.err = fmt.Errorf("chclient: scan: %w", err)
+			return false
+		}
+	} else if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
 		c.err = fmt.Errorf("chclient: scan: %w", err)
 		return false
 	}
@@ -172,8 +209,37 @@ func (c *rowsCursor) Next() bool {
 		return false
 	}
 	s.Labels = c.internLabels(labels)
+	// Per-row structured metadata is genuinely distinct per log line
+	// (durations, byte counts, query ids), so it is NOT interned — unlike
+	// the series-identity Labels map. The fifth column arrives as a JSON
+	// object string (`toJSONString` of the filtered LogAttributes map);
+	// decode it back to a map. An empty / `{}` payload leaves Metadata
+	// nil, so [StreamValue.MarshalJSON] falls back to the two-element
+	// `[ts, line]` tuple. Left nil entirely on the four-column path.
+	if metadata := decodeMetadataJSON(metadataJSON); len(metadata) > 0 {
+		s.Metadata = metadata
+	}
 	c.cur = s
 	return true
+}
+
+// decodeMetadataJSON parses the `toJSONString(<Map>)` payload of the
+// Loki log-stream `Metadata` column back into a `map[string]string`. An
+// empty string, a `{}` object, or a JSON null all decode to an empty
+// map, so a row whose filtered LogAttributes were empty surfaces no
+// structured metadata. A decode error is swallowed to a nil map rather
+// than failing the whole stream — a malformed metadata object should
+// never take down an otherwise valid log query; the handler simply emits
+// the two-element `[ts, line]` tuple for that entry.
+func decodeMetadataJSON(s string) map[string]string {
+	if s == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 // internLabels returns the canonical shared map instance for the

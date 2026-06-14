@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -213,9 +214,10 @@ type detectedFieldView struct {
 // lokiEnvelopeView is the Loki query-API envelope Grafana's Loki
 // datasource backend decodes from /loki/api/v1/query_range.
 type lokiEnvelopeView struct {
-	ResultType string
-	Matrix     []matrixSeriesView
-	Streams    []streamView
+	ResultType    string
+	EncodingFlags []string
+	Matrix        []matrixSeriesView
+	Streams       []streamView
 }
 
 type matrixSeriesView struct {
@@ -224,8 +226,86 @@ type matrixSeriesView struct {
 }
 
 type streamView struct {
-	Stream map[string]string `json:"stream"`
-	Values [][2]string       `json:"values"`
+	Stream map[string]string   `json:"stream"`
+	Values [][]json.RawMessage `json:"values"`
+}
+
+// checkStreamValueArity validates each stream value tuple against the
+// EXACT shape Grafana's strict response parser
+// (pkg/promlib/converter.readResult) accepts for the negotiated mode.
+// The contract is arity-precise, not a range — Grafana branches on the
+// `categorize-labels` encoding flag alone and then reads a fixed tuple
+// shape from EVERY value:
+//
+//   - non-categorized (`readStream`): exactly two elements `[ts, line]`.
+//     A stray third element 400s with `ReadArray: expect [ or , or ] or
+//     n, but found {` — the #908 plain-query break.
+//   - categorized (`readCategorizedStream`): exactly three elements
+//     `[ts, line, {…}]`. After the line the parser unconditionally calls
+//     `iter.ReadArray()` + `readCategorizedStreamField`, so a TWO-element
+//     value (closing `]` where the object is expected) 400s with
+//     `ReadObject: expect { or , or } or n, but found ]` — the #908
+//     shard-smoke break (run 27503329607). The third element MUST be a
+//     JSON object; `readCategorizedStreamField` reads its `structuredMetadata`
+//     / `parsed` sub-objects, so a non-object (array / string / null)
+//     third element also breaks the parser.
+func checkStreamValueArity(streams []streamView, categorized bool) error {
+	wantArity := 2
+	if categorized {
+		wantArity = 3
+	}
+	for si, s := range streams {
+		for vi, val := range s.Values {
+			if len(val) != wantArity {
+				return fmt.Errorf(
+					"stream[%d] value[%d] has %d elements, want exactly %d (categorize-labels=%t) — Grafana's readResult reads a fixed-arity tuple from every value, a mismatch 400s its parser",
+					si, vi, len(val), wantArity, categorized,
+				)
+			}
+			if categorized {
+				if err := checkCategorizedThird(val[2]); err != nil {
+					return fmt.Errorf("stream[%d] value[%d]: %w", si, vi, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkCategorizedThird validates the third element of a categorized
+// stream value against what Grafana's readCategorizedStreamField reads:
+// a JSON object whose recognised keys are `structuredMetadata` and/or
+// `parsed`, each mapping to a flat `{string: string}` label set. An empty
+// `{}` is valid (a metadata-free row still carries the envelope). A bare
+// metadata map (`{"thread":"x"}` instead of `{"structuredMetadata":{…}}`)
+// is rejected: the converter would read those keys as label-type fields,
+// not as metadata, so the columns would never surface — exactly the
+// "zero 3-tuples / no columns" symptom #908's loki_explore_columns guard
+// caught.
+func checkCategorizedThird(raw json.RawMessage) error {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return fmt.Errorf("categorized third element must be a JSON object, got %s: %w", truncate(raw, 80), err)
+	}
+	// At least one recognised envelope key must be present (an empty `{}`
+	// is allowed — it is the metadata-free row). Any OTHER top-level key
+	// means the producer emitted a bare metadata map instead of the
+	// categorized envelope.
+	for k, v := range obj {
+		switch k {
+		case "structuredMetadata", "parsed":
+			var labels map[string]string
+			if err := json.Unmarshal(v, &labels); err != nil {
+				return fmt.Errorf("categorized %q must be a {string:string} object, got %s: %w", k, truncate(v, 80), err)
+			}
+		default:
+			return fmt.Errorf(
+				"categorized third element carries unexpected top-level key %q — want only structuredMetadata/parsed; a bare metadata map (e.g. {%q:…}) is read as label-type fields, not metadata, so no columns surface",
+				k, k,
+			)
+		}
+	}
+	return nil
 }
 
 // promEnvelopeView is the Prometheus query-API envelope.
@@ -334,8 +414,9 @@ var decoders = map[string]decodeFunc{
 		var env struct {
 			Status string `json:"status"`
 			Data   struct {
-				ResultType string          `json:"resultType"`
-				Result     json.RawMessage `json:"result"`
+				ResultType    string          `json:"resultType"`
+				EncodingFlags []string        `json:"encodingFlags"`
+				Result        json.RawMessage `json:"result"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &env); err != nil {
@@ -344,7 +425,7 @@ var decoders = map[string]decodeFunc{
 		if env.Status != "success" {
 			return nil, fmt.Errorf("status = %q, want success; body: %s", env.Status, truncate(body, 300))
 		}
-		v := lokiEnvelopeView{ResultType: env.Data.ResultType}
+		v := lokiEnvelopeView{ResultType: env.Data.ResultType, EncodingFlags: env.Data.EncodingFlags}
 		switch env.Data.ResultType {
 		case "matrix", "vector":
 			if err := json.Unmarshal(env.Data.Result, &v.Matrix); err != nil {
@@ -353,6 +434,21 @@ var decoders = map[string]decodeFunc{
 		case "streams":
 			if err := json.Unmarshal(env.Data.Result, &v.Streams); err != nil {
 				return nil, fmt.Errorf("streams result decode: %w", err)
+			}
+			// Mirror Grafana's strict stream parser
+			// (promlib/converter.ReadPrometheusStyleResult): a stream value
+			// tuple is two-element `[ts, line]` UNLESS the response
+			// advertises the `categorize-labels` encoding flag, in which
+			// case it carries a categorized `{...}` third element. A bare
+			// third element WITHOUT the flag is exactly the #908 break —
+			// Grafana's `readStream` branch 400s on it with
+			// `ReadArray: expect [ or , or ] or n, but found {`. This guard
+			// catches that off-compose, where the lenient Go json.Unmarshal
+			// that previously decoded into [][2]string silently dropped the
+			// stray element.
+			categorized := slices.Contains(env.Data.EncodingFlags, "categorize-labels")
+			if err := checkStreamValueArity(v.Streams, categorized); err != nil {
+				return nil, err
 			}
 		default:
 			return nil, fmt.Errorf("resultType = %q, want matrix/vector/streams", env.Data.ResultType)
@@ -885,6 +981,59 @@ var predicates = map[string]predicateFunc{
 		}
 		if total < n {
 			return fmt.Errorf("total stream values = %d, want >= %d", total, n)
+		}
+		return nil
+	},
+	// encoding-flag: the streams response advertises the named
+	// encodingFlag (e.g. categorize-labels) so Grafana's converter takes
+	// the matching parser branch. The flag and the per-value arity are one
+	// contract — checkStreamValueArity already pins the arity; this pins
+	// the advertisement.
+	"encoding-flag": func(v any, arg string) error {
+		e, ok := v.(*lokiEnvelopeView)
+		if !ok {
+			return typeErr(v)
+		}
+		if !slices.Contains(e.EncodingFlags, arg) {
+			return fmt.Errorf("encodingFlags %v lacks %q", e.EncodingFlags, arg)
+		}
+		return nil
+	},
+	// categorized-metadata-min: at least n stream values carry a NON-EMPTY
+	// `structuredMetadata` object in their categorized third element. This
+	// is the off-compose mirror of the loki_explore_columns.spec.ts
+	// `at least one 3-tuple carries structured metadata` assertion — it
+	// fails if the producer advertised categorize-labels but never
+	// actually surfaced any metadata (the #908 shard-kiosk "ZERO 3-tuples"
+	// symptom).
+	"categorized-metadata-min": func(v any, arg string) error {
+		e, ok := v.(*lokiEnvelopeView)
+		if !ok {
+			return typeErr(v)
+		}
+		n, err := intArg(arg)
+		if err != nil {
+			return err
+		}
+		withMeta := 0
+		for _, s := range e.Streams {
+			for _, val := range s.Values {
+				if len(val) < 3 {
+					continue
+				}
+				var third struct {
+					StructuredMetadata map[string]string `json:"structuredMetadata"`
+				}
+				if err := json.Unmarshal(val[2], &third); err != nil {
+					continue
+				}
+				if len(third.StructuredMetadata) > 0 {
+					withMeta++
+				}
+			}
+		}
+		if withMeta < n {
+			return fmt.Errorf("stream values carrying non-empty structuredMetadata = %d, want >= %d", withMeta, n)
 		}
 		return nil
 	},

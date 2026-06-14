@@ -536,6 +536,14 @@ type Sample struct {
 	Labels     map[string]string
 	Timestamp  time.Time
 	Value      float64
+	// Metadata carries per-row structured metadata for Loki log-stream
+	// queries — the OTel-CH LogAttributes map surfaced as the third
+	// element of Loki's `[ts, line, {metadata}]` value tuple. It is
+	// populated only when the projection emits a fifth `Metadata` column
+	// (the log-stream path), and stays nil for every metric query and
+	// for the prom / tempo heads, whose four-column projections leave the
+	// shared cursor's 4-column scan path untouched.
+	Metadata map[string]string
 }
 
 // PeekBreakerState reports the circuit-breaker lifecycle phase as a stable

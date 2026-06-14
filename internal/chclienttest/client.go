@@ -15,6 +15,12 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
+// metadataColumn is the trailing projection alias the Loki log-stream
+// path appends to carry per-row structured metadata. It mirrors the
+// production rowsCursor's probe constant so this test double binds the
+// same five- vs four-destination scan off the result-set column shape.
+const metadataColumn = "Metadata"
+
 // Client is a chDB-backed implementation of the Querier interface each
 // handler defines (api/prom.Querier, api/loki.Querier, api/tempo.Querier).
 // All three are subsets of *chclient.Client's surface, so a single struct
@@ -114,18 +120,39 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 	}
 	defer func() { _ = rows.Close() }()
 
+	// Mirror the production rowsCursor metadata probe: the Loki log-stream
+	// projection appends a fifth `Metadata` column (a `toJSONString(<Map>)`
+	// JSON-object String), every other path projects four. Bind the scan
+	// to the column shape so the four-column metric / prom / tempo paths
+	// stay a four-destination scan and the log-stream path picks up the
+	// structured-metadata string.
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("chclienttest: columns: %w", err)
+	}
+	hasMetadata := len(cols) > 0 && cols[len(cols)-1] == metadataColumn
+
 	var out []chclient.Sample
 	for rows.Next() {
 		var (
-			name      string
-			attrsJSON string
-			ts        time.Time
-			value     float64
+			name         string
+			attrsJSON    string
+			ts           time.Time
+			value        float64
+			metadataJSON string
 		)
-		if err := rows.Scan(&name, &attrsJSON, &ts, &value); err != nil {
+		if hasMetadata {
+			if err := rows.Scan(&name, &attrsJSON, &ts, &value, &metadataJSON); err != nil {
+				return nil, fmt.Errorf("chclienttest: scan: %w", err)
+			}
+		} else if err := rows.Scan(&name, &attrsJSON, &ts, &value); err != nil {
 			return nil, fmt.Errorf("chclienttest: scan: %w", err)
 		}
 		labels, err := decodeMapJSON(attrsJSON)
+		if err != nil {
+			return nil, err
+		}
+		metadata, err := decodeMapJSON(metadataJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -134,6 +161,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 			Labels:     labels,
 			Timestamp:  ts,
 			Value:      value,
+			Metadata:   metadata,
 		})
 	}
 	if err := tolerantRowsErr(rows.Err()); err != nil {
