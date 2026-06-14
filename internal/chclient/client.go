@@ -192,15 +192,45 @@ type Config struct {
 //
 // Every CH-touching method (Ping, Exec, Query, QueryCursor, QueryStrings,
 // QueryMetricMeta, QueryIndexStats, QueryIndexVolume, QueryLabelSets) is
-// guarded by a per-Client circuit breaker (see breaker.go). When CH goes
-// dark the breaker trips after a short failure budget and methods return
+// guarded by a circuit breaker (see breaker.go). When CH goes dark the
+// breaker trips after a short failure budget and methods return
 // [ErrCircuitOpen] without dialling — the handler layer maps that into
 // HTTP 503 with a `Retry-After: 5` header so clients back off cleanly
 // instead of stacking inner-stage retries against a dead upstream.
+//
+// PER-HEAD ISOLATION (#94). A single *Client holds a registry of N
+// breakers, one per [Head] (prom / loki / tempo / probe), all sharing the
+// ONE driver.Conn pool. The data heads each get a distinct breaker via
+// [Client.ForHead]: a query storm that trips the prom head's breaker
+// fast-fails ONLY prom queries — loki and tempo keep their own CLOSED
+// breakers and serve normally, and the readiness probe runs through its own
+// HeadProbe breaker so /readyz stays GREEN. The shared driver.Conn means
+// this isolates the 503-CASCADE + pod-eviction blast radius, NOT pool / CH
+// server-side saturation (a fan-out that saturates CH can still slow the
+// other heads — pool-acquire-timeouts are breaker-neutral by design) and NOT
+// memory-cap (code-241) storms (those count as breaker SUCCESS). The breaker
+// `br` field selected by a Client view determines which head's breaker its
+// methods gate on; the bare *Client returned by [New] uses an unscoped
+// breaker so direct (non-ForHead) callers — schema preflight, tests —
+// behave exactly as a single-breaker Client did.
 type Client struct {
 	conn driver.Conn
 	addr string // CH addr (host:port) — stamped on execute spans as server.address
-	br   breaker
+
+	// br is the breaker the CH-touching methods on THIS view gate on. New
+	// sets it to an unscoped breaker; ForHead returns a shallow copy of the
+	// Client with br swapped for that head's registry entry. A pointer (not
+	// an embedded value) so a ForHead copy shares the SAME *breaker the
+	// registry holds — the copy is a lightweight view over the shared pool +
+	// the head's own breaker, never a second breaker.
+	br *breaker
+
+	// breakers is the immutable per-head breaker registry, built once in
+	// buildBreakers and never mutated afterward (so concurrent reads need no
+	// mutex; each *breaker keeps its own mu). Shared by every ForHead view
+	// of this Client so a head's breaker state is consistent across views.
+	breakers map[Head]*breaker
+
 	// maxSamples is Config.MaxQuerySamples, threaded into every cursor
 	// QueryCursor opens (and therefore into Query, which drains a
 	// cursor). 0 = unlimited.
@@ -214,6 +244,79 @@ type Client struct {
 	// every data-plane query via queryContext (overridable per-request,
 	// min'd, via WithQueryTimeout). 0 = setting not sent.
 	queryTimeout time.Duration
+}
+
+// buildBreakers constructs the per-head breaker registry shared by all of a
+// Client's ForHead views, plus the unscoped default breaker the bare Client
+// gates on. Both New and the test-only newWithConn route through here so
+// neither can ship a Client with a nil breaker (a nil br nil-derefs on the
+// first allow()). The telemetry set is built once and SHARED across every
+// breaker — one instrument pair, N head-labelled streams — so the zero-init
+// pass in newBreakerMetrics seeds all four heads from a single construction.
+//
+// Every head breaker inherits the same #95 tuning + disable config: per-head
+// disable / per-head thresholds are a future map-population detail, not a
+// structural change. metrics may be nil (the no-telemetry path) — the default
+// breaker and each head breaker then record nothing.
+func buildBreakers(
+	disabled bool,
+	threshold int,
+	window, openInterval time.Duration,
+	metrics *breakerMetrics,
+) (def *breaker, registry map[Head]*breaker) {
+	mk := func(h Head) *breaker {
+		th := threshold
+		// The readiness probe breaker trips on a tighter default budget so a
+		// total-CH outage flips /readyz red inside the k8s readinessProbe
+		// eviction window — the probe ping stream is low-rate (TTL-coalesced),
+		// so the looser data-head budget would trip too slowly. An explicit
+		// operator override (threshold != 0) wins for every head, including
+		// probe; this only fills the zero-value default.
+		if h == HeadProbe && th == 0 {
+			th = probeBreakerThreshold
+		}
+		return &breaker{
+			disabled:     disabled,
+			threshold:    th,
+			window:       window,
+			openInterval: openInterval,
+			head:         h,
+			metrics:      metrics,
+		}
+	}
+	registry = make(map[Head]*breaker, len(allHeads))
+	for _, h := range allHeads {
+		registry[h] = mk(h)
+	}
+	// The default (unscoped) breaker fronts a bare *Client used without
+	// ForHead — schema preflight, tests, the startup ping. It carries no
+	// head label so it never pollutes a per-head series; direct callers see
+	// exactly the pre-#94 single-breaker behaviour.
+	def = mk("")
+	return def, registry
+}
+
+// ForHead returns a lightweight Client VIEW that gates its CH-touching
+// methods on the breaker for head h while sharing this Client's ONE
+// connection pool (and the rest of its config). It is the seam that isolates
+// a head's fast-fail blast radius (#94): cmd/cerberus hands each API head its
+// own ForHead view, so prom.New(client.ForHead(HeadProm)), loki.New(...
+// HeadLoki ...), tempo.New(... HeadTempo ...), and health.New(Pinger:
+// client.ForHead(HeadProbe)) each get a DISTINCT breaker over the SAME pool.
+//
+// The returned *Client satisfies every head's narrow Querier interface
+// unchanged (same method set as the parent) — no interface churn. An unknown
+// head is a wiring bug: ForHead panics rather than minting a garbage-keyed
+// breaker, so a typo can never silently route a head to a nil / shared
+// breaker at request time.
+func (c *Client) ForHead(h Head) *Client {
+	br, ok := c.breakers[h]
+	if !ok {
+		panic("chclient: ForHead: unknown head " + string(h))
+	}
+	view := *c // shallow copy: shares conn + breakers registry + config
+	view.br = br
+	return &view
 }
 
 // New opens a connection pool to ClickHouse. Construction is lazy:
@@ -265,24 +368,26 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("chclient: open: %w", err)
 	}
+	// Per-head breaker registry (#94) sharing one telemetry set (#95 tuning
+	// + disable config flows to every head). Zero tuning fields resolve to
+	// the GA defaults inside each breaker (resolveThreshold / resolveWindow /
+	// resolveOpenInterval), so a bare Config — notably the ones tests build —
+	// keeps the pre-#95 hardcoded behaviour byte-for-byte. The telemetry set
+	// is wired off the global MeterProvider and zero-initialised at
+	// construction for all four heads so a healthy replica exports a flat
+	// closed/0 series per head instead of "No data" — see breaker_metrics.go.
+	def, registry := buildBreakers(
+		cfg.BreakerDisabled,
+		cfg.BreakerThreshold,
+		cfg.BreakerWindow,
+		cfg.BreakerOpenInterval,
+		newGlobalBreakerMetrics(),
+	)
 	return &Client{
-		conn: conn,
-		addr: cfg.Addr,
-		// Breaker tuning (#95). Zero fields resolve to the GA defaults
-		// inside the breaker (resolveThreshold / resolveWindow /
-		// resolveOpenInterval), so a bare Config — notably the ones tests
-		// build — keeps the pre-#95 hardcoded behaviour byte-for-byte.
-		br: breaker{
-			disabled:     cfg.BreakerDisabled,
-			threshold:    cfg.BreakerThreshold,
-			window:       cfg.BreakerWindow,
-			openInterval: cfg.BreakerOpenInterval,
-			// Wire the transition telemetry (state gauge + trips counter)
-			// off the global MeterProvider. Zero-initialised at
-			// construction so a healthy replica's breaker exports a flat
-			// closed/0 series instead of "No data" — see breaker_metrics.go.
-			metrics: newGlobalBreakerMetrics(),
-		},
+		conn:         conn,
+		addr:         cfg.Addr,
+		br:           def,
+		breakers:     registry,
 		maxSamples:   cfg.MaxQuerySamples,
 		maxMemory:    cfg.MaxQueryMemoryBytes,
 		queryTimeout: cfg.QueryTimeout,
@@ -374,7 +479,13 @@ func (c *Client) Conn() driver.Conn {
 //
 //nolint:revive // test-only seam; production code must use New.
 func newWithConn(conn driver.Conn) *Client {
-	return &Client{conn: conn}
+	// Route through buildBreakers so the test seam gets the SAME per-head
+	// registry + a non-nil default breaker production New does — otherwise
+	// br is nil and the first allow() nil-derefs in the chaos / integration
+	// tests. nil metrics = the no-telemetry path (these tests assert breaker
+	// state via currentState(), not via the metric label).
+	def, registry := buildBreakers(false, 0, 0, 0, nil)
+	return &Client{conn: conn, br: def, breakers: registry}
 }
 
 // Close releases all pooled connections.
