@@ -90,18 +90,20 @@ these connection inputs.
 
 ## Connection pool
 
-These reproduce clickhouse-go/v2's previously-implicit pool defaults verbatim,
-made explicit so the sharded-pushdown solver can raise the ceiling for fan-out
-rather than inherit a hidden driver default. When the pool is exhausted an
-acquire blocks up to `CERBERUS_CH_DIAL_TIMEOUT` and then fails with a
-breaker-neutral acquire-timeout (a local pool-sizing signal, not a
+The connection-count defaults reproduce clickhouse-go/v2's previously-implicit
+pool sizing verbatim, made explicit so the sharded-pushdown solver can raise the
+ceiling for fan-out rather than inherit a hidden driver default. The
+connection-lifetime default departs deliberately (see the row below) so a stale
+conn to a restarted ClickHouse backend is recycled fast. When the pool is
+exhausted an acquire blocks up to `CERBERUS_CH_DIAL_TIMEOUT` and then fails with
+a breaker-neutral acquire-timeout (a local pool-sizing signal, not a
 ClickHouse-health failure).
 
-| Variable                        | Type     | Default | Description                                                        |
-| ------------------------------- | -------- | ------- | ------------------------------------------------------------------ |
-| `CERBERUS_CH_MAX_OPEN_CONNS`    | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.    |
-| `CERBERUS_CH_MAX_IDLE_CONNS`    | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.      |
-| `CERBERUS_CH_CONN_MAX_LIFETIME` | duration | `1h`    | Max age of a pooled connection before it is recycled. Must be > 0. |
+| Variable                        | Type     | Default | Description                                                                                                                                                                           |
+| ------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_MAX_OPEN_CONNS`    | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.                                                                                                                       |
+| `CERBERUS_CH_MAX_IDLE_CONNS`    | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.                                                                                                                         |
+| `CERBERUS_CH_CONN_MAX_LIFETIME` | duration | `5m`    | Max age of a pooled connection before it is recycled. Kept short (vs the driver's 1h) so a stale conn to a restarted ClickHouse pod is recycled in minutes, not an hour. Must be > 0. |
 
 ## Query limits and memory
 

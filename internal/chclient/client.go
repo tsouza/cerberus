@@ -108,6 +108,21 @@ type Config struct {
 	// before the driver recycles it. clickhouse-go's implicit default is
 	// 1h; cerberus makes it explicit. Zero falls back to
 	// defaultConnMaxLifetime.
+	//
+	// It doubles as the recovery-speed ceiling for a restarted ClickHouse
+	// backend (ch-pod-kill, run 27509796946). clickhouse-go (v2.46.0) has
+	// no separate idle-time knob: a pooled conn to the OLD pod is dropped
+	// at acquire only once acquire()'s isBad() check trips — either the
+	// non-blocking socket read in conn_check.go notices the dead peer, OR
+	// the conn crosses ConnMaxLifetime (isBad checks both). A force-killed
+	// pod often leaves the socket in ESTABLISHED with no FIN/RST, so the
+	// socket check passes and the conn is only retired once it ages past
+	// ConnMaxLifetime — which at the 1h default is far too long. The
+	// transport-retry on the data path (see retry.go) makes a stale conn
+	// transparent on the FIRST query regardless of this value; this cap is
+	// the backstop that bounds how long a never-queried idle stale conn can
+	// otherwise loiter, so a modest value (minutes, not an hour) keeps the
+	// pool self-healing without churning conns under healthy load.
 	ConnMaxLifetime time.Duration
 
 	// MaxQuerySamples caps the number of Sample rows a single query may
@@ -532,7 +547,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if !c.br.allow() {
 		return fmt.Errorf("chclient: ping: %w", ErrCircuitOpen)
 	}
-	err := c.conn.Ping(ctx)
+	err := c.pingOpen(ctx)
 	c.br.record(ctx, err)
 	if err != nil {
 		return fmt.Errorf("chclient: ping: %w", err)
@@ -656,7 +671,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -710,7 +725,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -762,7 +777,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -811,7 +826,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -862,7 +877,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -905,7 +920,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -969,7 +984,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -1014,7 +1029,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
@@ -1062,7 +1077,7 @@ func (c *Client) QueryNameTypePairs(ctx context.Context, sql string, args ...any
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.conn.Query(ctx, sql, args...)
+	rows, err := c.queryOpen(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
