@@ -1409,6 +1409,8 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerLabelReplace(c, s, ctx)
 	case "label_join":
 		return lowerLabelJoin(c, s, ctx)
+	case "info":
+		return lowerInfo(c, s, ctx)
 	case "time":
 		return lowerTime(c, s, ctx)
 	case "vector":

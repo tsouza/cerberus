@@ -239,6 +239,44 @@ SELECT
     0.0
 FROM numbers(40)`
 
+	// target_info companion series for the two `up` targets (job=api /
+	// job=db). PromQL's `info(up)` enriches each `up` series with the
+	// data labels of the `target_info` series that shares its identity
+	// labels (instance / job) — here `version` + `language`. The showcase
+	// `info` panel renders `info(up)`, which the cerberus head lowers to a
+	// LEFT JOIN of `up` against `target_info` keyed on {instance, job}; the
+	// output is the two `up` series grown by `{version, language}`.
+	//
+	// `target_info` is conventionally a gauge that holds the constant 1.0;
+	// the value carries no meaning (only the label set does). Rolling
+	// re-seed discipline: 40 samples × 15 s centred on now64(9) so the
+	// info join's per-series-latest pick always lands a fresh row.
+	insertShowcaseTargetInfoSQL = `INSERT INTO otel_metrics_gauge
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'target_info',
+    'Target metadata',
+    '1',
+    map('job', 'api', 'version', '1.2.3', 'language', 'go'),
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    1.0
+FROM numbers(40)
+UNION ALL
+SELECT
+    map('service.name', 'db'),
+    'db',
+    'target_info',
+    'Target metadata',
+    '1',
+    map('job', 'db', 'version', '4.5.6', 'language', 'rust'),
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    1.0
+FROM numbers(40)`
+
 	// 600 samples at 1 s cadence cover a 10-minute window centred on
 	// the (current) seed timestamp: [seed_now - 300 s, seed_now + 299 s].
 	// The rolling re-seeder re-runs this INSERT every 30 s, so any 1m /
@@ -474,6 +512,9 @@ FROM numbers(40)`
 func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertGaugeSQL); err != nil {
 		return fmt.Errorf("gauge: %w", err)
+	}
+	if err := conn.Exec(ctx, insertShowcaseTargetInfoSQL); err != nil {
+		return fmt.Errorf("target_info: %w", err)
 	}
 	if err := conn.Exec(ctx, insertSumSQL); err != nil {
 		return fmt.Errorf("sum: %w", err)

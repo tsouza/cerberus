@@ -1,0 +1,52 @@
+-- query.promql --
+info(up)
+-- args --
+[0] string = "instance"
+[1] string = "job"
+[2] string = "__name__"
+[3] string = "up"
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 300000000000
+[9] string = "target_info"
+[10] string = "target.info"
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] string = "2026-01-01 00:00:01.000000000"
+[14] int64 = 9
+[15] int64 = 300000000000
+[16] string = "instance"
+[17] string = "instance"
+[18] string = "job"
+[19] string = "job"
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'db'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('job', 'db', 'version', '4.5.6'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["up", {"job": "api", "version": "1.2.3"}, "2026-01-01T00:00:00Z", 1.0],
+  ["up", {"job": "db", "version": "4.5.6"}, "2026-01-01T00:00:00Z", 0.0]
+]
+-- chplan --
+InfoJoin identity=[instance, job]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName IN ("target_info", "target.info")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT L.`MetricName` AS `MetricName`, mapConcat(mapFilter((k, v) -> NOT (k IN (?, ?, ?)), R.`Attributes`), L.`Attributes`) AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, L.`Value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) AS L LEFT JOIN (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) AS R ON L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?]

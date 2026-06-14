@@ -67,6 +67,12 @@ func allNodeKinds() []chplan.Node {
 		&chplan.MetricsHistogramOverTime{Attr: expr, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, GroupByDisplayNames: []string{"g"}, Inner: leaf},
 		&chplan.MetricsSecondStage{Input: leaf, K: 5, PartitionBy: []string{"p"}, ValueAlias: "v"},
 		&chplan.NestedSetAnnotate{Input: leaf, SpansTable: "spans", TraceIDColumn: "TraceId"},
+		&chplan.InfoJoin{
+			Input: leaf, Info: &chplan.Scan{Table: "info"},
+			IdentityLabels: []string{"instance", "job"}, DataLabels: []string{"version"},
+			MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
+			TimestampColumn: "TimeUnix", ValueColumn: "Value",
+		},
 	}
 }
 
@@ -109,7 +115,7 @@ func TestCloneNodeExhaustive(t *testing.T) {
 	// Lock-step guard: every concrete planNode() implementer in chplan must
 	// appear here. When this count drifts, a Node type was added — extend
 	// allNodeKinds AND the CloneNode switch in clone.go.
-	const wantNodeTypes = 28
+	const wantNodeTypes = 29
 	if len(nodes) != wantNodeTypes {
 		t.Fatalf("expected %d Node types, listed %d — a Node type was added: "+
 			"extend allNodeKinds + CloneNode", wantNodeTypes, len(nodes))

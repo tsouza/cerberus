@@ -127,6 +127,13 @@ func cloneCompositeNode(n Node) Node {
 		c.Right = CloneNode(v.Right)
 		c.Match.Labels = cloneStrings(v.Match.Labels)
 		return &c
+	case *InfoJoin:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.Info = CloneNode(v.Info)
+		c.IdentityLabels = cloneStrings(v.IdentityLabels)
+		c.DataLabels = cloneStrings(v.DataLabels)
+		return &c
 	case *NaryVectorSetOp:
 		return cloneNaryVectorSetOp(v)
 	case *HistogramQuantile:
