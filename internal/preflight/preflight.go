@@ -33,20 +33,26 @@
 //     column, an attribute map typed something other than
 //     Map(String, String)). These never self-heal, so they fail startup
 //     fast with an aggregated diff (every unmet requirement at once).
-//   - TRANSIENT — the configured tables are ENTIRELY ABSENT (system.columns
-//     reports zero rows for them): the schema has not been provisioned yet.
-//     This does NOT fail startup; cerberus boots but reports NOT READY on
-//     /readyz with a precise reason, and an external re-probe flips it ready
-//     once the writer creates the schema — no restart.
+//   - TRANSIENT — either (a) the configured tables are ENTIRELY ABSENT
+//     (system.columns reports zero rows for them): the schema has not been
+//     provisioned yet; or (b) ClickHouse is ENTIRELY UNREACHABLE at boot
+//     (the version / introspection probes fail with a transport / dial /
+//     connection-refused error — cerberus started before ClickHouse
+//     accepted connections). Neither is a misconfiguration: both heal on
+//     their own. This does NOT fail startup; cerberus boots but reports NOT
+//     READY on /readyz with a precise reason, and an external re-probe flips
+//     it ready once the server appears (and the schema exists) — no restart.
 //
-// Run returns a Result that carries both buckets separately. The caller
-// turns the fatal bucket into a non-zero exit and feeds the absent bucket
-// into the readiness machinery.
+// Run returns a Result that carries the buckets separately. The caller
+// turns the fatal bucket into a non-zero exit and feeds the absent /
+// unreachable buckets into the readiness machinery.
 package preflight
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -153,20 +159,46 @@ type Querier interface {
 //     non-empty AbsentTables with a nil Fatal is the transient "schema not
 //     yet provisioned" state: the caller boots NOT READY and re-probes
 //     rather than exiting.
+//   - Unreachable is set when a probe failed with a transport / dial /
+//     connection-refused error, i.e. ClickHouse is not yet accepting
+//     connections. Like AbsentTables this is transient (it self-heals once
+//     the server appears), so a Result with Unreachable set and a nil Fatal
+//     is the "boot ahead of ClickHouse" race: the caller boots NOT READY and
+//     re-probes rather than exiting. UnreachableErr carries the underlying
+//     transport error for the /readyz reason + logs.
 //
-// The two buckets are independent. A pass can report both (e.g. an old
-// server AND an absent table) — the Fatal bucket still wins (the caller
-// exits), because a too-old server never heals on its own.
+// The buckets are independent. A pass can report several (e.g. an old server
+// AND an absent table) — the Fatal bucket still wins (the caller exits),
+// because a too-old server never heals on its own. An unreachable server
+// short-circuits the shape gate (it cannot be introspected) so it never
+// coexists with a Fatal wrong-shape finding.
 type Result struct {
-	Fatal        error
-	AbsentTables []string
+	Fatal          error
+	AbsentTables   []string
+	Unreachable    bool
+	UnreachableErr error
 }
 
-// SchemaProvisioned reports whether no configured table is missing — i.e.
-// the schema is fully present (whatever its shape). The readiness wiring
-// consults this to decide whether to gate /readyz on a not-yet-provisioned
-// schema.
-func (r Result) SchemaProvisioned() bool { return len(r.AbsentTables) == 0 }
+// SchemaProvisioned reports whether the schema is fully present (whatever
+// its shape) AND ClickHouse was reachable enough to confirm it: no
+// configured table missing and no transport failure. The readiness wiring
+// consults this to decide whether to gate /readyz on a not-yet-ready
+// backend (an unreachable server can't have a confirmed-present schema).
+func (r Result) SchemaProvisioned() bool { return len(r.AbsentTables) == 0 && !r.Unreachable }
+
+// UnreachableReason renders a precise /readyz body reason for the
+// transport-failure case, e.g. "clickhouse not reachable: dial tcp
+// clickhouse:9000: connect: connection refused". Returns "" when the server
+// was reachable.
+func (r Result) UnreachableReason() string {
+	if !r.Unreachable {
+		return ""
+	}
+	if r.UnreachableErr != nil {
+		return fmt.Sprintf("clickhouse not reachable: %v", r.UnreachableErr)
+	}
+	return "clickhouse not reachable"
+}
 
 // AbsentReason renders the absent-tables list into a single precise reason
 // string for the /readyz body, e.g. "schema not yet provisioned: tables
@@ -201,11 +233,22 @@ func RunIfEnabled(ctx context.Context, enabled bool, q Querier, req Requirements
 // caller boot-but-wait on a not-yet-provisioned schema. Use RunIfEnabled
 // for the CERBERUS_REQUIREMENTS_CHECK gate.
 func Run(ctx context.Context, q Querier, req Requirements) Result {
-	var problems []string
-	problems = append(problems, checkVersion(ctx, q, req)...)
+	// Gate 1 (version) probes ClickHouse first. A transport failure here means
+	// the server isn't accepting connections yet — the boot-ahead-of-ClickHouse
+	// race. That's transient, not a misconfiguration, so short-circuit to an
+	// Unreachable Result rather than running the shape gate against a server
+	// that can't answer (and rather than mislabelling a dial error as fatal).
+	versionProblems, unreachable := checkVersion(ctx, q, req)
+	if unreachable != nil {
+		return Result{Unreachable: true, UnreachableErr: unreachable}
+	}
 
-	schemaProblems, absent := checkSchema(ctx, q, req)
-	problems = append(problems, schemaProblems...)
+	schemaProblems, absent, unreachable := checkSchema(ctx, q, req)
+	if unreachable != nil {
+		return Result{Unreachable: true, UnreachableErr: unreachable}
+	}
+
+	problems := append(versionProblems, schemaProblems...)
 
 	res := Result{AbsentTables: absent}
 	if len(problems) == 0 {
@@ -221,10 +264,64 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	return res
 }
 
+// isUnreachable reports whether err is a transport / connectivity failure
+// (ClickHouse not accepting connections yet) rather than a server-side
+// rejection. It prefers typed detection — a *net.OpError (dial / read / write
+// at the socket layer, e.g. connect: connection refused, no route to host)
+// or any net.Error reporting a timeout — over string matching, since the
+// clickhouse-go/v2 driver returns the raw dial error through its connection
+// acquire path (the chclient stage-prefix wrappers use %w, preserving the
+// chain). The named broad-substring fallback below only catches transport
+// failures the driver might wrap opaquely enough to defeat errors.As; it is
+// deliberately narrow to transport phrasing so a server-side error (a too-old
+// version rejection, a wrong-shape introspection result) never matches.
+func isUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return matchesTransportPhrase(err)
+}
+
+// transportPhrases are the lower-cased substrings that mark a connectivity
+// failure when the driver wraps the underlying error opaquely enough that
+// errors.As on *net.OpError / net.Error no longer reaches it. Kept narrow to
+// transport vocabulary so a server-side rejection never trips it.
+var transportPhrases = []string{
+	"connection refused",
+	"connection reset",
+	"no route to host",
+	"network is unreachable",
+	"no such host",
+	"i/o timeout",
+	"dial tcp",
+}
+
+// matchesTransportPhrase is the string-matching fallback for isUnreachable.
+func matchesTransportPhrase(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, p := range transportPhrases {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // checkVersion runs gate 1: it reads version() and compares the parsed
-// major.minor against the effective floor. An unreadable or unparseable
-// version is itself a failure (never a silent pass).
-func checkVersion(ctx context.Context, q Querier, req Requirements) []string {
+// major.minor against the effective floor. A TRANSPORT error (ClickHouse not
+// reachable) is returned as the second value so the caller short-circuits to
+// the transient Unreachable state; an unreadable-but-reachable response
+// (server-side query error, empty result, or unparseable / too-old version)
+// is a fatal problem (never a silent pass).
+func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []string, unreachable error) {
 	min := req.minVersion()
 	rateNote := "native rate disabled"
 	if req.NativeRateEnabled {
@@ -234,20 +331,23 @@ func checkVersion(ctx context.Context, q Querier, req Requirements) []string {
 	sql, args := chsql.NewQuery().Select(chsql.Call("version")).Build()
 	rows, err := q.QueryStrings(ctx, sql, args...)
 	if err != nil {
-		return []string{fmt.Sprintf("could not read clickhouse version: %v", err)}
+		if isUnreachable(err) {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("could not read clickhouse version: %v", err)}, nil
 	}
 	if len(rows) == 0 {
-		return []string{"clickhouse version query returned no rows"}
+		return []string{"clickhouse version query returned no rows"}, nil
 	}
 	raw := strings.TrimSpace(rows[0])
 	got, ok := parseCHVersion(raw)
 	if !ok {
-		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}
+		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}, nil
 	}
 	if !got.atLeast(min) {
-		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}
+		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // parseCHVersion extracts the leading major.minor from a ClickHouse
@@ -386,20 +486,27 @@ func nonEmpty(vals ...string) []string {
 // zero rows for, i.e. not yet provisioned. An entirely-absent table is
 // transient (the schema race), so it lands in the second slice and is NOT
 // a wrong-shape problem; a table that exists but has the wrong columns is.
-func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent []string) {
+func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent []string, unreachable error) {
 	seen := map[string]bool{}
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
 		}
 		seen[t.name] = true
-		probs, isAbsent := checkTable(ctx, q, req.Database, t)
+		probs, isAbsent, unreach := checkTable(ctx, q, req.Database, t)
+		if unreach != nil {
+			// A transport failure mid-introspection means the server dropped
+			// (or never came up): abandon the shape gate and report unreachable
+			// so the caller waits rather than recording a half-introspected
+			// schema as wrong-shape.
+			return nil, nil, unreach
+		}
 		problems = append(problems, probs...)
 		if isAbsent {
 			absent = append(absent, t.name)
 		}
 	}
-	return problems, absent
+	return problems, absent, nil
 }
 
 // checkTable introspects one table via system.columns and validates its
@@ -408,11 +515,15 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 //   - A table that reports ZERO columns is treated as absent (not yet
 //     provisioned): absent=true, no wrong-shape problem. The caller turns
 //     this into a transient NOT-READY state, not a boot failure.
-//   - A query error is itself fatal (it is not a clean "table missing"
-//     signal — the introspection failed) and is reported as a problem.
+//   - A TRANSPORT error (ClickHouse unreachable) is returned via the third
+//     value so the caller short-circuits to the transient Unreachable state —
+//     a dial failure is not a clean "table missing" signal, but it is just as
+//     transient as an absent table.
+//   - A non-transport query error is fatal (the introspection failed against
+//     a reachable server) and is reported as a problem.
 //   - Otherwise each missing column and each wrong attribute-map type is
 //     reported individually so the aggregated message is complete.
-func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems []string, absent bool) {
+func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems []string, absent bool, unreachable error) {
 	sql, args := chsql.NewQuery().
 		Select(chsql.Col("name"), chsql.Col("type")).
 		From(chsql.Qual("system", "columns")).
@@ -423,13 +534,16 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 		Build()
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
-		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, false
+		if isUnreachable(err) {
+			return nil, false, err
+		}
+		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, false, nil
 	}
 	if len(rows) == 0 {
 		// Entirely absent: the schema has not been provisioned yet. This is
 		// the transient startup race, not a misconfiguration — surface it as
 		// absent so the caller waits (NOT READY) rather than exiting.
-		return nil, true
+		return nil, true, nil
 	}
 
 	types := make(map[string]string, len(rows))
@@ -457,7 +571,7 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			))
 		}
 	}
-	return problems, false
+	return problems, false, nil
 }
 
 // normalizeType canonicalises a ClickHouse type string for comparison:
