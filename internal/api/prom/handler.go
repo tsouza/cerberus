@@ -264,6 +264,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cancel()
+	ctx = h.applyChaosSleep(ctx, r)
 
 	// Classify the expression once up front: scalar folds and string
 	// literals are answered in Go (no ClickHouse round-trip), and a
@@ -436,6 +437,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cancel()
+	ctx = h.applyChaosSleep(ctx, r)
 
 	// Parse up front: the expression type gate below and the scalar
 	// fold both need the AST. Mirrors upstream Prometheus's

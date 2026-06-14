@@ -36,9 +36,17 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
         sleep $(( attempt * 3 )); \
     done
 COPY . .
+# GO_BUILD_TAGS injects extra `go build -tags` into the cerberus binary
+# only. It defaults to EMPTY, so a normal `docker build` (compose-smoke,
+# dashboard e2e, every other lane) produces a stock binary with no
+# test-only code paths compiled in. The chaos e2e lane is the ONLY caller
+# that passes `--build-arg GO_BUILD_TAGS=chaos_sleep`, which links the
+# deterministic-sleep injection (see internal/chsql/chaos_sleep.go +
+# internal/api/prom/chaos_sleep.go). The seed binary never gets the tag.
+ARG GO_BUILD_TAGS=""
 RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus && \
+    CGO_ENABLED=0 go build -trimpath -tags "${GO_BUILD_TAGS}" -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/cerberus-seed ./test/e2e/seed/cmd/seed
 
 # Deterministic-fixture seeder image (compose `seed` service). Runs the

@@ -833,10 +833,18 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
-      # Reuse the e2e k3d bring-up VERBATIM (identical first steps to the
-      # dashboard job): cluster, cerberus:e2e image, manifests, host port
-      # maps (localhost:8080 cerberus), and live OTel data.
+      # Reuse the e2e k3d bring-up (same first steps as the dashboard job):
+      # cluster, cerberus:e2e image, manifests, host port maps
+      # (localhost:8080 cerberus), and live OTel data. The ONE difference
+      # from the dashboard job: CERBERUS_BUILD_TAGS=chaos_sleep links the
+      # deterministic-sleep injection (internal/{chsql,api/prom}/chaos_sleep.go)
+      # so ch-slow-query-timeout blocks ClickHouse for a fixed, substrate-
+      # independent duration instead of relying on brittle timing
+      # calibration. No other lane sets this tag, so production + the
+      # dashboard image never compile the sleep in.
       - name: Bring up k3d stack
+        env:
+          CERBERUS_BUILD_TAGS: chaos_sleep
         run: just e2e-up
 
       - name: Seed OTel data (deterministic synthetic rows; rolling)

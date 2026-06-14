@@ -128,12 +128,15 @@ function breakerStateName(v) {
   }
 }
 
-// ---- deliberately-expensive query (slow-query / admit-saturation) ----
+// ---- deliberately-expensive query (admit-saturation) -----------------
 //
-// Both the ch-slow-query-timeout and load-admit-saturation scenarios need a
-// query that is GENUINELY expensive to evaluate — heavy enough to blow the
-// (calibrated) CERBERUS_QUERY_TIMEOUT the chaos overlay sets (slow-query) or
-// to hold an admit slot long enough to overlap a concurrent burst (saturation).
+// The load-admit-saturation scenario needs a query that is GENUINELY
+// expensive to evaluate — heavy enough to hold an admit slot long enough to
+// overlap a concurrent burst. (ch-slow-query-timeout no longer uses this:
+// it drives a DETERMINISTIC server-side ClickHouse sleep via the chaos
+// header instead — see CHAOS_SLEEP_* above. Saturation keeps the real-
+// compute query because it must hold the slot under real work, not block on
+// a sleep that a timeout would abort mid-burst.)
 //
 // The cost MUST come from COMPUTE PER ANCHOR, not from anchor count. An
 // earlier version drove cost with a 30-day range at step=1s (~2.6M anchors),
@@ -176,6 +179,30 @@ const SLOW_QUERY_INNER_RANGE = '5m'; // each sub-anchor rate()s 5m of raw counte
 // dogfood loop happens to add — the seed shape is guaranteed in the k3d lane.
 const SLOW_QUERY_COUNTER = 'http_server_request_duration_count';
 const SLOW_QUERY_SERIES_MATCHER = '{job="api"}';
+
+// ---- deterministic chaos sleep (ch-slow-query-timeout) ----------------
+//
+// The ch-slow-query-timeout scenario no longer relies on a "naturally slow"
+// query: timing one is substrate-dependent (the stddev_over_time subquery
+// above measured ~650ms on compose but <250ms on k3d, so no static cap
+// separated it from a trivial query everywhere). Instead the chaos lane's
+// cerberus image is built with `-tags chaos_sleep`, and this scenario sends
+// an undocumented request header that splices a genuinely-blocking
+// server-side ClickHouse sleep into the emitted SQL — substrate-independent.
+//
+// CHAOS_SLEEP_HEADER names the seconds to sleep; CHAOS_SLEEP_SECONDS is set
+// well above the chaos overlay's CERBERUS_QUERY_TIMEOUT (5s) so the query
+// reliably times out on ANY substrate. The chaos build narrows the
+// ClickHouse-side max_execution_time to 3s (< the 5s Go deadline), so CH
+// aborts with code 159 (breaker-NEUTRAL) -> 503 errorType=timeout while the
+// breaker stays CLOSED. The trigger query itself is a trivial instant query;
+// only the header makes it slow, so the SAME query WITHOUT the header (and
+// any unrelated query) returns 200 in milliseconds.
+const CHAOS_SLEEP_HEADER = 'X-Cerberus-Chaos-Sleep-Seconds';
+const CHAOS_SLEEP_SECONDS = 10;
+// The trigger query is intentionally trivial — the sleep, not the query
+// shape, is what blocks. A bare instant `up` keeps the PromQL clean.
+const CHAOS_SLEEP_TRIGGER_QUERY = '/api/v1/query?query=up';
 
 // slowQueryPath builds the /api/v1/query_range path for the expensive
 // nested-subquery query. anchored to `now` so the outer window overlaps the
@@ -584,25 +611,38 @@ async function scenarioChPodKill() {
 // A slow query -> clean 503 errorType=timeout at the cap, breaker-NEUTRAL
 // (no trip, no 503 on unrelated heads), /readyz stays 200, slot+conn
 // released.
+//
+// The "slow" query is a TRIVIAL instant query carrying the undocumented
+// X-Cerberus-Chaos-Sleep-Seconds header, which (in the chaos_sleep-tagged
+// image only) splices a genuinely-blocking server-side ClickHouse sleep
+// into the emitted SQL. This makes the block DETERMINISTIC across compose
+// vs k3d — a fixed-duration server-side sleep, not a timing-calibrated
+// "heavy" query that ran fast on one substrate and slow on another.
+
+// SLOW_QUERY_BURST_TIMEOUT_MS bounds each slow request client-side. It must
+// exceed the server's wall-clock timeout (CERBERUS_QUERY_TIMEOUT=5s) plus
+// slack so the client sees the server's 503, not its own abort.
+const SLOW_QUERY_BURST_TIMEOUT_MS = 30_000;
+// The slow-query burst that must leave the breaker CLOSED.
+const SLOW_QUERY_BURST_COUNT = 4;
+
+// chaosSleepHeaders returns the per-request header map that triggers the
+// deterministic server-side sleep.
+function chaosSleepHeaders() {
+  return { [CHAOS_SLEEP_HEADER]: String(CHAOS_SLEEP_SECONDS) };
+}
+
 async function scenarioChSlowTimeout() {
   const failures = [];
 
   // Baseline breaker state before the slow burst.
   const baselineTrips = await queryBreakerMetric('cerberus_ch_breaker_trips_total');
 
-  // A heavy query_range whose cost comes from COMPUTE PER ANCHOR (a nested
-  // subquery fanned out at every outer anchor), not from anchor count — so
-  // it stays under the 11000-point resolution cap (which would 400 before
-  // the timeout arms) yet blows past the small, calibrated
-  // CERBERUS_QUERY_TIMEOUT (250ms) the chaos overlay set. The query is an
-  // UNCOLLAPSIBLE stddev_over_time (a per-anchor dispersion that can't fold
-  // to a constant), so its cost is real CH compute, not optimizer-foldable.
-  // See slowQueryPath / the SLOW_QUERY_* constants.
-  // ?timeout= mins with the cap; we lean on the configured cap.
-  const slowPath = slowQueryPath();
-
-  log('  fault: issuing a deliberately slow query_range (nested subquery, heavy per-anchor compute)...');
-  const slow = await httpGet(slowPath, { timeoutMs: 30_000 });
+  log(`  fault: issuing a trivial query with a ${CHAOS_SLEEP_SECONDS}s server-side chaos sleep (deterministic block)...`);
+  const slow = await httpGet(CHAOS_SLEEP_TRIGGER_QUERY, {
+    timeoutMs: SLOW_QUERY_BURST_TIMEOUT_MS,
+    headers: chaosSleepHeaders(),
+  });
   if (slow.status !== 503) {
     failures.push(`slow query should return 503 at the wall-clock cap; got ${slow.status} (body=${slow.body.slice(0, 200)})`);
   } else {
@@ -622,18 +662,25 @@ async function scenarioChSlowTimeout() {
     log('    /readyz stayed 200');
   }
 
-  // A separate FAST query still 200 (heads stay healthy; slot+conn released).
-  const fast = await httpGet('/api/v1/query?query=up');
+  // The SAME trigger query WITHOUT the chaos header still 200 in
+  // milliseconds — proof the sleep is opt-in per-request (no header => no
+  // sleep) and the slot + pooled conn from the slow query were released.
+  const fast = await httpGet(CHAOS_SLEEP_TRIGGER_QUERY);
   if (fast.status !== 200) {
-    failures.push(`a fast /api/v1/query?query=up must still 200 after the slow query (slot+conn released); got ${fast.status}`);
+    failures.push(`a fast /api/v1/query?query=up (no chaos header) must still 200 after the slow query (slot+conn released); got ${fast.status}`);
   } else {
-    log('    fast query still 200 (admit slot + pooled conn released)');
+    log('    fast query still 200 (no header => no sleep; admit slot + pooled conn released)');
   }
 
   // Burst of slow queries must NOT trip the breaker.
-  log('  bursting slow queries to confirm breaker stays CLOSED (breaker-neutral)...');
+  log('  bursting slow (chaos-sleep) queries to confirm breaker stays CLOSED (breaker-neutral)...');
   await Promise.all(
-    Array.from({ length: 4 }, () => httpGet(slowPath, { timeoutMs: 30_000 })),
+    Array.from({ length: SLOW_QUERY_BURST_COUNT }, () =>
+      httpGet(CHAOS_SLEEP_TRIGGER_QUERY, {
+        timeoutMs: SLOW_QUERY_BURST_TIMEOUT_MS,
+        headers: chaosSleepHeaders(),
+      }),
+    ),
   );
 
   // Heads must stay 200 (unrelated heads not 503'd by the timeout burst).

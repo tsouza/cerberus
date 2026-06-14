@@ -384,6 +384,14 @@ chdb-install:
 K3D_CLUSTER := "cerberus-e2e"
 CERBERUS_IMAGE := "cerberus:e2e"
 
+# Extra Go `-tags` baked into the cerberus image built by `e2e-up`. Empty
+# by default, so the dashboard e2e lane and any local `just e2e-up` build a
+# stock binary. ONLY the chaos lane sets CERBERUS_BUILD_TAGS=chaos_sleep
+# (via the `chaos` job in .github/workflows/e2e.yml) to link the
+# deterministic-sleep injection used by ch-slow-query-timeout. Threaded to
+# Dockerfile.local's GO_BUILD_TAGS build-arg.
+CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
+
 # External images referenced by test/e2e/k3s/*.yaml. Kept in sync with the
 # manifests by convention; a stale entry surfaces as a `Pending` /
 # `ImagePullBackOff` pod once that image is no longer pre-loaded. When you
@@ -429,8 +437,8 @@ e2e-up: e2e-down
         --k3s-arg "--disable=traefik@server:0" \
         {{K3D_EXTRA_ARGS}} \
         --wait
-    @echo "==> building cerberus image"
-    docker build -t {{CERBERUS_IMAGE}} -f Dockerfile.local .
+    @echo "==> building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
+    docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
     @echo "==> pre-pulling external images on host docker"
     @for img in {{E2E_EXTERNAL_IMAGES}}; do \
         echo "    docker pull $img"; \

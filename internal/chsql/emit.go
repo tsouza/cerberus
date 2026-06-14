@@ -59,8 +59,14 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 		return "", nil, err
 	}
 	sql := e.b.String()
+	// chaosSleepWrap is a no-op in every build except the chaos e2e
+	// lane's `chaos_sleep`-tagged image, where it splices a server-side
+	// ClickHouse sleep when the request ctx carries one (see
+	// chaos_sleep.go / chaos_sleep_stub.go). Production links the stub,
+	// so this is the identity transform.
+	sql, args := chaosSleepWrap(ctx, sql, e.args)
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, e.args, nil
+	return sql, args, nil
 }
 
 type emitter struct {
