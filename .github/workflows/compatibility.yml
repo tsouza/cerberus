@@ -126,9 +126,79 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # `gate` is the cheap-first tripwire. The compatibility harnesses are
+  # the most expensive PR lane (~8-10 min each, three Docker differential
+  # heads), so we DON'T want to burn that runner time when a trivial
+  # discipline-grep or a compile break would have failed the PR anyway.
+  # `gate` runs the same fast checks ci.yml's `forbid-skip` job runs
+  # (pure `git grep`, seconds) plus a `go build ./...` compile sanity
+  # check (~1-2 min with the module cache), and every expensive job below
+  # `needs: gate`. On a cheap-breakage PR the heavy heads are SKIPPED —
+  # which branch protection treats as satisfied, but that is safe because
+  # ci.yml's own `forbid-skip` / `check` go RED and block the merge. The
+  # gate only saves runner minutes; it never creates a merge hole. See
+  # the PR that introduced this for the full truth table.
+  #
+  # Docs-only short-circuit is preserved: `gate` itself is cheap enough
+  # to always run, and the heavy heads keep their own
+  # `needs.changes.outputs.docs_only != 'true'` guard, so a docs-only PR
+  # still skips them.
+  gate:
+    name: gate
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The discipline scans diff against origin/main, so we need
+          # both refs reachable (mirrors ci.yml's forbid-skip checkout).
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # The six discipline scans (pure `git grep` / `perl`, no Go
+      # toolchain) — byte-identical to ci.yml's `forbid-skip` job. These
+      # run first because they are the cheapest and the most common
+      # cause of a red PR.
+      - name: Reject t.Skip in test files
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: t-skip
+      - name: Reject "not implemented" / "skipped" / "deferred" in tests + fixtures
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: wording-tests
+      - name: Reject "not implemented" in production code
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: not-implemented
+      - name: Reject soft-assertion / silent-recover patterns
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: soft-assert
+      - name: Reject should_skip overlay entries
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: should-skip
+      - name: Reject test escape-hatch patterns
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: escape-hatch
+
+      # Compile sanity check. Far cheaper than `go test -race` (ci.yml's
+      # `check`), but catches a non-building tree before the Docker heads
+      # spin up — every head builds cerberus anyway.
+      - name: go build (compile sanity)
+        run: go build ./...
+
   prometheus:
     name: compatibility/prometheus
-    needs: changes
+    needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -345,7 +415,7 @@ jobs:
     # off the required-checks list avoids gating every unrelated PR on the
     # full forced-route corpus run.
     name: compatibility/prometheus-forced-route
-    needs: changes
+    needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -466,7 +536,7 @@ jobs:
     # This is a NORMAL CI job (not a branch-protection-required check) until
     # it has soaked on main — its green status on this PR is the proof.
     name: compatibility/promql-surface
-    needs: changes
+    needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -494,7 +564,7 @@ jobs:
 
   tempo:
     name: compatibility/tempo
-    needs: changes
+    needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -608,7 +678,7 @@ jobs:
 
   loki:
     name: compatibility/loki
-    needs: changes
+    needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
