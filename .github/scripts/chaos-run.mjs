@@ -61,6 +61,28 @@ const METRIC_SETTLE_DEADLINE_MS = 90_000; // OTLP flush lag before self-metrics 
 const POLL_INTERVAL_MS = 2_000;
 const SETTLE_INTERVAL_MS = 3_000;
 
+// cerberus_ch_breaker_state gauge encoding — mirrors the breakerGauge* consts
+// in internal/chclient/breaker_metrics.go (closed=0, open=1, half-open=2). The
+// chaos asserts key on CLOSED (0) as the only correct steady state for a
+// breaker-neutral fault; the labels make a failure message read truthfully
+// (a bare "got 2" misleads — 2 is HALF-OPEN, not a fresh trip).
+const BREAKER_STATE_CLOSED = 0;
+const BREAKER_STATE_OPEN = 1;
+const BREAKER_STATE_HALF_OPEN = 2;
+
+function breakerStateName(v) {
+  switch (v) {
+    case BREAKER_STATE_CLOSED:
+      return 'CLOSED';
+    case BREAKER_STATE_OPEN:
+      return 'OPEN';
+    case BREAKER_STATE_HALF_OPEN:
+      return 'HALF-OPEN';
+    default:
+      return `unknown(${v})`;
+  }
+}
+
 // ---- deliberately-expensive query (slow-query / admit-saturation) ----
 //
 // Both the ch-slow-query-timeout and load-admit-saturation scenarios need a
@@ -389,10 +411,10 @@ async function scenarioChPodKill() {
     log(`    cerberus_ch_breaker_trips_total == ${tripsSeen === null ? '(absent; OTLP lag / ephemeral-CH wipe, tolerated — trip already asserted via 503)' : tripsSeen}`);
   }
   const state = await queryBreakerMetric('cerberus_ch_breaker_state');
-  if (state !== null && state !== 0) {
-    failures.push(`cerberus_ch_breaker_state should be 0 (CLOSED) after recovery; got ${state}`);
+  if (state !== null && state !== BREAKER_STATE_CLOSED) {
+    failures.push(`cerberus_ch_breaker_state should be ${BREAKER_STATE_CLOSED} (CLOSED) after recovery; got ${state} (${breakerStateName(state)})`);
   } else {
-    log(`    cerberus_ch_breaker_state == ${state === null ? '(pending, tolerated)' : state}`);
+    log(`    cerberus_ch_breaker_state == ${state === null ? '(pending, tolerated)' : `${state} (${breakerStateName(state)})`}`);
   }
 
   // CH outage must NEVER restart cerberus.
@@ -812,10 +834,18 @@ async function scenarioLoadAdmitSaturation() {
     log('    cerberus_admit_rejected_total >= 1');
   }
   const stateAfter = await queryBreakerMetric('cerberus_ch_breaker_state');
-  if (stateAfter !== null && stateAfter !== 0) {
-    failures.push(`cerberus_ch_breaker_state should stay 0 under admit saturation (admit/pool rejections are breaker-neutral); got ${stateAfter}`);
+  if (stateAfter !== null && stateAfter !== BREAKER_STATE_CLOSED) {
+    // The gauge encodes closed=0 / open=1 / half-open=2 (breaker_metrics.go).
+    // Admit/pool rejections shed at the admission layer and never reach the
+    // breaker, so the only correct steady state here is CLOSED (0). A 2
+    // (HALF-OPEN) or 1 (OPEN) would mean a saturation shed leaked into the
+    // breaker — name the observed state so a future failure reads truthfully
+    // instead of the misleading bare "got 2".
+    failures.push(
+      `cerberus_ch_breaker_state must stay ${BREAKER_STATE_CLOSED} (CLOSED) under admit saturation — admit/pool rejections are breaker-neutral; got ${stateAfter} (${breakerStateName(stateAfter)})`,
+    );
   } else {
-    log(`    cerberus_ch_breaker_state == ${stateAfter === null ? `(pending; baseline ${baselineState})` : stateAfter} (breaker CLOSED)`);
+    log(`    cerberus_ch_breaker_state == ${stateAfter === null ? `(pending; baseline ${baselineState})` : `${stateAfter} (${breakerStateName(stateAfter)})`} (breaker CLOSED)`);
   }
 
   // After load drops, all heads 200.
@@ -847,13 +877,26 @@ async function endOfRunHealthGate() {
 
 // ---- scenario registry + driver --------------------------------------
 
+// `wipesCh: true` marks a scenario that destroys the ClickHouse pod. Because
+// CH runs `strategy: Recreate` on container-ephemeral storage
+// (test/e2e/k3s/clickhouse.yaml), the pod comes back EMPTY — every seeded
+// table is gone. The heal gate after such a scenario must RE-SEED before the
+// next scenario asserts, otherwise downstream queries hit `code:60 Unknown
+// table … otel_*`. The rolling seeder (e2e-seed-rolling) cannot do this: its
+// long-lived port-forward is bound to the killed pod and never reconnects, so
+// it writes into a dead socket for the rest of the run. The heal step issues a
+// one-shot `just e2e-reseed` through a FRESH port-forward instead.
 const PHASE1 = [
-  { name: 'ch-pod-kill', run: scenarioChPodKill },
+  { name: 'ch-pod-kill', run: scenarioChPodKill, wipesCh: true },
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
   { name: 'cerberus-pod-kill', run: scenarioCerberusPodKill },
 ];
 
 const PHASE2 = [
+  // ch-network-partition only blackholes egress with a NetworkPolicy; it never
+  // deletes the CH pod, so CH data survives — no re-seed needed after it. (On
+  // the k3d image where kube-router does not enforce NetworkPolicy this
+  // scenario records not-applicable; see scenarioChNetworkPartition.)
   { name: 'ch-network-partition', run: scenarioChNetworkPartition },
   { name: 'load-admit-saturation', run: scenarioLoadAdmitSaturation },
 ];
@@ -889,23 +932,75 @@ async function preflight() {
 }
 
 // healBetweenScenarios re-establishes the green-stack precondition each
-// scenario assumes. The lane is sequential and a CH-outage scenario tears CH
-// down (Recreate + ephemeral storage), so the NEXT scenario must not start
-// until /readyz + all heads are green again AND the data plane has had a
-// settle window for the rolling re-seed + OTLP re-export to repopulate the
-// freshly-recreated CH — otherwise a still-recovering stack from the prior
+// scenario assumes. The lane is sequential and a CH-destructive scenario tears
+// CH down (Recreate + ephemeral storage), so the NEXT scenario must not start
+// until /readyz + all heads are green again AND the data plane has been
+// REPOPULATED — otherwise a still-recovering or EMPTY stack from the prior
 // fault masquerades as the next scenario's failure (e.g. cerberus-pod-kill's
-// aggregate-success loop running while CH is mid-re-DDL). This implements the
-// heal-between-each-scenario invariant the lane's header documents.
-const HEAL_SETTLE_MS = 15_000; // rolling re-seed cadence (~30s) + OTLP flush headroom
-async function healBetweenScenarios(nextName) {
+// aggregate-success loop running while CH is empty, or ch-slow-query's nested
+// subquery 502'ing on a missing `otel_metrics_histogram` table). This
+// implements the heal-between-each-scenario invariant the lane's header
+// documents.
+//
+// CH recreates EMPTY (container-ephemeral storage), and the rolling seeder
+// cannot refill it: its long-lived port-forward died with the killed pod and
+// never reconnects. So after a `wipesCh` scenario the heal gate RE-SEEDS via a
+// one-shot `just e2e-reseed` (fresh port-forward, idempotent DDL + INSERTs),
+// then waits for the seeded fixtures to be visible through the Prom head
+// before clearing the gate. After a non-destructive scenario, CH data
+// survives and only a short settle window is needed.
+const HEAL_SETTLE_MS = 15_000; // OTLP flush headroom for a non-destructive scenario
+const RESEED_DEADLINE_MS = 120_000; // bound the `just e2e-reseed` one-shot (DDL + INSERTs + verify)
+const RESEED_VISIBLE_DEADLINE_MS = 90_000; // wait for the re-seeded `up` series to read back via the Prom head
+
+// reseedClickHouse runs the one-shot re-seed recipe (fresh port-forward,
+// idempotent DDL + fixture INSERTs + rowcount verify). Returns true on a
+// clean exit; logs + returns false otherwise. Bounded so a hung port-forward
+// can't stall the lane past its budget.
+function reseedClickHouse() {
+  log('  heal: re-seeding freshly-recreated (empty) ClickHouse via `just e2e-reseed`...');
+  const res = capture('just', ['e2e-reseed'], { timeout: RESEED_DEADLINE_MS });
+  if (res.stdout) log(res.stdout.trimEnd());
+  if (res.status !== 0) {
+    if (res.stderr) log(res.stderr.trimEnd());
+    return false;
+  }
+  return true;
+}
+
+async function healBetweenScenarios(nextName, priorScenario) {
   log(`heal gate: waiting for the stack to return green before scenario ${nextName}...`);
   const green = await assertStackGreen(CH_RECOVERY_DEADLINE_MS);
   if (!green) {
     return `heal gate before ${nextName}: stack did not return to /readyz 200 + all heads 200 within the recovery budget after the prior scenario`;
   }
-  // A short data-plane settle so the next scenario sees repopulated CH, not
-  // an empty freshly-recreated one (heads can be 200 on an empty table).
+
+  if (priorScenario && priorScenario.wipesCh) {
+    // CH came back empty — re-seed it before the next scenario asserts.
+    if (!reseedClickHouse()) {
+      return `heal gate before ${nextName}: re-seed of the recreated ClickHouse failed; downstream scenarios would query empty tables`;
+    }
+    // Confirm the seeded data is actually queryable through the Prom head
+    // before clearing the gate (heads can be 200 on an empty table, so a
+    // bare assertHeadsHealthy is not enough — assert the `up` series is back).
+    const visible = await pollUntil(
+      async () => {
+        const r = await httpGet('/api/v1/query?query=up');
+        if (r.status !== 200) return false;
+        const result = jsonField(r.body, 'data')?.result;
+        return Array.isArray(result) && result.length > 0;
+      },
+      { deadlineMs: RESEED_VISIBLE_DEADLINE_MS, label: 're-seed-visible' },
+    );
+    if (!visible) {
+      return `heal gate before ${nextName}: re-seeded data did not become queryable (\`up\` series absent) within budget after CH recreation`;
+    }
+    log('heal gate: ClickHouse re-seeded + data visible through the Prom head');
+    return null;
+  }
+
+  // Non-destructive prior scenario: CH data survived. A short data-plane
+  // settle absorbs OTLP flush lag before the next scenario asserts.
   await sleep(HEAL_SETTLE_MS);
   log('heal gate: stack green + settled');
   return null;
@@ -927,12 +1022,15 @@ async function main() {
     const s = scenarios[i];
     // Between scenarios (not before the first — preflight already gated it),
     // re-establish the green-stack precondition each scenario assumes. A
-    // prior CH-outage scenario leaves CH freshly recreated (ephemeral) and
-    // re-seeding; starting the next scenario on that still-recovering stack
-    // is what turned ch-pod-kill's CH wipe into ch-slow-query / cerberus-pod-
-    // kill failures (a 502 fast-query, a 72% aggregate-success loop).
+    // prior CH-DESTRUCTIVE scenario leaves CH freshly recreated (ephemeral)
+    // and EMPTY — the heal gate re-seeds it (the rolling seeder's tunnel died
+    // with the killed pod). Without the re-seed, ch-pod-kill's CH wipe turned
+    // into ch-slow-query / cerberus-pod-kill failures (a 502 fast-query, a
+    // sub-floor aggregate-success loop) because every later query hit empty
+    // tables. Pass the PRIOR scenario so the heal gate knows whether to
+    // re-seed.
     if (i > 0) {
-      const healFail = await healBetweenScenarios(s.name);
+      const healFail = await healBetweenScenarios(s.name, scenarios[i - 1]);
       if (healFail) {
         error(healFail);
         failed.push(`heal-gate-before-${s.name}`);

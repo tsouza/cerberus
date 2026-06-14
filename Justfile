@@ -505,6 +505,40 @@ e2e-seed:
             go run ./test/e2e/seed/cmd/seed
     @echo "==> seed done"
 
+# One-shot RE-seed through a fresh, self-contained port-forward — used by the
+# chaos lane's heal step after a CH-destructive scenario recreates ClickHouse
+# EMPTY (test/e2e/k3s/clickhouse.yaml: `strategy: Recreate`, no volumes ⇒
+# container-ephemeral storage). The rolling seeder's long-lived port-forward
+# (`e2e-seed-rolling`) is bound to a single backing pod, so `ch-pod-kill`
+# breaks that tunnel and it never reconnects — the rolling seeder then writes
+# into a dead socket for the rest of the run and CH stays empty, so every
+# downstream scenario fails with `code:60 Unknown table … otel_*`. This recipe
+# stands up its OWN throwaway forward on a DISTINCT local port (so it never
+# races the rolling forward's 19000 socket), re-applies the idempotent
+# OTel-CH DDL, re-inserts every fixture, verifies the rowcounts, and tears the
+# forward down — exactly the one-shot the seeder already performs on boot, so
+# a freshly-recreated empty CH is repopulated before the next scenario asserts.
+# Idempotent + re-runnable: the seeder's DDL is CREATE … IF NOT EXISTS and the
+# INSERTs re-anchor on now64(9), so running it against either an empty or an
+# already-populated CH is safe.
+#
+# One-shot re-seed of a recreated (empty) ClickHouse for the chaos heal step.
+e2e-reseed:
+    @echo "==> re-seeding OTel data (one-shot, fresh port-forward) after CH recreation"
+    @kubectl -n cerberus port-forward svc/clickhouse 19001:9000 > /tmp/cerberus-e2e-reseed-pf.log 2>&1 & \
+        pf_pid=$!; \
+        trap "kill $pf_pid 2>/dev/null || true" EXIT; \
+        for i in 1 2 3 4 5 6 7 8 9 10; do \
+            if nc -z 127.0.0.1 19001 2>/dev/null; then break; fi; \
+            sleep 1; \
+        done; \
+        CH_ADDR=127.0.0.1:19001 \
+        CH_DATABASE=otel \
+        CH_USERNAME=cerberus \
+        CH_PASSWORD=cerberus \
+            go run ./test/e2e/seed/cmd/seed
+    @echo "==> re-seed done"
+
 # Rolling seeder. Performs the same INSERTs as `e2e-seed` and then stays
 # alive, re-anchoring the metric/log windows on now64(9) every 30 s until
 # stopped via `just e2e-seed-stop` (or SIGTERM). Replaces the static-window

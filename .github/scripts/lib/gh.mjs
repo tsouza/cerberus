@@ -73,7 +73,9 @@ export function log(line = '') {
 
 // capture() — run a command, return { status, stdout, stderr }. Never
 // throws on a non-zero exit; the caller decides what a failure means.
-// `input` (Buffer|string) is fed to stdin when provided.
+// `input` (Buffer|string) is fed to stdin when provided. `timeout` (ms), when
+// set, bounds the run — spawnSync kills the child past the deadline and sets
+// res.error, which we surface as a non-zero { status }.
 export function capture(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: opts.encoding === undefined ? 'utf8' : opts.encoding,
@@ -81,9 +83,11 @@ export function capture(cmd, args, opts = {}) {
     input: opts.input,
     cwd: opts.cwd,
     env: opts.env ?? process.env,
+    timeout: opts.timeout,
+    killSignal: opts.killSignal,
   });
   if (res.error) {
-    return { status: 127, stdout: '', stderr: String(res.error.message) };
+    return { status: 127, stdout: res.stdout ?? '', stderr: String(res.error.message) };
   }
   return {
     status: res.status === null ? 1 : res.status,
