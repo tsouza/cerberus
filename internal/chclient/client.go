@@ -285,14 +285,26 @@ func buildBreakers(
 		}
 	}
 	registry = make(map[Head]*breaker, len(allHeads))
+	observed := make([]*breaker, 0, len(allHeads))
 	for _, h := range allHeads {
-		registry[h] = mk(h)
+		br := mk(h)
+		registry[h] = br
+		observed = append(observed, br)
 	}
 	// The default (unscoped) breaker fronts a bare *Client used without
 	// ForHead — schema preflight, tests, the startup ping. It carries no
 	// head label so it never pollutes a per-head series; direct callers see
-	// exactly the pre-#94 single-breaker behaviour.
+	// exactly the pre-#94 single-breaker behaviour. It is deliberately left
+	// OUT of the observed set so the state gauge emits exactly one series per
+	// real head (no head="" sample).
 	def = mk("")
+	// Register the observable-gauge callback now that the live per-head
+	// breakers exist (they post-date newBreakerMetrics). The callback reads
+	// each breaker's CURRENT state every collection interval, so the gauge
+	// always reflects reality and can never report a stale half-open after a
+	// breaker has closed. A nil metrics set (the no-telemetry path) makes this
+	// a no-op.
+	metrics.registerStateCallback(observed...)
 	return def, registry
 }
 

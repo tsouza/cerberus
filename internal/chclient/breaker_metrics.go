@@ -17,7 +17,7 @@ const breakerMeterName = "github.com/tsouza/cerberus/internal/chclient"
 
 // attrBreakerState labels the gauge with the lifecycle phase the gauge sample
 // corresponds to — "closed" / "open" / "half-open" — using the same stable
-// vocabulary peek() / currentState() return.
+// vocabulary peek() / currentState() / observeLevel() return.
 const attrBreakerState = attribute.Key("state")
 
 // attrBreakerHead labels every breaker sample with the logical head the
@@ -39,17 +39,27 @@ const (
 	breakerGaugeHalfOpen = 2
 )
 
-// breakerMetrics holds the OTel instruments a breaker fires on every state
-// transition. A nil *breakerMetrics is the "no telemetry" sentinel: the
+// breakerMetrics holds the OTel instruments the per-head breakers report
+// through. A nil *breakerMetrics is the "no telemetry" sentinel: the
 // zero-value breaker (and any breaker built without a MeterProvider) carries
 // nil and the fire helpers are no-ops, so the un-instrumented hot path pays
 // nothing. The production breaker, built in client.New, always carries a
 // non-nil set wired to the global MeterProvider.
 type breakerMetrics struct {
-	// state is a 0/1/2 gauge of the current lifecycle phase
-	// (closed/open/half-open). Recorded on every transition so a
-	// dashboard state-timeline tracks the breaker live.
-	state metric.Int64Gauge
+	// meter is retained so registerStateCallback can register the
+	// observable-gauge callback AFTER buildBreakers has minted the live
+	// per-head breakers the callback reads (the breakers don't exist yet at
+	// newBreakerMetrics time).
+	meter metric.Meter
+	// state is a 0/1/2 observable gauge of each head breaker's CURRENT
+	// lifecycle phase (closed/open/half-open). It is reported by a callback
+	// on every collection interval, reading each live breaker's current
+	// state, so the exported series always reflects the breaker's real state
+	// and can NEVER go stale — the failure mode of a synchronous gauge
+	// recorded only on transitions, which lingers at the last-transitioned
+	// value (e.g. a transient HALF-OPEN) long after the breaker has actually
+	// closed.
+	state metric.Int64ObservableGauge
 	// trips is the cumulative count of CLOSED->OPEN trips — the
 	// highest-blast-radius event (one trip 503s all three heads and
 	// flips /readyz). Monotonic counter so `increase(...[5m])` resolves
@@ -57,22 +67,24 @@ type breakerMetrics struct {
 	trips metric.Int64Counter
 }
 
-// newBreakerMetrics builds the breaker instrument set off mp and
-// zero-initialises both streams so the dashboard renders a flat 0 — not
-// "No data" — on a healthy replica whose breaker never trips.
+// newBreakerMetrics builds the breaker instrument set off mp. The trips
+// counter is zero-initialised per head so the dashboard renders a flat 0 — not
+// "No data" — on a healthy replica whose breaker never trips. The state gauge
+// is OBSERVABLE: it needs no zero-init because its callback (registered in
+// registerStateCallback once the breakers exist) reports every head's current
+// level on every collection interval, so the stream exists from the first
+// collection regardless of whether a transition ever fired.
 //
-// The zero-init mirrors internal/api/admit/admit.go's rejected_total
-// pre-registration: OTel synchronous instruments export NOTHING until their
-// first record/Add, so without seeding the trips counter and the closed-state
-// gauge at construction, a replica that stays CLOSED forever exports no
-// breaker stream at all and the "ClickHouse circuit breaker" panel shows
-// "No data" instead of a reassuring flat 0 / closed. Pre-registering at
-// construction is the standard Prometheus practice for series whose label set
-// is known in advance: the stream exists from process start, so rate() /
-// the state-timeline resolve immediately.
+// The trips zero-init mirrors internal/api/admit/admit.go's rejected_total
+// pre-registration: OTel synchronous counters export NOTHING until their first
+// Add, so without seeding the trips counter at construction, a replica that
+// stays CLOSED forever exports no trips stream at all and a rate() panel shows
+// "No data" instead of a reassuring flat 0. Pre-registering at construction is
+// the standard Prometheus practice for series whose label set is known in
+// advance.
 func newBreakerMetrics(mp metric.MeterProvider) *breakerMetrics {
 	meter := mp.Meter(breakerMeterName)
-	state, err := meter.Int64Gauge(
+	state, err := meter.Int64ObservableGauge(
 		"cerberus_ch_breaker_state",
 		metric.WithDescription(
 			"ClickHouse circuit-breaker lifecycle phase: "+
@@ -100,39 +112,52 @@ func newBreakerMetrics(mp metric.MeterProvider) *breakerMetrics {
 	if err != nil {
 		panic("chclient: build breaker trips counter: " + err.Error())
 	}
-	m := &breakerMetrics{state: state, trips: trips}
-	// Zero-init: seed the trips counter (so increase() has a baseline) and
-	// the gauge at the closed level (so the state-timeline starts CLOSED,
-	// not blank) — for EVERY head (#94). OTel sync instruments export
-	// nothing until their first record/Add, so without a per-head seed a
-	// healthy replica whose loki breaker never trips would export NO
-	// head="loki" series at all and a `sum by(head)` panel would silently
-	// miss the healthy heads. Seeding all four at construction makes every
-	// head's stream exist from process start. Both records happen before any
-	// transition fires.
+	m := &breakerMetrics{meter: meter, state: state, trips: trips}
+	// Zero-init the trips counter so increase() has a baseline — for EVERY
+	// head (#94). OTel sync counters export nothing until their first Add, so
+	// without a per-head seed a healthy replica whose loki breaker never trips
+	// would export NO head="loki" trips series at all and a `sum by(head)`
+	// panel would silently miss the healthy heads. The state gauge needs no
+	// such seed: its observable callback reports every head every interval.
 	for _, h := range allHeads {
 		m.trips.Add(context.Background(), 0, metric.WithAttributes(
 			attrBreakerHead.String(h.String()),
-		))
-		m.state.Record(context.Background(), breakerGaugeClosed, metric.WithAttributes(
-			attrBreakerHead.String(h.String()),
-			attrBreakerState.String("closed"),
 		))
 	}
 	return m
 }
 
-// recordState fires the state gauge for the phase the breaker (fronting head)
-// just entered. A nil receiver is the no-telemetry no-op for the zero-value
-// breaker.
-func (m *breakerMetrics) recordState(head Head, level int64, label string) {
+// registerStateCallback wires the observable-gauge callback that reports each
+// breaker's CURRENT lifecycle phase on every collection interval. It is called
+// by buildBreakers once the live per-head breakers exist (they post-date
+// newBreakerMetrics). A nil receiver is the no-telemetry no-op for the
+// zero-value breaker. The callback reads each breaker's state under the
+// breaker's own mutex (observeLevel), so it is safe to invoke concurrently
+// with breaker transitions — the gauge can never lag, reorder, or go stale
+// against the state field it mirrors.
+func (m *breakerMetrics) registerStateCallback(breakers ...*breaker) {
 	if m == nil {
 		return
 	}
-	m.state.Record(context.Background(), level, metric.WithAttributes(
-		attrBreakerHead.String(head.String()),
-		attrBreakerState.String(label),
-	))
+	_, err := m.meter.RegisterCallback(
+		func(_ context.Context, observer metric.Observer) error {
+			for _, b := range breakers {
+				level, label := b.observeLevel()
+				observer.ObserveInt64(m.state, level, metric.WithAttributes(
+					attrBreakerHead.String(b.head.String()),
+					attrBreakerState.String(label),
+				))
+			}
+			return nil
+		},
+		m.state,
+	)
+	if err != nil {
+		// Callback registration only fails on a misconfigured meter / a
+		// nil instrument; surface loudly rather than silently dropping the
+		// breaker's only state time-series.
+		panic("chclient: register breaker state callback: " + err.Error())
+	}
 }
 
 // recordTrip increments the CLOSED->OPEN trip counter for head. A nil receiver

@@ -15,7 +15,9 @@ import (
 
 // breakerGaugeLevels collects every cerberus_ch_breaker_state data point from
 // a manual-reader snapshot, keyed by its "state" attribute. The gauge is
-// last-value, so the map holds the most recent level recorded per label.
+// observable: its callback reports exactly one sample per breaker (the head's
+// CURRENT state) on each collection, so the map holds the live level per
+// state-label present in this snapshot.
 func breakerGaugeLevels(t *testing.T, reader *metric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -85,18 +87,22 @@ func breakerTripsTotal(t *testing.T, reader *metric.ManualReader) int64 {
 
 // TestBreakerMetrics_ZeroInitAtConstruction pins the anti-"No data" invariant:
 // both breaker streams exist at value 0 / closed the moment the breaker is
-// constructed, BEFORE any transition. OTel sync instruments export nothing
-// until their first record/Add, so without the zero-init in newBreakerMetrics
-// the "ClickHouse circuit breaker" dashboard panel would render "No data" on a
-// healthy replica whose breaker never trips. Mirrors admit.go's
-// rejected_total zero-init contract.
+// constructed, BEFORE any transition. The trips counter is zero-init'd at
+// construction (OTel sync counters export nothing until their first Add); the
+// state gauge is OBSERVABLE, so its callback reports every breaker's current
+// (closed) level on the first collection without needing a transition or a
+// seed. Without either, the "ClickHouse circuit breaker" dashboard panel would
+// render "No data" on a healthy replica whose breaker never trips.
 func TestBreakerMetrics_ZeroInitAtConstruction(t *testing.T) {
 	t.Parallel()
 	reader := metric.NewManualReader()
 	mp := metric.NewMeterProvider(metric.WithReader(reader))
 
-	// Construct the metric set; never drive a transition.
-	_ = newBreakerMetrics(mp)
+	// Construct the metric set + a CLOSED breaker, register the observable
+	// callback, but never drive a transition.
+	m := newBreakerMetrics(mp)
+	b := &breaker{head: HeadProm, metrics: m}
+	m.registerStateCallback(b)
 
 	if got := breakerTripsTotal(t, reader); got != 0 {
 		t.Errorf("trips_total before any trip: want 0, got %d", got)
@@ -104,10 +110,64 @@ func TestBreakerMetrics_ZeroInitAtConstruction(t *testing.T) {
 	levels := breakerGaugeLevels(t, reader)
 	got, ok := levels["closed"]
 	if !ok {
-		t.Fatalf("breaker_state: missing zero-init closed stream (panel would show No data)")
+		t.Fatalf("breaker_state: missing closed stream (panel would show No data)")
 	}
 	if got != breakerGaugeClosed {
 		t.Errorf("breaker_state closed: want %d at construction, got %d", breakerGaugeClosed, got)
+	}
+}
+
+// TestBreakerMetrics_ObservableNeverStale is the regression pin for the chaos
+// lane's last failure (dispatch 27508080750, ch-pod-kill): a breaker that
+// closes and then stops transitioning must report its CURRENT level (0/closed)
+// on a fresh collection, NOT linger at a transient half-open recorded earlier.
+// The pre-fix synchronous gauge, recorded only on transitions, kept exporting
+// the last-transitioned value (2/half-open) for minutes after the breaker had
+// actually closed, so an instant query read a stale 2. The observable callback
+// reads the live state every collection, so a CLOSED breaker reports 0 even
+// with no recent transition.
+func TestBreakerMetrics_ObservableNeverStale(t *testing.T) {
+	t.Parallel()
+	reader := metric.NewManualReader()
+	mp := metric.NewMeterProvider(metric.WithReader(reader))
+
+	base := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	now := base
+	m := newBreakerMetrics(mp)
+	b := &breaker{
+		head:         HeadProm,
+		threshold:    1,
+		openInterval: time.Second,
+		now:          func() time.Time { return now },
+		metrics:      m,
+	}
+	m.registerStateCallback(b)
+	failErr := errors.New("simulated CH outage")
+
+	// Drive the full oscillation CLOSED -> OPEN -> HALF-OPEN -> CLOSED so the
+	// most recent transition the pre-fix gauge would have recorded is the
+	// transient half-open (the value the chaos harness saw stuck at 2).
+	_ = b.allow()
+	b.record(context.Background(), failErr) // CLOSED -> OPEN
+	now = base.Add(1500 * time.Millisecond)
+	_ = b.allow()                       // OPEN -> HALF-OPEN (the transient 2)
+	b.record(context.Background(), nil) // HALF-OPEN -> CLOSED
+	if got := b.currentState(); got != "closed" {
+		t.Fatalf("after recovery: state = %q, want closed", got)
+	}
+
+	// Many collection intervals later, with NO further transition, the
+	// observable callback must still report the CURRENT level: 0/closed.
+	now = base.Add(5 * time.Minute)
+	levels := breakerGaugeLevels(t, reader)
+	if got, ok := levels["closed"]; !ok || got != breakerGaugeClosed {
+		t.Fatalf("stale-gauge regression: closed level = %d (ok=%v), want %d", got, ok, breakerGaugeClosed)
+	}
+	// Critically, NO half-open sample must survive: the pre-fix bug left a
+	// lingering 2. The observable gauge reports exactly one sample per head
+	// (the current state), so half-open must be absent entirely.
+	if _, ok := levels["half-open"]; ok {
+		t.Fatalf("stale-gauge regression: half-open sample lingers after breaker closed (the chaos-lane bug)")
 	}
 }
 
@@ -121,12 +181,15 @@ func TestBreakerMetrics_TransitionsRecorded(t *testing.T) {
 
 	base := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 	now := base
+	m := newBreakerMetrics(mp)
 	b := &breaker{
+		head:         HeadProm,
 		threshold:    1,
 		openInterval: time.Second,
 		now:          func() time.Time { return now },
-		metrics:      newBreakerMetrics(mp),
+		metrics:      m,
 	}
+	m.registerStateCallback(b)
 	failErr := errors.New("simulated CH outage")
 
 	// CLOSED -> OPEN (threshold 1).
