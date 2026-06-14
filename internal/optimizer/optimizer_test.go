@@ -303,6 +303,64 @@ var inputs = map[string]chplan.Node{
 		},
 	},
 
+	// pushdown_through_aggregate: the canonical metrics shape
+	// Project(Aggregate(Filter(Scan))) — the Project's pushdown stops at
+	// the Aggregate, so without the stage-aware arm the inner Scan still
+	// reads every column (`SELECT *`). The new arm fires on the Aggregate
+	// itself and narrows the Scan to the union of the GroupBy key refs
+	// (Attributes), the AggFunc arg refs (TimeUnix / Value), and the
+	// Filter predicate refs (MetricName) — exactly the columns the
+	// Aggregate + Filter emit consume.
+	"pushdown_through_aggregate": &chplan.Project{
+		Input: &chplan.Aggregate{
+			Input: &chplan.Filter{
+				Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+				Predicate: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.ColumnRef{Name: "MetricName"},
+					Right: &chplan.LitString{V: "up"},
+				},
+			},
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+			GroupByAliases: []string{"Attributes"},
+			AggFuncs: []chplan.AggFunc{
+				{Name: "max", Args: []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}}, Alias: "lwr_ts"},
+				{Name: "argMax", Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "Value"},
+					&chplan.ColumnRef{Name: "TimeUnix"},
+				}, Alias: "lwr_value"},
+			},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "Attributes"}, Alias: "Attributes"},
+			{Expr: &chplan.ColumnRef{Name: "lwr_ts"}, Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: "lwr_value"}, Alias: "Value"},
+		},
+	},
+
+	// pushdown_through_range_window: the matrix shape
+	// RangeWindow(Filter(Scan)) — the stage-aware arm fires on the
+	// RangeWindow and narrows the inner Scan to the union of the bare
+	// TimestampColumn / ValueColumn the windowed-array idiom reads, the
+	// GroupBy series-identity refs (Attributes), and the Filter predicate
+	// refs (MetricName). Drops the unread wide columns from the inner
+	// scan without touching the per-sample pair the window consumes.
+	"pushdown_through_range_window": &chplan.RangeWindow{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "http_requests_total"},
+			},
+		},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
 	// pushdown_select_wrap_carriers: the Tempo /api/search
 	// `| select(...)` wrap shape — Project(Filter(Scan)) where the
 	// selected attribute values ride INSIDE the canonical Attributes
