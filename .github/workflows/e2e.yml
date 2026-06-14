@@ -2,15 +2,22 @@ name: e2e
 
 # End-to-end test umbrella. Hosts both:
 #   - `compose-smoke` — repo-root quickstart compose stack smoke
-#     (`docker compose up --wait`) + Grafana Playwright catch-net.
+#     (`docker compose up --wait`) + Grafana Playwright catch-net,
+#     SHARDED across a balanced matrix of isolated-compose-stack jobs
+#     (compose-smoke-setup emits the matrix from the single-source-of-
+#     truth .github/scripts/compose-smoke-matrix.mjs; compose-smoke-shard
+#     runs each shard's specs against its own stack; the aggregator job
+#     literally named `compose-smoke` needs the matrix and gates on it).
 #     Runs on pull_request + push-to-main at SWEEP_DEPTH=lean (the
 #     required PR gate) and on the nightly schedule at
 #     SWEEP_DEPTH=full. The clickhouse / host / otelcol dashboards
 #     are compose-only surfaces (their receivers don't run in the
 #     k3d stack), so the nightly full-depth sweep of them has to
 #     happen HERE — the dashboard job can't cover them. Required
-#     status check on branch protection — DO NOT rename the job
-#     (the check name is pinned to `compose-smoke`).
+#     status check on branch protection — DO NOT rename the AGGREGATOR
+#     job (the check name is pinned to `compose-smoke`; the matrix
+#     children report as `compose-smoke-shard (shard-x)` and are NOT
+#     the gate).
 #   - `dashboard` — full-stack k3d + cerberus + Grafana + Playwright
 #     smoke. Runs on push-to-main + nightly + manual dispatch only.
 #     Informational on merges, not a PR gate; regressions are caught
@@ -182,45 +189,109 @@ jobs:
       - name: go build (compile sanity)
         run: go build ./...
 
-  compose-smoke:
-    name: compose-smoke
+      # compose-smoke shard partition coverage guard. The setup job's
+      # `verify` step is the load-bearing gate, but running the unit test
+      # here too catches a dropped / double-assigned spec on the cheapest
+      # tripwire — before any compose stack boots. ubuntu-latest ships node;
+      # the test imports only node: builtins + the matrix module's pure fns.
+      - name: compose-smoke shard coverage (unit guard)
+        run: node --test .github/scripts/compose-smoke-matrix.test.mjs
+
+  # compose-smoke is sharded into a balanced matrix of isolated-compose-stack
+  # jobs. The three heaviest specs are each a SINGLE async test() that loops
+  # internally over every dashboard/panel/surface — indivisible by Playwright's
+  # native --shard (which splits at test() granularity, leaving a one-test spec
+  # whole). The only real parallelism is LOGICAL: split the spec FILES across N
+  # jobs, each booting its OWN isolated compose stack, balanced by wall-clock
+  # weight. The partition + coverage assertion live in the single source of
+  # truth .github/scripts/compose-smoke-matrix.mjs — never hand-listed in YAML,
+  # so a new spec that isn't sharded is a HARD CI failure (verify step below),
+  # never a silent no-run.
+  #
+  # Topology:
+  #   compose-smoke-setup   — verify the partition covers every cohort spec,
+  #                           then emit the strategy.matrix JSON.
+  #   compose-smoke-shard   — the matrix; each shard boots its own stack and
+  #                           runs only its assigned specs.
+  #   compose-smoke         — the AGGREGATOR, named EXACTLY `compose-smoke` so
+  #                           the required-status-check context still appears
+  #                           and gates (matrix children report as
+  #                           `compose-smoke-shard (shard-x)`, not
+  #                           `compose-smoke`). Fails unless every shard passed.
+  #
+  # COST: N shards = N parallel compose builds/boots — billable minutes rise
+  # ~Nx, but wall-clock drops from the serial sum toward the longest shard.
+  # That latency win on the slowest required PR gate is the whole point.
+  compose-smoke-setup:
+    name: compose-smoke-setup
     needs: [changes, gate]
-    # Lane doctrine: PR + push run at SWEEP_DEPTH=lean (the required
-    # fast-feedback gate); the nightly schedule runs at
-    # SWEEP_DEPTH=full. The schedule lane exists because the
-    # clickhouse / host / otelcol dashboards are compose-only
-    # surfaces — the k3d dashboard job's collector intentionally
-    # doesn't run their receivers — so full-depth coverage of them
-    # has to live in this job. `needs.changes` only runs on
-    # pull_request, so we have to tolerate it being absent on
-    # push/schedule (always() unwraps the skip, and the docs-only
-    # short-circuit only applies on PR).
+    # Same trigger guard as the old monolith: PR (non-docs-only, gate green) /
+    # push / schedule. needs.changes only runs on pull_request, so tolerate it
+    # being absent on push/schedule (always() unwraps the skip).
     if: |
       always() &&
       (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
       (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
       (github.event_name != 'pull_request' || needs.gate.result == 'success')
     runs-on: ubuntu-latest
-    # Timeout is per-lane. PR/push run SWEEP_DEPTH=lean: the catch-net
-    # smoke + the iterate-* specs + the lean crawl (root + nav + one
-    # representative state per interaction control on the three
-    # drilldown roots) finish well under 45 min — that ceiling (was 30)
-    # absorbed the showcase-family kiosk renders (showcase-promql adds
-    # ~100 panel states to iterate-panel-kiosk alone).
-    #
-    # The nightly schedule runs SWEEP_DEPTH=full: the crawl spec alone
-    # BFS-walks every eligible surface AND drives every interactive
-    # control on each (the interaction sweep), which was observed at
-    # 50+ minutes wall-clock on its own — on top of the full-depth
-    # kiosk/browser-render passes of the other specs in this same job.
-    # 45 min cannot hold that; the full lane gets 120. The expression
-    # keeps the PR gate tight (fast feedback) while the nightly lane
-    # has the headroom the full-depth interaction sweep genuinely
-    # needs. Full-depth is NIGHTLY-ONLY by design — never a PR gate;
-    # see SWEEP_DEPTH below + docs/test-strategy.md (interaction sweep).
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Coverage gate FIRST: ::error:: + exit 1 if any compose-cohort spec is
+      # unassigned to a shard (the forbidden silent-coverage-gap) or any
+      # assigned/excluded entry is stale. Runs ~50ms, boots no stack — so a
+      # dropped spec costs seconds, not a 25-min stack boot running the wrong
+      # spec set. ubuntu-latest ships node; the module imports only node:
+      # builtins, so no setup-node step is needed.
+      - name: assert shard coverage of every compose-smoke spec
+        run: node .github/scripts/compose-smoke-matrix.mjs
+        env:
+          MODE: verify
+
+      # Emit the strategy.matrix JSON to $GITHUB_OUTPUT. emit re-runs the
+      # assertions internally, so even without the verify step above it can
+      # never ship a matrix that silently drops a spec.
+      - id: emit
+        name: emit shard matrix
+        run: node .github/scripts/compose-smoke-matrix.mjs
+        env:
+          MODE: emit
+
+  compose-smoke-shard:
+    name: compose-smoke-shard
+    needs: [changes, gate, compose-smoke-setup]
+    # Re-applies the same trigger guard AND requires setup to have cleanly
+    # emitted the matrix (a failed/skipped setup must not fan out shards).
+    if: |
+      always() &&
+      needs.compose-smoke-setup.result == 'success' &&
+      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.gate.result == 'success')
+    runs-on: ubuntu-latest
+    strategy:
+      # MANDATORY: one shard's failure must NOT cancel its siblings. The
+      # default (true) cancels in-flight shards into the ambiguous `cancelled`
+      # rollup, destroys their failure artifacts, and hides whether the others
+      # would also have failed. false => each shard runs to completion and the
+      # aggregator sees a clean `failure`.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.compose-smoke-setup.outputs.matrix) }}
+    # Per-lane AND now per-shard. PR/push run SWEEP_DEPTH=lean (required
+    # fast-feedback gate); the nightly schedule runs SWEEP_DEPTH=full. At full
+    # depth shard-crawl's single BFS test() is the ~50min long pole and needs
+    # the 120 ceiling; PR/push shards stay at 45. Because each shard is its own
+    # job, 45/120 is now per-shard wall-clock — more headroom than the old
+    # shared monolith, not less. See docs/test-strategy.md (interaction sweep).
     timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 45 }}
     concurrency:
-      group: compose-smoke-${{ github.ref }}
+      # Per-shard-keyed: sibling shards in the SAME run must not cancel each
+      # other (a shared group + cancel-in-progress would do exactly that), but
+      # a new push/PR-sync still cancels the prior run's matching shard.
+      group: compose-smoke-${{ github.ref }}-${{ matrix.name }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v6
@@ -296,7 +367,7 @@ jobs:
           fi
           npx playwright install --with-deps chromium
 
-      - name: playwright compose-grafana-smoke
+      - name: playwright compose-grafana-smoke (${{ matrix.name }})
         id: playwright_smoke
         working-directory: test/e2e/playwright
         env:
@@ -319,85 +390,24 @@ jobs:
           # test/e2e/playwright/playwright.config.ts.
           CRAWL_STACK: compose
         run: |
-          # Phase-1 panel-shape spec (iterate-panel-shape.spec.ts) runs
-          # alongside the catch-net smoke. It enumerates every
-          # provisioned dashboard, finds every aggregating panel
-          # target, and asserts the by(...) / without(...) label-shape
-          # rule against cerberus's /api/v1/query_range — pinning the
-          # N2/N11/N14 sweep findings so they can't silently regress.
-          #
-          # Phase-2 histogram-completeness spec
-          # (iterate-histogram-completeness.spec.ts) iterates the same
-          # dashboard surface but selects histogram_quantile(...)
-          # targets, asserts the underlying _bucket / _count / _sum
-          # companion series exist on the wire, and pins the
-          # no-fabricated-value rule for histogram_quantile over
-          # bucket-less metrics. Closes N5 / N6.
-          #
-          # Phase-3 filter-drill spec (iterate-filter-drill.spec.ts)
-          # rides the same dashboard enumeration: for every panel
-          # with a by(...) clause it re-fires the query with a
-          # `{<key>="<value>"}` matcher synthesised from a baseline-
-          # observed value and asserts the filtered series count is
-          # in (0, baseline] — the Q3-resolved subset rule. Pins
-          # N3/N15 (matcher-path drill regressions).
-          #
-          # Phase-4 single-panel-kiosk spec
-          # (iterate-panel-kiosk.spec.ts) iterates every provisioned
-          # dashboard + every panel, opens the panel in single-panel
-          # kiosk view (`?viewPanel=<id>&kiosk`), asserts the body
-          # renders, no role=alert error banner appears, and no
-          # browser console errors fire. ESCs back to the grid view
-          # and asserts the back-nav leaves no stuck-loading panel or
-          # orphaned modal behind. Closes N13 (latent).
-          #
-          # iterate-all-dashboards.spec.ts reads
-          # test/e2e/grafana/compose/dashboards/*.json at spec-build
-          # time, so it auto-adapts to whatever dashboards the
-          # provisioning directory carries. As the rich-observability
-          # rollout lands new dashboards (clickhouse, otelcol, host),
-          # the spec picks
-          # them up without an edit here.
-          #
-          # iterate-metrics-explorer.spec.ts enumerates every metric
-          # cerberus publishes and probes /api/v1/series for each.
-          # Pins the user's #8 sweep finding: the labels chip must not
-          # surface "Unable to fetch labels" for any published metric.
-          #
-          # crawl/ suite (P4/P5 — the deterministic Grafana crawler):
-          #   - crawl/crawl.spec.ts BFS-walks every same-origin surface
-          #     reachable from the Grafana root with universal per-page
-          #     oracles (console errors, datasource-API non-2xx +
-          #     tunneled errors, panel tri-state, crash banners) and
-          #     pins the visited set against
-          #     crawl/grafana-surface-inventory.compose.json. SWEEP_DEPTH
-          #     drives the lane: lean (PR gate) = root + nav + one
-          #     representative per drilldown app; full (this job's
-          #     nightly schedule run) = exhaustive BFS under a hard
-          #     page cap.
-          #   - crawl/dsquery.spec.ts replays consumer-grade queries
-          #     through POST /api/ds/query (the plugin BACKEND — a
-          #     decode layer the datasource-proxy probes never touch).
-          #   - crawl/lints.spec.ts carries the data-quality lints
-          #     (histogram degeneracy, identical-quantile-series).
-          npx playwright test \
-            compose_grafana_smoke.spec.ts \
-            iterate-panel-shape.spec.ts \
-            iterate-histogram-completeness.spec.ts \
-            iterate-filter-drill.spec.ts \
-            iterate-panel-kiosk.spec.ts \
-            iterate-all-dashboards.spec.ts \
-            iterate-metrics-explorer.spec.ts \
-            crawl/crawl.spec.ts \
-            crawl/dsquery.spec.ts \
-            crawl/lints.spec.ts \
-            --reporter=list
+          # The spec set for THIS shard is the space-joined list that
+          # .github/scripts/compose-smoke-matrix.mjs assigned to it (verified
+          # to be a total, disjoint cover of the cohort by the setup job). The
+          # specs themselves are unchanged — they enumerate every provisioned
+          # dashboard/panel/surface and assert the catch-net, panel-shape,
+          # histogram-completeness, filter-drill, kiosk, all-dashboards,
+          # metrics-explorer, and crawl (BFS + ds/query + lints) contracts.
+          # See docs/test-strategy.md (interaction sweep) for the per-spec map
+          # and the shard manifest for which spec lands on which shard.
+          npx playwright test ${{ matrix.specs }} --reporter=list
 
       - name: upload Playwright report on failure
         if: steps.playwright_smoke.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
-          name: compose-grafana-smoke-report
+          # Per-shard name — a static name 409s across the matrix
+          # (upload-artifact@v4+ rejects a second upload to a used name).
+          name: compose-grafana-smoke-report-${{ matrix.name }}
           path: |
             test/e2e/playwright/playwright-report
             test/e2e/playwright/test-results
@@ -421,6 +431,52 @@ jobs:
       - name: teardown
         if: always()
         run: docker compose down -v --remove-orphans
+
+  # The AGGREGATOR — named EXACTLY `compose-smoke` so the required
+  # branch-protection status-check context still appears and gates. The matrix
+  # children report as `compose-smoke-shard (shard-x)`, NOT `compose-smoke`;
+  # branch protection waits on `compose-smoke` specifically, so this job MUST
+  # exist and report green/red. DO NOT add the setup/shard job names to branch
+  # protection — only this aggregator is the gate.
+  compose-smoke:
+    name: compose-smoke
+    needs: [changes, gate, compose-smoke-setup, compose-smoke-shard]
+    # always() so it still runs (and reports) when setup/shards skipped — e.g.
+    # a docs-only PR, where the required context must still report green
+    # without doing work, exactly as the old monolith did.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: gate on every shard
+        run: |
+          echo "setup  = ${{ needs.compose-smoke-setup.result }}"
+          echo "shards = ${{ needs.compose-smoke-shard.result }}"
+          # Docs-only PR (or any path that skipped setup) → the required check
+          # must report green without work. A skipped setup means the matrix
+          # never fanned out; pass the gate through, mirroring the old job's
+          # docs-only short-circuit.
+          if [ "${{ needs.compose-smoke-setup.result }}" = "skipped" ]; then
+            echo "compose-smoke skipped (docs-only PR / gate not green / not applicable) — passing the required check."
+            exit 0
+          fi
+          # Otherwise setup must have succeeded and the matrix must be a clean
+          # success. A matrix exposes ONE rolled-up .result to dependents:
+          # `success` only if EVERY child succeeded; `failure` if any failed;
+          # `cancelled` if any was cancelled. The strict `!= 'success'` form
+          # catches failure AND cancelled AND skipped — `contains(…,'failure')`
+          # would miss `cancelled`, letting a cancelled shard set pass the
+          # required check silently. fail-fast:false keeps a real spec failure
+          # a clean `failure`, not an ambiguous `cancelled`.
+          if [ "${{ needs.compose-smoke-setup.result }}" != "success" ]; then
+            echo "::error::compose-smoke-setup did not succeed (${{ needs.compose-smoke-setup.result }})."
+            exit 1
+          fi
+          if [ "${{ needs.compose-smoke-shard.result }}" != "success" ]; then
+            echo "::error::one or more compose-smoke shards failed/cancelled (rolled-up: ${{ needs.compose-smoke-shard.result }})."
+            exit 1
+          fi
+          echo "all compose-smoke shards passed."
 
   dashboard:
     name: dashboard

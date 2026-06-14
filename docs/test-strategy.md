@@ -68,7 +68,7 @@ gate. Promoting a fail-on-parity gate to required is a tracked improvement.
 | `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)     | PR + push + nightly + dispatch      | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness)                                                                                                                                            |
 | `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus                                                                                                                                            |
 | `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus)                                                                                                                                                    |
-| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | PR + push + nightly                 | Required  | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                             |
+| `compose-smoke`                         | `e2e.yml` (`compose-smoke` aggregator over the `compose-smoke-shard` matrix) | PR + push + nightly                 | Required  | per-shard `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly), spec files balanced across isolated-stack shards (manifest: `.github/scripts/compose-smoke-matrix.mjs`) |
 | `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Info      | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                 |
 | `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`) | PR + push + nightly + dispatch      | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half) |
 | `perf-guards`                           | `chdb.yml` (`perf-guards`)                           | PR + push + nightly                 | Info      | `just perf-chdb` (`go test -tags chdb ./test/perf/...`): the cardinality / scale-wall ratchets, per-construct scaling harness, and cycle-guards (Layer 12 chdb lanes)                                                    |
@@ -592,6 +592,37 @@ runs on schedule + manual dispatch only, always at
 job). Depth changes states, never rules; `full` crawls exhaustively
 under a **hard page cap that fails the run when exceeded**, so
 surface growth forces a deliberate cap bump in `stacks.ts`.
+
+**The `compose-smoke` matrix-shard split.** `compose-smoke` is the
+slowest required PR gate. Historically it was one runner booting one
+compose stack and running one `npx playwright test` over all 10 specs
+*serially* (`playwright.config.ts` pins `workers: 1` in CI). The three
+heaviest specs — `iterate-panel-kiosk`, `compose_grafana_smoke`, and
+`crawl/crawl` — are each a *single* async `test()` that loops
+internally over every dashboard/panel/surface, so Playwright's native
+`--shard` (which partitions at `test()` granularity) leaves them whole
+and buys nothing. The split is therefore **logical**: the spec FILES
+are partitioned across a matrix of jobs, each booting its OWN isolated
+compose stack, balanced by measured wall-clock weight. The partition,
+the explicit non-compose-smoke exclude list, and the coverage
+assertion are the single source of truth in
+`.github/scripts/compose-smoke-matrix.mjs` (`compose-smoke-setup`
+verifies + emits the matrix; `compose-smoke-shard` runs each shard;
+the aggregator job literally named `compose-smoke` needs the matrix
+and gates on it so the required-check context still appears). Specs
+are **discovered** (`git ls-files`), so a newly added `*.spec.ts` is a
+hard CI failure until it is either assigned to a shard or named in the
+exclude list — never a silent no-run. `crawl/crawl` rides its own
+shard with only light companions because its single BFS `test()` is
+the ~50min `SWEEP_DEPTH=full` long pole and cannot be split — the
+nightly lane's wall-clock is therefore ≈ max(crawl shard) rather than
+the serial sum behind it. *Documented follow-up:* the k3d `dashboard`
+job also runs the crawl (`CRAWL_STACK=k3d`) unfiltered + its own crawl
+trio, but it is nightly-only + non-gating, so the latency win doesn't
+yet justify sharding it; splitting the `crawl/crawl` BFS `test()`
+itself (partition the frontier by root/app) is the only path below the
+~50min full-depth floor and is a crawl-engine change, not a workflow
+one.
 
 **The surface-inventory ratchet.**
 `crawl/grafana-surface-inventory.<stack>.json` pins each stack's
