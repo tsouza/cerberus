@@ -37,8 +37,35 @@ var LogStreamLabelValues = map[string][]string{
 // SeverityText vocabulary the CH-exporter writes. Not yet used as a
 // matcher target (the M3.x lowering surfaces severity through
 // SeverityNumber, not stream labels), but stored on every record so
-// the dataset shape matches production.
-var LogSeverityPool = []string{"INFO", "WARN", "ERROR", "DEBUG"}
+// the dataset shape matches production. The empty string is included
+// so the detected_level cascade's empty → "unknown" branch is
+// exercised (a severity-free row resolves its level from the
+// LogAttributes structured-metadata map, or falls through to
+// "unknown" when that's empty too).
+var LogSeverityPool = []string{"INFO", "WARN", "ERROR", "DEBUG", ""}
+
+// LogStructuredMetadataKeys is the structured-metadata key pool the
+// generator splices into the OTel-CH `LogAttributes` column. The keys
+// are exactly the level-source keys cerberus's detected_level cascade
+// scans, in its precedence order (see
+// internal/logql/detected_level.go: detected_level → level →
+// log.level → severity → severity_text → SeverityText column), so the
+// generated rows actually exercise every branch of the cascade rather
+// than always falling through to SeverityText.
+var LogStructuredMetadataKeys = []string{
+	"detected_level",
+	"level",
+	"log.level",
+	"severity",
+	"severity_text",
+}
+
+// LogStructuredMetadataValues is the value pool for a structured-
+// metadata level key. Mixed-case + abbreviated forms exercise
+// cerberus's normaliseLevelExpr case-folding (`err` → `error`, `WARN`
+// → `warn`, …); a value outside the canonical vocabulary
+// ("verbose") exercises the cascade's pass-through default branch.
+var LogStructuredMetadataValues = []string{"error", "ERR", "Warn", "info", "debug", "verbose"}
 
 // LogBodyTokenPool is the per-line word pool. Each generated body is
 // a space-joined sequence of 2-4 tokens drawn from this pool. Keeping
@@ -107,11 +134,13 @@ func LogsDataset() *rapid.Generator[property.Dataset] {
 			lset := drawStreamLabels(t, fmt.Sprintf("labels_%d", i))
 			body := drawBody(t, fmt.Sprintf("body_%d", i))
 			severity := rapid.SampledFrom(LogSeverityPool).Draw(t, fmt.Sprintf("severity_%d", i))
+			structured := drawStructuredMetadata(t, fmt.Sprintf("meta_%d", i))
 			ts := logAnchorTime.Add(time.Duration(i) * step).UnixNano()
 			records = append(records, property.LogRecord{
 				Body:               body,
 				SeverityText:       severity,
 				ResourceAttributes: lset,
+				LogAttributes:      structured,
 				TimestampNanos:     ts,
 			})
 		}
@@ -140,6 +169,29 @@ func drawStreamLabels(t *rapid.T, id string) map[string]string {
 	return out
 }
 
+// drawStructuredMetadata picks a 0-2 key subset from
+// LogStructuredMetadataKeys and assigns each a random level value from
+// LogStructuredMetadataValues. Keys are picked in the pool's
+// precedence order (not reshuffled) so the rapid shrinker focuses on
+// count, and so a multi-key draw deterministically exercises the
+// cascade's "first non-empty in precedence order wins" rule. Returning
+// a nil/empty map ~1/3 of the time keeps the SeverityText-only path
+// (and the empty → "unknown" branch when SeverityText is also empty)
+// well-represented.
+func drawStructuredMetadata(t *rapid.T, id string) map[string]string {
+	count := rapid.IntRange(0, 2).Draw(t, id+"_count")
+	if count == 0 {
+		return nil
+	}
+	picked := LogStructuredMetadataKeys[:count]
+	out := make(map[string]string, len(picked))
+	for _, key := range picked {
+		v := rapid.SampledFrom(LogStructuredMetadataValues).Draw(t, id+"_"+key)
+		out[key] = v
+	}
+	return out
+}
+
 // drawBody picks 2-4 tokens from LogBodyTokenPool and joins them with
 // single spaces, optionally appending one delimited IP token from
 // LogIPTokenPool (~half the draws) so the `ip()` line-filter shapes
@@ -164,24 +216,34 @@ func drawBody(t *rapid.T, id string) string {
 //   - One `CREATE OR REPLACE TABLE otel_logs (...) ENGINE = MergeTree
 //     ORDER BY Timestamp;`
 //   - One batched `INSERT INTO otel_logs (Timestamp, SeverityText,
-//     Body, ResourceAttributes) VALUES (...), (...);`
+//     Body, ResourceAttributes, LogAttributes) VALUES (...), (...);`
 //
 // `CREATE OR REPLACE TABLE` keeps re-runs inside the same chDB
 // process idempotent. MergeTree (not Memory) matches the metrics-
 // side rationale: the optimizer's PREWHERE promotion fires
 // unconditionally and chDB's Memory engine refuses PREWHERE.
 //
-// The DDL must declare every top-level OTel-CH scalar column the
-// LogQL lowering routes through `topLevelLogColumnFor` — even though
-// the property generator only populates `ResourceAttributes`,
-// `SeverityText`, `Body`, and `Timestamp`. The matcher lowering
-// emits `coalesce(nullIf(ServiceName, ”),
-// ResourceAttributes['service_name'])` (and the matching shape for
-// each other top-level label), so chDB rejects the query with
-// `Unknown expression identifier ServiceName` if the column is
-// missing. The empty-string / zero-value defaults keep the `nullIf`
-// branch falsy, so the coalesce still falls through to the
-// ResourceAttributes map the generator populated.
+// The DDL must declare every column the LogQL lowering can reference
+// — even those the generator leaves empty on a given row. Two classes:
+//
+//   - Top-level OTel-CH scalar columns the matcher lowering routes
+//     through `topLevelLogColumnFor`: it emits `coalesce(nullIf(
+//     ServiceName, ”), ResourceAttributes['service_name'])` (and the
+//     matching shape for each other top-level label), so chDB rejects
+//     the query with `Unknown expression identifier ServiceName` if
+//     the column is missing. The empty-string / zero-value defaults
+//     keep the `nullIf` branch falsy, so the coalesce still falls
+//     through to the ResourceAttributes map.
+//   - The `LogAttributes` structured-metadata map: the detected_level
+//     cascade (and structured-metadata label filters) read
+//     `LogAttributes['level'/'severity'/…]`, and the log-stream
+//     projection ALWAYS selects `LogAttributes` to synthesise
+//     `detected_level`. A query as simple as `{job="api"}` therefore
+//     projects `LogAttributes`; without the column chDB rejects the
+//     SELECT with `Unknown expression identifier LogAttributes`. The
+//     generator populates structured-metadata level keys on a subset
+//     of rows so the cascade's LogAttributes branches are exercised,
+//     not just declared.
 func renderLogsDDL(records []property.LogRecord) string {
 	var b strings.Builder
 	b.WriteString(`CREATE OR REPLACE TABLE `)
@@ -192,6 +254,7 @@ func renderLogsDDL(records []property.LogRecord) string {
     SeverityNumber UInt8 DEFAULT 0,
     Body String,
     ResourceAttributes Map(LowCardinality(String), String),
+    LogAttributes Map(String, String),
     ServiceName LowCardinality(String) DEFAULT '',
     ScopeName String DEFAULT '',
     ScopeVersion String DEFAULT '',
@@ -206,7 +269,7 @@ func renderLogsDDL(records []property.LogRecord) string {
 	}
 	b.WriteString(`INSERT INTO `)
 	b.WriteString(LogsTableName)
-	b.WriteString(` (Timestamp, SeverityText, Body, ResourceAttributes) VALUES `)
+	b.WriteString(` (Timestamp, SeverityText, Body, ResourceAttributes, LogAttributes) VALUES `)
 	for i, r := range records {
 		if i > 0 {
 			b.WriteString(", ")
@@ -219,7 +282,9 @@ func renderLogsDDL(records []property.LogRecord) string {
 
 // renderLogRow renders one
 // `(toDateTime64('YYYY-MM-DD HH:MM:SS.fff', 9), 'severity', 'body',
-// map(...))` literal row.
+// map(...), map(...))` literal row — the trailing two maps are
+// ResourceAttributes (stream identity) and LogAttributes (structured
+// metadata), in the INSERT column order.
 func renderLogRow(r property.LogRecord) string {
 	var b strings.Builder
 	b.WriteString("(toDateTime64('")
@@ -233,15 +298,17 @@ func renderLogRow(r property.LogRecord) string {
 	b.WriteString("', '")
 	b.WriteString(escapeSQLString(r.Body))
 	b.WriteString("', ")
-	b.WriteString(renderResourceAttrs(r.ResourceAttributes))
+	b.WriteString(renderAttrMap(r.ResourceAttributes))
+	b.WriteString(", ")
+	b.WriteString(renderAttrMap(r.LogAttributes))
 	b.WriteByte(')')
 	return b.String()
 }
 
-// renderResourceAttrs renders a label set as a CH
+// renderAttrMap renders a label set as a CH
 // `map('k1','v1', 'k2','v2')` expression. Sorted keys for
 // determinism.
-func renderResourceAttrs(labels map[string]string) string {
+func renderAttrMap(labels map[string]string) string {
 	if len(labels) == 0 {
 		return "map()"
 	}

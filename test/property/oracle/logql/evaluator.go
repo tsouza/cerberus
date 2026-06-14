@@ -45,18 +45,20 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	// handler's toStreamsWithTransform path groups by the
 	// CanonicalKey of the (post-format) labels — match that here.
 	//
-	// Each row's labels also carry the synthesized `detected_level`
-	// derived from the record's SeverityText — Loki surfaces this as a
-	// stream-identity dimension whenever the source row has severity
-	// metadata, and cerberus's wire-wrap (Lang.ProjectSamples on the
-	// log-stream branch) mirrors that. Strip the detection at the
-	// oracle so the comparator sees the same shape.
+	// Each row's labels also carry the synthesized `detected_level`,
+	// resolved via cerberus's detected_level cascade (see
+	// [detectedLevel] — structured-metadata `detected_level` /
+	// `level` / `log.level` / `severity` / `severity_text` keys in the
+	// LogAttributes map take precedence, then the dedicated
+	// SeverityText column). Loki surfaces this as a stream-identity
+	// dimension on EVERY row (a row with no detectable level resolves
+	// to "unknown"), and cerberus's wire-wrap (Lang.ProjectSamples on
+	// the log-stream branch) mirrors that — so the oracle stamps it
+	// unconditionally too.
 	out := property.Outcome{Rows: make([]property.OutcomeRow, 0, len(records))}
 	for _, r := range records {
 		labels := copyLabels(r.ResourceAttributes)
-		if lvl := normaliseLogLevel(r.SeverityText); lvl != "" {
-			labels["detected_level"] = lvl
-		}
+		labels["detected_level"] = detectedLevel(r)
 		// TimestampMs is unix milliseconds, matching the prom-side
 		// convention. Cerberus's stream-wire format uses nanos, but
 		// the property runner normalises to milliseconds (the
@@ -70,15 +72,52 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	return out
 }
 
+// detectedLevelKeys is the structured-metadata key precedence cerberus
+// scans before falling back to the SeverityText column — it must match
+// [internal/logql.detectedLevelSourceExpr]'s order exactly: the
+// canonical `detected_level` key first, then the allowed level fields
+// (`level` / `log.level` / `severity` / `severity_text`). The first key
+// present with a non-empty value wins.
+var detectedLevelKeys = []string{
+	"detected_level",
+	"level",
+	"log.level",
+	"severity",
+	"severity_text",
+}
+
+// detectedLevel resolves a record's synthesized `detected_level` value,
+// mirroring cerberus's [internal/logql.detectedLevelExpr]: it picks the
+// raw level source per [detectedLevelKeys] precedence (structured
+// metadata in the LogAttributes map, then the SeverityText column) and
+// normalises it via [normaliseLogLevel]. An all-empty row resolves to
+// "unknown" — reference Loki stamps detected_level on every record.
+func detectedLevel(r property.LogRecord) string {
+	src := ""
+	for _, key := range detectedLevelKeys {
+		if v := r.LogAttributes[key]; v != "" {
+			src = v
+			break
+		}
+	}
+	if src == "" {
+		src = r.SeverityText
+	}
+	return normaliseLogLevel(src)
+}
+
 // normaliseLogLevel mirrors cerberus's [internal/logql.normaliseLevelExpr]
 // — maps the case-insensitive forms upstream Loki accepts onto the
-// canonical lowercase level strings. Empty input returns the empty
-// string so the caller can skip the label entirely (matches the
-// `mapFilter((k, v) -> v != ”, ...)` shape on the SQL side).
+// canonical lowercase level strings. Empty input returns "unknown":
+// reference Loki's distributor stamps `detected_level="unknown"` on
+// every record with no detectable level, and cerberus's
+// `normaliseLevelExpr` mirrors that with its leading empty → "unknown"
+// branch. Non-empty inputs outside the known vocabulary pass through
+// lowercased, matching upstream `normalizeLogLevel`'s default branch.
 func normaliseLogLevel(severity string) string {
 	switch strings.ToLower(severity) {
 	case "":
-		return ""
+		return "unknown"
 	case "trace", "trc":
 		return "trace"
 	case "debug", "dbg":
@@ -308,6 +347,7 @@ func applyLabelFmt(e *syntax.LabelFmtExpr, records []property.LogRecord) []prope
 			Body:               r.Body,
 			SeverityText:       r.SeverityText,
 			ResourceAttributes: newLabels,
+			LogAttributes:      r.LogAttributes,
 			TimestampNanos:     r.TimestampNanos,
 		})
 	}
