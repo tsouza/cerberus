@@ -101,6 +101,70 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # `chdb-build` is a FAST, PR-visible compile gate over the entire
+  # chdb-tagged tree. It does NOT run any tests — `go build` + `go vet`
+  # with `-tags chdb` is enough to surface a build break in any
+  # chdb-tagged file (test/property/*_test.go, the chDB probe, the
+  # roundtrip walkers, test/perf/*) in seconds-to-low-minutes.
+  #
+  # Why this exists: the required PR gates (`check` + `lint` +
+  # `forbid-skip`) are CGO-free and compile with the DEFAULT build tags,
+  # so they never touch chdb-tagged source. The heavier chDB jobs that
+  # DO compile it (`probe`, `roundtrip`, `perf-guards`) only run their
+  # work on `pull_request` here — but a regression that breaks
+  # compilation of, say, test/property (which only runs in property.yml
+  # nightly) would otherwise hide until the next push-to-main / nightly.
+  # PR #908 did exactly that: it changed `internal/api/loki.StreamValue`
+  # from a tuple to a struct, broke `test/property/logql_test.go`, merged
+  # green because no PR check compiled the chdb-tagged property package,
+  # and broke the property lane on the next push. This job closes that
+  # gap — a chdb-tag build break now fails a PR check, not a nightly.
+  #
+  # COMPILE-ONLY by design: no `go test` run, so it stays cheap enough
+  # to gate every PR. The `go vet` step is the load-bearing one for the
+  # #908 class: `go build ./...` does NOT compile `_test.go` files, but
+  # the #908 break was in test/property/logql_test.go — `go vet` (and
+  # only vet, among the two) typechecks test files without executing
+  # them. `go build` is kept as the cheaper first signal for breaks in
+  # non-test chdb-tagged source (the chDB probe, roundtrip walkers).
+  chdb-build:
+    name: chdb-build
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      # Cache the pinned libchdb.so so the install step is a no-op cache
+      # hit on the common path (the recipe is idempotent — it skips the
+      # download when the file already exists at CHDB_INSTALL_PATH). The
+      # key is pinned to the recipe's CHDB_VERSION so a version bump busts
+      # the cache automatically.
+      - name: Cache libchdb.so
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v4.0.2
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Compile chdb-tagged tree (go build)
+        run: go build -tags chdb ./...
+
+      - name: Vet chdb-tagged tree (go vet)
+        run: go vet -tags chdb ./...
+
   probe:
     name: probe
     needs: changes
