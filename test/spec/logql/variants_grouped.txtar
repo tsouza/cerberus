@@ -1,0 +1,115 @@
+-- query.logql --
+variants(sum by (app) (count_over_time({app="foo"}[5m])), sum by (app) (bytes_over_time({app="foo"}[5m]))) of ({app="foo"}[5m])
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String) DEFAULT map()
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'a', map('app', 'foo')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'bb', map('app', 'foo')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'ccc', map('app', 'foo'));
+-- expected_rows --
+[
+  ["", {"__variant__": "0", "app": "foo"}, "2026-01-01T00:00:01Z", 3],
+  ["", {"__variant__": "1", "app": "foo"}, "2026-01-01T00:00:01Z", 6]
+]
+-- args --
+[0] string = "__variant__"
+[1] string = "0"
+[2] string = ""
+[3] string = "app"
+[4] int64 = 9
+[5] string = "app"
+[6] string = ""
+[7] string = "detected_level"
+[8] string = ""
+[9] string = "unknown"
+[10] string = "trace"
+[11] string = "trc"
+[12] string = "trace"
+[13] string = "debug"
+[14] string = "dbg"
+[15] string = "debug"
+[16] string = "info"
+[17] string = "inf"
+[18] string = "information"
+[19] string = "info"
+[20] string = "warn"
+[21] string = "wrn"
+[22] string = "warning"
+[23] string = "warn"
+[24] string = "error"
+[25] string = "err"
+[26] string = "error"
+[27] string = "critical"
+[28] string = "critical"
+[29] string = "fatal"
+[30] string = "fatal"
+[31] string = "app"
+[32] string = "app"
+[33] string = "app"
+[34] string = "app"
+[35] int64 = 1
+[36] string = "app"
+[37] string = "foo"
+[38] string = "app"
+[39] string = "__variant__"
+[40] string = "1"
+[41] string = ""
+[42] string = "app"
+[43] int64 = 9
+[44] string = "app"
+[45] string = ""
+[46] string = "detected_level"
+[47] string = ""
+[48] string = "unknown"
+[49] string = "trace"
+[50] string = "trc"
+[51] string = "trace"
+[52] string = "debug"
+[53] string = "dbg"
+[54] string = "debug"
+[55] string = "info"
+[56] string = "inf"
+[57] string = "information"
+[58] string = "info"
+[59] string = "warn"
+[60] string = "wrn"
+[61] string = "warning"
+[62] string = "warn"
+[63] string = "error"
+[64] string = "err"
+[65] string = "error"
+[66] string = "critical"
+[67] string = "critical"
+[68] string = "fatal"
+[69] string = "fatal"
+[70] string = "app"
+[71] string = "app"
+[72] string = "app"
+[73] string = "app"
+[74] string = "app"
+[75] string = "foo"
+[76] string = "app"
+-- chplan --
+UnionAll arms=2
+  Project [MetricName AS MetricName, mapConcat(Attributes, map("__variant__", "0")) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, map("app", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[ResourceAttributes["app"] AS gkey_0] funcs=[sum(Value) AS Value]
+        RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+          Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)), "app", if(mapContains(LogAttributes, "app"), LogAttributes["app"], ResourceAttributes["app"])))) AS ResourceAttributes, Timestamp, 1 AS Value]
+            Filter predicate=(ResourceAttributes["app"] = "foo")
+              Scan(otel_logs)
+  Project [MetricName AS MetricName, mapConcat(Attributes, map("__variant__", "1")) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, map("app", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[ResourceAttributes["app"] AS gkey_0] funcs=[sum(Value) AS Value]
+        RangeWindow func=sum_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+          Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)), "app", if(mapContains(LogAttributes, "app"), LogAttributes["app"], ResourceAttributes["app"])))) AS ResourceAttributes, Timestamp, toFloat64(length(Body)) AS Value]
+            Filter predicate=(ResourceAttributes["app"] = "foo")
+              Scan(otel_logs)
+-- sql --
+(SELECT `MetricName` AS `MetricName`, mapConcat(`Attributes`, map(?, ?)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)), ?, if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?])))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`) GROUP BY `ResourceAttributes`[?]))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapConcat(`Attributes`, map(?, ?)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, arraySum(window_vals) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)), ?, if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?])))) AS `ResourceAttributes`, `Timestamp`, toFloat64(length(`Body`)) AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?])))
