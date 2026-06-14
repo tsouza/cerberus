@@ -28,23 +28,176 @@ import (
 // emit directly (a projection wrapping a label-filtered scan): without
 // this widening the pushdown would stop at the intervening Filter and
 // leave the Scan reading every column.
+//
+// Two further shapes match a *mid-tree stage* node — an Aggregate or a
+// RangeWindow — sitting directly over Scan or Filter(Scan):
+//
+//  3. `Aggregate(Scan)` / `Aggregate(Filter(Scan))` — narrow the Scan to
+//     the union of the columns the Aggregate's GroupBy keys and AggFunc
+//     params/args read, plus the Filter predicate's columns when present.
+//  4. `RangeWindow(Scan)` / `RangeWindow(Filter(Scan))` — narrow the Scan
+//     to the union of TimestampColumn + ValueColumn (the per-sample pair
+//     the windowed-array idiom reads), the GroupBy + ScalarExprs column
+//     refs, plus the Filter predicate's columns when present.
+//
+// Shapes (3) and (4) are what makes the pushdown reach the inner Scan of
+// the canonical metrics shape `Project(Aggregate(Filter(Scan)))` (and the
+// matrix `Project(RangeWindow(Filter(Scan)))`): the Project's pushdown in
+// shapes (1)/(2) stops at the Aggregate/RangeWindow, so without these arms
+// the inner Scan still reads every column (`SELECT *`). Firing on the
+// stage node itself — wherever the FixedPoint walk reaches it — pushes the
+// narrowed column set THROUGH the stage down to the Scan.
 type ProjectionPushdown struct{}
 
 func (ProjectionPushdown) Name() string { return "projection-pushdown" }
 
 func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
-	p, ok := n.(*chplan.Project)
-	if !ok {
-		return n, false
-	}
-	switch child := p.Input.(type) {
-	case *chplan.Scan:
-		return applyProjectScan(p, child)
-	case *chplan.Filter:
-		return applyProjectFilterScan(p, child)
+	switch node := n.(type) {
+	case *chplan.Project:
+		switch child := node.Input.(type) {
+		case *chplan.Scan:
+			return applyProjectScan(node, child)
+		case *chplan.Filter:
+			return applyProjectFilterScan(node, child)
+		default:
+			return n, false
+		}
+	case *chplan.Aggregate:
+		return applyStageScan(node, node.Input, aggregateColumns(node))
+	case *chplan.RangeWindow:
+		return applyStageScan(node, node.Input, rangeWindowColumns(node))
 	default:
 		return n, false
 	}
+}
+
+// applyStageScan pushes a stage node's required-column set THROUGH an
+// optional intervening Filter down to the inner Scan, narrowing the Scan
+// in place. `stage` is the Aggregate / RangeWindow being rewritten,
+// `input` is stage's child (the Scan or Filter(Scan)), and stageCols is
+// the set of base columns the stage's own emit reads.
+//
+// The inner Scan is located as either `input` directly (Scan) or
+// `input.(*Filter).Input` (Filter(Scan)). Any other shape bails — this
+// keeps the rule total and avoids narrowing under a MetricsAggregate /
+// subquery input the stage emitters read differently.
+//
+// The idempotence guard `len(scan.Columns) > 0` mirrors the two existing
+// helpers: it stops the rule re-firing under the FixedPoint strategy and
+// avoids fighting MVSubstitution, which deliberately clears Columns when
+// it rewrites a Scan onto a rollup MV.
+func applyStageScan(stage, input chplan.Node, stageCols []string) (chplan.Node, bool) {
+	switch in := input.(type) {
+	case *chplan.Scan:
+		if len(in.Columns) > 0 {
+			return stage, false
+		}
+		cols := unionSortedColumns(stageCols, nil)
+		if len(cols) == 0 {
+			return stage, false
+		}
+		newScan := *in
+		newScan.Columns = cols
+		return cloneStageOverInput(stage, &newScan), true
+	case *chplan.Filter:
+		scan, ok := in.Input.(*chplan.Scan)
+		if !ok || len(scan.Columns) > 0 {
+			return stage, false
+		}
+		cols := unionSortedColumns(stageCols, predicateColumns(in.Predicate))
+		if len(cols) == 0 {
+			return stage, false
+		}
+		newScan := *scan
+		newScan.Columns = cols
+		newFilter := *in
+		newFilter.Input = &newScan
+		return cloneStageOverInput(stage, &newFilter), true
+	default:
+		return stage, false
+	}
+}
+
+// cloneStageOverInput returns a shallow clone of the stage node (Aggregate
+// or RangeWindow) with its Input replaced by newInput. The clone keeps the
+// optimizer's no-mutate-in-place contract: the original tree is untouched,
+// the rewritten subtree is fresh.
+func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
+	switch s := stage.(type) {
+	case *chplan.Aggregate:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.RangeWindow:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	default:
+		return stage
+	}
+}
+
+// aggregateColumns returns the sorted, deduped set of base columns an
+// Aggregate's own emit reads: the union of every GroupBy key expression
+// and every AggFunc's Params + Args. emitAggregate (chsql/emit_node.go)
+// selects exactly these — GroupBy in the SELECT/GROUP BY, AggFuncs as the
+// reducers — so this is the complete set the narrowed Scan must carry.
+func aggregateColumns(a *chplan.Aggregate) []string {
+	seen := map[string]struct{}{}
+	collect := collectColumn(seen)
+	for _, g := range a.GroupBy {
+		walkExpr(g, collect)
+	}
+	for _, af := range a.AggFuncs {
+		for _, p := range af.Params {
+			walkExpr(p, collect)
+		}
+		for _, ar := range af.Args {
+			walkExpr(ar, collect)
+		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// rangeWindowColumns returns the sorted, deduped set of base columns a
+// RangeWindow's row-shape emit reads: the bare-string TimestampColumn +
+// ValueColumn (the per-sample pair the windowed-array idiom consumes —
+// added literally, they are plain column names, not Exprs), plus the
+// column refs walked out of GroupBy and ScalarExprs.
+//
+// Only the row-shape (PromQL / LogQL) RangeWindow over Scan / Filter(Scan)
+// reaches this: applyStageScan bails on a MetricsAggregate input before we
+// get here, so the TraceQL matrix mode (which ignores ValueColumn and
+// reads the per-span Timestamp off its MetricsAggregate.Inner) is never
+// narrowed by this path.
+func rangeWindowColumns(r *chplan.RangeWindow) []string {
+	seen := map[string]struct{}{}
+	if r.TimestampColumn != "" {
+		seen[r.TimestampColumn] = struct{}{}
+	}
+	if r.ValueColumn != "" {
+		seen[r.ValueColumn] = struct{}{}
+	}
+	collect := collectColumn(seen)
+	for _, g := range r.GroupBy {
+		walkExpr(g, collect)
+	}
+	for _, s := range r.ScalarExprs {
+		walkExpr(s, collect)
+	}
+	return sortedColumnSet(seen)
+}
+
+// sortedColumnSet flattens a column-name set into a sorted, deduped slice.
+// Shared by aggregateColumns / rangeWindowColumns so the narrowed Scan's
+// Columns is reproducible across runs.
+func sortedColumnSet(seen map[string]struct{}) []string {
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // applyProjectScan handles the seed `Project(Scan)` shape.
