@@ -301,8 +301,13 @@ func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
 // TestDetectedLevel_NoColumnRefToDetectedLevelLabel verifies that no
 // stray `ResourceAttributes["detected_level"]` MapAccess survives in
 // the lowered tree — the synthesized normalisation should fully
-// shadow the plain map lookup. A failure here would mean the
-// dispatch missed a code path.
+// shadow the plain STREAM-LABEL lookup. A failure here would mean the
+// dispatch missed a code path and fell through to the resource map.
+//
+// A `LogAttributes["detected_level"]` MapAccess IS expected: the
+// detected_level source resolution reads the structured-metadata key
+// first (reference Loki's extractLogLevel step 1), so the assertion is
+// scoped to the ResourceAttributes (stream-label) column only.
 func TestDetectedLevel_NoColumnRefToDetectedLevelLabel(t *testing.T) {
 	t.Parallel()
 
@@ -322,6 +327,10 @@ func TestDetectedLevel_NoColumnRefToDetectedLevelLabel(t *testing.T) {
 		if !ok {
 			return
 		}
+		col, ok := ma.Map.(*chplan.ColumnRef)
+		if !ok || col.Name != s.ResourceAttributesColumn {
+			return
+		}
 		lit, ok := ma.Key.(*chplan.LitString)
 		if !ok {
 			return
@@ -331,7 +340,7 @@ func TestDetectedLevel_NoColumnRefToDetectedLevelLabel(t *testing.T) {
 		}
 	})
 	if found {
-		t.Errorf("plan still contains ResourceAttributes[\"detected_level\"] map lookup; want fully synthesized expression")
+		t.Errorf("plan still contains ResourceAttributes[\"detected_level\"] stream-label lookup; want fully synthesized expression")
 	}
 }
 
@@ -512,14 +521,21 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	fn := detectedLevelExpr(s).(*chplan.FuncCall)
 
-	// Leading pair: empty severity → "unknown" (reference Loki's
-	// constants.LogLevelUnknown stamping for undetectable levels).
+	// Leading pair: empty resolved source → "unknown" (reference Loki's
+	// constants.LogLevelUnknown stamping for undetectable levels). The
+	// source is the detected_level precedence cascade (see
+	// detectedLevelSourceExpr); assertSourceCascade pins it.
 	emptyCond, ok := fn.Args[0].(*chplan.Binary)
 	if !ok || emptyCond.Op != chplan.OpEq {
-		t.Fatalf("args[0] = %#v; want Binary{Op: Eq} comparing lower(SeverityText) to \"\"", fn.Args[0])
+		t.Fatalf("args[0] = %#v; want Binary{Op: Eq} comparing lower(<source>) to \"\"", fn.Args[0])
 	}
 	if rhs, ok := emptyCond.Right.(*chplan.LitString); !ok || rhs.V != "" {
 		t.Fatalf("args[0] RHS = %#v; want empty-string literal", emptyCond.Right)
+	}
+	if lowerCall, ok := emptyCond.Left.(*chplan.FuncCall); !ok || lowerCall.Name != "lower" {
+		t.Fatalf("args[0] LHS = %#v; want lower(<source>)", emptyCond.Left)
+	} else {
+		assertSourceCascade(t, lowerCall.Args[0], s)
 	}
 	if lit, ok := fn.Args[1].(*chplan.LitString); !ok || lit.V != "unknown" {
 		t.Fatalf("args[1] = %#v; want LitString \"unknown\"", fn.Args[1])
@@ -558,12 +574,12 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	}
 
 	// The trailing default branch is the lowercased pass-through —
-	// `lower(SeverityText)` — represented as a FuncCall(lower,
-	// ColumnRef(SeverityText)). A mutation on `+1` that drops the
-	// default slot would shorten Args to 14 and trip the len check
-	// above; this assertion pins the SHAPE of the default branch so
-	// a refactor that swaps it for something else (e.g. an empty
-	// string fall-through) still trips a test.
+	// `lower(<source>)`, where <source> is the detected_level
+	// precedence cascade. A mutation on `+1` that drops the default
+	// slot would shorten Args to 14 and trip the len check above; this
+	// assertion pins the SHAPE of the default branch so a refactor that
+	// swaps it for something else (e.g. an empty string fall-through)
+	// still trips a test.
 	defaultIdx := 2 * (len(canonicalLevelGroups) + 1)
 	defaultCall, ok := fn.Args[defaultIdx].(*chplan.FuncCall)
 	if !ok {
@@ -575,12 +591,27 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	if len(defaultCall.Args) != 1 {
 		t.Fatalf("default branch lower() args = %d; want 1", len(defaultCall.Args))
 	}
-	colRef, ok := defaultCall.Args[0].(*chplan.ColumnRef)
-	if !ok {
-		t.Fatalf("default branch lower() arg = %T; want *chplan.ColumnRef", defaultCall.Args[0])
+	assertSourceCascade(t, defaultCall.Args[0], s)
+}
+
+// assertSourceCascade verifies that `e` is the detected_level source
+// precedence cascade [detectedLevelSourceExpr] produces for the default
+// OTel schema: a `multiIf(...)` whose terminal fallback branch is the
+// bare SeverityColumn ColumnRef. The intermediate branches resolve the
+// structured-metadata level keys; the pin here is the final fallback,
+// which is the load-bearing severity source.
+func assertSourceCascade(t *testing.T, e chplan.Expr, s schema.Logs) {
+	t.Helper()
+	mi, ok := e.(*chplan.FuncCall)
+	if !ok || mi.Name != "multiIf" {
+		t.Fatalf("source = %#v; want multiIf(...) precedence cascade", e)
 	}
-	if colRef.Name != s.SeverityColumn {
-		t.Errorf("default branch lower() column = %q; want %q (schema SeverityColumn)", colRef.Name, s.SeverityColumn)
+	if len(mi.Args) == 0 {
+		t.Fatalf("source multiIf has no args")
+	}
+	fallback, ok := mi.Args[len(mi.Args)-1].(*chplan.ColumnRef)
+	if !ok || fallback.Name != s.SeverityColumn {
+		t.Errorf("source fallback branch = %#v; want ColumnRef(%q)", mi.Args[len(mi.Args)-1], s.SeverityColumn)
 	}
 }
 
@@ -619,4 +650,67 @@ func containsString(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestDetectedLevelSource_PrecedenceCascade pins reference Loki's
+// extractLogLevel source precedence (pkg/distributor/field_detection.go)
+// as cerberus encodes it in [detectedLevelSourceExpr]: the structured-
+// metadata `detected_level` key wins, then the allowed level/severity
+// keys, and the dedicated SeverityText column is the terminal fallback.
+// The cascade is a multiIf whose (cond, value) pairs read the
+// LogAttributes map and whose final branch is the bare SeverityColumn.
+func TestDetectedLevelSource_PrecedenceCascade(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	cascade, ok := detectedLevelSourceExpr(s).(*chplan.FuncCall)
+	if !ok || cascade.Name != "multiIf" {
+		t.Fatalf("source = %#v; want multiIf cascade", detectedLevelSourceExpr(s))
+	}
+
+	// Expected key order: detected_level, then allowedLevelFields, each
+	// contributing a (LogAttributes[key] != "", LogAttributes[key]) pair,
+	// then the SeverityText fallback.
+	wantKeys := append([]string{detectedLevelLabel}, allowedLevelFields...)
+	wantArgs := len(wantKeys)*2 + 1
+	if got := len(cascade.Args); got != wantArgs {
+		t.Fatalf("cascade has %d args; want %d (%d keys × 2 + fallback)", got, wantArgs, len(wantKeys))
+	}
+
+	for i, key := range wantKeys {
+		valIdx := 2*i + 1
+		ma, ok := cascade.Args[valIdx].(*chplan.MapAccess)
+		if !ok {
+			t.Fatalf("value branch for %q (args[%d]) = %T; want MapAccess", key, valIdx, cascade.Args[valIdx])
+		}
+		col, ok := ma.Map.(*chplan.ColumnRef)
+		if !ok || col.Name != s.AttributesColumn {
+			t.Errorf("value branch for %q reads %#v; want ColumnRef(%q)", key, ma.Map, s.AttributesColumn)
+		}
+		lit, ok := ma.Key.(*chplan.LitString)
+		if !ok || lit.V != key {
+			t.Errorf("value branch %d key = %#v; want LitString(%q)", i, ma.Key, key)
+		}
+	}
+
+	fallback, ok := cascade.Args[len(cascade.Args)-1].(*chplan.ColumnRef)
+	if !ok || fallback.Name != s.SeverityColumn {
+		t.Errorf("fallback branch = %#v; want ColumnRef(%q)", cascade.Args[len(cascade.Args)-1], s.SeverityColumn)
+	}
+}
+
+// TestDetectedLevelSource_NoAttributesColumnCollapses verifies that a
+// custom schema without a structured-metadata column resolves the level
+// from the bare SeverityColumn only — byte-identical to the pre-cascade
+// behaviour, so such schemas see zero churn.
+func TestDetectedLevelSource_NoAttributesColumnCollapses(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	s.AttributesColumn = ""
+
+	col, ok := detectedLevelSourceExpr(s).(*chplan.ColumnRef)
+	if !ok || col.Name != s.SeverityColumn {
+		t.Fatalf("source = %#v; want bare ColumnRef(%q) when AttributesColumn is empty", detectedLevelSourceExpr(s), s.SeverityColumn)
+	}
 }

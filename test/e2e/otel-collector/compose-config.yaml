@@ -217,6 +217,25 @@ receivers:
             type,
             query_kind,
             user,
+            -- Map the query_log row's terminal `type` (and a non-empty
+            -- exception) onto an OTel-style severity so cerberus's Loki
+            -- head derives a real `detected_level` instead of "unknown".
+            -- ExceptionBeforeStart / ExceptionWhileProcessing are
+            -- failures (error); a clean QueryFinish is info. The
+            -- collector writes this into the OTel-CH `SeverityText`
+            -- column via severity_text_column below.
+            multiIf(
+              type LIKE 'Exception%' OR exception != '', 'error',
+              'info'
+            )                           AS severity_text,
+            -- Standard-named structured-metadata duplicates of the
+            -- ClickHouse-specific counters, so Grafana's Logs Drilldown
+            -- generic `duration` / `bytes` columns populate (the app
+            -- surfaces these by their conventional names). The
+            -- ClickHouse-specific keys (query_duration_ms / read_bytes)
+            -- stay alongside for operators who query them directly.
+            concat(toString(query_duration_ms), 'ms') AS duration,
+            toString(read_bytes)        AS bytes,
             toString(query_duration_ms) AS query_duration_ms,
             toString(read_rows)         AS read_rows,
             toString(read_bytes)        AS read_bytes,
@@ -239,11 +258,18 @@ receivers:
         tracking_column: event_us
         logs:
           - body_column: query
+            # Populate the OTel-CH SeverityText column so the Loki head's
+            # detected_level derivation resolves a real level per record
+            # (info for clean queries, error for failures) instead of
+            # collapsing every line to "unknown".
+            severity_text_column: severity_text
             attribute_columns:
               - query_id
               - type
               - query_kind
               - user
+              - duration
+              - bytes
               - query_duration_ms
               - read_rows
               - read_bytes
