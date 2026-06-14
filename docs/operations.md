@@ -197,10 +197,11 @@ fan-out value — a sub-observable float-order difference, both render `0.12`).
 The test enforces a tight bound rather than the raw fixture count: **at most two
 cells may diverge, each by no more than 1 ULP** (`maxDualEmitUlpDivergentCells
 = 2`); any cell off by more than 1 ULP, or a third divergent cell, fails the
-test as an arithmetic regression. Treat this as experimental: the production /
-compose / e2e CH floor is now 25.8 (past the ≥ 25.6 introduction point), but the
-path still rides the experimental setting and has not yet been differentially
-swept against a real (non-chDB) server where that setting is actually enforced.
+test as an arithmetic regression. Treat this as experimental: the compose / e2e
+CH substrate is 25.8 (past the ≥ 25.6 introduction point, so the flag is
+exercisable there), but the path still rides the experimental setting and has not
+yet been differentially swept against a real (non-chDB) server where that setting
+is actually enforced.
 
 ## Backing services
 
@@ -337,6 +338,37 @@ expects (a scale-up replica booting into a saturated CH must not
 crash-loop; see [`health.md`](health.md)). Fail-fast is reserved for
 misconfiguration that can never succeed — a bad env value or invalid
 connection options abort startup with a clear error.
+
+### Startup requirements preflight
+
+`CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time
+requirements check immediately **after** the schema-create step. It
+converts two classes of misconfiguration that would otherwise surface as
+opaque query-time errors into a precise, fail-fast boot error:
+
+- **ClickHouse too old.** The connected server's `version()` is compared
+  against `max(base, applicable-feature-floors)` — base **24.8**, raised to
+  **25.6** by the native-rate floor when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
+  on. A version below the floor (or an unparseable one) fails startup.
+- **Divergent schema.** The configured tables are introspected via
+  `system.columns`; a missing essential column or a wrong attribute-map type
+  (`Attributes` / `ResourceAttributes` / `ScopeAttributes` must be
+  `Map(String, String)`) fails startup. The check honours every
+  `CERBERUS_SCHEMA_*` table rename — it validates the *active* shape.
+
+The ordering is deliberate: running the preflight **after** auto-create
+means a fresh database where cerberus just created the tables passes the
+schema gate (it would fail against tables that don't exist yet if the order
+were reversed). When any gate fails the process exits non-zero with an
+**aggregated** message listing every unmet requirement at once, so an
+operator fixes the deployment in a single pass rather than one error per
+restart. Set `CERBERUS_REQUIREMENTS_CHECK=false` to skip both gates (logged
+as one line) — useful when pointing cerberus at a deliberately non-default
+ClickHouse layout that the shape gate doesn't model. Note this is a
+stricter contract than the best-effort connectivity ping above: the
+preflight needs ClickHouse reachable to read the version and column
+metadata, so a CH that is unreachable at the preflight point fails startup
+rather than booting unready.
 
 ### Schema divergence: MetricName-first metrics sort key
 

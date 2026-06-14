@@ -26,6 +26,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -114,6 +115,18 @@ func run() error {
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
 	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse.Database, cfg.AutoCreateSchema)
+
+	// Boot-time requirements preflight (ON by default). It MUST run AFTER
+	// the schema-create step above — on a fresh DB cerberus has just
+	// created the tables, so introspecting them before the create would
+	// fail gate 2 against tables that don't exist yet. The check fails
+	// startup (returns an error → exit 1) when the connected server is
+	// older than the config-derived floor or the deployed schema diverges
+	// from the active shape, converting an opaque query-time failure into a
+	// precise boot-time one. CERBERUS_REQUIREMENTS_CHECK=false skips it.
+	if err := runRequirementsCheck(ctx, logger, client, cfg); err != nil {
+		return err
+	}
 
 	// Install the W3C+Baggage propagator and build OTel providers from
 	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
@@ -418,6 +431,45 @@ func setupSchema(
 	logger.Info("OTel ClickHouse schema ready")
 	ready.Store(true)
 	return ready.Load
+}
+
+// runRequirementsCheck runs the boot-time requirements check (gated ON by
+// default via CERBERUS_REQUIREMENTS_CHECK). It validates the connected
+// ClickHouse server version against the config-derived minimum AND the
+// deployed schema shape of the configured (override-resolved) tables. The
+// check is parameterised by the active config: the native-rate knob raises
+// the version floor, and every table/column name comes from the resolved
+// schema structs so CERBERUS_SCHEMA_* overrides are respected. When any
+// gate fails the returned error aggregates every unmet requirement and the
+// caller exits non-zero — the precise boot-time failure replaces the
+// opaque query-time error a too-old server or divergent schema would
+// otherwise produce. When disabled, both gates are bypassed (one log line).
+func runRequirementsCheck(
+	ctx context.Context,
+	logger *slog.Logger,
+	client *chclient.Client,
+	cfg config.Config,
+) error {
+	if !cfg.RequirementsCheck {
+		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
+		return nil
+	}
+	req := preflight.Requirements{
+		Database:          cfg.ClickHouse.Database,
+		NativeRateEnabled: cfg.ExperimentalTSGridRange,
+		Metrics:           cfg.Schema,
+		Logs:              cfg.Logs,
+		Traces:            cfg.Traces,
+	}
+	if err := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req); err != nil {
+		return err
+	}
+	logger.Info(
+		"requirements check passed",
+		"database", cfg.ClickHouse.Database,
+		"native_rate", cfg.ExperimentalTSGridRange,
+	)
+	return nil
 }
 
 // schemaRetryInterval is the cadence of background auto-create-schema

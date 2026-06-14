@@ -21,6 +21,56 @@ func TestFromEnv_AutoCreateSchema_Default(t *testing.T) {
 	}
 }
 
+// TestFromEnv_RequirementsCheck_Default confirms the preflight knob defaults
+// to true (ON) when CERBERUS_REQUIREMENTS_CHECK is unset.
+func TestFromEnv_RequirementsCheck_Default(t *testing.T) {
+	t.Setenv("CERBERUS_REQUIREMENTS_CHECK", "")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if !cfg.RequirementsCheck {
+		t.Errorf("RequirementsCheck = false; want true (default ON)")
+	}
+}
+
+// TestFromEnv_RequirementsCheck_Parsing covers the ParseBool vocabulary and
+// confirms the knob can be turned off.
+func TestFromEnv_RequirementsCheck_Parsing(t *testing.T) {
+	cases := []struct {
+		val  string
+		want bool
+	}{
+		{"true", true},
+		{"1", true},
+		{"false", false},
+		{"FALSE", false},
+		{"0", false},
+		{"f", false},
+		{"  false  ", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			t.Setenv("CERBERUS_REQUIREMENTS_CHECK", tc.val)
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+			if cfg.RequirementsCheck != tc.want {
+				t.Errorf("RequirementsCheck = %v; want %v", cfg.RequirementsCheck, tc.want)
+			}
+		})
+	}
+}
+
+// TestFromEnv_RequirementsCheck_Invalid confirms a bad boolean fails fast.
+func TestFromEnv_RequirementsCheck_Invalid(t *testing.T) {
+	t.Setenv("CERBERUS_REQUIREMENTS_CHECK", "maybe")
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("FromEnv: want error for invalid bool, got nil")
+	}
+}
+
 // TestFromEnv_AutoCreateSchema_Parsing covers the strconv.ParseBool
 // vocabulary cerberus accepts for the flag — true/false/1/0/etc.
 func TestFromEnv_AutoCreateSchema_Parsing(t *testing.T) {
