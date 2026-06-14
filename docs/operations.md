@@ -11,8 +11,11 @@ model, signals, and scaling.
 > there. This page covers how the key knobs interact with the running service.
 
 Every runtime knob is an environment variable read at startup by
-`internal/config/config.go` (the solver knobs by `internal/solver`) — no YAML,
-INI, or TOML files are loaded. The most operationally significant knobs:
+`internal/config/config.go` (the solver knobs by `internal/solver`). An optional
+`cerberus.yaml` may supply file-level defaults, but the `CERBERUS_*` environment
+contract always wins (precedence: env > file > built-in default) — see the
+[configuration-file section in `configuration.md`](configuration.md#configuration-file-optional).
+The most operationally significant knobs:
 
 - **`CERBERUS_CH_ADDR` / `_DATABASE` / `_USERNAME` / `_PASSWORD`** point cerberus
   at ClickHouse; swapping a local node for a managed cluster is an env flip.
@@ -55,6 +58,35 @@ hiccups, or set `CERBERUS_CH_BREAKER_ENABLED=false` to switch the breaker
 off entirely — a disabled breaker is always-allow and never trips, so a
 saturated or dead CH surfaces as ordinary dial/query errors (useful when
 an external proxy or service mesh already owns CH fail-fast).
+
+**Blast radius — one breaker, all three heads, and `/readyz`.** The breaker
+is per-`Client`, and a single `chclient.Client` is constructed once at startup
+and **shared across all three API heads** (Prom, Loki, Tempo) *and* the
+`/readyz` readiness pinger. There is no per-head breaker. So when consecutive
+CH-health failures trip the breaker OPEN, the coupling is total:
+
+- **All three heads return 503.** Every Prom, Loki, and Tempo query short-
+  circuits to `ErrCircuitOpen` → `503` + `Retry-After: 5`, even if the failures
+  that tripped it all came from one head's traffic. A Loki outage thus fails
+  Tempo and Prom queries too.
+- **`/readyz` flips red.** The readiness probe pings through the same client, so
+  an OPEN breaker makes `/readyz` return `503` with the breaker-open signal
+  embedded in the `clickhouse` field (`health.md`). Under Kubernetes that
+  **evicts the pod from the Service endpoints** until the breaker closes — the
+  HALF-OPEN probe succeeds, `/readyz` goes green, and the pod is re-added.
+
+This single-breaker coupling is deliberate: a cerberus replica whose only
+backing store is unreachable has nothing useful to serve on any head, so
+fail-fast + eviction is the correct response (a load balancer routes around it
+to a replica whose CH is healthy). But operators must understand it is
+**all-or-nothing** — there is no graceful degradation where one head stays up
+while another's CH path is broken, because they share one ClickHouse client and
+one breaker. Tune `CERBERUS_CH_BREAKER_*` (or disable the breaker) with that
+whole-replica coupling in mind. A query whose latency — not CH health — is the
+problem is bounded separately by the per-query wall-clock timeout
+([`CERBERUS_QUERY_TIMEOUT` in `configuration.md`](configuration.md#query-limits-and-memory)),
+so a single slow query is cancelled without advancing the breaker toward a
+replica-wide trip.
 
 ### Sharded-pushdown solver
 
@@ -143,15 +175,19 @@ the SQL array machinery leaves at high cardinality. See
   golden, the compat 574/574 corpus, and the compose / e2e lanes are
   structurally untouched when the flag is unset.
 
-**Parity.** Validated on the chDB substrate (25.8) by a dual-emit test that runs
-the fan-out and the native path on the same seed and compares decoded float64
-grids: 16/18 cells bit-identical, 2 cells differ by exactly 1 ULP (the native
-value is the next double up from the correctly-rounded fan-out value — a
-sub-observable float-order difference, both render `0.12`). Treat this as
-experimental: the production / compose / e2e CH floor is now 25.8 (past the
-≥ 25.6 introduction point), but the path still rides the experimental setting
-and has not yet been differentially swept against a real (non-chDB) server
-where that setting is actually enforced.
+**Parity.** Validated on the chDB substrate (25.8) by a dual-emit test
+(`internal/chsql/range_window_native_chdb_test.go`) that runs the fan-out and
+the native path on the same seed and compares decoded float64 grids. On the
+pinned 12-sample ramp 8 of 9 grid cells are bit-identical and 1 diverges by
+exactly 1 ULP (the native value is the next double up from the correctly-rounded
+fan-out value — a sub-observable float-order difference, both render `0.12`).
+The test enforces a tight bound rather than the raw fixture count: **at most two
+cells may diverge, each by no more than 1 ULP** (`maxDualEmitUlpDivergentCells
+= 2`); any cell off by more than 1 ULP, or a third divergent cell, fails the
+test as an arithmetic regression. Treat this as experimental: the production /
+compose / e2e CH floor is now 25.8 (past the ≥ 25.6 introduction point), but the
+path still rides the experimental setting and has not yet been differentially
+swept against a real (non-chDB) server where that setting is actually enforced.
 
 ## Backing services
 
