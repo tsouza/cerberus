@@ -759,6 +759,13 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/sort.go:lowerSortByLabel#8f9fe409",
+      "message": "promql: %s expects at least 2 arguments (vector, label[, label…]), got %d",
+      "class": "rejection",
+      "trigger_query": "sort_by_label(http_requests)"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "internal",

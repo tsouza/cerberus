@@ -3,7 +3,7 @@ package promql
 import (
 	"fmt"
 
-	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -98,7 +98,7 @@ func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 // if-chain for underscored names). Used by [lowerSortByLabel] to build
 // ORDER BY keys over label values.
 func labelValueExpr(name string, s schema.Metrics) chplan.Expr {
-	if name == labels.MetricName {
+	if name == model.MetricNameLabel {
 		return &chplan.ColumnRef{Name: s.MetricNameColumn}
 	}
 	mapLookup := attributeLookup(s.AttributesColumn, name)

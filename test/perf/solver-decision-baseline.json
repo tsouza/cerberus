@@ -1530,6 +1530,18 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "sort_by_label_ascending",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "sort_by_label_desc_tiebreak",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "sort_desc_descending",
     "routed": false,
     "k": 0,

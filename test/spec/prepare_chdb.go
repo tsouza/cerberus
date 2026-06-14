@@ -76,10 +76,19 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 
 	// Mirror RunRoundTrip's rewrite ordering exactly: substituteNow64
 	// first (it consumes the now64(?) arg slots), then star expansion,
-	// then Map-column wrapping, then projection-count extraction.
+	// then Map-column wrapping, then the ORDER BY-over-Map nest guard,
+	// then projection-count extraction. nestMapOrderBy must run after the
+	// Map-wrap passes (it keys off the wrapped projection) and is required
+	// for the sort_by_label / sort_by_label_desc shape — without it the
+	// outer `ORDER BY Attributes['k']` binds to the toJSONString String
+	// alias and chDB rejects arrayElement-over-String. Keeping it here (not
+	// only in RunRoundTrip) is what makes Query byte-identical to the SQL
+	// the round-trip assertion executes — the perf profiler reads this
+	// prepared Query directly.
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
 	query = expandStarProjection(query)
 	query = rewriteMapProjections(query)
+	query = nestMapOrderBy(query)
 	colCount := extractProjectionCount(query)
 
 	return &PreparedRoundTrip{
