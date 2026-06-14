@@ -6,59 +6,32 @@ model, signals, and scaling.
 
 ## Configuration
 
+> **Full configuration reference → [`configuration.md`](configuration.md).**
+> Every `CERBERUS_*` variable, its type, default, and per-area grouping lives
+> there. This page covers how the key knobs interact with the running service.
+
 Every runtime knob is an environment variable read at startup by
-`internal/config/config.go` — no YAML, INI, or TOML files are loaded.
+`internal/config/config.go` (the solver knobs by `internal/solver`) — no YAML,
+INI, or TOML files are loaded. The most operationally significant knobs:
 
-| Variable                               | Default          | Meaning                                                                                                                                                                                                                                                            |
-| -------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CERBERUS_HTTP_ADDR`                   | `:8080`          | HTTP listen address for the Prom/Loki/Tempo APIs and health probes.                                                                                                                                                                                                |
-| `CERBERUS_CH_ADDR`                     | `localhost:9000` | ClickHouse native-protocol endpoint.                                                                                                                                                                                                                               |
-| `CERBERUS_CH_DATABASE`                 | `otel`           | ClickHouse database name.                                                                                                                                                                                                                                          |
-| `CERBERUS_CH_USERNAME`                 | `default`        | ClickHouse user.                                                                                                                                                                                                                                                   |
-| `CERBERUS_CH_PASSWORD`                 | (empty)          | ClickHouse password.                                                                                                                                                                                                                                               |
-| `CERBERUS_CH_DIAL_TIMEOUT`             | `5s`             | ClickHouse dial timeout (`time.ParseDuration` syntax).                                                                                                                                                                                                             |
-| `CERBERUS_CH_MAX_OPEN_CONNS`           | `10`             | Total pooled ClickHouse connections (busy + idle). Reproduces clickhouse-go's implicit default; explicit so it can be raised for fan-out. Pool exhaustion blocks up to the dial timeout then returns a breaker-neutral acquire-timeout. Must be > 0.               |
-| `CERBERUS_CH_MAX_IDLE_CONNS`           | `5`              | Idle ClickHouse connections kept warm for reuse. Reproduces clickhouse-go's implicit default. Must be > 0.                                                                                                                                                         |
-| `CERBERUS_CH_CONN_MAX_LIFETIME`        | `1h`             | Max age of a pooled ClickHouse connection before it is recycled (`time.ParseDuration` syntax). Reproduces clickhouse-go's implicit default. Must be > 0.                                                                                                           |
-| `CERBERUS_CH_QUERY_MAX_MEMORY`         | `1073741824`     | Per-query ClickHouse memory cap in bytes (`max_memory_usage` on every data-plane query; DDL exempt). `0` = don't set. Queries over the cap get a resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422), breaker-neutral.                                  |
-| `CERBERUS_QUERY_MAX_SAMPLES`           | `50000000`       | Per-query sample budget (Prometheus `--query.max-samples` parity); bounds cerberus-process memory. `0` disables.                                                                                                                                                   |
-| `CERBERUS_CH_BREAKER_ENABLED`          | `true`           | Master switch for the ClickHouse-disconnect circuit breaker. `false` makes the breaker a no-op (always-allow, never trips) — a saturated or dead CH then surfaces as ordinary dial/query errors instead of fast-fail `503 Retry-After: 5`.                         |
-| `CERBERUS_CH_BREAKER_THRESHOLD`        | `5`              | Consecutive CH-health failures within the window that trip the breaker CLOSED → OPEN. Must be >= 1.                                                                                                                                                                |
-| `CERBERUS_CH_BREAKER_WINDOW`           | `10s`            | Rolling window over which the threshold failures must occur (`time.ParseDuration` syntax). Must be > 0.                                                                                                                                                            |
-| `CERBERUS_CH_BREAKER_OPEN_INTERVAL`    | `5s`             | OPEN-state backoff before the breaker admits a single HALF-OPEN probe (`time.ParseDuration` syntax). Must be > 0.                                                                                                                                                  |
-| `CERBERUS_AUTO_CREATE_SCHEMA`          | `false`          | When `true`, apply the OTel-CH DDL at startup before serving.                                                                                                                                                                                                      |
-| `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`  | `false`          | **Experimental.** Emit native `timeSeriesRateToGrid` for eligible `rate(…[range])` query_range (needs CH ≥ 25.6; prod is on 25.8 so the floor is met, errors on < 25.6). OFF keeps the fan-out. See [native rate](#experimental-native-rate-timeseriesratetogrid). |
-| `CERBERUS_LOG_FORMAT`                  | `text`           | slog handler kind (`text` or `json`).                                                                                                                                                                                                                              |
-| `CERBERUS_LOG_LEVEL`                   | `info`           | Minimum slog level (`debug` / `info` / `warn` / `error`).                                                                                                                                                                                                          |
-| `CERBERUS_OTLP_ENDPOINT`               | (empty)          | gRPC OTLP target for self-telemetry. Empty disables exporters.                                                                                                                                                                                                     |
-| `CERBERUS_OTLP_INSECURE`               | `false`          | Dial OTLP endpoint without TLS.                                                                                                                                                                                                                                    |
-| `CERBERUS_OTLP_HEADERS`                | (empty)          | Comma-separated `key=value` gRPC metadata (e.g. auth tokens).                                                                                                                                                                                                      |
-| `CERBERUS_OTLP_TIMEOUT`                | `10s`            | Per-request OTLP roundtrip timeout.                                                                                                                                                                                                                                |
-| `CERBERUS_OTLP_EXPORT_INTERVAL`        | `10s`            | Metric `PeriodicReader` flush interval for self-telemetry. The quickstart default is tuned for time-to-first-panel; deployments running at scale should raise it (e.g. `60s`) to cut collector load.                                                               |
-| `CERBERUS_ADMIT_DISABLED`              | `false`          | Disable per-handler concurrency caps.                                                                                                                                                                                                                              |
-| `CERBERUS_ADMIT_PROM`                  | `64`             | Max simultaneous in-flight Prom API requests.                                                                                                                                                                                                                      |
-| `CERBERUS_ADMIT_LOKI`                  | `64`             | Max simultaneous in-flight Loki API requests.                                                                                                                                                                                                                      |
-| `CERBERUS_ADMIT_TEMPO`                 | `32`             | Max simultaneous in-flight Tempo API requests.                                                                                                                                                                                                                     |
-| `CERBERUS_EVAL_ROUTE`                  | `auto`           | Sharded-pushdown solver mode: `auto` routes eligible plans (route B); `single` disables routing; `sharded` forces every eligible plan to route B. See [Sharded-pushdown solver](#sharded-pushdown-solver).                                                         |
-| `CERBERUS_SHARD_MIN_FANOUT`            | `16`             | `Fmin` — minimum anchor fan-out `F = max(Range/Step)` a plan must reach to be worth slicing (auto mode).                                                                                                                                                           |
-| `CERBERUS_SHARD_MIN_ANCHOR_PAIRS`      | `4000`           | Minimum expanded `(sample, anchor)` pair count `N×F` a plan must reach (auto mode).                                                                                                                                                                                |
-| `CERBERUS_SHARD_MAX_K`                 | `8`              | Caps the shard count `K`.                                                                                                                                                                                                                                          |
-| `CERBERUS_SHARD_MIN_ANCHORS_PER_SLICE` | `16`             | Grid quantum — each slice owns at least this many anchors (never fewer than 2).                                                                                                                                                                                    |
-| `CERBERUS_SHARD_PARALLEL`              | `3`              | `P` — per-request shard concurrency.                                                                                                                                                                                                                               |
-| `CERBERUS_SOLVER_TIMEOUT`              | `60s`            | End-to-end bound on a routed request.                                                                                                                                                                                                                              |
-| `CERBERUS_SHARD_MAX_OUTPUT_ROWS`       | `2000000`        | Caps composed per-request output rows; an overrun is a typed `422`.                                                                                                                                                                                                |
-| `CERBERUS_SHARD_MEMORY_APPORTION`      | `false`          | When `true`, per-shard `max_memory_usage` is `cap/P` (256 MiB floor), holding total exposure at the single-query cap.                                                                                                                                              |
+- **`CERBERUS_CH_ADDR` / `_DATABASE` / `_USERNAME` / `_PASSWORD`** point cerberus
+  at ClickHouse; swapping a local node for a managed cluster is an env flip.
+- **`CERBERUS_CH_QUERY_MAX_MEMORY`** bounds per-query ClickHouse memory so a
+  single over-broad query gets a deterministic rejection instead of racing the
+  server-total cap; **`CERBERUS_QUERY_MAX_SAMPLES`** bounds cerberus-process
+  memory the same way.
+- **`CERBERUS_CH_BREAKER_*`** tune the ClickHouse-disconnect circuit breaker
+  (below); **`CERBERUS_ADMIT_*`** tune the per-handler concurrency caps
+  ([Scaling](#per-handler-concurrency-caps-admission-control)).
+- **`CERBERUS_EVAL_ROUTE`** + the `CERBERUS_SHARD_*` knobs tune the
+  sharded-pushdown solver (below); **`CERBERUS_OTLP_ENDPOINT`** enables
+  self-telemetry export.
 
-Schema-shape overrides (table names, when the CH layout deviates from
-the OTel-CH exporter defaults) are listed in
-[`observability.md`](observability.md#schema-shape-overrides).
-
-Misconfigured values fail fast: an unparseable duration, an unknown log
-level, or a malformed OTLP header list aborts startup with a clear error
-rather than silently downgrading behaviour. Secrets (CH password, OTLP
-bearer tokens) live in the same env-var namespace and are sourced from
-Kubernetes `Secret` / Docker `secrets:` / a vault-injecting init
-container — never committed.
+Misconfigured values fail fast: an unparseable duration, an unknown log level,
+or a malformed OTLP header list aborts startup with a clear error rather than
+silently downgrading behaviour. Secrets (CH password, OTLP bearer tokens) live
+in the same env-var namespace and are sourced from Kubernetes `Secret` / Docker
+`secrets:` / a vault-injecting init container — never committed.
 
 ### ClickHouse circuit breaker
 
