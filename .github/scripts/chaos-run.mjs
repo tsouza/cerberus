@@ -61,6 +61,23 @@ const METRIC_SETTLE_DEADLINE_MS = 90_000; // OTLP flush lag before self-metrics 
 const POLL_INTERVAL_MS = 2_000;
 const SETTLE_INTERVAL_MS = 3_000;
 
+// Breaker HALF-OPEN -> CLOSED drive (ch-pod-kill heal). When CH comes back the
+// breaker is OPEN; after its OPEN_INTERVAL cooldown the NEXT query through it
+// transitions OPEN -> HALF-OPEN and admits exactly one recovery probe, and a
+// SUCCESSFUL probe is what closes it (internal/chclient/breaker.go record():
+// stateHalfOpen + err==nil -> stateClosed). /readyz going green and a single
+// "all 3 heads 200" sweep do NOT guarantee the close: /readyz keys on the
+// SEPARATE per-head probe breaker (#904), and with >=2 replicas each carries
+// its OWN main query breaker, so one sweep may close one replica's breaker
+// while another stays HALF-OPEN. We therefore DRIVE sustained successful
+// CH-touching queries (prom head -> real CH round-trip through the main
+// breaker) and POLL cerberus_ch_breaker_state until it reads CLOSED, so the
+// post-recovery assertion (and every downstream scenario that reads the gauge)
+// sees a genuinely-CLOSED breaker. This drives the legitimate transition; it
+// never weakens the assertion.
+const BREAKER_CLOSE_DEADLINE_MS = 90_000; // bound the drive-to-CLOSED poll (OTLP gauge lag + per-replica probes)
+const BREAKER_CLOSE_DRIVE_QUERIES = 8; // successful CH-touching queries to fire per poll tick (covers >=2 replicas' breakers)
+
 // cerberus_ch_breaker_state gauge encoding — mirrors the breakerGauge* consts
 // in internal/chclient/breaker_metrics.go (closed=0, open=1, half-open=2). The
 // chaos asserts key on CLOSED (0) as the only correct steady state for a
@@ -302,6 +319,35 @@ async function queryBreakerMetric(metric) {
   }
 }
 
+// driveBreakerClosed — after CH recovers, the main query breaker is in
+// HALF-OPEN until a SUCCESSFUL CH-touching request flows through it and closes
+// it (breaker.go record(): stateHalfOpen + err==nil -> stateClosed). This
+// fires a burst of successful prom-head queries (each a real CH round-trip
+// through the main breaker) on every poll tick and polls cerberus_ch_breaker_state
+// until it reads CLOSED (0) or the deadline elapses. Returns true once CLOSED,
+// false on timeout. It is a DRIVE, not a tolerance: callers still bindingly
+// assert the gauge reads CLOSED afterwards.
+async function driveBreakerClosed(deadlineMs) {
+  return pollUntil(
+    async () => {
+      // Fan out successful CH-touching queries so every replica's main breaker
+      // gets a HALF-OPEN probe + a closing success (with >=2 replicas the
+      // Service round-robins, so a single query may miss a still-HALF-OPEN
+      // replica). A non-200 here is fine — it just means we drive again next
+      // tick; the close only lands once a probe succeeds.
+      for (let i = 0; i < BREAKER_CLOSE_DRIVE_QUERIES; i += 1) {
+        await httpGet('/api/v1/query?query=up', { timeoutMs: 10_000 });
+      }
+      const state = await queryBreakerMetric('cerberus_ch_breaker_state');
+      // null = gauge not yet flushed (OTLP lag); keep driving until it reads a
+      // concrete CLOSED. We must not clear on null here — the binding assert
+      // that follows tolerates null, but the DRIVE wants a real CLOSED read.
+      return state === BREAKER_STATE_CLOSED;
+    },
+    { deadlineMs, intervalMs: SETTLE_INTERVAL_MS, label: 'breaker-close' },
+  );
+}
+
 // ---- scenario: ch-pod-kill -------------------------------------------
 // CH outage -> shared breaker OPEN -> 503 every head, /readyz red,
 // /healthz green (NO restart), auto-recover after CH recreate.
@@ -380,6 +426,25 @@ async function scenarioChPodKill() {
     failures.push('not all 3 heads returned 200 after CH recovery');
   } else {
     log('    all 3 heads 200');
+  }
+
+  // Drive the main query breaker HALF-OPEN -> CLOSED before asserting. CH is
+  // back, but the breaker only closes when a SUCCESSFUL CH-touching query
+  // flows through it (breaker.go: stateHalfOpen + err==nil -> stateClosed).
+  // /readyz green + a single heads sweep don't guarantee that across >=2
+  // replicas, so push sustained successful prom-head queries (real CH
+  // round-trips through the main breaker) and poll the gauge until CLOSED. This
+  // closes the legitimate transition so the post-recovery assertion below — and
+  // every later scenario that reads cerberus_ch_breaker_state — sees a genuinely
+  // CLOSED breaker, with NO assertion weakened.
+  log('  driving main breaker HALF-OPEN -> CLOSED with successful CH queries...');
+  const breakerClosed = await driveBreakerClosed(BREAKER_CLOSE_DEADLINE_MS);
+  if (!breakerClosed) {
+    failures.push(
+      'main breaker did not return to CLOSED after CH recovery despite sustained successful CH queries — HALF-OPEN -> CLOSED probe never closed (would mean a real breaker bug, not OTLP lag)',
+    );
+  } else {
+    log('    main breaker driven to CLOSED (cerberus_ch_breaker_state == 0)');
   }
 
   // Post-recovery metric corroboration (settle poll): trips >= 1, state == 0.
