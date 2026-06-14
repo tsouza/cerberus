@@ -426,11 +426,21 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 	if metaSlot.Alias != "Metadata" {
 		t.Fatalf("metadata slot alias: got %q, want %q", metaSlot.Alias, "Metadata")
 	}
+	// The metadata slot is toJSONString(mapFilter((k,v)->v!='', LogAttributes)):
+	// the inner mapFilter drops empty-valued LogAttributes entries, and the
+	// outer toJSONString renders the filtered map to a JSON-object String so
+	// it scans on BOTH chDB (no native Map scan) and prod ClickHouse.
 	metaFn, ok := metaSlot.Expr.(*chplan.FuncCall)
-	if !ok || metaFn.Name != "mapFilter" {
-		t.Fatalf("metadata slot expr: got %T/%v, want *chplan.FuncCall mapFilter "+
-			"(structured-metadata surface drops empty LogAttributes values)",
+	if !ok || metaFn.Name != "toJSONString" || len(metaFn.Args) != 1 {
+		t.Fatalf("metadata slot expr: got %T/%v, want *chplan.FuncCall toJSONString(<1 arg>) "+
+			"(structured-metadata surface scans as a JSON string for chDB Map-scan compat)",
 			metaSlot.Expr, metaSlot.Expr)
+	}
+	innerFilter, ok := metaFn.Args[0].(*chplan.FuncCall)
+	if !ok || innerFilter.Name != "mapFilter" {
+		t.Fatalf("metadata slot inner expr: got %T/%v, want *chplan.FuncCall mapFilter "+
+			"(structured-metadata surface drops empty LogAttributes values)",
+			metaFn.Args[0], metaFn.Args[0])
 	}
 
 	attrsSlot := proj.Projections[1]

@@ -403,7 +403,7 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByL
 // third element of each `[ts, line, {metadata}]` value tuple in a
 // streams response. The shape is
 //
-//	mapFilter((k, v) -> v != '', LogAttributes)
+//	toJSONString(mapFilter((k, v) -> v != '', LogAttributes))
 //
 // Empty-valued entries are dropped so a row that doesn't populate a given
 // attribute doesn't advertise an empty column — mirroring reference
@@ -413,21 +413,34 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByL
 // structured-metadata grammar, so no per-key normalisation runs here;
 // the handler normalises on the way out alongside the stream labels.
 //
+// The filtered map is rendered to a JSON object string via `toJSONString`
+// rather than projected as a raw `Map(String, String)`. A native Map
+// column scans cleanly on prod ClickHouse (clickhouse-go) but the chDB
+// probe lane (chdb-go's Parquet wire format) cannot cast a Map into a Go
+// `map[string]string` — see internal/chclient/chdb_probe_test.go, which
+// pins this exact shim. `toJSONString` returns a plain `String` that
+// BOTH backends scan; the cursor json.Unmarshal's it back into a map.
+//
 // Callers gate on a non-empty AttributesColumn — a custom schema without
 // a structured-metadata column never reaches this expression.
 func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "mapFilter",
+		Name: "toJSONString",
 		Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{"k", "v"},
-				Body: &chplan.Binary{
-					Op:    chplan.OpNe,
-					Left:  &chplan.BareIdent{Name: "v"},
-					Right: &chplan.LitString{V: ""},
+			&chplan.FuncCall{
+				Name: "mapFilter",
+				Args: []chplan.Expr{
+					&chplan.Lambda{
+						Params: []string{"k", "v"},
+						Body: &chplan.Binary{
+							Op:    chplan.OpNe,
+							Left:  &chplan.BareIdent{Name: "v"},
+							Right: &chplan.LitString{V: ""},
+						},
+					},
+					&chplan.ColumnRef{Name: s.AttributesColumn},
 				},
 			},
-			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},
 	}
 }

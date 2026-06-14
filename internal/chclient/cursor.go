@@ -2,6 +2,7 @@ package chclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -162,7 +163,14 @@ func (c *rowsCursor) Next() bool {
 	}
 	var s Sample
 	var labels map[string]string
-	var metadata map[string]string
+	// metadataJSON receives the fifth `Metadata` column when present: the
+	// log-stream projection renders the filtered LogAttributes map via
+	// `toJSONString(...)`, so it scans as a plain `String` (a JSON object)
+	// rather than a raw `Map(String, String)`. A native Map column scans
+	// on prod ClickHouse but NOT under the chDB probe lane (chdb-go's
+	// Parquet driver can't cast a Map — see chdb_probe_test.go); the JSON
+	// string scans cleanly on both, and is json.Unmarshal'd back below.
+	var metadataJSON string
 	// Probe the result-set shape once: the Loki log-stream projection
 	// appends a fifth `Metadata` column, every other path projects four.
 	// driver.Rows.Columns() is stable across the stream, so latch the
@@ -173,7 +181,7 @@ func (c *rowsCursor) Next() bool {
 		c.metadataProbed = true
 	}
 	if c.hasMetadata {
-		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value, &metadata); err != nil {
+		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value, &metadataJSON); err != nil {
 			c.err = fmt.Errorf("chclient: scan: %w", err)
 			return false
 		}
@@ -203,10 +211,35 @@ func (c *rowsCursor) Next() bool {
 	s.Labels = c.internLabels(labels)
 	// Per-row structured metadata is genuinely distinct per log line
 	// (durations, byte counts, query ids), so it is NOT interned — unlike
-	// the series-identity Labels map. Left nil on the four-column path.
-	s.Metadata = metadata
+	// the series-identity Labels map. The fifth column arrives as a JSON
+	// object string (`toJSONString` of the filtered LogAttributes map);
+	// decode it back to a map. An empty / `{}` payload leaves Metadata
+	// nil, so [StreamValue.MarshalJSON] falls back to the two-element
+	// `[ts, line]` tuple. Left nil entirely on the four-column path.
+	if metadata := decodeMetadataJSON(metadataJSON); len(metadata) > 0 {
+		s.Metadata = metadata
+	}
 	c.cur = s
 	return true
+}
+
+// decodeMetadataJSON parses the `toJSONString(<Map>)` payload of the
+// Loki log-stream `Metadata` column back into a `map[string]string`. An
+// empty string, a `{}` object, or a JSON null all decode to an empty
+// map, so a row whose filtered LogAttributes were empty surfaces no
+// structured metadata. A decode error is swallowed to a nil map rather
+// than failing the whole stream — a malformed metadata object should
+// never take down an otherwise valid log query; the handler simply emits
+// the two-element `[ts, line]` tuple for that entry.
+func decodeMetadataJSON(s string) map[string]string {
+	if s == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 // internLabels returns the canonical shared map instance for the
