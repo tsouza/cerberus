@@ -247,12 +247,12 @@ promql/parser      pkg/logql/syntax         pkg/traceql        ← reference ups
               │               anchor slices; emit + execute each
               │                       │
               ▼                       ▼
- ┌────────────────────────────────────────────────┐
+ ┌─────────────────────────────────────────────────┐
  │           internal/chsql — typed emitter        │   • parameterised, escape-free
  │  QueryBuilder slots + typed Frag constructors;  │   • PREWHERE promotion on Filter(Scan)
  │  closed typed surface — no raw SQL. Route B     │   • sort-key-aware predicate ordering
  │  emits each shard byte-identically to route A.  │   • streaming clickhouse-go/v2 cursor
- └────────────────────────────────────────────────┘
+ └─────────────────────────────────────────────────┘
               │                       │
               ▼                       ▼  K statements, bounded parallelism +
    one ClickHouse statement   connection gate, concatenated behind one
