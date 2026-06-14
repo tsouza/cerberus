@@ -61,6 +61,59 @@ const METRIC_SETTLE_DEADLINE_MS = 90_000; // OTLP flush lag before self-metrics 
 const POLL_INTERVAL_MS = 2_000;
 const SETTLE_INTERVAL_MS = 3_000;
 
+// ---- deliberately-expensive query (slow-query / admit-saturation) ----
+//
+// Both the ch-slow-query-timeout and load-admit-saturation scenarios need a
+// query that is GENUINELY expensive to evaluate — heavy enough to blow the
+// 3s CERBERUS_QUERY_TIMEOUT the chaos overlay sets (slow-query) or to hold
+// an admit slot long enough to overlap a concurrent burst (saturation).
+//
+// The cost MUST come from COMPUTE PER ANCHOR, not from anchor count. An
+// earlier version drove cost with a 30-day range at step=1s (~2.6M anchors),
+// but cerberus's resolution guard (internal/api/prom/handler.go:
+// maxResolutionPoints = 11000) rejects any range query whose
+// (end-start)/step exceeds 11000 points with a 400 BEFORE the wall-clock
+// timeout is even armed — so the "slow" query 400'd instead of timing out,
+// and the scenario asserted a 503 it could never see. The 11000-point cap is
+// an intentional Prometheus-compat invariant, so the query has to stay UNDER
+// it while still costing seconds to evaluate.
+//
+// The fix: a MODEST outer point count (well under the cap) where EACH outer
+// anchor fans out into a heavy nested subquery —
+//   max_over_time( sum(rate(<counter>[INNER])) [SUBQ_RANGE:SUBQ_STEP] )
+// Every outer anchor re-evaluates SUBQ_RANGE/SUBQ_STEP inner sub-anchors,
+// each a rate() over INNER seconds of the seeded high-cardinality counter
+// (the O(rows x anchors) compute fan-out). That product (outer x inner)
+// reliably exceeds 3s on the CI runner without ever tripping the points cap.
+const SLOW_QUERY_RANGE_SECONDS = 2 * 3600; // 2h outer window
+const SLOW_QUERY_STEP_SECONDS = 1; // 1s outer step => 7200 outer anchors (< 11000 cap)
+const SLOW_QUERY_SUBQ_RANGE = '1h'; // each anchor fans out a 1h subquery
+const SLOW_QUERY_SUBQ_STEP = '5s'; // at 5s => 720 inner sub-anchors per outer anchor
+const SLOW_QUERY_INNER_RANGE = '10m'; // each sub-anchor rate()s 10m of raw counter rows
+// The seeded high-cardinality counter the rate() scans (test/e2e/seed: 600
+// samples/series in otel_metrics_sum -> histogram-routed under this name).
+const SLOW_QUERY_COUNTER = 'http_server_request_duration_count';
+
+// slowQueryPath builds the /api/v1/query_range path for the expensive
+// nested-subquery query. anchored to `now` so the outer window overlaps the
+// rolling-seeded data. The point count is SLOW_QUERY_RANGE_SECONDS /
+// SLOW_QUERY_STEP_SECONDS = 7200, comfortably under the 11000-point
+// resolution cap, so the request passes the guard and reaches the
+// wall-clock-timeout path the slow-query contract pins.
+function slowQueryPath() {
+  const now = Math.floor(Date.now() / 1000);
+  const start = now - SLOW_QUERY_RANGE_SECONDS;
+  const expr =
+    `max_over_time(` +
+    `sum(rate(${SLOW_QUERY_COUNTER}[${SLOW_QUERY_INNER_RANGE}]))` +
+    `[${SLOW_QUERY_SUBQ_RANGE}:${SLOW_QUERY_SUBQ_STEP}])`;
+  return (
+    '/api/v1/query_range?query=' +
+    encodeURIComponent(expr) +
+    `&start=${start}&end=${now}&step=${SLOW_QUERY_STEP_SECONDS}`
+  );
+}
+
 // The three data-plane head probes. Each is a cheap query the seeded +
 // rolling OTel data answers with a 200 in steady state.
 const HEAD_PROBES = [
@@ -308,18 +361,32 @@ async function scenarioChPodKill() {
   }
 
   // Post-recovery metric corroboration (settle poll): trips >= 1, state == 0.
+  // This is BEST-EFFORT corroboration, not the binding trip signal — the
+  // breaker trip is already bindingly asserted DURING the fault via the
+  // 503 + Retry-After:5 HTTP path above. The self-metric flows OTLP ->
+  // collector -> CH -> Prom head, so it rides the very CH the outage knocked
+  // out; on the e2e fixture CH uses ephemeral storage with a Recreate
+  // strategy (test/e2e/k3s/clickhouse.yaml), so the trip counter written
+  // mid-outage can be lost when CH is recreated and never read back —
+  // surfacing as a NULL series (metric absent), not a 0. We therefore
+  // tolerate NULL (absent, OTLP-lag / ephemeral-CH-wipe — same tolerance the
+  // sibling state check already applies) but still FAIL if the series IS
+  // present and reads < 1, which would mean the trip genuinely wasn't
+  // recorded despite CH being queryable.
   log('  corroborating breaker self-metrics via Prom head (settle poll)...');
-  const tripsOk = await pollUntil(
+  let tripsSeen = null;
+  await pollUntil(
     async () => {
       const trips = await queryBreakerMetric('cerberus_ch_breaker_trips_total');
+      if (trips !== null) tripsSeen = trips;
       return trips !== null && trips >= 1;
     },
     { deadlineMs: METRIC_SETTLE_DEADLINE_MS, intervalMs: SETTLE_INTERVAL_MS, label: 'trips>=1' },
   );
-  if (!tripsOk) {
-    failures.push('cerberus_ch_breaker_trips_total never reached >=1 (breaker trip not recorded)');
+  if (tripsSeen !== null && tripsSeen < 1) {
+    failures.push(`cerberus_ch_breaker_trips_total present but < 1 (${tripsSeen}) — breaker trip not recorded despite CH being queryable`);
   } else {
-    log('    cerberus_ch_breaker_trips_total >= 1');
+    log(`    cerberus_ch_breaker_trips_total == ${tripsSeen === null ? '(absent; OTLP lag / ephemeral-CH wipe, tolerated — trip already asserted via 503)' : tripsSeen}`);
   }
   const state = await queryBreakerMetric('cerberus_ch_breaker_state');
   if (state !== null && state !== 0) {
@@ -351,18 +418,15 @@ async function scenarioChSlowTimeout() {
   // Baseline breaker state before the slow burst.
   const baselineTrips = await queryBreakerMetric('cerberus_ch_breaker_trips_total');
 
-  // A heavy query_range: a wide range with a tiny step explodes into
-  // millions of anchors (the O(rows x anchors) compute fan-out), reliably
-  // blowing past the small CERBERUS_QUERY_TIMEOUT (3s) the chaos overlay
-  // set. ?timeout= mins with the cap; we lean on the configured cap.
-  const now = Math.floor(Date.now() / 1000);
-  const start = now - 30 * 24 * 3600; // 30 days
-  const slowPath =
-    '/api/v1/query_range?query=' +
-    encodeURIComponent('sum(rate(http_server_request_duration_count[5m]))') +
-    `&start=${start}&end=${now}&step=1`;
+  // A heavy query_range whose cost comes from COMPUTE PER ANCHOR (a nested
+  // subquery fanned out at every outer anchor), not from anchor count — so
+  // it stays under the 11000-point resolution cap (which would 400 before
+  // the timeout arms) yet blows past the small CERBERUS_QUERY_TIMEOUT (3s)
+  // the chaos overlay set. See slowQueryPath / the SLOW_QUERY_* constants.
+  // ?timeout= mins with the cap; we lean on the configured cap.
+  const slowPath = slowQueryPath();
 
-  log('  fault: issuing a deliberately slow query_range (wide range, 1s step)...');
+  log('  fault: issuing a deliberately slow query_range (nested subquery, heavy per-anchor compute)...');
   const slow = await httpGet(slowPath, { timeoutMs: 30_000 });
   if (slow.status !== 503) {
     failures.push(`slow query should return 503 at the wall-clock cap; got ${slow.status} (body=${slow.body.slice(0, 200)})`);
@@ -687,14 +751,11 @@ async function scenarioLoadAdmitSaturation() {
 
   const baselineState = await queryBreakerMetric('cerberus_ch_breaker_state');
 
-  // Fire N concurrent requests > the (overlay) admit cap. Use the slow
-  // query so each request holds its admit slot long enough to overlap.
-  const now = Math.floor(Date.now() / 1000);
-  const start = now - 7 * 24 * 3600;
-  const slowPath =
-    '/api/v1/query_range?query=' +
-    encodeURIComponent('sum(rate(http_server_request_duration_count[5m]))') +
-    `&start=${start}&end=${now}&step=1`;
+  // Fire N concurrent requests > the (overlay) admit cap. Use the same
+  // heavy nested-subquery query (slowQueryPath) so each request holds its
+  // admit slot long enough to overlap — and so it passes the 11000-point
+  // resolution cap instead of 400'ing before it can occupy a slot.
+  const slowPath = slowQueryPath();
 
   const N = 16; // >> CERBERUS_ADMIT_PROM (2) in the chaos overlay
   log(`  fault: firing ${N} concurrent over-cap requests + one below-cap probe...`);
@@ -803,23 +864,51 @@ function selectedScenarios() {
   return pool;
 }
 
+// PREFLIGHT_DEADLINE_MS bounds both the initial preflight gate and the
+// between-scenario heal gate: how long to wait for /readyz + all heads green
+// before declaring the stack (still) healthy.
+const PREFLIGHT_DEADLINE_MS = 60_000;
+
+async function assertStackGreen(deadlineMs) {
+  const ready = await assertReadyzGreen(deadlineMs);
+  if (!ready) return false;
+  return assertHeadsHealthy(deadlineMs);
+}
+
 async function preflight() {
   // The whole lane assumes a healthy stack from `just e2e-up` + seed +
   // wait-otel. Confirm green before injecting the first fault so a
   // bring-up problem doesn't masquerade as a chaos failure.
   log('preflight: asserting the stack is green before fault injection...');
-  const ready = await assertReadyzGreen(60_000);
-  if (!ready) {
-    error('preflight: /readyz never reached 200 — the stack is not healthy; aborting before any fault injection');
-    return false;
-  }
-  const headsOk = await assertHeadsHealthy(60_000);
-  if (!headsOk) {
-    error('preflight: not all 3 heads returned 200 before fault injection — aborting');
+  if (!(await assertStackGreen(PREFLIGHT_DEADLINE_MS))) {
+    error('preflight: /readyz + all heads never reached 200 — the stack is not healthy; aborting before any fault injection');
     return false;
   }
   log('preflight OK: /readyz 200 + all heads 200');
   return true;
+}
+
+// healBetweenScenarios re-establishes the green-stack precondition each
+// scenario assumes. The lane is sequential and a CH-outage scenario tears CH
+// down (Recreate + ephemeral storage), so the NEXT scenario must not start
+// until /readyz + all heads are green again AND the data plane has had a
+// settle window for the rolling re-seed + OTLP re-export to repopulate the
+// freshly-recreated CH — otherwise a still-recovering stack from the prior
+// fault masquerades as the next scenario's failure (e.g. cerberus-pod-kill's
+// aggregate-success loop running while CH is mid-re-DDL). This implements the
+// heal-between-each-scenario invariant the lane's header documents.
+const HEAL_SETTLE_MS = 15_000; // rolling re-seed cadence (~30s) + OTLP flush headroom
+async function healBetweenScenarios(nextName) {
+  log(`heal gate: waiting for the stack to return green before scenario ${nextName}...`);
+  const green = await assertStackGreen(CH_RECOVERY_DEADLINE_MS);
+  if (!green) {
+    return `heal gate before ${nextName}: stack did not return to /readyz 200 + all heads 200 within the recovery budget after the prior scenario`;
+  }
+  // A short data-plane settle so the next scenario sees repopulated CH, not
+  // an empty freshly-recreated one (heads can be 200 on an empty table).
+  await sleep(HEAL_SETTLE_MS);
+  log('heal gate: stack green + settled');
+  return null;
 }
 
 async function main() {
@@ -834,7 +923,21 @@ async function main() {
   }
 
   const failed = [];
-  for (const s of scenarios) {
+  for (let i = 0; i < scenarios.length; i += 1) {
+    const s = scenarios[i];
+    // Between scenarios (not before the first — preflight already gated it),
+    // re-establish the green-stack precondition each scenario assumes. A
+    // prior CH-outage scenario leaves CH freshly recreated (ephemeral) and
+    // re-seeding; starting the next scenario on that still-recovering stack
+    // is what turned ch-pod-kill's CH wipe into ch-slow-query / cerberus-pod-
+    // kill failures (a 502 fast-query, a 72% aggregate-success loop).
+    if (i > 0) {
+      const healFail = await healBetweenScenarios(s.name);
+      if (healFail) {
+        error(healFail);
+        failed.push(`heal-gate-before-${s.name}`);
+      }
+    }
     // gh.mjs's group() wraps a SYNC fn in try/finally, so it can't bracket
     // async work (::endgroup:: would fire before the promise resolves).
     // Emit the group markers manually around the awaited scenario instead.
