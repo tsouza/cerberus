@@ -959,25 +959,63 @@ async function endOfRunHealthGate() {
 // for the time-windowed assertions of the scenarios that follow. The one-shot
 // closes the freshness gap between CH coming back and the next rolling tick
 // landing; the PVC guarantees the schema + historical data are already there.
+//
+// `destructive: true` marks a scenario that injects a POD-KILL fault (CH pod or
+// a cerberus replica). The run loop sorts every selected pool so NON-destructive
+// scenarios run FIRST and destructive ones LAST (see orderScenarios). This is
+// load-bearing for ch-slow-query-timeout: that scenario's "deliberately slow"
+// nested-subquery query is DATA-DRIVEN (its inner rate() evals scan the seeded
+// counter), so it only reliably exceeds the 3s CERBERUS_QUERY_TIMEOUT — and thus
+// returns the contracted 503 — when it runs against the FULL rolling-seeded
+// window. Running it BEFORE the destructive ch-pod-kill (whose recreate leaves a
+// thin post-reseed window right after the one-shot re-anchor) keeps the query
+// cost-dominated. As a bonus, load-admit-saturation's "breaker stays CLOSED"
+// assertion then runs on a naturally-closed breaker (no prior outage), and each
+// destructive scenario re-establishes its own preconditions via the heal gate.
 const PHASE1 = [
-  { name: 'ch-pod-kill', run: scenarioChPodKill, recreatesCh: true },
+  // Non-destructive, data-dependent: the slow-query timeout contract. Runs on
+  // the full rolling-seeded window so the heavy nested subquery reliably blows
+  // the 3s wall-clock cap.
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
-  { name: 'cerberus-pod-kill', run: scenarioCerberusPodKill },
+  // Destructive pod-kills, sorted to run after the non-destructive set.
+  { name: 'ch-pod-kill', run: scenarioChPodKill, recreatesCh: true, destructive: true },
+  { name: 'cerberus-pod-kill', run: scenarioCerberusPodKill, destructive: true },
 ];
 
 const PHASE2 = [
-  // ch-network-partition only blackholes egress with a NetworkPolicy; it never
-  // deletes the CH pod, so CH data survives — no re-seed needed after it. (On
-  // the k3d image where kube-router does not enforce NetworkPolicy this
-  // scenario records not-applicable; see scenarioChNetworkPartition.)
-  { name: 'ch-network-partition', run: scenarioChNetworkPartition },
+  // load-admit-saturation is non-destructive (admission-layer shed only) and
+  // wants a naturally-CLOSED breaker, so it sorts into the non-destructive head
+  // of the run alongside ch-slow-query-timeout.
   { name: 'load-admit-saturation', run: scenarioLoadAdmitSaturation },
+  // ch-network-partition only blackholes egress with a NetworkPolicy; it never
+  // deletes the CH pod, so CH data survives — no re-seed needed after it. It is
+  // non-destructive in the pod-kill sense, but it DOES trip the breaker OPEN, so
+  // it sorts after the breaker-neutral non-destructive scenarios yet before the
+  // pod-kills. (On the k3d image where kube-router does not enforce
+  // NetworkPolicy this scenario records not-applicable; see
+  // scenarioChNetworkPartition.)
+  { name: 'ch-network-partition', run: scenarioChNetworkPartition },
 ];
+
+// orderScenarios — stable-sort a selected pool so NON-destructive scenarios run
+// before destructive (pod-kill) ones. Stable: authored order is preserved within
+// each group, so the non-destructive head stays [slow-query, load-admit,
+// network-partition] and the destructive tail stays [ch-pod-kill,
+// cerberus-pod-kill]. The ch-pod-kill recreate (and its thin post-reseed window)
+// therefore always lands AFTER the data-dependent slow-query has run against the
+// full rolling-seeded window.
+function orderScenarios(pool) {
+  const rank = (s) => (s.destructive ? 1 : 0);
+  return pool
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => rank(a.s) - rank(b.s) || a.i - b.i)
+    .map((e) => e.s);
+}
 
 function selectedScenarios() {
   let pool = PHASE === 'all' ? [...PHASE1, ...PHASE2] : [...PHASE1];
   if (ONLY.length > 0) pool = pool.filter((s) => ONLY.includes(s.name));
-  return pool;
+  return orderScenarios(pool);
 }
 
 // PREFLIGHT_DEADLINE_MS bounds both the initial preflight gate and the
