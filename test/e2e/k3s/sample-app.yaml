@@ -27,6 +27,17 @@ spec:
         app: sample-app
         signal: traces
     spec:
+      # Gate telemetrygen on gateway readiness. telemetrygen FATALs (and the
+      # pod CrashLoopBackOffs) if it dials otel-collector-gateway:4317 before
+      # the gateway is accepting OTLP — a pure startup-ordering race. Block
+      # until the gateway's gRPC port is up so start-up is deterministic.
+      initContainers:
+        - name: wait-for-otel-gateway
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - 'until nc -z otel-collector-gateway 4317; do echo "waiting for otel-collector-gateway:4317"; sleep 1; done'
       containers:
         - name: telemetrygen
           image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
@@ -67,6 +78,17 @@ spec:
         app: sample-app
         signal: metrics
     spec:
+      # Gate telemetrygen on gateway readiness. telemetrygen FATALs (and the
+      # pod CrashLoopBackOffs) if it dials otel-collector-gateway:4317 before
+      # the gateway is accepting OTLP — a pure startup-ordering race. Block
+      # until the gateway's gRPC port is up so start-up is deterministic.
+      initContainers:
+        - name: wait-for-otel-gateway
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - 'until nc -z otel-collector-gateway 4317; do echo "waiting for otel-collector-gateway:4317"; sleep 1; done'
       containers:
         - name: telemetrygen
           image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
@@ -110,6 +132,17 @@ spec:
         app: sample-app
         signal: logs
     spec:
+      # Gate telemetrygen on gateway readiness. telemetrygen FATALs (and the
+      # pod CrashLoopBackOffs) if it dials otel-collector-gateway:4317 before
+      # the gateway is accepting OTLP — a pure startup-ordering race. Block
+      # until the gateway's gRPC port is up so start-up is deterministic.
+      initContainers:
+        - name: wait-for-otel-gateway
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - 'until nc -z otel-collector-gateway 4317; do echo "waiting for otel-collector-gateway:4317"; sleep 1; done'
       containers:
         - name: telemetrygen
           image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
