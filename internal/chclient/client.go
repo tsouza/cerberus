@@ -4,8 +4,10 @@ package chclient
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
+	"net/url"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -80,10 +82,104 @@ func startExecuteSpan(ctx context.Context, sql, addr string) (context.Context, t
 
 // Config describes a single ClickHouse connection.
 type Config struct {
-	Addr     string // host:port, e.g. "clickhouse:9000"
+	Addr     string // host:port, e.g. "clickhouse:9000"; the canonical endpoint stamped on execute spans
 	Database string
 	Username string
 	Password string
+
+	// Addrs is the full ClickHouse endpoint list when more than one host is
+	// configured (CERBERUS_CH_ADDR accepts a comma-separated list). When
+	// non-empty it is the authoritative Addr slice handed to the driver; the
+	// scalar Addr field is then Addrs[0] and is used only for the execute-span
+	// server.address attribute + startup logging (one logical CH service from
+	// the caller's view — sharding / replication is below the trace's
+	// abstraction). When empty the driver dials the single Addr. clickhouse-go
+	// applies ConnOpenStrategy across the slice (see ConnOpenStrategy below).
+	Addrs []string
+
+	// Protocol selects the ClickHouse wire protocol: clickhouse.Native (the
+	// default, host:port 9000) or clickhouse.HTTP (8123). The native protocol
+	// is the cerberus default and the only one the chaos / e2e lanes exercise;
+	// HTTP is offered for environments that can only egress 8123 (some managed
+	// CH offerings, restrictive proxies). The HTTP-only knobs (HTTPHeaders,
+	// HTTPURLPath, HTTPMaxConnsPerHost, HTTPProxyURL) are inert under Native —
+	// internal/config rejects setting them with Protocol=native so a
+	// silently-ignored value can never ship.
+	Protocol clickhouse.Protocol
+
+	// ConnOpenStrategy controls how the driver picks a host from Addrs:
+	// clickhouse.ConnOpenInOrder (the default — try hosts in listed order,
+	// falling through to the next on failure) or clickhouse.ConnOpenRoundRobin
+	// (rotate per connection). It is meaningful only with a multi-host Addrs; a
+	// round-robin strategy with a single address is benign but pointless
+	// (internal/config notes it, not rejects it).
+	ConnOpenStrategy clickhouse.ConnOpenStrategy
+
+	// TLS, when non-nil, makes the driver dial ClickHouse over TLS. cerberus
+	// builds it (crypto/tls + crypto/x509) only when CERBERUS_CH_TLS_ENABLED is
+	// true, populating the CA pool / client cert (mTLS) / ServerName /
+	// InsecureSkipVerify from the CERBERUS_CH_TLS_* knobs. A nil TLS (the
+	// default) dials plaintext, byte-unchanged from before this knob existed.
+	TLS *tls.Config
+
+	// ReadTimeout caps how long a single socket read may block waiting for data
+	// from ClickHouse. When zero, buildOptions DERIVES it from QueryTimeout (the
+	// per-query wall-clock budget) so a stale half-open socket to a force-killed
+	// pod cannot block past the query budget — the deterministic restart-recovery
+	// ceiling. A positive ReadTimeout overrides that derivation verbatim (the
+	// first-class CERBERUS_CH_READ_TIMEOUT knob); internal/config enforces
+	// ReadTimeout >= QueryTimeout so a socket read shorter than the query budget
+	// can never kill a legitimate long query. clickhouse-go has NO native
+	// write-timeout knob, so there is no symmetric WriteTimeout field.
+	ReadTimeout time.Duration
+
+	// Compression configures wire compression for the CH connection. nil (the
+	// default) sends data uncompressed, byte-unchanged from before this knob.
+	// cerberus builds it from CERBERUS_CH_COMPRESSION (none|lz4|zstd) +
+	// CERBERUS_CH_COMPRESSION_LEVEL. Under the native protocol the driver honours
+	// the level only for the lz4hc path; the level is still validated against the
+	// method's documented range so a typo fails fast.
+	Compression *clickhouse.Compression
+
+	// BlockBufferSize is the driver's per-connection block buffer count
+	// (clickhouse.Options.BlockBufferSize, default 2). Valid range 1..255 (uint8).
+	// 0 leaves the driver default. Raising it can improve throughput on wide
+	// result sets at the cost of memory.
+	BlockBufferSize uint8
+
+	// MaxCompressionBuffer caps the driver's compression buffer in bytes
+	// (clickhouse.Options.MaxCompressionBuffer, default 10485760 = 10 MiB). 0
+	// leaves the driver default; a positive value must be > 0.
+	MaxCompressionBuffer int
+
+	// FreeBufOnConnRelease, when true, makes the driver drop its preserved
+	// memory buffer after each query (clickhouse.Options.FreeBufOnConnRelease) —
+	// trades buffer-reuse throughput for a lower steady-state memory footprint.
+	// Default false (driver default).
+	FreeBufOnConnRelease bool
+
+	// Debug enables clickhouse-go's legacy stdout debug logging
+	// (clickhouse.Options.Debug). Default false. Noisy; for local diagnosis only.
+	Debug bool
+
+	// HTTPHeaders are extra headers attached to every HTTP-protocol request
+	// (clickhouse.Options.HttpHeaders). Only consulted under Protocol=HTTP;
+	// internal/config rejects setting them under Native.
+	HTTPHeaders map[string]string
+
+	// HTTPURLPath is an extra URL path prefix for HTTP-protocol requests
+	// (clickhouse.Options.HttpUrlPath). HTTP-only (see HTTPHeaders).
+	HTTPURLPath string
+
+	// HTTPMaxConnsPerHost bounds the underlying http.Transport's per-host
+	// connection count (clickhouse.Options.HttpMaxConnsPerHost). 0 leaves the
+	// driver default. HTTP-only (see HTTPHeaders).
+	HTTPMaxConnsPerHost int
+
+	// HTTPProxyURL routes HTTP-protocol requests through an HTTP proxy
+	// (clickhouse.Options.HTTPProxyURL). nil dials directly. HTTP-only
+	// (see HTTPHeaders).
+	HTTPProxyURL *url.URL
 
 	// DialTimeout caps the initial connection dial. Zero falls back to 5s.
 	DialTimeout time.Duration
@@ -421,14 +517,22 @@ func buildOptions(cfg Config) *clickhouse.Options {
 	if dial == 0 {
 		dial = 5 * time.Second
 	}
+	// Addrs (multi-host) is authoritative when present; otherwise dial the
+	// single scalar Addr — byte-unchanged from before the multi-host knob.
+	addrs := cfg.Addrs
+	if len(addrs) == 0 {
+		addrs = []string{cfg.Addr}
+	}
 	opts := &clickhouse.Options{
-		Addr: []string{cfg.Addr},
+		Addr: addrs,
 		Auth: clickhouse.Auth{
 			Database: cfg.Database,
 			Username: cfg.Username,
 			Password: cfg.Password,
 		},
-		DialTimeout: dial,
+		Protocol:         cfg.Protocol,
+		ConnOpenStrategy: cfg.ConnOpenStrategy,
+		DialTimeout:      dial,
 		// DialContext routes every CH connection through a net.Dialer so we
 		// can put TCP keepalive on the socket — the root-cause fix for slow
 		// breaker recovery after a CH restart (see Config.KeepAliveEnabled).
@@ -437,6 +541,46 @@ func buildOptions(cfg Config) *clickhouse.Options {
 		// dial through the same net.Dialer (Enable:false) so DialContext
 		// behaviour is uniform — only the keepalive policy changes.
 		DialContext: dialContext(dial, cfg),
+	}
+	// TLS / compression / buffer / HTTP knobs are left at the driver's
+	// zero-value default unless an operator set them — every unset knob keeps
+	// cerberus byte-identical to its pre-knob behaviour. internal/config does
+	// the cross-setting validation (TLS-enabled iff sub-knobs set, HTTP knobs
+	// require Protocol=HTTP, etc.) so by the time a Config reaches buildOptions
+	// the fields are already coherent.
+	if cfg.TLS != nil {
+		opts.TLS = cfg.TLS
+	}
+	if cfg.Compression != nil {
+		opts.Compression = cfg.Compression
+	}
+	if cfg.BlockBufferSize > 0 {
+		opts.BlockBufferSize = cfg.BlockBufferSize
+	}
+	if cfg.MaxCompressionBuffer > 0 {
+		opts.MaxCompressionBuffer = cfg.MaxCompressionBuffer
+	}
+	if cfg.FreeBufOnConnRelease {
+		opts.FreeBufOnConnRelease = true
+	}
+	if cfg.Debug {
+		// opts.Debug is the documented CERBERUS_CH_DEBUG surface — the legacy
+		// stdout debug toggle is the only zero-dep knob clickhouse-go exposes
+		// without wiring a custom slog.Logger, which cerberus deliberately does
+		// not (Logger is on the non-exposable list).
+		opts.Debug = true //nolint:staticcheck // SA1019: legacy Debug is the exposed CERBERUS_CH_DEBUG knob
+	}
+	if len(cfg.HTTPHeaders) > 0 {
+		opts.HttpHeaders = cfg.HTTPHeaders
+	}
+	if cfg.HTTPURLPath != "" {
+		opts.HttpUrlPath = cfg.HTTPURLPath
+	}
+	if cfg.HTTPMaxConnsPerHost > 0 {
+		opts.HttpMaxConnsPerHost = cfg.HTTPMaxConnsPerHost
+	}
+	if cfg.HTTPProxyURL != nil {
+		opts.HTTPProxyURL = cfg.HTTPProxyURL
 	}
 	// Pool sizing is explicit and configurable (#81). A zero field is
 	// left unset so clickhouse-go's own default applies — that keeps the
@@ -476,7 +620,16 @@ func buildOptions(cfg Config) *clickhouse.Options {
 	//
 	// Zero is left unset (driver default applies) so a bare Config — notably
 	// the ones tests build — keeps the driver's out-of-the-box behaviour.
-	if cfg.QueryTimeout > 0 {
+	//
+	// An explicit Config.ReadTimeout (CERBERUS_CH_READ_TIMEOUT) is first-class
+	// and OVERRIDES the QueryTimeout derivation verbatim: an operator who wants
+	// a socket-read ceiling decoupled from the query budget sets it directly.
+	// internal/config guarantees ReadTimeout >= QueryTimeout, so the explicit
+	// value can never be shorter than a legitimate query's first-block wait.
+	switch {
+	case cfg.ReadTimeout > 0:
+		opts.ReadTimeout = cfg.ReadTimeout
+	case cfg.QueryTimeout > 0:
 		opts.ReadTimeout = cfg.QueryTimeout
 	}
 	return opts

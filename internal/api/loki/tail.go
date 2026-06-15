@@ -31,11 +31,22 @@ const (
 	// new rows. Upstream Loki streams chunks every ~1s; we match that.
 	tailPollInterval = 1 * time.Second
 
-	// tailWriteTimeout caps how long a single WebSocket write may block
-	// before we tear the connection down. Catches slow / dead clients
-	// without leaking the polling goroutine.
-	tailWriteTimeout = 10 * time.Second
+	// defaultTailWriteTimeout caps how long a single WebSocket write may
+	// block before we tear the connection down. Catches slow / dead clients
+	// without leaking the polling goroutine. Operators override it via
+	// CERBERUS_LOKI_TAIL_WRITE_TIMEOUT (Handler.TailWriteTimeout); this is
+	// the fallback when the handler field is zero (bare-Handler tests).
+	defaultTailWriteTimeout = 10 * time.Second
 )
+
+// tailWriteTimeout resolves the effective per-write deadline: the handler's
+// configured TailWriteTimeout when positive, else the package default.
+func (h *Handler) tailWriteTimeout() time.Duration {
+	if h.TailWriteTimeout > 0 {
+		return h.TailWriteTimeout
+	}
+	return defaultTailWriteTimeout
+}
 
 // tailUpgrader is the default gorilla/websocket upgrader. It permits
 // every origin since /tail is consumed by the Loki datasource (Grafana
@@ -260,7 +271,7 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 			continue
 		}
 
-		if err := writeTailChunk(conn, streams); err != nil {
+		if err := writeTailChunk(conn, streams, h.tailWriteTimeout()); err != nil {
 			// Write failure usually means client disconnected; bail
 			// cleanly so the deferred Close runs.
 			h.Logger.Debug("cerberus loki tail write failed", "err", err)
@@ -272,12 +283,12 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 // writeTailChunk encodes streams + an empty dropped_entries slice and
 // writes the JSON frame with a bounded write deadline. Caller is
 // responsible for tearing the connection down on error.
-func writeTailChunk(conn *websocket.Conn, streams []Stream) error {
+func writeTailChunk(conn *websocket.Conn, streams []Stream, writeTimeout time.Duration) error {
 	// SetWriteDeadline only fails if the underlying connection has
 	// already been torn down — in which case the WriteJSON below will
 	// surface the real failure to the caller. Discarding this error is
 	// intentional, not silenced.
-	_ = conn.SetWriteDeadline(time.Now().Add(tailWriteTimeout))
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	return conn.WriteJSON(tailResponse{
 		Streams:        streams,
 		DroppedEntries: []droppedEntryStream{},

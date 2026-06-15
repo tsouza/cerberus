@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -27,8 +28,14 @@ import (
 // Config is the cerberus runtime configuration.
 type Config struct {
 	HTTPAddr   string
+	HTTPServer HTTPServerConfig
 	ClickHouse chclient.Config
 	Schema     schema.Metrics
+
+	// LokiTailWriteTimeout bounds a single /tail WebSocket write before a
+	// slow / dead client is torn down. Promoted from the hardcoded 10s in
+	// internal/api/loki/tail.go via CERBERUS_LOKI_TAIL_WRITE_TIMEOUT.
+	LokiTailWriteTimeout time.Duration
 	// Logs is the OTel logs schema (table + columns the Loki API reads).
 	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
 	// env overrides applied.
@@ -129,6 +136,39 @@ type AdmitConfig struct {
 	MaxInflightTempo int
 }
 
+// HTTPServerConfig holds the cerberus HTTP server's net/http timeout knobs
+// (cmd/cerberus's http.Server). Every field maps 1:1 to an http.Server field.
+//
+// Defaults preserve today's behaviour: ReadHeaderTimeout is the promoted 5s
+// that was previously hardcoded; ReadTimeout and WriteTimeout default to 0
+// (unlimited) so the Loki /tail WebSocket and long query_range matrix streams
+// are never severed mid-response by a server-side deadline; IdleTimeout bounds
+// an otherwise-leaked keep-alive connection; MaxHeaderBytes 0 leaves Go's
+// 1 MiB default.
+type HTTPServerConfig struct {
+	// ReadTimeout caps the time to read the ENTIRE request including the body
+	// (http.Server.ReadTimeout). 0 = unlimited. A streaming-safe default.
+	ReadTimeout time.Duration
+
+	// ReadHeaderTimeout caps the time to read request HEADERS
+	// (http.Server.ReadHeaderTimeout). Default 5s (the promoted hardcoded
+	// value). Must be <= ReadTimeout when ReadTimeout > 0.
+	ReadHeaderTimeout time.Duration
+
+	// WriteTimeout caps the time to write the response
+	// (http.Server.WriteTimeout). 0 = unlimited — required so the /tail
+	// WebSocket and long matrix responses are not cut mid-stream.
+	WriteTimeout time.Duration
+
+	// IdleTimeout caps how long an idle keep-alive connection is held open
+	// (http.Server.IdleTimeout). Default 120s.
+	IdleTimeout time.Duration
+
+	// MaxHeaderBytes caps request header size (http.Server.MaxHeaderBytes).
+	// 0 leaves Go's 1 MiB default.
+	MaxHeaderBytes int
+}
+
 // LogConfig controls the slog setup applied at startup.
 //
 //   - Format is the slog handler kind. "text" produces a human-readable
@@ -197,6 +237,31 @@ const (
 	envCHBreakerThreshold  = "CERBERUS_CH_BREAKER_THRESHOLD"
 	envCHBreakerWindow     = "CERBERUS_CH_BREAKER_WINDOW"
 	envCHBreakerOpenIntrvl = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
+	envCHProtocol          = "CERBERUS_CH_PROTOCOL"
+	envCHConnOpenStrategy  = "CERBERUS_CH_CONN_OPEN_STRATEGY"
+	envCHReadTimeout       = "CERBERUS_CH_READ_TIMEOUT"
+	envCHCompression       = "CERBERUS_CH_COMPRESSION"
+	envCHCompressionLevel  = "CERBERUS_CH_COMPRESSION_LEVEL"
+	envCHBlockBufferSize   = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
+	envCHMaxComprBuffer    = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
+	envCHFreeBufOnRelease  = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
+	envCHDebug             = "CERBERUS_CH_DEBUG"
+	envCHTLSEnabled        = "CERBERUS_CH_TLS_ENABLED"
+	envCHTLSCAFile         = "CERBERUS_CH_TLS_CA_FILE"
+	envCHTLSCertFile       = "CERBERUS_CH_TLS_CERT_FILE"
+	envCHTLSKeyFile        = "CERBERUS_CH_TLS_KEY_FILE"
+	envCHTLSServerName     = "CERBERUS_CH_TLS_SERVER_NAME"
+	envCHTLSSkipVerify     = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
+	envCHHTTPHeaders       = "CERBERUS_CH_HTTP_HEADERS"
+	envCHHTTPURLPath       = "CERBERUS_CH_HTTP_URL_PATH"
+	envCHHTTPMaxConns      = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
+	envCHHTTPProxyURL      = "CERBERUS_CH_HTTP_PROXY_URL"
+	envHTTPReadTimeout     = "CERBERUS_HTTP_READ_TIMEOUT"
+	envHTTPReadHdrTimeout  = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
+	envHTTPWriteTimeout    = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
+	envHTTPIdleTimeout     = "CERBERUS_HTTP_IDLE_TIMEOUT"
+	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
+	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
 	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
@@ -246,6 +311,32 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_BREAKER_THRESHOLD     default 5   (consecutive failures to trip OPEN)
 //	CERBERUS_CH_BREAKER_WINDOW        default "10s" (rolling failure window)
 //	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a probe)
+//	CERBERUS_CH_PROTOCOL           default "native" ("native" | "http")
+//	CERBERUS_CH_CONN_OPEN_STRATEGY default "in_order" ("in_order" | "round_robin")
+//	CERBERUS_CH_READ_TIMEOUT       default "" (empty → derived from CERBERUS_QUERY_TIMEOUT;
+//	    when set must be >= CERBERUS_QUERY_TIMEOUT; clickhouse-go has NO write-timeout knob)
+//	CERBERUS_CH_COMPRESSION        default "none" ("none" | "lz4" | "zstd")
+//	CERBERUS_CH_COMPRESSION_LEVEL  default 0 (unset; lz4 0..12, zstd 1..22; requires a method)
+//	CERBERUS_CH_BLOCK_BUFFER_SIZE  default 0 (unset → driver 2; valid 1..255)
+//	CERBERUS_CH_MAX_COMPRESSION_BUFFER default 0 (unset → driver 10 MiB; bytes, > 0)
+//	CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE default "false"
+//	CERBERUS_CH_DEBUG              default "false" (clickhouse-go legacy stdout debug)
+//	CERBERUS_CH_TLS_ENABLED        default "false" (dial CH over TLS; sub-knobs require this)
+//	CERBERUS_CH_TLS_CA_FILE        default "" (PEM CA bundle path)
+//	CERBERUS_CH_TLS_CERT_FILE      default "" (client cert for mTLS; pairs with KEY_FILE)
+//	CERBERUS_CH_TLS_KEY_FILE       default "" (client key for mTLS; pairs with CERT_FILE)
+//	CERBERUS_CH_TLS_SERVER_NAME    default "" (SNI / cert-verify hostname override)
+//	CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY default "false" (skip cert verify; incompatible with CA/SERVER_NAME)
+//	CERBERUS_CH_HTTP_HEADERS       default "" (HTTP-protocol only; "k=v,k2=v2")
+//	CERBERUS_CH_HTTP_URL_PATH      default "" (HTTP-protocol only)
+//	CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST default 0 (HTTP-protocol only; unset → driver default)
+//	CERBERUS_CH_HTTP_PROXY_URL     default "" (HTTP-protocol only; absolute URL)
+//	CERBERUS_HTTP_READ_TIMEOUT     default "0s" (whole-request read; 0 = unlimited / streaming-safe)
+//	CERBERUS_HTTP_READ_HEADER_TIMEOUT default "5s" (header read; <= READ_TIMEOUT when that is > 0)
+//	CERBERUS_HTTP_WRITE_TIMEOUT    default "0s" (response write; 0 = unlimited / streaming-safe)
+//	CERBERUS_HTTP_IDLE_TIMEOUT     default "120s" (idle keep-alive connection)
+//	CERBERUS_HTTP_MAX_HEADER_BYTES default 0 (0 → Go's 1 MiB default)
+//	CERBERUS_LOKI_TAIL_WRITE_TIMEOUT default "10s" (single /tail WebSocket write bound; > 0)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
 //	CERBERUS_REQUIREMENTS_CHECK     default "true" — run the boot-time
 //	    requirements check (CH server version >= the config-derived minimum
@@ -389,29 +480,51 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{
-		HTTPAddr: v.GetString(envHTTPAddr),
-		ClickHouse: chclient.Config{
-			Addr:                v.GetString(envCHAddr),
-			Database:            v.GetString(envCHDatabase),
-			Username:            v.GetString(envCHUsername),
-			Password:            v.GetString(envCHPassword),
-			DialTimeout:         dial,
-			MaxOpenConns:        maxOpenConns,
-			MaxIdleConns:        maxIdleConns,
-			ConnMaxLifetime:     connMaxLifetime,
-			KeepAliveEnabled:    keepAliveEnabled,
-			KeepAliveIdle:       keepAliveIdle,
-			KeepAliveInterval:   keepAliveInterval,
-			KeepAliveProbes:     keepAliveCount,
-			MaxQuerySamples:     maxSamples,
-			MaxQueryMemoryBytes: maxMemory,
-			QueryTimeout:        queryTimeout,
-			BreakerThreshold:    breaker.Threshold,
-			BreakerWindow:       breaker.Window,
-			BreakerOpenInterval: breaker.OpenInterval,
-			BreakerDisabled:     breaker.Disabled,
+	// Full-surface ClickHouse connection knobs (protocol, multi-host, TLS,
+	// compression, buffers, HTTP-only) + the HTTP server timeouts + the Loki
+	// tail write timeout, all parsed and cross-validated in one helper so
+	// FromEnv stays readable. The CROSS-setting dependency matrix is enforced
+	// inside surfaceFromEnv, where the query / pool knobs are threaded in.
+	// The idle<=open rule fires only when the operator EXPLICITLY set idle:
+	// lowering only MAX_OPEN_CONNS below the default idle of 5 is a common,
+	// coherent idiom (clickhouse-go clamps idle to open internally), so a
+	// defaulted idle must not be punished. viper.IsSet can't distinguish a
+	// SetDefault from a real override, so explicit-set is detected from the
+	// value source directly (env var or config-file key present).
+	pools := poolKnobs{
+		maxOpen:      maxOpenConns,
+		maxIdle:      maxIdleConns,
+		idleExplicit: explicitlySet(v, envCHMaxIdleConns),
+	}
+	surface, err := surfaceFromEnv(v, queryTimeout, pools)
+	if err != nil {
+		return Config{}, err
+	}
+	chCfg := assembleCHConfig(chConfigInputs{
+		database:        getString(v, envCHDatabase),
+		username:        getString(v, envCHUsername),
+		password:        v.GetString(envCHPassword),
+		dial:            dial,
+		maxOpen:         maxOpenConns,
+		maxIdle:         maxIdleConns,
+		connMaxLifetime: connMaxLifetime,
+		keepAlive: keepAliveInputs{
+			enabled:  keepAliveEnabled,
+			idle:     keepAliveIdle,
+			interval: keepAliveInterval,
+			probes:   keepAliveCount,
 		},
+		maxSamples:   maxSamples,
+		maxMemory:    maxMemory,
+		queryTimeout: queryTimeout,
+		breaker:      breaker,
+		extra:        surface.ch,
+	})
+	return Config{
+		HTTPAddr:                getString(v, envHTTPAddr),
+		HTTPServer:              surface.httpServer,
+		LokiTailWriteTimeout:    surface.lokiTailWriteTimeout,
+		ClickHouse:              chCfg,
 		Schema:                  schema.DefaultOTelMetricsFromEnv(),
 		Logs:                    schema.DefaultOTelLogsFromEnv(),
 		Traces:                  schema.DefaultOTelTracesFromEnv(),
@@ -448,6 +561,31 @@ var allEnvKeys = []string{
 	envCHBreakerThreshold,
 	envCHBreakerWindow,
 	envCHBreakerOpenIntrvl,
+	envCHProtocol,
+	envCHConnOpenStrategy,
+	envCHReadTimeout,
+	envCHCompression,
+	envCHCompressionLevel,
+	envCHBlockBufferSize,
+	envCHMaxComprBuffer,
+	envCHFreeBufOnRelease,
+	envCHDebug,
+	envCHTLSEnabled,
+	envCHTLSCAFile,
+	envCHTLSCertFile,
+	envCHTLSKeyFile,
+	envCHTLSServerName,
+	envCHTLSSkipVerify,
+	envCHHTTPHeaders,
+	envCHHTTPURLPath,
+	envCHHTTPMaxConns,
+	envCHHTTPProxyURL,
+	envHTTPReadTimeout,
+	envHTTPReadHdrTimeout,
+	envHTTPWriteTimeout,
+	envHTTPIdleTimeout,
+	envHTTPMaxHeaderBytes,
+	envLokiTailWriteTO,
 	envAutoCreateSchema,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
@@ -510,6 +648,31 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envCHBreakerThreshold, defaultCHBreakerThreshold)
 	v.SetDefault(envCHBreakerWindow, defaultCHBreakerWindow.String())
 	v.SetDefault(envCHBreakerOpenIntrvl, defaultCHBreakerOpenInterval.String())
+	v.SetDefault(envCHProtocol, defaultCHProtocol)
+	v.SetDefault(envCHConnOpenStrategy, defaultCHConnOpenStrategy)
+	v.SetDefault(envCHReadTimeout, defaultCHReadTimeout)
+	v.SetDefault(envCHCompression, defaultCHCompression)
+	v.SetDefault(envCHCompressionLevel, defaultCHCompressionLevel)
+	v.SetDefault(envCHBlockBufferSize, defaultCHBlockBufferSize)
+	v.SetDefault(envCHMaxComprBuffer, defaultCHMaxCompressionBuffer)
+	v.SetDefault(envCHFreeBufOnRelease, defaultCHFreeBufOnConnRelease)
+	v.SetDefault(envCHDebug, defaultCHDebug)
+	v.SetDefault(envCHTLSEnabled, defaultCHTLSEnabled)
+	v.SetDefault(envCHTLSCAFile, "")
+	v.SetDefault(envCHTLSCertFile, "")
+	v.SetDefault(envCHTLSKeyFile, "")
+	v.SetDefault(envCHTLSServerName, "")
+	v.SetDefault(envCHTLSSkipVerify, defaultCHTLSSkipVerify)
+	v.SetDefault(envCHHTTPHeaders, "")
+	v.SetDefault(envCHHTTPURLPath, "")
+	v.SetDefault(envCHHTTPMaxConns, defaultCHHTTPMaxConns)
+	v.SetDefault(envCHHTTPProxyURL, "")
+	v.SetDefault(envHTTPReadTimeout, defaultHTTPReadTimeout.String())
+	v.SetDefault(envHTTPReadHdrTimeout, defaultHTTPReadHeaderTimeout.String())
+	v.SetDefault(envHTTPWriteTimeout, defaultHTTPWriteTimeout.String())
+	v.SetDefault(envHTTPIdleTimeout, defaultHTTPIdleTimeout.String())
+	v.SetDefault(envHTTPMaxHeaderBytes, defaultHTTPMaxHeaderBytes)
+	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
@@ -572,6 +735,84 @@ const (
 	defaultOTLPTimeout        time.Duration = 10 * time.Second
 	defaultOTLPExportInterval time.Duration = 10 * time.Second
 )
+
+// ClickHouse protocol / strategy / compression enum vocabularies. The
+// defaults reproduce today's behaviour exactly: native protocol, in-order
+// host selection, and no wire compression — so an operator who sets none of
+// these knobs gets the same connection cerberus has always opened.
+const (
+	chProtocolNative = "native"
+	chProtocolHTTP   = "http"
+
+	chConnOpenInOrder    = "in_order"
+	chConnOpenRoundRobin = "round_robin"
+
+	chCompressionNone = "none"
+	chCompressionLZ4  = "lz4"
+	chCompressionZSTD = "zstd"
+
+	defaultCHProtocol         = chProtocolNative
+	defaultCHConnOpenStrategy = chConnOpenInOrder
+	defaultCHCompression      = chCompressionNone
+	// defaultCHReadTimeout is empty so a socket ReadTimeout is DERIVED from
+	// CERBERUS_QUERY_TIMEOUT (the deterministic restart-recovery ceiling, see
+	// chclient.buildOptions). A non-empty CERBERUS_CH_READ_TIMEOUT overrides
+	// the derivation. Empty (not "0s") keeps the value "unset" so the
+	// derivation path stays in effect rather than forcing ReadTimeout to 0.
+	defaultCHReadTimeout = ""
+	// defaultCHCompressionLevel is 0: "no explicit level". Sending a level
+	// while CERBERUS_CH_COMPRESSION=none is rejected (see the dependency
+	// matrix); 0 means the driver's per-method default level applies.
+	defaultCHCompressionLevel = 0
+	// defaultCHBlockBufferSize / defaultCHMaxCompressionBuffer / the HTTP
+	// per-host cap are all 0 = "leave the driver default" (2 / 10 MiB / Go's
+	// default), so an unset knob is byte-identical to before it existed.
+	defaultCHBlockBufferSize      = 0
+	defaultCHMaxCompressionBuffer = 0
+	defaultCHHTTPMaxConns         = 0
+	defaultCHFreeBufOnConnRelease = false
+	defaultCHDebug                = false
+	defaultCHTLSEnabled           = false
+	defaultCHTLSSkipVerify        = false
+)
+
+// Compression level bounds. clickhouse-go consumes Compression.Level
+// differently per method (lz4hc honours it; the SpeedDefault-pinned zstd
+// writer ignores it), but cerberus still validates the level against the
+// method's documented range so a typo fails fast at startup instead of
+// silently doing nothing. lz4: 0..12 (0 = driver default = LZ4HC level 9;
+// 12 = compress.LevelLZ4HCMax). zstd: 1..22, the conventional ZSTD range
+// that ClickHouse's server-side network_zstd_compression_level accepts.
+const (
+	chCompressionLZ4MinLevel  = 0
+	chCompressionLZ4MaxLevel  = 12
+	chCompressionZSTDMinLevel = 1
+	chCompressionZSTDMaxLevel = 22
+)
+
+// chBlockBufferMax is the inclusive upper bound on CERBERUS_CH_BLOCK_BUFFER_SIZE
+// — the driver field is a uint8, so 255 is the hard ceiling. The lower bound
+// is 1 (0 means "unset / driver default 2", handled before this check).
+const chBlockBufferMax = 255
+
+// HTTP server timeout defaults (cmd/cerberus's http.Server). The header
+// timeout is the promoted 5s that was previously hardcoded; read / write
+// default to 0 (unlimited) so streaming responses (Loki /tail WebSocket,
+// long query_range matrices) are never cut mid-stream; idle bounds an
+// otherwise-leaked keep-alive connection. MaxHeaderBytes 0 = Go's 1 MiB
+// default.
+const (
+	defaultHTTPReadTimeout       time.Duration = 0
+	defaultHTTPReadHeaderTimeout time.Duration = 5 * time.Second
+	defaultHTTPWriteTimeout      time.Duration = 0
+	defaultHTTPIdleTimeout       time.Duration = 120 * time.Second
+	defaultHTTPMaxHeaderBytes                  = 0
+)
+
+// defaultLokiTailWriteTimeout promotes the previously-hardcoded
+// tailWriteTimeout in internal/api/loki/tail.go: the bound on a single
+// /tail WebSocket write before a slow / dead client is torn down.
+const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
 
 // defaultQueryMaxSamples is the default per-query sample budget,
 // mirroring upstream Prometheus's --query.max-samples default
@@ -884,6 +1125,19 @@ func parseHeaders(raw string) (map[string]string, error) {
 		out[k] = val
 	}
 	return out, nil
+}
+
+// explicitlySet reports whether key was supplied by the operator — via the
+// environment OR the optional config file — as opposed to resolving from a
+// built-in SetDefault. viper.IsSet conflates a registered default with a real
+// override, so it can't answer this; we inspect the two operator-controlled
+// sources directly. A present-but-empty env value counts as NOT set (it is the
+// same "unset" the rest of the loader treats it as via getString's trim).
+func explicitlySet(v *viper.Viper, key string) bool {
+	if raw, ok := os.LookupEnv(key); ok && strings.TrimSpace(raw) != "" {
+		return true
+	}
+	return v.InConfig(key)
 }
 
 // getString returns the resolved string value for key (env > file >

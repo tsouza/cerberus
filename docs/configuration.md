@@ -67,26 +67,85 @@ defaults.
 
 ## HTTP server
 
-| Variable             | Type   | Default | Description                                                                                 |
-| -------------------- | ------ | ------- | ------------------------------------------------------------------------------------------- |
-| `CERBERUS_HTTP_ADDR` | string | `:8080` | HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes. |
-
 A single listener serves all three upstream APIs plus the health probes; there
 is no separate admin port. See [`operations.md`](operations.md#port-binding)
 for the port-binding contract (including h2c + gRPC on the same socket).
 
+The timeout knobs map 1:1 to `http.Server` fields. `ReadTimeout` and
+`WriteTimeout` default to `0` (unlimited) deliberately: the Loki `/tail`
+WebSocket and long `query_range` matrix responses stream for an unbounded
+duration and a non-zero server-side write deadline would sever them
+mid-response. `ReadHeaderTimeout` (the promoted 5s) still bounds slow-header
+attacks; `IdleTimeout` reclaims idle keep-alive connections.
+
+| Variable                            | Type     | Default | Description                                                                                             |
+| ----------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_HTTP_ADDR`                | string   | `:8080` | HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes.             |
+| `CERBERUS_HTTP_READ_TIMEOUT`        | duration | `0s`    | Whole-request read deadline (headers + body). `0` = unlimited (streaming-safe).                         |
+| `CERBERUS_HTTP_READ_HEADER_TIMEOUT` | duration | `5s`    | Request-header read deadline. Must be `<=` `CERBERUS_HTTP_READ_TIMEOUT` when that is `> 0`.             |
+| `CERBERUS_HTTP_WRITE_TIMEOUT`       | duration | `0s`    | Response write deadline. `0` = unlimited — required so `/tail` + long matrices stream uninterrupted.    |
+| `CERBERUS_HTTP_IDLE_TIMEOUT`        | duration | `120s`  | Idle keep-alive connection lifetime.                                                                    |
+| `CERBERUS_HTTP_MAX_HEADER_BYTES`    | int      | `0`     | Max request header size. `0` leaves Go's 1 MiB default.                                                 |
+
 ## ClickHouse connection
 
 ClickHouse is the only mandatory backing service, reached exclusively through
-these connection inputs.
+these connection inputs. `CERBERUS_CH_ADDR` accepts a comma-separated list of
+hosts for a replicated / sharded cluster; with more than one host the driver
+selects per `CERBERUS_CH_CONN_OPEN_STRATEGY`. The protocol defaults to the
+native binary protocol (port 9000); set `CERBERUS_CH_PROTOCOL=http` for the
+HTTP protocol (port 8123) when only 8123 is reachable. Every knob below is
+unset-by-default to the exact connection cerberus has always opened — setting
+none of them is byte-identical to the pre-knob behaviour.
 
-| Variable                   | Type     | Default          | Description                                            |
-| -------------------------- | -------- | ---------------- | ------------------------------------------------------ |
-| `CERBERUS_CH_ADDR`         | string   | `localhost:9000` | ClickHouse native-protocol endpoint.                   |
-| `CERBERUS_CH_DATABASE`     | string   | `otel`           | ClickHouse database name.                              |
-| `CERBERUS_CH_USERNAME`     | string   | `default`        | ClickHouse user.                                       |
-| `CERBERUS_CH_PASSWORD`     | string   | (empty)          | ClickHouse password.                                   |
-| `CERBERUS_CH_DIAL_TIMEOUT` | duration | `5s`             | ClickHouse dial timeout (`time.ParseDuration` syntax). |
+| Variable                               | Type     | Default          | Description                                                                                                                                                  |
+| -------------------------------------- | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CERBERUS_CH_ADDR`                     | string   | `localhost:9000` | ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required).                                                            |
+| `CERBERUS_CH_DATABASE`                 | string   | `otel`           | ClickHouse database name.                                                                                                                                    |
+| `CERBERUS_CH_USERNAME`                 | string   | `default`        | ClickHouse user.                                                                                                                                             |
+| `CERBERUS_CH_PASSWORD`                 | string   | (empty)          | ClickHouse password.                                                                                                                                         |
+| `CERBERUS_CH_DIAL_TIMEOUT`             | duration | `5s`             | ClickHouse dial timeout (`time.ParseDuration` syntax).                                                                                                       |
+| `CERBERUS_CH_PROTOCOL`                 | enum     | `native`         | Wire protocol: `native` (port 9000) or `http` (port 8123). The HTTP-only knobs below require `http`.                                                         |
+| `CERBERUS_CH_CONN_OPEN_STRATEGY`       | enum     | `in_order`       | Multi-host selection: `in_order` (try hosts in order) or `round_robin` (rotate). Pointless but benign with a single host.                                    |
+| `CERBERUS_CH_READ_TIMEOUT`             | duration | (derived)        | Socket read ceiling. Unset → derived from `CERBERUS_QUERY_TIMEOUT`. When set must be `>=` `CERBERUS_QUERY_TIMEOUT`. clickhouse-go has no write-timeout knob. |
+| `CERBERUS_CH_COMPRESSION`              | enum     | `none`           | Wire compression: `none`, `lz4`, or `zstd`.                                                                                                                  |
+| `CERBERUS_CH_COMPRESSION_LEVEL`        | int      | `0`              | Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`.                                                                     |
+| `CERBERUS_CH_BLOCK_BUFFER_SIZE`        | int      | `0`              | Per-connection block buffer count (`0` → driver default 2; valid `1..255`).                                                                                  |
+| `CERBERUS_CH_MAX_COMPRESSION_BUFFER`   | int      | `0`              | Compression buffer cap in bytes (`0` → driver default 10 MiB; otherwise `> 0`).                                                                              |
+| `CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE` | bool     | `false`          | Drop the preserved memory buffer after each query (lower steady-state memory, less buffer reuse).                                                            |
+| `CERBERUS_CH_DEBUG`                    | bool     | `false`          | clickhouse-go legacy stdout debug logging. Noisy; local diagnosis only.                                                                                      |
+
+### TLS / mTLS
+
+Set `CERBERUS_CH_TLS_ENABLED=true` to dial ClickHouse over TLS. The TLS
+sub-knobs are inert (and **rejected at startup**) unless TLS is enabled — a
+silently-ignored TLS config is a security footgun. For mutual TLS supply both
+`_TLS_CERT_FILE` and `_TLS_KEY_FILE` (a lone one is rejected). `_TLS_CA_FILE`
+pins a custom CA bundle; `_TLS_SERVER_NAME` overrides the verified hostname
+(SNI). `_TLS_INSECURE_SKIP_VERIFY=true` disables certificate verification
+entirely and is **rejected in combination with** `_TLS_CA_FILE` or
+`_TLS_SERVER_NAME` (skip-verify ignores both — the combo is incoherent).
+
+| Variable                               | Type   | Default | Description                                                              |
+| -------------------------------------- | ------ | ------- | ------------------------------------------------------------------------ |
+| `CERBERUS_CH_TLS_ENABLED`              | bool   | `false` | Dial ClickHouse over TLS. Required for any other TLS sub-knob.           |
+| `CERBERUS_CH_TLS_CA_FILE`              | string | (empty) | PEM CA bundle path. A set-but-unreadable path fails fast.                |
+| `CERBERUS_CH_TLS_CERT_FILE`            | string | (empty) | Client certificate (mTLS). Must be set together with the key file.       |
+| `CERBERUS_CH_TLS_KEY_FILE`             | string | (empty) | Client private key (mTLS). Must be set together with the cert file.      |
+| `CERBERUS_CH_TLS_SERVER_NAME`          | string | (empty) | Verified server hostname / SNI override.                                 |
+| `CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY` | bool   | `false` | Skip certificate verification. Incompatible with CA / server-name knobs. |
+
+### HTTP-protocol knobs
+
+Consulted only under `CERBERUS_CH_PROTOCOL=http`; setting any of them under
+`native` is **rejected at startup** (they would be silently ignored).
+
+| Variable                              | Type   | Default | Description                                                       |
+| ------------------------------------- | ------ | ------- | ----------------------------------------------------------------- |
+| `CERBERUS_CH_HTTP_HEADERS`            | string | (empty) | Extra HTTP request headers, `k=v,k2=v2` (e.g. multi-tenant IDs).  |
+| `CERBERUS_CH_HTTP_URL_PATH`           | string | (empty) | Extra URL path prefix for HTTP requests.                          |
+| `CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST` | int    | `0`     | `http.Transport` per-host connection cap (`0` → driver default).  |
+| `CERBERUS_CH_HTTP_PROXY_URL`          | string | (empty) | HTTP proxy URL (absolute, with scheme + host).                    |
 
 ## Connection pool
 
@@ -285,3 +344,39 @@ Prometheus `extrapolatedRate` inside the engine, closing the execution-layer gap
 the SQL array machinery leaves at high cardinality. Default off is byte-for-byte
 the established fan-out. See [`performance.md`](performance.md#the-durable-answer)
 for the why and [`benchmarks.md`](benchmarks.md) for the recorded numbers.
+
+## Loki streaming
+
+| Variable                           | Type     | Default | Description                                                                                            |
+| ---------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `CERBERUS_LOKI_TAIL_WRITE_TIMEOUT` | duration | `10s`   | Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`. |
+
+## Dependency matrix
+
+Most knobs are validated in isolation (unknown enum, out-of-range buffer,
+malformed URL, non-positive where positive is required). Some knobs, however,
+only make sense in combination — an individually-valid value can be incoherent
+next to another. Cerberus rejects these **combinations** at startup with an
+error that names both knobs, rather than silently ignoring or downgrading one
+of them. The full set of cross-setting rules:
+
+| Rule                                                | Knobs involved                                                                                                           | Why it fails fast                                                                                                                                                                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| TLS cert/key are both-or-neither                    | `_TLS_CERT_FILE`, `_TLS_KEY_FILE`                                                                                        | A lone cert or key cannot form an mTLS client key pair.                                                                                                                                                    |
+| TLS sub-knobs require enable                        | `_TLS_ENABLED` vs `_TLS_CA_FILE` / `_TLS_CERT_FILE` / `_TLS_KEY_FILE` / `_TLS_SERVER_NAME` / `_TLS_INSECURE_SKIP_VERIFY` | Silently-ignored TLS config is a security footgun.                                                                                                                                                         |
+| skip-verify contradicts CA / server-name            | `_TLS_INSECURE_SKIP_VERIFY` vs `_TLS_CA_FILE` / `_TLS_SERVER_NAME`                                                       | skip-verify ignores both — pinning a CA or hostname alongside it is incoherent.                                                                                                                            |
+| HTTP-protocol knobs require `http`                  | `CERBERUS_CH_PROTOCOL` vs `_HTTP_HEADERS` / `_HTTP_URL_PATH` / `_HTTP_MAX_CONNS_PER_HOST` / `_HTTP_PROXY_URL`            | Under `native` they would be silently dropped.                                                                                                                                                             |
+| Compression level requires a method                 | `CERBERUS_CH_COMPRESSION` vs `CERBERUS_CH_COMPRESSION_LEVEL`                                                             | A level with `none` does nothing; a level must also sit in the method's range (lz4 `0..12`, zstd `1..22`).                                                                                                 |
+| Read timeout ≥ query timeout                        | `CERBERUS_CH_READ_TIMEOUT` vs `CERBERUS_QUERY_TIMEOUT`                                                                   | A socket read shorter than the query budget would kill legitimate long queries.                                                                                                                            |
+| Idle conns ≤ open conns                             | `CERBERUS_CH_MAX_IDLE_CONNS` vs `CERBERUS_CH_MAX_OPEN_CONNS`                                                             | More idle than total pooled connections is a degenerate pool. Fires only when idle is **explicitly set** — lowering only `MAX_OPEN_CONNS` below the default idle is fine (the driver clamps idle to open). |
+| Server header timeout ≤ read timeout                | `CERBERUS_HTTP_READ_HEADER_TIMEOUT` vs `CERBERUS_HTTP_READ_TIMEOUT`                                                      | A header deadline longer than the whole-request deadline can never fire.                                                                                                                                   |
+
+Benign-but-pointless combinations are **not** hard errors — they are noted here
+rather than rejected:
+
+- `CERBERUS_CH_CONN_OPEN_STRATEGY=round_robin` with a single `CERBERUS_CH_ADDR`
+  host: the strategy has nothing to rotate over, but it is harmless.
+- Keepalive timing sub-knobs (`CERBERUS_CH_KEEPALIVE_IDLE` / `_INTERVAL` /
+  `_COUNT`) while `CERBERUS_CH_KEEPALIVE_ENABLED=false`: inert (the kernel never
+  arms a probe schedule), so a degenerate value is accepted, not rejected, when
+  keepalive is disabled.
