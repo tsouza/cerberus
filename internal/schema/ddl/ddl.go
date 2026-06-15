@@ -3,8 +3,23 @@
 // github.com/open-telemetry/opentelemetry-collector-contrib (via the
 // tsouza/opentelemetry-collector-contrib:cerberus-ddl fork wired via go.mod
 // replace, see PR #154). Cerberus does NOT maintain a parallel schema; this
-// package just executes upstream's `CREATE TABLE IF NOT EXISTS` against the
-// configured CH connection.
+// package just executes upstream's `CREATE DATABASE IF NOT EXISTS` followed by
+// `CREATE TABLE IF NOT EXISTS` against the configured CH connection.
+//
+// # The database must be created first
+//
+// The configured database (CERBERUS_CH_DATABASE) is NOT guaranteed to exist.
+// A fresh ClickHouse only ships the built-in `default` database; any other
+// target — e.g. the `otel` database the demo and compat stacks pin on both
+// the collector and cerberus — must be created. Every table template emits a
+// fully-qualified `<database>.<table>` name, so a CREATE TABLE against a
+// non-existent database fails with "Database otel does not exist" — which is
+// exactly what bit a deployment on a clean cluster. So Apply issues
+// `CREATE DATABASE IF NOT EXISTS <database>` BEFORE any table statement
+// (matching upstream's exporter, which creates the database in its start()
+// path before the tables). The whole sequence is idempotent: the database
+// create carries IF NOT EXISTS just like the table creates, so re-running over
+// an already-provisioned cluster is a no-op.
 //
 // The upstream traces + metrics templates are `fmt.Sprintf`-style with `%s`
 // placeholders for (database, table, on-cluster clause, engine, TTL
@@ -153,10 +168,11 @@ func (c Config) ttlExpr(timeField string) string {
 	}
 }
 
-// Apply runs CREATE TABLE IF NOT EXISTS for each requested signal against
-// conn using the upstream OTel exporter's DDL templates. Idempotent:
-// re-running over an existing schema is a no-op (every template carries
-// `IF NOT EXISTS`).
+// Apply ensures the configured database exists, then runs CREATE TABLE IF
+// NOT EXISTS for each requested signal against conn using the upstream OTel
+// exporter's DDL templates. Idempotent: re-running over an existing schema is
+// a no-op (the database create and every table template carry `IF NOT
+// EXISTS`).
 //
 // For Metrics, all 5 tables (gauge, sum, histogram, exp_histogram, summary)
 // are created in one Apply call — they form the metrics signal as a unit.
@@ -174,14 +190,39 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 // ApplyWithConfig is the explicit-config form of Apply: it threads a Config
 // through the upstream templates so callers can override database, engine,
 // cluster, TTL, or table names. See Config for field semantics.
+//
+// The configured database is created first (CREATE DATABASE IF NOT EXISTS) so
+// the fully-qualified `<database>.<table>` CREATE statements that follow never
+// fail against a non-existent database — the cold-cluster bootstrap path.
 func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals []Signal) error {
+	// No signals requested → no tables to create → no database needed. Return
+	// before touching conn so an empty-selector caller (and the nil-conn no-op
+	// contract its tests pin) never issues a stray CREATE DATABASE.
+	if len(signals) == 0 {
+		return nil
+	}
 	cfg = cfg.withDefaults()
+	if err := conn.Exec(ctx, renderCreateDatabase(cfg)); err != nil {
+		return fmt.Errorf("ddl: create database %s: %w", cfg.Database, err)
+	}
 	for _, s := range signals {
 		if err := applySignal(ctx, conn, cfg, s); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// renderCreateDatabase renders the `CREATE DATABASE IF NOT EXISTS <database>`
+// statement (with the optional ON CLUSTER clause), mirroring upstream's
+// exporter createDatabase. The database name is taken verbatim from the
+// resolved Config — the upstream exporter does not quote it either, and the
+// configured names are simple identifiers. IF NOT EXISTS keeps it idempotent.
+func renderCreateDatabase(cfg Config) string {
+	if cluster := cfg.clusterClause(); cluster != "" {
+		return fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s %s", cfg.Database, cluster)
+	}
+	return fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", cfg.Database)
 }
 
 // applySignal renders + executes the DDL statements for one signal.

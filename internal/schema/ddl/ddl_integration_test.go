@@ -71,6 +71,123 @@ func startClickHouse(t *testing.T) (driver.Conn, string) {
 	return conn, "otel"
 }
 
+// startClickHouseDefaultDB spins up a real ClickHouse whose ONLY database is
+// the built-in `default`, and returns a driver.Conn bound to it. Unlike
+// startClickHouse it deliberately does NOT pre-create an `otel` database — so
+// a test can prove Apply creates a target database that does not yet exist,
+// which is the real cold-cluster bootstrap path (k8s / compose against a plain
+// ClickHouse). The earlier integration tests masked the missing-database bug
+// by handing testcontainers WithDatabase("otel").
+func startClickHouseDefaultDB(t *testing.T) driver.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	container, err := tcclickhouse.Run(
+		ctx,
+		"clickhouse/clickhouse-server:25.8-alpine",
+		tcclickhouse.WithUsername("cerberus"),
+		tcclickhouse.WithPassword("cerberus"),
+	)
+	if err != nil {
+		t.Fatalf("start clickhouse: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = container.Terminate(context.Background())
+	})
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	port, err := container.MappedPort(ctx, "9000/tcp")
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{fmt.Sprintf("%s:%s", host, port.Port())},
+		Auth: clickhouse.Auth{
+			Database: "default",
+			Username: "cerberus",
+			Password: "cerberus",
+		},
+		DialTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pingCancel()
+	if err := conn.Ping(pingCtx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	return conn
+}
+
+// databaseExists reports whether a database row exists in system.databases.
+func databaseExists(ctx context.Context, t *testing.T, conn driver.Conn, database string) bool {
+	t.Helper()
+	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT name FROM system.databases WHERE name = '%s'", database))
+	if err != nil {
+		t.Fatalf("query databases: %v", err)
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
+// TestApply_CreatesDatabaseWhenAbsent is the regression test for the
+// cold-cluster bug: cerberus's AUTO_CREATE_SCHEMA targeted the `otel` database
+// but never created it, so on a fresh ClickHouse (only `default` exists) every
+// CREATE TABLE failed with "Database otel does not exist". Apply must now
+// create the database first, then the tables — driven from a connection bound
+// to `default`, exactly like a real deployment dialing a plain ClickHouse.
+func TestApply_CreatesDatabaseWhenAbsent(t *testing.T) {
+	conn := startClickHouseDefaultDB(t)
+	ctx := context.Background()
+
+	const target = "otel"
+	if databaseExists(ctx, t, conn, target) {
+		t.Fatalf("precondition: database %q already exists; the test cannot prove it gets created", target)
+	}
+
+	cfg := ddl.Config{Database: target}
+	if err := ddl.ApplyWithConfig(ctx, conn, cfg, ddl.All); err != nil {
+		t.Fatalf("Apply against absent database: %v", err)
+	}
+
+	if !databaseExists(ctx, t, conn, target) {
+		t.Fatalf("database %q was not created by Apply", target)
+	}
+
+	tables := listTables(ctx, t, conn, target)
+	want := []string{
+		"otel_logs",
+		"otel_metrics_exp_histogram",
+		"otel_metrics_gauge",
+		"otel_metrics_histogram",
+		"otel_metrics_sum",
+		"otel_metrics_summary",
+		"otel_traces",
+		"otel_traces_trace_id_ts",
+		"otel_traces_trace_id_ts_mv",
+	}
+	if !sameStringSlice(tables, want) {
+		t.Errorf("tables after create-database Apply:\n got: %v\nwant: %v", tables, want)
+	}
+
+	// Re-apply must stay a no-op now that the database AND tables exist —
+	// the IF NOT EXISTS on the database create is what keeps a process
+	// restart against a provisioned cluster clean.
+	if err := ddl.ApplyWithConfig(ctx, conn, cfg, ddl.All); err != nil {
+		t.Fatalf("Apply (rerun against provisioned database): %v", err)
+	}
+}
+
 // listTables reads the current database's table list — used by Apply tests
 // to assert what got created.
 func listTables(ctx context.Context, t *testing.T, conn driver.Conn, database string) []string {
