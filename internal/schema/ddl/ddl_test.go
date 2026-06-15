@@ -233,8 +233,8 @@ func TestTTLExpr_RoundingBuckets(t *testing.T) {
 func TestRenderSignal_PerSignalTTL(t *testing.T) {
 	cfg := Config{
 		TTL: TTL{
-			Metrics: 90 * 24 * time.Hour, // 90 days
-			Logs:    7 * 24 * time.Hour,  // 7 days
+			Metrics: 90 * 24 * time.Hour, // 90 days (not a whole week → stays days)
+			Logs:    14 * 24 * time.Hour, // 14 days = 2 weeks → coarsest bucket is weeks
 			Traces:  0,                   // no TTL on traces
 		},
 	}.withDefaults()
@@ -246,8 +246,8 @@ func TestRenderSignal_PerSignalTTL(t *testing.T) {
 		}
 	}
 	logs, _ := renderSignal(cfg, Logs)
-	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalDay(7)") {
-		t.Errorf("logs: want 7d TTL:\n%s", logs[0])
+	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalWeek(2)") {
+		t.Errorf("logs: want 2-week TTL:\n%s", logs[0])
 	}
 	traces, _ := renderSignal(cfg, Traces)
 	for i, stmt := range traces {

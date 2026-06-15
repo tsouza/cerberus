@@ -66,6 +66,48 @@ func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
 	}
 }
 
+// TestFromEnv_SchemaTTL_PrometheusSyntax confirms the TTL knobs accept the
+// Prometheus/Grafana duration syntax (90d, 2w, 1y) operators use for
+// retention windows — units Go's time.ParseDuration can't express — while
+// the hour form (2160h) still works.
+func TestFromEnv_SchemaTTL_PrometheusSyntax(t *testing.T) {
+	t.Setenv("CERBERUS_SCHEMA_TTL", "90d")     // global
+	t.Setenv("CERBERUS_SCHEMA_TTL_LOGS", "2w") // per-signal
+	t.Setenv("CERBERUS_SCHEMA_TTL_METRICS", "1y")
+	t.Setenv("CERBERUS_SCHEMA_TTL_TRACES", "2160h") // Go hour form still valid
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	p := cfg.SchemaProvisioning
+	if p.TTL != 90*24*time.Hour {
+		t.Errorf("TTL(90d) = %v; want 2160h", p.TTL)
+	}
+	if p.TTLLogs != 14*24*time.Hour {
+		t.Errorf("TTLLogs(2w) = %v; want 336h", p.TTLLogs)
+	}
+	if p.TTLMetrics != 365*24*time.Hour {
+		t.Errorf("TTLMetrics(1y) = %v; want 8760h", p.TTLMetrics)
+	}
+	if p.TTLTraces != 2160*time.Hour {
+		t.Errorf("TTLTraces(2160h) = %v; want 2160h", p.TTLTraces)
+	}
+}
+
+// TestFromEnv_SchemaTTL_Invalid confirms a malformed retention value fails
+// fast, naming the offending var.
+func TestFromEnv_SchemaTTL_Invalid(t *testing.T) {
+	t.Setenv("CERBERUS_SCHEMA_TTL", "2 weeks") // spaces/words are not the compact syntax
+	_, err := FromEnv()
+	if err == nil {
+		t.Fatal("malformed CERBERUS_SCHEMA_TTL must fail fast")
+	}
+	if !strings.Contains(err.Error(), "CERBERUS_SCHEMA_TTL") {
+		t.Errorf("error should name the var, got: %v", err)
+	}
+}
+
 // TestFromEnv_HTTPAddr_Default confirms the documented :8080 fallback
 // when CERBERUS_HTTP_ADDR is unset.
 func TestFromEnv_HTTPAddr_Default(t *testing.T) {

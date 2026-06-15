@@ -390,6 +390,15 @@ metrics tables share one TTL, the spans + `trace_id_ts` lookup share another
 short, metrics long). A deployment that needs genuinely per-table retention
 runs the DDL itself rather than via the auto-create hook.
 
+The TTL knobs accept the **Prometheus/Grafana duration syntax** operators
+already use for retention windows — `90d`, `2w`, `1y`, or the Go `2160h`
+form. `d`/`w`/`y` are fixed (24h / 7d / 365d), so a whole number of weeks
+renders as `toIntervalWeek(N)` and everything else as the coarsest exact
+ClickHouse interval (`toIntervalDay`/`Hour`/…). Calendar months and
+calendar-aware years are intentionally not supported: they are
+variable-length and a `1y` TTL is exactly 365 days, not a leap-aware
+calendar year.
+
 Auto-create also reuses the **same** table names the query heads read
 (`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
 consistently rather than silently diverging onto the upstream defaults.

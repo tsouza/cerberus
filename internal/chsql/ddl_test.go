@@ -59,7 +59,10 @@ func TestTableTTL(t *testing.T) {
 		d    time.Duration
 		want string
 	}{
+		{"week", "Timestamp", 14 * 24 * time.Hour, "TTL toDateTime(Timestamp) + toIntervalWeek(2)"},
 		{"day", "TimeUnix", 48 * time.Hour, "TTL toDateTime(TimeUnix) + toIntervalDay(2)"},
+		// 90 days is not a whole number of weeks, so it stays in days.
+		{"day_not_week", "TimeUnix", 90 * 24 * time.Hour, "TTL toDateTime(TimeUnix) + toIntervalDay(90)"},
 		{"hour", "Timestamp", 3 * time.Hour, "TTL toDateTime(Timestamp) + toIntervalHour(3)"},
 		{"minute", "Start", 90 * time.Minute, "TTL toDateTime(Start) + toIntervalMinute(90)"},
 		{"second", "TimeUnix", 45 * time.Second, "TTL toDateTime(TimeUnix) + toIntervalSecond(45)"},

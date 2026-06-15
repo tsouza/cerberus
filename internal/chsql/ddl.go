@@ -47,10 +47,18 @@ func DatabaseEngineReplicated(zooPath, shard, replica string) Frag {
 
 // ttlInterval picks the coarsest exact ClickHouse interval bucket for d:
 // the toIntervalXxx function name and its integer count. Mirrors the
-// retention granularity a CH TTL clause accepts (day / hour / minute /
-// second). Only called with d > 0 — TableTTL guards the zero case.
+// retention granularity a CH TTL clause accepts — week / day / hour /
+// minute / second, all of which are exact (fixed-length) durations a Go
+// time.Duration represents losslessly. Calendar units (month / quarter /
+// year) are intentionally NOT produced: they are variable-length and cannot
+// round-trip through a time.Duration, so a "1 year" retention arrives here as
+// 365 days and renders as toIntervalDay(365), not the calendar-aware
+// toIntervalYear(1). Only called with d > 0 — TableTTL guards the zero case.
 func ttlInterval(d time.Duration) (fn string, n int64) {
+	const week = 7 * 24 * time.Hour
 	switch {
+	case d%week == 0:
+		return "toIntervalWeek", int64(d / week)
 	case d%(24*time.Hour) == 0:
 		return "toIntervalDay", int64(d / (24 * time.Hour))
 	case d%time.Hour == 0:
