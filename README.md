@@ -4,7 +4,7 @@
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> **EXPERIMENTAL — NOT PRODUCTION-READY.** Cerberus is at `v1.0.0-RC1`,
+> **EXPERIMENTAL — NOT PRODUCTION-READY.** Cerberus is at `v1.0.0-rc.1`,
 > early and under active development. The differential harnesses run on every
 > PR and score parity against real Prometheus / Loki / Tempo, but correctness,
 > performance, and operational behaviour are still being shaken out, and the
