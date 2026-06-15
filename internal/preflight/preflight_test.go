@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -634,6 +636,83 @@ func TestRunUnreachableVersionShortCircuitsShapeGate(t *testing.T) {
 	assertTransient(t, res)
 	if res.Fatal != nil {
 		t.Fatalf("unreachable on version probe must short-circuit the shape gate, got fatal: %v", res.Fatal)
+	}
+}
+
+// unknownDatabaseErr mimics the error the clickhouse-go/v2 driver surfaces when
+// the connection's session default database does not exist: a typed
+// *clickhouse.Exception with code 81 (UNKNOWN_DATABASE), wrapped under the
+// chclient stage prefix (preserved via %w). isDatabaseAbsent must see through
+// the wrapper via errors.As. This is the reported cold-cluster failure: even
+// SELECT version() fails with this code until the database is created.
+func unknownDatabaseErr() error {
+	ex := &clickhouse.Exception{
+		Code:    chCodeUnknownDatabase,
+		Name:    "UNKNOWN_DATABASE",
+		Message: "Database otel does not exist",
+	}
+	return fmt.Errorf("chclient: query: %w", ex)
+}
+
+// assertDatabaseAbsentTransient is the shared assertion for the
+// not-yet-created-database cases: the Result must be transient (not fatal, not
+// provisioned), carry the DatabaseAbsent flag, and render a precise reason.
+func assertDatabaseAbsentTransient(t *testing.T, res Result) {
+	t.Helper()
+	if res.Fatal != nil {
+		t.Fatalf("absent database must NOT be fatal (transient cold-cluster race), got: %v", res.Fatal)
+	}
+	if !res.DatabaseAbsent {
+		t.Fatal("absent database must set Result.DatabaseAbsent")
+	}
+	if res.Unreachable {
+		t.Fatal("absent database is reachable; Result.Unreachable must be false")
+	}
+	if res.SchemaProvisioned() {
+		t.Fatal("absent database must report schema NOT provisioned")
+	}
+	reason := res.DatabaseAbsentReason("otel")
+	if !strings.Contains(reason, "otel") || !strings.Contains(reason, "not yet provisioned") {
+		t.Errorf("DatabaseAbsentReason = %q, want a precise not-yet-provisioned reason naming the database", reason)
+	}
+}
+
+// TestRunUnknownDatabaseIsTransient is the regression test for the reported
+// rc.1 bug: on a cold cluster the configured database does not exist, so the
+// version probe fails with UNKNOWN_DATABASE (code 81). The old preflight
+// bucketed that as a FATAL "could not read clickhouse version" and cerberus
+// exited(1) before anything could create the database. It must instead be
+// TRANSIENT — boot NOT READY and re-probe until the database appears.
+func TestRunUnknownDatabaseIsTransient(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{VersionErr: unknownDatabaseErr(), Columns: healthyColumns()}
+	assertDatabaseAbsentTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// TestRunUnknownDatabaseStringFallback: when the driver wraps the exception
+// opaquely enough to defeat errors.As (no typed *clickhouse.Exception in the
+// chain), the narrow string fallback on the UNKNOWN_DATABASE message still
+// classifies it as the transient absent-database case.
+func TestRunUnknownDatabaseStringFallback(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{
+		VersionErr: errors.New("clickhouse: Database otel does not exist (UNKNOWN_DATABASE)"),
+		Columns:    healthyColumns(),
+	}
+	assertDatabaseAbsentTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// TestRunUnknownDatabaseShortCircuitsShapeGate: an absent database on the
+// version probe must NOT then run (and fail) the shape gate — the Result
+// carries only the DatabaseAbsent signal, no wrong-shape fatal even though the
+// columns would diverge.
+func TestRunUnknownDatabaseShortCircuitsShapeGate(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{VersionErr: unknownDatabaseErr(), ColumnsErr: errors.New("code 60: unknown table")}
+	res := Run(context.Background(), q, defaultReq())
+	assertDatabaseAbsentTransient(t, res)
+	if res.Fatal != nil {
+		t.Fatalf("absent database on version probe must short-circuit the shape gate, got fatal: %v", res.Fatal)
 	}
 }
 

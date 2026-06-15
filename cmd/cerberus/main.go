@@ -536,6 +536,25 @@ func runRequirementsCheck(
 		return present.Func(), nil
 	}
 
+	if res.DatabaseAbsent {
+		// Transient: ClickHouse is up but the configured database does not exist
+		// yet (UNKNOWN_DATABASE / code 81). The connection carries the database
+		// as its session default, so even SELECT version() fails until the
+		// database is created — by the collector that owns schema creation, or by
+		// the auto-create hook once it can reach the server. This is the same
+		// class of cold-cluster race as an absent schema, NOT a misconfiguration,
+		// so boot but stay NOT READY; the background re-probe flips readiness once
+		// the database (and its tables) appear. No restart.
+		reason := res.DatabaseAbsentReason(cfg.ClickHouse.Database)
+		logger.Warn(
+			"clickhouse database not yet provisioned; serving unready until it is created (/readyz gates traffic)",
+			"reason", reason,
+		)
+		present := newSchemaPresentSignal(reason)
+		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
+		return present.Func(), nil
+	}
+
 	if !res.SchemaProvisioned() {
 		// Transient: the schema has not been provisioned yet (cerberus booted
 		// ahead of the collector that owns schema creation). Boot but stay
@@ -638,6 +657,11 @@ func reprobeSchema(
 		if res.Unreachable {
 			// Still no ClickHouse: keep the unreachable reason fresh and wait.
 			signal.setReason(res.UnreachableReason())
+			continue
+		}
+		if res.DatabaseAbsent {
+			// Database still not created: keep the reason fresh and wait.
+			signal.setReason(res.DatabaseAbsentReason(req.Database))
 			continue
 		}
 		if !res.SchemaProvisioned() {

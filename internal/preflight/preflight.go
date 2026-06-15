@@ -33,15 +33,20 @@
 //     column, an attribute map typed something other than
 //     Map(String, String)). These never self-heal, so they fail startup
 //     fast with an aggregated diff (every unmet requirement at once).
-//   - TRANSIENT — either (a) the configured tables are ENTIRELY ABSENT
+//   - TRANSIENT — any of (a) the configured tables are ENTIRELY ABSENT
 //     (system.columns reports zero rows for them): the schema has not been
-//     provisioned yet; or (b) ClickHouse is ENTIRELY UNREACHABLE at boot
-//     (the version / introspection probes fail with a transport / dial /
-//     connection-refused error — cerberus started before ClickHouse
-//     accepted connections). Neither is a misconfiguration: both heal on
+//     provisioned yet; (b) the configured DATABASE does not exist yet — the
+//     connection carries it as the session default (Auth.Database), so even a
+//     database-independent probe like SELECT version() fails with
+//     UNKNOWN_DATABASE (code 81, "Database <name> does not exist") until an
+//     external writer or the auto-create hook creates it; or (c) ClickHouse is
+//     ENTIRELY UNREACHABLE at boot (the version / introspection probes fail with
+//     a transport / dial / connection-refused error — cerberus started before
+//     ClickHouse accepted connections). None is a misconfiguration: all heal on
 //     their own. This does NOT fail startup; cerberus boots but reports NOT
 //     READY on /readyz with a precise reason, and an external re-probe flips
-//     it ready once the server appears (and the schema exists) — no restart.
+//     it ready once the server appears (and the database + schema exist) — no
+//     restart.
 //
 // Run returns a Result that carries the buckets separately. The caller
 // turns the fatal bucket into a non-zero exit and feeds the absent /
@@ -55,6 +60,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -166,17 +173,29 @@ type Querier interface {
 //     is the "boot ahead of ClickHouse" race: the caller boots NOT READY and
 //     re-probes rather than exiting. UnreachableErr carries the underlying
 //     transport error for the /readyz reason + logs.
+//   - DatabaseAbsent is set when ClickHouse is reachable but the configured
+//     database does not exist yet (UNKNOWN_DATABASE / code 81). Because the
+//     connection carries the database as its session default, even SELECT
+//     version() fails with this code, so the version gate surfaces it FIRST and
+//     short-circuits here. Like AbsentTables this is transient — the database
+//     self-heals once an external writer (the collector) or the auto-create
+//     hook creates it — so a Result with DatabaseAbsent set and a nil Fatal is
+//     the cold-cluster "database not yet provisioned" race: the caller boots NOT
+//     READY and re-probes rather than exiting. DatabaseAbsentErr carries the
+//     underlying UNKNOWN_DATABASE error for the /readyz reason + logs.
 //
 // The buckets are independent. A pass can report several (e.g. an old server
 // AND an absent table) — the Fatal bucket still wins (the caller exits),
-// because a too-old server never heals on its own. An unreachable server
-// short-circuits the shape gate (it cannot be introspected) so it never
-// coexists with a Fatal wrong-shape finding.
+// because a too-old server never heals on its own. An unreachable server, or a
+// not-yet-created database, short-circuits the shape gate (it cannot be
+// introspected) so neither ever coexists with a Fatal wrong-shape finding.
 type Result struct {
-	Fatal          error
-	AbsentTables   []string
-	Unreachable    bool
-	UnreachableErr error
+	Fatal             error
+	AbsentTables      []string
+	Unreachable       bool
+	UnreachableErr    error
+	DatabaseAbsent    bool
+	DatabaseAbsentErr error
 }
 
 // SchemaProvisioned reports whether the schema is fully present (whatever
@@ -184,7 +203,9 @@ type Result struct {
 // configured table missing and no transport failure. The readiness wiring
 // consults this to decide whether to gate /readyz on a not-yet-ready
 // backend (an unreachable server can't have a confirmed-present schema).
-func (r Result) SchemaProvisioned() bool { return len(r.AbsentTables) == 0 && !r.Unreachable }
+func (r Result) SchemaProvisioned() bool {
+	return len(r.AbsentTables) == 0 && !r.Unreachable && !r.DatabaseAbsent
+}
 
 // UnreachableReason renders a precise /readyz body reason for the
 // transport-failure case, e.g. "clickhouse not reachable: dial tcp
@@ -198,6 +219,21 @@ func (r Result) UnreachableReason() string {
 		return fmt.Sprintf("clickhouse not reachable: %v", r.UnreachableErr)
 	}
 	return "clickhouse not reachable"
+}
+
+// DatabaseAbsentReason renders a precise /readyz body reason for the
+// not-yet-created-database case, naming the configured database, e.g.
+// `database "otel" not yet provisioned: ...`. Returns "" when the database
+// exists. The database name is carried so the reason is self-contained even
+// though the underlying error already embeds it.
+func (r Result) DatabaseAbsentReason(database string) string {
+	if !r.DatabaseAbsent {
+		return ""
+	}
+	if r.DatabaseAbsentErr != nil {
+		return fmt.Sprintf("database %q not yet provisioned: %v", database, r.DatabaseAbsentErr)
+	}
+	return fmt.Sprintf("database %q not yet provisioned", database)
 }
 
 // AbsentReason renders the absent-tables list into a single precise reason
@@ -238,9 +274,16 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	// race. That's transient, not a misconfiguration, so short-circuit to an
 	// Unreachable Result rather than running the shape gate against a server
 	// that can't answer (and rather than mislabelling a dial error as fatal).
-	versionProblems, unreachable := checkVersion(ctx, q, req)
+	// An UNKNOWN_DATABASE error here means the server IS up but the configured
+	// database does not exist yet (the connection carries it as the session
+	// default, so even version() fails) — equally transient, so short-circuit to
+	// a DatabaseAbsent Result rather than mislabelling it a fatal version-read.
+	versionProblems, unreachable, dbAbsent := checkVersion(ctx, q, req)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
+	}
+	if dbAbsent != nil {
+		return Result{DatabaseAbsent: true, DatabaseAbsentErr: dbAbsent}
 	}
 
 	schemaProblems, absent, unreachable := checkSchema(ctx, q, req)
@@ -290,6 +333,44 @@ func isUnreachable(err error) bool {
 	return matchesTransportPhrase(err)
 }
 
+// chCodeUnknownDatabase is ClickHouse's UNKNOWN_DATABASE server error code
+// (ErrorCodes.cpp: 81), raised as "Database <name> does not exist". On a cold
+// cluster the configured database may not exist yet, and the connection carries
+// it as the session default (Auth.Database) — so even a database-independent
+// probe like SELECT version() fails with this code until an external writer
+// (the collector) or the auto-create hook creates the database.
+const chCodeUnknownDatabase = 81
+
+// isDatabaseAbsent reports whether err is ClickHouse's UNKNOWN_DATABASE
+// rejection (code 81). It prefers typed detection — errors.As against
+// *clickhouse.Exception checking Code — mirroring the chclient memory-limit
+// detector; the named broad-substring fallback only catches the case where the
+// driver wraps the exception opaquely enough to defeat errors.As. The phrases
+// are deliberately narrow to the UNKNOWN_DATABASE vocabulary so a successful
+// query whose result data merely mentions a database name never trips it.
+func isDatabaseAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ex *clickhouse.Exception
+	if errors.As(err, &ex) && ex.Code == chCodeUnknownDatabase {
+		return true
+	}
+	return matchesUnknownDatabasePhrase(err)
+}
+
+// matchesUnknownDatabasePhrase is the string-matching fallback for
+// isDatabaseAbsent. "unknown_database" is the distinctive code name the server
+// appends; the "database … does not exist" pair covers a wrapper that drops the
+// code name but keeps the message.
+func matchesUnknownDatabasePhrase(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unknown_database") {
+		return true
+	}
+	return strings.Contains(msg, "database") && strings.Contains(msg, "does not exist")
+}
+
 // transportPhrases are the lower-cased substrings that mark a connectivity
 // failure when the driver wraps the underlying error opaquely enough that
 // errors.As on *net.OpError / net.Error no longer reaches it. Kept narrow to
@@ -316,12 +397,15 @@ func matchesTransportPhrase(err error) bool {
 }
 
 // checkVersion runs gate 1: it reads version() and compares the parsed
-// major.minor against the effective floor. A TRANSPORT error (ClickHouse not
-// reachable) is returned as the second value so the caller short-circuits to
-// the transient Unreachable state; an unreadable-but-reachable response
-// (server-side query error, empty result, or unparseable / too-old version)
-// is a fatal problem (never a silent pass).
-func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []string, unreachable error) {
+// major.minor against the effective floor. Two error classes are returned
+// separately so the caller short-circuits to the matching transient state: a
+// TRANSPORT error (ClickHouse not reachable) via unreachable, and an
+// UNKNOWN_DATABASE error (the configured database does not exist yet — the
+// connection carries it as the session default, so even version() fails) via
+// dbAbsent. An unreadable-but-reachable response against an existing database
+// (other server-side query error, empty result, or unparseable / too-old
+// version) is a fatal problem (never a silent pass).
+func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []string, unreachable, dbAbsent error) {
 	min := req.minVersion()
 	rateNote := "native rate disabled"
 	if req.NativeRateEnabled {
@@ -332,22 +416,25 @@ func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []
 	rows, err := q.QueryStrings(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {
-			return nil, err
+			return nil, err, nil
 		}
-		return []string{fmt.Sprintf("could not read clickhouse version: %v", err)}, nil
+		if isDatabaseAbsent(err) {
+			return nil, nil, err
+		}
+		return []string{fmt.Sprintf("could not read clickhouse version: %v", err)}, nil, nil
 	}
 	if len(rows) == 0 {
-		return []string{"clickhouse version query returned no rows"}, nil
+		return []string{"clickhouse version query returned no rows"}, nil, nil
 	}
 	raw := strings.TrimSpace(rows[0])
 	got, ok := parseCHVersion(raw)
 	if !ok {
-		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}, nil
+		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}, nil, nil
 	}
 	if !got.atLeast(min) {
-		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}, nil
+		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}, nil, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // parseCHVersion extracts the leading major.minor from a ClickHouse
