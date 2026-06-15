@@ -84,13 +84,47 @@ async function combinedStatus() {
   return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=100`);
 }
 
+// The release gate cares about the MERGE-TIME signal (push / pull_request /
+// manual dispatch), NOT scheduled nightly re-runs. The nightly e2e re-runs the
+// deep, slow lanes on whatever commit is main HEAD — notably the BFS `crawl`
+// shard, which is a ~50-min long pole that routinely hits its timeout and ends
+// `cancelled`/`failure`. Because those nightly check-runs share the SAME name
+// as the push ones and carry a higher id, a naive latest-per-name pick lets a
+// hung nightly supersede the green push result and block a release forever.
+// So resolve each check-run's triggering workflow event and drop the scheduled
+// ones; the push/PR/dispatch results are the merge-time truth the gate wants.
+const SCHEDULED_EVENT = 'schedule';
+const runEventCache = new Map();
+async function checkRunEvent(cr) {
+  const m = /\/actions\/runs\/(\d+)/.exec(cr.details_url || '');
+  if (!m) return null; // non-Actions check (CodeQL / security app) — keep it
+  const runId = m[1];
+  if (runEventCache.has(runId)) return runEventCache.get(runId);
+  let ev = null;
+  try {
+    const run = await getJSON(`${apiBase}/repos/${repo}/actions/runs/${runId}`);
+    ev = run.event ?? null;
+  } catch {
+    ev = null; // on any resolution error, fail SAFE: keep the check (don't hide a red)
+  }
+  runEventCache.set(runId, ev);
+  return ev;
+}
+
 // A check-run is green when it completed with an accepting conclusion. A job
 // that is genuinely not applicable to this commit reports `skipped` (path
 // filters, `if:` guards) and counts as green — that is a deliberate pass, not
 // a failure.
 const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
 
-const [checkRuns, status] = await Promise.all([allCheckRuns(), combinedStatus()]);
+const [allRuns, status] = await Promise.all([allCheckRuns(), combinedStatus()]);
+
+// Drop scheduled (nightly) check-runs; keep push / PR / dispatch ones.
+const checkRuns = [];
+for (const cr of allRuns) {
+  if ((await checkRunEvent(cr)) === SCHEDULED_EVENT) continue;
+  checkRuns.push(cr);
+}
 
 // Re-runs leave multiple check-runs with the same name; keep only the most
 // recent per name (highest id) so a green re-run supersedes an earlier fail.
