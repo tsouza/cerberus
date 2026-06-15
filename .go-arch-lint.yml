@@ -260,3 +260,10 @@ deps:
     mayDependOn:
       - chsql
       - chclient
+  # schema-ddl composes the auto-create DDL (CREATE DATABASE / ON CLUSTER /
+  # TTL) via the typed chsql DDL builder instead of hand-rolled SQL strings,
+  # so it depends on chsql. chsql depends only on chplan, so there is no
+  # cycle (schema-ddl → chsql → chplan).
+  schema-ddl:
+    mayDependOn:
+      - chsql

@@ -996,6 +996,21 @@ func verbatim(sql string) Frag {
 	return func(b *Builder) { b.sb.WriteString(sql) }
 }
 
+// ddlToken emits a fixed ClickHouse DDL keyword / punctuation token
+// verbatim. It is the closed-surface primitive backing the typed DDL
+// statement builders in ddl.go (CreateDatabase and the ON CLUSTER /
+// ENGINE / TTL clause constructors) — the DDL counterpart of the clause
+// keywords QueryBuilder.writeInto writes for SELECT. The argument is
+// ALWAYS a compile-time-constant DDL token (e.g. "CREATE DATABASE ",
+// " ENGINE = ", "IF NOT EXISTS "), never user, plan, or config data —
+// names flow through Ident / BareIdent and values through InlineLit /
+// Call. Keeping it here (not in ddl.go) is what lets the DDL builders
+// compose statements without any raw sb.Write of their own, so the
+// "tokens are written only in builder.go" discipline holds.
+func ddlToken(s string) Frag {
+	return func(b *Builder) { b.sb.WriteString(s) }
+}
+
 // BareIdent returns a Frag that emits name literally — no backtick
 // quoting. The narrow trust contract: name MUST be a CH-safe bare
 // identifier (the CH grammar requires it to match
