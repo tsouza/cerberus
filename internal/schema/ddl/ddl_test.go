@@ -201,7 +201,9 @@ func TestRenderSignal_UnknownSignal(t *testing.T) {
 
 // TestTTLExpr_RoundingBuckets checks the TTL rounding logic that mirrors
 // the upstream GenerateTTLExpr — round-up to day/hour/minute when the
-// duration falls on a clean boundary.
+// duration falls on a clean boundary. ttlExpr takes the bare retention
+// column and wraps it in toDateTime(...) itself (via chsql.TableTTL), so
+// the rendered clause is `TTL toDateTime(<col>) + toIntervalXxx(N)`.
 func TestTTLExpr_RoundingBuckets(t *testing.T) {
 	cases := []struct {
 		name string
@@ -209,10 +211,10 @@ func TestTTLExpr_RoundingBuckets(t *testing.T) {
 		want string
 	}{
 		{"zero", 0, ""},
-		{"1d", 24 * time.Hour, "TTL t + toIntervalDay(1)"},
-		{"2h", 2 * time.Hour, "TTL t + toIntervalHour(2)"},
-		{"30m", 30 * time.Minute, "TTL t + toIntervalMinute(30)"},
-		{"45s", 45 * time.Second, "TTL t + toIntervalSecond(45)"},
+		{"1d", 24 * time.Hour, "TTL toDateTime(t) + toIntervalDay(1)"},
+		{"2h", 2 * time.Hour, "TTL toDateTime(t) + toIntervalHour(2)"},
+		{"30m", 30 * time.Minute, "TTL toDateTime(t) + toIntervalMinute(30)"},
+		{"45s", 45 * time.Second, "TTL toDateTime(t) + toIntervalSecond(45)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

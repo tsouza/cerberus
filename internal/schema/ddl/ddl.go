@@ -40,6 +40,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates"
+
+	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // Config carries the rendering inputs for the upstream DDL templates. The
@@ -64,11 +66,46 @@ type Config struct {
 	// clause into each template. Cerberus leaves TTL to the operator.
 	TTL time.Duration
 
+	// DatabaseEngine selects the ClickHouse engine for the CREATE DATABASE
+	// statement. The zero value emits no ENGINE clause (server default
+	// Atomic — the single-node shape); set Replicated to create the
+	// database with the Replicated engine for a clustered deployment.
+	DatabaseEngine DatabaseEngine
+
 	// Tables overrides the per-signal table names. The zero values fall
 	// back to the upstream defaults (otel_logs, otel_traces,
 	// otel_metrics_gauge, otel_metrics_sum, otel_metrics_histogram,
 	// otel_metrics_exp_histogram, otel_metrics_summary).
 	Tables Tables
+}
+
+// DatabaseEngine selects the ClickHouse database engine for the
+// auto-created database. The zero value (Replicated false) emits no
+// ENGINE clause, so ClickHouse applies its default (Atomic) — the
+// single-node shape cerberus ships by default.
+//
+// When Replicated is true the database is created with
+// `ENGINE = Replicated(<path>, <shard>, <replica>)`. A Replicated
+// database auto-replicates all DDL across replicas and auto-converts
+// MergeTree tables to ReplicatedMergeTree, so the table Engine stays the
+// plain MergeTree default and no ON CLUSTER clause is used (the two are
+// mutually exclusive — the Replicated database replicates DDL itself).
+type DatabaseEngine struct {
+	// Replicated turns on the Replicated database engine. When false the
+	// other fields are ignored and no ENGINE clause is emitted.
+	Replicated bool
+
+	// ReplicatedZooPath is the ZooKeeper/Keeper path the Replicated engine
+	// coordinates on, e.g. "/clickhouse/databases/otel". Required when
+	// Replicated is true (ApplyWithConfig rejects an empty path).
+	ReplicatedZooPath string
+
+	// ReplicatedShard / ReplicatedReplica are the shard and replica names
+	// the engine identifies this node by. They default to the ClickHouse
+	// server macros "{shard}" / "{replica}", which the server expands —
+	// the conventional cluster setup, so most operators leave them unset.
+	ReplicatedShard   string
+	ReplicatedReplica string
 }
 
 // Tables overrides the per-signal table name used when rendering each
@@ -89,6 +126,13 @@ type Tables struct {
 const (
 	defaultDatabase = "default"
 	defaultEngine   = "MergeTree()"
+
+	// defaultReplicatedShard / defaultReplicatedReplica are the ClickHouse
+	// server macros a Replicated database engine identifies a node by when
+	// the operator doesn't pin explicit values — the conventional cluster
+	// setup, where the server config defines {shard} / {replica}.
+	defaultReplicatedShard   = "{shard}"
+	defaultReplicatedReplica = "{replica}"
 
 	defaultLogsTable                = "otel_logs"
 	defaultTracesTable              = "otel_traces"
@@ -130,42 +174,46 @@ func (c Config) withDefaults() Config {
 	if c.Tables.MetricsSummary == "" {
 		c.Tables.MetricsSummary = defaultMetricsSummaryTable
 	}
+	if c.DatabaseEngine.Replicated {
+		if c.DatabaseEngine.ReplicatedShard == "" {
+			c.DatabaseEngine.ReplicatedShard = defaultReplicatedShard
+		}
+		if c.DatabaseEngine.ReplicatedReplica == "" {
+			c.DatabaseEngine.ReplicatedReplica = defaultReplicatedReplica
+		}
+	}
 	return c
 }
 
 // clusterClause renders the optional ON CLUSTER fragment that upstream
 // templates expect as a single slot (`%s` in the Sprintf templates,
-// `{{.ClusterString}}` in the logs template). Matches upstream's
-// `Config.clusterString` semantics: the cluster name is backtick-quoted
-// with embedded backticks doubled.
+// `{{.ClusterString}}` in the logs template). Returns "" when no cluster
+// is configured. Built via the typed chsql.OnCluster constructor — the
+// name is backtick-quoted (embedded backticks doubled) by the builder, so
+// this matches upstream's `Config.clusterString` semantics without any
+// hand-rolled fmt.Sprintf / strings.ReplaceAll.
 func (c Config) clusterClause() string {
 	if c.Cluster == "" {
 		return ""
 	}
-	escaped := strings.ReplaceAll(c.Cluster, "`", "``")
-	return fmt.Sprintf("ON CLUSTER `%s`", escaped)
+	sql, _ := chsql.Render(chsql.OnCluster(c.Cluster))
+	return sql
 }
 
-// ttlExpr renders the optional `TTL <field> + toIntervalXxx(N)` fragment
-// that upstream templates expect as one slot per signal. The time field
-// differs per signal — Logs and Traces use `toDateTime(Timestamp)`,
-// metrics use `toDateTime(TimeUnix)`. Matches upstream's
-// `internal.GenerateTTLExpr` semantics.
-func (c Config) ttlExpr(timeField string) string {
-	ttl := c.TTL
-	if ttl <= 0 {
+// ttlExpr renders the optional `TTL toDateTime(<column>) + toIntervalXxx(N)`
+// fragment that upstream templates expect as one slot per signal, or ""
+// when no TTL is configured. column is the bare time column retention
+// keys on — Metrics use TimeUnix, Logs and Traces spans use Timestamp,
+// the traces lookup uses Start. Built via the typed chsql.TableTTL
+// constructor (Add(Call(toDateTime, …), Call(toIntervalXxx, …))), which
+// reproduces upstream's `internal.GenerateTTLExpr` shape byte-for-byte.
+func (c Config) ttlExpr(column string) string {
+	frag := chsql.TableTTL(column, c.TTL)
+	if frag == nil {
 		return ""
 	}
-	switch {
-	case ttl%(24*time.Hour) == 0:
-		return fmt.Sprintf("TTL %s + toIntervalDay(%d)", timeField, ttl/(24*time.Hour))
-	case ttl%time.Hour == 0:
-		return fmt.Sprintf("TTL %s + toIntervalHour(%d)", timeField, ttl/time.Hour)
-	case ttl%time.Minute == 0:
-		return fmt.Sprintf("TTL %s + toIntervalMinute(%d)", timeField, ttl/time.Minute)
-	default:
-		return fmt.Sprintf("TTL %s + toIntervalSecond(%d)", timeField, ttl/time.Second)
-	}
+	sql, _ := chsql.Render(frag)
+	return sql
 }
 
 // Apply ensures the configured database exists, then runs CREATE TABLE IF
@@ -195,13 +243,21 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 // the fully-qualified `<database>.<table>` CREATE statements that follow never
 // fail against a non-existent database — the cold-cluster bootstrap path.
 func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals []Signal) error {
+	cfg = cfg.withDefaults()
+	// Validate the config eagerly — BEFORE the empty-signals short-circuit —
+	// so a Replicated database engine with no ZooKeeper/Keeper path is rejected
+	// regardless of which signals are requested. Validation is pure (it never
+	// touches conn), so it's safe ahead of the nil-conn no-op path below; doing
+	// it here means a misconfiguration can't hide behind a zero-signal call.
+	if cfg.DatabaseEngine.Replicated && cfg.DatabaseEngine.ReplicatedZooPath == "" {
+		return fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	}
 	// No signals requested → no tables to create → no database needed. Return
 	// before touching conn so an empty-selector caller (and the nil-conn no-op
 	// contract its tests pin) never issues a stray CREATE DATABASE.
 	if len(signals) == 0 {
 		return nil
 	}
-	cfg = cfg.withDefaults()
 	if err := conn.Exec(ctx, renderCreateDatabase(cfg)); err != nil {
 		return fmt.Errorf("ddl: create database %s: %w", cfg.Database, err)
 	}
@@ -214,15 +270,28 @@ func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals 
 }
 
 // renderCreateDatabase renders the `CREATE DATABASE IF NOT EXISTS <database>`
-// statement (with the optional ON CLUSTER clause), mirroring upstream's
-// exporter createDatabase. The database name is taken verbatim from the
-// resolved Config — the upstream exporter does not quote it either, and the
-// configured names are simple identifiers. IF NOT EXISTS keeps it idempotent.
+// statement via the typed chsql.CreateDatabase builder, mirroring upstream's
+// exporter createDatabase. The database name is emitted bare (the upstream
+// exporter does not quote it either, and the configured names are simple
+// identifiers); IF NOT EXISTS keeps it idempotent. An ON CLUSTER clause is
+// added when a cluster is configured, and a `ENGINE = Replicated(...)` clause
+// when DatabaseEngine.Replicated is set — the two are mutually exclusive in
+// practice (a Replicated database replicates DDL itself), but the builder
+// leaves that policy to the caller / config validation.
 func renderCreateDatabase(cfg Config) string {
-	if cluster := cfg.clusterClause(); cluster != "" {
-		return fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s %s", cfg.Database, cluster)
+	stmt := chsql.CreateDatabase(cfg.Database).IfNotExists()
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
 	}
-	return fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", cfg.Database)
+	if cfg.DatabaseEngine.Replicated {
+		stmt.Engine(chsql.DatabaseEngineReplicated(
+			cfg.DatabaseEngine.ReplicatedZooPath,
+			cfg.DatabaseEngine.ReplicatedShard,
+			cfg.DatabaseEngine.ReplicatedReplica,
+		))
+	}
+	sql, _ := stmt.Build()
+	return sql
 }
 
 // applySignal renders + executes the DDL statements for one signal.
@@ -248,7 +317,7 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 func renderSignal(cfg Config, s Signal) ([]string, error) {
 	switch s {
 	case Metrics:
-		ttl := cfg.ttlExpr("toDateTime(TimeUnix)")
+		ttl := cfg.ttlExpr("TimeUnix")
 		return []string{
 			renderMetricsTable(sqltemplates.MetricsGaugeCreateTable, cfg, cfg.Tables.MetricsGauge, ttl),
 			renderMetricsTable(sqltemplates.MetricsSumCreateTable, cfg, cfg.Tables.MetricsSum, ttl),
@@ -295,7 +364,7 @@ func renderLogsTable(cfg Config) (string, error) {
 		TableName:         cfg.Tables.Logs,
 		ClusterString:     cfg.clusterClause(),
 		Engine:            cfg.Engine,
-		TTL:               cfg.ttlExpr("toDateTime(Timestamp)"),
+		TTL:               cfg.ttlExpr("Timestamp"),
 		HasFullTextSearch: false,
 	}
 	var buf strings.Builder
@@ -313,7 +382,7 @@ func renderTracesTable(cfg Config) string {
 		sqltemplates.TracesCreateTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
-		cfg.ttlExpr("toDateTime(Timestamp)"),
+		cfg.ttlExpr("Timestamp"),
 	)
 }
 
@@ -327,7 +396,7 @@ func renderTracesCreateTsTable(cfg Config) string {
 		sqltemplates.TracesCreateTsTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
-		cfg.ttlExpr("toDateTime(Start)"),
+		cfg.ttlExpr("Start"),
 	)
 }
 

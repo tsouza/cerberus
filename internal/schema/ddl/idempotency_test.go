@@ -78,6 +78,150 @@ func TestRenderCreateDatabase(t *testing.T) {
 	}
 }
 
+// TestRenderCreateDatabase_ReplicatedEngine pins the Replicated database
+// engine path: the CREATE DATABASE statement carries
+// `ENGINE = Replicated(<path>, <shard>, <replica>)`, the shard/replica
+// default to the server macros when unset, and an explicit override is
+// honoured. This is the squid-style clustered shape where the Replicated
+// database auto-replicates DDL and auto-converts MergeTree tables.
+func TestRenderCreateDatabase_ReplicatedEngine(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "macro defaults",
+			cfg: Config{
+				Database: "otel",
+				DatabaseEngine: DatabaseEngine{
+					Replicated:        true,
+					ReplicatedZooPath: "/clickhouse/databases/otel",
+				},
+			}.withDefaults(),
+			want: "CREATE DATABASE IF NOT EXISTS otel ENGINE = Replicated('/clickhouse/databases/otel', '{shard}', '{replica}')",
+		},
+		{
+			name: "explicit shard and replica",
+			cfg: Config{
+				Database: "otel",
+				DatabaseEngine: DatabaseEngine{
+					Replicated:        true,
+					ReplicatedZooPath: "/clickhouse/databases/otel",
+					ReplicatedShard:   "shard0",
+					ReplicatedReplica: "clickhouse-shard0-0",
+				},
+			}.withDefaults(),
+			want: "CREATE DATABASE IF NOT EXISTS otel ENGINE = Replicated('/clickhouse/databases/otel', 'shard0', 'clickhouse-shard0-0')",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := renderCreateDatabase(tc.cfg); got != tc.want {
+				t.Errorf("renderCreateDatabase:\n got: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithDefaults_ReplicatedMacroDefaults pins that withDefaults fills the
+// shard/replica macros only when the Replicated engine is enabled, and
+// leaves an Atomic (zero-value) config untouched.
+func TestWithDefaults_ReplicatedMacroDefaults(t *testing.T) {
+	atomic := Config{Database: "otel"}.withDefaults()
+	if atomic.DatabaseEngine.Replicated {
+		t.Fatalf("zero-value DatabaseEngine must stay non-replicated")
+	}
+	if atomic.DatabaseEngine.ReplicatedShard != "" || atomic.DatabaseEngine.ReplicatedReplica != "" {
+		t.Errorf("Atomic config must not get macro defaults, got shard=%q replica=%q",
+			atomic.DatabaseEngine.ReplicatedShard, atomic.DatabaseEngine.ReplicatedReplica)
+	}
+
+	repl := Config{
+		Database:       "otel",
+		DatabaseEngine: DatabaseEngine{Replicated: true, ReplicatedZooPath: "/p"},
+	}.withDefaults()
+	if repl.DatabaseEngine.ReplicatedShard != "{shard}" || repl.DatabaseEngine.ReplicatedReplica != "{replica}" {
+		t.Errorf("Replicated config must default the macros, got shard=%q replica=%q",
+			repl.DatabaseEngine.ReplicatedShard, repl.DatabaseEngine.ReplicatedReplica)
+	}
+}
+
+// TestApplyWithConfig_ReplicatedRequiresZooPath pins the validation: a
+// Replicated database engine with no ZooKeeper/Keeper path is a
+// misconfiguration that fails fast (before touching the nil conn), not a
+// statement that renders `Replicated(”, ...)`. The validation is eager —
+// it fires regardless of which signals are requested, INCLUDING the
+// empty-signals path, so a bad config can't hide behind a zero-signal call.
+func TestApplyWithConfig_ReplicatedRequiresZooPath(t *testing.T) {
+	cfg := Config{
+		Database:       "otel",
+		DatabaseEngine: DatabaseEngine{Replicated: true}, // no ReplicatedZooPath
+	}
+	signalSets := map[string][]Signal{
+		"all signals":   All,
+		"empty signals": {},
+		"nil signals":   nil,
+	}
+	for name, signals := range signalSets {
+		t.Run(name, func(t *testing.T) {
+			err := ApplyWithConfig(context.TODO(), nil, cfg, signals)
+			if err == nil {
+				t.Fatal("Replicated engine with empty zoo path must error")
+			}
+			if !strings.Contains(err.Error(), "ReplicatedZooPath") {
+				t.Errorf("error should name the missing field, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestRenderCreateDatabase_BackticksEscaped pins backtick handling end to
+// end through renderCreateDatabase: the cluster name is backtick-quoted
+// with embedded backticks doubled (via the typed OnCluster constructor),
+// inside the full CREATE DATABASE statement — not just the OnCluster
+// fragment in isolation.
+func TestRenderCreateDatabase_BackticksEscaped(t *testing.T) {
+	cfg := Config{Database: "otel", Cluster: "a`b"}.withDefaults()
+	got := renderCreateDatabase(cfg)
+	want := "CREATE DATABASE IF NOT EXISTS otel ON CLUSTER `a``b`"
+	if got != want {
+		t.Errorf("renderCreateDatabase:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestRenderSignal_TTLZeroWithReplicatedEngine renders every signal with no
+// TTL and a Replicated database engine: the table statements must carry no
+// TTL clause (the nil TTL frag coalesces to an empty slot), while the
+// CREATE DATABASE statement carries the Replicated engine clause. Pins that
+// the two orthogonal axes (TTL off, Replicated DB on) compose cleanly.
+func TestRenderSignal_TTLZeroWithReplicatedEngine(t *testing.T) {
+	cfg := Config{
+		Database: "otel",
+		DatabaseEngine: DatabaseEngine{
+			Replicated:        true,
+			ReplicatedZooPath: "/clickhouse/databases/otel",
+		},
+	}.withDefaults()
+
+	dbStmt := renderCreateDatabase(cfg)
+	if !strings.Contains(dbStmt, "ENGINE = Replicated('/clickhouse/databases/otel', '{shard}', '{replica}')") {
+		t.Errorf("CREATE DATABASE missing Replicated engine clause:\n%s", dbStmt)
+	}
+
+	for _, sig := range All {
+		stmts, err := renderSignal(cfg, sig)
+		if err != nil {
+			t.Fatalf("renderSignal(%s): %v", sig, err)
+		}
+		for i, stmt := range stmts {
+			if strings.Contains(stmt, "TTL toDateTime") {
+				t.Errorf("%s[%d]: TTL=0 must emit no TTL clause:\n%s", sig, i, stmt)
+			}
+		}
+	}
+}
+
 // TestRenderSignal_LogsOnlySubset emulates a deployment that only wants
 // the logs signal. The render layer must produce the single logs
 // statement and nothing else — Apply iterates per-signal so any
