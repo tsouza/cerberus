@@ -36,13 +36,29 @@ func OnCluster(name string) Frag {
 
 // DatabaseEngineReplicated returns
 // `Replicated('<zooPath>', '<shard>', '<replica>')` — the ClickHouse
-// Replicated database engine. A Replicated database auto-replicates all
-// DDL across replicas and auto-converts MergeTree tables to
-// ReplicatedMergeTree, so ON CLUSTER is neither needed nor used with it.
-// The three arguments are single-quoted CH string literals; shard and
-// replica are typically the server macros "{shard}" / "{replica}".
+// Replicated database engine, which auto-replicates all DDL across replicas
+// (so ON CLUSTER is neither needed nor used with it). It does NOT, however,
+// silently turn MergeTree tables into ReplicatedMergeTree on every server —
+// the tables must be created with an explicit ReplicatedMergeTree engine
+// (see EngineReplicatedMergeTree) to replicate their DATA. The three
+// arguments are single-quoted CH string literals; shard and replica are
+// typically the server macros "{shard}" / "{replica}".
 func DatabaseEngineReplicated(zooPath, shard, replica string) Frag {
 	return Call("Replicated", InlineLit(zooPath), InlineLit(shard), InlineLit(replica))
+}
+
+// EngineReplicatedMergeTree returns
+// `ReplicatedMergeTree('<zooPath>', '<replica>')` — the replicated table
+// engine whose DATA replicates across replicas via Keeper. Inside a
+// Replicated database the table DDL is replicated either way, but only a
+// ReplicatedMergeTree engine shares the actual rows; a plain MergeTree leaves
+// each replica with an independent copy. zooPath and replica are single-quoted
+// CH string literals; pass the ClickHouse-standard
+// "/clickhouse/tables/{uuid}/{shard}" / "{replica}" (the server expands the
+// {uuid}/{shard}/{replica} macros), or whatever the cluster's
+// default_replica_path convention is.
+func EngineReplicatedMergeTree(zooPath, replica string) Frag {
+	return Call("ReplicatedMergeTree", InlineLit(zooPath), InlineLit(replica))
 }
 
 // ttlInterval picks the coarsest exact ClickHouse interval bucket for d:
