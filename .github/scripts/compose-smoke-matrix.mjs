@@ -39,6 +39,9 @@
 // Env:
 //   MODE            `emit` | `verify` (also argv[2]); default `verify`.
 //   PLAYWRIGHT_DIR  glob root; default `test/e2e/playwright`.
+//   IS_SCHEDULE     (emit) "true" on the nightly schedule — selects the FULL
+//                   per-shard timeout for non-crawl shards (120 vs the 45 lean
+//                   PR/push ceiling). The crawl shard's 30-min cap is constant.
 //   GITHUB_OUTPUT   (emit) runner file the matrix JSON is appended to.
 //
 // Exit: 0 clean / matrix emitted; 1 on any coverage violation or bad MODE.
@@ -49,6 +52,40 @@ import process from 'node:process';
 import { error, notice, log, lsFiles, setOutput, appendStepSummary } from './lib/gh.mjs';
 
 const PW_DIR = process.env.PLAYWRIGHT_DIR || 'test/e2e/playwright';
+
+// ---------------------------------------------------------------------------
+// Per-shard wall-clock ceilings (timeout-minutes on the compose-smoke-shard
+// job, interpolated as `matrix.timeoutMinutes`).
+//
+// The CRAWL shard gets a HARD 30-min cap regardless of event. crawl/crawl.spec.ts
+// is a slow BFS COVERAGE lane (NOT a correctness gate — it is de-gated from the
+// required `compose-smoke` aggregate, see GATE_EXCLUDED_SHARDS below) whose single
+// indivisible BFS test() intermittently flakes (the app-init-race 400, #115/#934)
+// and, on a hang, runs out to its long job timeout holding the
+// `cancel-in-progress: false` concurrency slot for ~2h. A 30-min cap makes it FAIL
+// FAST and release the slot instead. The PR/push lean crawl's internal budget is
+// 14min (testInfo.setTimeout in crawl.spec.ts), so 30min is comfortable headroom
+// for a healthy run; a hung/flaking run is cut at 30 instead of riding to 120.
+//
+// NON-CRAWL shards keep their prior effective ceilings: the nightly schedule runs
+// SWEEP_DEPTH=full (the heavier sweep) at 120, PR/push run SWEEP_DEPTH=lean at 45.
+// Those shards are fast (≤~35s lean per spec) so they comfortably fit; the 45/120
+// split is preserved verbatim from the old per-job `timeout-minutes` expression.
+const CRAWL_SHARD_TIMEOUT_MIN = 30;
+const NONCRAWL_SHARD_TIMEOUT_FULL_MIN = 120;
+const NONCRAWL_SHARD_TIMEOUT_LEAN_MIN = 45;
+
+// Shards EXCLUDED from the required `compose-smoke` aggregate roll-up. The crawl
+// shard still RUNS and reports its own `compose-smoke-shard (shard-crawl)` check
+// (visible, never masked with continue-on-error), but its pass/fail does NOT fail
+// the required `compose-smoke` status. Rationale: the crawl is slow BFS COVERAGE,
+// not a correctness gate; it is slow/flaky by nature (~6min compose / ~50min k3d,
+// app-init-race 400 = #115/#934), and a coverage flake must not block every PR.
+// The required gate keeps the real correctness shards (smoke, kiosk). The
+// `compose-smoke` aggregator reads this list (emitted as `gate_excluded`) to
+// decide which shard outcomes gate it. Emitted from a single source of truth so
+// the de-gate can't drift from the partition.
+const GATE_EXCLUDED_SHARDS = ['shard-crawl'];
 
 // ---------------------------------------------------------------------------
 // The wall-clock-balanced partition of the compose-smoke spec set.
@@ -238,16 +275,60 @@ function verify() {
   process.exit(0);
 }
 
+// shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. The crawl
+// shard is a constant 30-min hard cap (fail fast, release the concurrency slot);
+// non-crawl shards take the full (nightly) or lean (PR/push) ceiling.
+export function shardTimeoutMinutes(shardName, { isSchedule } = {}) {
+  if (GATE_EXCLUDED_SHARDS.includes(shardName)) return CRAWL_SHARD_TIMEOUT_MIN;
+  return isSchedule ? NONCRAWL_SHARD_TIMEOUT_FULL_MIN : NONCRAWL_SHARD_TIMEOUT_LEAN_MIN;
+}
+
+// shardEntry() — the strategy.matrix `include` row for a shard.
+const shardEntry = (s, isSchedule) => ({
+  name: s.name,
+  specs: s.specs.join(' '),
+  timeoutMinutes: shardTimeoutMinutes(s.name, { isSchedule }),
+});
+
+const isGateExcluded = (name) => GATE_EXCLUDED_SHARDS.includes(name);
+
 function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
-  const include = SHARDS.map((s) => ({ name: s.name, specs: s.specs.join(' ') }));
-  setOutput('matrix', JSON.stringify({ include }));
+  const isSchedule = process.env.IS_SCHEDULE === 'true';
+
+  // The partition is split into TWO matrices so the de-gate is structural, not
+  // a fragile after-the-fact result filter. A GitHub matrix exposes only ONE
+  // rolled-up `.result` to dependents (success iff EVERY child succeeded), so a
+  // single matrix can't let one shard fail without failing the whole roll-up.
+  // Splitting at the source — both matrices derived from the SAME SHARDS +
+  // GATE_EXCLUDED_SHARDS list, so they can't drift — lets the required
+  // `compose-smoke` aggregator `needs` only the REQUIRED matrix while the crawl
+  // shard runs in its own informational matrix and reports its own child check
+  // (`compose-smoke-shard-info (shard-crawl)`), visible and unmasked.
+  const required = SHARDS.filter((s) => !isGateExcluded(s.name));
+  const informational = SHARDS.filter((s) => isGateExcluded(s.name));
+
+  setOutput('matrix', JSON.stringify({ include: required.map((s) => shardEntry(s, isSchedule)) }));
+  setOutput('matrix_informational', JSON.stringify({ include: informational.map((s) => shardEntry(s, isSchedule)) }));
+  setOutput('has_informational', informational.length > 0 ? 'true' : 'false');
   setOutput('shard_names', JSON.stringify(SHARDS.map((s) => s.name)));
+  setOutput('gate_excluded', JSON.stringify(GATE_EXCLUDED_SHARDS));
   appendStepSummary(
-    ['### compose-smoke shard matrix', '', '| shard | specs |', '| --- | --- |', ...SHARDS.map((s) => `| \`${s.name}\` | ${s.specs.length} |`)].join('\n'),
+    [
+      '### compose-smoke shard matrix',
+      '',
+      '| shard | specs | timeout (min) | gates required check |',
+      '| --- | --- | --- | --- |',
+      ...SHARDS.map(
+        (s) =>
+          `| \`${s.name}\` | ${s.specs.length} | ${shardTimeoutMinutes(s.name, { isSchedule })} | ${isGateExcluded(s.name) ? 'no (coverage)' : 'yes'} |`,
+      ),
+    ].join('\n'),
   );
-  log(`compose-smoke-matrix: emitted ${include.length}-shard matrix.`);
+  log(
+    `compose-smoke-matrix: emitted ${required.length} required + ${informational.length} informational shard(s).`,
+  );
   process.exit(0);
 }
 
@@ -265,4 +346,4 @@ if (invokedDirectly) {
 }
 
 // Exported for the unit guard (.github/scripts/compose-smoke-matrix.test.mjs).
-export { SHARDS, EXCLUDED, SHARD_NAME_RE };
+export { SHARDS, EXCLUDED, SHARD_NAME_RE, GATE_EXCLUDED_SHARDS, CRAWL_SHARD_TIMEOUT_MIN };

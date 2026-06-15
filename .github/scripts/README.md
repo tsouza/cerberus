@@ -33,18 +33,28 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
-  GATE that refuses to publish a release unless the WHOLE of `main` is
-  green on the exact commit being tagged — every push-triggered lane
-  (ci, compatibility, chdb, coverage, e2e dashboard+chaos, mutation,
-  perf-profile, property, CodeQL, …), not just the PR-required subset.
-  Reads the check-runs + commit statuses on `GITHUB_SHA` and fails on any
+  GATE that refuses to publish a release unless the substantive lanes of
+  `main` are green on the exact commit being tagged — every stable
+  push-triggered lane (ci/check, lint, compatibility ×3, chdb, coverage,
+  mutation/gremlins, perf-profile, property, probe, roundtrip ×3,
+  compose-smoke, CodeQL, …), not just the PR-required subset. Reads the
+  check-runs + commit statuses on `GITHUB_SHA` and fails on any
   non-`success`/`skipped`/`neutral` or still-pending lane. Re-runs are
-  deduped by name (latest wins); the release run's own jobs are excluded.
+  deduped by name (latest wins); the release run's own jobs are excluded;
+  scheduled (nightly) re-runs are excluded (the merge-time push result is
+  the truth). **Flaky UI COVERAGE lanes are also excluded** (`FLAKY_UI_LANE_RE`):
+  the BFS `crawl` shards (`compose-smoke-shard-info (shard-crawl)`, the k3d
+  `dashboard-shard (shard-crawl)`) and the whole informational `dashboard`
+  k3d lane (`dashboard` / `dashboard-setup` / `dashboard-shard (…)`). These
+  are coverage, not correctness gates (exploretraces "Failed to fetch",
+  the app-init-race 400 = #115/#934), so a coverage flake must not block a
+  release; the regex is anchored/specific (fail SAFE — only these lanes are
+  dropped, the required `compose-smoke` still gates).
   - Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_SHA`; optional
     `GITHUB_API_URL` (default `https://api.github.com`) and
     `RELEASE_SELF_JOBS` (default `preflight,goreleaser`).
-  - Exit: `0` when every non-self check on the commit is green, `1`
-    otherwise (with one `::error::` per red/pending lane).
+  - Exit: `0` when every non-self, non-scheduled, non-flaky-UI check on the
+    commit is green, `1` otherwise (with one `::error::` per red/pending lane).
 - **`compat-step-summary.mjs`** — `compatibility.yml`, the three
   `Append score to step summary` steps.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
@@ -115,10 +125,22 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   forbidden gap), double-assigned, phantom/stale, and bad-shard-name are each
   reported, then `exit 1`. `compose-smoke-matrix.test.mjs` is the `node --test`
   guard (run on the cheap `gate` lane) that pins the invariant + proves the
-  detectors fire.
+  detectors fire. Two extra responsibilities: (1) it carries the per-shard
+  `timeoutMinutes` ceiling on each emitted entry — the crawl shard gets a hard
+  30-min cap (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the concurrency
+  slot), non-crawl shards keep 120 (nightly full, `IS_SCHEDULE=true`) / 45
+  (PR/push lean); (2) it splits the partition into a REQUIRED `matrix` and an
+  informational `matrix_informational` (the `GATE_EXCLUDED_SHARDS` coverage
+  shards — today `shard-crawl`). The required `compose-smoke` aggregator
+  `needs:` only the required matrix, so a crawl flake/hang reports its own
+  visible `compose-smoke-shard-info (shard-crawl)` check but does NOT fail the
+  required gate. Both matrices derive from the same `SHARDS` +
+  `GATE_EXCLUDED_SHARDS`, so they can't drift.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
-    `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `GITHUB_OUTPUT` (emit:
-    the runner file the `{include:[{name,specs}]}` matrix JSON is written to).
+    `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `IS_SCHEDULE` (emit:
+    `"true"` selects the full non-crawl timeout), `GITHUB_OUTPUT` (emit: the
+    runner file the `matrix` / `matrix_informational` / `has_informational` /
+    `gate_excluded` outputs are written to).
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 
@@ -138,11 +160,18 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   runs Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
   `node --test` guard (run on the cheap `gate` lane) pinning the invariant +
   proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
-  deliberately small.
+  deliberately small. Each emitted entry also carries a per-shard
+  `timeoutMinutes`: the crawl shard gets a hard 30-min cap
+  (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the k3d concurrency slot), the
+  smoke shards keep their 75-min cluster-lifetime bound (`SMOKE_SHARD_TIMEOUT_MIN`).
+  The whole `dashboard` lane is informational (never a PR gate), and the crawl
+  shard is also excluded from the release preflight.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
-    `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `GITHUB_OUTPUT` (emit:
-    the runner file the `{include:[{name,specs,crawlStack,runGoE2E}]}` matrix
-    JSON is written to).
+    `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `INCLUDE_CRAWL` (emit:
+    `"true"` adds the crawl shard — schedule/dispatch only), `GITHUB_OUTPUT`
+    (emit: the runner file the
+    `{include:[{name,specs,crawlStack,runGoE2E,timeoutMinutes}]}` matrix JSON is
+    written to).
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 

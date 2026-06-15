@@ -25,8 +25,22 @@
 //                      release workflow, excluded from the gate
 //                      (default "preflight,goreleaser").
 //
-// Exit 0 when every non-self check on the commit is success/skipped/neutral;
-// exit 1 (with ::error:: annotations) otherwise.
+// Flaky-UI-lane exclusions (FLAKY_UI_LANE_RE): the e2e UI COVERAGE lanes — the
+// BFS `crawl` shards (compose-smoke-shard-info (shard-crawl) + the k3d
+// dashboard-shard (shard-crawl)) and the whole `dashboard` k3d lane
+// (dashboard / dashboard-setup / dashboard-shard) — are slow + flaky by nature
+// (exploretraces "Failed to fetch", the app-init-race 400 = #115/#934) and are
+// COVERAGE, not correctness gates. They are de-gated from the required
+// `compose-smoke` PR check and the dashboard lane is informational-only, so a
+// coverage flake must not block a RELEASE either. We drop check-runs whose name
+// matches FLAKY_UI_LANE_RE from the gate. Everything else still gates: the
+// required status checks + the stable substantive lanes (ci/check, lint, compat
+// ×3, compose-smoke [now crawl-independent], probe, roundtrip ×3, chdb,
+// mutation/gremlins, property, perf-profile, coverage, CodeQL). Fail SAFE: only
+// names that clearly match these lanes are dropped; anything ambiguous is KEPT.
+//
+// Exit 0 when every non-self, non-flaky-UI check on the commit is
+// success/skipped/neutral; exit 1 (with ::error:: annotations) otherwise.
 
 import { error, notice, log } from './lib/gh.mjs';
 
@@ -93,6 +107,24 @@ async function combinedStatus() {
 // hung nightly supersede the green push result and block a release forever.
 // So resolve each check-run's triggering workflow event and drop the scheduled
 // ones; the push/PR/dispatch results are the merge-time truth the gate wants.
+// Flaky UI COVERAGE lanes dropped from the release gate. Anchored, specific
+// patterns — fail SAFE by matching only these lanes, never a broad substring
+// that could swallow a substantive lane:
+//   - any `shard-crawl` matrix child — the BFS crawl coverage lane. GitHub
+//     builds a multi-dimension matrix child's check name from ALL include
+//     fields joined by ", ", e.g.
+//       `compose-smoke-shard-info (shard-crawl, crawl/crawl.spec.ts …)`
+//       `dashboard-shard (shard-crawl, crawl/crawl.spec.ts …)`
+//     so we match `(shard-crawl` followed by `,` or `)` (NOT `(shard-crawl-…`).
+//   - the whole k3d `dashboard` lane: the `dashboard` aggregate, `dashboard-setup`,
+//     and every `dashboard-shard (...)` child (smoke shards included — the k3d
+//     lane is informational-only and flaky end-to-end, exploretraces "Failed to
+//     fetch"). The required `compose-smoke` lane is NOT matched (no `dashboard`
+//     token, and its required shards are `(shard-kiosk …)` / `(shard-smoke …)`,
+//     never `shard-crawl`), so it still gates.
+const FLAKY_UI_LANE_RE = /(\(shard-crawl[,)]|^dashboard($|-setup$|-shard( |$)))/;
+const isFlakyUILane = (name) => FLAKY_UI_LANE_RE.test(name);
+
 const SCHEDULED_EVENT = 'schedule';
 const runEventCache = new Map();
 async function checkRunEvent(cr) {
@@ -137,8 +169,15 @@ for (const cr of checkRuns) {
 const problems = [];
 let gated = 0;
 
+let skippedFlakyUI = 0;
 for (const cr of latestByName.values()) {
   if (selfJobs.has(cr.name)) continue; // never gate on this release run itself
+  if (isFlakyUILane(cr.name)) {
+    // De-gated flaky UI COVERAGE lane (crawl shard / dashboard lane). It still
+    // ran + reported its own check; it just doesn't block the release.
+    skippedFlakyUI += 1;
+    continue;
+  }
   gated += 1;
   if (cr.status !== 'completed') {
     problems.push(`${cr.name}: still ${cr.status} (not completed)`);
@@ -149,6 +188,10 @@ for (const cr of latestByName.values()) {
 
 // Legacy statuses: each individual context must be success.
 for (const st of status.statuses ?? []) {
+  if (isFlakyUILane(st.context)) {
+    skippedFlakyUI += 1;
+    continue;
+  }
   gated += 1;
   if (st.state !== 'success') {
     problems.push(`${st.context}: status ${st.state}`);
@@ -165,7 +208,8 @@ if (problems.length > 0) {
 }
 
 notice(
-  `release-preflight: all ${gated} CI checks on commit ${sha.slice(0, 8)} are green — proceeding with the release.`,
+  `release-preflight: all ${gated} CI checks on commit ${sha.slice(0, 8)} are green ` +
+    `(${skippedFlakyUI} flaky UI coverage lane(s) excluded from the gate) — proceeding with the release.`,
 );
-log(`release-preflight: ${gated} checks verified green on ${sha}`);
+log(`release-preflight: ${gated} checks verified green on ${sha}; ${skippedFlakyUI} flaky UI lane(s) excluded`);
 process.exit(0);

@@ -83,6 +83,19 @@ const PW_DIR = process.env.PLAYWRIGHT_DIR || 'test/e2e/playwright';
 const CRAWL_STACK_K3D = 'k3d';
 const CRAWL_STACK_NONE = '';
 
+// Per-shard wall-clock ceilings (timeout-minutes on the dashboard-shard job,
+// interpolated as `matrix.timeoutMinutes`).
+//
+// The CRAWL shard gets a HARD 30-min cap. The k3d crawl is a slow BFS COVERAGE
+// lane (not a correctness gate — the whole `dashboard` lane is informational,
+// never a PR gate); on a hang it rode the job to its long timeout holding the
+// `cancel-in-progress: false` k3d concurrency slot. A 30-min cap makes it FAIL
+// FAST and release the slot. The smoke shards keep their prior effective 75-min
+// job ceiling (k3d bring-up ~3-5min + the non-crawl smoke specs fit comfortably);
+// the value is preserved verbatim from the old single per-job `timeout-minutes`.
+const CRAWL_SHARD_TIMEOUT_MIN = 30;
+const SMOKE_SHARD_TIMEOUT_MIN = 75;
+
 // ---------------------------------------------------------------------------
 // The partition of the dashboard-lane spec set across isolated k3d clusters.
 //
@@ -267,6 +280,14 @@ export function collectViolations(discovered) {
   return v;
 }
 
+// shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. The crawl
+// shard (CRAWL_STACK=k3d) is a constant 30-min hard cap (fail fast, release the
+// k3d concurrency slot); the smoke shards keep the prior effective 75-min job
+// ceiling.
+export function shardTimeoutMinutes(shard) {
+  return shard.crawlStack === CRAWL_STACK_K3D ? CRAWL_SHARD_TIMEOUT_MIN : SMOKE_SHARD_TIMEOUT_MIN;
+}
+
 function assertCoverageOrExit(discovered) {
   const v = collectViolations(discovered);
   if (v.length === 0) return;
@@ -306,6 +327,7 @@ function emit() {
     specs: s.specs.join(' '),
     crawlStack: s.crawlStack,
     runGoE2E: s.runGoE2E,
+    timeoutMinutes: shardTimeoutMinutes(s),
   }));
   setOutput('matrix', JSON.stringify({ include }));
   setOutput('shard_names', JSON.stringify(shards.map((s) => s.name)));
@@ -313,10 +335,11 @@ function emit() {
     [
       '### dashboard (k3d) shard matrix',
       '',
-      '| shard | specs | CRAWL_STACK | Go e2e |',
-      '| --- | --- | --- | --- |',
+      '| shard | specs | CRAWL_STACK | Go e2e | timeout (min) |',
+      '| --- | --- | --- | --- | --- |',
       ...shards.map(
-        (s) => `| \`${s.name}\` | ${s.specs.length} | ${s.crawlStack || '(none)'} | ${s.runGoE2E ? 'yes' : 'no'} |`,
+        (s) =>
+          `| \`${s.name}\` | ${s.specs.length} | ${s.crawlStack || '(none)'} | ${s.runGoE2E ? 'yes' : 'no'} | ${shardTimeoutMinutes(s)} |`,
       ),
     ].join('\n'),
   );
@@ -341,4 +364,4 @@ if (invokedDirectly) {
 }
 
 // Exported for the unit guard (.github/scripts/dashboard-matrix.test.mjs).
-export { SHARDS, EXCLUDED, SHARD_NAME_RE };
+export { SHARDS, EXCLUDED, SHARD_NAME_RE, CRAWL_SHARD_TIMEOUT_MIN, SMOKE_SHARD_TIMEOUT_MIN, CRAWL_STACK_K3D };
