@@ -62,10 +62,10 @@ Content-Type: application/json
 
 ### Response shape
 
-| Field        | Type    | Values                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                                                                                                                                                                                                                                                                     |
-| `schema`     | string  | `"ready"` when the schema is provisioned and the auto-create hook is done (or disabled); `"absent: <reason>"` when the boot-time requirements check found the configured tables not yet provisioned (the cerberus + collector startup race — cerberus waits and re-probes, no restart); `"pending"` while the auto-create hook is still running; `"unknown"` when the CH ping itself failed. |
+| Field        | Type    | Values                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `schema`     | string  | `"ready"` when the schema is provisioned and the auto-create hook is done (or disabled); `"absent: <reason>"` when the boot-time requirements check found the configured schema not yet provisioned — either the tables are absent or the **database** itself does not exist yet (`database "otel" not yet provisioned: …`), both the cerberus + collector startup race where cerberus waits and re-probes, no restart; `"pending"` while the auto-create hook is still running; `"unknown"` when the CH ping itself failed. |
 
 ### HTTP status codes
 
@@ -158,11 +158,14 @@ succeed (bad env values, invalid connection options).
 The preflight is a deliberately **stricter** contract, and it is on by
 default. `CERBERUS_REQUIREMENTS_CHECK` (the boot-time CH-version + schema
 gate — see [`operations.md`](operations.md#startup-requirements-preflight))
-needs ClickHouse reachable to read `version()` and `system.columns`, so a
-CH that is unreachable at the preflight point fails startup rather than
-booting unready. Deployments that need the boot-into-unready behaviour
-above against a CH that may be down at boot set
-`CERBERUS_REQUIREMENTS_CHECK=false` to skip the gate.
+needs ClickHouse reachable to read `version()` and `system.columns`. It still
+boots into unready (never exits) for the **transient** cases — an unreachable
+server, a not-yet-created database (`UNKNOWN_DATABASE`, surfaced even by the
+`version()` probe because the connection carries the database as its session
+default), or an absent schema — re-probing until the dependency appears. What
+it converts into a fail-fast boot **error** is a *reachable* server that fails
+the contract: a too-old / unparseable version, or a wrong-shape table. Set
+`CERBERUS_REQUIREMENTS_CHECK=false` to skip the gate entirely.
 
 ## Implementation pointers
 

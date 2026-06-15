@@ -386,6 +386,17 @@ opaque query-time errors into a precise, fail-fast boot error:
   external writer (the collector, or cerberus' own `CERBERUS_AUTO_CREATE_SCHEMA`)
   provisions the schema, `/readyz` flips ready **without a restart**.
   `/healthz` (liveness) stays **200** throughout — only readiness gates.
+- **Absent (not-yet-created) database.** A step earlier than an absent table:
+  the configured **database** itself does not exist yet. Because the connection
+  carries the database as its session default, even the version probe's
+  `SELECT version()` fails with `UNKNOWN_DATABASE` (ClickHouse code 81,
+  `Database <name> does not exist`). This is the same cold-cluster race as an
+  absent schema — the database is created moments later by the collector or by
+  `CERBERUS_AUTO_CREATE_SCHEMA` — so it is **not** fatal: cerberus boots,
+  reports **NOT READY** with a precise reason
+  (`database "otel" not yet provisioned: …`), and re-probes until the database
+  (and its tables) appear, with no restart. Treating it as fatal would
+  crash-loop a gateway pointed at a database its collector hasn't created yet.
 
 The ordering is deliberate: running the preflight **after** auto-create
 means a fresh database where cerberus just created the tables passes the
@@ -393,17 +404,20 @@ schema gate (it would fail against tables that don't exist yet if the order
 were reversed). When a **fatal** gate (too-old version, wrong-shape table)
 fails, the process exits non-zero with an **aggregated** message listing
 every unmet requirement at once, so an operator fixes the deployment in a
-single pass rather than one error per restart. An **absent** schema is the
-one finding that is *not* fatal — it is the transient case the wait-and-
-reprobe path above handles. Set `CERBERUS_REQUIREMENTS_CHECK=false` to skip
-both gates (logged as one line) — useful when pointing cerberus at a
-deliberately non-default ClickHouse layout that the shape gate doesn't
-model. Note the version + wrong-shape gates are a stricter contract than the
-best-effort connectivity ping above: the preflight needs ClickHouse
-reachable to read the version and column metadata, so a CH that is
-unreachable at the preflight point (or returns an introspection *error*, as
-opposed to a clean zero-row absence) fails startup rather than booting
-unready.
+single pass rather than one error per restart. The **transient** findings —
+an absent schema, an absent database, and an **unreachable** server — are the
+ones that are *not* fatal: each takes the wait-and-reprobe path above, booting
+**NOT READY** and flipping ready once the dependency appears. Set
+`CERBERUS_REQUIREMENTS_CHECK=false` to skip both gates (logged as one line) —
+useful when pointing cerberus at a deliberately non-default ClickHouse layout
+that the shape gate doesn't model. The preflight needs ClickHouse reachable to
+read the version and column metadata, but a server that is unreachable at the
+preflight point is itself classified transient (a dial / connection-refused
+error boots unready and re-probes, exactly like the connectivity ping above) —
+**not** a fatal exit. What stays fatal is a *reachable* server that fails the
+contract: a too-old / unparseable version, a wrong-shape table, or an
+introspection *error* (as opposed to a clean zero-row absence, or the
+`UNKNOWN_DATABASE` not-yet-created-database case).
 
 ### Schema divergence: MetricName-first metrics sort key
 

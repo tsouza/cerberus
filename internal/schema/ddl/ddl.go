@@ -195,6 +195,12 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 // the fully-qualified `<database>.<table>` CREATE statements that follow never
 // fail against a non-existent database — the cold-cluster bootstrap path.
 func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals []Signal) error {
+	// No signals requested → no tables to create → no database needed. Return
+	// before touching conn so an empty-selector caller (and the nil-conn no-op
+	// contract its tests pin) never issues a stray CREATE DATABASE.
+	if len(signals) == 0 {
+		return nil
+	}
 	cfg = cfg.withDefaults()
 	if err := conn.Exec(ctx, renderCreateDatabase(cfg)); err != nil {
 		return fmt.Errorf("ddl: create database %s: %w", cfg.Database, err)
