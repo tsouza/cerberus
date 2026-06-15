@@ -59,7 +59,9 @@ import {
   captureConsoleErrors,
   captureRoleAlertBanners,
   drillTwoLevels,
+  isTransientMalformedTraceQLFailure,
   iterateDrilldownApps,
+  reportableConsoleErrors,
   waitForAppInstalled,
 } from './helpers/index.js';
 
@@ -69,12 +71,15 @@ import {
 // cerberus).
 
 // Captured response shape: stripped down so the failure detail isn't
-// dragged down by a 1MB ds/query body.
+// dragged down by a 1MB ds/query body. `requestBody` carries the forwarded
+// ds/query payload (the per-refId expr/query) so the init-race reconciler can
+// inspect the TraceQL shape — see isTransientMalformedTraceQLFailure.
 type CapturedResponseSummary = {
   url: string;
   method: string;
   status: number;
   bodyPreview: string;
+  requestBody: string;
 };
 
 type DrilldownFailure = {
@@ -203,6 +208,9 @@ async function sweepDrilldownApp(
       // Read body lazily — kept short to keep memory bounded.
       const status = resp.status();
       const method = resp.request().method();
+      // postData() is synchronous and carries the forwarded ds/query body —
+      // needed by the init-race reconciler to read the TraceQL shape.
+      const requestBody = resp.request().postData() ?? '';
       const summaryPromise = (async () => {
         let bodyPreview = '';
         // Only read the body when it's a failure so we don't spam
@@ -220,6 +228,7 @@ async function sweepDrilldownApp(
           method,
           status,
           bodyPreview,
+          requestBody,
         });
       })();
       captureBodies.push(summaryPromise);
@@ -265,26 +274,58 @@ async function sweepDrilldownApp(
   await Promise.all(captureBodies);
 
   // 1. Wire-status sweep over every captured response — zero
-  //    tolerance for 4xx/5xx.
+  //    tolerance for 4xx/5xx, EXCEPT the Traces Drilldown app's
+  //    primarySignal-init race. That app applies its primarySignal
+  //    default inside a React useEffect, so during the initial-load /
+  //    rapid-drill window it transiently forwards a dangling-operand
+  //    TraceQL (`{ && …} | rate()`) that cerberus correctly 400s
+  //    (reference Tempo rejects the identical syntax error). It is a
+  //    third-party app artifact, not a cerberus fault — and racy: the
+  //    400 fires on every run but only lands inside the capture window
+  //    intermittently, which is what makes this spec flaky. The
+  //    reconciler is narrow (every query in the request must carry the
+  //    dangling shape); a well-formed-query non-2xx still fails loudly.
+  //    Mirrors the crawl lane (#934). Count the reconciled races so the
+  //    console sweep below can resolve their browser-side twin.
+  let reconciledInitRace = 0;
   for (const resp of captured) {
-    if (resp.status < 200 || resp.status > 299) {
-      failures.push({
-        app: app.id,
-        rule: 'http-non-2xx',
-        detail: `${resp.method} ${resp.url} → ${resp.status}\n  body: ${resp.bodyPreview}`,
-      });
+    if (resp.status >= 200 && resp.status <= 299) continue;
+    if (
+      isTransientMalformedTraceQLFailure({
+        url: resp.url,
+        status: resp.status,
+        requestBody: resp.requestBody,
+      })
+    ) {
+      reconciledInitRace++;
+      continue;
     }
+    failures.push({
+      app: app.id,
+      rule: 'http-non-2xx',
+      detail: `${resp.method} ${resp.url} → ${resp.status}\n  body: ${resp.bodyPreview}`,
+    });
   }
 
   // 2. Console-error sweep — every browser console error is a real
-  //    failure. No noise filter (any upstream-Grafana console error is
-  //    either a Grafana bug to file or a state cerberus's compose stack
-  //    can pre-empt; mask nothing here).
-  if (consoleErrors.length > 0) {
+  //    failure, with ONE reconciliation: each primarySignal-init-race
+  //    400 reconciled above ALSO surfaces to the browser as a single
+  //    EMPTY-text console error (Grafana logs the failed background
+  //    fetch; the message text is empty). Resolve up to
+  //    `reconciledInitRace` empty-text console errors as those twins. A
+  //    console error with substantive text ALWAYS fails (mask nothing of
+  //    value), and any empty error beyond the reconciled-400 count fails
+  //    too — so a genuinely-broken app (non-reconciled wire failure, or
+  //    more console noise than the init race explains) still reports.
+  const reportableErrors = reportableConsoleErrors(
+    consoleErrors,
+    reconciledInitRace,
+  );
+  if (reportableErrors.length > 0) {
     failures.push({
       app: app.id,
       rule: 'console-error',
-      detail: `${consoleErrors.length} console error(s):\n${consoleErrors
+      detail: `${reportableErrors.length} console error(s):\n${reportableErrors
         .map((m) => `  - ${truncate(m, 400)}`)
         .join('\n')}`,
     });

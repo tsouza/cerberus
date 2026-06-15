@@ -36,6 +36,7 @@ import {
   succeededDsQuerySignatures,
   type DsResponseView,
 } from './lib.js';
+import { reportableConsoleErrors } from '../helpers/reconcile.js';
 
 const tempoBody = (query: string, refId = 'A'): string =>
   JSON.stringify({ queries: [{ refId, query, datasource: { type: 'tempo' } }] });
@@ -292,5 +293,48 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
         requestBody: '<streamed>',
       }),
     ).toBe(false);
+  });
+});
+
+test.describe('reportableConsoleErrors', () => {
+  test('resolves one empty-text twin per reconciled init-race 400', () => {
+    // The observed flake: 1 reconciled dangling-query 400 → 1 empty-text
+    // console error. Fully explained → nothing reportable.
+    expect(reportableConsoleErrors([''], 1)).toEqual([]);
+    expect(reportableConsoleErrors(['', ''], 2)).toEqual([]);
+  });
+
+  test('keeps empty-text errors BEYOND the reconciled-400 count', () => {
+    // 2 empty errors but only 1 reconciled 400 → 1 stays reportable.
+    expect(reportableConsoleErrors(['', ''], 1)).toEqual([
+      '<empty-text console error>',
+    ]);
+  });
+
+  test('NEVER masks a substantive console error', () => {
+    // A real, non-empty console error always reports, even when an
+    // init-race 400 was reconciled in the same window.
+    expect(reportableConsoleErrors(['ChunkLoadError: boom'], 1)).toEqual([
+      'ChunkLoadError: boom',
+    ]);
+    expect(
+      reportableConsoleErrors(['', 'TypeError: x is undefined'], 1),
+    ).toEqual(['TypeError: x is undefined']);
+  });
+
+  test('with zero reconciled races, every console error reports', () => {
+    expect(reportableConsoleErrors([''], 0)).toEqual([
+      '<empty-text console error>',
+    ]);
+    expect(reportableConsoleErrors(['boom'], 0)).toEqual(['boom']);
+  });
+
+  test('whitespace-only errors count as empty (twins), not substantive', () => {
+    expect(reportableConsoleErrors(['   ', '\n'], 2)).toEqual([]);
+  });
+
+  test('a clean window stays clean', () => {
+    expect(reportableConsoleErrors([], 0)).toEqual([]);
+    expect(reportableConsoleErrors([], 3)).toEqual([]);
   });
 });
