@@ -58,15 +58,16 @@ func TestFromEnv_CHAddr_Override(t *testing.T) {
 }
 
 // TestFromEnv_CHDatabase_DefaultAndOverride covers the documented
-// otel default + arbitrary override.
+// default ("default", matching the upstream OTel ClickHouse exporter) +
+// arbitrary override.
 func TestFromEnv_CHDatabase_DefaultAndOverride(t *testing.T) {
 	t.Setenv("CERBERUS_CH_DATABASE", "")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv default: %v", err)
 	}
-	if cfg.ClickHouse.Database != "otel" {
-		t.Errorf("CH.Database default = %q; want otel", cfg.ClickHouse.Database)
+	if cfg.ClickHouse.Database != "default" {
+		t.Errorf("CH.Database default = %q; want default", cfg.ClickHouse.Database)
 	}
 	t.Setenv("CERBERUS_CH_DATABASE", "tenant_a")
 	cfg, err = FromEnv()

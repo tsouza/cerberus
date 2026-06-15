@@ -27,8 +27,8 @@ func TestFromEnv_ViperDefaults_NoEnv(t *testing.T) {
 	if cfg.ClickHouse.Addr != "localhost:9000" {
 		t.Errorf("CH.Addr = %q; want localhost:9000", cfg.ClickHouse.Addr)
 	}
-	if cfg.ClickHouse.Database != "otel" {
-		t.Errorf("CH.Database = %q; want otel", cfg.ClickHouse.Database)
+	if cfg.ClickHouse.Database != "default" {
+		t.Errorf("CH.Database = %q; want default", cfg.ClickHouse.Database)
 	}
 	if cfg.ClickHouse.Username != "default" {
 		t.Errorf("CH.Username = %q; want default", cfg.ClickHouse.Username)

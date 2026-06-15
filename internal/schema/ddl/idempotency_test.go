@@ -30,6 +30,54 @@ func TestRenderSignal_AllTablesCarryIfNotExists(t *testing.T) {
 	}
 }
 
+// TestRenderCreateDatabase pins the database-bootstrap statement: it must
+// carry IF NOT EXISTS (idempotent re-apply), name the resolved database, and
+// render the ON CLUSTER clause only when a cluster is configured. This is the
+// render-layer guard for the cold-cluster bug where a missing
+// CREATE DATABASE left every CREATE TABLE failing with "Database otel does not
+// exist".
+func TestRenderCreateDatabase(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantSub []string
+		notSub  []string
+	}{
+		{
+			name:    "default database",
+			cfg:     Config{}.withDefaults(),
+			wantSub: []string{"CREATE DATABASE IF NOT EXISTS default"},
+			notSub:  []string{"ON CLUSTER"},
+		},
+		{
+			name:    "override database",
+			cfg:     Config{Database: "otel"}.withDefaults(),
+			wantSub: []string{"CREATE DATABASE IF NOT EXISTS otel"},
+			notSub:  []string{"ON CLUSTER"},
+		},
+		{
+			name:    "on cluster",
+			cfg:     Config{Database: "otel", Cluster: "prod"}.withDefaults(),
+			wantSub: []string{"CREATE DATABASE IF NOT EXISTS otel", "ON CLUSTER `prod`"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderCreateDatabase(tc.cfg)
+			for _, sub := range tc.wantSub {
+				if !strings.Contains(got, sub) {
+					t.Errorf("renderCreateDatabase = %q; want substring %q", got, sub)
+				}
+			}
+			for _, sub := range tc.notSub {
+				if strings.Contains(got, sub) {
+					t.Errorf("renderCreateDatabase = %q; should not contain %q", got, sub)
+				}
+			}
+		})
+	}
+}
+
 // TestRenderSignal_LogsOnlySubset emulates a deployment that only wants
 // the logs signal. The render layer must produce the single logs
 // statement and nothing else — Apply iterates per-signal so any

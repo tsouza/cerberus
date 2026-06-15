@@ -291,7 +291,7 @@ const configFileBaseName = "cerberus"
 //
 //	CERBERUS_HTTP_ADDR             default ":8080"
 //	CERBERUS_CH_ADDR               default "localhost:9000"
-//	CERBERUS_CH_DATABASE           default "otel"
+//	CERBERUS_CH_DATABASE           default "default"
 //	CERBERUS_CH_USERNAME           default "default"
 //	CERBERUS_CH_PASSWORD           default ""
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
@@ -714,7 +714,7 @@ func newLoader() *viper.Viper {
 const (
 	defaultHTTPAddr           = ":8080"
 	defaultCHAddr             = "localhost:9000"
-	defaultCHDatabase         = "otel"
+	defaultCHDatabase         = "default"
 	defaultCHUsername         = "default"
 	defaultCHPassword         = ""
 	defaultAutoCreateSchema   = false
