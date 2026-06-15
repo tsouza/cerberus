@@ -83,7 +83,8 @@ func TestRenderCreateDatabase(t *testing.T) {
 // `ENGINE = Replicated(<path>, <shard>, <replica>)`, the shard/replica
 // default to the server macros when unset, and an explicit override is
 // honoured. This is the squid-style clustered shape where the Replicated
-// database auto-replicates DDL and auto-converts MergeTree tables.
+// database auto-replicates DDL (the tables themselves get an explicit
+// ReplicatedMergeTree engine to replicate their DATA).
 func TestRenderCreateDatabase_ReplicatedEngine(t *testing.T) {
 	cases := []struct {
 		name string

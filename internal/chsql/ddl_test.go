@@ -43,6 +43,19 @@ func TestDatabaseEngineReplicated(t *testing.T) {
 	}
 }
 
+// TestEngineReplicatedMergeTree pins the ReplicatedMergeTree table engine
+// clause — the two string-literal args, single-quoted, with the server
+// macros ({uuid}/{shard}/{replica}) passed through verbatim. A Replicated
+// database does not auto-convert MergeTree, so this is the engine cerberus
+// emits to replicate table DATA.
+func TestEngineReplicatedMergeTree(t *testing.T) {
+	got := renderFrag(EngineReplicatedMergeTree("/clickhouse/tables/{uuid}/{shard}", "{replica}"))
+	want := "ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')"
+	if got != want {
+		t.Errorf("EngineReplicatedMergeTree = %q; want %q", got, want)
+	}
+}
+
 // TestTableTTL pins the TTL clause across every rounding bucket and the
 // no-TTL (nil Frag) case. The column is wrapped in toDateTime(...) as a
 // bare identifier, matching the upstream template form.

@@ -58,9 +58,23 @@ type Config struct {
 	// empty.
 	Cluster string
 
-	// Engine overrides the ClickHouse table engine. Defaults to
-	// "MergeTree()" — matches the upstream exporter default.
+	// Engine overrides the ClickHouse table engine. When empty it defaults to
+	// "MergeTree()" (the upstream exporter default) — or, when
+	// DatabaseEngine.Replicated is set, to
+	// ReplicatedMergeTree(ReplicatedTablePath, ReplicatedTableReplica): a
+	// Replicated database does NOT auto-convert MergeTree to
+	// ReplicatedMergeTree, so the tables need the replicated engine to
+	// replicate their DATA across replicas. An explicit Engine wins over both.
 	Engine string
+
+	// ReplicatedTablePath / ReplicatedTableReplica are the ReplicatedMergeTree
+	// arguments used when Engine is empty and DatabaseEngine.Replicated is set.
+	// They default to the ClickHouse-standard
+	// "/clickhouse/tables/{uuid}/{shard}" / "{replica}" (the server expands the
+	// {uuid}/{shard}/{replica} macros) — matching the default
+	// default_replica_path. Override for a cluster with a different convention.
+	ReplicatedTablePath    string
+	ReplicatedTableReplica string
 
 	// TTL sets per-signal retention on the created tables — a zero duration
 	// for a signal emits no TTL clause (operator-managed retention).
@@ -95,11 +109,14 @@ type Config struct {
 // single-node shape cerberus ships by default.
 //
 // When Replicated is true the database is created with
-// `ENGINE = Replicated(<path>, <shard>, <replica>)`. A Replicated
-// database auto-replicates all DDL across replicas and auto-converts
-// MergeTree tables to ReplicatedMergeTree, so the table Engine stays the
-// plain MergeTree default and no ON CLUSTER clause is used (the two are
-// mutually exclusive — the Replicated database replicates DDL itself).
+// `ENGINE = Replicated(<path>, <shard>, <replica>)`. A Replicated database
+// auto-replicates all DDL across replicas, so no ON CLUSTER clause is used
+// (the two are mutually exclusive — the Replicated database replicates DDL
+// itself). It does NOT auto-convert MergeTree tables to ReplicatedMergeTree,
+// though: replicated DDL gives each replica an independent table, but only a
+// ReplicatedMergeTree engine replicates the DATA. So withDefaults resolves an
+// empty table Engine to an explicit ReplicatedMergeTree under a Replicated
+// database (see defaultTableEngine / Config.ReplicatedTablePath).
 type DatabaseEngine struct {
 	// Replicated turns on the Replicated database engine. When false the
 	// other fields are ignored and no ENGINE clause is emitted.
@@ -163,6 +180,11 @@ const (
 	defaultReplicatedShard   = "{shard}"
 	defaultReplicatedReplica = "{replica}"
 
+	// defaultReplicatedTablePath is the ClickHouse-standard ReplicatedMergeTree
+	// ZooKeeper path (the default default_replica_path). {uuid} is auto-provided
+	// per table and {shard} is the server macro, so this is per-table unique.
+	defaultReplicatedTablePath = "/clickhouse/tables/{uuid}/{shard}"
+
 	defaultLogsTable                = "otel_logs"
 	defaultTracesTable              = "otel_traces"
 	defaultMetricsGaugeTable        = "otel_metrics_gauge"
@@ -180,7 +202,7 @@ func (c Config) withDefaults() Config {
 		c.Database = defaultDatabase
 	}
 	if c.Engine == "" {
-		c.Engine = defaultEngine
+		c.Engine = defaultTableEngine(c.DatabaseEngine.Replicated, c.ReplicatedTablePath, c.ReplicatedTableReplica)
 	}
 	if c.Tables.Logs == "" {
 		c.Tables.Logs = defaultLogsTable
@@ -212,6 +234,27 @@ func (c Config) withDefaults() Config {
 		}
 	}
 	return c
+}
+
+// defaultTableEngine resolves the table engine to use when Config.Engine is
+// empty. With a Replicated database engine the tables must be explicit
+// ReplicatedMergeTree to replicate their DATA (a Replicated database does NOT
+// auto-convert MergeTree), so it returns
+// `ReplicatedMergeTree('<path>', '<replica>')` with the standard
+// /clickhouse/tables/{uuid}/{shard} / {replica} defaults when path/replica are
+// blank. Otherwise it returns the single-node `MergeTree()` default. Built via
+// the typed chsql constructors — no hand-assembled SQL.
+func defaultTableEngine(replicated bool, tablePath, tableReplica string) string {
+	if !replicated {
+		return defaultEngine
+	}
+	if tablePath == "" {
+		tablePath = defaultReplicatedTablePath
+	}
+	if tableReplica == "" {
+		tableReplica = defaultReplicatedReplica
+	}
+	return chsql.RenderDDL(chsql.EngineReplicatedMergeTree(tablePath, tableReplica))
 }
 
 // clusterClause renders the optional ON CLUSTER fragment that upstream
