@@ -99,7 +99,7 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 		return err
 	}
 
-	fmt.Fprintln(os.Stderr, "bench-report: measuring execution-route × native-rate matrix…")
+	fmt.Fprintln(os.Stderr, "bench-report: measuring rate-range strategies…")
 	matrix, err := measureMatrix(s, iters)
 	if err != nil {
 		return err

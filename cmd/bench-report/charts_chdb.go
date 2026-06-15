@@ -78,18 +78,6 @@ func (d *svgDoc) rect(x, y, w, h int, fill string) {
 	fmt.Fprintf(&d.b, `<rect x="%d" y="%d" width="%d" height="%d" fill="%s"/>`, x, y, w, h, fill)
 }
 
-// legend draws a horizontal legend swatch row centered under the title.
-func (d *svgDoc) legend(labels []string) {
-	x := padL
-	const sw = 14
-	for i, lab := range labels {
-		col := okabeIto[i%len(okabeIto)]
-		d.rect(x, padT-26, sw, sw, col)
-		d.text(x+sw+5, padT-14, 12, textCol, "start", lab)
-		x += sw + 9 + len(lab)*7 + 16
-	}
-}
-
 // plotFrame draws the axes + horizontal gridlines for a numeric y range
 // [0, ymax], returning the inner plot rect (x0,y0,x1,y1) and a y-mapper.
 func (d *svgDoc) plotFrame(ymax float64, yUnit string, yticks int) (x0, y0, x1, y1 int, ymap func(float64) int) {
@@ -117,51 +105,6 @@ func (d *svgDoc) plotFrame(ymax float64, yUnit string, yticks int) (x0, y0, x1, 
 	fmt.Fprintf(&d.b, `<text x="16" y="%d" font-size="12" fill="%s" text-anchor="middle" transform="rotate(-90 16 %d)">%s</text>`,
 		(y0+y1)/2, subText, (y0+y1)/2, escapeXML(yUnit))
 	return x0, y0, x1, y1, ymap
-}
-
-// groupedBars draws a grouped bar chart: one group per groupLabel, one bar
-// per series within the group. values[g][s] is the value for group g,
-// series s; series is the legend. ymax auto-scales with 10% headroom.
-func groupedBars(title, yUnit string, groupLabels, series []string, values [][]float64, fmtVal func(float64) string) string {
-	d := newSVG()
-	d.title(title)
-	d.legend(series)
-
-	var ymax float64
-	for _, row := range values {
-		for _, v := range row {
-			if v > ymax {
-				ymax = v
-			}
-		}
-	}
-	ymax *= 1.15
-
-	x0, _, x1, y1, ymap := d.plotFrame(ymax, yUnit, 5)
-	plotW := x1 - x0
-	nG := len(groupLabels)
-	if nG == 0 {
-		return d.close()
-	}
-	groupW := plotW / nG
-	const groupGap = 18
-	innerW := groupW - groupGap
-	nS := len(series)
-	barW := innerW / max1(nS)
-
-	for g := 0; g < nG; g++ {
-		gx := x0 + g*groupW + groupGap/2
-		for sIdx := 0; sIdx < nS; sIdx++ {
-			v := values[g][sIdx]
-			bx := gx + sIdx*barW
-			by := ymap(v)
-			d.rect(bx, by, barW-3, y1-by, okabeIto[sIdx%len(okabeIto)])
-			d.text(bx+(barW-3)/2, by-5, 10, textCol, "middle", fmtVal(v))
-		}
-		// group label
-		d.text(gx+innerW/2, y1+18, 12, textCol, "middle", groupLabels[g])
-	}
-	return d.close()
 }
 
 // barChart draws a simple single-series bar chart (one bar per label).
@@ -257,13 +200,6 @@ func writeChart(docOut, name, svg string) (string, error) {
 		return "", err
 	}
 	return "benchmarks/" + name, nil
-}
-
-func max1(n int) int {
-	if n < 1 {
-		return 1
-	}
-	return n
 }
 
 // fmtTick renders a y-axis tick value compactly (k / M suffixes).

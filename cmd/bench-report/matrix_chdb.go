@@ -17,51 +17,62 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
-// The execution-route × native-rate matrix. The focus query is the
-// end-to-end rate range query_range — the one shape where BOTH the
-// sharded-pushdown solver (internal/solver, route A vs B) AND the
-// experimental ClickHouse-native timeSeriesRateToGrid lowering
-// (CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) matter. Every other e2e shape
-// is route-invariant (an instant query has no anchor grid to slice; a
-// series lookup / log filter has no rate fan-out), so the matrix lives
-// here, on its own focus query, rather than fanning the whole e2e table.
+// The rate-range strategy table. The focus query is the end-to-end rate
+// range query_range — the one shape where BOTH the sharded-pushdown solver
+// (internal/solver, route A vs B) AND the experimental ClickHouse-native
+// timeSeriesRateToGrid lowering (CERBERUS_EXPERIMENTAL_TS_GRID_RANGE)
+// matter. Every other e2e shape is route-invariant (an instant query has no
+// anchor grid to slice; a series lookup / log filter has no rate fan-out),
+// so the strategy table lives here, on its own focus query, rather than
+// fanning the whole e2e table.
 //
-// The matrix is 3 routes × 2 tsgrid states = 6 cells, each driven
-// through the FULL production pipeline for that configuration:
+// There are only THREE genuinely distinct strategies, not a route × tsgrid
+// grid: native rate and sharding are two ALTERNATIVE remedies for the same
+// row fan-out, NOT independent dials. Enabling native rate removes the
+// fan-out entirely (timeSeriesRateToGrid never builds the (sample,anchor)
+// matrix), so the sharded solver finds no fan-out spine to slice and any
+// route collapses to a single statement. That is why the whole "native on"
+// column of the old 3×2 matrix was one repeated cell — it is dropped here.
+//
+// Each strategy is driven through the FULL production pipeline for its
+// configuration:
 //
 //	parse → lower(LowerOpts{tsgrid}) → optimize → route(solver mode)
 //	      → emit → execute(chDB) → (sequential shard composition)
 //
-// What each axis controls:
+// The three strategies:
 //
-//   - route=single  → solver.ModeSingle: the solver is dark, the whole
-//     anchor grid runs as ONE ClickHouse statement (route A).
-//   - route=sharded → solver.ModeSharded: the plan is force-routed onto
-//     K disjoint anchor-grid shards (route B), each a re-anchored copy
-//     of the same plan over its anchor sub-grid.
-//   - route=auto    → solver.ModeAuto: the production default — the cost
-//     gate decides. For this OOM-class fixture it routes B.
-//   - tsgrid=off    → the default arrayJoin fan-out: each sample is
-//     replicated once per covering anchor (the (sample,anchor) matrix).
-//   - tsgrid=on     → the native timeSeriesRateToGrid aggregate computes
-//     every grid point's rate in ONE pass with NO row fan-out (requires
-//     ClickHouse ≥ 25.6 — the chDB substrate is 25.8).
+//   - single (native off)  → solver.ModeSingle, tsgrid=false: the solver is
+//     dark, the whole anchor grid runs as ONE ClickHouse statement (route
+//     A) — the full fan-out in one query, the baseline and the problem.
+//   - sharded (native off) → solver.ModeSharded, tsgrid=false: the plan is
+//     force-routed onto K disjoint anchor-grid shards (route B), each a
+//     re-anchored copy of the same plan over its anchor sub-grid; the worst
+//     shard's peak fits under the per-query memory cap.
+//   - native rate          → solver.ModeAuto, tsgrid=true: the realistic
+//     production config (auto routing + the experimental native-rate flag).
+//     The native timeSeriesRateToGrid aggregate computes every grid point's
+//     rate in ONE pass with NO row fan-out (requires ClickHouse ≥ 25.6 — the
+//     chDB substrate is 25.8), so the fan-out vanishes and auto correctly
+//     collapses to a single statement (route is moot).
 //
-// Two numbers are reported per cell:
+// Two numbers are reported per strategy:
 //
-//   - Wall  — best-of-N wall time, MEASURED. For a sharded cell this is
-//     the SEQUENTIAL sum of the shard walls (one in-process chDB engine
+//   - Wall  — best-of-N wall time, MEASURED. For the sharded strategy this
+//     is the SEQUENTIAL sum of the shard walls (one in-process chDB engine
 //     runs them back-to-back); production runs them on parallel CH
 //     connections, so the on-engine sharded wall is a CONSERVATIVE upper
 //     bound, never a speedup claim.
 //   - PeakMem — the per-statement peak memory, MODELED from the MEASURED
 //     intermediate (sample,anchor) pair count via the same published
 //     calibration constant the sharded section uses (chDB exposes no
-//     peak-memory metric and never enforces a cap). For a sharded cell
-//     it is the WORST shard's modeled peak — the per-query driver, since
-//     each shard is capped independently. tsgrid=on collapses the
-//     intermediate to ~scan rows, so its modeled peak is far lower.
+//     peak-memory metric and never enforces a cap). For the sharded
+//     strategy it is the WORST shard's modeled peak — the per-query driver,
+//     since each shard is capped independently. The native-rate strategy
+//     collapses the intermediate to ~scan rows, so its modeled peak is far
+//     lower.
 type matrixCell struct {
+	Name     string // strategy label, e.g. "single (native off)"
 	Route    string // single / sharded / auto
 	TSGrid   bool   // native timeSeriesRateToGrid lowering on/off
 	Routed   bool   // did the solver actually take route B?
@@ -71,7 +82,7 @@ type matrixCell struct {
 	PeakMem  int64 // modeled peak bytes (PeakRows × bytesPerPair)
 }
 
-// matrixResult is the whole 3×2 grid plus the focus-query description.
+// matrixResult is the three-strategy table plus the focus-query description.
 type matrixResult struct {
 	Query      string
 	Step       time.Duration
@@ -80,15 +91,26 @@ type matrixResult struct {
 	N          int64 // outer anchor count
 	F          int64 // per-window fan-out (Range/Step)
 	ScanRows   int64
-	Cells      []matrixCell // row-major: route outer, tsgrid inner
+	Cells      []matrixCell // one per matrixStrategy, in presentation order
 }
 
-// matrixRoutes / matrixTSGrid enumerate the axes in a stable presentation
-// order (single → sharded → auto; off → on).
-var (
-	matrixRoutes = []string{solver.ModeSingle, solver.ModeSharded, solver.ModeAuto}
-	matrixTSGrid = []bool{false, true}
-)
+// matrixStrategy is one row of the strategy table: a (route, tsgrid)
+// configuration with a published label.
+type matrixStrategy struct {
+	Name   string // presentation label
+	Route  string // solver mode
+	TSGrid bool   // native timeSeriesRateToGrid lowering on/off
+}
+
+// matrixStrategies enumerates the three genuinely distinct strategies in a
+// stable presentation order: the baseline single statement, the sharded
+// cap-fit, and the native-rate fan-out removal (run under auto, the
+// production default, to show auto + native → single).
+var matrixStrategies = []matrixStrategy{
+	{Name: "single (native off)", Route: solver.ModeSingle, TSGrid: false},
+	{Name: "sharded (native off)", Route: solver.ModeSharded, TSGrid: false},
+	{Name: "native rate", Route: solver.ModeAuto, TSGrid: true},
+}
 
 // matrixQuery is the focus query: the e2e rate range query_range. It is the
 // same shape as the e2e "range query (240 steps)" row, run over the same
@@ -102,17 +124,17 @@ var (
 	matrixStart = matrixEnd.Add(-time.Hour)
 )
 
-// measureMatrix drives the route × tsgrid matrix over the e2e metrics seed
-// (already created by measureE2E, which runs first). It returns one
-// matrixResult — six measured cells.
+// measureMatrix drives the three rate-range strategies over the e2e metrics
+// seed (already created by measureE2E, which runs first). It returns one
+// matrixResult — one measured cell per matrixStrategy.
 func measureMatrix(s *session, iters int) (matrixResult, error) {
 	ctx := context.Background()
 
 	// The native timeSeriesRateToGrid aggregate is experimental; enable it
-	// session-wide so the tsgrid cells run. It is inert for the non-tsgrid
-	// statements, so a single session-level SET is the cleanest gate (the
-	// production engine threads it per-request via WithTSGridSetting; here
-	// the in-process session carries it for the whole matrix run).
+	// session-wide so the native-rate strategy runs. It is inert for the
+	// non-tsgrid statements, so a single session-level SET is the cleanest
+	// gate (the production engine threads it per-request via WithTSGridSetting;
+	// here the in-process session carries it for the whole strategy run).
 	if err := s.exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
 		return matrixResult{}, fmt.Errorf("enable native-rate setting: %w", err)
 	}
@@ -132,26 +154,27 @@ func measureMatrix(s *session, iters int) (matrixResult, error) {
 		ScanRows:   scanRows,
 	}
 
-	for _, route := range matrixRoutes {
-		for _, tsgrid := range matrixTSGrid {
-			cell, err := measureMatrixCell(ctx, s, iters, route, tsgrid)
-			if err != nil {
-				return matrixResult{}, fmt.Errorf("cell route=%s tsgrid=%v: %w", route, tsgrid, err)
-			}
-			res.Cells = append(res.Cells, cell)
+	for _, st := range matrixStrategies {
+		cell, err := measureMatrixCell(ctx, s, iters, st)
+		if err != nil {
+			return matrixResult{}, fmt.Errorf("strategy %q (route=%s tsgrid=%v): %w",
+				st.Name, st.Route, st.TSGrid, err)
 		}
+		res.Cells = append(res.Cells, cell)
 	}
 	return res, nil
 }
 
-// measureMatrixCell drives one (route, tsgrid) configuration end to end.
-func measureMatrixCell(ctx context.Context, s *session, iters int, route string, tsgrid bool) (matrixCell, error) {
-	plan, err := lowerMatrixPlan(ctx, tsgrid)
+// measureMatrixCell drives one strategy (route, tsgrid) configuration end to
+// end and labels the resulting cell with the strategy's published name.
+func measureMatrixCell(ctx context.Context, s *session, iters int, st matrixStrategy) (matrixCell, error) {
+	plan, err := lowerMatrixPlan(ctx, st.TSGrid)
 	if err != nil {
 		return matrixCell{}, fmt.Errorf("lower+optimize: %w", err)
 	}
 
-	cell := matrixCell{Route: route, TSGrid: tsgrid, K: 1}
+	route, tsgrid := st.Route, st.TSGrid
+	cell := matrixCell{Name: st.Name, Route: route, TSGrid: tsgrid, K: 1}
 
 	cfg := solver.DefaultConfig()
 	cfg.Mode = route

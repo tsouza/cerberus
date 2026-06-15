@@ -253,16 +253,19 @@ func seedE2ELogs(s *session) error {
 	ddl := `CREATE OR REPLACE TABLE e2e_logs (
   Timestamp DateTime64(9), Body String,
   SeverityText LowCardinality(String) DEFAULT '',
-  ResourceAttributes Map(String,String), ServiceName String DEFAULT ''
+  ResourceAttributes Map(String,String),
+  LogAttributes Map(String,String) DEFAULT map(),
+  ServiceName String DEFAULT ''
 ) ENGINE = MergeTree() ORDER BY (ServiceName, Timestamp);`
 	if err := s.exec(ddl); err != nil {
 		return err
 	}
-	ins := fmt.Sprintf(`INSERT INTO e2e_logs SELECT
+	ins := fmt.Sprintf(`INSERT INTO e2e_logs (Timestamp, Body, SeverityText, ResourceAttributes, LogAttributes, ServiceName) SELECT
   toDateTime64('2026-06-01 11:00:00', 9) + toIntervalMillisecond(number),
   if(number %% 2 = 0, concat('request error code=', toString(number %% 500)), concat('ok path=/p', toString(number %% 100))),
   if(number %% 2 = 0, 'ERROR', 'INFO'),
   map('host', concat('h', toString(number %% 200))),
+  map('level', if(number %% 2 = 0, 'error', 'info')),
   'e2e'
 FROM numbers(%d)`, e2eDatasetRows)
 	return s.exec(ins)

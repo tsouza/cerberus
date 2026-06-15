@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/tsouza/cerberus/internal/solver"
 )
 
 type docInput struct {
@@ -100,7 +102,7 @@ func writeTable(b *strings.Builder, aligns []align, header []string, rows [][]st
 
 // renderDoc assembles the full benchmarks.md, written to read top-to-bottom
 // like a story: what we measure → where → how → the end-to-end numbers →
-// the route × native-rate matrix → scaling → the per-component micro costs →
+// the rate-range strategy table → scaling → the per-component micro costs →
 // how to reproduce. Charts are emitted as committed SVGs alongside the doc
 // and referenced inline. Timings are rounded to keep regenerated diffs
 // small; deterministic ratios carry one decimal.
@@ -338,114 +340,113 @@ func renderE2E(b *strings.Builder, in docInput) error {
 	return nil
 }
 
-// renderMatrix — the execution-route × native-rate matrix, the centrepiece.
+// renderMatrix — the rate-range strategy table, the centrepiece.
 func renderMatrix(b *strings.Builder, in docInput) error {
 	m := in.matrix
-	b.WriteString("## Execution routes × native rate (the matrix)\n\n")
+	b.WriteString("## The expensive shape: rate-range query — three strategies\n\n")
 
 	b.WriteString("The rate range query is where cerberus's two performance levers come into ")
-	b.WriteString("play, and they are **independent**, so the interesting view is a matrix.\n\n")
+	b.WriteString("play. They are **not independent dials** — they are two *alternative* remedies ")
+	b.WriteString("for the same row fan-out:\n\n")
+	b.WriteString("- **Sharding** (the [sharded-pushdown solver](solver.md), route B) makes the ")
+	b.WriteString("fan-out *fit*. It re-anchors the *same* plan onto **K disjoint anchor-grid ")
+	b.WriteString("shards**, each a separate statement over a slice of the grid; no shard sees ")
+	b.WriteString("more than ~1/K of the fan-out, so each one stays under the per-query memory ")
+	b.WriteString("cap.\n")
+	b.WriteString("- **Native rate** (`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`) makes the fan-out ")
+	b.WriteString("*vanish*. ClickHouse's native `timeSeriesRateToGrid` aggregate computes every ")
+	b.WriteString("grid point's rate in a single pass with **no row fan-out at all** — it never ")
+	b.WriteString("builds the `(sample, anchor)` matrix. It needs ClickHouse ≥ 25.6 (the ")
+	b.WriteString("substrate here is 25.8).\n\n")
 
-	b.WriteString("**The execution route** decides how many ClickHouse statements run:\n\n")
-	b.WriteString("- **single** (route A) — one statement covers the whole anchor grid. Simplest, ")
-	b.WriteString("but the entire fan-out lands in one query's memory.\n")
-	b.WriteString("- **sharded** (route B) — the [sharded-pushdown solver](solver.md) re-anchors ")
-	b.WriteString("the *same* plan onto **K disjoint anchor-grid shards**, each a separate ")
-	b.WriteString("statement over a slice of the grid. No shard sees more than ~1/K of the ")
-	b.WriteString("fan-out, so each one fits comfortably under the per-query memory cap.\n")
-	b.WriteString("- **auto** — the production default. The solver inspects the plan and routes B ")
-	b.WriteString("only when the fan-out is large enough to be worth slicing; otherwise it falls ")
-	b.WriteString("back to the byte-identical single statement.\n\n")
-
-	b.WriteString("**The native-rate flag** (`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`) decides how a ")
-	b.WriteString("single statement computes the rate:\n\n")
-	b.WriteString("- **off** — the default `arrayJoin` fan-out: each sample is replicated once per ")
-	b.WriteString("step whose window covers it, producing the `(sample, anchor)` matrix, then a ")
-	b.WriteString("`GROUP BY` collapses it.\n")
-	b.WriteString("- **on** — ClickHouse's native `timeSeriesRateToGrid` aggregate computes every ")
-	b.WriteString("grid point's rate in a **single pass with no row fan-out at all**. It needs ")
-	b.WriteString("ClickHouse ≥ 25.6 (the substrate here is 25.8).\n\n")
+	b.WriteString("Because native rate *removes* the fan-out, the two levers do not stack: with ")
+	b.WriteString("native rate on there is no fan-out spine left for the sharded solver to slice, ")
+	b.WriteString("so any route collapses to a single statement. That leaves exactly **three ")
+	b.WriteString("genuinely distinct strategies** for this query, not a route × native-rate ")
+	b.WriteString("grid.\n\n")
 
 	fmt.Fprintf(b, "**The focus query** is the same rate range query_range from the table above — "+
 		"`%s` over %s at a %s step (fan-out F = Range/Step = **%d**, grid N = **%d** steps), on "+
-		"the **%s**-row metrics seed. Each of the 3 × 2 = 6 cells drives the full pipeline for "+
-		"that configuration and reports two numbers: the measured **wall** time and the modeled "+
+		"the **%s**-row metrics seed. Each strategy drives the full pipeline for its "+
+		"configuration and reports two numbers: the measured **wall** time and the modeled "+
 		"per-statement **peak memory**.\n\n",
 		m.Query, fmtGridDur(m.OuterRange), fmtGridDur(m.Step), m.F, m.N, fmtInt(m.ScanRows))
 
-	// 3x2 wall + memory table.
+	// Three-strategy wall + memory table.
 	rows := matrixRows(m)
-	writeTable(b, []align{alignLeft, alignLeft, alignRight, alignRight, alignRight, alignLeft},
-		[]string{"route", "native rate", "statements", "wall", "modeled peak mem", "routed"}, rows)
+	writeTable(b, []align{alignLeft, alignRight, alignRight, alignRight, alignLeft},
+		[]string{"strategy", "statements", "wall", "peak mem", "note"}, rows)
 	b.WriteString("\n")
 
-	// Grouped bar: wall by route × tsgrid.
-	groups, series, wallVals, memVals := matrixChartData(m)
+	b.WriteString("`auto` (the production default) picks the sharded route for this query when ")
+	b.WriteString("native rate is off; with native rate on it collapses to a single statement — ")
+	b.WriteString("so `auto` does not earn its own row, it lands on one of the three above ")
+	b.WriteString("depending on the flag.\n\n")
+
+	// One bar per strategy: wall, then peak memory.
+	labels, wallVals, memVals := matrixChartData(m)
 	wref, err := writeChart(in.outPath, "matrix-wall.svg",
-		groupedBars("Rate range query: wall by route × native-rate", "wall (ms)",
-			groups, series, wallVals, func(v float64) string { return fmtMs(v) }))
+		barChart("Rate range query: wall by strategy", "wall (ms)",
+			labels, wallVals, func(v float64) string { return fmtMs(v) }))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(b, "![Wall by route and native-rate](%s)\n\n", wref)
+	fmt.Fprintf(b, "![Wall by strategy](%s)\n\n", wref)
 
 	mref, err := writeChart(in.outPath, "matrix-memory.svg",
-		groupedBars("Rate range query: modeled peak memory", "peak memory (MiB)",
-			groups, series, memVals, func(v float64) string { return fmtMiB(v) }))
+		barChart("Rate range query: modeled peak memory by strategy", "peak memory (MiB)",
+			labels, memVals, func(v float64) string { return fmtMiB(v) }))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(b, "![Modeled peak memory by route and native-rate](%s)\n\n", mref)
+	fmt.Fprintf(b, "![Modeled peak memory by strategy](%s)\n\n", mref)
 
 	// Narrative interpretation, pulled from the measured cells.
 	renderMatrixNarrative(b, m)
 	return nil
 }
 
-// renderMatrixNarrative interprets the matrix in plain language, citing the
-// measured cells so the prose can never drift from the numbers.
+// renderMatrixNarrative interprets the three strategies in plain language,
+// citing the measured cells so the prose can never drift from the numbers.
 func renderMatrixNarrative(b *strings.Builder, m matrixResult) {
-	single := matrixCellOf(m, "single", false)
-	sharded := matrixCellOf(m, "sharded", false)
-	auto := matrixCellOf(m, "auto", false)
-	singleTS := matrixCellOf(m, "single", true)
+	single := matrixSingleCell(m)
+	sharded := matrixShardedCell(m)
+	native := matrixNativeCell(m)
 
-	b.WriteString("**Reading the matrix.**\n\n")
+	b.WriteString("**Reading the three strategies.**\n\n")
 
+	if single != nil {
+		fmt.Fprintf(b, "- **single = the baseline, and the problem.** The whole fan-out runs in "+
+			"one statement: ~%s intermediate `(sample, anchor)` rows materialize before the "+
+			"`GROUP BY` collapse (**modeled %s**). That is the single-query memory this whole "+
+			"section is about reducing.\n",
+			fmtInt(single.PeakRows), fmtBytes(single.PeakMem))
+	}
 	if single != nil && sharded != nil {
-		fmt.Fprintf(b, "- **Sharding trades memory for statement count.** The single-statement "+
-			"route materializes ~%s intermediate rows in one query (**modeled %s**); sharding "+
-			"into K=%d cuts the worst shard to ~%s rows (**modeled %s**) — a **%.1f×** reduction "+
-			"in per-query memory, which is what keeps it under the cap. The shards run "+
-			"sequentially on this single in-process engine, so the *wall* here is the "+
-			"conservative sum; in production they run on parallel ClickHouse connections.\n",
-			fmtInt(single.PeakRows), fmtBytes(single.PeakMem),
+		fmt.Fprintf(b, "- **sharded = trade statement count for a lower per-query peak.** "+
+			"Slicing into K=%d statements cuts the worst shard to ~%s rows (**modeled %s**) — a "+
+			"**%.1f×** reduction in per-query peak memory, which is what fits it under the cap. "+
+			"The shards run sequentially on this single in-process engine, so the *wall* here is "+
+			"the conservative sum; in production they run on parallel ClickHouse connections.\n",
 			sharded.K, fmtInt(sharded.PeakRows), fmtBytes(sharded.PeakMem),
 			ratioI(single.PeakRows, sharded.PeakRows))
 	}
-	if singleTS != nil && single != nil {
-		fmt.Fprintf(b, "- **Native rate removes the fan-out instead of slicing it.** With "+
-			"`timeSeriesRateToGrid` on, the single-statement intermediate drops from ~%s rows "+
-			"to ~%s (**modeled %s**, down from %s) — the aggregate never builds the "+
-			"`(sample, anchor)` matrix at all. Where sharding makes the fan-out *fit*, the "+
-			"native path makes it *vanish*.\n",
-			fmtInt(single.PeakRows), fmtInt(singleTS.PeakRows),
-			fmtBytes(singleTS.PeakMem), fmtBytes(single.PeakMem))
-	}
-	if auto != nil {
-		routedWord := "falls back to the single statement"
-		if auto.Routed {
-			routedWord = fmt.Sprintf("routes to %d shards", auto.K)
-		}
-		fmt.Fprintf(b, "- **`auto` is the default, and it picks correctly.** For this OOM-class "+
-			"fan-out the production default %s — matching the `sharded` row, with no operator "+
-			"intervention. On a low-fan-out query the same `auto` mode would instead stay on the "+
-			"cheaper single statement.\n", routedWord)
+	if native != nil && single != nil {
+		fmt.Fprintf(b, "- **native rate = remove the fan-out at the source.** With "+
+			"`timeSeriesRateToGrid` on, the intermediate drops from ~%s rows to ~%s "+
+			"(**modeled %s**, down from %s) — the aggregate never builds the `(sample, anchor)` "+
+			"matrix at all, so it collapses to a single-pass statement and the execution route "+
+			"is moot. Where sharding makes the fan-out *fit*, the native path makes it "+
+			"*vanish*.\n",
+			fmtInt(single.PeakRows), fmtInt(native.PeakRows),
+			fmtBytes(native.PeakMem), fmtBytes(single.PeakMem))
 	}
 	b.WriteString("\n")
-	b.WriteString("The two levers compose: `auto` routing keeps any deployment safe under the ")
-	b.WriteString("memory cap today, and turning the native-rate flag on collapses the fan-out ")
-	b.WriteString("at its source for the deployments whose ClickHouse is new enough. The ")
+	b.WriteString("So the two remedies do not compose into a four-way grid — they are a choice. ")
+	b.WriteString("`auto` routing keeps any deployment safe under the memory cap today by ")
+	b.WriteString("sharding the fan-out; turning the native-rate flag on collapses the fan-out at ")
+	b.WriteString("its source for the deployments whose ClickHouse is new enough, at which point ")
+	b.WriteString("there is nothing left to shard. The ")
 	b.WriteString("[sharded solver section](#sharded-solver-the-memory-cap-win) below works the ")
 	b.WriteString("memory arithmetic against the real production cap.\n\n")
 }
@@ -674,35 +675,46 @@ func renderSeeAlso(b *strings.Builder) {
 
 // --- matrix presentation helpers ----------------------------------------
 
-// matrixRows builds the 3×2 table rows in presentation order.
+// matrixRows builds the three-strategy table rows in presentation order:
+// strategy | statements | wall | peak mem | note. The note conveys what each
+// strategy does to the fan-out (baseline / cap-fit / removed).
 func matrixRows(m matrixResult) [][]string {
 	var rows [][]string
 	for _, c := range m.Cells {
-		routedCell := "no (single statement)"
 		stmts := "1"
 		if c.Routed {
-			routedCell = fmt.Sprintf("yes (K=%d)", c.K)
 			stmts = fmt.Sprintf("%d", c.K)
 		}
 		rows = append(rows, []string{
-			c.Route, tsLabel(c.TSGrid), stmts, roundDur(c.Wall), fmtBytes(c.PeakMem), routedCell,
+			c.Name, stmts, roundDur(c.Wall), fmtBytes(c.PeakMem), matrixNote(c),
 		})
 	}
 	return rows
 }
 
-// matrixChartData splits the cells into grouped-bar inputs: one group per
-// route, two series (native off / on), for both wall (ms) and memory (MiB).
-func matrixChartData(m matrixResult) (groups, series []string, wall, mem [][]float64) {
-	groups = []string{"single", "sharded", "auto"}
-	series = []string{"native off", "native on"}
-	for _, route := range groups {
-		off := matrixCellOf(m, route, false)
-		on := matrixCellOf(m, route, true)
-		wall = append(wall, []float64{cellWallMs(off), cellWallMs(on)})
-		mem = append(mem, []float64{cellMemMiB(off), cellMemMiB(on)})
+// matrixNote describes a strategy's effect on the fan-out for the table's
+// note column, derived from the measured cell (route + tsgrid).
+func matrixNote(c matrixCell) string {
+	switch {
+	case c.TSGrid:
+		return "fan-out removed (single-pass aggregate)"
+	case c.Routed:
+		return fmt.Sprintf("fan-out sliced to fit (K=%d shards)", c.K)
+	default:
+		return "baseline — whole fan-out in one query"
 	}
-	return groups, series, wall, mem
+}
+
+// matrixChartData splits the cells into single-series bar inputs: one bar per
+// strategy, for both wall (ms) and memory (MiB).
+func matrixChartData(m matrixResult) (labels []string, wall, mem []float64) {
+	for i := range m.Cells {
+		c := &m.Cells[i]
+		labels = append(labels, c.Name)
+		wall = append(wall, cellWallMs(c))
+		mem = append(mem, cellMemMiB(c))
+	}
+	return labels, wall, mem
 }
 
 func cellWallMs(c *matrixCell) float64 {
@@ -719,21 +731,36 @@ func cellMemMiB(c *matrixCell) float64 {
 	return float64(c.PeakMem) / float64(1<<20)
 }
 
-// matrixCellOf finds the cell for a (route, tsgrid) pair, or nil.
-func matrixCellOf(m matrixResult, route string, tsgrid bool) *matrixCell {
+// matrixSingleCell / matrixShardedCell / matrixNativeCell select the cell for
+// each of the three strategies, identifying them by their (route, tsgrid)
+// configuration so the narrative reads off the same measured numbers the
+// table renders. Native rate is the tsgrid-on strategy regardless of route
+// (auto collapses to single under it); the other two are tsgrid-off.
+func matrixSingleCell(m matrixResult) *matrixCell {
+	return matrixCellByConfig(m, solver.ModeSingle, false)
+}
+
+func matrixShardedCell(m matrixResult) *matrixCell {
+	return matrixCellByConfig(m, solver.ModeSharded, false)
+}
+
+func matrixNativeCell(m matrixResult) *matrixCell {
 	for i := range m.Cells {
-		if m.Cells[i].Route == route && m.Cells[i].TSGrid == tsgrid {
+		if m.Cells[i].TSGrid {
 			return &m.Cells[i]
 		}
 	}
 	return nil
 }
 
-func tsLabel(on bool) string {
-	if on {
-		return "on"
+// matrixCellByConfig finds the cell for a (route, tsgrid) pair, or nil.
+func matrixCellByConfig(m matrixResult, route string, tsgrid bool) *matrixCell {
+	for i := range m.Cells {
+		if m.Cells[i].Route == route && m.Cells[i].TSGrid == tsgrid {
+			return &m.Cells[i]
+		}
 	}
-	return "off"
+	return nil
 }
 
 // e2eShortLabel trims an e2e row name to a compact chart x-label.

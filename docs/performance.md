@@ -319,9 +319,11 @@ rejected rather than served. That is exactly the wall this flag exists to move.
 > The [sharded-pushdown solver](solver.md) is cerberus's *other* answer to that
 > wall, and it is on by default (`auto`): it slices the same fan-out across `K`
 > statements so no single one exceeds the cap. Sharding makes the fan-out
-> *fit*; the native path below makes it *vanish*. They are independent levers —
-> see the [route × native-rate numbers in benchmarks.md](benchmarks.md#execution-routes--native-rate-the-matrix)
-> for how they compose.
+> *fit*; the native path below makes it *vanish*. They are two *alternative*
+> remedies, not independent dials — native rate removes the fan-out, so there is
+> nothing left for the solver to slice. See the
+> [three rate-range strategies in benchmarks.md](benchmarks.md#the-expensive-shape-rate-range-query--three-strategies)
+> for the measured trade-off.
 
 ### The durable answer
 
@@ -339,8 +341,8 @@ the memory — stays **flat** instead of growing with the grid. On the canonical
 | **off** (default)     | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
 | **on** (experimental) | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
 
-(Measured on the 500k-row seed; full methodology and the route × native-rate
-numbers are in [benchmarks.md](benchmarks.md#execution-routes--native-rate-the-matrix).)
+(Measured on the 500k-row seed; full methodology and the three rate-range
+strategies are in [benchmarks.md](benchmarks.md#the-expensive-shape-rate-range-query--three-strategies).)
 The fan-out's memory scales with the data; the native path's stays roughly flat
 no matter how many series or anchors you ask for — which is precisely what lets
 it serve the million-row queries that would otherwise hit the cap.
