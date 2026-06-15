@@ -49,6 +49,25 @@ var (
 // abstraction layer.
 const peerServiceClickHouse = "clickhouse"
 
+// defaultDialTimeout is the fallback connection-dial budget applied when
+// Config.DialTimeout is left zero. It mirrors clickhouse-go's own implicit
+// 5s default and is named here so both buildOptions (the driver option) and
+// resolveDialTimeout (the breaker recovery-ping budget) read the same value —
+// the recovery ping MUST be allowed at least one full fresh dial.
+const defaultDialTimeout = 5 * time.Second
+
+// resolveDialTimeout returns the effective connection-dial budget for cfg:
+// the operator-set Config.DialTimeout, or defaultDialTimeout when unset. It
+// is the single source of truth for the dial ceiling — buildOptions hands it
+// to the driver, and the breaker recovery loop sizes its synthetic-ping
+// timeout off it (see recoveryPingTimeout).
+func resolveDialTimeout(cfg Config) time.Duration {
+	if cfg.DialTimeout > 0 {
+		return cfg.DialTimeout
+	}
+	return defaultDialTimeout
+}
+
 // startExecuteSpan opens an `execute` span carrying the standard
 // db.system + db.statement semantic-conventions attributes plus the
 // cerberus.sql_length counter. The span is opened as SpanKindClient
@@ -374,6 +393,17 @@ type Client struct {
 	// every data-plane query via queryContext (overridable per-request,
 	// min'd, via WithQueryTimeout). 0 = setting not sent.
 	queryTimeout time.Duration
+
+	// recovery owns the background breaker-recovery goroutine (see
+	// recoveryLoop). It is non-nil ONLY on the root Client that New created
+	// and started the loop on; the lightweight ForHead views are shallow
+	// copies that SHARE this pointer but never start a second loop — the one
+	// loop already drives every per-head breaker in the shared registry. A
+	// nil pointer (the test-only newWithConn seam, or a bare struct literal)
+	// means "no background recovery" and Close skips the join. Sharing the
+	// pointer also makes Close idempotent + view-safe: whichever Client calls
+	// Close first stops the single loop exactly once via recovery.stop.
+	recovery *recoveryLoop
 }
 
 // buildBreakers constructs the per-head breaker registry shared by all of a
@@ -513,10 +543,7 @@ func New(cfg Config) (*Client, error) {
 // is unit-testable without a live ClickHouse (clickhouse.Open is lazy and
 // never dials, but it also doesn't expose the resolved Options back to us).
 func buildOptions(cfg Config) *clickhouse.Options {
-	dial := cfg.DialTimeout
-	if dial == 0 {
-		dial = 5 * time.Second
-	}
+	dial := resolveDialTimeout(cfg)
 	// Addrs (multi-host) is authoritative when present; otherwise dial the
 	// single scalar Addr — byte-unchanged from before the multi-host knob.
 	addrs := cfg.Addrs
@@ -655,7 +682,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 		cfg.BreakerOpenInterval,
 		newGlobalBreakerMetrics(),
 	)
-	return &Client{
+	c := &Client{
 		conn:         conn,
 		addr:         cfg.Addr,
 		br:           def,
@@ -664,6 +691,22 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 		maxMemory:    cfg.MaxQueryMemoryBytes,
 		queryTimeout: cfg.QueryTimeout,
 	}
+	// Start the active background breaker-recovery loop on the ROOT Client
+	// (ForHead views are shallow copies that share — never restart — it).
+	// The tick cadence is the breaker's own resolved OPEN-state backoff, so
+	// the loop probes at exactly the rhythm the breaker would admit a probe
+	// on; the per-probe budget is recoveryPingTimeout (≥ the dial timeout) so
+	// a synthetic ping can complete a fresh dial or evict a stale conn
+	// instead of deadline-exceeding under a too-short caller ctx. See
+	// breaker_recovery.go for the full rationale (traffic-starved replica
+	// stuck OPEN ~5min in the ch-pod-kill chaos scenario).
+	c.recovery = startRecoveryLoop(
+		conn,
+		breakerList(def, registry),
+		def.resolveOpenInterval(),
+		recoveryPingTimeout(cfg),
+	)
+	return c
 }
 
 // querySettings returns the per-query ClickHouse settings map applied
@@ -756,6 +799,14 @@ func (c *Client) Conn() driver.Conn {
 // option validation. This constructor bypasses it — it is unexported and
 // intentionally narrow.
 //
+// It deliberately does NOT start the background breaker-recovery loop: the
+// chaos / failure-mode tests drive recovery synchronously via an injected
+// clock (newBreakerTestClient) plus real request traffic, and most of them
+// never call Close — starting a goroutine here would leak it. The recovery
+// loop itself is exercised by its own dedicated constructor
+// (newRecoveryTestClient) whose tests always Close. c.recovery stays nil, so
+// Close on a newWithConn Client is a plain conn.Close.
+//
 //nolint:revive // test-only seam; production code must use New.
 func newWithConn(conn driver.Conn) *Client {
 	// Route through buildBreakers so the test seam gets the SAME per-head
@@ -767,8 +818,20 @@ func newWithConn(conn driver.Conn) *Client {
 	return &Client{conn: conn, br: def, breakers: registry}
 }
 
-// Close releases all pooled connections.
+// Close stops the background breaker-recovery goroutine (joining it so the
+// shutdown is goleak-clean) and then releases all pooled connections. The two
+// steps are ordered: the recovery loop pings through c.conn, so the conn must
+// stay open until the loop has provably exited.
+//
+// It is idempotent and view-safe. c.recovery is non-nil only on the root
+// Client New started the loop on; its stop() is sync.Once-guarded, so a
+// double Close — or a Close on a shared-pointer ForHead view — stops the
+// single loop exactly once and joins without panicking. A nil c.recovery (the
+// test-only newWithConn seam, or a bare struct literal) has no loop to stop.
 func (c *Client) Close() error {
+	if c.recovery != nil {
+		c.recovery.stop()
+	}
 	if c.conn == nil {
 		return nil
 	}
