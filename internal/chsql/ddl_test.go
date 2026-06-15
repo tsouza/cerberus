@@ -43,14 +43,15 @@ func TestDatabaseEngineReplicated(t *testing.T) {
 	}
 }
 
-// TestEngineReplicatedMergeTree pins the ReplicatedMergeTree table engine
-// clause — the two string-literal args, single-quoted, with the server
-// macros ({uuid}/{shard}/{replica}) passed through verbatim. A Replicated
-// database does not auto-convert MergeTree, so this is the engine cerberus
-// emits to replicate table DATA.
+// TestEngineReplicatedMergeTree pins the BARE ReplicatedMergeTree table-engine
+// clause — no arguments. This is the form a Replicated database requires: the
+// database supplies the Keeper path / replica, and ClickHouse 24.8+ rejects
+// explicit (path, replica) args there with code 36. A Replicated database does
+// not auto-convert MergeTree, so this bare engine is what cerberus emits to
+// replicate table DATA.
 func TestEngineReplicatedMergeTree(t *testing.T) {
-	got := renderFrag(EngineReplicatedMergeTree("/clickhouse/tables/{uuid}/{shard}", "{replica}"))
-	want := "ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')"
+	got := renderFrag(EngineReplicatedMergeTree())
+	want := "ReplicatedMergeTree"
 	if got != want {
 		t.Errorf("EngineReplicatedMergeTree = %q; want %q", got, want)
 	}

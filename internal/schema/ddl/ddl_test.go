@@ -192,11 +192,11 @@ func TestRenderSignal_CustomConfig(t *testing.T) {
 }
 
 // TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree pins the
-// prod-bug fix: a Replicated database does NOT auto-convert MergeTree, so
-// with DatabaseEngine.Replicated set and no explicit Engine, the tables must
-// render with an explicit ReplicatedMergeTree engine (the standard
-// /clickhouse/tables/{uuid}/{shard} / {replica} default) — never plain
-// MergeTree() — so the DATA actually replicates across replicas.
+// prod-bug fix: a Replicated database does NOT auto-convert MergeTree, so with
+// DatabaseEngine.Replicated set and no explicit Engine, the tables must render
+// with the BARE ReplicatedMergeTree engine — no (path, replica) args, which a
+// Replicated database rejects with code 36, and never plain MergeTree() — so
+// the DATA actually replicates across replicas.
 func TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree(t *testing.T) {
 	cfg := Config{
 		DatabaseEngine: DatabaseEngine{
@@ -205,7 +205,6 @@ func TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree(t *testing
 		},
 	}.withDefaults()
 
-	const wantEngine = "ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')"
 	for _, sig := range All {
 		stmts, err := renderSignal(cfg, sig)
 		if err != nil {
@@ -216,31 +215,17 @@ func TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree(t *testing
 			if sig == Traces && i == 2 {
 				continue
 			}
-			if !strings.Contains(stmt, wantEngine) {
-				t.Errorf("%s[%d]: want explicit %s in:\n%s", sig, i, wantEngine, stmt)
+			if !strings.Contains(stmt, "ReplicatedMergeTree") {
+				t.Errorf("%s[%d]: want bare ReplicatedMergeTree engine in:\n%s", sig, i, stmt)
+			}
+			// No explicit args: a Replicated database rejects
+			// ReplicatedMergeTree('...', '...') with code 36.
+			if strings.Contains(stmt, "ReplicatedMergeTree(") {
+				t.Errorf("%s[%d]: ReplicatedMergeTree must take NO args under a Replicated database:\n%s", sig, i, stmt)
 			}
 			if strings.Contains(stmt, "MergeTree()") {
 				t.Errorf("%s[%d]: plain MergeTree() must not render under a Replicated database:\n%s", sig, i, stmt)
 			}
-		}
-	}
-}
-
-// TestRenderSignal_ReplicatedTableCustomPath pins the override knobs: a
-// custom ReplicatedTablePath / ReplicatedTableReplica flows into the table
-// engine verbatim.
-func TestRenderSignal_ReplicatedTableCustomPath(t *testing.T) {
-	cfg := Config{
-		DatabaseEngine:         DatabaseEngine{Replicated: true, ReplicatedZooPath: "/clickhouse/databases/otel"},
-		ReplicatedTablePath:    "/clickhouse/custom/{shard}/{table}",
-		ReplicatedTableReplica: "rep-{replica}",
-	}.withDefaults()
-
-	const wantEngine = "ReplicatedMergeTree('/clickhouse/custom/{shard}/{table}', 'rep-{replica}')"
-	metrics, _ := renderSignal(cfg, Metrics)
-	for i, stmt := range metrics {
-		if !strings.Contains(stmt, wantEngine) {
-			t.Errorf("metrics[%d]: want custom %s in:\n%s", i, wantEngine, stmt)
 		}
 	}
 }

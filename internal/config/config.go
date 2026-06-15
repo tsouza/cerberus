@@ -152,24 +152,14 @@ type SchemaProvisioning struct {
 
 	// TableEngine (CERBERUS_SCHEMA_TABLE_ENGINE) overrides the table engine.
 	// Empty renders the upstream default `MergeTree()` — or, when
-	// DatabaseReplicated is set, an explicit
-	// `ReplicatedMergeTree(TableReplicatedPath, TableReplicatedReplica)`: a
-	// Replicated database does NOT auto-convert MergeTree to
-	// ReplicatedMergeTree, so the tables need the replicated engine to
-	// replicate their DATA. Set this only to pin a non-default engine; the
-	// replicated-default path is driven by DatabaseReplicated +
-	// TableReplicatedPath below.
+	// DatabaseReplicated is set, the bare `ReplicatedMergeTree` (no args): a
+	// Replicated database does NOT auto-convert MergeTree, so the tables need a
+	// replicated engine to replicate their DATA, and inside a Replicated
+	// database the engine's path/replica are supplied automatically (explicit
+	// args are rejected, code 36). Set this only to pin a non-default engine —
+	// e.g. a classic ON CLUSTER cluster needing an explicit
+	// `ReplicatedMergeTree('/path', '{replica}')`.
 	TableEngine string
-
-	// TableReplicatedPath / TableReplicatedReplica
-	// (CERBERUS_SCHEMA_TABLE_REPLICATED_PATH / _REPLICA) are the
-	// ReplicatedMergeTree arguments used for tables when DatabaseReplicated is
-	// set and TableEngine is empty. Empty falls back to the ClickHouse-standard
-	// `/clickhouse/tables/{uuid}/{shard}` / `{replica}` (the server expands the
-	// {uuid}/{shard}/{replica} macros), matching the default
-	// default_replica_path; override for a cluster with a different convention.
-	TableReplicatedPath    string
-	TableReplicatedReplica string
 
 	// TTL (CERBERUS_SCHEMA_TTL) is the DEFAULT retention applied to every
 	// signal's tables (e.g. `2160h` = 90 days). Zero (the default) leaves
@@ -190,9 +180,9 @@ type SchemaProvisioning struct {
 	// database with `ENGINE = Replicated(...)`. A Replicated database
 	// auto-replicates all DDL across replicas, so no ON CLUSTER clause is
 	// needed — but it does NOT auto-convert MergeTree tables to
-	// ReplicatedMergeTree, so cerberus emits an explicit ReplicatedMergeTree
-	// table engine (see TableReplicatedPath) to replicate the DATA. Requires
-	// DatabaseReplicatedPath.
+	// ReplicatedMergeTree, so cerberus emits a bare `ReplicatedMergeTree` table
+	// engine (no args — the database supplies the Keeper coordinates) to
+	// replicate the DATA. Requires DatabaseReplicatedPath.
 	DatabaseReplicated bool
 
 	// DatabaseReplicatedPath (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH) is
@@ -362,8 +352,6 @@ const (
 	envAutoCreateDatabase  = "CERBERUS_AUTO_CREATE_DATABASE"
 	envSchemaCluster       = "CERBERUS_SCHEMA_CLUSTER"
 	envSchemaTableEngine   = "CERBERUS_SCHEMA_TABLE_ENGINE"
-	envSchemaTableReplPath = "CERBERUS_SCHEMA_TABLE_REPLICATED_PATH"
-	envSchemaTableReplRepl = "CERBERUS_SCHEMA_TABLE_REPLICATED_REPLICA"
 	envSchemaTTL           = "CERBERUS_SCHEMA_TTL"
 	envSchemaTTLMetrics    = "CERBERUS_SCHEMA_TTL_METRICS"
 	envSchemaTTLLogs       = "CERBERUS_SCHEMA_TTL_LOGS"
@@ -453,13 +441,11 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_SCHEMA_CLUSTER        default "" — ON CLUSTER clause for auto-create
 //	    DDL (classic distributed-DDL clusters). Mutually exclusive with
 //	    CERBERUS_SCHEMA_DATABASE_REPLICATED.
-//	CERBERUS_SCHEMA_TABLE_ENGINE   default "" → MergeTree(), or an explicit
-//	    ReplicatedMergeTree(...) when CERBERUS_SCHEMA_DATABASE_REPLICATED=true
-//	    (a Replicated database does NOT auto-convert MergeTree); set only to
-//	    pin some other non-default engine
-//	CERBERUS_SCHEMA_TABLE_REPLICATED_PATH default "/clickhouse/tables/{uuid}/{shard}"
-//	    — ReplicatedMergeTree Keeper path used under a Replicated database
-//	CERBERUS_SCHEMA_TABLE_REPLICATED_REPLICA default "{replica}" server macro
+//	CERBERUS_SCHEMA_TABLE_ENGINE   default "" → MergeTree(), or the bare
+//	    ReplicatedMergeTree (no args) when CERBERUS_SCHEMA_DATABASE_REPLICATED=true
+//	    (a Replicated database does NOT auto-convert MergeTree, and explicit
+//	    engine args are rejected there); set only to pin some other non-default
+//	    engine — e.g. a classic ON CLUSTER ReplicatedMergeTree('/path','{replica}')
 //	CERBERUS_SCHEMA_TTL            default "0s" — global default retention for all
 //	    signals (no TTL clause when 0; e.g. "2160h" = 90d)
 //	CERBERUS_SCHEMA_TTL_METRICS   default inherits CERBERUS_SCHEMA_TTL; per-signal override
@@ -467,7 +453,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_SCHEMA_TTL_TRACES    default inherits CERBERUS_SCHEMA_TTL; per-signal override
 //	CERBERUS_SCHEMA_DATABASE_REPLICATED default "false" — create the database with
 //	    ENGINE = Replicated(...) so DDL auto-replicates across replicas (no ON
-//	    CLUSTER needed); cerberus emits explicit ReplicatedMergeTree tables to
+//	    CLUSTER needed); cerberus emits bare ReplicatedMergeTree tables to
 //	    replicate the DATA (a Replicated database does NOT auto-convert MergeTree)
 //	CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH default "" — Keeper path, required when
 //	    CERBERUS_SCHEMA_DATABASE_REPLICATED=true (e.g. "/clickhouse/databases/otel")
@@ -723,8 +709,6 @@ var allEnvKeys = []string{
 	envAutoCreateDatabase,
 	envSchemaCluster,
 	envSchemaTableEngine,
-	envSchemaTableReplPath,
-	envSchemaTableReplRepl,
 	envSchemaTTL,
 	envSchemaTTLMetrics,
 	envSchemaTTLLogs,
@@ -822,10 +806,10 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
 	// Schema-provisioning bool + duration knobs need a non-empty default so
 	// the getBool / getDuration parsers don't reject an unset value. The
-	// string knobs (cluster, table engine, database + table replicated
+	// string knobs (cluster, table engine, database replicated
 	// path/shard/replica) resolve "" via getString and need none —
-	// internal/schema/ddl supplies the /clickhouse/tables/{uuid}/{shard} +
-	// {shard}/{replica} macro fallbacks when the database is Replicated.
+	// internal/schema/ddl supplies the {shard}/{replica} macro fallbacks and
+	// the bare ReplicatedMergeTree engine when the database is Replicated.
 	v.SetDefault(envSchemaDBReplicated, defaultSchemaDBReplicated)
 	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
 	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
@@ -1465,8 +1449,6 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	return SchemaProvisioning{
 		Cluster:                   getString(v, envSchemaCluster),
 		TableEngine:               getString(v, envSchemaTableEngine),
-		TableReplicatedPath:       getString(v, envSchemaTableReplPath),
-		TableReplicatedReplica:    getString(v, envSchemaTableReplRepl),
 		TTL:                       ttl,
 		TTLMetrics:                ttlMetrics,
 		TTLLogs:                   ttlLogs,

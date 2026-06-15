@@ -101,24 +101,3 @@ func TestSchemaApplyConfig_ReplicatedThreaded(t *testing.T) {
 		t.Errorf("replicated engine not threaded: %+v", got.DatabaseEngine)
 	}
 }
-
-// TestSchemaApplyConfig_ReplicatedTablePathThreaded pins the ReplicatedMergeTree
-// table-engine knobs flow through to the ddl Config so a Replicated database
-// gets explicit ReplicatedMergeTree tables (a Replicated database does not
-// auto-convert MergeTree).
-func TestSchemaApplyConfig_ReplicatedTablePathThreaded(t *testing.T) {
-	cfg := config.Config{
-		SchemaProvisioning: config.SchemaProvisioning{
-			DatabaseReplicated:     true,
-			DatabaseReplicatedPath: "/clickhouse/databases/otel",
-			TableReplicatedPath:    "/clickhouse/custom/{shard}/{table}",
-			TableReplicatedReplica: "rep-{replica}",
-		},
-	}
-	got := schemaApplyConfig(cfg)
-	if got.ReplicatedTablePath != "/clickhouse/custom/{shard}/{table}" ||
-		got.ReplicatedTableReplica != "rep-{replica}" {
-		t.Errorf("table-replicated knobs not threaded: path=%q replica=%q",
-			got.ReplicatedTablePath, got.ReplicatedTableReplica)
-	}
-}
