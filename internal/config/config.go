@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/common/model"
 	"github.com/spf13/viper"
 	otellog "go.opentelemetry.io/otel/log"
 
@@ -1320,6 +1321,27 @@ func getDuration(v *viper.Viper, key string) (time.Duration, error) {
 	return d, nil
 }
 
+// getRetentionDuration resolves key as a retention duration using the
+// Prometheus/Grafana duration syntax operators already type for retention
+// windows — `90d`, `2w`, `1y`, as well as the `2160h` Go form. It is a
+// superset of getDuration (time.ParseDuration stops at hours), so existing
+// hour-based values keep working. Units d/w/y are fixed (d=24h, w=7d,
+// y=365d); calendar months/years are intentionally unsupported — they can't
+// round-trip through a time.Duration (see docs/configuration.md). Note the
+// Prometheus convention that compound values list units in descending order
+// (`1w2d` is valid, `2d1w` is not).
+func getRetentionDuration(v *viper.Viper, key string) (time.Duration, error) {
+	raw := getString(v, key)
+	if raw == "" {
+		return 0, fmt.Errorf("%s: missing value", key)
+	}
+	d, err := model.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return time.Duration(d), nil
+}
+
 // bootFlags groups the boolean boot-time toggles FromEnv resolves: the
 // auto-create-schema hook, the requirements preflight, and the experimental
 // native-rate path. Grouping them keeps the per-flag parse + fail-fast error
@@ -1363,19 +1385,19 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttl, err := getDuration(v, envSchemaTTL)
+	ttl, err := getRetentionDuration(v, envSchemaTTL)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlMetrics, err := getDuration(v, envSchemaTTLMetrics)
+	ttlMetrics, err := getRetentionDuration(v, envSchemaTTLMetrics)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlLogs, err := getDuration(v, envSchemaTTLLogs)
+	ttlLogs, err := getRetentionDuration(v, envSchemaTTLLogs)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlTraces, err := getDuration(v, envSchemaTTLTraces)
+	ttlTraces, err := getRetentionDuration(v, envSchemaTTLTraces)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
