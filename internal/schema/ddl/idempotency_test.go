@@ -415,7 +415,7 @@ func TestRenderSignal_ConcurrentRendersDoNotRace(t *testing.T) {
 // produces statements without a TTL keyword. Cerberus's default leaves
 // retention to the operator.
 func TestRenderSignal_TTLZeroSkipsTTLClause(t *testing.T) {
-	cfg := Config{TTL: 0}.withDefaults()
+	cfg := Config{TTL: TTL{}}.withDefaults()
 	for _, sig := range All {
 		stmts, _ := renderSignal(cfg, sig)
 		for i, stmt := range stmts {
@@ -436,7 +436,7 @@ func TestRenderSignal_TTLZeroSkipsTTLClause(t *testing.T) {
 // toDateTime(TimeUnix). A swap would silently render valid SQL against
 // the wrong column.
 func TestRenderSignal_TTLAppliesCorrectTimeFieldPerSignal(t *testing.T) {
-	cfg := Config{TTL: 24 * time.Hour}.withDefaults()
+	cfg := Config{TTL: TTL{Metrics: 24 * time.Hour, Logs: 24 * time.Hour, Traces: 24 * time.Hour}}.withDefaults()
 	logs, _ := renderSignal(cfg, Logs)
 	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalDay(1)") {
 		t.Errorf("logs TTL: missing toDateTime(Timestamp) field:\n%s", logs[0])

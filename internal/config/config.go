@@ -54,6 +54,16 @@ type Config struct {
 	// the flag on an already-populated ClickHouse is a no-op.
 	AutoCreateSchema bool
 
+	// SchemaProvisioning carries the DDL knobs the auto-create hook
+	// (CERBERUS_AUTO_CREATE_SCHEMA) uses when it creates the OTel schema.
+	// Every field is a no-op unless AutoCreateSchema is true. The zero value
+	// is cerberus's single-node shape: an Atomic database, MergeTree tables,
+	// no ON CLUSTER, no TTL. The table names are NOT here — auto-create
+	// reuses the same Schema / Logs / Traces table names the query heads
+	// read, so a CERBERUS_SCHEMA_*_TABLE override creates and reads the same
+	// table.
+	SchemaProvisioning SchemaProvisioning
+
 	// RequirementsCheck, when true (the default), runs the boot-time
 	// requirements check after the schema-create step: it inspects the
 	// connected ClickHouse server version against the config-derived
@@ -111,6 +121,62 @@ type Config struct {
 	// are rejected with HTTP 503 + Retry-After: 1 so well-behaved
 	// clients back off and CH stays out of overload.
 	Admit AdmitConfig
+}
+
+// SchemaProvisioning carries the DDL-shaping knobs the auto-create hook
+// applies when CERBERUS_AUTO_CREATE_SCHEMA=true. They mirror the typed
+// internal/schema/ddl Config surface; the zero value is the single-node
+// shape cerberus ships by default (Atomic database, MergeTree tables, no
+// cluster, no TTL).
+type SchemaProvisioning struct {
+	// Cluster (CERBERUS_SCHEMA_CLUSTER) renders an ON CLUSTER clause into
+	// every CREATE statement — the classic distributed-DDL model. Mutually
+	// exclusive with DatabaseReplicated (a Replicated database replicates
+	// DDL itself); leave it empty for a single-node or Replicated-database
+	// deployment.
+	Cluster string
+
+	// TableEngine (CERBERUS_SCHEMA_TABLE_ENGINE) overrides the table engine.
+	// Empty renders the upstream default `MergeTree()`. Inside a Replicated
+	// database the plain default is correct — ClickHouse auto-converts it to
+	// ReplicatedMergeTree — so this is only for classic ON CLUSTER clusters
+	// that need an explicit `ReplicatedMergeTree(<zoo>, <replica>)`.
+	TableEngine string
+
+	// TTL (CERBERUS_SCHEMA_TTL) is the DEFAULT retention applied to every
+	// signal's tables (e.g. `2160h` = 90 days). Zero (the default) leaves
+	// retention to the operator — no TTL clause is emitted. The per-signal
+	// overrides below take precedence when set.
+	TTL time.Duration
+
+	// TTLMetrics / TTLLogs / TTLTraces (CERBERUS_SCHEMA_TTL_METRICS / _LOGS /
+	// _TRACES) override TTL for a single signal. Observability retention is
+	// conventionally per-signal — logs are voluminous and short-lived,
+	// metrics long-lived — so each signal can diverge from the global
+	// default. A zero value inherits TTL; a non-zero value overrides it.
+	TTLMetrics time.Duration
+	TTLLogs    time.Duration
+	TTLTraces  time.Duration
+
+	// DatabaseReplicated (CERBERUS_SCHEMA_DATABASE_REPLICATED) creates the
+	// database with `ENGINE = Replicated(...)`. A Replicated database
+	// auto-replicates all DDL across replicas and auto-converts MergeTree
+	// tables to ReplicatedMergeTree, so no ON CLUSTER / explicit replicated
+	// table engine is needed. Requires DatabaseReplicatedPath.
+	DatabaseReplicated bool
+
+	// DatabaseReplicatedPath (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH) is
+	// the ZooKeeper/Keeper path the Replicated engine coordinates on, e.g.
+	// `/clickhouse/databases/otel`. Required when DatabaseReplicated is true.
+	DatabaseReplicatedPath string
+
+	// DatabaseReplicatedShard / DatabaseReplicatedReplica
+	// (CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD / _REPLICA) name the shard
+	// and replica the engine identifies this node by. Empty falls back to
+	// the ClickHouse server macros `{shard}` / `{replica}` (the conventional
+	// cluster setup), resolved in internal/schema/ddl.
+	DatabaseReplicatedShard   string
+	DatabaseReplicatedReplica string
 }
 
 // AdmitConfig holds the per-handler concurrency cap knobs.
@@ -263,6 +329,16 @@ const (
 	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
 	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envSchemaCluster       = "CERBERUS_SCHEMA_CLUSTER"
+	envSchemaTableEngine   = "CERBERUS_SCHEMA_TABLE_ENGINE"
+	envSchemaTTL           = "CERBERUS_SCHEMA_TTL"
+	envSchemaTTLMetrics    = "CERBERUS_SCHEMA_TTL_METRICS"
+	envSchemaTTLLogs       = "CERBERUS_SCHEMA_TTL_LOGS"
+	envSchemaTTLTraces     = "CERBERUS_SCHEMA_TTL_TRACES"
+	envSchemaDBReplicated  = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
+	envSchemaDBReplPath    = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
+	envSchemaDBReplShard   = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
+	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
 	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
@@ -338,6 +414,23 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_HTTP_MAX_HEADER_BYTES default 0 (0 → Go's 1 MiB default)
 //	CERBERUS_LOKI_TAIL_WRITE_TIMEOUT default "10s" (single /tail WebSocket write bound; > 0)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
+//	CERBERUS_SCHEMA_CLUSTER        default "" — ON CLUSTER clause for auto-create
+//	    DDL (classic distributed-DDL clusters). Mutually exclusive with
+//	    CERBERUS_SCHEMA_DATABASE_REPLICATED.
+//	CERBERUS_SCHEMA_TABLE_ENGINE   default "" → MergeTree(); override only for a
+//	    classic ON CLUSTER cluster needing an explicit ReplicatedMergeTree(...)
+//	CERBERUS_SCHEMA_TTL            default "0s" — global default retention for all
+//	    signals (no TTL clause when 0; e.g. "2160h" = 90d)
+//	CERBERUS_SCHEMA_TTL_METRICS   default inherits CERBERUS_SCHEMA_TTL; per-signal override
+//	CERBERUS_SCHEMA_TTL_LOGS      default inherits CERBERUS_SCHEMA_TTL; per-signal override
+//	CERBERUS_SCHEMA_TTL_TRACES    default inherits CERBERUS_SCHEMA_TTL; per-signal override
+//	CERBERUS_SCHEMA_DATABASE_REPLICATED default "false" — create the database with
+//	    ENGINE = Replicated(...) so DDL auto-replicates and MergeTree tables
+//	    auto-convert to ReplicatedMergeTree (no ON CLUSTER needed)
+//	CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH default "" — Keeper path, required when
+//	    CERBERUS_SCHEMA_DATABASE_REPLICATED=true (e.g. "/clickhouse/databases/otel")
+//	CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD   default "{shard}" server macro
+//	CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA default "{replica}" server macro
 //	CERBERUS_REQUIREMENTS_CHECK     default "true" — run the boot-time
 //	    requirements check (CH server version >= the config-derived minimum
 //	    AND deployed schema shape) AFTER the schema-create step; any unmet
@@ -379,15 +472,11 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	autoCreate, err := getBool(v, envAutoCreateSchema)
+	flags, err := bootFlagsFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
-	requirementsCheck, err := getBool(v, envRequirementsCheck)
-	if err != nil {
-		return Config{}, err
-	}
-	tsGridRange, err := getBool(v, envExperimentalTSGrid)
+	schemaProvisioning, err := schemaProvisioningFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -528,9 +617,10 @@ func FromEnv() (Config, error) {
 		Schema:                  schema.DefaultOTelMetricsFromEnv(),
 		Logs:                    schema.DefaultOTelLogsFromEnv(),
 		Traces:                  schema.DefaultOTelTracesFromEnv(),
-		AutoCreateSchema:        autoCreate,
-		RequirementsCheck:       requirementsCheck,
-		ExperimentalTSGridRange: tsGridRange,
+		AutoCreateSchema:        flags.AutoCreate,
+		SchemaProvisioning:      schemaProvisioning,
+		RequirementsCheck:       flags.RequirementsCheck,
+		ExperimentalTSGridRange: flags.TSGridRange,
 		Log:                     logCfg,
 		OTLP:                    otlp,
 		Admit:                   admit,
@@ -587,6 +677,16 @@ var allEnvKeys = []string{
 	envHTTPMaxHeaderBytes,
 	envLokiTailWriteTO,
 	envAutoCreateSchema,
+	envSchemaCluster,
+	envSchemaTableEngine,
+	envSchemaTTL,
+	envSchemaTTLMetrics,
+	envSchemaTTLLogs,
+	envSchemaTTLTraces,
+	envSchemaDBReplicated,
+	envSchemaDBReplPath,
+	envSchemaDBReplShard,
+	envSchemaDBReplReplica,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
 	envLogFormat,
@@ -674,6 +774,16 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envHTTPMaxHeaderBytes, defaultHTTPMaxHeaderBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
+	// Schema-provisioning bool + duration knobs need a non-empty default so
+	// the getBool / getDuration parsers don't reject an unset value. The
+	// string knobs (cluster, table engine, replicated path/shard/replica)
+	// resolve "" via getString and need none — internal/schema/ddl supplies
+	// the {shard}/{replica} macro fallbacks when the database is Replicated.
+	v.SetDefault(envSchemaDBReplicated, defaultSchemaDBReplicated)
+	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogFormat, defaultLogFormat)
@@ -718,6 +828,8 @@ const (
 	defaultCHUsername         = "default"
 	defaultCHPassword         = ""
 	defaultAutoCreateSchema   = false
+	defaultSchemaDBReplicated = false
+	defaultSchemaTTL          = "0s"
 	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
 	defaultLogFormat          = "text"
@@ -1206,6 +1318,79 @@ func getDuration(v *viper.Viper, key string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return d, nil
+}
+
+// bootFlags groups the boolean boot-time toggles FromEnv resolves: the
+// auto-create-schema hook, the requirements preflight, and the experimental
+// native-rate path. Grouping them keeps the per-flag parse + fail-fast error
+// checks out of FromEnv's body.
+type bootFlags struct {
+	AutoCreate        bool
+	RequirementsCheck bool
+	TSGridRange       bool
+}
+
+// bootFlagsFromEnv parses the three boolean boot toggles, failing fast on a
+// malformed value exactly as the inline parses did.
+func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
+	autoCreate, err := getBool(v, envAutoCreateSchema)
+	if err != nil {
+		return bootFlags{}, err
+	}
+	requirementsCheck, err := getBool(v, envRequirementsCheck)
+	if err != nil {
+		return bootFlags{}, err
+	}
+	tsGridRange, err := getBool(v, envExperimentalTSGrid)
+	if err != nil {
+		return bootFlags{}, err
+	}
+	return bootFlags{
+		AutoCreate:        autoCreate,
+		RequirementsCheck: requirementsCheck,
+		TSGridRange:       tsGridRange,
+	}, nil
+}
+
+// schemaProvisioningFromEnv parses the CERBERUS_SCHEMA_* auto-create knobs
+// into a SchemaProvisioning. Extracted from FromEnv so the boolean +
+// duration parses (each fail-fast on a malformed value) live in one place
+// rather than inflating FromEnv's branch count. The string knobs resolve via
+// getString (empty is valid); internal/schema/ddl supplies the
+// {shard}/{replica} macro fallbacks when the database is Replicated.
+func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
+	replicated, err := getBool(v, envSchemaDBReplicated)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	ttl, err := getDuration(v, envSchemaTTL)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	ttlMetrics, err := getDuration(v, envSchemaTTLMetrics)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	ttlLogs, err := getDuration(v, envSchemaTTLLogs)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	ttlTraces, err := getDuration(v, envSchemaTTLTraces)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	return SchemaProvisioning{
+		Cluster:                   getString(v, envSchemaCluster),
+		TableEngine:               getString(v, envSchemaTableEngine),
+		TTL:                       ttl,
+		TTLMetrics:                ttlMetrics,
+		TTLLogs:                   ttlLogs,
+		TTLTraces:                 ttlTraces,
+		DatabaseReplicated:        replicated,
+		DatabaseReplicatedPath:    getString(v, envSchemaDBReplPath),
+		DatabaseReplicatedShard:   getString(v, envSchemaDBReplShard),
+		DatabaseReplicatedReplica: getString(v, envSchemaDBReplReplica),
+	}, nil
 }
 
 // envLog parses CERBERUS_LOG_FORMAT + CERBERUS_LOG_LEVEL from the viper

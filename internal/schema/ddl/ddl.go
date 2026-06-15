@@ -62,9 +62,12 @@ type Config struct {
 	// "MergeTree()" — matches the upstream exporter default.
 	Engine string
 
-	// TTL, when non-zero, renders a `TTL <timeField> + toIntervalXxx(N)`
-	// clause into each template. Cerberus leaves TTL to the operator.
-	TTL time.Duration
+	// TTL sets per-signal retention on the created tables — a zero duration
+	// for a signal emits no TTL clause (operator-managed retention).
+	// Retention is conventionally keyed on the signal (logs short, metrics
+	// long), not the individual table, so the five metrics tables share
+	// TTL.Metrics and the spans + lookup tables share TTL.Traces. See TTL.
+	TTL TTL
 
 	// DatabaseEngine selects the ClickHouse engine for the CREATE DATABASE
 	// statement. The zero value emits no ENGINE clause (server default
@@ -106,6 +109,25 @@ type DatabaseEngine struct {
 	// the conventional cluster setup, so most operators leave them unset.
 	ReplicatedShard   string
 	ReplicatedReplica string
+}
+
+// TTL carries per-signal retention durations for the auto-created tables.
+// A zero duration leaves that signal's tables with no TTL clause. Retention
+// is keyed on the signal rather than the individual table because that is
+// how observability retention is actually set — logs are voluminous and
+// short-lived, metrics are long-lived — and the tables within a signal
+// (the five metrics tables; the traces spans + trace_id_ts lookup) share a
+// lifecycle. An operator needing genuinely per-table retention runs the DDL
+// themselves instead of via the auto-create hook.
+type TTL struct {
+	// Metrics applies to the five metrics tables (retention keyed on the
+	// TimeUnix column).
+	Metrics time.Duration
+	// Logs applies to the logs table (keyed on Timestamp).
+	Logs time.Duration
+	// Traces applies to the spans table (keyed on Timestamp) and the
+	// trace_id_ts lookup table (keyed on Start).
+	Traces time.Duration
 }
 
 // Tables overrides the per-signal table name used when rendering each
@@ -201,13 +223,13 @@ func (c Config) clusterClause() string {
 
 // ttlExpr renders the optional `TTL toDateTime(<column>) + toIntervalXxx(N)`
 // fragment that upstream templates expect as one slot per signal, or ""
-// when no TTL is configured. column is the bare time column retention
-// keys on — Metrics use TimeUnix, Logs and Traces spans use Timestamp,
-// the traces lookup uses Start. Built via the typed chsql.TableTTL
-// constructor (Add(Call(toDateTime, …), Call(toIntervalXxx, …))), which
-// reproduces upstream's `internal.GenerateTTLExpr` shape byte-for-byte.
-func (c Config) ttlExpr(column string) string {
-	frag := chsql.TableTTL(column, c.TTL)
+// when ttl <= 0. column is the bare time column retention keys on — Metrics
+// use TimeUnix, Logs and Traces spans use Timestamp, the traces lookup uses
+// Start. Built via the typed chsql.TableTTL constructor (Add(Call(toDateTime,
+// …), Call(toIntervalXxx, …))), which reproduces upstream's
+// `internal.GenerateTTLExpr` shape byte-for-byte.
+func ttlExpr(column string, ttl time.Duration) string {
+	frag := chsql.TableTTL(column, ttl)
 	if frag == nil {
 		return ""
 	}
@@ -314,7 +336,7 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 func renderSignal(cfg Config, s Signal) ([]string, error) {
 	switch s {
 	case Metrics:
-		ttl := cfg.ttlExpr("TimeUnix")
+		ttl := ttlExpr("TimeUnix", cfg.TTL.Metrics)
 		return []string{
 			renderMetricsTable(sqltemplates.MetricsGaugeCreateTable, cfg, cfg.Tables.MetricsGauge, ttl),
 			renderMetricsTable(sqltemplates.MetricsSumCreateTable, cfg, cfg.Tables.MetricsSum, ttl),
@@ -361,7 +383,7 @@ func renderLogsTable(cfg Config) (string, error) {
 		TableName:         cfg.Tables.Logs,
 		ClusterString:     cfg.clusterClause(),
 		Engine:            cfg.Engine,
-		TTL:               cfg.ttlExpr("Timestamp"),
+		TTL:               ttlExpr("Timestamp", cfg.TTL.Logs),
 		HasFullTextSearch: false,
 	}
 	var buf strings.Builder
@@ -379,7 +401,7 @@ func renderTracesTable(cfg Config) string {
 		sqltemplates.TracesCreateTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
-		cfg.ttlExpr("Timestamp"),
+		ttlExpr("Timestamp", cfg.TTL.Traces),
 	)
 }
 
@@ -393,7 +415,7 @@ func renderTracesCreateTsTable(cfg Config) string {
 		sqltemplates.TracesCreateTsTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
-		cfg.ttlExpr("Start"),
+		ttlExpr("Start", cfg.TTL.Traces),
 	)
 }
 
