@@ -834,6 +834,66 @@ export function isSupersededDsQueryFailure(
 }
 
 // ---------------------------------------------------------------------------
+// app-init-race reconciliation: dangling-operand TraceQL
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches a TraceQL spanset whose boolean filter has a DANGLING /
+ * EMPTY operand around `&&` / `||` — i.e. a `{` followed immediately
+ * by a binary operator (empty left operand: `{ && true}`), or a
+ * binary operator immediately followed by the closing `}` (empty
+ * right operand: `{true && }`), or two adjacent operators (`{a && &&
+ * b}`). This is a SYNTAX ERROR, not a value-level filter: TraceQL's
+ * grammar requires a non-empty operand on each side of `&&` / `||`,
+ * so cerberus's parser (and reference Tempo's identical grammar)
+ * rejects it with `syntax error: unexpected &&` (HTTP 400).
+ *
+ * The shape is produced by the Grafana Traces Drilldown app
+ * (grafana-exploretraces-app), NOT by cerberus. The app's
+ * `PrimarySignalVariable` (a Scenes CustomVariable) applies its
+ * default value inside the component's `useEffect`, not in its
+ * constructor — so during the initial-load / rapid-navigation window,
+ * before that effect fires, the `${primarySignal}` interpolation is
+ * EMPTY and the app builds `{ && ${filters}} | rate()` (and the
+ * errors / duration variants). The instant the effect resolves the
+ * default, the app re-fires the well-formed query; the user only ever
+ * sees the settled result. See
+ * src/pages/Explore/PrimarySignalVariable.tsx in
+ * grafana/traces-drilldown.
+ */
+const DANGLING_TRACEQL_OPERAND =
+  /\{\s*(?:&&|\|\|)|(?:&&|\|\|)\s*\}|(?:&&|\|\|)\s*(?:&&|\|\|)/;
+
+/**
+ * True iff `resp` is a non-2xx Tempo ds/query whose EVERY forwarded
+ * TraceQL query carries a dangling-operand spanset (see
+ * DANGLING_TRACEQL_OPERAND) — the Traces Drilldown app's
+ * primarySignal-init-race shape. cerberus correctly 400s these
+ * (reference Tempo rejects the identical syntax-error), so they are a
+ * transient app-side artifact, not a cerberus fault.
+ *
+ * This is NOT the supersession reconciler's twin: the malformed query
+ * has a DIFFERENT expr than the settled one, so it never shares a
+ * signature with a 2xx sibling and `isSupersededDsQueryFailure` can't
+ * resolve it. It is also NOT a blanket 400 suppressor — a non-2xx
+ * carrying any well-formed query still fails loudly; only the specific
+ * dangling-`&&`/`||` syntax shape the app's known init race emits is
+ * reconciled, and ALL queries in the request must exhibit it (a mixed
+ * request with one well-formed query is a genuine failure).
+ */
+export function isTransientMalformedTraceQLFailure(
+  resp: DsResponseView,
+): boolean {
+  if (!resp.url.includes('/api/ds/query')) return false;
+  if (resp.status >= 200 && resp.status <= 299) return false;
+  const dsType = new URL(resp.url, 'http://x').searchParams.get('ds_type');
+  if (dsType !== 'tempo') return false;
+  const exprs = [...refIdToExpr(resp.requestBody).values()];
+  if (exprs.length === 0) return false;
+  return exprs.every((expr) => DANGLING_TRACEQL_OPERAND.test(expr));
+}
+
+// ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------
 
