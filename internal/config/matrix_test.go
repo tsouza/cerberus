@@ -12,7 +12,6 @@ import (
 func TestFromEnv_SchemaProvisioning_Defaults(t *testing.T) {
 	for _, k := range []string{
 		"CERBERUS_SCHEMA_CLUSTER", "CERBERUS_SCHEMA_TABLE_ENGINE", "CERBERUS_SCHEMA_TTL",
-		"CERBERUS_SCHEMA_TABLE_REPLICATED_PATH", "CERBERUS_SCHEMA_TABLE_REPLICATED_REPLICA",
 		"CERBERUS_SCHEMA_TTL_METRICS", "CERBERUS_SCHEMA_TTL_LOGS", "CERBERUS_SCHEMA_TTL_TRACES",
 		"CERBERUS_SCHEMA_DATABASE_REPLICATED", "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH",
 		"CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD", "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA",
@@ -26,8 +25,7 @@ func TestFromEnv_SchemaProvisioning_Defaults(t *testing.T) {
 	p := cfg.SchemaProvisioning
 	if p.Cluster != "" || p.TableEngine != "" || p.DatabaseReplicated ||
 		p.TTL != 0 || p.TTLMetrics != 0 || p.TTLLogs != 0 || p.TTLTraces != 0 ||
-		p.DatabaseReplicatedPath != "" ||
-		p.TableReplicatedPath != "" || p.TableReplicatedReplica != "" {
+		p.DatabaseReplicatedPath != "" {
 		t.Errorf("schema provisioning defaults not zero: %+v", p)
 	}
 }
@@ -44,8 +42,6 @@ func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
 	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH", "/clickhouse/databases/otel")
 	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD", "shard0")
 	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA", "replica0")
-	t.Setenv("CERBERUS_SCHEMA_TABLE_REPLICATED_PATH", "/clickhouse/custom/{shard}/{table}")
-	t.Setenv("CERBERUS_SCHEMA_TABLE_REPLICATED_REPLICA", "rep-{replica}")
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -67,10 +63,6 @@ func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
 	if !p.DatabaseReplicated || p.DatabaseReplicatedPath != "/clickhouse/databases/otel" ||
 		p.DatabaseReplicatedShard != "shard0" || p.DatabaseReplicatedReplica != "replica0" {
 		t.Errorf("replicated knobs not parsed: %+v", p)
-	}
-	if p.TableReplicatedPath != "/clickhouse/custom/{shard}/{table}" ||
-		p.TableReplicatedReplica != "rep-{replica}" {
-		t.Errorf("table-replicated knobs not parsed: %+v", p)
 	}
 }
 

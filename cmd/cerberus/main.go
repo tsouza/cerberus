@@ -448,11 +448,9 @@ func schemaApplyConfig(cfg config.Config) ddl.Config {
 		return p.TTL
 	}
 	return ddl.Config{
-		Database:               cfg.ClickHouse.Database,
-		Cluster:                p.Cluster,
-		Engine:                 p.TableEngine,
-		ReplicatedTablePath:    p.TableReplicatedPath,
-		ReplicatedTableReplica: p.TableReplicatedReplica,
+		Database: cfg.ClickHouse.Database,
+		Cluster:  p.Cluster,
+		Engine:   p.TableEngine,
 		TTL: ddl.TTL{
 			Metrics: signalTTL(p.TTLMetrics),
 			Logs:    signalTTL(p.TTLLogs),

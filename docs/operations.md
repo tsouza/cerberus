@@ -376,14 +376,18 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
   database). A Replicated database does **not**, however, auto-convert
   `MergeTree` tables to `ReplicatedMergeTree`: replicated *DDL* gives each
   replica an independent table, but only a `ReplicatedMergeTree` engine
-  replicates the *DATA*. So cerberus emits explicit
-  `ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`
-  tables by default whenever the database is Replicated — the
-  `{uuid}`/`{shard}`/`{replica}` server macros do the rest, and you leave
-  `CERBERUS_SCHEMA_TABLE_ENGINE` unset. Override the Keeper path convention
-  with `CERBERUS_SCHEMA_TABLE_REPLICATED_PATH` /
-  `CERBERUS_SCHEMA_TABLE_REPLICATED_REPLICA` only if your cluster's
-  `default_replica_path` differs from the standard.
+  replicates the *DATA*. So cerberus emits **bare `ReplicatedMergeTree`**
+  tables (no engine arguments) by default whenever the database is Replicated,
+  and you leave `CERBERUS_SCHEMA_TABLE_ENGINE` unset. The args are omitted on
+  purpose: inside a Replicated database the engine's Keeper path and replica
+  are supplied automatically (from the database's own `Replicated(...)`
+  coordinates plus the server's `default_replica_path` /
+  `default_replica_name`), and ClickHouse 24.8+ **rejects** an explicit
+  `ReplicatedMergeTree('/path', '{replica}')` there with `code 36`
+  (`database_replicated_allow_replicated_engine_arguments` defaults to `0`).
+  Verify the data is genuinely replicated after deploy with
+  `SELECT count() FROM system.replicas WHERE database = '<db>'` — it must be
+  `> 0`.
 - **Classic `ON CLUSTER` cluster.** Set `CERBERUS_SCHEMA_CLUSTER=<name>` and,
   if the engine isn't replicated by the cluster default, an explicit
   `CERBERUS_SCHEMA_TABLE_ENGINE=ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`.

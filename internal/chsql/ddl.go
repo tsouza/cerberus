@@ -47,18 +47,24 @@ func DatabaseEngineReplicated(zooPath, shard, replica string) Frag {
 	return Call("Replicated", InlineLit(zooPath), InlineLit(shard), InlineLit(replica))
 }
 
-// EngineReplicatedMergeTree returns
-// `ReplicatedMergeTree('<zooPath>', '<replica>')` — the replicated table
-// engine whose DATA replicates across replicas via Keeper. Inside a
-// Replicated database the table DDL is replicated either way, but only a
-// ReplicatedMergeTree engine shares the actual rows; a plain MergeTree leaves
-// each replica with an independent copy. zooPath and replica are single-quoted
-// CH string literals; pass the ClickHouse-standard
-// "/clickhouse/tables/{uuid}/{shard}" / "{replica}" (the server expands the
-// {uuid}/{shard}/{replica} macros), or whatever the cluster's
-// default_replica_path convention is.
-func EngineReplicatedMergeTree(zooPath, replica string) Frag {
-	return Call("ReplicatedMergeTree", InlineLit(zooPath), InlineLit(replica))
+// EngineReplicatedMergeTree returns the BARE `ReplicatedMergeTree` table
+// engine clause — no positional arguments. This is the form required for the
+// tables of a Replicated database: the database's own
+// Replicated('<path>', '{shard}', '{replica}') coordinates plus the server's
+// default_replica_path / default_replica_name supply the Keeper path and
+// replica name automatically, so the engine needs no args. ClickHouse 24.8+
+// REJECTS explicit (path, replica) arguments inside a Replicated database with
+// code 36 (database_replicated_allow_replicated_engine_arguments defaults to
+// 0), which is exactly why the args must be omitted. Only a ReplicatedMergeTree
+// engine replicates the table DATA — a plain MergeTree leaves each replica with
+// an independent copy — so this is what cerberus emits for a Replicated DB.
+//
+// A classic ON CLUSTER deployment that instead needs an explicit
+// `ReplicatedMergeTree('/path', '{replica}')` (no Replicated database to supply
+// the coordinates) passes the full engine string through the operator-facing
+// CERBERUS_SCHEMA_TABLE_ENGINE knob — cerberus does not compose that shape.
+func EngineReplicatedMergeTree() Frag {
+	return BareIdent("ReplicatedMergeTree")
 }
 
 // ttlInterval picks the coarsest exact ClickHouse interval bucket for d:

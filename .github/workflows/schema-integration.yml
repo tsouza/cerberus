@@ -1,0 +1,109 @@
+name: schema-integration
+
+# Schema-provisioning integration lane: runs internal/schema/ddl's
+# `integration`-tagged tests against a REAL ClickHouse (spun up via
+# testcontainers-go), exercising the DDL cerberus's AUTO_CREATE_SCHEMA hook
+# emits end to end — CREATE DATABASE + every signal's CREATE TABLE actually
+# executed and accepted by the server, not just string-asserted.
+#
+# Why this lane exists: the required PR gates (`check` / `lint` / `forbid-skip`)
+# and the chDB lanes assert on RENDERED SQL strings or run against the embedded
+# single-node chDB engine. Neither can observe whether the emitted DDL is
+# ACCEPTED by a real ClickHouse, nor whether a Replicated database actually
+# replicates DATA (system.replicas). Three production bugs shipped through that
+# blind spot in a row — rc.2 (a Replicated database left its tables plain
+# MergeTree, never replicating), rc.3 (the fix emitted ReplicatedMergeTree WITH
+# explicit args, which a strict cluster rejects with code 36), and the cold-DB
+# bootstrap. The unit tests "passed" each time because they asserted the
+# then-current (buggy) emitted string. This lane closes that gap: it runs
+# `ApplyWithConfig` against a real server (incl. a Replicated database backed by
+# an embedded Keeper) and asserts the DDL is accepted and the tables register in
+# system.replicas — see internal/schema/ddl/ddl_replicated_integration_test.go.
+#
+# INFORMATIONAL, not a required PR gate (yet): it pulls ClickHouse images and
+# starts containers, so it is in the heavier / slower-to-warm category alongside
+# e2e + dashboard. It runs on PRs for author-time visibility and on push-to-main
+# + nightly to catch drift. Promote to a required status check once it has a
+# track record of green stability (the same playbook used for the compatibility
+# gate flip) — that promotion needs a branch-protection edit by the maintainer.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # nightly at 04:30 UTC (offset from the chdb lane's 04:00)
+    - cron: '30 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schema-integration-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Docs-only PRs short-circuit the Docker work. See ci.yml / chdb.yml for the
+  # `every` predicate-quantifier rationale.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  schema-ddl:
+    name: schema-ddl
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    # Generous: the suite pulls two ClickHouse images (24.8 + 25.8 alpine) and
+    # starts a container per test, including a Keeper-backed Replicated case.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Run schema/ddl integration tests (real ClickHouse)
+        run: just schema-ddl-test
