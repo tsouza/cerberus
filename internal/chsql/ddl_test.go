@@ -113,21 +113,31 @@ func TestCreateDatabase(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sql, args := tc.stmt.Build()
-			if sql != tc.want {
-				t.Errorf("Build() sql = %q; want %q", sql, tc.want)
-			}
-			if len(args) != 0 {
-				t.Errorf("Build() args = %v; want none (DDL has no bindings)", args)
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestCreateDatabase_Subqueryable confirms the builder satisfies the
-// Subqueryable contract (Build) so it composes uniformly with the rest of
-// the chsql surface, even though a DDL statement is never used as a
-// subquery in practice.
-func TestCreateDatabase_Subqueryable(t *testing.T) {
-	var _ Subqueryable = CreateDatabase("otel")
+// TestRenderDDL_PanicsOnBoundArg locks the DDL no-bindings invariant: a
+// fragment that binds a positional `?` (here via Lit) must panic rather
+// than silently drop the binding and emit an unfillable `?` into the DDL.
+// This is what makes the DDL render path safe to return a bare string.
+func TestRenderDDL_PanicsOnBoundArg(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("RenderDDL must panic when the fragment binds positional args")
+		}
+	}()
+	_ = RenderDDL(Lit(5)) // Lit emits a `?` and binds 5 — illegal in DDL
+}
+
+// TestRenderDDL_InlineValuesOK confirms the legitimate DDL path: inline
+// values (InlineLit / Call) bind nothing, so RenderDDL returns the text
+// without panicking.
+func TestRenderDDL_InlineValuesOK(t *testing.T) {
+	if got := RenderDDL(Call("toIntervalDay", InlineLit(int64(2)))); got != "toIntervalDay(2)" {
+		t.Errorf("RenderDDL = %q; want toIntervalDay(2)", got)
+	}
 }

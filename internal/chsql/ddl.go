@@ -86,10 +86,9 @@ func TableTTL(column string, d time.Duration) Frag {
 
 // CreateDatabaseBuilder builds a `CREATE DATABASE` statement. Construct
 // via CreateDatabase, chain IfNotExists / OnCluster / Engine, and
-// terminate with Build (which satisfies Subqueryable for symmetry with
-// QueryBuilder, though a DDL statement is never used as a subquery). DDL
-// carries no positional `?` bindings, so Build's argument slice is always
-// nil.
+// terminate with SQL. DDL carries no positional `?` bindings, so SQL
+// returns just the statement text (it renders via RenderDDL, which
+// enforces the no-bindings invariant).
 type CreateDatabaseBuilder struct {
 	name        string
 	ifNotExists bool
@@ -148,7 +147,28 @@ func (c *CreateDatabaseBuilder) frag() Frag {
 	}
 }
 
-// Build renders the statement and its (always nil) argument slice.
-func (c *CreateDatabaseBuilder) Build() (string, []any) {
-	return Render(c.frag())
+// SQL renders the statement to its ClickHouse text. There is no args slice
+// to return — a CREATE DATABASE statement binds no positional `?` values —
+// so SQL renders through RenderDDL, which asserts that invariant rather
+// than letting a stray binding be silently dropped.
+func (c *CreateDatabaseBuilder) SQL() string {
+	return RenderDDL(c.frag())
+}
+
+// RenderDDL renders a DDL Frag to its ClickHouse text. Unlike a query, a
+// DDL statement carries NO positional `?` bindings: every value is part of
+// the statement shape, emitted inline via Ident / InlineLit / Call, never
+// bound with Lit / Arg. RenderDDL enforces that — it panics if the fragment
+// bound any args, since a `?` placeholder in DDL would reach conn.Exec with
+// nothing to fill it (broken SQL). Surfacing it as a panic at render time
+// turns a silent footgun into an immediate test failure, the same
+// fail-at-test-time stance as InlineLit's unsupported-type panic. (Render
+// returns (sql, args) — the second value is the bindings slice, never an
+// error; RenderDDL is the DDL-shaped terminator that asserts it's empty.)
+func RenderDDL(f Frag) string {
+	sql, args := Render(f)
+	if len(args) != 0 {
+		panic("chsql: DDL fragment bound positional args (Lit/Arg); DDL values must be inline (InlineLit/Ident/Call)")
+	}
+	return sql
 }

@@ -196,8 +196,7 @@ func (c Config) clusterClause() string {
 	if c.Cluster == "" {
 		return ""
 	}
-	sql, _ := chsql.Render(chsql.OnCluster(c.Cluster))
-	return sql
+	return chsql.RenderDDL(chsql.OnCluster(c.Cluster))
 }
 
 // ttlExpr renders the optional `TTL toDateTime(<column>) + toIntervalXxx(N)`
@@ -212,8 +211,7 @@ func (c Config) ttlExpr(column string) string {
 	if frag == nil {
 		return ""
 	}
-	sql, _ := chsql.Render(frag)
-	return sql
+	return chsql.RenderDDL(frag)
 }
 
 // Apply ensures the configured database exists, then runs CREATE TABLE IF
@@ -290,8 +288,7 @@ func renderCreateDatabase(cfg Config) string {
 			cfg.DatabaseEngine.ReplicatedReplica,
 		))
 	}
-	sql, _ := stmt.Build()
-	return sql
+	return stmt.SQL()
 }
 
 // applySignal renders + executes the DDL statements for one signal.
