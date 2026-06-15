@@ -130,6 +130,7 @@ import {
   harvestLinks,
   inventoryPath,
   isSupersededDsQueryFailure,
+  isTransientMalformedTraceQLFailure,
   loadExclusions,
   loadInventory,
   marshalInventory,
@@ -1014,6 +1015,15 @@ function evaluateWireOracles(
       continue;
     }
     if (isSupersededDsQueryFailure(resp, succeededSigs)) {
+      continue;
+    }
+    // The Traces Drilldown app's primarySignal-init race transiently
+    // forwards a dangling-operand TraceQL (`{ && …} | rate()`) that
+    // cerberus correctly 400s (reference Tempo rejects the identical
+    // syntax error). Distinct expr → no 2xx sibling, so the
+    // supersession reconciler above can't catch it; this one keys on
+    // the malformed shape itself. See isTransientMalformedTraceQLFailure.
+    if (isTransientMalformedTraceQLFailure(resp)) {
       continue;
     }
     fail(

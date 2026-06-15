@@ -31,6 +31,7 @@ import { expect, test } from '@playwright/test';
 import {
   dsQuerySignature,
   isSupersededDsQueryFailure,
+  isTransientMalformedTraceQLFailure,
   refIdToExpr,
   succeededDsQuerySignatures,
   type DsResponseView,
@@ -178,5 +179,118 @@ test.describe('supersession reconciliation', () => {
       requestBody: '',
     };
     expect(isSupersededDsQueryFailure(resp, new Set())).toBe(false);
+  });
+});
+
+/**
+ * isTransientMalformedTraceQLFailure — the Traces Drilldown
+ * primarySignal-init race (compose-smoke crawl run 27527911418).
+ *
+ * The app's PrimarySignalVariable applies its default inside the
+ * component's useEffect, not its constructor, so during the
+ * initial-load / rapid-nav window `${primarySignal}` interpolates to
+ * EMPTY and the app forwards a dangling-operand spanset
+ * `{ && ${filters}} | rate()` (and the errors / duration variants).
+ * That is a TraceQL SYNTAX ERROR — cerberus 400s it with
+ * `unexpected &&`, exactly as reference Tempo's identical grammar
+ * does. The malformed expr differs from the settled one, so it has no
+ * 2xx sibling and the supersession reconciler can't resolve it; this
+ * reconciler keys on the malformed shape instead. Verified live on
+ * the compose stack: `GET /api/metrics/query_range?q={ && true} |
+ * rate()` → HTTP 400; the settled `{true && true} | rate() by(…)` →
+ * HTTP 200.
+ */
+const dsqTempo = (
+  query: string,
+  status: number,
+  requestId = 'SQR108',
+): DsResponseView => ({
+  url: `/api/ds/query?ds_type=tempo&requestId=${requestId}`,
+  status,
+  requestBody: tempoBody(query),
+});
+
+test.describe('isTransientMalformedTraceQLFailure', () => {
+  test('reconciles the empty-primarySignal leading-`&&` rate query', () => {
+    expect(
+      isTransientMalformedTraceQLFailure(dsqTempo('{ && true} | rate()', 400)),
+    ).toBe(true);
+  });
+
+  test('reconciles the errors + duration init-race variants', () => {
+    for (const q of [
+      '{ && true && status=error} | rate()',
+      '{ && true} | quantile_over_time(duration, 0.9)',
+      '{ && true} | rate() by(resource.service.version)',
+    ]) {
+      expect(isTransientMalformedTraceQLFailure(dsqTempo(q, 400))).toBe(true);
+    }
+  });
+
+  test('reconciles `||` and trailing-operand dangling shapes', () => {
+    for (const q of [
+      '{ || true} | rate()',
+      '{true && } | rate()',
+      '{true && && false} | rate()',
+    ]) {
+      expect(isTransientMalformedTraceQLFailure(dsqTempo(q, 400))).toBe(true);
+    }
+  });
+
+  test('does NOT reconcile a well-formed TraceQL 400 (real wrong-rejection)', () => {
+    // A genuine cerberus wrong-rejection of a valid query must still
+    // fail loudly — this reconciler is not a blanket 400 suppressor.
+    for (const q of [
+      '{true && true} | rate()',
+      '{nestedSetParent<0 && true} | rate() by(resource.service.version)',
+      '{true && true && resource.service.version != nil} | rate()',
+      '{kind=server && true} | quantile_over_time(duration, 0.9)',
+    ]) {
+      expect(isTransientMalformedTraceQLFailure(dsqTempo(q, 400))).toBe(false);
+    }
+  });
+
+  test('does NOT reconcile when one query in the request is well-formed', () => {
+    const mixed: DsResponseView = {
+      url: '/api/ds/query?ds_type=tempo&requestId=SQR1',
+      status: 400,
+      requestBody: JSON.stringify({
+        queries: [
+          { refId: 'A', query: '{ && true} | rate()', datasource: { type: 'tempo' } },
+          { refId: 'B', query: '{true && true} | rate()', datasource: { type: 'tempo' } },
+        ],
+      }),
+    };
+    expect(isTransientMalformedTraceQLFailure(mixed)).toBe(false);
+  });
+
+  test('does NOT reconcile a 2xx, a non-ds/query, or a non-tempo ds_type', () => {
+    expect(
+      isTransientMalformedTraceQLFailure(dsqTempo('{ && true} | rate()', 200)),
+    ).toBe(false);
+    expect(
+      isTransientMalformedTraceQLFailure({
+        url: '/api/dashboards/uid/abc',
+        status: 400,
+        requestBody: '',
+      }),
+    ).toBe(false);
+    expect(
+      isTransientMalformedTraceQLFailure({
+        url: '/api/ds/query?ds_type=prometheus&requestId=SQR1',
+        status: 400,
+        requestBody: promBody('{ && up'),
+      }),
+    ).toBe(false);
+  });
+
+  test('does NOT reconcile an empty/unparseable request body', () => {
+    expect(
+      isTransientMalformedTraceQLFailure({
+        url: '/api/ds/query?ds_type=tempo&requestId=SQR1',
+        status: 400,
+        requestBody: '<streamed>',
+      }),
+    ).toBe(false);
   });
 });
