@@ -55,6 +55,19 @@ type Config struct {
 	// the flag on an already-populated ClickHouse is a no-op.
 	AutoCreateSchema bool
 
+	// AutoCreateDatabase controls whether the auto-create hook also creates
+	// the configured database (CREATE DATABASE IF NOT EXISTS), in addition to
+	// the tables. It defaults to AutoCreateSchema's value: enabling schema
+	// auto-create creates the database too. Set CERBERUS_AUTO_CREATE_DATABASE
+	// explicitly to false when the database is provisioned externally — e.g. a
+	// Replicated database created by cluster tooling with specific Keeper
+	// paths — so cerberus creates only the tables inside it. Because the
+	// configured database may not exist yet when cerberus connects (the
+	// session's default database), the CREATE DATABASE is issued over a
+	// bootstrap connection bound to ClickHouse's always-present `default`
+	// database; the fully-qualified table creates work from there too.
+	AutoCreateDatabase bool
+
 	// SchemaProvisioning carries the DDL knobs the auto-create hook
 	// (CERBERUS_AUTO_CREATE_SCHEMA) uses when it creates the OTel schema.
 	// Every field is a no-op unless AutoCreateSchema is true. The zero value
@@ -330,6 +343,7 @@ const (
 	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
 	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envAutoCreateDatabase  = "CERBERUS_AUTO_CREATE_DATABASE"
 	envSchemaCluster       = "CERBERUS_SCHEMA_CLUSTER"
 	envSchemaTableEngine   = "CERBERUS_SCHEMA_TABLE_ENGINE"
 	envSchemaTTL           = "CERBERUS_SCHEMA_TTL"
@@ -415,6 +429,9 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_HTTP_MAX_HEADER_BYTES default 0 (0 → Go's 1 MiB default)
 //	CERBERUS_LOKI_TAIL_WRITE_TIMEOUT default "10s" (single /tail WebSocket write bound; > 0)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
+//	CERBERUS_AUTO_CREATE_DATABASE  default = CERBERUS_AUTO_CREATE_SCHEMA — also
+//	    create the database (over a bootstrap connection to the always-present
+//	    `default` db). Set false to create only the tables (externally-managed db).
 //	CERBERUS_SCHEMA_CLUSTER        default "" — ON CLUSTER clause for auto-create
 //	    DDL (classic distributed-DDL clusters). Mutually exclusive with
 //	    CERBERUS_SCHEMA_DATABASE_REPLICATED.
@@ -619,6 +636,7 @@ func FromEnv() (Config, error) {
 		Logs:                    schema.DefaultOTelLogsFromEnv(),
 		Traces:                  schema.DefaultOTelTracesFromEnv(),
 		AutoCreateSchema:        flags.AutoCreate,
+		AutoCreateDatabase:      flags.AutoCreateDatabase,
 		SchemaProvisioning:      schemaProvisioning,
 		RequirementsCheck:       flags.RequirementsCheck,
 		ExperimentalTSGridRange: flags.TSGridRange,
@@ -678,6 +696,7 @@ var allEnvKeys = []string{
 	envHTTPMaxHeaderBytes,
 	envLokiTailWriteTO,
 	envAutoCreateSchema,
+	envAutoCreateDatabase,
 	envSchemaCluster,
 	envSchemaTableEngine,
 	envSchemaTTL,
@@ -1343,21 +1362,35 @@ func getRetentionDuration(v *viper.Viper, key string) (time.Duration, error) {
 }
 
 // bootFlags groups the boolean boot-time toggles FromEnv resolves: the
-// auto-create-schema hook, the requirements preflight, and the experimental
-// native-rate path. Grouping them keeps the per-flag parse + fail-fast error
-// checks out of FromEnv's body.
+// auto-create-schema hook, the auto-create-database sub-toggle, the
+// requirements preflight, and the experimental native-rate path. Grouping
+// them keeps the per-flag parse + fail-fast error checks out of FromEnv's
+// body.
 type bootFlags struct {
-	AutoCreate        bool
-	RequirementsCheck bool
-	TSGridRange       bool
+	AutoCreate         bool
+	AutoCreateDatabase bool
+	RequirementsCheck  bool
+	TSGridRange        bool
 }
 
-// bootFlagsFromEnv parses the three boolean boot toggles, failing fast on a
-// malformed value exactly as the inline parses did.
+// bootFlagsFromEnv parses the boolean boot toggles, failing fast on a
+// malformed value exactly as the inline parses did. AutoCreateDatabase
+// defaults to AutoCreate's value when CERBERUS_AUTO_CREATE_DATABASE is not
+// explicitly set: enabling schema auto-create also creates the database, but
+// an operator whose database is managed externally (e.g. a Replicated
+// database provisioned by their cluster tooling) can set it to false to
+// create only the tables.
 func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	autoCreate, err := getBool(v, envAutoCreateSchema)
 	if err != nil {
 		return bootFlags{}, err
+	}
+	autoCreateDatabase := autoCreate
+	if explicitlySet(v, envAutoCreateDatabase) {
+		autoCreateDatabase, err = getBool(v, envAutoCreateDatabase)
+		if err != nil {
+			return bootFlags{}, err
+		}
 	}
 	requirementsCheck, err := getBool(v, envRequirementsCheck)
 	if err != nil {
@@ -1368,9 +1401,10 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 		return bootFlags{}, err
 	}
 	return bootFlags{
-		AutoCreate:        autoCreate,
-		RequirementsCheck: requirementsCheck,
-		TSGridRange:       tsGridRange,
+		AutoCreate:         autoCreate,
+		AutoCreateDatabase: autoCreateDatabase,
+		RequirementsCheck:  requirementsCheck,
+		TSGridRange:        tsGridRange,
 	}, nil
 }
 

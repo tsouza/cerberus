@@ -115,7 +115,7 @@ func run() error {
 
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
-	schemaReady := setupSchema(ctx, logger, client, schemaApplyConfig(cfg), cfg.AutoCreateSchema)
+	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse, schemaApplyConfig(cfg), cfg.AutoCreateSchema, cfg.AutoCreateDatabase)
 
 	// Boot-time requirements preflight (ON by default). It MUST run AFTER
 	// the schema-create step above — on a fresh DB cerberus has just
@@ -487,35 +487,79 @@ func setupSchema(
 	ctx context.Context,
 	logger *slog.Logger,
 	client *chclient.Client,
+	chCfg chclient.Config,
 	applyCfg ddl.Config,
-	autoCreate bool,
+	autoCreateSchema, autoCreateDatabase bool,
 ) health.SchemaReadyFunc {
 	ready := new(atomic.Bool)
-	if !autoCreate {
+	if !autoCreateSchema {
 		ready.Store(true)
 		return ready.Load
 	}
+
+	// Pick the connection the DDL runs over. When cerberus creates the
+	// database, the CREATE DATABASE must run from a session whose default
+	// database EXISTS — and the configured database may not yet — so it goes
+	// over a bootstrap connection bound to ClickHouse's always-present
+	// `default` database (the fully-qualified `<db>.<table>` table creates work
+	// from there too). When the database is externally managed
+	// (CERBERUS_AUTO_CREATE_DATABASE=false) the table creates run over the
+	// normal target-bound connection and the CREATE DATABASE is skipped.
+	applyConn := client.Conn()
+	cleanup := func() {} // no-op unless a bootstrap client is opened
+	applyCfg.SkipDatabaseCreate = !autoCreateDatabase
+	if autoCreateDatabase {
+		bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg))
+		if err != nil {
+			// chclient.New is lazy (no dial) and only validates options the
+			// target client already validated, so this is effectively
+			// unreachable; if it ever fires, fall back to the target connection
+			// (the apply will surface the real error via the retry + /readyz).
+			logger.Warn("could not open bootstrap connection for database create; using the configured connection", "err", err)
+		} else {
+			applyConn = bootClient.Conn()
+			cleanup = func() { _ = bootClient.Close() }
+		}
+	}
+
 	logger.Info(
 		"auto-creating OTel ClickHouse schema",
 		"database", applyCfg.Database,
+		"create_database", autoCreateDatabase,
 		"cluster", applyCfg.Cluster,
 		"replicated_db", applyCfg.DatabaseEngine.Replicated,
 		"signals", "metrics,logs,traces",
 	)
 	apply := func(ctx context.Context) error {
-		return ddl.ApplyWithConfig(ctx, client.Conn(), applyCfg, ddl.All)
+		return ddl.ApplyWithConfig(ctx, applyConn, applyCfg, ddl.All)
 	}
 	if err := apply(ctx); err != nil {
 		logger.Warn(
 			"auto-create schema failed at startup; retrying in background (/readyz reports schema pending)",
 			"err", err,
 		)
-		go retrySchemaApply(ctx, logger, ready, schemaRetryInterval, apply)
+		go retrySchemaApply(ctx, logger, ready, schemaRetryInterval, apply, cleanup)
 		return ready.Load
 	}
+	cleanup()
 	logger.Info("OTel ClickHouse schema ready")
 	ready.Store(true)
 	return ready.Load
+}
+
+// bootstrapDatabase is ClickHouse's always-present database. The auto-create
+// hook issues CREATE DATABASE <target> over a connection bound to it, because
+// the configured target database may not exist yet — and ClickHouse rejects
+// every statement (even CREATE DATABASE) on a session whose default database
+// is absent (code 81, UNKNOWN_DATABASE).
+const bootstrapDatabase = "default"
+
+// bootstrapClickHouseConfig returns chCfg rebound to the always-present
+// `default` database, for the one-time auto-create DDL. Everything else
+// (address, auth, TLS, pool sizing) is unchanged.
+func bootstrapClickHouseConfig(chCfg chclient.Config) chclient.Config {
+	chCfg.Database = bootstrapDatabase
+	return chCfg
 }
 
 // runRequirementsCheck runs the boot-time requirements check (gated ON by
@@ -741,7 +785,9 @@ func retrySchemaApply(
 	ready *atomic.Bool,
 	interval time.Duration,
 	apply func(context.Context) error,
+	cleanup func(),
 ) {
+	defer cleanup() // close the bootstrap connection on success or shutdown
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
