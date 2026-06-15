@@ -6,6 +6,66 @@ import (
 	"time"
 )
 
+// TestFromEnv_SchemaProvisioning_Defaults confirms the schema-provisioning
+// knobs default to the single-node zero shape (no cluster / engine / TTL /
+// replicated database).
+func TestFromEnv_SchemaProvisioning_Defaults(t *testing.T) {
+	for _, k := range []string{
+		"CERBERUS_SCHEMA_CLUSTER", "CERBERUS_SCHEMA_TABLE_ENGINE", "CERBERUS_SCHEMA_TTL",
+		"CERBERUS_SCHEMA_TTL_METRICS", "CERBERUS_SCHEMA_TTL_LOGS", "CERBERUS_SCHEMA_TTL_TRACES",
+		"CERBERUS_SCHEMA_DATABASE_REPLICATED", "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH",
+		"CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD", "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA",
+	} {
+		t.Setenv(k, "")
+	}
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	p := cfg.SchemaProvisioning
+	if p.Cluster != "" || p.TableEngine != "" || p.DatabaseReplicated ||
+		p.TTL != 0 || p.TTLMetrics != 0 || p.TTLLogs != 0 || p.TTLTraces != 0 ||
+		p.DatabaseReplicatedPath != "" {
+		t.Errorf("schema provisioning defaults not zero: %+v", p)
+	}
+}
+
+// TestFromEnv_SchemaProvisioning_Overrides confirms every schema-provisioning
+// env var (including the per-signal TTL overrides and the Replicated engine
+// knobs) parses into SchemaProvisioning.
+func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
+	t.Setenv("CERBERUS_SCHEMA_CLUSTER", "prod")
+	t.Setenv("CERBERUS_SCHEMA_TABLE_ENGINE", "ReplicatedMergeTree('/p', '{replica}')")
+	t.Setenv("CERBERUS_SCHEMA_TTL", "2160h")
+	t.Setenv("CERBERUS_SCHEMA_TTL_LOGS", "168h")
+	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED", "true")
+	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH", "/clickhouse/databases/otel")
+	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD", "shard0")
+	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA", "replica0")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	p := cfg.SchemaProvisioning
+	if p.Cluster != "prod" {
+		t.Errorf("Cluster = %q; want prod", p.Cluster)
+	}
+	if p.TableEngine != "ReplicatedMergeTree('/p', '{replica}')" {
+		t.Errorf("TableEngine = %q", p.TableEngine)
+	}
+	if p.TTL != 2160*time.Hour {
+		t.Errorf("TTL = %v; want 2160h", p.TTL)
+	}
+	if p.TTLLogs != 168*time.Hour {
+		t.Errorf("TTLLogs = %v; want 168h", p.TTLLogs)
+	}
+	if !p.DatabaseReplicated || p.DatabaseReplicatedPath != "/clickhouse/databases/otel" ||
+		p.DatabaseReplicatedShard != "shard0" || p.DatabaseReplicatedReplica != "replica0" {
+		t.Errorf("replicated knobs not parsed: %+v", p)
+	}
+}
+
 // TestFromEnv_HTTPAddr_Default confirms the documented :8080 fallback
 // when CERBERUS_HTTP_ADDR is unset.
 func TestFromEnv_HTTPAddr_Default(t *testing.T) {

@@ -115,7 +115,7 @@ func run() error {
 
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
-	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse.Database, cfg.AutoCreateSchema)
+	schemaReady := setupSchema(ctx, logger, client, schemaApplyConfig(cfg), cfg.AutoCreateSchema)
 
 	// Boot-time requirements preflight (ON by default). It MUST run AFTER
 	// the schema-create step above — on a fresh DB cerberus has just
@@ -428,6 +428,52 @@ func warnIfClickHouseUnreachable(ctx context.Context, logger *slog.Logger, clien
 	}
 }
 
+// schemaApplyConfig maps the runtime config into the typed internal/schema/ddl
+// Config the auto-create hook applies. The database name comes from the
+// ClickHouse connection config; the cluster / table-engine / TTL / Replicated
+// database-engine knobs come from CERBERUS_SCHEMA_* (SchemaProvisioning); and
+// the per-signal TABLE NAMES are threaded from the SAME resolved schema structs
+// the query heads read (cfg.Schema / cfg.Logs / cfg.Traces), so a
+// CERBERUS_SCHEMA_*_TABLE override creates and queries the same table instead of
+// silently diverging.
+func schemaApplyConfig(cfg config.Config) ddl.Config {
+	p := cfg.SchemaProvisioning
+	// Per-signal TTL: a non-zero per-signal override wins; otherwise the
+	// signal inherits the global CERBERUS_SCHEMA_TTL default (which is itself
+	// 0 = no retention unless the operator sets it).
+	signalTTL := func(override time.Duration) time.Duration {
+		if override > 0 {
+			return override
+		}
+		return p.TTL
+	}
+	return ddl.Config{
+		Database: cfg.ClickHouse.Database,
+		Cluster:  p.Cluster,
+		Engine:   p.TableEngine,
+		TTL: ddl.TTL{
+			Metrics: signalTTL(p.TTLMetrics),
+			Logs:    signalTTL(p.TTLLogs),
+			Traces:  signalTTL(p.TTLTraces),
+		},
+		DatabaseEngine: ddl.DatabaseEngine{
+			Replicated:        p.DatabaseReplicated,
+			ReplicatedZooPath: p.DatabaseReplicatedPath,
+			ReplicatedShard:   p.DatabaseReplicatedShard,
+			ReplicatedReplica: p.DatabaseReplicatedReplica,
+		},
+		Tables: ddl.Tables{
+			Logs:                cfg.Logs.LogsTable,
+			Traces:              cfg.Traces.SpansTable,
+			MetricsGauge:        cfg.Schema.GaugeTable,
+			MetricsSum:          cfg.Schema.SumTable,
+			MetricsHistogram:    cfg.Schema.HistogramTable,
+			MetricsExpHistogram: cfg.Schema.ExpHistogramTable,
+			MetricsSummary:      cfg.Schema.SummaryTable,
+		},
+	}
+}
+
 // setupSchema runs the auto-create-schema startup hook (when enabled)
 // and returns the SchemaReadyFunc the /readyz handler consults. When
 // auto-create is off, readiness must not gate on it, so the returned
@@ -441,7 +487,7 @@ func setupSchema(
 	ctx context.Context,
 	logger *slog.Logger,
 	client *chclient.Client,
-	database string,
+	applyCfg ddl.Config,
 	autoCreate bool,
 ) health.SchemaReadyFunc {
 	ready := new(atomic.Bool)
@@ -451,10 +497,11 @@ func setupSchema(
 	}
 	logger.Info(
 		"auto-creating OTel ClickHouse schema",
-		"database", database,
+		"database", applyCfg.Database,
+		"cluster", applyCfg.Cluster,
+		"replicated_db", applyCfg.DatabaseEngine.Replicated,
 		"signals", "metrics,logs,traces",
 	)
-	applyCfg := ddl.Config{Database: database}
 	apply := func(ctx context.Context) error {
 		return ddl.ApplyWithConfig(ctx, client.Conn(), applyCfg, ddl.All)
 	}

@@ -356,6 +356,44 @@ crash-loop; see [`health.md`](health.md)). Fail-fast is reserved for
 misconfiguration that can never succeed — a bad env value or invalid
 connection options abort startup with a clear error.
 
+### Auto-create schema: single-node vs clustered
+
+When `CERBERUS_AUTO_CREATE_SCHEMA=true`, the `CERBERUS_SCHEMA_*` knobs shape
+the DDL cerberus emits (all are no-ops when auto-create is off). The DDL is
+built through the typed `internal/chsql` builder — cerberus never
+hand-concatenates SQL — and the table column bodies still come verbatim from
+the upstream OTel ClickHouse exporter templates; only the database engine,
+`ON CLUSTER`, table engine and TTL clauses are cerberus-parameterised.
+
+- **Single-node (default).** No cluster, no TTL, an Atomic database, plain
+  `MergeTree` tables. Nothing to set.
+- **Replicated database (recommended for a cluster).** Set
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED=true` and
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH=/clickhouse/databases/otel`. The
+  database is created with `ENGINE = Replicated(<path>, {shard}, {replica})`;
+  a Replicated database **auto-replicates all DDL** across replicas and
+  **auto-converts `MergeTree` → `ReplicatedMergeTree`**, so you leave
+  `CERBERUS_SCHEMA_CLUSTER` and `CERBERUS_SCHEMA_TABLE_ENGINE` unset — the
+  `{shard}`/`{replica}` server macros do the rest. This mirrors how a
+  Replicated database is run in practice (no `ON CLUSTER` inside it).
+- **Classic `ON CLUSTER` cluster.** Set `CERBERUS_SCHEMA_CLUSTER=<name>` and,
+  if the engine isn't replicated by the cluster default, an explicit
+  `CERBERUS_SCHEMA_TABLE_ENGINE=ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`.
+  `ON CLUSTER` and the Replicated database engine are mutually exclusive —
+  pick one.
+
+**Retention is per signal.** `CERBERUS_SCHEMA_TTL` sets a global default;
+`CERBERUS_SCHEMA_TTL_{METRICS,LOGS,TRACES}` override one signal each (a zero
+override inherits the global). Retention keys on the signal — the five
+metrics tables share one TTL, the spans + `trace_id_ts` lookup share another
+— because that is how observability retention is actually managed (logs
+short, metrics long). A deployment that needs genuinely per-table retention
+runs the DDL itself rather than via the auto-create hook.
+
+Auto-create also reuses the **same** table names the query heads read
+(`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
+consistently rather than silently diverging onto the upstream defaults.
+
 ### Startup requirements preflight
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time

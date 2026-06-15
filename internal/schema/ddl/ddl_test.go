@@ -140,7 +140,7 @@ func TestRenderSignal_CustomConfig(t *testing.T) {
 		Database: "cerberus_test",
 		Cluster:  "my_cluster",
 		Engine:   "ReplicatedMergeTree('/clickhouse/{shard}/tables/{table}', '{replica}')",
-		TTL:      48 * time.Hour,
+		TTL:      TTL{Metrics: 48 * time.Hour, Logs: 48 * time.Hour, Traces: 48 * time.Hour},
 		Tables: Tables{
 			MetricsGauge:        "custom_gauge",
 			MetricsSum:          "custom_sum",
@@ -218,11 +218,42 @@ func TestTTLExpr_RoundingBuckets(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := (Config{TTL: tc.ttl}).ttlExpr("t")
+			got := ttlExpr("t", tc.ttl)
 			if got != tc.want {
 				t.Errorf("ttlExpr: got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRenderSignal_PerSignalTTL pins independent per-signal retention: a
+// different TTL for metrics, logs, and traces lands on the right tables
+// (and a zero for a signal emits no TTL), proving the signals don't share
+// one global duration.
+func TestRenderSignal_PerSignalTTL(t *testing.T) {
+	cfg := Config{
+		TTL: TTL{
+			Metrics: 90 * 24 * time.Hour, // 90 days
+			Logs:    7 * 24 * time.Hour,  // 7 days
+			Traces:  0,                   // no TTL on traces
+		},
+	}.withDefaults()
+
+	metrics, _ := renderSignal(cfg, Metrics)
+	for i, stmt := range metrics {
+		if !strings.Contains(stmt, "TTL toDateTime(TimeUnix) + toIntervalDay(90)") {
+			t.Errorf("metrics[%d]: want 90d TTL:\n%s", i, stmt)
+		}
+	}
+	logs, _ := renderSignal(cfg, Logs)
+	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalDay(7)") {
+		t.Errorf("logs: want 7d TTL:\n%s", logs[0])
+	}
+	traces, _ := renderSignal(cfg, Traces)
+	for i, stmt := range traces {
+		if strings.Contains(stmt, "TTL toDateTime") {
+			t.Errorf("traces[%d]: TTL=0 must emit no TTL clause:\n%s", i, stmt)
+		}
 	}
 }
 

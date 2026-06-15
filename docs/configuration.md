@@ -253,10 +253,27 @@ also honored by the OTel Go SDK and merge with these. See
 
 ## Schema
 
-| Variable                      | Type | Default | Description                                                                                                                                                                                                            |
-| ----------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_AUTO_CREATE_SCHEMA` | bool | `false` | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins.                                                                                                                            |
-| `CERBERUS_REQUIREMENTS_CHECK` | bool | `true`  | Run the boot-time requirements check after the schema-create step. Fails startup on a fatal finding (too-old server, wrong-shape table); an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes. |
+| Variable                                      | Type     | Default                          | Description                                                                                                                                                                                                            |
+| --------------------------------------------- | -------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_AUTO_CREATE_SCHEMA`                 | bool     | `false`                          | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL — all are no-ops unless this is `true`.                                                     |
+| `CERBERUS_SCHEMA_CLUSTER`                     | string   | (empty)                          | Render an `ON CLUSTER <name>` clause into the auto-create DDL (classic distributed-DDL clusters). Mutually exclusive with `CERBERUS_SCHEMA_DATABASE_REPLICATED`.                                                       |
+| `CERBERUS_SCHEMA_TABLE_ENGINE`                | string   | `MergeTree()`                    | Override the table engine. Only needed for a classic `ON CLUSTER` cluster that wants an explicit `ReplicatedMergeTree(...)`; inside a Replicated database the plain default auto-converts.                             |
+| `CERBERUS_SCHEMA_TTL`                         | duration | `0s`                             | Global default retention for every signal's tables (no TTL clause when `0`; e.g. `2160h` = 90 days). Per-signal overrides below take precedence.                                                                       |
+| `CERBERUS_SCHEMA_TTL_METRICS`                 | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the five metrics tables. A non-zero value overrides the global default for metrics.                                                                                                                      |
+| `CERBERUS_SCHEMA_TTL_LOGS`                    | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the logs table.                                                                                                                                                                                          |
+| `CERBERUS_SCHEMA_TTL_TRACES`                  | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the spans + `trace_id_ts` tables.                                                                                                                                                                        |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED`         | bool     | `false`                          | Create the database with `ENGINE = Replicated(...)` so DDL auto-replicates across replicas and `MergeTree` tables auto-convert to `ReplicatedMergeTree` (no `ON CLUSTER` needed).                                      |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH`    | string   | (empty)                          | ZooKeeper/Keeper path the Replicated engine coordinates on (e.g. `/clickhouse/databases/otel`). **Required** when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`.                                                          |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD`   | string   | `{shard}`                        | Shard name for the Replicated engine — defaults to the ClickHouse server macro.                                                                                                                                        |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA` | string   | `{replica}`                      | Replica name for the Replicated engine — defaults to the ClickHouse server macro.                                                                                                                                      |
+| `CERBERUS_REQUIREMENTS_CHECK`                 | bool     | `true`                           | Run the boot-time requirements check after the schema-create step. Fails startup on a fatal finding (too-old server, wrong-shape table); an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes. |
+
+> The auto-create hook reuses the same table names the query heads read
+> (the `CERBERUS_SCHEMA_*_TABLE` overrides), so a renamed table is created
+> **and** queried consistently. Retention is keyed per **signal**, not per
+> individual table — the five metrics tables share one TTL, etc. — because
+> that matches how observability retention is set (logs short, metrics long).
+> A deployment needing genuinely per-table retention runs the DDL itself.
 
 The preflight runs two gates, both parameterised by the active
 (override-resolved) configuration:
