@@ -17,7 +17,17 @@ name: e2e
 #     status check on branch protection — DO NOT rename the AGGREGATOR
 #     job (the check name is pinned to `compose-smoke`; the matrix
 #     children report as `compose-smoke-shard (shard-x)` and are NOT
-#     the gate).
+#     the gate). The slow BFS `shard-crawl` COVERAGE lane is split OUT
+#     of the required roll-up into a SEPARATE informational matrix job
+#     (`compose-smoke-shard-info`): it still runs + reports its own
+#     visible child check, but its result does NOT gate the required
+#     `compose-smoke` (crawl = coverage, not a correctness gate; it is
+#     slow + intermittently flaky — the app-init-race 400 is #115/#934 —
+#     and must not block PR merges). The crawl shard also carries a hard
+#     30-min `timeout-minutes` so a hang fails fast and releases the
+#     `cancel-in-progress: false` concurrency slot instead of riding to
+#     a 2h ceiling. The split + per-shard timeouts live in the
+#     single-source-of-truth .github/scripts/compose-smoke-matrix.mjs.
 #   - `dashboard` — full-stack k3d + cerberus + Grafana + Playwright
 #     smoke, SHARDED across a modest matrix of isolated-k3d-cluster jobs
 #     (dashboard-setup emits the matrix from the single-source-of-truth
@@ -253,7 +263,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      # `matrix` = the REQUIRED gating shards (smoke, kiosk). The required
+      # `compose-smoke` aggregator gates ONLY on these.
       matrix: ${{ steps.emit.outputs.matrix }}
+      # `matrix_informational` = the de-gated COVERAGE shards (crawl). These run
+      # + report their own child check but do NOT gate the required aggregate.
+      matrix_informational: ${{ steps.emit.outputs.matrix_informational }}
+      has_informational: ${{ steps.emit.outputs.has_informational }}
     steps:
       - uses: actions/checkout@v6
 
@@ -270,12 +286,15 @@ jobs:
 
       # Emit the strategy.matrix JSON to $GITHUB_OUTPUT. emit re-runs the
       # assertions internally, so even without the verify step above it can
-      # never ship a matrix that silently drops a spec.
+      # never ship a matrix that silently drops a spec. IS_SCHEDULE selects the
+      # FULL (120) vs lean (45) per-shard timeout for the non-crawl shards; the
+      # crawl shard's 30-min cap is constant.
       - id: emit
         name: emit shard matrix
         run: node .github/scripts/compose-smoke-matrix.mjs
         env:
           MODE: emit
+          IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
 
   compose-smoke-shard:
     name: compose-smoke-shard
@@ -297,13 +316,13 @@ jobs:
       # aggregator sees a clean `failure`.
       fail-fast: false
       matrix: ${{ fromJSON(needs.compose-smoke-setup.outputs.matrix) }}
-    # Per-lane AND now per-shard. PR/push run SWEEP_DEPTH=lean (required
-    # fast-feedback gate); the nightly schedule runs SWEEP_DEPTH=full. At full
-    # depth shard-crawl's single BFS test() is the ~50min long pole and needs
-    # the 120 ceiling; PR/push shards stay at 45. Because each shard is its own
-    # job, 45/120 is now per-shard wall-clock — more headroom than the old
-    # shared monolith, not less. See docs/test-strategy.md (interaction sweep).
-    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 45 }}
+    # Per-shard wall-clock ceiling, computed in compose-smoke-matrix.mjs and
+    # carried on each matrix entry. Non-crawl shards take 120 (nightly full) /
+    # 45 (PR/push lean); the crawl shard (now in the SEPARATE informational
+    # matrix below) carries a hard 30-min cap. Keeping the value in the manifest
+    # — the single source of truth for the partition — means the timeout policy
+    # can't drift from the shard it applies to.
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
       # Per-shard-keyed: sibling shards in the SAME run must not cancel each
       # other (a shared group + cancel-in-progress would do exactly that), but
@@ -449,12 +468,145 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans
 
+  # ---------------------------------------------------------------------------
+  # compose-smoke-shard-info — the INFORMATIONAL (coverage) shard matrix. Today
+  # this is the `shard-crawl` BFS coverage lane, de-gated from the required
+  # `compose-smoke` aggregate (see GATE_EXCLUDED_SHARDS in
+  # compose-smoke-matrix.mjs). It is byte-for-byte the same job as
+  # compose-smoke-shard — same stack boot, same Playwright run, same evidence
+  # dumps — but it consumes the SEPARATE `matrix_informational` output and the
+  # required `compose-smoke` aggregator does NOT `needs:` it. So the crawl shard
+  # STILL RUNS and STILL REPORTS its own visible child check
+  # (`compose-smoke-shard-info (shard-crawl)`) — NOT masked with
+  # continue-on-error — but a crawl flake/hang no longer fails the required
+  # `compose-smoke` status, so it can't block a PR merge.
+  #
+  # Why split the matrix instead of filtering results: a GitHub matrix exposes
+  # only ONE rolled-up `.result` to dependents, so a single matrix can't let one
+  # child fail without failing the whole roll-up. Both matrices derive from the
+  # SAME SHARDS + GATE_EXCLUDED_SHARDS list in the manifest, so the required and
+  # informational sets can't drift apart.
+  #
+  # Rationale for de-gating crawl: it is slow BFS COVERAGE, not a correctness
+  # gate; it is slow + flaky by nature (~6min compose / ~50min k3d at full
+  # depth; the app-init-race 400 is #115 / #934), and intermittently runs out to
+  # its timeout holding the cancel-in-progress:false concurrency slot. The hard
+  # 30-min per-shard cap (matrix.timeoutMinutes) makes a hang fail fast.
+  compose-smoke-shard-info:
+    name: compose-smoke-shard-info
+    needs: [changes, gate, compose-smoke-setup]
+    # Same trigger guard as compose-smoke-shard, plus: only fan out when setup
+    # actually emitted an informational matrix (has_informational == true).
+    if: |
+      always() &&
+      needs.compose-smoke-setup.result == 'success' &&
+      needs.compose-smoke-setup.outputs.has_informational == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.gate.result == 'success')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.compose-smoke-setup.outputs.matrix_informational) }}
+    # Hard 30-min cap (CRAWL_SHARD_TIMEOUT_MIN in the manifest) — fail fast
+    # instead of riding to a 2h hang holding the concurrency slot.
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
+    concurrency:
+      group: compose-smoke-info-${{ github.ref }}-${{ matrix.name }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        env:
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: docker compose up --wait
+        run: docker compose up --wait --wait-timeout 300
+
+      - name: smoke cerberus /healthz + /readyz
+        run: |
+          curl -fsS --max-time 5 http://localhost:8080/healthz
+          curl -fsS --max-time 5 http://localhost:8080/readyz
+
+      - name: smoke Grafana /api/health
+        run: |
+          curl -fsS --max-time 5 http://localhost:3000/api/health \
+            | tee /tmp/grafana-health.json
+          grep -q '"database":[[:space:]]*"ok"' /tmp/grafana-health.json
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: install Playwright deps
+        working-directory: test/e2e/playwright
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+          npx playwright install --with-deps chromium
+
+      - name: playwright compose-grafana-smoke (${{ matrix.name }})
+        id: playwright_smoke
+        working-directory: test/e2e/playwright
+        env:
+          GRAFANA_BASE_URL: http://localhost:3000
+          GRAFANA_URL: http://localhost:3000
+          CERBERUS_URL: http://localhost:8080
+          SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
+          CRAWL_STACK: compose
+        run: npx playwright test ${{ matrix.specs }} --reporter=list
+
+      - name: upload Playwright report on failure
+        if: steps.playwright_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: compose-grafana-smoke-report-${{ matrix.name }}
+          path: |
+            test/e2e/playwright/playwright-report
+            test/e2e/playwright/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: dump compose state + logs on failure
+        if: failure() || steps.playwright_smoke.outcome == 'failure'
+        run: |
+          echo "=== compose ps ==="
+          docker compose ps
+          echo "=== clickhouse logs (last 200) ==="
+          docker compose logs --tail=200 clickhouse || true
+          echo "=== cerberus logs (last 200) ==="
+          docker compose logs --tail=200 cerberus || true
+          echo "=== grafana logs (last 200) ==="
+          docker compose logs --tail=200 grafana || true
+          echo "=== otel-collector logs (last 200) ==="
+          docker compose logs --tail=200 otel-collector || true
+
+      - name: teardown
+        if: always()
+        run: docker compose down -v --remove-orphans
+
   # The AGGREGATOR — named EXACTLY `compose-smoke` so the required
   # branch-protection status-check context still appears and gates. The matrix
   # children report as `compose-smoke-shard (shard-x)`, NOT `compose-smoke`;
   # branch protection waits on `compose-smoke` specifically, so this job MUST
   # exist and report green/red. DO NOT add the setup/shard job names to branch
   # protection — only this aggregator is the gate.
+  #
+  # Crawl de-gate: this aggregator `needs:` ONLY compose-smoke-shard (the
+  # REQUIRED matrix), NOT compose-smoke-shard-info (the crawl coverage matrix).
+  # So a crawl flake/hang reports its own red `compose-smoke-shard-info
+  # (shard-crawl)` check but does NOT roll into this required gate.
   compose-smoke:
     name: compose-smoke
     needs: [changes, gate, compose-smoke-setup, compose-smoke-shard]
@@ -465,7 +617,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: gate on every shard
+      - name: gate on every required shard
         run: |
           echo "setup  = ${{ needs.compose-smoke-setup.result }}"
           echo "shards = ${{ needs.compose-smoke-shard.result }}"
@@ -477,23 +629,25 @@ jobs:
             echo "compose-smoke skipped (docs-only PR / gate not green / not applicable) — passing the required check."
             exit 0
           fi
-          # Otherwise setup must have succeeded and the matrix must be a clean
-          # success. A matrix exposes ONE rolled-up .result to dependents:
+          # Otherwise setup must have succeeded and the REQUIRED matrix must be a
+          # clean success. A matrix exposes ONE rolled-up .result to dependents:
           # `success` only if EVERY child succeeded; `failure` if any failed;
           # `cancelled` if any was cancelled. The strict `!= 'success'` form
           # catches failure AND cancelled AND skipped — `contains(…,'failure')`
           # would miss `cancelled`, letting a cancelled shard set pass the
           # required check silently. fail-fast:false keeps a real spec failure
-          # a clean `failure`, not an ambiguous `cancelled`.
+          # a clean `failure`, not an ambiguous `cancelled`. NOTE: the crawl
+          # coverage shard lives in compose-smoke-shard-info, NOT this need set,
+          # so a crawl flake/hang can't fail this required gate.
           if [ "${{ needs.compose-smoke-setup.result }}" != "success" ]; then
             echo "::error::compose-smoke-setup did not succeed (${{ needs.compose-smoke-setup.result }})."
             exit 1
           fi
           if [ "${{ needs.compose-smoke-shard.result }}" != "success" ]; then
-            echo "::error::one or more compose-smoke shards failed/cancelled (rolled-up: ${{ needs.compose-smoke-shard.result }})."
+            echo "::error::one or more REQUIRED compose-smoke shards failed/cancelled (rolled-up: ${{ needs.compose-smoke-shard.result }})."
             exit 1
           fi
-          echo "all compose-smoke shards passed."
+          echo "all required compose-smoke shards passed (crawl coverage shard is informational, de-gated)."
 
   # ---------------------------------------------------------------------------
   # dashboard (k3d) lane — SHARDED across a modest matrix of isolated k3d
@@ -597,12 +751,14 @@ jobs:
       # sees a clean failure rather than an ambiguous cancelled.
       fail-fast: false
       matrix: ${{ fromJSON(needs.dashboard-setup.outputs.matrix) }}
-    # 40 to match the old monolith. Per-shard now: the crawl shard's single BFS
-    # test() is the ~50min long pole at SWEEP_DEPTH=full and needs the headroom;
-    # because it runs ALONE on its own cluster, the smoke shards no longer wait
-    # behind it. The crawl shard's own internal testInfo.setTimeout (75min in
-    # crawl.spec.ts) governs the BFS; this job cap is the cluster-lifetime bound.
-    timeout-minutes: 75
+    # Per-shard wall-clock ceiling, computed in dashboard-matrix.mjs and carried
+    # on each matrix entry. Smoke shards keep the prior 75-min cluster-lifetime
+    # bound; the crawl shard gets a HARD 30-min cap (CRAWL_SHARD_TIMEOUT_MIN) so a
+    # hung BFS fails fast and releases the cancel-in-progress:false k3d slot
+    # instead of riding to the long ceiling. The k3d crawl is informational
+    # COVERAGE (the whole dashboard lane is non-gating), so a 30-min cut never
+    # blocks a merge or a release.
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
       # Per-shard-keyed: sibling shards in the SAME run must not cancel each
       # other; never cancel-in-progress (a half-killed k3d teardown leaks
