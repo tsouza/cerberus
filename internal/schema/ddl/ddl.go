@@ -75,6 +75,13 @@ type Config struct {
 	// database with the Replicated engine for a clustered deployment.
 	DatabaseEngine DatabaseEngine
 
+	// SkipDatabaseCreate, when true, omits the CREATE DATABASE statement and
+	// creates only the tables (which are fully qualified, so they land in the
+	// configured database). Use it when the database is provisioned externally
+	// — e.g. a Replicated database managed by cluster tooling. The zero value
+	// (false) creates the database, the default cold-cluster bootstrap.
+	SkipDatabaseCreate bool
+
 	// Tables overrides the per-signal table names. The zero values fall
 	// back to the upstream defaults (otel_logs, otel_traces,
 	// otel_metrics_gauge, otel_metrics_sum, otel_metrics_histogram,
@@ -269,7 +276,8 @@ func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals 
 	// regardless of which signals are requested. Validation is pure (it never
 	// touches conn), so it's safe ahead of the nil-conn no-op path below; doing
 	// it here means a misconfiguration can't hide behind a zero-signal call.
-	if cfg.DatabaseEngine.Replicated && cfg.DatabaseEngine.ReplicatedZooPath == "" {
+	// Only meaningful when cerberus actually creates the database.
+	if !cfg.SkipDatabaseCreate && cfg.DatabaseEngine.Replicated && cfg.DatabaseEngine.ReplicatedZooPath == "" {
 		return fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
 	}
 	// No signals requested → no tables to create → no database needed. Return
@@ -278,8 +286,13 @@ func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals 
 	if len(signals) == 0 {
 		return nil
 	}
-	if err := conn.Exec(ctx, renderCreateDatabase(cfg)); err != nil {
-		return fmt.Errorf("ddl: create database %s: %w", cfg.Database, err)
+	// Create the database first (unless it's externally managed) so the
+	// fully-qualified `<database>.<table>` table creates never fail against a
+	// non-existent database.
+	if !cfg.SkipDatabaseCreate {
+		if err := conn.Exec(ctx, renderCreateDatabase(cfg)); err != nil {
+			return fmt.Errorf("ddl: create database %s: %w", cfg.Database, err)
+		}
 	}
 	for _, s := range signals {
 		if err := applySignal(ctx, conn, cfg, s); err != nil {

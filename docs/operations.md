@@ -381,6 +381,20 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
   `CERBERUS_SCHEMA_TABLE_ENGINE=ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`.
   `ON CLUSTER` and the Replicated database engine are mutually exclusive —
   pick one.
+- **Externally-managed database.** When the database is provisioned by your
+  cluster tooling (common for a Replicated database, whose Keeper path and
+  macros are an infra concern), set `CERBERUS_AUTO_CREATE_DATABASE=false`:
+  cerberus then creates only the **tables** inside it and never issues
+  `CREATE DATABASE`. Leave it unset and it follows `CERBERUS_AUTO_CREATE_SCHEMA`
+  — the hook creates the database too.
+
+> **Why the database create needs a bootstrap connection.** ClickHouse rejects
+> *every* statement (even `CREATE DATABASE`) on a session whose default database
+> doesn't exist — and the configured database (`CERBERUS_CH_DATABASE`) is the
+> session default, which is exactly the one that may be missing on a cold
+> cluster. So when cerberus creates the database it does so over a one-time
+> connection bound to ClickHouse's always-present `default` database; the
+> fully-qualified `<db>.<table>` table creates run from there too.
 
 **Retention is per signal.** `CERBERUS_SCHEMA_TTL` sets a global default;
 `CERBERUS_SCHEMA_TTL_{METRICS,LOGS,TRACES}` override one signal each (a zero

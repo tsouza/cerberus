@@ -108,6 +108,40 @@ func TestFromEnv_SchemaTTL_Invalid(t *testing.T) {
 	}
 }
 
+// TestFromEnv_AutoCreateDatabase_InheritsSchema pins that
+// CERBERUS_AUTO_CREATE_DATABASE defaults to CERBERUS_AUTO_CREATE_SCHEMA's
+// value when unset, and that an explicit value overrides it.
+func TestFromEnv_AutoCreateDatabase_InheritsSchema(t *testing.T) {
+	cases := []struct {
+		name         string
+		schema       string // CERBERUS_AUTO_CREATE_SCHEMA
+		database     string // CERBERUS_AUTO_CREATE_DATABASE ("" = unset)
+		wantSchema   bool
+		wantDatabase bool
+	}{
+		{"both off (default)", "false", "", false, false},
+		{"schema on inherits db on", "true", "", true, true},
+		{"schema on, db explicitly off", "true", "false", true, false},
+		{"schema off, db explicitly on", "false", "true", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CERBERUS_AUTO_CREATE_SCHEMA", tc.schema)
+			t.Setenv("CERBERUS_AUTO_CREATE_DATABASE", tc.database)
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+			if cfg.AutoCreateSchema != tc.wantSchema {
+				t.Errorf("AutoCreateSchema = %v; want %v", cfg.AutoCreateSchema, tc.wantSchema)
+			}
+			if cfg.AutoCreateDatabase != tc.wantDatabase {
+				t.Errorf("AutoCreateDatabase = %v; want %v", cfg.AutoCreateDatabase, tc.wantDatabase)
+			}
+		})
+	}
+}
+
 // TestFromEnv_HTTPAddr_Default confirms the documented :8080 fallback
 // when CERBERUS_HTTP_ADDR is unset.
 func TestFromEnv_HTTPAddr_Default(t *testing.T) {

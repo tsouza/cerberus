@@ -171,7 +171,7 @@ func TestRetrySchemaApply_FlipsReadyAfterTransientFailures(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		retrySchemaApply(ctx, slog.New(slog.DiscardHandler), &ready, time.Millisecond, apply)
+		retrySchemaApply(ctx, slog.New(slog.DiscardHandler), &ready, time.Millisecond, apply, func() {})
 	}()
 
 	select {
@@ -201,7 +201,7 @@ func TestRetrySchemaApply_StopsOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		retrySchemaApply(ctx, slog.New(slog.DiscardHandler), &ready, time.Millisecond, apply)
+		retrySchemaApply(ctx, slog.New(slog.DiscardHandler), &ready, time.Millisecond, apply, func() {})
 	}()
 
 	cancel()
