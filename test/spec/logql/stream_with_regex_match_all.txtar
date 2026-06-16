@@ -1,13 +1,15 @@
 -- query.logql --
 {service_name=~".*"}
 -- sql --
-SELECT * FROM `otel_logs` WHERE match(coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])), ?)
+SELECT * FROM `otel_logs` WHERE match(coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))), ?)
 -- args --
 [0] string = ""
 [1] string = "service_name"
 [2] string = "service_name"
 [3] string = "service.name"
-[4] string = ".*"
+[4] string = "service.name"
+[5] string = "service/name"
+[6] string = ".*"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -27,5 +29,5 @@ INSERT INTO otel_logs (Body) VALUES ('r1'), ('r2'), ('r3'), ('r4');
   ["r4"]
 ]
 -- chplan --
-Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) =~ ".*")
+Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) =~ ".*")
   Scan(otel_logs)

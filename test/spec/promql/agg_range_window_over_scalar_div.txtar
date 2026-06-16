@@ -1,0 +1,184 @@
+-- query.promql --
+sum(sum_over_time(loadbalancing_googleapis_com_https_request_count[5m])) / 300
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('loadbalancing_googleapis_com_https_request_count', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:30', 9), 150),
+    ('loadbalancing_googleapis_com_https_request_count', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 150);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 1]
+]
+-- description --
+Regression (rc.8 Issue C control): an AGGREGATED range-vector divided by a
+scalar — sum(sum_over_time(m[5m])) / 300. The aggregate wrapper already
+synthesises TimeUnix (wrapAggregateForSample), so this form worked before the
+fix; pinned alongside the bare-range case so both binop-over-range shapes stay
+covered. inner sum = 300 over the 5m window; / 300 = 1.
+-- args --
+[0] string = ""
+[1] float64 = 300
+[2] string = ""
+[3] string = "Map(String,String)"
+[4] int64 = 9
+[5] string = "loadbalancing_googleapis_com_https_request_count"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = "loadbalancing_googleapis_com_https_request"
+[11] string = "loadbalancing.googleapis.com.https.request"
+[12] string = "loadbalancing.googleapis.com.https/request"
+[13] string = "loadbalancing.googleapis.com.https_request"
+[14] string = "loadbalancing.googleapis.com/https/request"
+[15] string = "loadbalancing.googleapis.com/https_request"
+[16] string = "loadbalancing.googleapis.com_https.request"
+[17] string = "loadbalancing.googleapis.com_https_request"
+[18] string = "loadbalancing.googleapis/com/https/request"
+[19] string = "loadbalancing.googleapis/com/https_request"
+[20] string = "loadbalancing.googleapis/com_https_request"
+[21] string = "loadbalancing.googleapis_com.https.request"
+[22] string = "loadbalancing.googleapis_com.https_request"
+[23] string = "loadbalancing.googleapis_com_https.request"
+[24] string = "loadbalancing.googleapis_com_https_request"
+[25] string = "loadbalancing/googleapis/com/https/request"
+[26] string = "loadbalancing/googleapis/com/https_request"
+[27] string = "loadbalancing/googleapis/com_https_request"
+[28] string = "loadbalancing/googleapis_com_https_request"
+[29] string = "loadbalancing_googleapis.com.https.request"
+[30] string = "loadbalancing_googleapis.com.https_request"
+[31] string = "loadbalancing_googleapis.com_https.request"
+[32] string = "loadbalancing_googleapis.com_https_request"
+[33] string = "loadbalancing_googleapis_com.https.request"
+[34] string = "loadbalancing_googleapis_com.https_request"
+[35] string = "loadbalancing_googleapis_com_https.request"
+[36] string = "service.name"
+[37] string = "service_name"
+[38] string = "service.name"
+[39] string = "service_name"
+[40] string = "loadbalancing_googleapis_com_https_request_count"
+[41] string = "loadbalancing.googleapis.com.https.request.count"
+[42] string = "loadbalancing.googleapis.com.https.request/count"
+[43] string = "loadbalancing.googleapis.com.https.request_count"
+[44] string = "loadbalancing.googleapis.com.https/request/count"
+[45] string = "loadbalancing.googleapis.com.https/request_count"
+[46] string = "loadbalancing.googleapis.com.https_request.count"
+[47] string = "loadbalancing.googleapis.com.https_request_count"
+[48] string = "loadbalancing.googleapis.com/https/request/count"
+[49] string = "loadbalancing.googleapis.com/https/request_count"
+[50] string = "loadbalancing.googleapis.com/https_request_count"
+[51] string = "loadbalancing.googleapis.com_https.request.count"
+[52] string = "loadbalancing.googleapis.com_https.request_count"
+[53] string = "loadbalancing.googleapis.com_https_request.count"
+[54] string = "loadbalancing.googleapis.com_https_request_count"
+[55] string = "loadbalancing.googleapis/com/https/request/count"
+[56] string = "loadbalancing.googleapis/com/https/request_count"
+[57] string = "loadbalancing.googleapis/com/https_request_count"
+[58] string = "loadbalancing.googleapis/com_https_request_count"
+[59] string = "loadbalancing.googleapis_com.https.request.count"
+[60] string = "loadbalancing.googleapis_com.https.request_count"
+[61] string = "loadbalancing.googleapis_com.https_request.count"
+[62] string = "loadbalancing.googleapis_com.https_request_count"
+[63] string = "loadbalancing.googleapis_com_https.request.count"
+[64] string = "loadbalancing.googleapis_com_https.request_count"
+[65] string = "loadbalancing.googleapis_com_https_request.count"
+[66] string = "loadbalancing.googleapis_com_https_request_count"
+[67] string = "loadbalancing/googleapis/com/https/request/count"
+[68] string = "loadbalancing/googleapis/com/https/request_count"
+[69] string = "loadbalancing/googleapis/com/https_request_count"
+[70] string = "loadbalancing/googleapis/com_https_request_count"
+[71] string = "loadbalancing/googleapis_com_https_request_count"
+[72] string = "loadbalancing_googleapis.com.https.request.count"
+[73] string = "loadbalancing_googleapis.com.https.request_count"
+[74] string = "loadbalancing_googleapis.com.https_request.count"
+[75] string = "loadbalancing_googleapis.com.https_request_count"
+[76] string = "loadbalancing_googleapis.com_https.request.count"
+[77] string = "loadbalancing_googleapis.com_https.request_count"
+[78] string = "loadbalancing_googleapis.com_https_request.count"
+[79] string = "loadbalancing_googleapis.com_https_request_count"
+[80] string = "loadbalancing_googleapis_com.https.request.count"
+[81] string = "loadbalancing_googleapis_com.https.request_count"
+[82] string = "loadbalancing_googleapis_com.https_request.count"
+[83] string = "loadbalancing_googleapis_com.https_request_count"
+[84] string = "loadbalancing_googleapis_com_https.request.count"
+[85] string = "loadbalancing_googleapis_com_https.request_count"
+[86] string = "loadbalancing_googleapis_com_https_request.count"
+[87] string = "service.name"
+[88] string = "service_name"
+[89] string = "service.name"
+[90] string = "service_name"
+[91] string = "loadbalancing_googleapis_com_https_request_count"
+[92] string = "loadbalancing.googleapis.com.https.request.count"
+[93] string = "loadbalancing.googleapis.com.https.request/count"
+[94] string = "loadbalancing.googleapis.com.https.request_count"
+[95] string = "loadbalancing.googleapis.com.https/request/count"
+[96] string = "loadbalancing.googleapis.com.https/request_count"
+[97] string = "loadbalancing.googleapis.com.https_request.count"
+[98] string = "loadbalancing.googleapis.com.https_request_count"
+[99] string = "loadbalancing.googleapis.com/https/request/count"
+[100] string = "loadbalancing.googleapis.com/https/request_count"
+[101] string = "loadbalancing.googleapis.com/https_request_count"
+[102] string = "loadbalancing.googleapis.com_https.request.count"
+[103] string = "loadbalancing.googleapis.com_https.request_count"
+[104] string = "loadbalancing.googleapis.com_https_request.count"
+[105] string = "loadbalancing.googleapis.com_https_request_count"
+[106] string = "loadbalancing.googleapis/com/https/request/count"
+[107] string = "loadbalancing.googleapis/com/https/request_count"
+[108] string = "loadbalancing.googleapis/com/https_request_count"
+[109] string = "loadbalancing.googleapis/com_https_request_count"
+[110] string = "loadbalancing.googleapis_com.https.request.count"
+[111] string = "loadbalancing.googleapis_com.https.request_count"
+[112] string = "loadbalancing.googleapis_com.https_request.count"
+[113] string = "loadbalancing.googleapis_com.https_request_count"
+[114] string = "loadbalancing.googleapis_com_https.request.count"
+[115] string = "loadbalancing.googleapis_com_https.request_count"
+[116] string = "loadbalancing.googleapis_com_https_request.count"
+[117] string = "loadbalancing.googleapis_com_https_request_count"
+[118] string = "loadbalancing/googleapis/com/https/request/count"
+[119] string = "loadbalancing/googleapis/com/https/request_count"
+[120] string = "loadbalancing/googleapis/com/https_request_count"
+[121] string = "loadbalancing/googleapis/com_https_request_count"
+[122] string = "loadbalancing/googleapis_com_https_request_count"
+[123] string = "loadbalancing_googleapis.com.https.request.count"
+[124] string = "loadbalancing_googleapis.com.https.request_count"
+[125] string = "loadbalancing_googleapis.com.https_request.count"
+[126] string = "loadbalancing_googleapis.com.https_request_count"
+[127] string = "loadbalancing_googleapis.com_https.request.count"
+[128] string = "loadbalancing_googleapis.com_https.request_count"
+[129] string = "loadbalancing_googleapis.com_https_request.count"
+[130] string = "loadbalancing_googleapis.com_https_request_count"
+[131] string = "loadbalancing_googleapis_com.https.request.count"
+[132] string = "loadbalancing_googleapis_com.https.request_count"
+[133] string = "loadbalancing_googleapis_com.https_request.count"
+[134] string = "loadbalancing_googleapis_com.https_request_count"
+[135] string = "loadbalancing_googleapis_com_https.request.count"
+[136] string = "loadbalancing_googleapis_com_https.request_count"
+[137] string = "loadbalancing_googleapis_com_https_request.count"
+-- chplan --
+Project ["" AS MetricName, Attributes, TimeUnix, (Value / 300) AS Value]
+  Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+    Aggregate groupBy=[] funcs=[sum(Value) AS Value]
+      RangeWindow func=sum_over_time range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
+        UnionAll arms=3
+          Project ["loadbalancing_googleapis_com_https_request_count" AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
+            Filter predicate=(MetricName IN ("loadbalancing_googleapis_com_https_request", "loadbalancing.googleapis.com.https.request", "loadbalancing.googleapis.com.https/request", "loadbalancing.googleapis.com.https_request", "loadbalancing.googleapis.com/https/request", "loadbalancing.googleapis.com/https_request", "loadbalancing.googleapis.com_https.request", "loadbalancing.googleapis.com_https_request", "loadbalancing.googleapis/com/https/request", "loadbalancing.googleapis/com/https_request", "loadbalancing.googleapis/com_https_request", "loadbalancing.googleapis_com.https.request", "loadbalancing.googleapis_com.https_request", "loadbalancing.googleapis_com_https.request", "loadbalancing.googleapis_com_https_request", "loadbalancing/googleapis/com/https/request", "loadbalancing/googleapis/com/https_request", "loadbalancing/googleapis/com_https_request", "loadbalancing/googleapis_com_https_request", "loadbalancing_googleapis.com.https.request", "loadbalancing_googleapis.com.https_request", "loadbalancing_googleapis.com_https.request", "loadbalancing_googleapis.com_https_request", "loadbalancing_googleapis_com.https.request", "loadbalancing_googleapis_com.https_request", "loadbalancing_googleapis_com_https.request"))
+              Scan(otel_metrics_histogram)
+          Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName IN ("loadbalancing_googleapis_com_https_request_count", "loadbalancing.googleapis.com.https.request.count", "loadbalancing.googleapis.com.https.request/count", "loadbalancing.googleapis.com.https.request_count", "loadbalancing.googleapis.com.https/request/count", "loadbalancing.googleapis.com.https/request_count", "loadbalancing.googleapis.com.https_request.count", "loadbalancing.googleapis.com.https_request_count", "loadbalancing.googleapis.com/https/request/count", "loadbalancing.googleapis.com/https/request_count", "loadbalancing.googleapis.com/https_request_count", "loadbalancing.googleapis.com_https.request.count", "loadbalancing.googleapis.com_https.request_count", "loadbalancing.googleapis.com_https_request.count", "loadbalancing.googleapis.com_https_request_count", "loadbalancing.googleapis/com/https/request/count", "loadbalancing.googleapis/com/https/request_count", "loadbalancing.googleapis/com/https_request_count", "loadbalancing.googleapis/com_https_request_count", "loadbalancing.googleapis_com.https.request.count", "loadbalancing.googleapis_com.https.request_count", "loadbalancing.googleapis_com.https_request.count", "loadbalancing.googleapis_com.https_request_count", "loadbalancing.googleapis_com_https.request.count", "loadbalancing.googleapis_com_https.request_count", "loadbalancing.googleapis_com_https_request.count", "loadbalancing.googleapis_com_https_request_count", "loadbalancing/googleapis/com/https/request/count", "loadbalancing/googleapis/com/https/request_count", "loadbalancing/googleapis/com/https_request_count", "loadbalancing/googleapis/com_https_request_count", "loadbalancing/googleapis_com_https_request_count", "loadbalancing_googleapis.com.https.request.count", "loadbalancing_googleapis.com.https.request_count", "loadbalancing_googleapis.com.https_request.count", "loadbalancing_googleapis.com.https_request_count", "loadbalancing_googleapis.com_https.request.count", "loadbalancing_googleapis.com_https.request_count", "loadbalancing_googleapis.com_https_request.count", "loadbalancing_googleapis.com_https_request_count", "loadbalancing_googleapis_com.https.request.count", "loadbalancing_googleapis_com.https.request_count", "loadbalancing_googleapis_com.https_request.count", "loadbalancing_googleapis_com.https_request_count", "loadbalancing_googleapis_com_https.request.count", "loadbalancing_googleapis_com_https.request_count", "loadbalancing_googleapis_com_https_request.count"))
+              Scan(otel_metrics_sum)
+          Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName IN ("loadbalancing_googleapis_com_https_request_count", "loadbalancing.googleapis.com.https.request.count", "loadbalancing.googleapis.com.https.request/count", "loadbalancing.googleapis.com.https.request_count", "loadbalancing.googleapis.com.https/request/count", "loadbalancing.googleapis.com.https/request_count", "loadbalancing.googleapis.com.https_request.count", "loadbalancing.googleapis.com.https_request_count", "loadbalancing.googleapis.com/https/request/count", "loadbalancing.googleapis.com/https/request_count", "loadbalancing.googleapis.com/https_request_count", "loadbalancing.googleapis.com_https.request.count", "loadbalancing.googleapis.com_https.request_count", "loadbalancing.googleapis.com_https_request.count", "loadbalancing.googleapis.com_https_request_count", "loadbalancing.googleapis/com/https/request/count", "loadbalancing.googleapis/com/https/request_count", "loadbalancing.googleapis/com/https_request_count", "loadbalancing.googleapis/com_https_request_count", "loadbalancing.googleapis_com.https.request.count", "loadbalancing.googleapis_com.https.request_count", "loadbalancing.googleapis_com.https_request.count", "loadbalancing.googleapis_com.https_request_count", "loadbalancing.googleapis_com_https.request.count", "loadbalancing.googleapis_com_https.request_count", "loadbalancing.googleapis_com_https_request.count", "loadbalancing.googleapis_com_https_request_count", "loadbalancing/googleapis/com/https/request/count", "loadbalancing/googleapis/com/https/request_count", "loadbalancing/googleapis/com/https_request_count", "loadbalancing/googleapis/com_https_request_count", "loadbalancing/googleapis_com_https_request_count", "loadbalancing_googleapis.com.https.request.count", "loadbalancing_googleapis.com.https.request_count", "loadbalancing_googleapis.com.https_request.count", "loadbalancing_googleapis.com.https_request_count", "loadbalancing_googleapis.com_https.request.count", "loadbalancing_googleapis.com_https.request_count", "loadbalancing_googleapis.com_https_request.count", "loadbalancing_googleapis.com_https_request_count", "loadbalancing_googleapis_com.https.request.count", "loadbalancing_googleapis_com.https.request_count", "loadbalancing_googleapis_com.https_request.count", "loadbalancing_googleapis_com.https_request_count", "loadbalancing_googleapis_com_https.request.count", "loadbalancing_googleapis_com_https.request_count", "loadbalancing_googleapis_com_https_request.count"))
+              Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, (`Value` / toFloat64(?)) AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `Attributes`, arraySum(window_vals) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM ((SELECT ? AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1)) WHERE `_cerb_n` > 0))

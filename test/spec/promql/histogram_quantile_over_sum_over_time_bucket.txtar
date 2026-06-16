@@ -1,0 +1,97 @@
+-- query.promql --
+histogram_quantile(0.99, sum by (le)(sum_over_time(loadbalancing_googleapis_com_https_total_latencies_bucket[5m])))
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('loadbalancing_googleapis_com_https_total_latencies', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:30', 9), 10, 5.0,  [3,4,3], [0.1,0.5,1.0]),
+    ('loadbalancing_googleapis_com_https_total_latencies', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 70, 35.0, [21,28,21], [0.1,0.5,1.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 1]
+]
+-- description --
+Regression (rc.8 Issue B): histogram_quantile over sum by(le)(sum_over_time(
+_bucket[5m])) for a DELTA histogram. matchHistogramAggIdiom only recognised
+rate/increase as the inner bucket aggregation, so the sum_over_time form fell to
+the non-bucket fallback (Filter(input,false)) → empty. The fix adds sum_over_time
+to the idiom (scale-invariant: histogram_quantile interpolates cumulative-count
+RATIOS, so DELTA-histogram sum_over_time aggregation is the canonical shape). The
+inner agg returns le-keyed bucket series; the quantile interpolates rather than
+collapsing to empty. p99 lands in the top (>=1.0/+Inf) bucket.
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "Map(String,String)"
+[3] string = "loadbalancing_googleapis_com_https_total_latencies"
+[4] string = "loadbalancing.googleapis.com.https.total.latencies"
+[5] string = "loadbalancing.googleapis.com.https.total/latencies"
+[6] string = "loadbalancing.googleapis.com.https.total_latencies"
+[7] string = "loadbalancing.googleapis.com.https/total/latencies"
+[8] string = "loadbalancing.googleapis.com.https/total_latencies"
+[9] string = "loadbalancing.googleapis.com.https_total.latencies"
+[10] string = "loadbalancing.googleapis.com.https_total_latencies"
+[11] string = "loadbalancing.googleapis.com/https/total/latencies"
+[12] string = "loadbalancing.googleapis.com/https/total_latencies"
+[13] string = "loadbalancing.googleapis.com/https_total_latencies"
+[14] string = "loadbalancing.googleapis.com_https.total.latencies"
+[15] string = "loadbalancing.googleapis.com_https.total_latencies"
+[16] string = "loadbalancing.googleapis.com_https_total.latencies"
+[17] string = "loadbalancing.googleapis.com_https_total_latencies"
+[18] string = "loadbalancing.googleapis/com/https/total/latencies"
+[19] string = "loadbalancing.googleapis/com/https/total_latencies"
+[20] string = "loadbalancing.googleapis/com/https_total_latencies"
+[21] string = "loadbalancing.googleapis/com_https_total_latencies"
+[22] string = "loadbalancing.googleapis_com.https.total.latencies"
+[23] string = "loadbalancing.googleapis_com.https.total_latencies"
+[24] string = "loadbalancing.googleapis_com.https_total.latencies"
+[25] string = "loadbalancing.googleapis_com.https_total_latencies"
+[26] string = "loadbalancing.googleapis_com_https.total.latencies"
+[27] string = "loadbalancing.googleapis_com_https.total_latencies"
+[28] string = "loadbalancing.googleapis_com_https_total.latencies"
+[29] string = "loadbalancing.googleapis_com_https_total_latencies"
+[30] string = "loadbalancing/googleapis/com/https/total/latencies"
+[31] string = "loadbalancing/googleapis/com/https/total_latencies"
+[32] string = "loadbalancing/googleapis/com/https_total_latencies"
+[33] string = "loadbalancing/googleapis/com_https_total_latencies"
+[34] string = "loadbalancing/googleapis_com_https_total_latencies"
+[35] string = "loadbalancing_googleapis.com.https.total.latencies"
+[36] string = "loadbalancing_googleapis.com.https.total_latencies"
+[37] string = "loadbalancing_googleapis.com.https_total.latencies"
+[38] string = "loadbalancing_googleapis.com.https_total_latencies"
+[39] string = "loadbalancing_googleapis.com_https.total.latencies"
+[40] string = "loadbalancing_googleapis.com_https.total_latencies"
+[41] string = "loadbalancing_googleapis.com_https_total.latencies"
+[42] string = "loadbalancing_googleapis.com_https_total_latencies"
+[43] string = "loadbalancing_googleapis_com.https.total.latencies"
+[44] string = "loadbalancing_googleapis_com.https.total_latencies"
+[45] string = "loadbalancing_googleapis_com.https_total.latencies"
+[46] string = "loadbalancing_googleapis_com.https_total_latencies"
+[47] string = "loadbalancing_googleapis_com_https.total.latencies"
+[48] string = "loadbalancing_googleapis_com_https.total_latencies"
+[49] string = "loadbalancing_googleapis_com_https_total.latencies"
+[50] string = "2026-01-01 00:00:01.000000000"
+[51] int64 = 9
+[52] string = "2026-01-01 00:00:01.000000000"
+[53] int64 = 9
+[54] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.99 groupBy=[Attributes AS Attributes]
+    Project [CAST(map(), "Map(String,String)") AS Attributes, BucketCounts AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      Aggregate groupBy=[] funcs=[sumForEach(BucketCounts) AS BucketCounts, any(ExplicitBounds) AS ExplicitBounds]
+        Filter predicate=(((MetricName IN ("loadbalancing_googleapis_com_https_total_latencies", "loadbalancing.googleapis.com.https.total.latencies", "loadbalancing.googleapis.com.https.total/latencies", "loadbalancing.googleapis.com.https.total_latencies", "loadbalancing.googleapis.com.https/total/latencies", "loadbalancing.googleapis.com.https/total_latencies", "loadbalancing.googleapis.com.https_total.latencies", "loadbalancing.googleapis.com.https_total_latencies", "loadbalancing.googleapis.com/https/total/latencies", "loadbalancing.googleapis.com/https/total_latencies", "loadbalancing.googleapis.com/https_total_latencies", "loadbalancing.googleapis.com_https.total.latencies", "loadbalancing.googleapis.com_https.total_latencies", "loadbalancing.googleapis.com_https_total.latencies", "loadbalancing.googleapis.com_https_total_latencies", "loadbalancing.googleapis/com/https/total/latencies", "loadbalancing.googleapis/com/https/total_latencies", "loadbalancing.googleapis/com/https_total_latencies", "loadbalancing.googleapis/com_https_total_latencies", "loadbalancing.googleapis_com.https.total.latencies", "loadbalancing.googleapis_com.https.total_latencies", "loadbalancing.googleapis_com.https_total.latencies", "loadbalancing.googleapis_com.https_total_latencies", "loadbalancing.googleapis_com_https.total.latencies", "loadbalancing.googleapis_com_https.total_latencies", "loadbalancing.googleapis_com_https_total.latencies", "loadbalancing.googleapis_com_https_total_latencies", "loadbalancing/googleapis/com/https/total/latencies", "loadbalancing/googleapis/com/https/total_latencies", "loadbalancing/googleapis/com/https_total_latencies", "loadbalancing/googleapis/com_https_total_latencies", "loadbalancing/googleapis_com_https_total_latencies", "loadbalancing_googleapis.com.https.total.latencies", "loadbalancing_googleapis.com.https.total_latencies", "loadbalancing_googleapis.com.https_total.latencies", "loadbalancing_googleapis.com.https_total_latencies", "loadbalancing_googleapis.com_https.total.latencies", "loadbalancing_googleapis.com_https.total_latencies", "loadbalancing_googleapis.com_https_total.latencies", "loadbalancing_googleapis.com_https_total_latencies", "loadbalancing_googleapis_com.https.total.latencies", "loadbalancing_googleapis_com.https.total_latencies", "loadbalancing_googleapis_com.https_total.latencies", "loadbalancing_googleapis_com.https_total_latencies", "loadbalancing_googleapis_com_https.total.latencies", "loadbalancing_googleapis_com_https.total_latencies", "loadbalancing_googleapis_com_https_total.latencies")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.99 <= 0, 0.0, if(0.99 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.99 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT CAST(map(), ?) AS `Attributes`, `BucketCounts` AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `BucketCounts`, `ExplicitBounds` FROM (SELECT sumForEach(`BucketCounts`) AS `BucketCounts`, any(`ExplicitBounds`) AS `ExplicitBounds`, count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) WHERE `_cerb_n` > 0)))

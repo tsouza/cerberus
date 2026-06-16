@@ -187,6 +187,39 @@ function stripHistogramSuffix(metric: string): string {
   return metric;
 }
 
+// Max metric probes in flight at once for the every-published-metric sweep.
+// Each probe is two independent read-only HTTP round-trips; a small pool
+// mirrors how Grafana fans panel queries out and keeps the sweep's wall
+// time well inside the test budget without overwhelming the single
+// compose-stack cerberus / ClickHouse.
+const METRIC_PROBE_CONCURRENCY = 8;
+
+// mapWithConcurrency runs `fn` over `items` with at most `limit` calls in
+// flight, preserving input order in the returned results. Pulled out so the
+// every-metric sweep can fan out instead of awaiting serially — the serial
+// shape made the test's wall time scale with metric count and flake under
+// runner contention.
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = cursor;
+      cursor += 1;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+  return results;
+}
+
 test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () => {
   test.describe.configure({ mode: 'serial' });
 
@@ -258,77 +291,101 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
     const nowSec = Math.floor(Date.now() / 1000);
     const labelFailures: string[] = [];
 
-    for (const metric of names) {
-      const seriesBody = await fetchSeries(request, metric, nowSec);
-      const seriesCount = seriesBody.data.length;
-      const labelCount =
-        seriesCount > 0 ? Object.keys(seriesBody.data[0] ?? {}).length : 0;
-
-      // Sanity: the __name__ on every series matches the queried name,
-      // OR the queried name is a histogram synthetic-suffix view
-      // (`_count` / `_sum` / `_bucket`) of the returned __name__. The
-      // Prom-on-OTel convention is to expose histograms under the base
-      // name with the suffix as a derived view, so a /api/v1/series
-      // call for `http_server_request_duration_count` is expected to
-      // return rows with `__name__=http_server_request_duration`. Any
-      // other mismatch indicates the gateway echoed a different
-      // metric's labels.
-      const metricBase = stripHistogramSuffix(metric);
-      for (const s of seriesBody.data) {
-        if (!s.__name__ || s.__name__ === metric) continue;
-        // Queried name is a suffix view of returned name (round-2 path,
-        // e.g. queried `foo_count`, returned `foo`).
-        if (metricBase !== metric && s.__name__ === metricBase) continue;
-        // Returned name is a suffix view of the queried name (PR #699
-        // bare-name fan-out, e.g. queried `foo`, returned `foo_bucket`).
-        const returnedBase = stripHistogramSuffix(s.__name__);
-        if (returnedBase !== s.__name__ && returnedBase === metric) continue;
-        labelFailures.push(
-          `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
-        );
-      }
-
-      if (seriesCount === 0) {
-        labelFailures.push(
-          `metric=${metric}: /api/v1/series returned 0 series — every catalog-published metric must resolve to >= 1 series. Fix the cerberus catalog endpoint or the publishing pipeline.`,
-        );
-      }
-
-      const rangeBody = await fetchQueryRange(request, metric, nowSec);
-      const rangeSeries = rangeBody.data?.result?.length ?? 0;
-      let firstValue: string | null = null;
-      const r0 = rangeBody.data?.result?.[0];
-      if (r0 && Array.isArray(r0.values) && r0.values.length > 0) {
-        firstValue = String(r0.values[0]?.[1] ?? '');
-      }
-
-      // The QUERY surface must serve every catalog-advertised name —
-      // this is the exact call Drilldown-Metrics fires per preview
-      // panel, and an empty result renders the "wall of empty preview
-      // tiles" the round-3 sweep pinned. The /api/v1/series probe above
-      // is NOT sufficient: the series endpoint historically applied a
-      // matcher fan-out the query path lacked, so series returned rows
-      // while query_range returned nothing for dotted-stored (k8s_*,
-      // container_*) and bare classic-histogram names. No tolerance
-      // list: an empty result here is a cerberus catalog/lowering bug
-      // or a seed bug — fix it at the source.
-      if (rangeSeries === 0) {
-        labelFailures.push(
-          `metric=${metric}: /api/v1/query_range returned 0 series — ` +
-            `every catalog-advertised __name__ must be queryable ` +
-            `(empty preview panel in Drilldown-Metrics). Fix the ` +
-            `catalog advertisement or the selector lowering, never ` +
-            `this assertion.`,
-        );
-      }
-
-      summary.push({
+    // Probe every published metric with BOUNDED CONCURRENCY rather than a
+    // serial await-loop. The per-metric work is two independent read-only
+    // round-trips (/series + /query_range); a serial loop's wall time
+    // scales as N × latency, so on a contended CI runner the sweep tips
+    // the test's fixed budget and Playwright disposes the request context
+    // mid-flight ("Request context disposed" — a timing flake, not a real
+    // failure). A bounded pool keeps wall time ≈ (N / CONCURRENCY) × latency
+    // with large headroom while still probing EVERY catalog metric — no
+    // sampling, no coverage loss. Results merge in catalog order so the
+    // summary + failure report stay deterministic.
+    const probes = await mapWithConcurrency(
+      names,
+      METRIC_PROBE_CONCURRENCY,
+      async (
         metric,
-        label_count: labelCount,
-        series_count: seriesCount,
-        first_value: firstValue,
-        query_range_series: rangeSeries,
-      });
+      ): Promise<{ summary: MetricSummary; failures: string[] }> => {
+        const failures: string[] = [];
+        const seriesBody = await fetchSeries(request, metric, nowSec);
+        const seriesCount = seriesBody.data.length;
+        const labelCount =
+          seriesCount > 0 ? Object.keys(seriesBody.data[0] ?? {}).length : 0;
+
+        // Sanity: the __name__ on every series matches the queried name,
+        // OR the queried name is a histogram synthetic-suffix view
+        // (`_count` / `_sum` / `_bucket`) of the returned __name__. The
+        // Prom-on-OTel convention is to expose histograms under the base
+        // name with the suffix as a derived view, so a /api/v1/series
+        // call for `http_server_request_duration_count` is expected to
+        // return rows with `__name__=http_server_request_duration`. Any
+        // other mismatch indicates the gateway echoed a different
+        // metric's labels.
+        const metricBase = stripHistogramSuffix(metric);
+        for (const s of seriesBody.data) {
+          if (!s.__name__ || s.__name__ === metric) continue;
+          // Queried name is a suffix view of returned name (round-2 path,
+          // e.g. queried `foo_count`, returned `foo`).
+          if (metricBase !== metric && s.__name__ === metricBase) continue;
+          // Returned name is a suffix view of the queried name (PR #699
+          // bare-name fan-out, e.g. queried `foo`, returned `foo_bucket`).
+          const returnedBase = stripHistogramSuffix(s.__name__);
+          if (returnedBase !== s.__name__ && returnedBase === metric) continue;
+          failures.push(
+            `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
+          );
+        }
+
+        if (seriesCount === 0) {
+          failures.push(
+            `metric=${metric}: /api/v1/series returned 0 series — every catalog-published metric must resolve to >= 1 series. Fix the cerberus catalog endpoint or the publishing pipeline.`,
+          );
+        }
+
+        const rangeBody = await fetchQueryRange(request, metric, nowSec);
+        const rangeSeries = rangeBody.data?.result?.length ?? 0;
+        let firstValue: string | null = null;
+        const r0 = rangeBody.data?.result?.[0];
+        if (r0 && Array.isArray(r0.values) && r0.values.length > 0) {
+          firstValue = String(r0.values[0]?.[1] ?? '');
+        }
+
+        // The QUERY surface must serve every catalog-advertised name —
+        // this is the exact call Drilldown-Metrics fires per preview
+        // panel, and an empty result renders the "wall of empty preview
+        // tiles" the round-3 sweep pinned. The /api/v1/series probe above
+        // is NOT sufficient: the series endpoint historically applied a
+        // matcher fan-out the query path lacked, so series returned rows
+        // while query_range returned nothing for dotted-stored (k8s_*,
+        // container_*) and bare classic-histogram names. No tolerance
+        // list: an empty result here is a cerberus catalog/lowering bug
+        // or a seed bug — fix it at the source.
+        if (rangeSeries === 0) {
+          failures.push(
+            `metric=${metric}: /api/v1/query_range returned 0 series — ` +
+              `every catalog-advertised __name__ must be queryable ` +
+              `(empty preview panel in Drilldown-Metrics). Fix the ` +
+              `catalog advertisement or the selector lowering, never ` +
+              `this assertion.`,
+          );
+        }
+
+        return {
+          summary: {
+            metric,
+            label_count: labelCount,
+            series_count: seriesCount,
+            first_value: firstValue,
+            query_range_series: rangeSeries,
+          },
+          failures,
+        };
+      },
+    );
+    for (const probe of probes) {
+      summary.push(probe.summary);
+      labelFailures.push(...probe.failures);
     }
 
     // Attach the summary as a CI artifact. The Playwright HTML report

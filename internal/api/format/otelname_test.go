@@ -202,29 +202,21 @@ func TestPromLabelToOTelCandidates(t *testing.T) {
 		{"empty", "", []string{""}},
 		{"no-underscore", "job", []string{"job"}},
 		{"name-label", "__name__", []string{"__name__"}},
-		{"single-internal", "cerberus_ql", []string{"cerberus_ql", "cerberus.ql"}},
+		// A k-underscore name expands to the dot powerset (2^k) UNIONed
+		// with the bounded dots→slashes→underscores zone variants, input
+		// first then the rest sorted. ASCII order is `.` < `/` < `_`.
+		{"single-internal", "cerberus_ql", []string{"cerberus_ql", "cerberus.ql", "cerberus/ql"}},
 		{
 			"two-internal",
 			"service_name_full",
 			[]string{
 				"service_name_full",
 				"service.name.full",
+				"service.name/full",
 				"service.name_full",
+				"service/name/full",
+				"service/name_full",
 				"service_name.full",
-			},
-		},
-		{
-			"three-internal",
-			"http_request_method_v2",
-			[]string{
-				"http_request_method_v2",
-				"http.request.method.v2",
-				"http.request.method_v2",
-				"http.request_method.v2",
-				"http.request_method_v2",
-				"http_request.method.v2",
-				"http_request.method_v2",
-				"http_request_method.v2",
 			},
 		},
 		// Leading-underscore is preserved (it's a Prom grammar marker
@@ -250,22 +242,96 @@ func TestPromLabelToOTelCandidates(t *testing.T) {
 	}
 }
 
+// TestPromLabelToOTelCandidatesInvariants pins the structural invariants
+// for a deeper name without hand-enumerating every entry: input first, no
+// duplicates, every candidate differs from the input only at the internal
+// underscore positions using only `.` / `/`, the dot powerset is a subset,
+// and the uniform all-dots / all-slashes endpoints are present.
+func TestPromLabelToOTelCandidatesInvariants(t *testing.T) {
+	in := "http_request_method_v2" // 3 internal underscores
+	got := format.PromLabelToOTelCandidates(in)
+	if got[0] != in {
+		t.Fatalf("first candidate must be input verbatim: got %q", got[0])
+	}
+	seen := map[string]bool{}
+	for _, c := range got {
+		if seen[c] {
+			t.Fatalf("duplicate candidate %q", c)
+		}
+		seen[c] = true
+		if len(c) != len(in) {
+			t.Fatalf("candidate %q changed length vs %q", c, in)
+		}
+		for i := range c {
+			if c[i] == in[i] {
+				continue
+			}
+			if in[i] != '_' {
+				t.Fatalf("candidate %q rewrote a non-underscore byte at %d", c, i)
+			}
+			if c[i] != '.' && c[i] != '/' {
+				t.Fatalf("candidate %q used separator %q (want . or /)", c, c[i])
+			}
+		}
+	}
+	for _, must := range []string{
+		"http.request.method.v2", // all-dots (dot powerset endpoint)
+		"http/request/method/v2", // all-slashes (zone endpoint)
+		"http.request_method.v2", // dot powerset member
+		"http.request/method/v2", // mixed dot→slash zone member
+	} {
+		if !seen[must] {
+			t.Fatalf("expected candidate %q missing from %v", must, got)
+		}
+	}
+}
+
+// TestPromLabelToOTelCandidatesGCP pins the dotted-AND-slashed GCP Cloud
+// Monitoring shape (rc.8 Issue A): the queried Prometheus name must
+// reverse-map to the literal raw OTel name the clickhouseexporter wrote,
+// e.g. `cloudsql.googleapis.com/database/up`. A `.`-only powerset never
+// reconstructs the slash segments — this is the regression guard. The
+// zone model (dots→slashes→underscores) covers the GCP
+// `domain.parts/path/parts/leaf_name` structure.
+func TestPromLabelToOTelCandidatesGCP(t *testing.T) {
+	for _, tc := range []struct{ in, raw string }{
+		{"cloudsql_googleapis_com_database_up", "cloudsql.googleapis.com/database/up"},
+		{"loadbalancing_googleapis_com_https_request_count", "loadbalancing.googleapis.com/https/request_count"},
+		{"loadbalancing_googleapis_com_https_total_latencies_bucket", "loadbalancing.googleapis.com/https/total_latencies_bucket"},
+	} {
+		got := format.PromLabelToOTelCandidates(tc.in)
+		found := false
+		for _, c := range got {
+			if c == tc.raw {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("PromLabelToOTelCandidates(%q): raw OTel name %q not reconstructed (got %d candidates)",
+				tc.in, tc.raw, len(got))
+		}
+	}
+}
+
 // TestPromLabelToOTelCandidatesCap pins the powerset cap — beyond 6
-// rewritable underscores the function falls back to two endpoints
-// (verbatim + all-dots) so the emitted coalesce chain stays bounded.
+// rewritable underscores the function falls back to the uniform endpoints
+// (verbatim + all-dots + all-slashes) so the candidate set stays bounded.
 func TestPromLabelToOTelCandidatesCap(t *testing.T) {
-	// 8 internal underscores → 256 powerset entries without the cap,
-	// 2 entries with it.
+	// 8 internal underscores → 2^8 + zone entries without the cap; 3 with it.
 	in := "a_b_c_d_e_f_g_h_i"
 	got := format.PromLabelToOTelCandidates(in)
-	if len(got) != 2 {
-		t.Fatalf("powerset cap not applied: got %d candidates, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("powerset cap not applied: got %d candidates, want 3", len(got))
 	}
 	if got[0] != in {
 		t.Fatalf("first candidate must be input verbatim: got %q", got[0])
 	}
 	if got[1] != "a.b.c.d.e.f.g.h.i" {
-		t.Fatalf("fallback candidate must be all-dots: got %q", got[1])
+		t.Fatalf("fallback candidate 1 must be all-dots: got %q", got[1])
+	}
+	if got[2] != "a/b/c/d/e/f/g/h/i" {
+		t.Fatalf("fallback candidate 2 must be all-slashes: got %q", got[2])
 	}
 }
 

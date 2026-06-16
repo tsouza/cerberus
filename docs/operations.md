@@ -616,6 +616,22 @@ pays nothing for the gauge/sum arms it doesn't use. This is why a gauge
 named `*_sum`/`*_count` is queryable as its literal name rather than
 silently resolving to a non-existent histogram base and returning empty.
 
+A second axis of resolution is the **separator**. A PromQL `__name__`
+carries only `[a-zA-Z0-9_:]`, but the OTel-CH `MetricName` it must match can
+hold the raw instrument name with **dots** (`k8s.pod.cpu.usage`) or
+**slashes** — notably GCP Cloud Monitoring metric types, whose name is
+`domain.parts/path/parts/leaf_name`, e.g.
+`cloudsql.googleapis.com/database/up`. Cerberus reverse-maps the queried
+underscored name to a bounded candidate set scanned via the same
+PK-pruned `MetricName IN (…)`: the `2^k` dot powerset (each internal `_`
+may have been a `.`), unioned with the **zone variants** that model the
+GCP shape — contiguous dots, then slashes, then underscores. So
+`cloudsql_googleapis_com_database_up` resolves to the slashed raw name
+without any write-side renaming. The candidate set stays bounded (a
+typical histogram chip ≈ 90 variants), so the `/series` metadata fan-out
+stays one round-trip. Arbitrary interleaved separators (`a/b.c/d`) are out
+of scope — real OTel/GCP names don't use them.
+
 ### Shutdown
 
 On `SIGINT` or `SIGTERM`, cerberus:

@@ -78,6 +78,12 @@
     "reason": "routed"
   },
   {
+    "query": "agg_range_window_over_scalar_div",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "at_end_basic",
     "routed": false,
     "k": 0,
@@ -924,6 +930,12 @@
     "reason": "routed"
   },
   {
+    "query": "histogram_quantile_over_sum_over_time_bucket",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_scalar_phi",
     "routed": false,
     "k": 0,
@@ -1036,6 +1048,12 @@
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
+  },
+  {
+    "query": "instant_sum_over_suffixed_count_delta_sum",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "irate_over_subquery",
@@ -1411,6 +1429,12 @@
   },
   {
     "query": "rad_metric",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "range_window_func_over_scalar_div",
     "routed": true,
     "k": 8,
     "reason": "routed"

@@ -58,13 +58,30 @@ var promLabelCandidateCache sync.Map // map[string][]string
 // Ambiguity: `cerberus_query_total` could mean `cerberus.query.total`,
 // `cerberus.query_total`, `cerberus_query.total`, or the original
 // `cerberus_query_total`. The function enumerates every subset of the
-// `_` positions; for `k` rewritable underscores it emits `2^k`
+// `_` positions as `.`; for `k` rewritable underscores it emits `2^k`
 // candidates (deduped against `s` itself). To keep query SQL bounded
 // the enumeration caps at `maxRewritableUnderscores = 6`
 // (`2^6 = 64` candidates). Beyond the cap the function falls back to
-// the two endpoints: `s` verbatim, plus the all-dots form. Real-world
+// the uniform endpoints (`s` verbatim, all-dots, all-slashes). Real-world
 // OTel keys carry 1-4 dots; the cap only kicks in for pathological
 // names.
+//
+// Slash separators (rc.8): OTelToPromMetric collapses `/` to `_` too, so
+// a stored name can also be slashed — notably GCP Cloud Monitoring metric
+// types, whose raw OTel name is `domain.parts/path/parts/leaf_name`, e.g.
+// `cloudsql.googleapis.com/database/up`. A pure dot powerset never
+// reconstructs the slash segments. Rather than enumerate the full 3^k
+// `_`/`.`/`/` powerset (which triples the candidate count and inflates the
+// /series metadata fan-out), we add only the BOUNDED zone variants that
+// match real names' structure: contiguous DOTS (the dotted namespace),
+// then contiguous SLASHES (the path), then contiguous UNDERSCORES (the
+// leaf). For `k` positions that is the `(k+1)(k+2)/2` choices of two split
+// points `0 ≤ i ≤ j ≤ k` — positions `[0,i)` become `.`, `[i,j)` become
+// `/`, `[j,k)` stay `_`. Unioned with the dot powerset this stays well
+// under the metadata arm cap (a typical histogram chip ≈ 90 candidates)
+// while reconstructing every `domain/path/leaf` GCP name. Truly arbitrary
+// interleaved separators (`a/b.c/d`) are out of scope — real OTel names
+// don't use them.
 //
 // Output ordering: `s` is always candidates[0]; the rest are sorted
 // alphabetically so the emitted coalesce chain is deterministic
@@ -126,52 +143,69 @@ func computePromLabelCandidates(s string) []string {
 		return []string{s}
 	}
 
+	seen := map[string]struct{}{s: {}}
+	out := []string{s}
+	add := func(b []byte) {
+		v := string(b)
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+
 	const maxRewritableUnderscores = 6
 	if len(positions) > maxRewritableUnderscores {
-		// Fallback: emit just `s` + the all-dots expansion. Two-entry
-		// shape keeps the emitter footprint small for pathologically
-		// long names.
-		allDots := []byte(s)
-		for _, p := range positions {
-			allDots[p] = '.'
-		}
-		out := []string{s, string(allDots)}
-		// Dedup in case s == allDots is impossible (positions non-empty),
-		// but keep the explicit check for symmetry with the powerset path.
-		if out[1] == out[0] {
-			return out[:1]
+		// Fallback: emit `s` + the two uniform expansions (all-dots,
+		// all-slashes). The dot powerset and zone enumeration are dropped
+		// here to keep the emitter footprint small for pathologically long
+		// names; uniform-separator names are the common deep shape.
+		for _, sep := range []byte{'.', '/'} {
+			b := []byte(s)
+			for _, p := range positions {
+				b[p] = sep
+			}
+			add(b)
 		}
 		return out
 	}
 
-	// Enumerate the powerset of `positions` — every subset is the set
-	// of underscores that become dots. Bit i of the mask flips
-	// positions[i].
-	total := 1 << len(positions)
-	seen := make(map[string]struct{}, total)
-	out := make([]string, 0, total)
-	seen[s] = struct{}{}
-	out = append(out, s)
 	buf := make([]byte, len(s))
-	for mask := 1; mask < total; mask++ {
+
+	// 1) Dot powerset: every subset of `positions` becomes `.` (the OTel
+	// dotted-namespace shape). Bit i of the mask flips positions[i].
+	for mask := 1; mask < 1<<len(positions); mask++ {
 		copy(buf, s)
 		for i, p := range positions {
 			if mask&(1<<i) != 0 {
 				buf[p] = '.'
 			}
 		}
-		v := string(buf)
-		if _, ok := seen[v]; ok {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
+		add(buf)
 	}
+
+	// 2) Slash zone variants: contiguous DOTS [0,i) → SLASHES [i,j) →
+	// UNDERSCORES [j,k), for every split pair 0 ≤ i ≤ j ≤ k. Reconstructs
+	// `domain.parts/path/parts/leaf_name` GCP names without the 3^k blowup.
+	for i := 0; i <= len(positions); i++ {
+		for j := i; j <= len(positions); j++ {
+			copy(buf, s)
+			for idx, p := range positions {
+				switch {
+				case idx < i:
+					buf[p] = '.'
+				case idx < j:
+					buf[p] = '/'
+				}
+			}
+			add(buf)
+		}
+	}
+
 	// Stable order: keep `s` first (so callers that only want the
 	// canonical form can read [0]), sort the rest alphabetically.
 	if len(out) > 2 {
-		rest := out[1:]
-		sort.Strings(rest)
+		sort.Strings(out[1:])
 	}
 	return out
 }

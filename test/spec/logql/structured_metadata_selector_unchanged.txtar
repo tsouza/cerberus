@@ -11,15 +11,17 @@ INSERT INTO otel_logs (Body) VALUES ('a'), ('b');
 -- expected_rows --
 []
 -- chplan --
-Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "clickhouse") AND (ResourceAttributes["tier"] = "gold"))
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (ResourceAttributes["tier"] = "gold"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (`ResourceAttributes`[?] = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (`ResourceAttributes`[?] = ?)
 -- args --
 [0] string = ""
 [1] string = "service_name"
 [2] string = "service_name"
 [3] string = "service.name"
-[4] string = "clickhouse"
-[5] string = "tier"
-[6] string = "gold"
+[4] string = "service.name"
+[5] string = "service/name"
+[6] string = "clickhouse"
+[7] string = "tier"
+[8] string = "gold"

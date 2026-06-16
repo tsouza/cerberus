@@ -66,23 +66,30 @@ INSERT INTO otel_metrics_sum VALUES
 [2] string = "cerberus_ql"
 [3] string = "cerberus_ql"
 [4] string = "cerberus.ql"
-[5] string = "service.name"
-[6] string = "service_name"
+[5] string = "cerberus.ql"
+[6] string = "cerberus/ql"
 [7] string = "service.name"
 [8] string = "service_name"
-[9] string = "cerberus_queries_total"
-[10] string = "cerberus.queries.total"
-[11] string = "cerberus.queries_total"
-[12] string = "cerberus_queries.total"
-[13] string = "cerberus_ql"
-[14] string = "cerberus_ql"
-[15] string = "cerberus.ql"
+[9] string = "service.name"
+[10] string = "service_name"
+[11] string = "cerberus_queries_total"
+[12] string = "cerberus.queries.total"
+[13] string = "cerberus.queries/total"
+[14] string = "cerberus.queries_total"
+[15] string = "cerberus/queries/total"
+[16] string = "cerberus/queries_total"
+[17] string = "cerberus_queries.total"
+[18] string = "cerberus_ql"
+[19] string = "cerberus_ql"
+[20] string = "cerberus.ql"
+[21] string = "cerberus.ql"
+[22] string = "cerberus/ql"
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(map("cerberus_ql", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], Attributes["cerberus.ql"]) AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+  Aggregate groupBy=[if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], if(mapContains(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])) AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
     RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
       Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-        Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries_total", "cerberus_queries.total"))
+        Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total"))
           Scan(otel_metrics_sum)
 -- sql --
-SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `anchor_ts` AS `TimeUnix`, toFloat64(`grid_val`) AS `Value` FROM (SELECT `Attributes`, timeSeriesRateToGrid(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?)))) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]), `TimeUnix`)
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])) AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `anchor_ts` AS `TimeUnix`, toFloat64(`grid_val`) AS `Value` FROM (SELECT `Attributes`, timeSeriesRateToGrid(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])), `TimeUnix`)

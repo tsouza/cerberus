@@ -388,20 +388,22 @@ type histogramAggShape struct {
 }
 
 // matchHistogramAggIdiom walks the expression tree looking for the
-// shape `[sum by/without (...) ((paren))*] rate|increase((paren)*
+// shape `[sum by/without (...) ((paren))*] rate|increase|sum_over_time((paren)*
 // <VectorSelector>[range])`. Returns the captured shape on a match.
 //
 // Accepted shapes (after peeling ParenExpr / StepInvariantExpr at each
 // level):
 //   - rate(metric_bucket[5m])
 //   - increase(metric_bucket[5m])
+//   - sum_over_time(metric_bucket[5m])   (DELTA-histogram aggregation)
 //   - sum by(le)(rate(metric_bucket[5m]))
+//   - sum by(le)(sum_over_time(metric_bucket[5m]))
 //   - sum without(...) (rate(metric_bucket[5m]))
 //
 // Anything else returns ok=false and the caller falls through to the
 // bare-selector path. Specifically rejected: non-sum aggregations
-// (avg / max / quantile / …), range-vector functions other than rate
-// / increase, deeper nestings (e.g. `sum(sum(...))`).
+// (avg / max / quantile / …), range-vector functions other than
+// rate / increase / sum_over_time, deeper nestings (e.g. `sum(sum(...))`).
 func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 	e = peelWrappers(e)
 
@@ -426,8 +428,18 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		return histogramAggShape{}, false
 	}
 	switch call.Func.Name {
-	case "rate", "increase":
-		// supported range-vector functions on the histogram-array path
+	case "rate", "increase", "sum_over_time":
+		// Supported range-vector functions on the histogram-array path.
+		// `histogram_quantile` is SCALE-INVARIANT — it interpolates the
+		// ratio of cumulative bucket counts, so it yields the identical
+		// quantile whether the per-`le` window aggregate is a per-second
+		// `rate`, a windowed `increase`, or a windowed `sum_over_time`.
+		// `sum_over_time(<base>_bucket[w])` is the canonical aggregation for
+		// DELTA-temporality histograms (each point is a per-window delta;
+		// summing the deltas over the window is the total per `le`), so
+		// `histogram_quantile(phi, sum by(le)(sum_over_time(<base>_bucket[w])))`
+		// — the shape GCP / OTel delta-histogram dashboards emit — must
+		// resolve, not collapse to the empty non-bucket fallback.
 	default:
 		return histogramAggShape{}, false
 	}

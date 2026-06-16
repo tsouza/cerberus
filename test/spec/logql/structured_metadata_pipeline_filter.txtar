@@ -17,22 +17,29 @@ INSERT INTO otel_logs (Body) VALUES ('q1'), ('q2'), ('q3');
   ["clickhouse", "q3"]
 ]
 -- chplan --
-Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "clickhouse") AND (if((mapContains(LogAttributes, "query_kind") OR mapContains(LogAttributes, "query.kind")), if(mapContains(LogAttributes, "query_kind"), LogAttributes["query_kind"], LogAttributes["query.kind"]), if(mapContains(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], ResourceAttributes["query.kind"])) = "Select"))
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (if(((mapContains(LogAttributes, "query_kind") OR mapContains(LogAttributes, "query.kind")) OR mapContains(LogAttributes, "query/kind")), if(mapContains(LogAttributes, "query_kind"), LogAttributes["query_kind"], if(mapContains(LogAttributes, "query.kind"), LogAttributes["query.kind"], LogAttributes["query/kind"])), if(mapContains(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], if(mapContains(ResourceAttributes, "query.kind"), ResourceAttributes["query.kind"], ResourceAttributes["query/kind"]))) = "Select"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (if((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
 -- args --
 [0] string = ""
 [1] string = "service_name"
 [2] string = "service_name"
 [3] string = "service.name"
-[4] string = "clickhouse"
-[5] string = "query_kind"
-[6] string = "query.kind"
+[4] string = "service.name"
+[5] string = "service/name"
+[6] string = "clickhouse"
 [7] string = "query_kind"
-[8] string = "query_kind"
-[9] string = "query.kind"
+[8] string = "query.kind"
+[9] string = "query/kind"
 [10] string = "query_kind"
 [11] string = "query_kind"
 [12] string = "query.kind"
-[13] string = "Select"
+[13] string = "query.kind"
+[14] string = "query/kind"
+[15] string = "query_kind"
+[16] string = "query_kind"
+[17] string = "query.kind"
+[18] string = "query.kind"
+[19] string = "query/kind"
+[20] string = "Select"
