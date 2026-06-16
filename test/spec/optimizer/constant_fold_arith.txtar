@@ -1,5 +1,5 @@
 -- optimized --
-SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?)
 -- unoptimized --
 SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE ((? + ?) = ?)
 -- chplan_optimized --

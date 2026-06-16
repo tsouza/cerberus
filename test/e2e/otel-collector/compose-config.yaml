@@ -374,6 +374,17 @@ processors:
       - key: deployment.environment
         value: compose
         action: upsert
+      # rc.5 — stamp k8s-shaped ResourceAttributes so the dashboard / crawl
+      # lanes exercise resource-attribute -> Prometheus-label projection
+      # (CERBERUS_PROM_RESOURCE_LABELS promote-all). Compose has no k8s, so
+      # these are STATIC; the cerberus Prom head surfaces them as
+      # k8s_namespace_name / deployment_environment_name labels.
+      - key: k8s.namespace.name
+        value: cerberus
+        action: upsert
+      - key: deployment.environment.name
+        value: compose
+        action: upsert
   # Stamp a service.name per scraper output so PromQL filters can
   # pivot by source (clickhouse / host / otelcol-self) without a
   # MetricName prefix scan.

@@ -569,8 +569,49 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
-	out := format.NormalizeLabelNames(append([]string{model.MetricNameLabel}, names...))
+	collected := append([]string{model.MetricNameLabel}, names...)
+	if h.resourceArmActive() {
+		resNames, err := h.fetchResourceLabelNames(ctx)
+		if err != nil {
+			return nil, err
+		}
+		collected = append(collected, resNames...)
+	}
+	out := format.NormalizeLabelNames(collected)
 	sort.Strings(out)
+	return out, nil
+}
+
+// fetchResourceLabelNames returns the sanitized Prom label names for the
+// allowlisted ResourceAttributes keys present across the metric tables.
+// Each raw (dotted) resource key is intersected with the allowlist (nil
+// allowlist = every key) and emitted in its dot->underscore sanitized form
+// (the wire spelling operators see in Grafana). The caller folds these into
+// the /labels listing alongside the Attributes keys + __name__.
+func (h *Handler) fetchResourceLabelNames(ctx context.Context) ([]string, error) {
+	resNames, err := timeCH(ctx, func() ([]string, error) {
+		return h.Client.QueryStrings(ctx, h.unionResourceLabelNamesSQL())
+	})
+	if err != nil {
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
+	allow := h.resourceAllowSet()
+	out := make([]string, 0, len(resNames))
+	for _, k := range resNames {
+		if allow != nil {
+			if _, ok := allow[k]; !ok {
+				continue
+			}
+		}
+		// Skip keys already backed by a dedicated top-level column
+		// (service.name → ServiceName): the dedicated path surfaces them,
+		// so promoting them via the resource arm too would double-list the
+		// label and diverge from reference Prometheus.
+		if promql.DedicatedResourceLabelExcluded(h.Schema, k) {
+			continue
+		}
+		out = append(out, format.OTelToPromLabel(k))
+	}
 	return out, nil
 }
 
@@ -1121,6 +1162,61 @@ func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, e
 	return sql, args, nil
 }
 
+// resourceArmActive reports whether the unmatched catalog endpoints
+// (/labels, /label/<name>/values) should surface OTel ResourceAttributes
+// keys as Prometheus labels. The schema must name a ResourceAttributes
+// column; a custom schema that clears it opts out entirely.
+//
+// The allowlist (Schema.PromResourceLabels) narrows WHICH keys surface but
+// does NOT gate the feature on/off — an empty allowlist promotes every
+// resource key (the locked promote-all default).
+func (h *Handler) resourceArmActive() bool {
+	return h.Schema.ResourceAttributesColumn != ""
+}
+
+// resourceAllowSet returns the allowlist as a set of ORIGINAL dotted OTel
+// keys, or nil when no allowlist is configured (promote-all). Callers
+// treat nil as "every key allowed".
+func (h *Handler) resourceAllowSet() map[string]struct{} {
+	if len(h.Schema.PromResourceLabels) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(h.Schema.PromResourceLabels))
+	for _, k := range h.Schema.PromResourceLabels {
+		set[k] = struct{}{}
+	}
+	return set
+}
+
+// resourceLabelValueArmActive reports whether a /label/<name>/values
+// lookup for promLabel should emit a ResourceAttributes value arm. True
+// when the resource arm is active AND either no allowlist is configured or
+// at least one dot<->underscore candidate of promLabel names an
+// allowlisted dotted key — mirroring the matcher-side
+// promql.resourceLabelAllowed gate so the listing surface and the query
+// surface agree on which labels are resource-backed.
+func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
+	if !h.resourceArmActive() {
+		return false
+	}
+	// A dedicated-column-backed label (service.name → ServiceName) is
+	// surfaced by the dedicated path, never the resource arm — promoting it
+	// here too would double-promote and diverge from reference Prometheus.
+	if promql.DedicatedResourceLabelExcluded(h.Schema, promLabel) {
+		return false
+	}
+	allow := h.resourceAllowSet()
+	if allow == nil {
+		return true
+	}
+	for _, cand := range format.PromLabelToOTelCandidates(promLabel) {
+		if _, ok := allow[cand]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // unionLabelNamesSQL builds a UNION of all metric tables' label keys.
 func (h *Handler) unionLabelNamesSQL() string {
 	tables := h.metricTables()
@@ -1129,6 +1225,30 @@ func (h *Handler) unionLabelNamesSQL() string {
 	for _, t := range tables {
 		arm := chsql.NewQuery().
 			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
+			From(chsql.Col(t))
+		parts = append(parts, arm.Frag())
+	}
+	outer := chsql.NewQuery().
+		Select(chsql.As(distinctIdent("name"), "")).
+		From(chsql.Paren(chsql.UnionAll(parts...))).
+		OrderBy(chsql.Col("name"), false)
+	sql, _ := outer.Build()
+	return sql
+}
+
+// unionResourceLabelNamesSQL builds a UNION of all metric tables'
+// ResourceAttributes keys — the resource-side mirror of
+// [unionLabelNamesSQL]. The raw (dotted) keys are returned; the caller
+// sanitizes + allowlist-filters in Go (cheaper than an N-key SQL IN over
+// every row's map, and it keeps the Attributes union byte-identical so the
+// promote-all default adds no churn to existing fixtures).
+func (h *Handler) unionResourceLabelNamesSQL() string {
+	tables := h.metricTables()
+	resCol := h.Schema.ResourceAttributesColumn
+	parts := make([]chsql.Frag, 0, len(tables))
+	for _, t := range tables {
+		arm := chsql.NewQuery().
+			Select(chsql.As(arrayJoinMapKeysFrag(resCol), "name")).
 			From(chsql.Col(t))
 		parts = append(parts, arm.Frag())
 	}
@@ -1181,7 +1301,9 @@ func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 	tables := h.metricTables()
 	attrsCol := h.Schema.AttributesColumn
 	candidates := labelValueCandidates(name)
-	parts := make([]chsql.Frag, 0, len(tables)*len(candidates))
+	resCol := h.Schema.ResourceAttributesColumn
+	resourceArm := h.resourceLabelValueArmActive(name)
+	parts := make([]chsql.Frag, 0, len(tables)*len(candidates)*2)
 	for _, t := range tables {
 		for _, k := range candidates {
 			arm := chsql.NewQuery().
@@ -1189,6 +1311,19 @@ func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 				From(chsql.Col(t)).
 				Where(mapAtNotEmptyFrag(attrsCol, k))
 			parts = append(parts, arm.Frag())
+			// Resource arm: read the same candidate key out of the
+			// ResourceAttributes map so a value stored only under a
+			// resource attribute (k8s.namespace.name, …) surfaces on
+			// /label/<name>/values. Gated on the allowlist so a
+			// non-allowlisted label stays Attributes-only — byte-identical
+			// to the legacy emit.
+			if resourceArm {
+				resArm := chsql.NewQuery().
+					Select(chsql.As(distinctMapAtFrag(resCol, k), "value")).
+					From(chsql.Col(t)).
+					Where(mapAtNotEmptyFrag(resCol, k))
+				parts = append(parts, resArm.Frag())
+			}
 		}
 	}
 	outer := chsql.NewQuery().

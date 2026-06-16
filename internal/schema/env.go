@@ -28,6 +28,11 @@ const (
 	// enable it; unset/empty/falsey leaves it off. The operator sets it
 	// only after confirming the `<spans>_trace_id_ts` MV is populated.
 	EnvTracesTsLookup = "CERBERUS_SCHEMA_TRACES_TS_LOOKUP"
+	// EnvPromResourceLabels is the comma-separated allowlist of OTel
+	// ResourceAttributes keys (dotted form) projected as Prometheus
+	// labels. Empty / unset promotes every resource-attribute key.
+	// Populates Metrics.PromResourceLabels.
+	EnvPromResourceLabels = "CERBERUS_PROM_RESOURCE_LABELS"
 )
 
 // traceIDTsSuffix is the fixed suffix the OTel-CH exporter's DDL template
@@ -76,7 +81,26 @@ func DefaultOTelMetricsFromEnv() Metrics {
 	m.HistogramTable = envOverride(EnvMetricsHistogramTable, m.HistogramTable)
 	m.ExpHistogramTable = envOverride(EnvMetricsExpHistogramTable, m.ExpHistogramTable)
 	m.SummaryTable = envOverride(EnvMetricsSummaryTable, m.SummaryTable)
+	m.PromResourceLabels = envCSVList(EnvPromResourceLabels)
 	return m
+}
+
+// envCSVList splits a comma-separated env var into a trimmed,
+// empty-dropped slice. Unset / whitespace-only returns nil so callers
+// can treat nil as the documented "all" / "none" sentinel. Mirrors
+// envOverride's trim-and-skip-empty discipline for the list shape.
+func envCSVList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // DefaultOTelLogsFromEnv returns DefaultOTelLogs() with the

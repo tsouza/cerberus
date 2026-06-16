@@ -493,6 +493,12 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_SCHEMA_LOGS_TABLE                  default "otel_logs"
 //	CERBERUS_SCHEMA_TRACES_TABLE                default "otel_traces"
 //	CERBERUS_SCHEMA_TRACES_TS_LOOKUP            default off (opt-in trace_id_ts window prune)
+//	CERBERUS_PROM_RESOURCE_LABELS              default "" (empty = project ALL OTel
+//	                                           ResourceAttributes keys as Prometheus
+//	                                           labels) — comma-separated allowlist of
+//	                                           resource-attribute keys (dotted OTel form)
+//	                                           to surface; sanitized dot->underscore on
+//	                                           the wire
 func FromEnv() (Config, error) {
 	v := newLoader()
 

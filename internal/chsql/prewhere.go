@@ -241,11 +241,39 @@ func partitionPrewhere(conjuncts []chplan.Expr, shape TableShape) (prewhere, whe
 		}
 	}
 	if len(where) == 0 && len(prewhere) > 0 {
+		// Demote the last PREWHERE conjunct to WHERE so CH's executor
+		// doesn't degenerate to a no-op WHERE clause — EXCEPT when the sole
+		// remaining PREWHERE conjunct is a leading-sort-key equality
+		// (MetricName-class). CH happily accepts `... PREWHERE (MetricName =
+		// ?)` with no WHERE, and demoting the leading-sort-key equality out
+		// of PREWHERE forfeits the granule pruning that equality enables —
+		// the regression the resource Project surfaced when MetricName=?
+		// became a solo conjunct. Keep it in PREWHERE.
+		if len(prewhere) == 1 && isLeadingSortKeyEquality(prewhere[0], shape) {
+			return prewhere, where
+		}
 		last := len(prewhere) - 1
 		where = []chplan.Expr{prewhere[last]}
 		prewhere = prewhere[:last]
 	}
 	return prewhere, where
+}
+
+// isLeadingSortKeyEquality reports whether e is an equality predicate
+// (`col = lit`) whose column is the leading sort key (SortRank 0) on shape —
+// the MetricName-class cheap equality CH uses to binary-search the primary
+// key. Used to keep such a predicate in PREWHERE even when it is the sole
+// remaining conjunct (see partitionPrewhere's demote-last guard).
+func isLeadingSortKeyEquality(e chplan.Expr, shape TableShape) bool {
+	bin, ok := e.(*chplan.Binary)
+	if !ok || bin.Op != chplan.OpEq {
+		return false
+	}
+	cols := collectColumnRefs(e)
+	if len(cols) != 1 {
+		return false
+	}
+	return shape.SortRank(cols[0]) == 0
 }
 
 // projectionTouchesWide reports whether the SELECT list named by cols

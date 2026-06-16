@@ -1,7 +1,7 @@
 -- args --
 [0] string = "http_requests_total"
 -- sql --
-SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?)
 -- chplan --
 Filter predicate=(MetricName = "http_requests_total")
   Scan(otel_metrics_gauge)

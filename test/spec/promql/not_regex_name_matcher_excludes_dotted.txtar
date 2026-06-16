@@ -22,21 +22,31 @@ INSERT INTO otel_metrics_gauge VALUES
   ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE NOT match(`MetricName`, ?) AND (`Attributes`[?] = ?) WHERE NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE NOT match(`MetricName`, ?) WHERE NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?) AND (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
 -- args --
-[0] string = ".*container_cpu_usage.*"
-[1] string = "job"
-[2] string = "api"
-[3] string = "[^a-zA-Z0-9_:]"
-[4] string = "_"
-[5] string = ".*container_cpu_usage.*"
-[6] string = "2026-01-01 00:00:01.000000000"
-[7] int64 = 9
-[8] string = "2026-01-01 00:00:01.000000000"
-[9] int64 = 9
-[10] int64 = 300000000000
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = ".*container_cpu_usage.*"
+[5] string = "[^a-zA-Z0-9_:]"
+[6] string = "_"
+[7] string = ".*container_cpu_usage.*"
+[8] string = "job"
+[9] string = ""
+[10] string = "job"
+[11] string = ""
+[12] string = ""
+[13] string = "api"
+[14] string = "2026-01-01 00:00:01.000000000"
+[15] int64 = 9
+[16] string = "2026-01-01 00:00:01.000000000"
+[17] int64 = 9
+[18] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-    Filter predicate=((((Attributes["job"] = "api") AND ((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*"))) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
-      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+    Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api") AND ((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*")))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))

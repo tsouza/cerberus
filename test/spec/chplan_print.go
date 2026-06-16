@@ -499,6 +499,11 @@ func printExpr(e chplan.Expr) string {
 		return v.Name
 	case *chplan.LitString:
 		return strconv.Quote(v.V)
+	case *chplan.InlineString:
+		// Inline string literal (emitted verbatim, not as a `?` param).
+		// Rendered like LitString in the IR view — the inline-vs-param
+		// distinction is an emit detail, not a plan-shape one.
+		return strconv.Quote(v.V)
 	case *chplan.LitInt:
 		return strconv.FormatInt(v.V, 10)
 	case *chplan.LitFloat:

@@ -92,7 +92,7 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	colCount := extractProjectionCount(query)
 
 	return &PreparedRoundTrip{
-		Seed:        rt.Seed,
+		Seed:        strings.Join(backfillResourceAttributes(splitStatements(rt.Seed)), ";\n"),
 		Query:       query,
 		Args:        queryArgs,
 		ColumnCount: colCount,

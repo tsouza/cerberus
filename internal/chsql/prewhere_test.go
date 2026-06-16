@@ -272,6 +272,22 @@ func TestPartitionPrewhere(t *testing.T) {
 	if len(pre) != 0 || len(where) != 1 {
 		t.Errorf("partitionPrewhere (no wide cols): pre=%v where=%v", pre, where)
 	}
+
+	// Sole conjunct is a leading-sort-key equality: it must STAY in
+	// PREWHERE — demoting it forfeits the granule pruning the primary-key
+	// binary-search enables (the resource-Project MetricName=? regression).
+	metricsShape := TableShape{
+		SortColumns: []string{"MetricName", "Attributes"},
+		WideColumns: []string{"ResourceAttributes"},
+	}
+	metricNameEq := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "MetricName"}, Right: &chplan.LitString{V: "up"}}
+	pre, where = partitionPrewhere([]chplan.Expr{metricNameEq}, metricsShape)
+	if len(pre) != 1 || pre[0] != metricNameEq {
+		t.Errorf("partitionPrewhere (sole sort-key eq) PREWHERE = %v, want [metricNameEq]", pre)
+	}
+	if len(where) != 0 {
+		t.Errorf("partitionPrewhere (sole sort-key eq) WHERE = %v, want []", where)
+	}
 }
 
 // TestProjectionTouchesWide covers the wide-column projection check.

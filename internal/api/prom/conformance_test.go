@@ -1644,9 +1644,13 @@ func TestConformance_ServiceNameMatcherRoutesToTopLevelColumn(t *testing.T) {
 // single `{service_name:""}` bucket because `Attributes['service_name']`
 // returns the empty string for OTel-collector-routed rows.
 //
-// The assertion targets the captured SQL: `mapConcat(`Attributes`,
-// mapFilter(...))` + `toString(`ServiceName`)` must appear in the
-// inner subquery so the augmenting Project lands above the Scan.
+// The assertion targets the captured SQL: the outer-by overlay
+// `mapConcat(<base>, mapFilter(...))` + `toString(`ServiceName`)` must
+// appear in the inner subquery so the augmenting Project lands above the
+// Scan. Since rc.5 the overlay's `<base>` is the resource-attribute merge
+// (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) rather than a
+// bare `Attributes` column ref, so the assertion targets the `mapConcat(`
+// + `mapFilter(` overlay shape and the merge base independently.
 func TestConformance_ServiceNameByClauseAugmentsAttributes(t *testing.T) {
 	t.Parallel()
 
@@ -1666,8 +1670,8 @@ func TestConformance_ServiceNameByClauseAugmentsAttributes(t *testing.T) {
 	if stub.lastSQL == "" {
 		t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
 	}
-	if !strings.Contains(stub.lastSQL, "mapConcat(`Attributes`") {
-		t.Errorf("SQL is missing the `mapConcat(Attributes, ...)` augmentation for the service_name by-clause\nSQL: %s", stub.lastSQL)
+	if !strings.Contains(stub.lastSQL, "mapConcat(mapUpdate(") {
+		t.Errorf("SQL is missing the `mapConcat(mapUpdate(...), mapFilter(...))` outer-by overlay over the resource-merge base for the service_name by-clause\nSQL: %s", stub.lastSQL)
 	}
 	if !strings.Contains(stub.lastSQL, "toString(`ServiceName`)") {
 		t.Errorf("SQL is missing the `toString(ServiceName)` synthesised key for the service_name by-clause\nSQL: %s", stub.lastSQL)
@@ -1739,8 +1743,8 @@ func TestConformance_ServiceNameMatcherWithByClauseCrossProduct(t *testing.T) {
 			if !strings.Contains(stub.lastSQL, "coalesce(nullIf(`ServiceName`") {
 				t.Errorf("SQL is missing the `coalesce(nullIf(ServiceName, ''), ...)` matcher routing\nSQL: %s", stub.lastSQL)
 			}
-			if !strings.Contains(stub.lastSQL, "mapConcat(`Attributes`") {
-				t.Errorf("SQL is missing the `mapConcat(Attributes, ...)` by-clause augmentation\nSQL: %s", stub.lastSQL)
+			if !strings.Contains(stub.lastSQL, "mapConcat(mapUpdate(") {
+				t.Errorf("SQL is missing the `mapConcat(mapUpdate(...), mapFilter(...))` by-clause overlay over the resource-merge base\nSQL: %s", stub.lastSQL)
 			}
 			if !strings.Contains(stub.lastSQL, "toString(`ServiceName`)") {
 				t.Errorf("SQL is missing the `toString(ServiceName)` synthesised key for the by-clause\nSQL: %s", stub.lastSQL)

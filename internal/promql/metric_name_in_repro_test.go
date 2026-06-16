@@ -119,9 +119,12 @@ func TestMetricNameQueryRange_RenderedSQLBounded(t *testing.T) {
 	// chunk cap that is ~388KB — over ClickHouse's 256KB max_query_size,
 	// which is the exact `code: 62 … Max query size exceeded` at position
 	// 262124 the compose-smoke probe hit. With the flat IN the same arm
-	// renders ~1067 bytes (128 arms ≈ 137KB, well under the ceiling). Pin a
-	// generous 1.5KB per-arm bound so the chunk cap can never re-cross 256KB.
-	const perArmBound = 1536
+	// renders ~1067 bytes; the rc.5 resource-attribute projection adds a
+	// fixed per-arm `mapUpdate(sanitize(RA), sanitize(Attributes))` wrapper
+	// (~1577 bytes/arm). 128 arms ≈ 197KB, still comfortably under the
+	// ceiling. Pin a 1.75KB per-arm bound (128 arms ≈ 229KB < 256KB) so the
+	// chunk cap can never re-cross 256KB.
+	const perArmBound = 1792
 	if len(sql) >= perArmBound {
 		t.Errorf("single 64-candidate span-metric arm rendered %d bytes (want < %d) — risks re-crossing max_query_size when UNION-ALL'd across the chunk cap:\n%.400s",
 			len(sql), perArmBound, sql)

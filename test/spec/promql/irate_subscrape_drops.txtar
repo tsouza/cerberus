@@ -21,13 +21,18 @@ INSERT INTO otel_metrics_sum VALUES
 -- expected_rows --
 []
 -- args --
-[0] string = "http_requests_total"
-[1] string = "http.requests.total"
-[2] string = "http.requests_total"
-[3] string = "http_requests.total"
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "http_requests_total"
+[5] string = "http.requests.total"
+[6] string = "http.requests_total"
+[7] string = "http_requests.total"
 -- chplan --
 RangeWindow func=irate range=15s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=1970-01-01T00:08:20Z
-  Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests_total", "http_requests.total"))
-    Scan(otel_metrics_sum)
+  Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests_total", "http_requests.total"))
+      Scan(otel_metrics_sum)
 -- sql --
-SELECT `Attributes`, if(length(window_pairs) > 1 AND dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1)) > 0, (if(tupleElement(window_pairs[length(window_pairs)], 2) < tupleElement(window_pairs[length(window_pairs) - 1], 2), tupleElement(window_pairs[length(window_pairs)], 2), tupleElement(window_pairs[length(window_pairs)], 2) - tupleElement(window_pairs[length(window_pairs) - 1], 2))) / ((dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1))) / 1e9), nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('1970-01-01 00:08:20.000000000', 9) - toIntervalNanosecond(15000000000) AND tupleElement(p, 1) <= toDateTime64('1970-01-01 00:08:20.000000000', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?))) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2
+SELECT `Attributes`, if(length(window_pairs) > 1 AND dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1)) > 0, (if(tupleElement(window_pairs[length(window_pairs)], 2) < tupleElement(window_pairs[length(window_pairs) - 1], 2), tupleElement(window_pairs[length(window_pairs)], 2), tupleElement(window_pairs[length(window_pairs)], 2) - tupleElement(window_pairs[length(window_pairs) - 1], 2))) / ((dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1))) / 1e9), nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('1970-01-01 00:08:20.000000000', 9) - toIntervalNanosecond(15000000000) AND tupleElement(p, 1) <= toDateTime64('1970-01-01 00:08:20.000000000', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?)))) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2

@@ -1464,6 +1464,30 @@
     "reason": "routed"
   },
   {
+    "query": "resource_attr_bare_selector",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "resource_attr_matcher",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "resource_attr_precedence_collision",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "resource_attr_sum_by",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "round_metric",
     "routed": true,
     "k": 8,

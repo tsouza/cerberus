@@ -1,0 +1,69 @@
+# rc.5 (task #123) — `sum by (k8s_namespace_name) (...)` must group on the
+# resource-attribute label. The aggregation lowers its input through the
+# selector seam (which merges mapUpdate(sanitize(ResourceAttributes),
+# Attributes)), so the by-clause's Attributes['k8s_namespace_name'] lookup
+# resolves the resource key the merge sanitized into the Attributes map.
+# Two rows in `prod` (one each in two pods) collapse to a single bucket
+# summing to 12; the lone `staging` row buckets separately.
+
+-- query.promql --
+sum by (k8s_namespace_name) (http_requests_total)
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('k8s.pod.name', 'pod-a'), map('k8s.namespace.name', 'prod'),    toDateTime64('2026-01-01 00:00:00', 9), 5.0),
+    ('http_requests_total', map('k8s.pod.name', 'pod-b'), map('k8s.namespace.name', 'prod'),    toDateTime64('2026-01-01 00:00:00', 9), 7.0),
+    ('http_requests_total', map('k8s.pod.name', 'pod-c'), map('k8s.namespace.name', 'staging'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
+-- expected_rows --
+[
+  ["", {"k8s_namespace_name": "prod"}, "2026-01-01T00:00:01Z", 12.0],
+  ["", {"k8s_namespace_name": "staging"}, "2026-01-01T00:00:01Z", 4.0]
+]
+-- args --
+[0] string = ""
+[1] string = "k8s_namespace_name"
+[2] int64 = 9
+[3] string = "k8s_namespace_name"
+[4] string = "k8s_namespace_name"
+[5] string = "k8s.namespace.name"
+[6] string = "k8s.namespace.name"
+[7] string = "k8s.namespace_name"
+[8] string = "k8s.namespace_name"
+[9] string = "k8s_namespace.name"
+[10] string = "service.name"
+[11] string = "service_name"
+[12] string = "service.name"
+[13] string = "service_name"
+[14] string = "http_requests_total"
+[15] string = "http.requests.total"
+[16] string = "http.requests_total"
+[17] string = "http_requests.total"
+[18] string = "2026-01-01 00:00:01.000000000"
+[19] int64 = 9
+[20] string = "2026-01-01 00:00:01.000000000"
+[21] int64 = 9
+[22] int64 = 300000000000
+[23] string = "k8s_namespace_name"
+[24] string = "k8s_namespace_name"
+[25] string = "k8s.namespace.name"
+[26] string = "k8s.namespace.name"
+[27] string = "k8s.namespace_name"
+[28] string = "k8s.namespace_name"
+[29] string = "k8s_namespace.name"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("k8s_namespace_name", gkey_0)) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[if(mapContains(Attributes, "k8s_namespace_name"), Attributes["k8s_namespace_name"], if(mapContains(Attributes, "k8s.namespace.name"), Attributes["k8s.namespace.name"], if(mapContains(Attributes, "k8s.namespace_name"), Attributes["k8s.namespace_name"], Attributes["k8s_namespace.name"]))) AS gkey_0] funcs=[sum(Value) AS Value]
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests_total", "http_requests.total"))
+              Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]))) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]))))

@@ -2,23 +2,31 @@
 system_cpu_logical_count
 -- args --
 [0] string = "system_cpu_logical_count"
-[1] string = "system_cpu_logical"
-[2] string = "system.cpu.logical"
-[3] string = "system.cpu_logical"
-[4] string = "system_cpu.logical"
-[5] string = "system_cpu_logical_count"
-[6] string = "system.cpu.logical.count"
-[7] string = "system.cpu.logical_count"
-[8] string = "system.cpu_logical.count"
-[9] string = "system.cpu_logical_count"
-[10] string = "system_cpu.logical.count"
-[11] string = "system_cpu.logical_count"
-[12] string = "system_cpu_logical.count"
-[13] string = "2026-01-01 00:00:01.000000000"
-[14] int64 = 9
-[15] string = "2026-01-01 00:00:01.000000000"
-[16] int64 = 9
-[17] int64 = 300000000000
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "system_cpu_logical"
+[6] string = "system.cpu.logical"
+[7] string = "system.cpu_logical"
+[8] string = "system_cpu.logical"
+[9] string = "service.name"
+[10] string = "service_name"
+[11] string = "service.name"
+[12] string = "service_name"
+[13] string = "system_cpu_logical_count"
+[14] string = "system.cpu.logical.count"
+[15] string = "system.cpu.logical_count"
+[16] string = "system.cpu_logical.count"
+[17] string = "system.cpu_logical_count"
+[18] string = "system_cpu.logical.count"
+[19] string = "system_cpu.logical_count"
+[20] string = "system_cpu_logical.count"
+[21] string = "2026-01-01 00:00:01.000000000"
+[22] int64 = 9
+[23] string = "2026-01-01 00:00:01.000000000"
+[24] int64 = 9
+[25] int64 = 300000000000
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
@@ -68,11 +76,11 @@ Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix,
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
     Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       UnionAll arms=2
-        Project ["system_cpu_logical_count" AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
+        Project ["system_cpu_logical_count" AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
           Filter predicate=(MetricName IN ("system_cpu_logical", "system.cpu.logical", "system.cpu_logical", "system_cpu.logical"))
             Scan(otel_metrics_histogram)
-        Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
           Filter predicate=(MetricName IN ("system_cpu_logical_count", "system.cpu.logical.count", "system.cpu.logical_count", "system.cpu_logical.count", "system.cpu_logical_count", "system_cpu.logical.count", "system_cpu.logical_count", "system_cpu_logical.count"))
             Scan(otel_metrics_sum)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT ? AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
