@@ -95,6 +95,20 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `CHAOS_MANIFESTS` (default `test/e2e/chaos/manifests`).
   - Exit: `0` all selected scenarios passed (or recorded not-applicable
     with a `::notice::`), `1` on any contract-assertion failure.
+- **`e2e-cerberus-restart-gate.mjs`** — `e2e.yml`, the `Assert zero
+  cerberus restarts` step on the k3d dashboard/crawl shards. Sums
+  `restartCount` across the cerberus pods; on any restart dumps the
+  OOM-specific evidence the inline bash lacked — `lastState.terminated`
+  Reason (OOMKilled surfaced loudly; a `--previous` log tail is empty for an
+  OOM kill), `resources.limits` + `GOMEMLIMIT`, `kubectl top` per-container
+  usage (best-effort, skips gracefully when metrics-server is absent in
+  k3d), and a live `/debug/pprof/heap` pulled from each running container
+  (when `CERBERUS_DEBUG_PPROF` is on) into `PPROF_OUT_DIR` for artifact
+  upload. A kubectl read failure is treated as "couldn't determine" (exit 0,
+  matching the prior leniency) rather than a false fail.
+  - Env: `NAMESPACE` (default `cerberus`), `PPROF_OUT_DIR` (default `/tmp`).
+  - Exit: `0` when restarts == 0 (or unreadable), `1` when restarts > 0
+    (after dumping evidence).
 - **`promql-surface-gate.mjs`** — `compatibility.yml`, the
   `compatibility/promql-surface` job (reference-backed full-surface PromQL
   rejection-completeness gate, #106). Stands up a flag-enabled reference

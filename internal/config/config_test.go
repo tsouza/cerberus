@@ -21,6 +21,29 @@ func TestFromEnv_AutoCreateSchema_Default(t *testing.T) {
 	}
 }
 
+// TestFromEnv_DebugPProf confirms the pprof toggle defaults OFF and flips ON
+// only when CERBERUS_DEBUG_PPROF is explicitly true — the profiling surface
+// must never ship open by default.
+func TestFromEnv_DebugPProf(t *testing.T) {
+	t.Setenv("CERBERUS_DEBUG_PPROF", "")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.DebugPProf {
+		t.Errorf("DebugPProf = true; want false (default off)")
+	}
+
+	t.Setenv("CERBERUS_DEBUG_PPROF", "true")
+	cfg, err = FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if !cfg.DebugPProf {
+		t.Errorf("DebugPProf = false; want true (CERBERUS_DEBUG_PPROF=true)")
+	}
+}
+
 // TestFromEnv_RequirementsCheck_Default confirms the preflight knob defaults
 // to true (ON) when CERBERUS_REQUIREMENTS_CHECK is unset.
 func TestFromEnv_RequirementsCheck_Default(t *testing.T) {

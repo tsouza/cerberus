@@ -108,7 +108,12 @@ type rowsCursor struct {
 	// pairs), which is exactly the per-row overhead that OOMKilled the
 	// k3d e2e pods (run 27269987620). Consumers MUST treat
 	// Sample.Labels as read-only — see the contract on [Sample].
-	interned map[string]map[string]string
+	interned map[string]internedSeries
+	// internSeq is the running counter that assigns each newly-seen series
+	// its 1-based [Sample.SeriesID]; it advances on first sight of a
+	// canonical label key so the ordinal is stable for every later row of
+	// that series within this cursor.
+	internSeq uint32
 	// span is the `execute` pipeline-stage span opened by QueryCursor.
 	// Held by the cursor (rather than closed when QueryCursor returns)
 	// so that row decode + CH wire transit are billed to the execute
@@ -208,7 +213,7 @@ func (c *rowsCursor) Next() bool {
 		c.err = &TooManySamplesError{Limit: c.maxSamples}
 		return false
 	}
-	s.Labels = c.internLabels(labels)
+	s.Labels, s.SeriesID = c.internLabels(labels)
 	// Per-row structured metadata is genuinely distinct per log line
 	// (durations, byte counts, query ids), so it is NOT interned — unlike
 	// the series-identity Labels map. The fifth column arrives as a JSON
@@ -242,26 +247,40 @@ func decodeMetadataJSON(s string) map[string]string {
 	return m
 }
 
+// internedSeries pairs an interned label map with the 1-based ordinal the
+// cursor assigned it on first sight, so [rowsCursor.internLabels] can hand
+// both back: the shared map (memory dedup) and a stable per-series identity
+// (consumer-side per-series memoisation, reflect-free).
+type internedSeries struct {
+	labels map[string]string
+	id     uint32
+}
+
 // internLabels returns the canonical shared map instance for the
-// decoded label set: the first occurrence of a label set is cached
-// under its canonical key, and every later row with the same set
-// returns that exact map. The freshly decoded duplicate becomes
-// short-lived garbage; what matters is that the RETAINED set (the
-// samples a handler buffers while pivoting a matrix response) holds
-// one map per series instead of one map per row.
-func (c *rowsCursor) internLabels(labels map[string]string) map[string]string {
+// decoded label set plus its stable 1-based series ordinal: the first
+// occurrence of a label set is cached under its canonical key, and every
+// later row with the same set returns that exact map and the same ordinal.
+// The freshly decoded duplicate becomes short-lived garbage; what matters
+// is that the RETAINED set (the samples a handler buffers while pivoting a
+// matrix response) holds one map per series instead of one map per row.
+//
+// The ordinal lets consumers memoise per-series work without a
+// reflect-based map-pointer probe — see [Sample.SeriesID]. A nil label set
+// returns id 0 (the "not interned" sentinel).
+func (c *rowsCursor) internLabels(labels map[string]string) (map[string]string, uint32) {
 	if labels == nil {
-		return nil
+		return nil, 0
 	}
 	key := canonicalLabelKey(labels)
 	if cached, ok := c.interned[key]; ok {
-		return cached
+		return cached.labels, cached.id
 	}
 	if c.interned == nil {
-		c.interned = make(map[string]map[string]string)
+		c.interned = make(map[string]internedSeries)
 	}
-	c.interned[key] = labels
-	return labels
+	c.internSeq++
+	c.interned[key] = internedSeries{labels: labels, id: c.internSeq}
+	return labels, c.internSeq
 }
 
 // canonicalLabelKey is a deterministic string form of a label set:

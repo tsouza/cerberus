@@ -1050,13 +1050,14 @@ func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[str
 	now := time.Now()
 
 	seen := make(map[string]map[string]string)
+	memo := newLabelMemo(0)
 	for _, chunk := range chunkMatcherVariants(matchers) {
 		samples, err := h.fetchSeriesChunk(ctx, chunk, now)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range samples {
-			labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
+			labels := memo.normalize(s)
 			key := format.CanonicalKey(labels)
 			if _, ok := seen[key]; !ok {
 				seen[key] = labels

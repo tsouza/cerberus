@@ -909,24 +909,30 @@ jobs:
       # then fails the job.
       - name: Assert zero cerberus restarts
         if: always() && env.RUN_SHARD == 'true'
+        env:
+          NAMESPACE: cerberus
+          PPROF_OUT_DIR: /tmp/cerberus-pprof
+        # Node module (per the CLAUDE.md "non-trivial step logic lives in
+        # .github/scripts/*.mjs" rule): sums restartCount across the cerberus
+        # pods and, on any restart, dumps the OOM-specific evidence the inline
+        # bash lacked — lastState.terminated Reason (OOMKilled surfaced
+        # loudly), resources.limits + GOMEMLIMIT, `kubectl top` usage
+        # (best-effort), and a live /debug/pprof/heap pulled from each running
+        # container before teardown. A `--previous` log tail is empty for an
+        # OOM kill, so the heap profile + terminated-state Reason are the real
+        # signal. See .github/scripts/e2e-cerberus-restart-gate.mjs.
         run: |
-          total=0
-          for c in $(kubectl -n cerberus get pods -l app=cerberus \
-              -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}'); do
-            total=$((total + c))
-          done
-          echo "cerberus container restarts (sum across pods): $total"
-          if [ "$total" -gt 0 ]; then
-            echo "::error::cerberus pods restarted $total time(s) during the e2e run — dumping evidence"
-            kubectl -n cerberus get pods -o wide || true
-            kubectl -n cerberus get events --sort-by=.lastTimestamp | tail -60 || true
-            for p in $(kubectl -n cerberus get pods -l app=cerberus -o name); do
-              echo "=== $p (previous container) ==="
-              kubectl -n cerberus logs "$p" --previous --tail 120 || true
-            done
-            kubectl -n cerberus describe pods -l app=cerberus || true
-            exit 1
-          fi
+          mkdir -p /tmp/cerberus-pprof
+          node .github/scripts/e2e-cerberus-restart-gate.mjs
+
+      - name: Upload cerberus heap profiles on restart
+        if: failure() && env.RUN_SHARD == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cerberus-heap-pprof-${{ matrix.name }}
+          path: /tmp/cerberus-pprof
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Upload Playwright report on failure
         if: failure()

@@ -247,6 +247,24 @@ opt-IN narrowing, empty/unset promotes every key. List only the resource keys
 you actually query on at scale. See
 [`configuration.md`](configuration.md#prometheus-resource-attribute-labels).
 
+**Memory.** Promoting resource attributes is not free: the merge
+(`mapUpdate(sanitize(ResourceAttributes), sanitize(Attributes))`) runs
+per-scanned-row at the scan leaf — before the staleness filter and the
+range/aggregate reduction — so ClickHouse materialises a merged label map for
+every row a query touches, and cerberus decodes the larger map for every result
+row it buffers. The per-query heap cost grows roughly proportional to
+*(rows scanned × promoted-resource-key count)*. A chDB-backed handler benchmark
+(`BenchmarkResourceAttr_Range*` in `internal/api/prom`) measured **~+65% heap
+per query** with the merge ON vs OFF on a 7-resource-key dataset — a genuine,
+GC-recoverable per-query cost, not a leak (each query's cursor + buffered
+matrix is released once the response is written). Size cerberus's memory limit
+(and `GOMEMLIMIT`, which Go's GC needs since it does not read cgroup limits)
+for the heavier per-query footprint, **or** trim the promoted set with
+`CERBERUS_PROM_RESOURCE_LABELS` so only the keys you query on carry the cost.
+The e2e manifest (`test/e2e/k3s/cerberus.yaml`) sizes the pod at 1536Mi /
+`GOMEMLIMIT=1228MiB` for the promote-all default under the full dashboard
+sweep; a tighter allowlist lets you run leaner.
+
 ## Backing services
 
 **ClickHouse** is the only mandatory backing service, reached

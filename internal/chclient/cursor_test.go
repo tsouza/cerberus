@@ -70,9 +70,12 @@ func TestRowsCursor_StreamsSamples(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	// SeriesID is the stable 1-based ordinal the cursor's interning assigns
+	// each distinct decoded label set in first-seen order; fakeRows.Scan
+	// ignores it on input, so it appears only on the cursor's output.
 	want := []Sample{
-		{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: ts, Value: 1.0},
-		{MetricName: "up", Labels: map[string]string{"job": "db"}, Timestamp: ts.Add(time.Minute), Value: 0.0},
+		{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: ts, Value: 1.0, SeriesID: 1},
+		{MetricName: "up", Labels: map[string]string{"job": "db"}, Timestamp: ts.Add(time.Minute), Value: 0.0, SeriesID: 2},
 	}
 	rows := &fakeRows{samples: want}
 	cursor := &rowsCursor{rows: rows}
