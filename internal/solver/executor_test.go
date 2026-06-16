@@ -565,6 +565,61 @@ func TestExecute_CrossShardReintern(t *testing.T) {
 	}
 }
 
+// TestExecute_CrossShardSeriesIDBijective is the regression guard for the
+// rc.5 memo aliasing bug (#949 → 136 prometheus-compat diffs): the child
+// rowsCursors number their series independently from 1, so the composed
+// stream must RE-assign a cross-shard SeriesID — otherwise two genuinely
+// distinct series carry the same per-shard ordinal and a SeriesID-keyed
+// consumer (the prom matrix/vector label memo) aliases them, bucketing one
+// series' samples under another's labels.
+//
+// The invariant: across the whole composed drain the (canonical label set
+// ↔ SeriesID) mapping is BIJECTIVE — every distinct label set has exactly
+// one SeriesID, and no SeriesID is shared by two distinct label sets.
+func TestExecute_CrossShardSeriesIDBijective(t *testing.T) {
+	q := newFakeQuerier(4)
+	// Each shard emits 4 rows; the label set cycles through 5 distinct
+	// series across the (shard, row) space, so the SAME series recurs on
+	// different shards (the cross-shard overlap) AND each shard re-uses the
+	// low per-shard ordinals for DIFFERENT series (the collision the fix
+	// must defeat).
+	q.labelsFn = func(shard, i int) map[string]string {
+		return map[string]string{"inst": fmt.Sprintf("%d", (shard*4+i)%5)}
+	}
+	x := newExec(q, newFakeEmitter(), testCfg(), 32, newFakeBreaker(BreakerClosed), nil)
+	cur, _, err := x.Execute(context.Background(), "promql", makeDecision(3), nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	defer cur.Close()
+
+	keyToID := map[string]uint32{}
+	idToKey := map[uint32]string{}
+	for cur.Next() {
+		s := cur.Sample()
+		key := canonicalLabelKey(s.Labels)
+		if s.SeriesID == 0 {
+			t.Fatalf("composed cursor handed out SeriesID 0 for labels %v", s.Labels)
+		}
+		if prev, ok := keyToID[key]; ok && prev != s.SeriesID {
+			t.Fatalf("label set %q got two SeriesIDs: %d and %d", key, prev, s.SeriesID)
+		}
+		if prevKey, ok := idToKey[s.SeriesID]; ok && prevKey != key {
+			t.Fatalf("SeriesID %d aliased two distinct label sets: %q and %q",
+				s.SeriesID, prevKey, key)
+		}
+		keyToID[key] = s.SeriesID
+		idToKey[s.SeriesID] = key
+	}
+	if err := cur.Err(); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	// 5 distinct series cycled across the (shard,row) space.
+	if len(keyToID) != 5 {
+		t.Fatalf("expected 5 distinct series, saw %d", len(keyToID))
+	}
+}
+
 // TestExecute_SharedSampleBudget asserts the per-request budget is shared
 // across K shard cursors — the fan-out enforces ONE max-samples limit.
 func TestExecute_SharedSampleBudget(t *testing.T) {

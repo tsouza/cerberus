@@ -34,16 +34,21 @@ import (
 // in the per-series state, so downstream behaviour is byte-identical to the
 // un-memoised path.
 //
-// Cross-cursor safety: SeriesID restarts at 1 per cursor, so a consumer
-// that merges rows from several cursors (the /series chunk loop) could see
-// two different series share an ordinal. That is harmless here because the
-// memo only governs which (already-correct) normalised map is returned for
-// a given row — the consumer still keys its OWN dedup map on
-// CanonicalKey(labels), so a collision at most recomputes a normalisation
-// the consumer would have deduped anyway. To stay strictly correct the memo
-// folds MetricName into the key, and falls back to a fresh normalisation
-// whenever SeriesID is 0 (the non-interned test/slice cursor) so distinct
-// series never collapse.
+// Cursor-scope contract: SeriesID is a SINGLE-cursor identity — both the
+// chclient rowsCursor AND the solver's composed shardCursor (route B)
+// guarantee that, within ONE cursor drain, every distinct series carries a
+// distinct SeriesID and every row of a series carries the same one. So a
+// labelMemo is valid for exactly one cursor's worth of rows: the matrix /
+// vector pivots each drain ONE cursor (single or composed) into one memo.
+// A consumer that merges rows from SEVERAL independent cursors must NOT
+// share one memo across them — their SeriesID namespaces each restart at 1,
+// so an ordinal could alias two genuinely-distinct series. (The /series
+// path folds several per-chunk queries and therefore normalises directly,
+// without the memo — see fetchSeries.) To stay correct the memo folds
+// MetricName into the key (the cursor does not fold it into the interned
+// label key, so one interned series can pair with several metric names),
+// and falls back to a fresh normalisation whenever SeriesID is 0 (the
+// non-interned test/slice cursor) so distinct series never collapse.
 type labelMemo struct {
 	cache map[labelMemoKey]map[string]string
 }

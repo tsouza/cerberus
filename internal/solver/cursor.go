@@ -53,8 +53,18 @@ type shardCursor struct {
 
 	// interned re-interns labels ACROSS shards keyed by the canonical label
 	// key, so the same series arriving from K shards holds ONE label-map
-	// copy during the drain (not K). Per-request state.
-	interned map[string]map[string]string
+	// copy during the drain (not K). It ALSO stamps each distinct series a
+	// stable cross-shard [chclient.Sample.SeriesID] — the child rowsCursors
+	// each number their series independently from 1, so without this
+	// re-numbering the composed stream would hand two genuinely-distinct
+	// series the same per-shard ordinal, and a SeriesID-keyed consumer (the
+	// prom matrix/vector label memo) would alias them. Per-request state.
+	interned map[string]internedSeries
+	// internSeq assigns each newly-seen canonical label key its 1-based
+	// cross-shard SeriesID; it advances on first sight of a key, so the
+	// composed cursor presents ONE consistent SeriesID namespace regardless
+	// of which shard a row arrived on.
+	internSeq uint32
 
 	// drainIdx is the index of the channel the composer is currently
 	// draining (0..k). Only Next touches it (single-consumer), so no lock.
@@ -119,7 +129,7 @@ func (sc *shardCursor) Next() bool {
 				sc.cancelCause(sc.err)
 				return false
 			}
-			s.Labels = sc.reintern(s.Labels)
+			s.Labels, s.SeriesID = sc.reintern(s.Labels)
 			sc.cur = s
 			sc.emitted++
 			return true
@@ -166,19 +176,35 @@ func (sc *shardCursor) normalizeGroupErr(werr error) error {
 	return werr
 }
 
+// internedSeries pairs the canonical shared label-map instance with the
+// 1-based cross-shard ordinal the composer assigned it on first sight, so
+// [shardCursor.reintern] can hand both back: the shared map (memory dedup)
+// and a composed-stream-stable series identity (so a SeriesID-keyed
+// consumer can memoise per-series work without aliasing two shards' rows).
+type internedSeries struct {
+	labels map[string]string
+	id     uint32
+}
+
 // reintern returns the canonical shared map instance for a label set across
-// ALL shards, so the same series from K shards holds one map during the
-// drain. Labels stay read-only.
-func (sc *shardCursor) reintern(labels map[string]string) map[string]string {
+// ALL shards (so the same series from K shards holds one map during the
+// drain) plus a stable cross-shard SeriesID. The child rowsCursors restart
+// their per-shard numbering at 1, so the composer re-assigns the ordinal
+// here against its OWN first-seen order — turning the concatenated stream
+// into one consistent SeriesID namespace. A nil label set returns id 0
+// (the "not interned" sentinel; a SeriesID-keyed memo recomputes for it).
+// Labels stay read-only.
+func (sc *shardCursor) reintern(labels map[string]string) (map[string]string, uint32) {
 	if labels == nil {
-		return nil
+		return nil, 0
 	}
 	key := canonicalLabelKey(labels)
 	if cached, ok := sc.interned[key]; ok {
-		return cached
+		return cached.labels, cached.id
 	}
-	sc.interned[key] = labels
-	return labels
+	sc.internSeq++
+	sc.interned[key] = internedSeries{labels: labels, id: sc.internSeq}
+	return labels, sc.internSeq
 }
 
 // Sample returns the row the most recent successful Next landed on.

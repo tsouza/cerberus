@@ -1050,14 +1050,20 @@ func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[str
 	now := time.Now()
 
 	seen := make(map[string]map[string]string)
-	memo := newLabelMemo(0)
+	// No labelMemo here: this loop folds samples from SEVERAL independent
+	// queries (chunk × matcher-variant), each its own cursor with its OWN
+	// SeriesID namespace restarting at 1. A SeriesID-keyed memo would alias
+	// rows from different cursors that happen to share a per-cursor ordinal.
+	// The memo also buys nothing on this path — /series emits ONE label set
+	// per series, not K samples per series, and the `seen` map already dedups
+	// by canonical key. So normalise directly, per row.
 	for _, chunk := range chunkMatcherVariants(matchers) {
 		samples, err := h.fetchSeriesChunk(ctx, chunk, now)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range samples {
-			labels := memo.normalize(s)
+			labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
 			key := format.CanonicalKey(labels)
 			if _, ok := seen[key]; !ok {
 				seen[key] = labels
