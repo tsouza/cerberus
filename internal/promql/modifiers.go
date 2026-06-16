@@ -137,6 +137,29 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 		// both be set — the parser enforces that).
 		a.End = time.UnixMilli(*vs.Timestamp).UTC()
 	}
+	// No absolute @-pin: anchor the window to the query's eval instant
+	// (ctx.end) so an instant /api/v1/query at time=T evaluates the
+	// (T-range, T] window AT T — not at ClickHouse wall-clock now64(9).
+	// EVERY range-vector lowering reaches the window anchor through this
+	// one helper (matrix selector, sum_over_time / rate / increase / delta
+	// / deriv, predict_linear, holt_winters, quantile_over_time,
+	// histogram_quantile over-time, the bare-selector LWR staleness
+	// window), so doing the back-fill HERE makes eval-instant anchoring
+	// uniform and removes the per-caller duplication whose omission was the
+	// rc.8 instant-window empty-hole bug: lowerRangeVectorCall + range_fns
+	// left End zero, so emit rendered now64(9) and the window silently
+	// became (serverNow-range, serverNow], ignoring time=T.
+	//
+	// Guarded on a.End.IsZero(): an @ / @start() / @end() / @<ts> pin (set
+	// above) is preserved untouched. A genuinely context-free Lower() (no
+	// eval range) leaves ctx.end zero, so End stays zero and emit falls
+	// back to now64(9) — the correct neutral anchor when there is no
+	// requested eval instant. In range mode the per-step / broadcast paths
+	// re-pin End to the grid anchor as before; writing ctx.end here first
+	// is idempotent with that.
+	if a.End.IsZero() && !ctx.end.IsZero() {
+		a.End = ctx.end.UTC()
+	}
 	return a, nil
 }
 
