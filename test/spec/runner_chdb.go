@@ -36,19 +36,44 @@ import (
 // rows.Err() and must be ignored — any other error is real.
 const chdbEOFSentinel = "empty row"
 
+// defaultNowAnchor is the deterministic eval instant every fixed-anchor
+// round-trip fixture is seeded against. It mirrors the instant-eval
+// anchor `internal/promql/lower_test.go` feeds into `LowerAt`
+// (`time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)`), so each round-trip
+// fixture sees the same wall-clock the lowering pass used to compute
+// filter bounds. [nowAnchorLiteral] is `chNow64Literal(defaultNowAnchor)`
+// by construction (asserted in TestNowAnchorLiteralMatchesDefault), so
+// the fixed-anchor and per-eval substitution paths share one source of
+// truth for the default instant.
+var defaultNowAnchor = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+
 // nowAnchorLiteral is the deterministic CH literal we splice in place
-// of every `now64(...)` reference in the emitted SQL. It mirrors the
-// instant-eval anchor `internal/promql/lower_test.go` feeds into
-// `LowerAt` (`time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)`), so each
-// round-trip fixture sees the same wall-clock the lowering pass used
-// to compute filter bounds. Keeping this in lock-step with the
-// lowering anchor lets `expected_rows:` cells pin the TimeUnix column
-// to a fixed string instead of chasing wall-clock noise.
+// of every `now64(...)` reference in the emitted SQL when no explicit
+// per-evaluation anchor is supplied (the established fixed-anchor
+// round-trip path). It is held as a package const — not computed from
+// [defaultNowAnchor] at init — so its byte shape is pinned to exactly the
+// value the goldens were generated against; the equality to
+// `chNow64Literal(defaultNowAnchor)` is guarded by a test instead.
 //
 // The third arg (`'UTC'`) is mandatory: chDB's parser treats the
 // timezone slot positionally and rejects `toDateTime64(str, 9)` when
 // the literal has fractional seconds.
 const nowAnchorLiteral = "toDateTime64('2026-01-01 00:00:01.000000000', 9, 'UTC')"
+
+// chNow64Literal renders a `time.Time` as the CH DateTime64(9) literal
+// shape `substituteNow64` splices in — `toDateTime64('YYYY-MM-DD
+// HH:MM:SS.fffffffff', 9, 'UTC')`. The nanosecond field is always nine
+// digits so the parser sees a fractional-second literal (matching
+// [nowAnchorLiteral]'s shape). Used by the eval-instant sweep to anchor
+// the residual outer-projection `now64(?)` to the swept eval time T.
+func chNow64Literal(at time.Time) string {
+	u := at.UTC()
+	return fmt.Sprintf(
+		"toDateTime64('%04d-%02d-%02d %02d:%02d:%02d.%09d', 9, 'UTC')",
+		u.Year(), int(u.Month()), u.Day(),
+		u.Hour(), u.Minute(), u.Second(), u.Nanosecond(),
+	)
+}
 
 // tolerantRowsErr matches the helper used by the chDB probe in
 // internal/chclient/chdb_probe_test.go.
@@ -668,6 +693,22 @@ func isWildcardProjection(p string) bool {
 // the follow-up that lands seed alignment + this substitution
 // together.
 func substituteNow64(query string, args []any) (string, []any) {
+	return substituteNow64At(query, args, nowAnchorLiteral)
+}
+
+// substituteNow64At is the anchor-parameterised core of
+// [substituteNow64]: it splices `anchorLiteral` (a pre-rendered CH
+// DateTime64 literal, e.g. from [chNow64Literal]) in place of every
+// `now64(...)` / `now()` reference, instead of the package-fixed
+// [nowAnchorLiteral]. [substituteNow64] passes [nowAnchorLiteral] so the
+// established fixed-anchor round-trip path is byte-identical; the
+// eval-instant sweep passes a per-T literal so the residual outer
+// `now64(?)` result-timestamp projection pins to the swept eval instant
+// rather than the fixed default. The window bound itself is NOT a
+// now64 in the post-fix SQL — it renders as an inline eval-literal — so
+// this anchor only governs the wall-clock projection, never the row
+// count or the window semantics under test.
+func substituteNow64At(query string, args []any, anchorLiteral string) (string, []any) {
 	// Fast-path: nothing to do when neither shape is present.
 	if !strings.Contains(query, "now64(") && !strings.Contains(query, "now()") {
 		return query, args
@@ -702,7 +743,7 @@ func substituteNow64(query string, args []any) (string, []any) {
 
 		// Match `now64(?)` — substitute literal and consume one arg.
 		if c == 'n' && strings.HasPrefix(query[i:], "now64(?)") {
-			out.WriteString(nowAnchorLiteral)
+			out.WriteString(anchorLiteral)
 			// Skip the consumed arg slot. argIdx is the next-to-bind
 			// index; it points at the `?` inside `now64(?)` which we
 			// are about to drop. Advance past it without copying.
@@ -734,7 +775,7 @@ func substituteNow64(query string, args []any) (string, []any) {
 				// known cases today) passes through to surface a
 				// real failure rather than silently mis-rewrite.
 				if isIntLiteral(inner) {
-					out.WriteString(nowAnchorLiteral)
+					out.WriteString(anchorLiteral)
 					i += len("now64(") + j // jump past the closing `)`
 					continue
 				}
@@ -749,7 +790,7 @@ func substituteNow64(query string, args []any) (string, []any) {
 		// type widening is invisible at the call site. No args slot
 		// to consume.
 		if c == 'n' && strings.HasPrefix(query[i:], "now()") {
-			out.WriteString(nowAnchorLiteral)
+			out.WriteString(anchorLiteral)
 			i += len("now()") - 1
 			continue
 		}
