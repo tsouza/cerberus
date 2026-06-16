@@ -114,19 +114,25 @@ func TestMetricNameQueryRange_RenderedSQLBounded(t *testing.T) {
 		t.Errorf("rendered SQL chains %d MetricName comparisons — inline OR/AND blowup, want a single IN:\n%s", n, sql)
 	}
 
-	// Size pin: a single 64-candidate span-metric arm rendered ~3035 bytes
-	// of inline OR-chain pre-fix. Crossed with the metadata handlers' 128-arm
-	// chunk cap that is ~388KB — over ClickHouse's 256KB max_query_size,
-	// which is the exact `code: 62 … Max query size exceeded` at position
-	// 262124 the compose-smoke probe hit. With the flat IN the same arm
-	// renders ~1067 bytes; the rc.5 resource-attribute projection adds a
-	// fixed per-arm `mapUpdate(sanitize(RA), sanitize(Attributes))` wrapper
-	// (~1577 bytes/arm). 128 arms ≈ 197KB, still comfortably under the
-	// ceiling. Pin a 1.75KB per-arm bound (128 arms ≈ 229KB < 256KB) so the
-	// chunk cap can never re-cross 256KB.
-	const perArmBound = 1792
-	if len(sql) >= perArmBound {
-		t.Errorf("single 64-candidate span-metric arm rendered %d bytes (want < %d) — risks re-crossing max_query_size when UNION-ALL'd across the chunk cap:\n%.400s",
-			len(sql), perArmBound, sql)
+	// Size pin: a single 64-candidate span-metric query rendered ~3035 bytes
+	// of inline OR-chain pre-fix. With the flat IN (PR #795) the candidate
+	// set folds to one `MetricName IN (?,…)` term; the rc.5 resource-attr
+	// projection adds a fixed `mapUpdate(sanitize(RA), sanitize(Attributes))`
+	// wrapper per arm; and a `_sum`/`_count` selector unions THREE arms —
+	// histogram (bare), sum (suffixed) and gauge (suffixed) — so a standalone
+	// `<x>_sum` gauge resolves. This 3-arm union renders ~2.5KB for the
+	// 64-candidate worst case (vs ~1.6KB for the prior 2-arm union).
+	//
+	// This bounds a SINGLE user query, which is nowhere near 256KB. The
+	// metadata handlers' 128-variant fan-out — where size genuinely matters —
+	// is protected unconditionally by maxRenderedQueryBytes (metadata.go),
+	// which re-measures each built chunk's BOUND byte length and splits it
+	// further (down to one arm) whenever it breaches the budget. So the 256KB
+	// ceiling never depends on this heuristic; the pin just catches a gross
+	// per-query regression. 3KB leaves margin for the gauge arm.
+	const perQueryBound = 3072
+	if len(sql) >= perQueryBound {
+		t.Errorf("single 64-candidate span-metric query rendered %d bytes (want < %d) — gross per-query size regression:\n%.400s",
+			len(sql), perQueryBound, sql)
 	}
 }

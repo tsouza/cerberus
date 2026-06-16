@@ -1548,6 +1548,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "scan_unions_gauge_for_suffixed_standalone_gauge",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "scan_unions_gauge_sum_for_unsuffixed_metric",
     "routed": true,
     "k": 8,

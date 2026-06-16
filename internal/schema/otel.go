@@ -495,13 +495,20 @@ func (m Metrics) TablesFor(metricName string) []string {
 	// physical layouts so the matcher finds rows regardless.
 	for _, suf := range []string{"_count", "_sum"} {
 		if hasSuffix(metricName, suf) {
-			if m.HistogramTable != "" && m.SumTable != "" && m.SumTable != m.HistogramTable {
-				return []string{m.HistogramTable, m.SumTable}
-			}
-			if m.HistogramTable != "" {
-				return []string{m.HistogramTable}
-			}
-			return []string{m.SumTable}
+			// Three physical layouts can carry a `_count`/`_sum`-suffixed
+			// name, so fan across all configured-and-distinct candidates:
+			//   1. Histogram table, BARE name — the classic-histogram
+			//      companion (Count/Sum columns on the `<base>` row).
+			//   2. Sum table, SUFFIXED name — OTel-hostmetrics cumulative
+			//      sums emitted under the suffixed name.
+			//   3. Gauge table, SUFFIXED name — a STANDALONE gauge literally
+			//      named `<x>_sum`/`<x>_count` (e.g. yace emits each
+			//      CloudWatch statistic as a name suffix: `*_sum`, `*_average`
+			//      — all plain gauges). Without this arm such a gauge returns
+			//      0 series even though its rows sit in the gauge table.
+			// Empty arms are cost-free under the MetricName PREWHERE, so a
+			// genuine histogram companion is unaffected by the extra arms.
+			return distinctTables(m.HistogramTable, m.SumTable, m.GaugeTable)
 		}
 	}
 	// `_total` and `_bucket` are unambiguous: `_total` is the OTel-CH
@@ -545,6 +552,26 @@ func (m Metrics) TablesForUnknownName() []string {
 		return []string{m.GaugeTable, m.SumTable}
 	}
 	return []string{m.GaugeTable}
+}
+
+// distinctTables returns the non-empty table names in argument order with
+// duplicates removed — the candidate set for a selector whose name may live
+// in more than one physical layout. First occurrence wins, so callers pass
+// the byte-stable-preferred table first.
+func distinctTables(tables ...string) []string {
+	out := make([]string, 0, len(tables))
+	seen := make(map[string]struct{}, len(tables))
+	for _, t := range tables {
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
 }
 
 func hasSuffix(s, suffix string) bool {
