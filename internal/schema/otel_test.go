@@ -142,20 +142,27 @@ func TestDefaultOTelMetricsTablesFor(t *testing.T) {
 		// TablesFor — keeps the matcher-resolve path single-table for
 		// the fixtures that exercise `_total` / `_count` / `_sum` /
 		// `_bucket` shapes.
-		// `_count` and `_sum` fan to (Histogram, Sum) because the
-		// OTel-CH histogram exporter writes these as Count/Sum columns
-		// on the bare-name histogram row while the OTel-hostmetrics
-		// emitter writes them as cumulative Sums under the suffixed
-		// name (`system_cpu_logical_count`, `system_processes_count`,
-		// etc.). The PromQL lowering builds a UnionAll across both
-		// physical layouts so the matcher finds rows wherever the
-		// upstream emitter dropped them.
-		"http_server_request_duration_count": {m.HistogramTable, m.SumTable},
-		"http_server_request_duration_sum":   {m.HistogramTable, m.SumTable},
-		"system_cpu_logical_count":           {m.HistogramTable, m.SumTable},
-		"system_processes_count":             {m.HistogramTable, m.SumTable},
-		"system_filesystem_inodes_count":     {m.HistogramTable, m.SumTable},
-		"system_processes_created_count":     {m.HistogramTable, m.SumTable},
+		// `_count` and `_sum` fan to (Histogram, Sum, Gauge) — three
+		// physical layouts can carry the suffixed name: the OTel-CH
+		// histogram exporter writes Count/Sum columns on the bare-name
+		// histogram row; the OTel-hostmetrics emitter writes cumulative
+		// Sums under the suffixed name (`system_cpu_logical_count`,
+		// `system_processes_count`, …); AND a STANDALONE gauge can be
+		// literally named `<x>_sum`/`<x>_count` (e.g. yace emits each
+		// CloudWatch statistic as a name suffix — `*_sum`, `*_average` —
+		// all plain gauges in otel_metrics_gauge). The PromQL lowering
+		// builds a UnionAll across all three so the matcher finds rows
+		// wherever the upstream emitter dropped them.
+		"http_server_request_duration_count": {m.HistogramTable, m.SumTable, m.GaugeTable},
+		"http_server_request_duration_sum":   {m.HistogramTable, m.SumTable, m.GaugeTable},
+		"system_cpu_logical_count":           {m.HistogramTable, m.SumTable, m.GaugeTable},
+		"system_processes_count":             {m.HistogramTable, m.SumTable, m.GaugeTable},
+		"system_filesystem_inodes_count":     {m.HistogramTable, m.SumTable, m.GaugeTable},
+		"system_processes_created_count":     {m.HistogramTable, m.SumTable, m.GaugeTable},
+		// A standalone gauge literally named `<x>_sum` (the yace
+		// CloudWatch-statistic case) — the gauge arm is what makes it
+		// resolve instead of returning 0 series.
+		"aws_applicationelb_request_count_sum": {m.HistogramTable, m.SumTable, m.GaugeTable},
 		// `_total` and `_bucket` stay single-table — counter naming and
 		// classic-histogram bucket-companion fan-out aren't ambiguous
 		// between physical layouts.

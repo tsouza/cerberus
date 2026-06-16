@@ -3462,8 +3462,8 @@
   {
     "fixture": "promql/lwr_bare_selector_eval_ts_boundary",
     "fan_factor": 1,
-    "scan_rows": 1,
-    "peak_intermediate": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3482,8 +3482,8 @@
   {
     "fixture": "promql/lwr_bare_selector_staleness_window",
     "fan_factor": 1,
-    "scan_rows": 1,
-    "peak_intermediate": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3612,8 +3612,8 @@
   {
     "fixture": "promql/negative_at",
     "fan_factor": 1,
-    "scan_rows": 1,
-    "peak_intermediate": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3622,8 +3622,8 @@
   {
     "fixture": "promql/negative_offset",
     "fan_factor": 1,
-    "scan_rows": 2,
-    "peak_intermediate": 2,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3970,6 +3970,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/resets_counter",
+    "fan_factor": 1,
+    "scan_rows": 5,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/resource_attr_bare_selector",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -4004,16 +4014,6 @@
     "fan_factor": 1,
     "scan_rows": 3,
     "peak_intermediate": 3,
-    "has_cross_join": false,
-    "has_array_join": false,
-    "has_recursive_cte": false,
-    "max_recursion_depth": 0
-  },
-  {
-    "fixture": "promql/resets_counter",
-    "fan_factor": 1,
-    "scan_rows": 5,
-    "peak_intermediate": 5,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -4111,6 +4111,16 @@
   },
   {
     "fixture": "promql/scalar_single_series",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/scan_unions_gauge_for_suffixed_standalone_gauge",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,

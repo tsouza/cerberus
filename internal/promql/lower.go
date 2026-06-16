@@ -367,8 +367,10 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		companionBare = bare
 		// The single-arm fallback rewrites matchers in-place to the bare
 		// name so the legacy histogram-companion-only emit shape stays
-		// byte-stable for deployments without a separate Sum table.
-		if s.SumTable == "" || s.SumTable == s.HistogramTable {
+		// byte-stable — but ONLY when there is no distinct Sum/Gauge value
+		// table to scan under the literal suffixed name (else the union path
+		// below owns the rewrite per-arm).
+		if len(literalCompanionValueTables(s)) == 0 {
 			matchers = rewriteMetricName(matchers, bare)
 		}
 	}
@@ -559,10 +561,33 @@ func needCompanionUnion(s schema.Metrics, companionValueColumn, companionSuffixe
 	if companionValueColumn == "" || companionSuffixed == "" || companionBare == "" {
 		return false
 	}
-	if s.SumTable == "" || s.SumTable == s.HistogramTable {
-		return false
+	// The union is needed when the suffixed name can live somewhere other than
+	// the histogram companion's bare-name row — i.e. there is at least one
+	// distinct Sum/Gauge value table to scan under the LITERAL suffixed name.
+	// (Gauge is the standalone-`<x>_sum`-gauge case; Sum is hostmetrics.)
+	return len(literalCompanionValueTables(s)) > 0
+}
+
+// literalCompanionValueTables returns the distinct value tables a
+// `_count`/`_sum`-suffixed name may live in UNDER ITS LITERAL NAME — the Sum
+// table (OTel-hostmetrics cumulative sums) and the Gauge table (standalone
+// gauges literally named `<x>_sum`/`<x>_count`, e.g. yace CloudWatch statistic
+// suffixes). The histogram table is excluded — it is the bare-name arm. Sum
+// precedes Gauge for a stable union arm order; empties and duplicates drop.
+func literalCompanionValueTables(s schema.Metrics) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, t := range []string{s.SumTable, s.GaugeTable} {
+		if t == "" || t == s.HistogramTable {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
 	}
-	return true
+	return out
 }
 
 // lowerCompanionUnion builds the chplan subtree for a
@@ -580,9 +605,17 @@ func lowerCompanionUnion(
 	matchers []*labels.Matcher,
 	bareName, suffixedName, sourceColumn string,
 ) (chplan.Node, error) {
-	histArm := buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn)
-	sumArm := buildSumCompanionArm(s, matchers, suffixedName)
-	selectorInput := chplan.Node(&chplan.UnionAll{Inputs: []chplan.Node{histArm, sumArm}})
+	inputs := []chplan.Node{
+		buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn),
+	}
+	// One literal-suffixed-name arm per distinct value table the name may live
+	// in: the Sum table (hostmetrics cumulative sums) and the Gauge table
+	// (standalone `<x>_sum`/`<x>_count` gauges — the yace CloudWatch-suffix
+	// case). Empty arms are cost-free under the per-arm MetricName filter.
+	for _, t := range literalCompanionValueTables(s) {
+		inputs = append(inputs, buildLiteralNameCompanionArm(s, matchers, suffixedName, t))
+	}
+	selectorInput := chplan.Node(&chplan.UnionAll{Inputs: inputs})
 	anchor, err := selectorAnchor(v, ctx)
 	if err != nil {
 		return nil, err
@@ -660,17 +693,17 @@ func buildHistogramCompanionArm(
 	}
 }
 
-// buildSumCompanionArm assembles the sum-table arm of the
-// classic-histogram-companion UnionAll. The arm scans the sum table
-// with the MetricName filter kept on the SUFFIXED user-visible name
-// (`system_cpu_logical_count`, `system_processes_count`, etc. — the
-// shape OTel-hostmetrics emits for these counters) and projects the
-// canonical Sample-row quadruple directly. The Value column is
-// already `Float64` on the sum table, so no `toFloat64` cast is
-// required (the histogram arm needs the cast because its Count column
-// is UInt64).
-func buildSumCompanionArm(
-	s schema.Metrics, matchers []*labels.Matcher, suffixedName string,
+// buildLiteralNameCompanionArm assembles a literal-suffixed-name arm of the
+// classic-histogram-companion UnionAll. The arm scans `table` with the
+// MetricName filter kept on the SUFFIXED user-visible name
+// (`system_cpu_logical_count`, `aws_applicationelb_request_count_sum`, etc.)
+// and projects the canonical Sample-row quadruple directly. Used for BOTH the
+// Sum table (OTel-hostmetrics cumulative sums under the suffixed name) and the
+// Gauge table (a standalone gauge literally named `<x>_sum`/`<x>_count`). The
+// Value column is already `Float64`, so no `toFloat64` cast is required (the
+// histogram arm needs the cast because its Count column is UInt64).
+func buildLiteralNameCompanionArm(
+	s schema.Metrics, matchers []*labels.Matcher, suffixedName, table string,
 ) chplan.Node {
 	// Defensive: thread the suffixed name back through rewriteMetricName
 	// so any non-Equal `__name__` matchers in the input list (regex
@@ -680,8 +713,15 @@ func buildSumCompanionArm(
 	// as the canonical Equal matcher, so this is a no-op for the
 	// production input shape but the helper stays robust against
 	// alternate matcher shapes upstream callers might thread in.
+	//
+	// `table` is the SUFFIXED-name value table this arm scans — the Sum
+	// table (OTel-hostmetrics cumulative sums under the suffixed name) or
+	// the Gauge table (a STANDALONE gauge literally named `<x>_sum` /
+	// `<x>_count`, e.g. yace CloudWatch statistic suffixes). Both store the
+	// value in the canonical Value column (Float64), so no toFloat64 cast is
+	// needed (unlike the histogram arm's UInt64 Count column).
 	armMatchers := rewriteMetricName(matchers, suffixedName)
-	scan := &chplan.Scan{Table: s.SumTable}
+	scan := &chplan.Scan{Table: table}
 	var armInput chplan.Node = scan
 	if pred := buildPredicate(armMatchers, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}

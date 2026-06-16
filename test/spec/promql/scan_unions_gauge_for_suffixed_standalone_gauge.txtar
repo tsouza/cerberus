@@ -1,0 +1,127 @@
+-- query.promql --
+aws_alb_request_count_sum
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('aws_alb_request_count_sum', map('load_balancer', 'app/web/abc'), map(), toDateTime64('2026-01-01 00:00:00', 9), 4096);
+-- expected_rows --
+[
+  ["aws_alb_request_count_sum", {"load_balancer": "app/web/abc"}, "2026-01-01T00:00:00Z", 4096]
+]
+-- description --
+Regression pin for the schema-report (2026-06-16) bug: a STANDALONE
+GAUGE whose MetricName ends in `_sum` (or `_count`) returned 0 series
+because the PromQL->CH name resolution routed the suffix exclusively to
+the histogram-companion (bare-name) + sum (suffixed) tables and never
+scanned the gauge table where the row actually lives.
+
+Real-world source: yace (yet-another-cloudwatch-exporter) emits each
+CloudWatch statistic as a name suffix — `aws_applicationelb_request_count_sum`,
+`*_average`, `*_p99` — all as plain gauges. Pre-fix, every `_sum`/`_count`
+stat metric was invisible to the Prometheus query API (request-rate +
+error-rate panels on the "AWS / Load Balancers" dashboard painted empty),
+though the rows sat in `otel_metrics_gauge`.
+
+The fix adds a GAUGE arm (literal suffixed name) to the `_count`/`_sum`
+companion union: histogram(bare) UNION sum(suffixed) UNION gauge(suffixed).
+Here the histogram + sum tables are empty and only the gauge holds
+`aws_alb_request_count_sum`, so the gauge arm is the only one that returns
+a row — exactly the path that was missing. A genuine histogram companion
+(see histogram_sum_basic.txtar) still resolves via the bare-name arm; its
+extra gauge/sum arms are cost-free empties under the MetricName PREWHERE.
+-- args --
+[0] string = "aws_alb_request_count_sum"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "aws_alb_request_count"
+[6] string = "aws.alb.request.count"
+[7] string = "aws.alb.request_count"
+[8] string = "aws.alb_request.count"
+[9] string = "aws.alb_request_count"
+[10] string = "aws_alb.request.count"
+[11] string = "aws_alb.request_count"
+[12] string = "aws_alb_request.count"
+[13] string = "service.name"
+[14] string = "service_name"
+[15] string = "service.name"
+[16] string = "service_name"
+[17] string = "aws_alb_request_count_sum"
+[18] string = "aws.alb.request.count.sum"
+[19] string = "aws.alb.request.count_sum"
+[20] string = "aws.alb.request_count.sum"
+[21] string = "aws.alb.request_count_sum"
+[22] string = "aws.alb_request.count.sum"
+[23] string = "aws.alb_request.count_sum"
+[24] string = "aws.alb_request_count.sum"
+[25] string = "aws.alb_request_count_sum"
+[26] string = "aws_alb.request.count.sum"
+[27] string = "aws_alb.request.count_sum"
+[28] string = "aws_alb.request_count.sum"
+[29] string = "aws_alb.request_count_sum"
+[30] string = "aws_alb_request.count.sum"
+[31] string = "aws_alb_request.count_sum"
+[32] string = "aws_alb_request_count.sum"
+[33] string = "service.name"
+[34] string = "service_name"
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = "aws_alb_request_count_sum"
+[38] string = "aws.alb.request.count.sum"
+[39] string = "aws.alb.request.count_sum"
+[40] string = "aws.alb.request_count.sum"
+[41] string = "aws.alb.request_count_sum"
+[42] string = "aws.alb_request.count.sum"
+[43] string = "aws.alb_request.count_sum"
+[44] string = "aws.alb_request_count.sum"
+[45] string = "aws.alb_request_count_sum"
+[46] string = "aws_alb.request.count.sum"
+[47] string = "aws_alb.request.count_sum"
+[48] string = "aws_alb.request_count.sum"
+[49] string = "aws_alb.request_count_sum"
+[50] string = "aws_alb_request.count.sum"
+[51] string = "aws_alb_request.count_sum"
+[52] string = "aws_alb_request_count.sum"
+[53] string = "2026-01-01 00:00:01.000000000"
+[54] int64 = 9
+[55] string = "2026-01-01 00:00:01.000000000"
+[56] int64 = 9
+[57] int64 = 300000000000
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      UnionAll arms=3
+        Project ["aws_alb_request_count_sum" AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Sum) AS Value]
+          Filter predicate=(MetricName IN ("aws_alb_request_count", "aws.alb.request.count", "aws.alb.request_count", "aws.alb_request.count", "aws.alb_request_count", "aws_alb.request.count", "aws_alb.request_count", "aws_alb_request.count"))
+            Scan(otel_metrics_histogram)
+        Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName IN ("aws_alb_request_count_sum", "aws.alb.request.count.sum", "aws.alb.request.count_sum", "aws.alb.request_count.sum", "aws.alb.request_count_sum", "aws.alb_request.count.sum", "aws.alb_request.count_sum", "aws.alb_request_count.sum", "aws.alb_request_count_sum", "aws_alb.request.count.sum", "aws_alb.request.count_sum", "aws_alb.request_count.sum", "aws_alb.request_count_sum", "aws_alb_request.count.sum", "aws_alb_request.count_sum", "aws_alb_request_count.sum"))
+            Scan(otel_metrics_sum)
+        Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName IN ("aws_alb_request_count_sum", "aws.alb.request.count.sum", "aws.alb.request.count_sum", "aws.alb.request_count.sum", "aws.alb.request_count_sum", "aws.alb_request.count.sum", "aws.alb_request.count_sum", "aws.alb_request_count.sum", "aws.alb_request_count_sum", "aws_alb.request.count.sum", "aws_alb.request.count_sum", "aws_alb.request_count.sum", "aws_alb.request_count_sum", "aws_alb_request.count.sum", "aws_alb_request.count_sum", "aws_alb_request_count.sum"))
+            Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT ? AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Sum`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)

@@ -109,16 +109,18 @@ func TestLower_HistogramCompanion_RoutesToHistogramAndSumUnion(t *testing.T) {
 			}
 
 			// Walk the plan tree to find Scan nodes. The companion
-			// union emits two: one against the histogram table, one
-			// against the sum table.
+			// union emits THREE: histogram (bare name), sum (suffixed),
+			// and gauge (suffixed) — the gauge arm is what makes a
+			// standalone gauge literally named `<x>_sum`/`<x>_count`
+			// resolve instead of returning 0 series.
 			scans := collectScans(plan)
-			if len(scans) != 2 {
-				t.Fatalf("want 2 Scan nodes (histogram + sum union), got %d", len(scans))
+			if len(scans) != 3 {
+				t.Fatalf("want 3 Scan nodes (histogram + sum + gauge union), got %d", len(scans))
 			}
-			tables := []string{scans[0].Table, scans[1].Table}
-			if tables[0] != s.HistogramTable || tables[1] != s.SumTable {
-				t.Fatalf("Scan tables = %v; want [%q, %q]",
-					tables, s.HistogramTable, s.SumTable)
+			tables := []string{scans[0].Table, scans[1].Table, scans[2].Table}
+			if tables[0] != s.HistogramTable || tables[1] != s.SumTable || tables[2] != s.GaugeTable {
+				t.Fatalf("Scan tables = %v; want [%q, %q, %q]",
+					tables, s.HistogramTable, s.SumTable, s.GaugeTable)
 			}
 
 			// The histogram-arm Project must alias the right source
@@ -133,14 +135,20 @@ func TestLower_HistogramCompanion_RoutesToHistogramAndSumUnion(t *testing.T) {
 					tc.wantColumn, s.ValueColumn, histProject.Projections)
 			}
 
-			// The sum-arm Project must pass `Value` through unchanged.
-			sumProject := findCompanionProject(plan, scans[1])
-			if sumProject == nil {
-				t.Fatalf("sum arm: want Project over Scan(%s); got none", s.SumTable)
-			}
-			if !projectPassesValue(sumProject, s.ValueColumn) {
-				t.Fatalf("sum arm Project does not pass %s through unchanged; projections=%+v",
-					s.ValueColumn, sumProject.Projections)
+			// The sum + gauge arms each pass `Value` through unchanged
+			// (both store a Float64 Value under the suffixed name).
+			for _, arm := range []struct {
+				idx   int
+				table string
+			}{{1, s.SumTable}, {2, s.GaugeTable}} {
+				p := findCompanionProject(plan, scans[arm.idx])
+				if p == nil {
+					t.Fatalf("%s arm: want Project over Scan(%s); got none", arm.table, arm.table)
+				}
+				if !projectPassesValue(p, s.ValueColumn) {
+					t.Fatalf("%s arm Project does not pass %s through unchanged; projections=%+v",
+						arm.table, s.ValueColumn, p.Projections)
+				}
 			}
 
 			// Both arm-level filters must reference their own
@@ -188,10 +196,12 @@ func TestLower_HistogramCompanion_PreservesCountersWithTotalSuffix(t *testing.T)
 	}
 }
 
-// TestLower_HistogramCompanion_NoHistogramTable verifies the rewrite
-// is a no-op when the schema has no histogram table configured (an
-// edge case for custom schemas that disable classic histograms).
-// Falls back to the existing TableFor / SumTable routing.
+// TestLower_HistogramCompanion_NoHistogramTable verifies that with no
+// histogram table configured (a custom schema that disables classic
+// histograms) a `_count`/`_sum` selector falls back to the TablesFor
+// routing — which now fans across the Sum AND Gauge tables under the
+// LITERAL suffixed name, so a standalone gauge named `<x>_count` still
+// resolves (the schema-report bug) rather than only the sum table.
 func TestLower_HistogramCompanion_NoHistogramTable(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
@@ -207,13 +217,24 @@ func TestLower_HistogramCompanion_NoHistogramTable(t *testing.T) {
 		t.Fatalf("Lower: %v", err)
 	}
 
+	// With no histogram table the selector takes the multi-table fallback
+	// (scanFromTables → a single Scan with UnionTables set), which now fans
+	// across BOTH the sum and gauge tables under the literal suffixed name.
 	scans := collectScans(plan)
-	if len(scans) != 1 {
-		t.Fatalf("want 1 Scan, got %d", len(scans))
+	gotTables := make(map[string]bool)
+	for _, sc := range scans {
+		if sc.Table != "" {
+			gotTables[sc.Table] = true
+		}
+		for _, t := range sc.UnionTables {
+			gotTables[t] = true
+		}
 	}
-	if scans[0].Table != s.SumTable {
-		t.Fatalf("Scan.Table = %q; want %q (sum table — fallback when no histogram table)",
-			scans[0].Table, s.SumTable)
+	for _, want := range []string{s.SumTable, s.GaugeTable} {
+		if !gotTables[want] {
+			t.Fatalf("scan tables = %v; want both %q (sum) and %q (gauge) — a standalone gauge `<x>_count` must resolve even without a histogram table",
+				gotTables, s.SumTable, s.GaugeTable)
+		}
 	}
 }
 

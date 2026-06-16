@@ -585,6 +585,37 @@ The practical contract for adopters:
   existing stock table is an operator-driven migration (create the new
   table, backfill), not something cerberus does silently.
 
+### Metric name → table resolution
+
+OTel-CH stores metrics in five tables by instrument type
+(`otel_metrics_gauge`, `_sum`, `_histogram`, `_exp_histogram`,
+`_summary`), but a PromQL `__name__` carries no type. Cerberus resolves a
+metric name to the right table(s) and **unions across every physical
+layout the name could live in**, so a query never returns 0 series just
+because the upstream emitter dropped the rows in a table the Prom naming
+convention didn't predict. The candidate set per name shape:
+
+| `__name__` shape            | tables scanned (UNION ALL)                                   |
+| --------------------------- | ------------------------------------------------------------ |
+| unsuffixed (`foo`)          | gauge, sum                                                   |
+| `foo_total`                 | sum                                                          |
+| `foo_bucket`                | histogram (classic-bucket fan-out)                           |
+| **`foo_count` / `foo_sum`** | **histogram (bare `foo`), sum (suffixed), gauge (suffixed)** |
+
+The `_count`/`_sum` row is the subtle one: the name can be a classic
+**histogram companion** (the OTel-CH exporter writes `Count`/`Sum` columns
+on the bare-`foo` histogram row), a **cumulative sum** under the suffixed
+name (OTel-hostmetrics: `system_cpu_logical_count`, …), **or a standalone
+gauge literally named `foo_sum`** — e.g.
+[`yace`](https://github.com/nerdswords/yet-another-cloudwatch-exporter)
+emits each CloudWatch statistic as a name suffix
+(`aws_applicationelb_request_count_sum`, `*_average`, `*_p99`), all plain
+gauges. All three are scanned; empty arms are cost-free under the
+per-arm `MetricName` primary-key prune, so a genuine histogram companion
+pays nothing for the gauge/sum arms it doesn't use. This is why a gauge
+named `*_sum`/`*_count` is queryable as its literal name rather than
+silently resolving to a non-existent histogram base and returning empty.
+
 ### Shutdown
 
 On `SIGINT` or `SIGTERM`, cerberus:
