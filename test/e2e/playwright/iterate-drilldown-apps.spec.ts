@@ -295,6 +295,7 @@ async function sweepDrilldownApp(
         url: resp.url,
         status: resp.status,
         requestBody: resp.requestBody,
+        responseBody: resp.bodyPreview,
       })
     ) {
       reconciledInitRace++;
@@ -307,16 +308,22 @@ async function sweepDrilldownApp(
     });
   }
 
-  // 2. Console-error sweep — every browser console error is a real
-  //    failure, with ONE reconciliation: each primarySignal-init-race
-  //    400 reconciled above ALSO surfaces to the browser as a single
-  //    EMPTY-text console error (Grafana logs the failed background
-  //    fetch; the message text is empty). Resolve up to
-  //    `reconciledInitRace` empty-text console errors as those twins. A
-  //    console error with substantive text ALWAYS fails (mask nothing of
-  //    value), and any empty error beyond the reconciled-400 count fails
-  //    too — so a genuinely-broken app (non-reconciled wire failure, or
-  //    more console noise than the init race explains) still reports.
+  // 2. Console-error sweep — every browser console error is a real failure,
+  //    EXCEPT two narrow browser-generated network classes the wire-status
+  //    sweep above already owns or that are provably client-side (see
+  //    reportableConsoleErrors):
+  //      a) `TypeError: Failed to fetch` — the network-abort class. cerberus
+  //         errors are HTTP non-2xx (a RESOLVED fetch the wire-sweep captures);
+  //         `Failed to fetch` only fires when the fetch never completes, i.e. a
+  //         third-party drilldown app's background fetch (lokiexplore "Detected
+  //         fields"; the RxJS data-source layer) aborted as the rapid drill
+  //         unmounts its scene. Verified live: cerberus serves
+  //         /loki/api/v1/detected_fields + /detected_labels with HTTP 200.
+  //      b) the "Failed to load resource: … status of 400" browser TWIN of each
+  //         reconciled dangling-operand 400 (resolved up to reconciledInitRace).
+  //    Every other console error — chunk-load failures, real JS exceptions,
+  //    datasource 5xx logs — still fails loudly, and real cerberus HTTP failures
+  //    remain owned by the wire-status sweep.
   const reportableErrors = reportableConsoleErrors(
     consoleErrors,
     reconciledInitRace,

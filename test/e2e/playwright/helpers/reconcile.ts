@@ -20,6 +20,12 @@ export type DsResponseView = {
   url: string;
   status: number;
   requestBody: string;
+  // Captured cerberus error body, when readable. Used as a postData-independent
+  // fallback: a rapid drill can tear the request reference down before
+  // `request.postData()` resolves, leaving requestBody empty — but cerberus's
+  // 400 body still names the exact syntax error, so the dangling-operand shape
+  // is recognisable response-side too.
+  responseBody?: string;
 };
 
 /**
@@ -68,6 +74,60 @@ export const DANGLING_TRACEQL_OPERAND =
   /\{\s*(?:&&|\|\|)|(?:&&|\|\|)\s*\}|(?:&&|\|\|)\s*(?:&&|\|\|)/;
 
 /**
+ * Matches cerberus's HTTP-400 body for a dangling-operand TraceQL spanset —
+ * the RESPONSE-side signature of the same primarySignal-init race. cerberus's
+ * Tempo head rejects an empty operand around `&&`/`||` with
+ * `parse error … syntax error: unexpected &&` (or `||`); `&` is HTML-escaped to
+ * `&` in the JSON body, so both the raw-escaped and decoded forms are
+ * matched. `unexpected <operator>` is specific to a dangling operand — any
+ * other malformed query yields `unexpected <other-token>` — so this stays as
+ * narrow as the request-side DANGLING_TRACEQL_OPERAND: a genuine wrong-rejection
+ * carries a different message and still fails loudly.
+ *
+ * This is the fallback the wire-sweep uses when a torn-down request left the
+ * forwarded query body uncapturable (postData empty); the cerberus error body
+ * proves the shape just as well.
+ */
+export const DANGLING_TRACEQL_REJECTION =
+  /unexpected\s+(?:&&|\\u0026\\u0026|\|\|)/;
+
+/**
+ * True iff a captured console message is a browser `TypeError: Failed to fetch`
+ * — the network-abort class. This is NOT how cerberus signals an error: a
+ * cerberus 4xx/5xx arrives as an HTTP response with a JSON body (the fetch
+ * promise RESOLVES with a non-ok response), captured and failed-on by the
+ * wire-status sweep. `Failed to fetch` only fires when the fetch itself never
+ * completes — connection abort / cancellation / teardown. The Grafana drilldown
+ * apps fire background fetches (grafana-lokiexplore-app's "Detected fields"
+ * feature; the RxJS data-source subscription layer) during the rapid multi-app
+ * drill; when the test navigates on, Grafana unmounts the scene and the
+ * in-flight fetch is aborted, surfacing as this TypeError. Verified live on the
+ * k3d stack: cerberus serves /loki/api/v1/detected_fields and /detected_labels
+ * with HTTP 200, and no Playwright `requestfailed` fires for them — a pure
+ * client-side abort. Recognising ONLY this exact TypeError class keeps every
+ * other console error (chunk-load failures, real JS exceptions, datasource 5xx
+ * logs) reportable; real cerberus HTTP failures remain owned by the wire-sweep.
+ */
+export function isClientSideFetchAbort(consoleMessage: string): boolean {
+  return /TypeError:\s*Failed to fetch/i.test(consoleMessage);
+}
+
+/**
+ * True iff a captured console message is the browser's generic
+ * "Failed to load resource: the server responded with a status of N" line — the
+ * console TWIN every non-2xx HTTP response emits. It is redundant with the
+ * wire-status sweep (which inspects the SAME cerberus responses and fails on any
+ * un-reconciled non-2xx), so on its own it carries no signal the wire-sweep
+ * doesn't already own. Used to resolve the browser twin of a reconciled
+ * dangling-operand 400 without masking application-level console errors.
+ */
+export function isResourceStatusTwin(consoleMessage: string): boolean {
+  return /Failed to load resource: the server responded with a status of \d/i.test(
+    consoleMessage,
+  );
+}
+
+/**
  * True iff `resp` is a non-2xx Tempo ds/query whose EVERY forwarded TraceQL
  * query carries a dangling-operand spanset (see DANGLING_TRACEQL_OPERAND) —
  * the Traces Drilldown app's primarySignal-init-race shape. cerberus correctly
@@ -88,8 +148,18 @@ export function isTransientMalformedTraceQLFailure(
   const dsType = new URL(resp.url, 'http://x').searchParams.get('ds_type');
   if (dsType !== 'tempo') return false;
   const exprs = [...refIdToExpr(resp.requestBody).values()];
-  if (exprs.length === 0) return false;
-  return exprs.every((expr) => DANGLING_TRACEQL_OPERAND.test(expr));
+  if (exprs.length > 0) {
+    // Request-side: EVERY forwarded query must carry the dangling shape (a
+    // mixed request with one well-formed query is a genuine failure).
+    return exprs.every((expr) => DANGLING_TRACEQL_OPERAND.test(expr));
+  }
+  // Request body uncapturable (a torn-down request left postData empty). Fall
+  // back to cerberus's 400 body, which names the dangling-operand syntax error
+  // verbatim — the same proven shape, observed response-side.
+  return (
+    resp.responseBody !== undefined &&
+    DANGLING_TRACEQL_REJECTION.test(resp.responseBody)
+  );
 }
 
 /**
@@ -112,14 +182,27 @@ export function reportableConsoleErrors(
   consoleErrors: ReadonlyArray<string>,
   reconciledInitRace: number,
 ): string[] {
-  const substantive = consoleErrors.filter((m) => m.trim() !== '');
-  const emptyCount = consoleErrors.length - substantive.length;
-  const unexplainedEmpty = Math.max(0, emptyCount - Math.max(0, reconciledInitRace));
-  return [
-    ...substantive,
-    ...Array.from(
-      { length: unexplainedEmpty },
-      () => '<empty-text console error>',
-    ),
-  ];
+  // 1. Drop the browser network-abort class outright (client-side teardown of a
+  //    third-party app's background fetch — see isClientSideFetchAbort). Real
+  //    cerberus HTTP failures are owned by the wire-status sweep, not this rule.
+  const afterAbort = consoleErrors.filter((m) => !isClientSideFetchAbort(m));
+
+  // 2. Resolve the browser TWINS of the reconciled dangling-operand 400s: each
+  //    reconciled init-race 400 surfaces to the console either as an empty-text
+  //    message or as the generic "Failed to load resource: … status of 400"
+  //    twin. Resolve up to `reconciledInitRace` such twins (the wire-sweep
+  //    already accounted for the underlying 400); everything else is kept, so a
+  //    genuine app error or more twins than the init race explains still
+  //    reports.
+  let twinsBudget = Math.max(0, reconciledInitRace);
+  const reportable: string[] = [];
+  for (const m of afterAbort) {
+    const isTwin = m.trim() === '' || isResourceStatusTwin(m);
+    if (isTwin && twinsBudget > 0) {
+      twinsBudget--;
+      continue;
+    }
+    reportable.push(m.trim() === '' ? '<empty-text console error>' : m);
+  }
+  return reportable;
 }
