@@ -57,14 +57,23 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// The ResourceAttributes column mirrors the production OTel-CH default
+// schema ([schema.DefaultOTelMetrics] names it): the rc.5 read path always
+// projects mapUpdate(sanitize(ResourceAttributes), sanitize(Attributes)),
+// so a seed table omitting the column fails the chDB round-trip with
+// UNKNOWN_IDENTIFIER. It is left empty (DEFAULT map()) and the INSERT is
+// column-explicit, so the existing positional VALUES tuples keep working
+// and the merged label map collapses to Attributes alone — keeping the
+// native/fan-out parity assertion unchanged.
 const dualEmitSeed = `
 CREATE OR REPLACE TABLE otel_metrics_sum (
     MetricName String,
     Attributes Map(String, String),
+    ResourceAttributes Map(String, String) DEFAULT map(),
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_sum VALUES
+INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 24.0),

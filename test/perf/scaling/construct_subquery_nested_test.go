@@ -54,15 +54,20 @@ func init() {
 		CardinalityBound: 4.0,
 		SubLinearSlack:   0.9,
 		Seed: func() string {
+			// ResourceAttributes mirrors the OTel-CH default schema: the rc.5
+			// read path projects mapUpdate(sanitize(ResourceAttributes), …),
+			// so the seed table must carry the column (left empty via DEFAULT)
+			// or the chDB round-trip 502s with UNKNOWN_IDENTIFIER.
 			ddl := `DROP TABLE IF EXISTS otel_metrics_gauge;
 			CREATE TABLE otel_metrics_gauge (
 			  ServiceName String, MetricName String, Attributes Map(String,String),
+			  ResourceAttributes Map(String,String) DEFAULT map(),
 			  TimeUnix DateTime64(9), Value Float64
 			) ENGINE = MergeTree()
 			ORDER BY (MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix));`
 			// 100 series x ~720 samples (one every 10s over 2h) = 72k rows;
 			// FIXED across every inner-step variant so So is the only var.
-			ins := `INSERT INTO otel_metrics_gauge SELECT
+			ins := `INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value) SELECT
 			  'svc', '` + subqueryMetric + `',
 			  map('instance', concat('i', toString(number % 100))),
 			  toDateTime64('2026-01-01 00:00:00', 9) + toIntervalSecond((intDiv(number, 100)) * 10),

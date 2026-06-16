@@ -85,24 +85,30 @@ var (
 // The ORDER BY does not dedup (MergeTree, not ReplacingMergeTree), so both
 // job=c rows persist. Statements are newline-clean (no inline `-- comment`
 // lines) so splitStatements keeps each INSERT intact.
+// ResourceAttributes (DEFAULT map()) mirrors the OTel-CH default schema:
+// the rc.5 read path projects mapUpdate(sanitize(ResourceAttributes), …),
+// so the seed table must carry the column or the chDB round-trip 502s with
+// UNKNOWN_IDENTIFIER. Each INSERT is column-explicit (sans
+// ResourceAttributes) so the empty default fills it.
 const laneSeed = `CREATE OR REPLACE TABLE otel_metrics_sum (
   MetricName String,
   Attributes Map(String, String),
+  ResourceAttributes Map(String, String) DEFAULT map(),
   ServiceName LowCardinality(String),
   TimeUnix DateTime64(9),
   Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_sum
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
 SELECT 'http_requests_total', map('job', 'a'), 'svc',
   toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
   toFloat64(number)
 FROM numbers(241);
-INSERT INTO otel_metrics_sum
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
 SELECT 'http_requests_total', map('job', 'b'), 'svc',
   toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
   toFloat64(number * 2)
 FROM numbers(241);
-INSERT INTO otel_metrics_sum VALUES
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value) VALUES
   ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 5.0),
   ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 9.0);`
 

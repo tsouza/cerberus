@@ -246,11 +246,16 @@ func seedCounterAtScale(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 	stmts := []string{
 		`DROP TABLE IF EXISTS otel_metrics_sum`,
+		// ResourceAttributes mirrors the OTel-CH default schema: the rc.5
+		// read path projects mapUpdate(sanitize(ResourceAttributes), …), so
+		// the seed table must carry the column (left empty via DEFAULT) or
+		// the chDB round-trip 502s with UNKNOWN_IDENTIFIER.
 		`CREATE TABLE otel_metrics_sum (
 		  MetricName String, Attributes Map(String,String),
+		  ResourceAttributes Map(String,String) DEFAULT map(),
 		  TimeUnix DateTime64(9), Value Float64
 		) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix)`,
-		`INSERT INTO otel_metrics_sum SELECT
+		`INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) SELECT
 		  '` + scaleRateMetric + `',
 		  map('instance', concat('i', toString(number % ` + itoa(scaleSeedSeries) + `))),
 		  toDateTime64('2026-01-01 00:00:00', 9)
