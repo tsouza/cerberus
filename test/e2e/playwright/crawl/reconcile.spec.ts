@@ -36,7 +36,11 @@ import {
   succeededDsQuerySignatures,
   type DsResponseView,
 } from './lib.js';
-import { reportableConsoleErrors } from '../helpers/reconcile.js';
+import {
+  isClientSideFetchAbort,
+  isResourceStatusTwin,
+  reportableConsoleErrors,
+} from '../helpers/reconcile.js';
 
 const tempoBody = (query: string, refId = 'A'): string =>
   JSON.stringify({ queries: [{ refId, query, datasource: { type: 'tempo' } }] });
@@ -285,7 +289,7 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
     ).toBe(false);
   });
 
-  test('does NOT reconcile an empty/unparseable request body', () => {
+  test('does NOT reconcile an empty/unparseable request body (no response body)', () => {
     expect(
       isTransientMalformedTraceQLFailure({
         url: '/api/ds/query?ds_type=tempo&requestId=SQR1',
@@ -293,6 +297,99 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
         requestBody: '<streamed>',
       }),
     ).toBe(false);
+  });
+
+  // Response-side fallback: a rapid drill can tear the request reference down
+  // before postData resolves, leaving requestBody empty. cerberus's 400 body
+  // names the dangling-operand syntax error verbatim, so the SAME proven shape
+  // is recognisable response-side. Live-captured body (k3d, 2026-06-16):
+  //   {"error":true,"message":"parse error at line 0, col 3: syntax error: unexpected &&"}
+  test('reconciles via the cerberus 400 body when the request body is unavailable', () => {
+    for (const body of [
+      // raw HTML-escaped `&` (as cerberus emits it on the wire)
+      '{"error":true,"message":"parse error at line 0, col 3: syntax error: unexpected \\u0026\\u0026"}',
+      // decoded form (defensive — if the harness ever JSON-parses first)
+      'parse error: syntax error: unexpected &&',
+      // the `||` variant
+      'parse error: syntax error: unexpected ||',
+    ]) {
+      expect(
+        isTransientMalformedTraceQLFailure({
+          url: '/api/ds/query?ds_type=tempo&requestId=SQR1',
+          status: 400,
+          requestBody: '<streamed>',
+          responseBody: body,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  test('does NOT reconcile a DIFFERENT syntax error via the response body', () => {
+    // A genuine wrong-rejection of some other malformed/valid query carries a
+    // different `unexpected <token>` and must still fail loudly.
+    for (const body of [
+      'parse error: syntax error: unexpected }',
+      'parse error: syntax error: unexpected identifier',
+      'parse error: syntax error: unexpected (',
+      '{"error":true,"message":"internal error"}',
+    ]) {
+      expect(
+        isTransientMalformedTraceQLFailure({
+          url: '/api/ds/query?ds_type=tempo&requestId=SQR1',
+          status: 400,
+          requestBody: '<streamed>',
+          responseBody: body,
+        }),
+      ).toBe(false);
+    }
+  });
+});
+
+/**
+ * isClientSideFetchAbort — the lokiexplore "Detected fields" / RxJS
+ * network-abort class (k3d dashboard-shard, 2026-06-16; ~60% of runs).
+ *
+ * A browser `TypeError: Failed to fetch` is a CLIENT-SIDE abort — the fetch
+ * never completed (teardown of a third-party app's background fetch as the
+ * rapid drill unmounts its scene). cerberus errors are HTTP non-2xx (a resolved
+ * fetch the wire-sweep owns). Verified live: cerberus serves
+ * /loki/api/v1/detected_fields + /detected_labels with HTTP 200, and no
+ * Playwright requestfailed fires for them.
+ */
+test.describe('isClientSideFetchAbort', () => {
+  test('matches the network-abort TypeError (with + without app context)', () => {
+    expect(isClientSideFetchAbort('TypeError: Failed to fetch')).toBe(true);
+    expect(
+      isClientSideFetchAbort(
+        'TypeError: Failed to fetch {app: grafana-lokiexplore-app, version: 2.1.2, msg: Detected fields error}',
+      ),
+    ).toBe(true);
+  });
+
+  test('does NOT match real application errors', () => {
+    for (const m of [
+      'ChunkLoadError: Loading chunk 3399 failed',
+      'TypeError: x is undefined',
+      'Failed to load resource: the server responded with a status of 500',
+      'Error: panic rendering scene',
+    ]) {
+      expect(isClientSideFetchAbort(m)).toBe(false);
+    }
+  });
+});
+
+test.describe('isResourceStatusTwin', () => {
+  test('matches the browser non-2xx resource twin', () => {
+    expect(
+      isResourceStatusTwin(
+        'Failed to load resource: the server responded with a status of 400 (Bad Request)',
+      ),
+    ).toBe(true);
+  });
+
+  test('does NOT match a real application error', () => {
+    expect(isResourceStatusTwin('ChunkLoadError: boom')).toBe(false);
+    expect(isResourceStatusTwin('TypeError: Failed to fetch')).toBe(false);
   });
 });
 
@@ -336,5 +433,55 @@ test.describe('reportableConsoleErrors', () => {
   test('a clean window stays clean', () => {
     expect(reportableConsoleErrors([], 0)).toEqual([]);
     expect(reportableConsoleErrors([], 3)).toEqual([]);
+  });
+
+  test('drops the client-side fetch-abort class (lokiexplore teardown race)', () => {
+    expect(reportableConsoleErrors(['TypeError: Failed to fetch'], 0)).toEqual(
+      [],
+    );
+    expect(
+      reportableConsoleErrors(
+        [
+          'TypeError: Failed to fetch {app: grafana-lokiexplore-app, version: 2.1.2, msg: Detected fields error}',
+        ],
+        0,
+      ),
+    ).toEqual([]);
+  });
+
+  test('keeps a real error sitting next to a fetch-abort', () => {
+    expect(
+      reportableConsoleErrors(
+        ['TypeError: Failed to fetch', 'ChunkLoadError: boom'],
+        0,
+      ),
+    ).toEqual(['ChunkLoadError: boom']);
+  });
+
+  test('resolves the resource-status twin of a reconciled 400, up to budget', () => {
+    // 1 reconciled dangling-operand 400 → its browser twin
+    // "Failed to load resource: … status of 400" is resolved.
+    expect(
+      reportableConsoleErrors(
+        ['Failed to load resource: the server responded with a status of 400 (Bad Request)'],
+        1,
+      ),
+    ).toEqual([]);
+  });
+
+  test('keeps a resource-status twin BEYOND the reconciled-400 budget', () => {
+    // 2 twins but only 1 reconciled 400 → 1 stays reportable (a real,
+    // un-reconciled non-2xx still surfaces here as well as in the wire-sweep).
+    const twin =
+      'Failed to load resource: the server responded with a status of 400 (Bad Request)';
+    expect(reportableConsoleErrors([twin, twin], 1)).toEqual([twin]);
+  });
+
+  test('a non-400 resource twin with no reconciled race still reports', () => {
+    // A 500 resource twin with zero reconciled races is NOT resolved — it is a
+    // real failure twin (also caught by the wire-sweep).
+    const twin500 =
+      'Failed to load resource: the server responded with a status of 500';
+    expect(reportableConsoleErrors([twin500], 0)).toEqual([twin500]);
   });
 });
