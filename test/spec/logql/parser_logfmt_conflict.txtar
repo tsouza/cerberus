@@ -31,9 +31,11 @@ INSERT INTO otel_logs (Body) VALUES
 [12] string = "level_extracted"
 [13] string = "level_extracted"
 [14] string = "level.extracted"
-[15] string = "warn"
+[15] string = "level.extracted"
+[16] string = "level/extracted"
+[17] string = "warn"
 -- chplan --
-Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "level_extracted"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], LogAttributes["level.extracted"])) = "warn"))
+Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "level_extracted"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], if(mapContains(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)

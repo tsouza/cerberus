@@ -49,9 +49,11 @@ INSERT INTO otel_logs (Timestamp, Body) VALUES
 [1] string = "service_name"
 [2] string = "service_name"
 [3] string = "service.name"
-[4] string = "cerberus"
+[4] string = "service.name"
+[5] string = "service/name"
+[6] string = "cerberus"
 -- chplan --
-Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "cerberus")
+Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "cerberus")
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)

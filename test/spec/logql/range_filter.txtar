@@ -5,7 +5,7 @@
 -- end --
 2026-05-14T12:05:00Z
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?)
+SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
 -- args --
 [0] string = "2026-05-14 12:03:20.000000000"
 [1] int64 = 9
@@ -15,7 +15,9 @@ SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timest
 [5] string = "service_name"
 [6] string = "service_name"
 [7] string = "service.name"
-[8] string = "api"
+[8] string = "service.name"
+[9] string = "service/name"
+[10] string = "api"
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
@@ -35,5 +37,5 @@ INSERT INTO otel_logs (Timestamp) VALUES
   ["2026-05-14T12:05:00Z"]
 ]
 -- chplan --
-Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "api") AND ((Timestamp >= toDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= toDateTime64("2026-05-14 12:05:00.000000000", 9))))
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "api") AND ((Timestamp >= toDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= toDateTime64("2026-05-14 12:05:00.000000000", 9))))
   Scan(otel_logs)

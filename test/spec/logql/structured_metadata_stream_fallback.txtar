@@ -19,17 +19,19 @@ INSERT INTO otel_logs (Body) VALUES ('e1'), ('e2'), ('w1');
   ["clickhouse", "e2"]
 ]
 -- chplan --
-Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "clickhouse") AND (if(mapContains(LogAttributes, "region"), LogAttributes["region"], ResourceAttributes["region"]) = "us-east"))
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (if(mapContains(LogAttributes, "region"), LogAttributes["region"], ResourceAttributes["region"]) = "us-east"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?)
 -- args --
 [0] string = ""
 [1] string = "service_name"
 [2] string = "service_name"
 [3] string = "service.name"
-[4] string = "clickhouse"
-[5] string = "region"
-[6] string = "region"
+[4] string = "service.name"
+[5] string = "service/name"
+[6] string = "clickhouse"
 [7] string = "region"
-[8] string = "us-east"
+[8] string = "region"
+[9] string = "region"
+[10] string = "us-east"
