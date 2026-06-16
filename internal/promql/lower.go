@@ -1704,7 +1704,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// and the dual-emit parity test). `rate` drops `__name__` (it is a
 		// derived sample), so the native node returns directly here,
 		// bypassing the last/first_over_time name-preservation wrap below.
-		if native := maybeNativeTSGridRate(rw, ctx); native != nil {
+		if native := maybeNativeTSGridRate(rw, s, ctx); native != nil {
 			return native, nil
 		}
 	}
@@ -1756,14 +1756,19 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 //     hold regardless of caller.)
 //   - rw.Identity must be false (the bare-vector subquery no-op path is
 //     not a rate) and rw.Input must be a plain Scan / Filter — the
-//     row-shape relation timeSeriesRateToGrid consumes. Inputs that route
-//     through MetricsAggregate / MetricsHistogramOverTime / MetricsCompare
-//     keep their own emit branches.
+//     row-shape relation timeSeriesRateToGrid consumes — optionally
+//     wrapped in the canonical selector-attributes Project (the always-on
+//     resource-attribute merge / outer-by overlay). That Project re-exposes
+//     exactly the `(MetricName, Attributes, TimeUnix, Value)` quadruple the
+//     native emitter reads from its `FROM (<input>)` subquery, so it is
+//     transparent for eligibility. Inputs that route through
+//     MetricsAggregate / MetricsHistogramOverTime / MetricsCompare keep
+//     their own emit branches.
 //
 // The OuterRange field is intentionally NOT copied: it is a fan-out-only
 // emit knob (the matrix anchor span) that the native grid encodes
 // directly via Start/End/Step.
-func maybeNativeTSGridRate(rw *chplan.RangeWindow, ctx lowerCtx) *chplan.RangeWindowNative {
+func maybeNativeTSGridRate(rw *chplan.RangeWindow, s schema.Metrics, ctx lowerCtx) *chplan.RangeWindowNative {
 	if !ctx.experimentalTSGridRange {
 		return nil
 	}
@@ -1773,7 +1778,7 @@ func maybeNativeTSGridRate(rw *chplan.RangeWindow, ctx lowerCtx) *chplan.RangeWi
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
 		return nil
 	}
-	if !isPlainScanFilter(rw.Input) {
+	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
 	return &chplan.RangeWindowNative{
@@ -1788,6 +1793,52 @@ func maybeNativeTSGridRate(rw *chplan.RangeWindow, ctx lowerCtx) *chplan.RangeWi
 		ValueColumn:     rw.ValueColumn,
 		GroupBy:         rw.GroupBy,
 	}
+}
+
+// isNativeRateInput reports whether n is an input the native
+// timeSeriesRateToGrid emitter can consume directly. That is a plain
+// Scan / Filter chain ([isPlainScanFilter]) OPTIONALLY wrapped in the
+// canonical selector-attributes Project ([isCanonicalSampleProject]) —
+// the always-on resource-attribute merge / outer-by overlay
+// [augmentSelectorAttributes] inserts above the Filter. The native
+// emitter reads its input as `FROM (<input>)` selecting the canonical
+// `(MetricName, Attributes, TimeUnix, Value)` aliases, so that Project is
+// transparent: peeling it for the eligibility check keeps the native path
+// firing once the resource arm is active, instead of silently regressing
+// the query to the heavier arrayJoin fan-out (the experimental flag's
+// whole point is the lighter native aggregate).
+func isNativeRateInput(n chplan.Node, s schema.Metrics) bool {
+	if p, ok := n.(*chplan.Project); ok && isCanonicalSampleProject(p, s) {
+		n = p.Input
+	}
+	return isPlainScanFilter(n)
+}
+
+// isCanonicalSampleProject reports whether p is the canonical
+// selector-attributes Project: exactly four projections aliased to the
+// schema's MetricName / Attributes / Timestamp / Value columns (the
+// quadruple [augmentSelectorAttributes] and the histogram-companion
+// projects emit). Only the alias SET is checked — not the Attributes
+// expression — because the native emitter consumes the column by NAME
+// from its subquery regardless of how the map was rebound (bare column,
+// resource merge, or outer-by overlay).
+func isCanonicalSampleProject(p *chplan.Project, s schema.Metrics) bool {
+	if len(p.Projections) != 4 {
+		return false
+	}
+	want := map[string]struct{}{
+		s.MetricNameColumn: {},
+		s.AttributesColumn: {},
+		s.TimestampColumn:  {},
+		s.ValueColumn:      {},
+	}
+	for _, proj := range p.Projections {
+		if _, ok := want[proj.Alias]; !ok {
+			return false
+		}
+		delete(want, proj.Alias)
+	}
+	return len(want) == 0
 }
 
 // isPlainScanFilter reports whether n is a row-shape relation the native

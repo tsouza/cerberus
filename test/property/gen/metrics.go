@@ -163,6 +163,18 @@ func drawPoints(t *rapid.T, id string) []property.Point {
 // the property test matches what production CH does. ORDER BY
 // (MetricName, TimeUnix) gives the table a sort key without forcing
 // a primary key (which would constrain INSERT order).
+//
+// The `ResourceAttributes Map(String, String)` column mirrors the
+// OTel-CH default schema ([schema.DefaultOTelMetrics] names it via
+// ResourceAttributesColumn): since the read path now projects and
+// matches over ResourceAttributes (the resource-attribute arm added in
+// rc.5), the table cerberus queries must carry the column or chDB fails
+// with `Unknown expression identifier ResourceAttributes`. The
+// generator leaves it empty (`DEFAULT map()`) — PR 1 models only
+// per-datapoint Attributes — so the merged label set the resource arm
+// computes (`mapUpdate(ResourceAttributes, Attributes)`) collapses to
+// Attributes alone, keeping the oracle's verbatim-Attributes label sets
+// in lock-step.
 func renderDDL(series []property.SeriesData) string {
 	var b strings.Builder
 	b.WriteString(`CREATE OR REPLACE TABLE `)
@@ -170,6 +182,7 @@ func renderDDL(series []property.SeriesData) string {
 	b.WriteString(` (
     MetricName String,
     Attributes Map(String, String),
+    ResourceAttributes Map(String, String) DEFAULT map(),
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix);
@@ -177,7 +190,7 @@ func renderDDL(series []property.SeriesData) string {
 	for _, s := range series {
 		b.WriteString(`INSERT INTO `)
 		b.WriteString(GaugeTableName)
-		b.WriteString(` VALUES `)
+		b.WriteString(` (MetricName, Attributes, TimeUnix, Value) VALUES `)
 		for i, p := range s.Points {
 			if i > 0 {
 				b.WriteString(", ")

@@ -125,12 +125,17 @@ func setOpChainMetricName(i int) (promName, otelName string) {
 func setOpChainSeed(k int) string {
 	var b strings.Builder
 	b.WriteString("DROP TABLE IF EXISTS otel_metrics_sum;")
+	// ResourceAttributes mirrors the OTel-CH default schema: the rc.5 read
+	// path projects mapUpdate(sanitize(ResourceAttributes), …), so the seed
+	// table must carry the column (left empty via DEFAULT) or the chDB
+	// round-trip 502s with UNKNOWN_IDENTIFIER.
 	b.WriteString(`CREATE TABLE otel_metrics_sum (
 	  MetricName String, Attributes Map(String,String),
+	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix);`)
 	ts := setOpChainEvalTime.Add(-time.Second).UTC().Format("2006-01-02 15:04:05.000000000")
-	b.WriteString("\nINSERT INTO otel_metrics_sum VALUES\n")
+	b.WriteString("\nINSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES\n")
 	for i := 0; i <= k; i++ {
 		_, otel := setOpChainMetricName(i)
 		if i > 0 {

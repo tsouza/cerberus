@@ -64,15 +64,16 @@ const sortByLabelSeed = `
 CREATE OR REPLACE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
+    ResourceAttributes Map(String, String) DEFAULT map(),
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_gauge VALUES
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('http_requests', map('handler', 'b', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 30.0),
     ('http_requests', map('handler', 'a', 'method', 'post'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
     ('http_requests', map('handler', 'a', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 10.0),
     ('http_requests', map('handler', 'c', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 40.0);
-INSERT INTO otel_metrics_gauge VALUES
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('node_load', map('instance', 'v10', 'rack', 'r2'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
     ('node_load', map('instance', 'v2',  'rack', 'r2'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
     ('node_load', map('instance', 'v1',  'rack', 'r2'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),

@@ -123,16 +123,23 @@ func seriesSeed() string {
 	// Rows are anchored at now64(9) below (inside the staleness window the
 	// /series bare-selector instant pipeline applies), so no fixed-timestamp
 	// literal is needed here.
+	// ResourceAttributes mirrors the OTel-CH default schema on every metric
+	// table: the rc.5 read path projects mapUpdate(sanitize(ResourceAttributes),
+	// …), so each seed table must carry the column (left empty via DEFAULT)
+	// or the chDB round-trip 502s with UNKNOWN_IDENTIFIER.
 	gaugeDDL := `CREATE OR REPLACE TABLE otel_metrics_gauge (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
+	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix));`
 	sumDDL := `CREATE OR REPLACE TABLE otel_metrics_sum (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
+	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix));`
 	histDDL := `CREATE OR REPLACE TABLE otel_metrics_histogram (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
+	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Count UInt64, Sum Float64,
 	  BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix));`
@@ -141,21 +148,21 @@ func seriesSeed() string {
 	// instant queries do real granule work, not a single-row scan. now()
 	// anchors the rows inside the bare-selector staleness window the
 	// /series instant pipeline applies (Timestamp <= now, 5m lookback).
-	gaugeIns := `INSERT INTO otel_metrics_gauge SELECT
+	gaugeIns := `INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value) SELECT
 	  concat('svc', toString(number % 8)),
 	  arrayElement(['http_server_active_requests','system_cpu_utilization','process_runtime_memory'], (number % 3) + 1),
 	  map('http.request.method', arrayElement(['GET','POST','PUT'], (number % 3)+1), 'host', concat('h', toString(number % 20))),
 	  now64(9) - INTERVAL (number % 60) SECOND,
 	  toFloat64(number)
 	FROM numbers(20000);`
-	sumIns := `INSERT INTO otel_metrics_sum SELECT
+	sumIns := `INSERT INTO otel_metrics_sum (ServiceName, MetricName, Attributes, TimeUnix, Value) SELECT
 	  concat('svc', toString(number % 8)),
 	  'http_server_request_duration_count',
 	  map('http.request.method', arrayElement(['GET','POST','PUT'], (number % 3)+1), 'host', concat('h', toString(number % 20))),
 	  now64(9) - INTERVAL (number % 60) SECOND,
 	  toFloat64(number)
 	FROM numbers(20000);`
-	histIns := `INSERT INTO otel_metrics_histogram SELECT
+	histIns := `INSERT INTO otel_metrics_histogram (ServiceName, MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds) SELECT
 	  concat('svc', toString(number % 8)),
 	  'http_server_request_duration',
 	  map('http.request.method', arrayElement(['GET','POST','PUT'], (number % 3)+1), 'host', concat('h', toString(number % 20))),

@@ -50,15 +50,20 @@ func init() {
 		// headroom while a rows x N regression (241x) blows straight past.
 		CardinalityBound: 3.0,
 		Seed: func() string {
+			// ResourceAttributes mirrors the OTel-CH default schema: the rc.5
+			// read path projects mapUpdate(sanitize(ResourceAttributes), …),
+			// so the seed table must carry the column (left empty via DEFAULT)
+			// or the chDB round-trip 502s with UNKNOWN_IDENTIFIER.
 			ddl := `DROP TABLE IF EXISTS otel_metrics_gauge;
 			CREATE TABLE otel_metrics_gauge (
 			  ServiceName String, MetricName String, Attributes Map(String,String),
+			  ResourceAttributes Map(String,String) DEFAULT map(),
 			  TimeUnix DateTime64(9), Value Float64
 			) ENGINE = MergeTree()
 			ORDER BY (MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix));`
 			// 200 series x ~900 samples over 24h = 180k rows; FIXED across
 			// every step variant so anchor count N is the only variable.
-			ins := `INSERT INTO otel_metrics_gauge SELECT
+			ins := `INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value) SELECT
 			  'svc', '` + rangeLWRMetric + `',
 			  map('instance', concat('i', toString(number % 200))),
 			  toDateTime64('2026-01-01 00:00:00', 9) + toIntervalSecond((intDiv(number, 200)) * 96),

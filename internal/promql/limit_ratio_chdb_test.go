@@ -185,15 +185,20 @@ func TestLimitRatio_ChDBParity_ComputedRatio(t *testing.T) {
 // the five-instance `up` corpus into the gauge table.
 func seedLimitRatioCorpus(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
+	// ResourceAttributes (DEFAULT map()) mirrors the OTel-CH default schema:
+	// the rc.5 read path projects mapUpdate(sanitize(ResourceAttributes), …),
+	// so the seed tables must carry the column or the chDB round-trip 502s
+	// with UNKNOWN_IDENTIFIER. The INSERTs stay column-explicit (sans
+	// ResourceAttributes) so the empty default fills it.
+	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
 		t.Fatalf("create gauge: %v", err)
 	}
-	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
+	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
 		t.Fatalf("create sum: %v", err)
 	}
 	for _, inst := range seriesInstances {
 		ins := fmt.Sprintf(
-			"INSERT INTO otel_metrics_gauge VALUES ('up', map('instance', '%s', 'job', 'demo'), toDateTime64('2026-01-01 00:00:00', 9), 1.0)", inst,
+			"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES ('up', map('instance', '%s', 'job', 'demo'), toDateTime64('2026-01-01 00:00:00', 9), 1.0)", inst,
 		)
 		if _, err := db.Exec(ins); err != nil {
 			t.Fatalf("seed %s: %v", inst, err)
