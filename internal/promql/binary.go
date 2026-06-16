@@ -364,15 +364,12 @@ func foldSyntheticVectorBinary(synth, vec chplan.Node, op chplan.BinaryOp, scala
 	if isComparison(op) && returnBool {
 		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
 	}
-	return &chplan.Project{
-		Input: vec,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: newValue, Alias: s.ValueColumn},
-		},
-	}
+	// RangeWindow-aware projection — same rationale as lowerVectorScalar:
+	// a bare INSTANT RangeWindow vec leg (`sum_over_time(m[5m]) - time()`)
+	// exposes only (Attributes, Value), so a TimeUnix passthrough would
+	// raise CH UNKNOWN_IDENTIFIER. For a selector / already-canonicalised
+	// vec leg the helper emits the identical 4-column shape.
+	return projectValueOverInner(vec, s, newValue)
 }
 
 // rewriteAnchorToTimeUnix walks expr and replaces every
@@ -584,13 +581,16 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	if isComparison(op) && returnBool {
 		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
 	}
-	return &chplan.Project{
-		Input: inner,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: newValue, Alias: s.ValueColumn},
-		},
-	}, nil
+	// projectValueOverInner is RangeWindow-aware: for a selector input it
+	// emits the canonical (MetricName="", Attributes, TimeUnix, Value)
+	// shape (byte-identical to the hand-rolled Project this replaced); for
+	// an INSTANT RangeWindow input it omits the TimeUnix passthrough — the
+	// instant range emit exposes only (Attributes, Value), so referencing
+	// s.TimestampColumn there raised CH `UNKNOWN_IDENTIFIER` and silently
+	// emptied `sum_over_time(m[5m]) / 300`-class queries (the HTTP-layer
+	// wrapWithSampleProjection synthesises the eval-anchor timestamp). The
+	// matrix shape keeps its per-anchor `anchor_ts`. Mirrors the
+	// instant-fn / unary-minus path which already routes through this
+	// helper.
+	return projectValueOverInner(inner, s, newValue), nil
 }

@@ -37,29 +37,36 @@ INSERT INTO otel_metrics_sum VALUES
 [3] string = "service_name"
 [4] string = "cerberus_queries_total"
 [5] string = "cerberus.queries.total"
-[6] string = "cerberus.queries_total"
-[7] string = "cerberus_queries.total"
-[8] string = "cerberus_ql"
-[9] string = "cerberus_ql"
-[10] string = "cerberus.ql"
-[11] string = ""
+[6] string = "cerberus.queries/total"
+[7] string = "cerberus.queries_total"
+[8] string = "cerberus/queries/total"
+[9] string = "cerberus/queries_total"
+[10] string = "cerberus_queries.total"
+[11] string = "cerberus_ql"
 [12] string = "cerberus_ql"
-[13] string = "cerberus_ql"
+[13] string = "cerberus.ql"
 [14] string = "cerberus.ql"
-[15] string = ""
+[15] string = "cerberus/ql"
 [16] string = ""
-[17] string = "promql"
-[18] string = "2026-01-01 00:00:01.000000000"
-[19] int64 = 9
-[20] string = "2026-01-01 00:00:01.000000000"
-[21] int64 = 9
-[22] int64 = 300000000000
+[17] string = "cerberus_ql"
+[18] string = "cerberus_ql"
+[19] string = "cerberus.ql"
+[20] string = "cerberus.ql"
+[21] string = "cerberus/ql"
+[22] string = ""
+[23] string = ""
+[24] string = "promql"
+[25] string = "2026-01-01 00:00:01.000000000"
+[26] int64 = 9
+[27] string = "2026-01-01 00:00:01.000000000"
+[28] int64 = 9
+[29] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
     Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-        Filter predicate=((coalesce(nullIf(if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], Attributes["cerberus.ql"]), ""), nullIf(if(mapContains(ResourceAttributes, "cerberus_ql"), ResourceAttributes["cerberus_ql"], ResourceAttributes["cerberus.ql"]), ""), "") = "promql") AND (MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries_total", "cerberus_queries.total")))
+        Filter predicate=((coalesce(nullIf(if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], if(mapContains(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])), ""), nullIf(if(mapContains(ResourceAttributes, "cerberus_ql"), ResourceAttributes["cerberus_ql"], if(mapContains(ResourceAttributes, "cerberus.ql"), ResourceAttributes["cerberus.ql"], ResourceAttributes["cerberus/ql"])), ""), "") = "promql") AND (MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total")))
           Scan(otel_metrics_sum)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?)) WHERE (coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]), ?), nullIf(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]), ?), ?) = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])), ?), nullIf(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])), ?), ?) = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)

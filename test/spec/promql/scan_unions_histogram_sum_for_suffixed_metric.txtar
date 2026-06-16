@@ -8,37 +8,52 @@ system_cpu_logical_count
 [4] string = "service_name"
 [5] string = "system_cpu_logical"
 [6] string = "system.cpu.logical"
-[7] string = "system.cpu_logical"
-[8] string = "system_cpu.logical"
-[9] string = "service.name"
-[10] string = "service_name"
-[11] string = "service.name"
-[12] string = "service_name"
-[13] string = "system_cpu_logical_count"
-[14] string = "system.cpu.logical.count"
-[15] string = "system.cpu.logical_count"
-[16] string = "system.cpu_logical.count"
-[17] string = "system.cpu_logical_count"
-[18] string = "system_cpu.logical.count"
-[19] string = "system_cpu.logical_count"
-[20] string = "system_cpu_logical.count"
-[21] string = "service.name"
-[22] string = "service_name"
-[23] string = "service.name"
-[24] string = "service_name"
-[25] string = "system_cpu_logical_count"
-[26] string = "system.cpu.logical.count"
-[27] string = "system.cpu.logical_count"
-[28] string = "system.cpu_logical.count"
-[29] string = "system.cpu_logical_count"
-[30] string = "system_cpu.logical.count"
-[31] string = "system_cpu.logical_count"
-[32] string = "system_cpu_logical.count"
-[33] string = "2026-01-01 00:00:01.000000000"
-[34] int64 = 9
-[35] string = "2026-01-01 00:00:01.000000000"
-[36] int64 = 9
-[37] int64 = 300000000000
+[7] string = "system.cpu/logical"
+[8] string = "system.cpu_logical"
+[9] string = "system/cpu/logical"
+[10] string = "system/cpu_logical"
+[11] string = "system_cpu.logical"
+[12] string = "service.name"
+[13] string = "service_name"
+[14] string = "service.name"
+[15] string = "service_name"
+[16] string = "system_cpu_logical_count"
+[17] string = "system.cpu.logical.count"
+[18] string = "system.cpu.logical/count"
+[19] string = "system.cpu.logical_count"
+[20] string = "system.cpu/logical/count"
+[21] string = "system.cpu/logical_count"
+[22] string = "system.cpu_logical.count"
+[23] string = "system.cpu_logical_count"
+[24] string = "system/cpu/logical/count"
+[25] string = "system/cpu/logical_count"
+[26] string = "system/cpu_logical_count"
+[27] string = "system_cpu.logical.count"
+[28] string = "system_cpu.logical_count"
+[29] string = "system_cpu_logical.count"
+[30] string = "service.name"
+[31] string = "service_name"
+[32] string = "service.name"
+[33] string = "service_name"
+[34] string = "system_cpu_logical_count"
+[35] string = "system.cpu.logical.count"
+[36] string = "system.cpu.logical/count"
+[37] string = "system.cpu.logical_count"
+[38] string = "system.cpu/logical/count"
+[39] string = "system.cpu/logical_count"
+[40] string = "system.cpu_logical.count"
+[41] string = "system.cpu_logical_count"
+[42] string = "system/cpu/logical/count"
+[43] string = "system/cpu/logical_count"
+[44] string = "system/cpu_logical_count"
+[45] string = "system_cpu.logical.count"
+[46] string = "system_cpu.logical_count"
+[47] string = "system_cpu_logical.count"
+[48] string = "2026-01-01 00:00:01.000000000"
+[49] int64 = 9
+[50] string = "2026-01-01 00:00:01.000000000"
+[51] int64 = 9
+[52] int64 = 300000000000
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
@@ -89,13 +104,13 @@ Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix,
     Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       UnionAll arms=3
         Project ["system_cpu_logical_count" AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
-          Filter predicate=(MetricName IN ("system_cpu_logical", "system.cpu.logical", "system.cpu_logical", "system_cpu.logical"))
+          Filter predicate=(MetricName IN ("system_cpu_logical", "system.cpu.logical", "system.cpu/logical", "system.cpu_logical", "system/cpu/logical", "system/cpu_logical", "system_cpu.logical"))
             Scan(otel_metrics_histogram)
         Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-          Filter predicate=(MetricName IN ("system_cpu_logical_count", "system.cpu.logical.count", "system.cpu.logical_count", "system.cpu_logical.count", "system.cpu_logical_count", "system_cpu.logical.count", "system_cpu.logical_count", "system_cpu_logical.count"))
+          Filter predicate=(MetricName IN ("system_cpu_logical_count", "system.cpu.logical.count", "system.cpu.logical/count", "system.cpu.logical_count", "system.cpu/logical/count", "system.cpu/logical_count", "system.cpu_logical.count", "system.cpu_logical_count", "system/cpu/logical/count", "system/cpu/logical_count", "system/cpu_logical_count", "system_cpu.logical.count", "system_cpu.logical_count", "system_cpu_logical.count"))
             Scan(otel_metrics_sum)
         Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-          Filter predicate=(MetricName IN ("system_cpu_logical_count", "system.cpu.logical.count", "system.cpu.logical_count", "system.cpu_logical.count", "system.cpu_logical_count", "system_cpu.logical.count", "system_cpu.logical_count", "system_cpu_logical.count"))
+          Filter predicate=(MetricName IN ("system_cpu_logical_count", "system.cpu.logical.count", "system.cpu.logical/count", "system.cpu.logical_count", "system.cpu/logical/count", "system.cpu/logical_count", "system.cpu_logical.count", "system.cpu_logical_count", "system/cpu/logical/count", "system/cpu/logical_count", "system/cpu_logical_count", "system_cpu.logical.count", "system_cpu.logical_count", "system_cpu_logical.count"))
             Scan(otel_metrics_gauge)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT ? AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT ? AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)

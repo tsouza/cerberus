@@ -22,63 +22,83 @@ INSERT INTO otel_metrics_sum VALUES
 [3] string = "service_name"
 [4] string = "http_server_request_a_total"
 [5] string = "http.server.request.a.total"
-[6] string = "http.server.request.a_total"
-[7] string = "http.server.request_a.total"
-[8] string = "http.server.request_a_total"
-[9] string = "http.server_request.a.total"
-[10] string = "http.server_request.a_total"
-[11] string = "http.server_request_a.total"
-[12] string = "http.server_request_a_total"
-[13] string = "http_server.request.a.total"
-[14] string = "http_server.request.a_total"
-[15] string = "http_server.request_a.total"
-[16] string = "http_server.request_a_total"
-[17] string = "http_server_request.a.total"
-[18] string = "http_server_request.a_total"
-[19] string = "http_server_request_a.total"
-[20] string = "2026-01-01 00:00:01.000000000"
-[21] int64 = 9
-[22] string = "2026-01-01 00:00:01.000000000"
-[23] int64 = 9
-[24] int64 = 300000000000
-[25] string = "service.name"
-[26] string = "service_name"
-[27] string = "service.name"
-[28] string = "service_name"
-[29] string = "http_server_request_b_total"
-[30] string = "http.server.request.b.total"
-[31] string = "http.server.request.b_total"
-[32] string = "http.server.request_b.total"
-[33] string = "http.server.request_b_total"
-[34] string = "http.server_request.b.total"
-[35] string = "http.server_request.b_total"
-[36] string = "http.server_request_b.total"
-[37] string = "http.server_request_b_total"
-[38] string = "http_server.request.b.total"
-[39] string = "http_server.request.b_total"
-[40] string = "http_server.request_b.total"
-[41] string = "http_server.request_b_total"
-[42] string = "http_server_request.b.total"
-[43] string = "http_server_request.b_total"
-[44] string = "http_server_request_b.total"
-[45] string = "2026-01-01 00:00:01.000000000"
-[46] int64 = 9
-[47] string = "2026-01-01 00:00:01.000000000"
-[48] int64 = 9
-[49] int64 = 300000000000
+[6] string = "http.server.request.a/total"
+[7] string = "http.server.request.a_total"
+[8] string = "http.server.request/a/total"
+[9] string = "http.server.request/a_total"
+[10] string = "http.server.request_a.total"
+[11] string = "http.server.request_a_total"
+[12] string = "http.server/request/a/total"
+[13] string = "http.server/request/a_total"
+[14] string = "http.server/request_a_total"
+[15] string = "http.server_request.a.total"
+[16] string = "http.server_request.a_total"
+[17] string = "http.server_request_a.total"
+[18] string = "http.server_request_a_total"
+[19] string = "http/server/request/a/total"
+[20] string = "http/server/request/a_total"
+[21] string = "http/server/request_a_total"
+[22] string = "http/server_request_a_total"
+[23] string = "http_server.request.a.total"
+[24] string = "http_server.request.a_total"
+[25] string = "http_server.request_a.total"
+[26] string = "http_server.request_a_total"
+[27] string = "http_server_request.a.total"
+[28] string = "http_server_request.a_total"
+[29] string = "http_server_request_a.total"
+[30] string = "2026-01-01 00:00:01.000000000"
+[31] int64 = 9
+[32] string = "2026-01-01 00:00:01.000000000"
+[33] int64 = 9
+[34] int64 = 300000000000
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = "service.name"
+[38] string = "service_name"
+[39] string = "http_server_request_b_total"
+[40] string = "http.server.request.b.total"
+[41] string = "http.server.request.b/total"
+[42] string = "http.server.request.b_total"
+[43] string = "http.server.request/b/total"
+[44] string = "http.server.request/b_total"
+[45] string = "http.server.request_b.total"
+[46] string = "http.server.request_b_total"
+[47] string = "http.server/request/b/total"
+[48] string = "http.server/request/b_total"
+[49] string = "http.server/request_b_total"
+[50] string = "http.server_request.b.total"
+[51] string = "http.server_request.b_total"
+[52] string = "http.server_request_b.total"
+[53] string = "http.server_request_b_total"
+[54] string = "http/server/request/b/total"
+[55] string = "http/server/request/b_total"
+[56] string = "http/server/request_b_total"
+[57] string = "http/server_request_b_total"
+[58] string = "http_server.request.b.total"
+[59] string = "http_server.request.b_total"
+[60] string = "http_server.request_b.total"
+[61] string = "http_server.request_b_total"
+[62] string = "http_server_request.b.total"
+[63] string = "http_server_request.b_total"
+[64] string = "http_server_request_b.total"
+[65] string = "2026-01-01 00:00:01.000000000"
+[66] int64 = 9
+[67] string = "2026-01-01 00:00:01.000000000"
+[68] int64 = 9
+[69] int64 = 300000000000
 -- chplan --
 VectorSetOp op=unless match=default
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-          Filter predicate=(MetricName IN ("http_server_request_a_total", "http.server.request.a.total", "http.server.request.a_total", "http.server.request_a.total", "http.server.request_a_total", "http.server_request.a.total", "http.server_request.a_total", "http.server_request_a.total", "http.server_request_a_total", "http_server.request.a.total", "http_server.request.a_total", "http_server.request_a.total", "http_server.request_a_total", "http_server_request.a.total", "http_server_request.a_total", "http_server_request_a.total"))
+          Filter predicate=(MetricName IN ("http_server_request_a_total", "http.server.request.a.total", "http.server.request.a/total", "http.server.request.a_total", "http.server.request/a/total", "http.server.request/a_total", "http.server.request_a.total", "http.server.request_a_total", "http.server/request/a/total", "http.server/request/a_total", "http.server/request_a_total", "http.server_request.a.total", "http.server_request.a_total", "http.server_request_a.total", "http.server_request_a_total", "http/server/request/a/total", "http/server/request/a_total", "http/server/request_a_total", "http/server_request_a_total", "http_server.request.a.total", "http_server.request.a_total", "http_server.request_a.total", "http_server.request_a_total", "http_server_request.a.total", "http_server_request.a_total", "http_server_request_a.total"))
             Scan(otel_metrics_sum)
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-          Filter predicate=(MetricName IN ("http_server_request_b_total", "http.server.request.b.total", "http.server.request.b_total", "http.server.request_b.total", "http.server.request_b_total", "http.server_request.b.total", "http.server_request.b_total", "http.server_request_b.total", "http.server_request_b_total", "http_server.request.b.total", "http_server.request.b_total", "http_server.request_b.total", "http_server.request_b_total", "http_server_request.b.total", "http_server_request.b_total", "http_server_request_b.total"))
+          Filter predicate=(MetricName IN ("http_server_request_b_total", "http.server.request.b.total", "http.server.request.b/total", "http.server.request.b_total", "http.server.request/b/total", "http.server.request/b_total", "http.server.request_b.total", "http.server.request_b_total", "http.server/request/b/total", "http.server/request/b_total", "http.server/request_b_total", "http.server_request.b.total", "http.server_request.b_total", "http.server_request_b.total", "http.server_request_b_total", "http/server/request/b/total", "http/server/request/b_total", "http/server/request_b_total", "http/server_request_b_total", "http_server.request.b.total", "http_server.request.b_total", "http_server.request_b.total", "http_server.request_b_total", "http_server_request.b.total", "http_server_request.b_total", "http_server_request_b.total"))
             Scan(otel_metrics_sum)
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))) WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)))))
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))) WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)))))
