@@ -878,6 +878,23 @@ type Sample struct {
 	Labels     map[string]string
 	Timestamp  time.Time
 	Value      float64
+	// SeriesID is a stable, per-cursor identity for the interned Labels
+	// map: every Sample whose Labels alias the same interned instance
+	// carries the same SeriesID, assigned in first-seen order starting at
+	// 1 (0 means "not interned" — the slice-backed test cursor and any
+	// path that bypasses internLabels leave it zero). It lets consumers
+	// memoise per-series work (the prom matrix/vector pivots normalise the
+	// wire label set once per series instead of once per row) WITHOUT a
+	// reflect-based map-pointer probe: the cursor already computes the
+	// canonical key during interning, so handing back the dedup ordinal is
+	// free. SeriesID is a SINGLE-cursor identity — two independent cursors
+	// restart the numbering — so a consumer that merges rows from several
+	// independent cursors into ONE memo could alias two distinct series that
+	// share a per-cursor ordinal. The solver's composed shardCursor (route B)
+	// is itself ONE cursor for this purpose: it re-stamps a consistent
+	// cross-shard SeriesID as it concatenates the child streams, so a
+	// consumer draining the composed cursor sees one coherent namespace.
+	SeriesID uint32
 	// Metadata carries per-row structured metadata for Loki log-stream
 	// queries — the OTel-CH LogAttributes map surfaced as the third
 	// element of Loki's `[ts, line, {metadata}]` value tuple. It is

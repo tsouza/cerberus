@@ -354,8 +354,9 @@ func matrixFromSamples(samples []chclient.Sample) []MatrixSample {
 	}
 	bySeries := map[string]*seriesState{}
 	order := make([]string, 0)
+	memo := newLabelMemo(len(samples))
 	for _, s := range samples {
-		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
+		labels := memo.normalize(s)
 		key := format.CanonicalKey(labels)
 		st, ok := bySeries[key]
 		if !ok {
@@ -1058,8 +1059,9 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	}
 
 	bySeries := map[string]latest{}
+	memo := newLabelMemo(len(samples))
 	for _, s := range samples {
-		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
+		labels := memo.normalize(s)
 		key := format.CanonicalKey(labels)
 		cur, ok := bySeries[key]
 		if !ok || s.Timestamp.After(cur.ts) {
@@ -1128,9 +1130,12 @@ func matrixFromCursor(
 	// path must match. (Compat query `{job="demo", __name__!~"..."}`
 	// diverged purely on series order before this.)
 	order := make([]string, 0)
+	// Memoise the per-row label normalisation by interned-map identity so
+	// a series with K samples normalises once, not K times — see labelMemo.
+	memo := newLabelMemo(0)
 	for cursor.Next() {
 		s := cursor.Sample()
-		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
+		labels := memo.normalize(s)
 		key := format.CanonicalKey(labels)
 		st, ok := bySeries[key]
 		if !ok {

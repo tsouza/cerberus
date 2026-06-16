@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -274,6 +275,7 @@ func run() error {
 
 	rootMux := http.NewServeMux()
 	healthHandler.Mount(rootMux)
+	maybeMountPProf(rootMux, cfg.DebugPProf, logger)
 	rootMux.Handle("/", tracedAPI)
 
 	// Tempo gRPC StreamingQuerier — PR 1 (scaffold) of the Tempo gRPC
@@ -818,6 +820,26 @@ func retrySchemaApply(
 //   - HTTP/2 clients via prior-knowledge (grpc-go default)
 //   - HTTP/2 upgrades from HTTP/1.1 (h2c-aware proxies)
 //
+// maybeMountPProf registers the standard net/http/pprof debug handlers under
+// /debug/pprof/ on mux when enabled is set (CERBERUS_DEBUG_PPROF, see
+// config.Config.DebugPProf) — a no-op otherwise, so the profiling surface
+// never ships open by default. The explicit per-route registration (rather
+// than relying on `net/http/pprof`'s init-time DefaultServeMux side effect)
+// keeps the handlers on cerberus's own mux and makes the surface auditable in
+// one place. /debug/pprof/heap is the one the e2e OOM diagnostics capture
+// before pod teardown.
+func maybeMountPProf(mux *http.ServeMux, enabled bool, logger *slog.Logger) {
+	if !enabled {
+		return
+	}
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	logger.Warn("pprof debug endpoints enabled (CERBERUS_DEBUG_PPROF) — /debug/pprof/* is reachable on the HTTP listener")
+}
+
 // Go 1.24+ `http.Server.Protocols` supersedes the deprecated
 // `golang.org/x/net/http2/h2c.NewHandler` wrap — same wire behaviour,
 // no extra dep. Behind a TLS-terminating proxy (ingress-nginx, Envoy,

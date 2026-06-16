@@ -63,6 +63,16 @@ data:
   # binary default — set explicitly for parity with docker-compose.yml
   # and so the cap survives a default change.
   CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
+  # Enable the gated net/http/pprof debug endpoints (/debug/pprof/*) on the
+  # cerberus HTTP listener for the e2e lane ONLY. Off by default in every
+  # production manifest; on here so the "Dump cluster state on failure" step
+  # in .github/workflows/e2e.yml can `wget /debug/pprof/heap` from the
+  # running cerberus container before teardown when a restart is detected —
+  # the missing diagnostic that made the rc.5 OOM (run on the
+  # ResourceAttributes-as-Prom-labels commit) opaque. A `--previous`
+  # container log dump is empty for an OOMKill, so the live heap profile is
+  # the only artifact that pinpoints which query shape blew the budget.
+  CERBERUS_DEBUG_PPROF: "true"
 ---
 apiVersion: v1
 kind: Service
@@ -124,7 +134,7 @@ spec:
                 name: cerberus-config
           env:
             # Go's GC doesn't see cgroup limits — GOMEMLIMIT keeps heap
-            # pressure below the 1Gi ceiling so allocation bursts from
+            # pressure below the cgroup ceiling so allocation bursts from
             # the heavy auto-discovered Playwright specs trigger GC
             # instead of the OOM killer. Evidence: run 27263112345
             # (OOMKilled exit 137 at 256Mi), then run 27269987620
@@ -133,10 +143,24 @@ spec:
             # step) matrix sweep, and again immediately on retry (a
             # query-of-death loop). The real demand is bounded by the
             # cursor's label-map interning + the CERBERUS_QUERY_MAX_
-            # SAMPLES budget in the ConfigMap above; 800MiB/1Gi gives
-            # the bounded workload honest headroom.
+            # SAMPLES budget in the ConfigMap above.
+            #
+            # rc.5 bump (800MiB → 1228MiB, paired with the 1Gi → 1536Mi
+            # limit below): the ResourceAttributes-as-Prom-labels feature
+            # promotes OTel resource keys (k8s_namespace_name, k8s_pod_name,
+            # k8s_node_name, service_instance_id, cloud_region, …) into every
+            # series' label map. A chDB-backed handler benchmark
+            # (BenchmarkResourceAttr_Range*, internal/api/prom) measured
+            # ~+65% per-query heap with the merge ON vs OFF on a 7-resource-
+            # key dataset — a GENUINE, GC-recoverable per-query cost that
+            # scales with (scanned rows × resource-key count), not a leak.
+            # The matrix-pivot memoisation in this PR claws back ~55% of the
+            # transient label-map garbage (BenchmarkMatrixFromCursor_Memoised
+            # vs _PerRow: 7.98MB → 3.59MB per pivot), but the larger retained
+            # maps remain a real cost, so GOMEMLIMIT rises proportionally to
+            # keep the GC reclaiming before the cgroup OOMs.
             - name: GOMEMLIMIT
-              value: 800MiB
+              value: 1228MiB
           resources:
             requests:
               # 250m so the scheduler weights cerberus fairly against
@@ -146,18 +170,27 @@ spec:
               cpu: 250m
               memory: 128Mi
             limits:
-              # 1Gi (was 512Mi, was 256Mi): the Playwright dashboard
-              # sweep's matrix specs buffer full query_range matrices
-              # per request. Run 27263112345 OOMKilled cerberus (exit
-              # 137) at 256Mi; run 27269987620 (superseding) OOMKilled
+              # 1536Mi (was 1Gi, was 512Mi, was 256Mi): the Playwright
+              # dashboard sweep's matrix specs buffer full query_range
+              # matrices per request. Run 27263112345 OOMKilled cerberus
+              # (exit 137) at 256Mi; run 27269987620 (superseding) OOMKilled
               # again at 512Mi + GOMEMLIMIT=400MiB during the
               # iterate-time-ranges sweep. The fix is two-sided: the
-              # chclient cursor now interns per-series label maps and
-              # enforces CERBERUS_QUERY_MAX_SAMPLES (ConfigMap above),
-              # and this limit right-sizes the pod for the bounded
-              # demand. Paired with GOMEMLIMIT=800MiB above so the Go
-              # heap backs off well before this ceiling.
-              memory: 1Gi
+              # chclient cursor interns per-series label maps and enforces
+              # CERBERUS_QUERY_MAX_SAMPLES (ConfigMap above), and this limit
+              # right-sizes the pod for the bounded demand.
+              #
+              # The rc.5 ResourceAttributes-as-Prom-labels feature
+              # OOMKilled the pod again (2 restarts) on the nightly run for
+              # commit 44c2630f: promoting OTel resource keys into every
+              # series' label map raised per-query heap ~65% (measured —
+              # see GOMEMLIMIT above), a real bounded cost. 1536Mi gives the
+              # heavier bounded workload honest headroom; GOMEMLIMIT=1228MiB
+              # (~80%) above keeps the Go heap backing off before this
+              # ceiling. Operators promoting many high-cardinality resource
+              # keys should size memory accordingly or trim the set via
+              # CERBERUS_PROM_RESOURCE_LABELS (see docs/operations.md).
+              memory: 1536Mi
           # /readyz pings ClickHouse (with a small TTL cache so this
           # probe doesn't hammer CH) and reports the auto-create-schema
           # invariant. A failure removes the pod from the Service

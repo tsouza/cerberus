@@ -248,7 +248,7 @@ func (x *Executor) Execute(
 		releaseAdmit: releaseAdmit,
 		chans:        make([]chan chclient.Sample, k),
 		childCursors: make([]chclient.Cursor, k),
-		interned:     make(map[string]map[string]string),
+		interned:     make(map[string]internedSeries),
 	}
 
 	for i := range sc.chans {

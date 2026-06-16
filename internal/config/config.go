@@ -33,6 +33,18 @@ type Config struct {
 	ClickHouse chclient.Config
 	Schema     schema.Metrics
 
+	// DebugPProf, when true, mounts the net/http/pprof debug handlers
+	// (/debug/pprof/…) on the main HTTP listener. Default false — the
+	// profiling surface stays OFF in production so it is never reachable
+	// unless an operator explicitly opts in via CERBERUS_DEBUG_PPROF=true.
+	// It exists so a live heap/CPU profile can be captured from a pod that
+	// is mid-incident (the rc.5 e2e OOM investigation needed exactly this:
+	// a `wget /debug/pprof/heap` against the running cerberus container
+	// before teardown). Gated, not always-on, because the endpoints expose
+	// process internals + add an attack surface no production deploy wants
+	// open by default.
+	DebugPProf bool
+
 	// LokiTailWriteTimeout bounds a single /tail WebSocket write before a
 	// slow / dead client is torn down. Promoted from the hardcoded 10s in
 	// internal/api/loki/tail.go via CERBERUS_LOKI_TAIL_WRITE_TIMEOUT.
@@ -348,6 +360,7 @@ const (
 	envHTTPIdleTimeout     = "CERBERUS_HTTP_IDLE_TIMEOUT"
 	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
 	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envDebugPProf          = "CERBERUS_DEBUG_PPROF"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
 	envAutoCreateDatabase  = "CERBERUS_AUTO_CREATE_DATABASE"
 	envSchemaCluster       = "CERBERUS_SCHEMA_CLUSTER"
@@ -656,6 +669,7 @@ func FromEnv() (Config, error) {
 		SchemaProvisioning:      schemaProvisioning,
 		RequirementsCheck:       flags.RequirementsCheck,
 		ExperimentalTSGridRange: flags.TSGridRange,
+		DebugPProf:              flags.DebugPProf,
 		Log:                     logCfg,
 		OTLP:                    otlp,
 		Admit:                   admit,
@@ -711,6 +725,7 @@ var allEnvKeys = []string{
 	envHTTPIdleTimeout,
 	envHTTPMaxHeaderBytes,
 	envLokiTailWriteTO,
+	envDebugPProf,
 	envAutoCreateSchema,
 	envAutoCreateDatabase,
 	envSchemaCluster,
@@ -809,6 +824,8 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envHTTPIdleTimeout, defaultHTTPIdleTimeout.String())
 	v.SetDefault(envHTTPMaxHeaderBytes, defaultHTTPMaxHeaderBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
+	// pprof is OFF by default — the profiling surface is opt-in only.
+	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
 	// Schema-provisioning bool + duration knobs need a non-empty default so
 	// the getBool / getDuration parsers don't reject an unset value. The
@@ -1388,6 +1405,7 @@ type bootFlags struct {
 	AutoCreateDatabase bool
 	RequirementsCheck  bool
 	TSGridRange        bool
+	DebugPProf         bool
 }
 
 // bootFlagsFromEnv parses the boolean boot toggles, failing fast on a
@@ -1417,11 +1435,16 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	if err != nil {
 		return bootFlags{}, err
 	}
+	debugPProf, err := getBool(v, envDebugPProf)
+	if err != nil {
+		return bootFlags{}, err
+	}
 	return bootFlags{
 		AutoCreate:         autoCreate,
 		AutoCreateDatabase: autoCreateDatabase,
 		RequirementsCheck:  requirementsCheck,
 		TSGridRange:        tsGridRange,
+		DebugPProf:         debugPProf,
 	}, nil
 }
 

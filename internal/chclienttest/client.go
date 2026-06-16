@@ -43,7 +43,7 @@ type Client struct {
 // returns a Client that satisfies the prom / loki / tempo Querier
 // interfaces. Each test gets an isolated session — there is no
 // process-wide shared state.
-func NewChDB(t *testing.T) *Client {
+func NewChDB(t testing.TB) *Client {
 	t.Helper()
 	// Empty DSN -> chdb-go provisions a temp-dir-backed session that
 	// the driver tears down on Close. There is no `:memory:` literal
@@ -87,7 +87,7 @@ func NewChDBWithError(_ *testing.T, err error) *Client {
 // the prior test left behind. Authors who want the upstream semantics
 // can opt out by writing `CREATE OR REPLACE TABLE` / `CREATE TABLE IF
 // NOT EXISTS` themselves — the rewrite only fires on the bare form.
-func (c *Client) Seed(t *testing.T, ddl string) {
+func (c *Client) Seed(t testing.TB, ddl string) {
 	t.Helper()
 	if c.db == nil {
 		t.Fatalf("chclienttest: Seed called on error-only client")
