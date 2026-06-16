@@ -456,6 +456,28 @@ spec:
         role: gateway
     spec:
       serviceAccountName: otel-collector
+      initContainers:
+        # The clickhouseexporter runs `create database` at Start() and the
+        # collector exits 1 if ClickHouse can't serve a query then — a boot-order
+        # race that BackOff-loops the gateway and cascades the sample-apps into
+        # FATAL (#82: "telemetrygen FATALs if otel-collector-gateway not ready").
+        # Block until ClickHouse can EXECUTE A QUERY, not merely accept a TCP
+        # connection: CH opens the native 9000 port (and answers /ping) early in
+        # boot, before the query engine is ready, so a bare `nc -z 9000` /
+        # /ping wait lets the collector start a hair too soon and still
+        # CrashLoopBackOff (observed: 3 restarts on a cold race). A
+        # `SELECT 1` over the HTTP interface (8123) returns "1" only once the
+        # query engine — what `create database` needs — is actually up.
+        - name: wait-for-clickhouse
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              until [ "$(wget -qO- 'http://clickhouse:8123/?query=SELECT+1' 2>/dev/null)" = "1" ]; do
+                echo "waiting for clickhouse query engine (8123 SELECT 1) ..."
+                sleep 2
+              done
       containers:
         - name: collector
           # 0.152.1 mirrors the compose stack (docker-compose.yml). The

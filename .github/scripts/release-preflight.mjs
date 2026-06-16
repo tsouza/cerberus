@@ -116,13 +116,20 @@ async function combinedStatus() {
 //       `compose-smoke-shard-info (shard-crawl, crawl/crawl.spec.ts …)`
 //       `dashboard-shard (shard-crawl, crawl/crawl.spec.ts …)`
 //     so we match `(shard-crawl` followed by `,` or `)` (NOT `(shard-crawl-…`).
-//   - the whole k3d `dashboard` lane: the `dashboard` aggregate, `dashboard-setup`,
-//     and every `dashboard-shard (...)` child (smoke shards included — the k3d
-//     lane is informational-only and flaky end-to-end, exploretraces "Failed to
-//     fetch"). The required `compose-smoke` lane is NOT matched (no `dashboard`
-//     token, and its required shards are `(shard-kiosk …)` / `(shard-smoke …)`,
-//     never `shard-crawl`), so it still gates.
-const FLAKY_UI_LANE_RE = /(\(shard-crawl[,)]|^dashboard($|-setup$|-shard( |$)))/;
+//     This is a genuinely non-deterministic ~50-min BFS sweep that routinely
+//     hits its timeout and ends `cancelled`/`failure`; it stays de-gated.
+//   - the k3d `dashboard` AGGREGATE + `dashboard-setup` only. The aggregate
+//     rolls up every shard (including the de-gated `shard-crawl`), so it can
+//     never be greener than its weakest shard — gating it would re-import the
+//     crawl flake. The deterministic `dashboard-shard (shard-smoke-*)` children
+//     are NO LONGER dropped: they GATE again now that the two flakes that
+//     justified dropping them are fixed at source — the drilldown-apps
+//     init/teardown races (#950) and the otel-collector-gateway boot-order
+//     CrashLoopBackOff (#82, gateway initContainer waits for ClickHouse to be
+//     query-ready). The required `compose-smoke` lane is unaffected (no
+//     `dashboard` token; its shards are `(shard-kiosk …)` / `(shard-smoke …)`,
+//     never `shard-crawl`).
+const FLAKY_UI_LANE_RE = /(\(shard-crawl[,)]|^dashboard($|-setup$))/;
 const isFlakyUILane = (name) => FLAKY_UI_LANE_RE.test(name);
 
 const SCHEDULED_EVENT = 'schedule';
