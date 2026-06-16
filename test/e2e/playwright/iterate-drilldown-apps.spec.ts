@@ -48,6 +48,7 @@
 
 import {
   type Page,
+  type Request,
   type Response,
   type TestInfo,
   expect,
@@ -191,6 +192,25 @@ async function sweepDrilldownApp(
   // the existing `compose_grafana_smoke.spec.ts` watches; the drilldown
   // sweep enforces the same zero-non-2xx rule across all three.
   const captureBodies: Promise<void>[] = [];
+
+  // Capture the forwarded ds/query POST body at REQUEST time, keyed by the
+  // request object. The init-race reconciler reads the dangling-operand
+  // TraceQL shape from this body; reading `resp.request().postData()` at
+  // RESPONSE time intermittently returns empty because the rapid two-level
+  // drill navigates away and Playwright releases the request's post body —
+  // and that navigation is exactly when the Traces-Drilldown primarySignal
+  // init-race 400 lands, so the reconciler goes blind and the known-benign
+  // 400 fails the spec (THE flake). Snapshotting postData() the moment the
+  // request fires, before any navigation can release it, makes the
+  // request-side match reliable regardless of when the response settles.
+  const requestBodies = new WeakMap<Request, string>();
+  const onRequest = (req: Request) => {
+    if (!req.url().includes('/api/ds/query')) return;
+    const body = req.postData();
+    if (body) requestBodies.set(req, body);
+  };
+  page.on('request', onRequest);
+
   const onResponse = (resp: Response) => {
     const url = resp.url();
     if (
@@ -208,9 +228,11 @@ async function sweepDrilldownApp(
       // Read body lazily — kept short to keep memory bounded.
       const status = resp.status();
       const method = resp.request().method();
-      // postData() is synchronous and carries the forwarded ds/query body —
-      // needed by the init-race reconciler to read the TraceQL shape.
-      const requestBody = resp.request().postData() ?? '';
+      // Prefer the body snapshotted at request time (onRequest); fall back
+      // to the response-time read. The forwarded ds/query body is what the
+      // init-race reconciler matches the dangling-operand TraceQL shape from.
+      const requestBody =
+        requestBodies.get(resp.request()) ?? resp.request().postData() ?? '';
       const summaryPromise = (async () => {
         let bodyPreview = '';
         // Only read the body when it's a failure so we don't spam
@@ -265,6 +287,7 @@ async function sweepDrilldownApp(
       detail: `drillTwoLevels threw: ${(err as Error).message}; root: ${app.root}`,
     });
   } finally {
+    page.off('request', onRequest);
     page.off('response', onResponse);
     stopConsole();
   }
