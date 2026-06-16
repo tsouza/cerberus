@@ -1750,6 +1750,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/agg_range_window_over_scalar_div",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/at_end_basic",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -3100,6 +3110,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_over_sum_over_time_bucket",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_scalar_phi",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -3281,6 +3301,16 @@
   },
   {
     "fixture": "promql/info_target_info_enrichment",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/instant_sum_over_suffixed_count_delta_sum",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
@@ -3891,6 +3921,16 @@
   },
   {
     "fixture": "promql/rad_metric",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/range_window_func_over_scalar_div",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
