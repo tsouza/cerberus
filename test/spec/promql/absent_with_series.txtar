@@ -23,13 +23,18 @@ INSERT INTO otel_metrics_gauge VALUES
 [2] string = "2026-01-01 00:00:01.000000000"
 [3] int64 = 9
 [4] float64 = 1
-[5] string = "temperature"
-[6] int64 = 0
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = "temperature"
+[10] int64 = 0
 -- chplan --
 Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
   Filter predicate=(_cerb_n = 0)
     Aggregate groupBy=[] funcs=[count() AS _cerb_n]
-      Filter predicate=(MetricName = "temperature")
-        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName = "temperature")
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?)))) WHERE (`_cerb_n` = ?))

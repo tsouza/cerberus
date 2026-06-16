@@ -73,6 +73,26 @@ type lowerCtx struct {
 	// the only callers that set it true are the query_range handler
 	// adapters. See [lowerRangeVectorCall] for the gating predicate.
 	experimentalTSGridRange bool
+
+	// attributesPreMerged signals that the selector input already carries
+	// the resource-attribute merge in its `Attributes` column — i.e. each
+	// arm projected `mapUpdate(sanitize(ResourceAttributes), Attributes)`
+	// itself, so the raw `ResourceAttributes` column is NOT in scope above
+	// the arm (e.g. the classic-histogram companion UnionAll, whose arms
+	// collapse to the canonical Sample quadruple). When set,
+	// [selectorAttributesExpr] uses the bare `Attributes` ColumnRef as the
+	// outer-by overlay base instead of re-deriving the resource merge,
+	// which would reference an out-of-scope `ResourceAttributes`.
+	attributesPreMerged bool
+}
+
+// withAttributesPreMerged returns a copy of c with attributesPreMerged
+// set, used by the companion-union path whose arms merge resource
+// attributes per-arm before the union collapses the column set.
+func (c lowerCtx) withAttributesPreMerged() lowerCtx {
+	out := c
+	out.attributesPreMerged = true
+	return out
 }
 
 // withOuterByLabels returns a copy of c with outerByLabels set to

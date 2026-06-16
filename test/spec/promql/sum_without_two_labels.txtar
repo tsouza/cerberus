@@ -1,20 +1,24 @@
 -- query.promql --
 sum without (instance, pod) (up)
 -- sql --
-SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`))
+SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`))
 -- args --
 [0] string = ""
 [1] int64 = 9
 [2] string = "instance"
 [3] string = "pod"
-[4] string = "up"
-[5] string = "2026-01-01 00:00:01.000000000"
-[6] int64 = 9
-[7] string = "2026-01-01 00:00:01.000000000"
-[8] int64 = 9
-[9] int64 = 300000000000
-[10] string = "instance"
-[11] string = "pod"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "up"
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] int64 = 300000000000
+[14] string = "instance"
+[15] string = "pod"
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
@@ -36,5 +40,7 @@ Project ["" AS MetricName, gkey_0 AS Attributes, now64(9) AS TimeUnix, Value AS 
   Aggregate groupBy=[mapWithout(Attributes, [instance, pod]) AS gkey_0] funcs=[sum(Value) AS Value]
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-        Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
-          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+        Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName = "up")
+              Scan(merge(otel_metrics_gauge|otel_metrics_sum))

@@ -838,7 +838,7 @@ func openChDB(t *testing.T) *sql.DB {
 // `CREATE TABLE IF NOT EXISTS` themselves.
 func applySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
-	for _, stmt := range splitStatements(seed) {
+	for _, stmt := range backfillResourceAttributes(splitStatements(seed)) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
@@ -848,6 +848,239 @@ func applySeed(t *testing.T, db *sql.DB, seed string) {
 			t.Fatalf("seed exec failed:\n--- stmt ---\n%s\n--- err ---\n%v", stmt, err)
 		}
 	}
+}
+
+// metricsTablePrefix is the storage prefix every OTel-CH metric table
+// (gauge / sum / histogram / exp-histogram / summary) shares; the
+// resource-attribute backfill scopes itself to these so a fixture's own
+// helper tables stay untouched.
+const metricsTablePrefix = "otel_metrics_"
+
+// resourceAttributesColumnDDL is the column definition the backfill
+// injects. DEFAULT map() lets the existing positional INSERTs keep their
+// value count: the backfilled INSERTs carry an explicit column list that
+// omits this column, so chDB fills it with the empty map — matching
+// production, where every metric table carries a (possibly empty)
+// ResourceAttributes map.
+const resourceAttributesColumnDDL = "ResourceAttributes Map(String, String) DEFAULT map()"
+
+// backfillResourceAttributes mirrors the production OTel-CH invariant —
+// every metric table (`otel_metrics_*`) carries a `ResourceAttributes`
+// Map column — onto the spec fixtures' simplified seed DDL. The rc.5
+// read-path always projects
+// `mapUpdate(sanitize(ResourceAttributes), Attributes)`, so a seed table
+// that omits the column would fail the chDB round-trip with
+// UNKNOWN_IDENTIFIER. Rather than hand-editing ~300 fixtures (and every
+// future one), the harness backfills the column centrally:
+//
+//   - A `CREATE TABLE otel_metrics_*` whose body declares an `Attributes`
+//     Map column but no `ResourceAttributes` gets the column injected
+//     (DEFAULT map()) and its ordered column names recorded.
+//   - Every subsequent `INSERT INTO <that table> VALUES …` with no
+//     explicit column list is rewritten to carry the recorded column
+//     list (sans ResourceAttributes), so the existing positional VALUES
+//     tuples keep working and the DEFAULT fills the new column.
+//
+// Seeds that already declare ResourceAttributes, or that already use an
+// explicit INSERT column list, pass through untouched — so a fixture that
+// deliberately populates resource attributes (the rc.5 contract fixtures)
+// is honoured verbatim.
+func backfillResourceAttributes(stmts []string) []string {
+	// table name -> ordered column names (pre-backfill) for tables we
+	// injected the column into. Only these tables' INSERTs are rewritten.
+	cols := map[string][]string{}
+	out := make([]string, 0, len(stmts))
+	for _, stmt := range stmts {
+		if table, colNames, body, ok := parseMetricsCreate(stmt); ok {
+			cols[table] = colNames
+			out = append(out, body)
+			continue
+		}
+		if rewritten, ok := rewriteMetricsInsert(stmt, cols); ok {
+			out = append(out, rewritten)
+			continue
+		}
+		out = append(out, stmt)
+	}
+	return out
+}
+
+// parseMetricsCreate reports whether stmt is a `CREATE TABLE
+// otel_metrics_*` that declares an `Attributes` column but no
+// `ResourceAttributes`. On a match it returns the table name, the ordered
+// pre-backfill column names, and the rewritten statement with the
+// ResourceAttributes column injected right after the Attributes column.
+func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
+	trimmed := stripLeadingNoise(stmt)
+	upper := strings.ToUpper(trimmed)
+	idx := strings.Index(upper, "CREATE TABLE ")
+	if idx != 0 {
+		return "", nil, "", false
+	}
+	rest := trimmed[len("CREATE TABLE "):]
+	name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
+	if !strings.HasPrefix(name, metricsTablePrefix) {
+		return "", nil, "", false
+	}
+	open := strings.IndexByte(stmt, '(')
+	if open < 0 {
+		return "", nil, "", false
+	}
+	// Match the column-list close paren by balancing from the first `(`
+	// — NOT strings.LastIndexByte, which would grab the ENGINE/ORDER BY
+	// `(MetricName, …)` paren and drag the engine clause into the column
+	// body.
+	closeParen := matchParen(stmt, open)
+	if closeParen < 0 {
+		return "", nil, "", false
+	}
+	bodyCols := stmt[open+1 : closeParen]
+	defs := splitTopLevelCommas(bodyCols)
+	hasAttributes, hasResource := false, false
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		cn := firstToken(strings.TrimSpace(d))
+		switch cn {
+		case "Attributes":
+			hasAttributes = true
+		case "ResourceAttributes":
+			hasResource = true
+		}
+		if cn != "" {
+			names = append(names, cn)
+		}
+	}
+	if !hasAttributes || hasResource {
+		return "", nil, "", false
+	}
+	// Inject the column directly after the Attributes definition so the
+	// rewritten DDL reads naturally; column order is otherwise irrelevant
+	// because the INSERTs become explicit-column.
+	newDefs := make([]string, 0, len(defs)+1)
+	for _, d := range defs {
+		newDefs = append(newDefs, d)
+		if firstToken(strings.TrimSpace(d)) == "Attributes" {
+			newDefs = append(newDefs, " "+resourceAttributesColumnDDL)
+		}
+	}
+	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
+	return name, names, rewritten, true
+}
+
+// rewriteMetricsInsert rewrites a positional `INSERT INTO <table> VALUES`
+// into one carrying the recorded column list (sans ResourceAttributes) so
+// the DEFAULT-filled column does not break the value count. Inserts into
+// untracked tables, or that already carry an explicit column list, pass
+// through unchanged.
+func rewriteMetricsInsert(stmt string, cols map[string][]string) (string, bool) {
+	trimmed := stripLeadingNoise(stmt)
+	prefix := stmt[:len(stmt)-len(trimmed)]
+	upper := strings.ToUpper(trimmed)
+	const needle = "INSERT INTO "
+	if !strings.HasPrefix(upper, needle) {
+		return "", false
+	}
+	rest := trimmed[len(needle):]
+	name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
+	colNames, tracked := cols[name]
+	if !tracked {
+		return "", false
+	}
+	// Find the table-name token end; if the next non-space char is '(',
+	// the INSERT already carries an explicit column list — leave it.
+	afterName := strings.TrimLeft(rest[len(firstToken(rest)):], " \t\n\r")
+	if strings.HasPrefix(afterName, "(") {
+		return "", false
+	}
+	colList := "(" + strings.Join(colNames, ", ") + ") "
+	return prefix + needle + firstToken(rest) + " " + colList + afterName, true
+}
+
+// matchParen returns the index of the `)` that balances the `(` at
+// position open in s, honouring single-quoted strings, or -1 when
+// unbalanced. open must index a `(`.
+func matchParen(s string, open int) int {
+	depth := 0
+	inStr := false
+	esc := false
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case c == '\\' && inStr:
+			esc = true
+		case c == '\'':
+			inStr = !inStr
+		case inStr:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// firstToken returns the leading identifier of s (up to the first space,
+// tab, newline, '(' or ',').
+func firstToken(s string) string {
+	s = strings.TrimLeft(s, " \t\n\r")
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\n', '\r', '(', ',':
+			return s[:i]
+		}
+	}
+	return s
+}
+
+// splitTopLevelCommas splits s on commas that sit at paren-depth 0,
+// shielding commas inside nested parens (e.g. `Map(String, String)`) and
+// single-quoted strings. Used to walk a CREATE TABLE column-definition
+// list.
+func splitTopLevelCommas(s string) []string {
+	var (
+		out   []string
+		buf   strings.Builder
+		depth int
+		inStr bool
+		esc   bool
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+			buf.WriteByte(c)
+		case c == '\\' && inStr:
+			esc = true
+			buf.WriteByte(c)
+		case c == '\'':
+			inStr = !inStr
+			buf.WriteByte(c)
+		case inStr:
+			buf.WriteByte(c)
+		case c == '(':
+			depth++
+			buf.WriteByte(c)
+		case c == ')':
+			depth--
+			buf.WriteByte(c)
+		case c == ',' && depth == 0:
+			out = append(out, buf.String())
+			buf.Reset()
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	if strings.TrimSpace(buf.String()) != "" {
+		out = append(out, buf.String())
+	}
+	return out
 }
 
 // promoteCreateTable rewrites a bare `CREATE TABLE …` statement to

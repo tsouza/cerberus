@@ -83,6 +83,48 @@ func TestDefaultOTelMetricsFromEnv_TrimsValue(t *testing.T) {
 	}
 }
 
+// TestDefaultOTelMetricsFromEnv_PromResourceLabels pins the
+// CERBERUS_PROM_RESOURCE_LABELS allowlist parse: comma-separated OTel
+// dotted keys split into a trimmed, empty-dropped slice; unset /
+// whitespace-only yields nil (the documented "promote all" sentinel).
+func TestDefaultOTelMetricsFromEnv_PromResourceLabels(t *testing.T) {
+	cases := []struct {
+		name string
+		set  bool
+		val  string
+		want []string
+	}{
+		{"unset", false, "", nil},
+		{"empty", true, "", nil},
+		{"whitespace_only", true, "  \n\t ", nil},
+		{"single", true, "k8s.namespace.name", []string{"k8s.namespace.name"}},
+		{
+			"multi_with_spaces",
+			true,
+			" k8s.namespace.name , deployment.environment.name ,, k8s.pod.name ",
+			[]string{"k8s.namespace.name", "deployment.environment.name", "k8s.pod.name"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv(EnvPromResourceLabels, tc.val)
+			} else {
+				t.Setenv(EnvPromResourceLabels, "")
+			}
+			got := DefaultOTelMetricsFromEnv().PromResourceLabels
+			if len(got) != len(tc.want) {
+				t.Fatalf("len: got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d]: got %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestDefaultOTelLogsFromEnv_Unset / _Override mirror the metrics
 // coverage for the logs surface.
 func TestDefaultOTelLogsFromEnv_Unset(t *testing.T) {

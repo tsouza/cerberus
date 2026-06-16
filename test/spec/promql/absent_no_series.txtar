@@ -38,18 +38,27 @@ INSERT INTO otel_metrics_gauge VALUES
 [3] string = "2026-01-01 00:00:01.000000000"
 [4] int64 = 9
 [5] float64 = 1
-[6] string = "nonexistent_metric_name"
-[7] string = "nonexistent.metric.name"
-[8] string = "nonexistent.metric_name"
-[9] string = "nonexistent_metric.name"
-[10] string = "job"
-[11] string = "x"
-[12] int64 = 0
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = "nonexistent_metric_name"
+[11] string = "nonexistent.metric.name"
+[12] string = "nonexistent.metric_name"
+[13] string = "nonexistent_metric.name"
+[14] string = "job"
+[15] string = ""
+[16] string = "job"
+[17] string = ""
+[18] string = ""
+[19] string = "x"
+[20] int64 = 0
 -- chplan --
 Project ["" AS MetricName, map("job", "x") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
   Filter predicate=(_cerb_n = 0)
     Aggregate groupBy=[] funcs=[count() AS _cerb_n]
-      Filter predicate=((Attributes["job"] = "x") AND (MetricName IN ("nonexistent_metric_name", "nonexistent.metric.name", "nonexistent.metric_name", "nonexistent_metric.name")))
-        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "x") AND (MetricName IN ("nonexistent_metric_name", "nonexistent.metric.name", "nonexistent.metric_name", "nonexistent_metric.name")))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?, ?)) WHERE (`Attributes`[?] = ?))) WHERE (`_cerb_n` = ?))
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)))) WHERE (`_cerb_n` = ?))

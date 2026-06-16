@@ -1,7 +1,7 @@
 -- optimized --
 SELECT `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT `Attributes`, `MetricName`, `TimeUnix`, `Value` FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)
 -- unoptimized --
-SELECT `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)
+SELECT `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?)) GROUP BY `Attributes`)
 -- chplan_optimized --
 Project [Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]

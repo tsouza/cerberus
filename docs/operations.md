@@ -220,6 +220,33 @@ exercisable there), but the path still rides the experimental setting and has no
 yet been differentially swept against a real (non-chDB) server where that setting
 is actually enforced.
 
+### Prometheus resource-attribute labels
+
+The Prometheus head projects each metric row's OTel `ResourceAttributes` map as
+Prometheus labels alongside the per-datapoint `Attributes` map — **on by
+default**. Fleet metrics carry their resource-level keys (`k8s.namespace.name`,
+`deployment.environment.name`, …) as ordinary labels you can filter and group
+on. The projection runs in lock-step across every read surface: the bare
+selector, `sum`/`avg by(...)`/`without(...)` aggregations, the matcher `WHERE`,
+`/api/v1/series`, `/api/v1/labels`, and `/api/v1/label/<name>/values`.
+
+Keys are sanitized dot→underscore on the wire for Prometheus legality
+(`k8s.namespace.name` → `k8s_namespace_name`); a matcher like
+`{k8s_namespace_name="prod"}` reverses the sanitized name through the
+dot↔underscore candidate chain to filter the stored dotted key. On a key
+collision the per-datapoint `Attributes` value **wins** over the
+`ResourceAttributes` value (the Prometheus convention that a datapoint label
+overrides a resource label); the dedicated `service.name` → `ServiceName`-column
+handling is preserved.
+
+**Cardinality.** Promote-all is **unbounded by design**: high-churn resource
+keys (`k8s.pod.name`, `k8s.pod.uid`, `host.id`) become labels and multiply
+active-series cardinality. To bound it, set `CERBERUS_PROM_RESOURCE_LABELS` to a
+comma-separated allowlist of resource keys in their **original dotted** form —
+opt-IN narrowing, empty/unset promotes every key. List only the resource keys
+you actually query on at scale. See
+[`configuration.md`](configuration.md#prometheus-resource-attribute-labels).
+
 ## Backing services
 
 **ClickHouse** is the only mandatory backing service, reached

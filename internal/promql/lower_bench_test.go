@@ -120,11 +120,29 @@ func TestAllocs_Lower(t *testing.T) {
 		// Ceilings = baseline × ~2-3 to keep the test regression-
 		// focused; a multi-× spike means somebody slipped a heap
 		// allocation into a fast path.
-		{"instant", `up`, 70},
-		{"range", `rate(http_requests_total[5m])`, 60},
-		{"binary", `(up * 2) > 1`, 130},
-		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 130},
-		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 70},
+		//
+		// rc.5 (resource-attribute merge): every selector now wraps a
+		// Project that rebinds Attributes to
+		// `mapUpdate(sanitize(ResourceAttributes), sanitize(Attributes))`
+		// (the always-on resource-label merge). The precedence-parity fix
+		// sanitizes BOTH maps' keys (so a dotted key colliding in both
+		// resolves Attributes-wins on its sanitized wire spelling), which
+		// doubles the sanitize subtree (a second mapFromArrays/arrayMap/
+		// Lambda), adding ~4 more allocs/op.
+		//
+		// dedicated-key exclusion (this change): the resource source map is
+		// now ALWAYS wrapped in `mapFilter((k,v) -> k NOT IN ('service.name',
+		// 'service_name'), ResourceAttributes)` so the dedicated ServiceName
+		// column isn't double-promoted via the resource arm. The mapFilter +
+		// Lambda + InList(2 lits) subtree adds ~14-28 allocs/op per selector.
+		// Re-baselined: instant 149, range 123, binary 163, aggregation 192,
+		// subquery 127. Ceilings keep ~1.1-1.3× headroom over the new
+		// baseline so a future slip still trips.
+		{"instant", `up`, 180},
+		{"range", `rate(http_requests_total[5m])`, 150},
+		{"binary", `(up * 2) > 1`, 200},
+		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 230},
+		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 155},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

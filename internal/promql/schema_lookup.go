@@ -89,16 +89,21 @@ func promCanonicalTopLevelLabel(label string) string {
 	return label
 }
 
-// augmentAttributesForOuterBy returns a chplan expression that wraps
-// the per-row Attributes map with one synthesised key per top-level
-// OTel-CH column referenced by `outerByLabels`. The shape is
+// augmentAttributesForOuterByExpr returns a chplan expression that wraps
+// the supplied base Attributes expression with one synthesised key per
+// top-level OTel-CH column referenced by `outerByLabels`. The shape is
 //
 //	mapConcat(
-//	    Attributes,
+//	    <base>,
 //	    mapFilter((k, v) -> v != '',
 //	        map('<promLabel0>', toString(<col0>),
 //	            '<promLabel1>', toString(<col1>),
 //	            ...)))
+//
+// The base expression is supplied by the caller so the synthesised
+// top-level-column overlay composes ON TOP of an already-merged map (e.g.
+// the resource-attribute merge from [mergeResourceAttributesExpr]) rather
+// than the raw column.
 //
 // `toString` is a no-op for `String`-typed columns (CH elides it at
 // the wire) but coerces non-String top-level columns into the
@@ -106,16 +111,15 @@ func promCanonicalTopLevelLabel(label string) string {
 // column rows so a row with `ServiceName=”` doesn't gain a spurious
 // `{service_name:”}` key — matching Prom's "absent label" semantics.
 //
-// `mapConcat` is later-key-wins, so an explicit Attributes binding
-// (a producer that wrote both the top-level column AND the underscored
-// map key) is overwritten by the top-level column. That's the
-// intended precedence: the dedicated column is the OTel-CH-canonical
-// storage shape and the map entry is the fallback.
+// `mapConcat` is later-key-wins, so the synthesised ServiceName key
+// still overrides whatever `base` carried for that key — preserving the
+// #232 precedence (dedicated column wins) regardless of what the base
+// merge produced.
 //
 // Returns nil when `outerByLabels` contains no top-level-routed
 // labels — callers fold a nil augmentation into "no Project wrap"
 // rather than emitting a degenerate identity map.
-func augmentAttributesForOuterBy(s schema.Metrics, outerByLabels []string) chplan.Expr {
+func augmentAttributesForOuterByExpr(s schema.Metrics, outerByLabels []string, base chplan.Expr) chplan.Expr {
 	pairs := promqlTopLevelKeysForOuterBy(outerByLabels, s)
 	if len(pairs) == 0 {
 		return nil
@@ -148,6 +152,6 @@ func augmentAttributesForOuterBy(s schema.Metrics, outerByLabels []string) chpla
 	}
 	return &chplan.FuncCall{
 		Name: "mapConcat",
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}, filtered},
+		Args: []chplan.Expr{base, filtered},
 	}
 }

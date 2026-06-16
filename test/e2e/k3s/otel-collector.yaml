@@ -174,6 +174,17 @@ data:
           - key: k8s.cluster.name
             value: cerberus-e2e
             action: upsert
+          # rc.5 — static k8s-shaped ResourceAttributes so the dashboard /
+          # crawl lanes exercise resource-attribute -> Prometheus-label
+          # projection (k8s_namespace_name / deployment_environment_name).
+          # Static (not k8sattributes-derived) keeps the gate deterministic;
+          # the cerberus Prom head promotes them via CERBERUS_PROM_RESOURCE_LABELS.
+          - key: k8s.namespace.name
+            value: cerberus
+            action: upsert
+          - key: deployment.environment.name
+            value: e2e
+            action: upsert
       # Stamp service.name=clickhouse on the sqlquery/clickhouse-logs output so
       # cerberus's Loki head surfaces it as `{service_name="clickhouse"}`,
       # matching the compose stack's resource/clickhouse processor.

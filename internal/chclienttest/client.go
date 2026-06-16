@@ -92,7 +92,7 @@ func (c *Client) Seed(t *testing.T, ddl string) {
 	if c.db == nil {
 		t.Fatalf("chclienttest: Seed called on error-only client")
 	}
-	for _, stmt := range splitStatements(ddl) {
+	for _, stmt := range backfillResourceAttributes(splitStatements(ddl)) {
 		if isBlank(stmt) {
 			continue
 		}

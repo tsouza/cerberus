@@ -127,7 +127,14 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 		Input: scanOrFilter,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			// Merge resource attributes here, where the raw
+			// ResourceAttributes column is still in scope (this Project
+			// reads the histogram Scan directly). The arrayJoin fan-out +
+			// the outer `mapConcat(Attributes, map('le', …))` then carry
+			// the already-merged map, so the selector seam above treats
+			// this path as attributes-pre-merged (see lower.go bucket
+			// branch) and does not re-reference ResourceAttributes.
+			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
 			{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},

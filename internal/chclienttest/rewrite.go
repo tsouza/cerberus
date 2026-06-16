@@ -327,6 +327,191 @@ func isBlank(s string) bool {
 	return strings.TrimSpace(s) == ""
 }
 
+// metricsTablePrefix scopes the resource-attribute backfill to OTel-CH
+// metric tables; helper tables a test seeds stay untouched.
+const metricsTablePrefix = "otel_metrics_"
+
+// resourceAttributesColumnDDL is the column the backfill injects (DEFAULT
+// map() so positional INSERTs keep their value count — the backfilled
+// INSERTs carry an explicit column list omitting this column).
+const resourceAttributesColumnDDL = "ResourceAttributes Map(String, String) DEFAULT map()"
+
+// backfillResourceAttributes mirrors the production OTel-CH invariant —
+// every metric table carries a `ResourceAttributes` Map column — onto the
+// handler tests' simplified seed DDL, so the rc.5 read-path projection
+// (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) resolves rather
+// than failing with UNKNOWN_IDENTIFIER. A `CREATE TABLE otel_metrics_*`
+// that declares `Attributes` but no `ResourceAttributes` gets the column
+// injected (DEFAULT map()), and every subsequent positional `INSERT INTO
+// <that table> VALUES …` is rewritten to an explicit column list (sans
+// ResourceAttributes) so the DEFAULT fills the gap. Seeds that already
+// declare the column, or already use an explicit INSERT column list, pass
+// through untouched. Mirrors test/spec/runner_chdb.go::backfillResourceAttributes.
+func backfillResourceAttributes(stmts []string) []string {
+	cols := map[string][]string{}
+	out := make([]string, 0, len(stmts))
+	for _, stmt := range stmts {
+		if table, names, rewritten, ok := parseMetricsCreate(stmt); ok {
+			cols[table] = names
+			out = append(out, rewritten)
+			continue
+		}
+		if rewritten, ok := rewriteMetricsInsert(stmt, cols); ok {
+			out = append(out, rewritten)
+			continue
+		}
+		out = append(out, stmt)
+	}
+	return out
+}
+
+func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
+	trimmed := strings.TrimLeft(stmt, " \t\n\r")
+	upper := strings.ToUpper(trimmed)
+	if !strings.HasPrefix(upper, "CREATE TABLE ") {
+		return "", nil, "", false
+	}
+	name := strings.ToLower(strings.TrimSpace(ddlFirstToken(trimmed[len("CREATE TABLE "):])))
+	if !strings.HasPrefix(name, metricsTablePrefix) {
+		return "", nil, "", false
+	}
+	open := strings.IndexByte(stmt, '(')
+	if open < 0 {
+		return "", nil, "", false
+	}
+	closeParen := ddlMatchParen(stmt, open)
+	if closeParen < 0 {
+		return "", nil, "", false
+	}
+	defs := ddlSplitTopLevelCommas(stmt[open+1 : closeParen])
+	hasAttributes, hasResource := false, false
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		cn := ddlFirstToken(strings.TrimSpace(d))
+		switch cn {
+		case "Attributes":
+			hasAttributes = true
+		case "ResourceAttributes":
+			hasResource = true
+		}
+		if cn != "" {
+			names = append(names, cn)
+		}
+	}
+	if !hasAttributes || hasResource {
+		return "", nil, "", false
+	}
+	newDefs := make([]string, 0, len(defs)+1)
+	for _, d := range defs {
+		newDefs = append(newDefs, d)
+		if ddlFirstToken(strings.TrimSpace(d)) == "Attributes" {
+			newDefs = append(newDefs, " "+resourceAttributesColumnDDL)
+		}
+	}
+	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
+	return name, names, rewritten, true
+}
+
+func rewriteMetricsInsert(stmt string, cols map[string][]string) (string, bool) {
+	trimmed := strings.TrimLeft(stmt, " \t\n\r")
+	prefix := stmt[:len(stmt)-len(trimmed)]
+	upper := strings.ToUpper(trimmed)
+	const needle = "INSERT INTO "
+	if !strings.HasPrefix(upper, needle) {
+		return "", false
+	}
+	rest := trimmed[len(needle):]
+	name := strings.ToLower(strings.TrimSpace(ddlFirstToken(rest)))
+	colNames, tracked := cols[name]
+	if !tracked {
+		return "", false
+	}
+	afterName := strings.TrimLeft(rest[len(ddlFirstToken(rest)):], " \t\n\r")
+	if strings.HasPrefix(afterName, "(") {
+		return "", false // already explicit-column
+	}
+	colList := "(" + strings.Join(colNames, ", ") + ") "
+	return prefix + needle + ddlFirstToken(rest) + " " + colList + afterName, true
+}
+
+func ddlFirstToken(s string) string {
+	s = strings.TrimLeft(s, " \t\n\r")
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\n', '\r', '(', ',':
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func ddlMatchParen(s string, open int) int {
+	depth := 0
+	inStr := false
+	esc := false
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case c == '\\' && inStr:
+			esc = true
+		case c == '\'':
+			inStr = !inStr
+		case inStr:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func ddlSplitTopLevelCommas(s string) []string {
+	var (
+		out   []string
+		buf   strings.Builder
+		depth int
+		inStr bool
+		esc   bool
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+			buf.WriteByte(c)
+		case c == '\\' && inStr:
+			esc = true
+			buf.WriteByte(c)
+		case c == '\'':
+			inStr = !inStr
+			buf.WriteByte(c)
+		case inStr:
+			buf.WriteByte(c)
+		case c == '(':
+			depth++
+			buf.WriteByte(c)
+		case c == ')':
+			depth--
+			buf.WriteByte(c)
+		case c == ',' && depth == 0:
+			out = append(out, buf.String())
+			buf.Reset()
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	if strings.TrimSpace(buf.String()) != "" {
+		out = append(out, buf.String())
+	}
+	return out
+}
+
 // promoteCreateTable rewrites a bare `CREATE TABLE …` statement to
 // `CREATE OR REPLACE TABLE …` so re-running a seed against a chDB
 // session that already holds the table is idempotent. Other variants

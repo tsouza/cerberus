@@ -1,7 +1,7 @@
 -- unoptimized --
-SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?)
 -- optimized --
-SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?)
 -- chplan_optimized --
 Filter predicate=(MetricName = "up")
   Scan(otel_metrics_gauge)

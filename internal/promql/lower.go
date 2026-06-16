@@ -223,6 +223,59 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 // subqueries) bypass the LWR wrap by setting `inRangeVector` before
 // recursing — the RangeWindow node owns the in-window aggregation
 // itself.
+// lowerHistogramSelectorInput builds the selector's input subtree for the
+// classic-histogram companion (`_count` / `_sum`) and `_bucket` fan-out
+// paths, returning the (possibly wrapped) input node, the residual
+// predicate the LWR / range-vector wrapper must still apply, and whether
+// the wrap already folded the resource-attribute merge into its
+// Attributes projection (`attributesPreMerged`).
+//
+// For the bare-selector path (neither bucketSuffixed nor
+// companionValueColumn set) the input is the raw scan, pred is returned
+// unchanged, and attributesPreMerged is false — the caller merges
+// resource attributes at the selector seam.
+//
+//   - `_bucket` (bucketSuffixed != ""): the scan-side filter feeds into
+//     the fan-out Project, then a post-fan-out Filter applies any
+//     `le=<bound>` matcher against the synthesized `Attributes['le']` key.
+//     That key lives ONLY in the (already resource-merged) Attributes map,
+//     so the `le` predicate is built against a schema view with the
+//     resource column cleared to keep it a bare Attributes match. `pred`
+//     is baked into the fan-out's input Filter and returned nil so the
+//     downstream wrapper doesn't re-apply it.
+//   - `_count` / `_sum` (companionValueColumn != ""): wrap the scan in the
+//     companion Project that aliases the source Count / Sum column as
+//     `Value`. pred passes through to the downstream wrapper.
+//
+// Both companion paths set attributesPreMerged=true because their
+// canonical-quadruple output drops the raw ResourceAttributes column.
+func lowerHistogramSelectorInput(
+	scan *chplan.Scan,
+	pred chplan.Expr,
+	bucketSuffixed string,
+	bucketLeMatchers []*labels.Matcher,
+	companionValueColumn string,
+	s schema.Metrics,
+) (chplan.Node, chplan.Expr, bool) {
+	switch {
+	case bucketSuffixed != "":
+		var fanInput chplan.Node = scan
+		if pred != nil {
+			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
+		}
+		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s)
+		leSchema := s
+		leSchema.ResourceAttributesColumn = ""
+		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
+			selectorInput = &chplan.Filter{Input: selectorInput, Predicate: lePred}
+		}
+		return selectorInput, nil, true
+	case companionValueColumn != "":
+		return wrapHistogramCompanionProject(scan, companionValueColumn, s), pred, true
+	}
+	return scan, pred, false
+}
+
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	// Resolve the candidate physical tables for this matcher.
@@ -346,28 +399,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// Any user-supplied `le` matcher applies AFTER the fan-out as an
 	// outer Filter on `Attributes['le']` (the column doesn't exist on
 	// the raw scan row).
-	var selectorInput chplan.Node = scan
-	switch {
-	case bucketSuffixed != "":
-		// The scan-side filter (non-le matchers) feeds into the
-		// fan-out Project, then the post-fanout filter applies any
-		// `le=<bound>` matcher the user wrote against the synthesized
-		// `Attributes['le']` key.
-		var fanInput chplan.Node = scan
-		if pred != nil {
-			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
-		}
-		selectorInput = wrapHistogramBucketFanout(fanInput, bucketSuffixed, s)
-		if lePred := buildPredicate(bucketLeMatchers, s); lePred != nil {
-			selectorInput = &chplan.Filter{Input: selectorInput, Predicate: lePred}
-		}
-		// `pred` is already baked into the fan-out's input Filter (or
-		// nil when there were no scan-side matchers), so the LWR /
-		// range-vector wrapper below must NOT re-apply it.
-		pred = nil
-	case companionValueColumn != "":
-		selectorInput = wrapHistogramCompanionProject(scan, companionValueColumn, s)
-	}
+	selectorInput, pred, attributesPreMerged := lowerHistogramSelectorInput(
+		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s,
+	)
 
 	// Resolve the effective evaluation anchor for this selector.
 	// `@`/offset modifiers shadow the surrounding ctx; absent a
@@ -413,11 +447,23 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// The bucket-suffix case at L188-204 bakes pred into the
 	// fan-out's inner Filter and zeroes pred before this point, so
 	// the branch below is a no-op for that path.
-	if pred != nil && augmentAttributesForOuterBy(s, ctx.outerByLabels) != nil {
+	//
+	// The guard now fires whenever the selector Project will be emitted —
+	// not only for the outer-by overlay but also for the always-on
+	// resource-attribute merge (which references `ResourceAttributes` and
+	// drops the raw `ServiceName` column out of scope above the Project,
+	// same as the outer-by case). `isBareAttributesRef` is the same
+	// decision `augmentSelectorAttributes` uses, so the pred sink and the
+	// Project wrap stay in lock-step.
+	attrCtx := ctx
+	if attributesPreMerged {
+		attrCtx = ctx.withAttributesPreMerged()
+	}
+	if pred != nil && !isBareAttributesRef(selectorAttributesExpr(attrCtx, s), s) {
 		selectorInput = &chplan.Filter{Input: selectorInput, Predicate: pred}
 		pred = nil
 	}
-	selectorInput = augmentSelectorAttributes(selectorInput, ctx, s)
+	selectorInput = augmentSelectorAttributes(selectorInput, attrCtx, s)
 
 	if ctx.inRangeVector {
 		// Inside a range vector / subquery the surrounding node owns
@@ -482,7 +528,11 @@ func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s sch
 		Input: scan,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			// Merge resource attributes here (raw ResourceAttributes in
+			// scope on the histogram Scan); the canonical quadruple this
+			// Project exposes drops the raw column, so the selector seam
+			// above treats this path as attributes-pre-merged.
+			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{
 				Expr: &chplan.FuncCall{
@@ -537,7 +587,11 @@ func lowerCompanionUnion(
 	if err != nil {
 		return nil, err
 	}
-	selectorInput = augmentSelectorAttributes(selectorInput, ctx, s)
+	// Each arm already merged resource attributes (the raw
+	// ResourceAttributes column is dropped by the UnionAll's canonical
+	// quadruple), so the post-union augment overlays only the outer-by
+	// top-level columns on top of the already-merged Attributes.
+	selectorInput = augmentSelectorAttributes(selectorInput, ctx.withAttributesPreMerged(), s)
 	if ctx.inRangeVector {
 		// Nested range-vector consumer (rate / *_over_time / subquery):
 		// the surrounding RangeWindow owns the per-window aggregation.
@@ -589,7 +643,11 @@ func buildHistogramCompanionArm(
 		Input: armInput,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			// Merge resource attributes per-arm: the raw ResourceAttributes
+			// column is in scope here (the arm scans the histogram table
+			// directly) but is dropped from the canonical quadruple the
+			// UnionAll exposes, so the post-union seam cannot reference it.
+			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{
 				Expr: &chplan.FuncCall{
@@ -632,7 +690,10 @@ func buildSumCompanionArm(
 		Input: armInput,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			// Merge resource attributes per-arm (see buildHistogramCompanionArm):
+			// raw ResourceAttributes is in scope on the sum table but dropped
+			// by the canonical quadruple the UnionAll exposes.
+			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
@@ -650,7 +711,7 @@ func buildSumCompanionArm(
 // The Project's column shape preserves the canonical Sample-row
 // quadruple (MetricName, Attributes, TimeUnix, Value) the downstream
 // LWR / RangeWindow consumes. The dedicated top-level column
-// (ServiceName) is read by `augmentAttributesForOuterBy` from the
+// (ServiceName) is read by `augmentAttributesForOuterByExpr` from the
 // row's input scope — when `input` is a Scan / Filter the column is
 // directly addressable; when `input` is a `wrapHistogramCompanion-
 // Project` the column flows through unchanged because the histogram
@@ -665,19 +726,45 @@ func buildSumCompanionArm(
 // RangeWindow's `GROUP BY Attributes` already partitions over the
 // distinct ServiceName values.
 func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
-	augmented := augmentAttributesForOuterBy(s, ctx.outerByLabels)
-	if augmented == nil {
+	attrsExpr := selectorAttributesExpr(ctx, s)
+	if isBareAttributesRef(attrsExpr, s) {
+		// No resource merge (schema cleared ResourceAttributesColumn) AND
+		// no outer-by overlay — the Project would be a no-op identity, so
+		// skip it to keep custom-schema-without-ResourceAttributes
+		// fixtures byte-identical.
 		return input
 	}
 	return &chplan.Project{
 		Input: input,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: augmented, Alias: s.AttributesColumn},
+			{Expr: attrsExpr, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// selectorAttributesExpr returns the rebound Attributes expression for the
+// selector Project: the base resource-merge
+// (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) with the
+// outer-by top-level-column overlay (`mapConcat(<base>, mapFilter(…))`)
+// composed on top when the enclosing aggregation references a top-level
+// label. When neither applies it is the bare Attributes ColumnRef, and
+// [augmentSelectorAttributes] skips the Project entirely.
+func selectorAttributesExpr(ctx lowerCtx, s schema.Metrics) chplan.Expr {
+	base := mergeResourceAttributesExpr(s)
+	if ctx.attributesPreMerged {
+		// The selector input already carries the merge in its Attributes
+		// column (companion-union arms merge per-arm); re-deriving it here
+		// would reference an out-of-scope ResourceAttributes. Overlay the
+		// outer-by columns on the bare (already-merged) Attributes column.
+		base = &chplan.ColumnRef{Name: s.AttributesColumn}
+	}
+	if overlay := augmentAttributesForOuterByExpr(s, ctx.outerByLabels, base); overlay != nil {
+		return overlay
+	}
+	return base
 }
 
 // rewriteMetricName returns a copy of matchers where any
@@ -1111,6 +1198,14 @@ func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.
 //     dedicated column is unpopulated. Mirrors the LogQL fix from
 //     PR #669 / task #217 in [internal/logql.matcherToExpr].
 //
+//  4. A non-service, non-`__name__` label when the schema names a
+//     ResourceAttributes column (and the label is allowlisted, if an
+//     allowlist is configured) — resolves against BOTH the metric
+//     Attributes map AND the ResourceAttributes map, Attributes winning
+//     on collision. See [resourceMatcherFallback] / the branch-4 comment
+//     below for the coalesce-over-nullIf precedence + negative-matcher
+//     emptiness floor.
+//
 //  3. Anything else — falls through to the Attributes-map lookup
 //     (with the dot/underscore candidate expansion documented on
 //     [attributeLookup]).
@@ -1132,6 +1227,37 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 					},
 				},
 				mapLookup,
+			},
+		}
+	} else if resArm := resourceMatcherFallback(s, m.Name); resArm != nil {
+		// BRANCH 4 — Attributes ∪ ResourceAttributes, Attributes-win.
+		//
+		//   coalesce(nullIf(Attributes[cands], ''),
+		//            nullIf(ResourceAttributes[cands], ''),
+		//            '')
+		//
+		// The metric-level Attributes map is arg 0, so a non-empty
+		// Attributes value shadows the resource value — byte-for-byte the
+		// same precedence the read-path projection's
+		// `mapUpdate(sanitize(ResourceAttributes), Attributes)` produces.
+		//
+		// Each map side is `nullIf(<lookup>, '')` because CH's
+		// `Map(String,String)['missing']` returns the empty-string default
+		// (not NULL); without nullIf, coalesce would always stop at the
+		// Attributes arm and never consult ResourceAttributes. The trailing
+		// `''` re-floors the LHS so "absent in BOTH maps" yields the empty
+		// string (not NULL): a negative matcher `{env!="prod"}` must KEEP a
+		// row that has no `env` at all (Prom "absent label → empty string"),
+		// and CH three-valued logic would otherwise drop the NULL row.
+		lhs = &chplan.FuncCall{
+			Name: "coalesce",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "nullIf",
+					Args: []chplan.Expr{mapLookup, &chplan.LitString{V: ""}},
+				},
+				resArm,
+				&chplan.LitString{V: ""},
 			},
 		}
 	} else {
@@ -1787,7 +1913,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// needs to partition over. Only `by(...)` propagates — `without(...)`
 	// exclusion semantics don't reference specific columns, so the
 	// without branch keeps the lean Attributes shape. See
-	// [augmentAttributesForOuterBy] for the resulting Project wrap and
+	// [augmentAttributesForOuterByExpr] for the resulting Project wrap and
 	// [internal/logql.lowerCtx.OuterByLabels] for the LogQL precedent
 	// (PR #666 / task #218).
 	innerCtx := ctx

@@ -35,6 +35,26 @@ type Metrics struct {
 	AttributesColumn string
 	// ResourceAttributesColumn names the column holding resource labels.
 	ResourceAttributesColumn string
+	// PromResourceLabels is the allowlist of OTel ResourceAttributes keys
+	// (in their original dotted form, e.g. "k8s.namespace.name",
+	// "deployment.environment.name") projected as Prometheus labels on the
+	// PromQL read path (bare selector / aggregation / /series) and on the
+	// metadata surface (/labels, /label/<name>/values). Keys are matched
+	// against the ORIGINAL dotted OTel key; the wire emits the dot ->
+	// underscore sanitized form (k8s.namespace.name -> k8s_namespace_name).
+	//
+	// nil / empty promotes EVERY ResourceAttributes key (the default — the
+	// allowlist is opt-IN narrowing, not opt-in feature-enable). A custom
+	// schema that clears ResourceAttributesColumn disables the resource arm
+	// entirely regardless of this list. Wired from
+	// CERBERUS_PROM_RESOURCE_LABELS (comma-separated).
+	//
+	// Caveat: keys containing characters OTHER than dots that sanitize to
+	// underscore (e.g. '-', '/', ':') are surfaced on /labels and the
+	// bare-selector projection but are NOT addressable by an underscored
+	// matcher or /label/<name>/values, because the candidate chain only
+	// reverses underscore -> dot (mirrors the leading-digit caveat).
+	PromResourceLabels []string
 	// TimestampColumn names the timestamp column (DateTime64).
 	TimestampColumn string
 	// StartTimeColumn names the per-series start-timestamp column

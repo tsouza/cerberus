@@ -325,6 +325,46 @@ layout deviates from the OTel-CH exporter defaults (`CERBERUS_SCHEMA_METRICS_*`,
 `CERBERUS_SCHEMA_LOGS_TABLE`, `CERBERUS_SCHEMA_TRACES_TABLE`) — are documented in
 [`observability.md`](observability.md#schema-shape-overrides).
 
+### Prometheus resource-attribute labels
+
+The Prometheus head projects each metric row's OTel `ResourceAttributes`
+map as Prometheus labels alongside the per-datapoint `Attributes` map, so
+fleet metrics can be filtered and grouped by resource-level keys
+(`k8s.namespace.name`, `deployment.environment.name`, `k8s.pod.name`, …).
+Keys are sanitized dot→underscore for Prometheus legality
+(`k8s.namespace.name` → `k8s_namespace_name`) on the wire, and a matcher
+like `{k8s_namespace_name="prod"}` reverses the sanitized name through the
+existing dot↔underscore candidate chain to filter the stored dotted key.
+
+**Precedence:** on a key collision the per-datapoint `Attributes` value
+wins over the `ResourceAttributes` value (the Prometheus convention that a
+datapoint label overrides a resource label). The dedicated
+`service.name`/`service_name` → `ServiceName`-column handling is preserved
+and keeps its existing precedence.
+
+| Variable                         | Type            | Default          | Description                                                                                                                                                                                                                                                                                                            |
+| -------------------------------- | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_PROM_RESOURCE_LABELS`  | CSV (`a,b,c`)   | (empty = all)    | Allowlist of OTel `ResourceAttributes` keys (in their **original dotted** form, e.g. `k8s.namespace.name`) projected as Prometheus labels. **Empty / unset promotes EVERY resource key** — the allowlist is opt-IN narrowing, not opt-in enabling. Matching is on the dotted key; the wire emits the sanitized form.   |
+
+The allowlist gates every read surface in lock-step: the bare-selector
+projection, `sum`/`avg by(...)`/`without(...)` aggregations, the matcher
+`WHERE`, `/api/v1/series`, `/api/v1/labels`, and
+`/api/v1/label/<name>/values`. A custom schema that clears the
+`ResourceAttributes` column disables the resource arm entirely regardless
+of this knob.
+
+**Cardinality.** Promote-all is unbounded by design: high-churn resource keys
+(`k8s.pod.name`, `k8s.pod.uid`, `host.id`) become labels and multiply
+active-series cardinality. Set the allowlist to the keys you actually query on
+at scale to bound it.
+
+**Non-dot sanitization caveat.** Resource-attribute keys containing characters
+*other* than dots that sanitize to underscore (e.g. `-`, `/`, `:`) are surfaced
+on `/api/v1/labels` and the bare-selector projection, but are **not** addressable
+by an underscored matcher or `/api/v1/label/<name>/values` — the candidate chain
+only reverses underscore→dot, so it can't reconstruct the original `-`/`/`/`:`
+key from the underscored form (the same caveat as the leading-digit case).
+
 ## Execution / solver
 
 The sharded-pushdown solver (`internal/solver`, [`solver.md`](solver.md))

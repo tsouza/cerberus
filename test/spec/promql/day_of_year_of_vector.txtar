@@ -16,18 +16,24 @@ INSERT INTO otel_metrics_gauge VALUES
 -- args --
 [0] string = ""
 [1] string = "UTC"
-[2] string = "unix_seconds"
-[3] string = "unix.seconds"
-[4] string = "2026-01-01 00:00:01.000000000"
-[5] int64 = 9
-[6] string = "2026-01-01 00:00:01.000000000"
-[7] int64 = 9
-[8] int64 = 300000000000
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "unix_seconds"
+[7] string = "unix.seconds"
+[8] string = "2026-01-01 00:00:01.000000000"
+[9] int64 = 9
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] int64 = 300000000000
 -- chplan --
 Project ["" AS MetricName, Attributes, TimeUnix, toFloat64(toDayOfYear(toDateTime(toInt64(Value), "UTC"))) AS Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-      Filter predicate=(((MetricName IN ("unix_seconds", "unix.seconds")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
-        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+      Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName IN ("unix_seconds", "unix.seconds"))
+            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64(toDayOfYear(toDateTime(toInt64(`Value`), ?))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64(toDayOfYear(toDateTime(toInt64(`Value`), ?))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))
