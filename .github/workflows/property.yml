@@ -13,6 +13,11 @@ name: property
 #
 #   - TestPromQL_Property_FromScratch — PromQL instant + range +
 #     aggregations against the from-scratch oracle.
+#   - TestPromQL_InstantWindowSweep_FromScratch — sweeps the instant
+#     eval time T (incl. the 60s/90s offsets the rc.8 window-anchor bug
+#     hid in) across a continuous series; asserts the instant
+#     range-vector result agrees with a from-scratch (T-range, T] window
+#     oracle (non-empty when the window is non-empty).
 #   - TestLogQL_Property              — LogQL stream + line filter +
 #     `| label_format` against the from-scratch oracle.
 #   - TestTraceQL_Property            — TraceQL spanset filter +
@@ -30,9 +35,10 @@ name: property
 # rapid seed is captured in the test output (and the workflow log).
 # Authors can reproduce a failing run locally with:
 #
-#   go test -tags chdb -run TestPromQL_Property  -rapid.seed=<N> ./test/property/...
-#   go test -tags chdb -run TestLogQL_Property   -rapid.seed=<N> ./test/property/...
-#   go test -tags chdb -run TestTraceQL_Property -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestPromQL_Property              -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestPromQL_InstantWindowSweep     -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestLogQL_Property               -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestTraceQL_Property             -rapid.seed=<N> ./test/property/...
 
 on:
   push:
