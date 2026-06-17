@@ -36,7 +36,7 @@ jobs:
 
       - uses: azure/setup-helm@v5
         with:
-          version: v3.16.4
+          version: v3.21.1
 
       - name: helm lint
         run: helm lint "$CHART_DIR"
@@ -54,11 +54,11 @@ jobs:
       - name: Install kubeconform
         uses: taiki-e/install-action@v2
         with:
-          tool: kubeconform@0.6.7
+          tool: kubeconform@0.8.0
 
       - name: Render + kubeconform + image-existence guard
         env:
-          KUBE_VERSION: '1.28.0'
+          KUBE_VERSION: '1.33.0'
         run: node .github/scripts/chart-kubeconform.mjs
 
       - name: chart-testing (ct) lint
