@@ -77,11 +77,22 @@ func init() {
 		// scan keeps the intermediate well within a small multiple while an
 		// exponential re-materialisation regression blows straight past.
 		CardinalityBound: float64(maxK + 2),
-		SubLinearSlack:   0.9,
-		// Post-#90 the chain flattens into ONE NaryVectorSetOp single-pass
-		// (one UNION ALL over all K arms + one window partition), so both the
-		// intermediate (3->9 rows, disjoint arms) AND the wall are (sub-)linear
-		// in K. No quarantine — both axes hard-gate. See the package doc above.
+		// Post-#90 the chain flattens into ONE NaryVectorSetOp single-pass (one
+		// UNION ALL over all K arms + one window partition). The intermediate
+		// CARDINALITY is flat (3->9 rows, disjoint arms — the hard
+		// CardinalityBound axis), but the single pass still SCANS all K+1 arms,
+		// so the wall is inherently ~LINEAR in K (≈paramGrowth, measured ~0.97x
+		// of K across 2->8), NOT sub-linear. The wall axis here is the backstop
+		// for an EXECUTION re-regression — a #88-class CTE re-execution
+		// (exponential) or a #814-class per-level window re-pass (~1.7x/param) —
+		// which all land well above linear. So the gate must clear healthy
+		// linear + runner jitter (~1.15x param) yet stay below the cheapest
+		// regression (~1.7x param): slack 1.3 -> gate ≈1.36x param, comfortably
+		// between. Tighter (the old 0.9, demanding sub-linear for an O(K) scan)
+		// sat ON the healthy floor and flaked on runner noise. The cardinality
+		// axis stays the primary hard anti-fan-out invariant; this only
+		// calibrates the secondary wall heuristic to the construct's real shape.
+		SubLinearSlack: 1.3,
 		Seed: func() string {
 			return setOpChainSeed(maxK)
 		},
