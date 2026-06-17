@@ -114,11 +114,11 @@ jobs:
 
       - uses: azure/setup-helm@v5
         with:
-          version: v3.16.4
+          version: v3.21.1
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@v4
 
-      - uses: oras-project/setup-oras@v1
+      - uses: oras-project/setup-oras@v2
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
