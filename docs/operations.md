@@ -261,7 +261,7 @@ matrix is released once the response is written). Size cerberus's memory limit
 (and `GOMEMLIMIT`, which Go's GC needs since it does not read cgroup limits)
 for the heavier per-query footprint, **or** trim the promoted set with
 `CERBERUS_PROM_RESOURCE_LABELS` so only the keys you query on carry the cost.
-The e2e manifest (`test/e2e/k3s/cerberus.yaml`) sizes the pod at 1536Mi /
+The e2e manifest (`test/e2e/k3s/cerberus-values.yaml`) sizes the pod at 1536Mi /
 `GOMEMLIMIT=1228MiB` for the promote-all default under the full dashboard
 sweep; a tighter allowlist lets you run leaner.
 
@@ -308,7 +308,7 @@ port to the outside world; cerberus itself only knows how to bind and
 serve.
 
 The same binding semantics apply in every environment: `docker compose
-up` exposes `8080:8080`, `test/e2e/k3s/cerberus.yaml` declares a
+up` exposes `8080:8080`, `test/e2e/k3s/cerberus-values.yaml` declares a
 `NodePort` on `30080 → 8080`, and a local `./cerberus` run from source
 listens on `:8080`. No env-var translation is needed between deployment
 targets.
@@ -374,10 +374,77 @@ concurrency bugs.
 
 ### Kubernetes HorizontalPodAutoscaler
 
-The e2e manifests at `test/e2e/k3s/cerberus-hpa.yaml` ship a working
-HPA reference: it scales replicas on CPU + in-flight request count
-(via the `cerberus_query_inflight` gauge exported through OTLP). The
-file is also a runnable example for production deployments.
+The chart's `autoscaling` block ships a working HPA: the e2e values
+(`test/e2e/k3s/cerberus-values.yaml`) enable it at 2–4 replicas on 70 %
+CPU utilisation with a fast scale-up / slow scale-down `behavior`
+policy. Because cerberus is stateless, CPU is a faithful proxy for
+query load; `autoscaling.extraMetrics` can add a custom in-flight-request
+signal where a metrics adapter is available.
+
+### Helm: production HA against Replicated ClickHouse
+
+The chart at `deploy/helm/cerberus` (published to
+`oci://ghcr.io/tsouza/cerberus/charts/cerberus`) ships first-class typed
+values for a multi-replica deployment. A representative production HA
+`values.yaml`:
+
+```yaml
+replicaCount: 3
+clickhouse:
+  addr: ["clickhouse.clickhouse.svc.cluster.local:9000"]
+  database: otel
+  existingSecret: cerberus-ch-credentials   # password via Secret, never inline
+requirementsCheck: true                     # boot-time ClickHouse preflight
+schema:
+  ttl: "2w"
+  replicated:
+    enabled: true                           # Replicated DB + ReplicatedMergeTree
+    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+prom:
+  resourceLabels:                           # bounded allowlist — see below
+    - service.name
+    - k8s.namespace.name
+    - k8s.pod.name
+affinityPresets:
+  colocateWithClickHouse:
+    enabled: true
+    mode: preferred
+    topologyKey: kubernetes.io/hostname
+```
+
+Each typed block lowers to the canonical env:
+
+- `schema.replicated.enabled` → `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`
+  and `schema.replicated.zookeeperPath` →
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH`, driving the bare
+  `ReplicatedMergeTree` emission documented under
+  [Auto-create schema](#auto-create-schema-single-node-vs-clustered). The
+  path **must** carry the `{shard}` / `{replica}` macros.
+- `requirementsCheck` → `CERBERUS_REQUIREMENTS_CHECK=true` (see
+  [Startup requirements preflight](#startup-requirements-preflight)).
+- `prom.resourceLabels` → comma-joined `CERBERUS_PROM_RESOURCE_LABELS`. This
+  is a **bounded allowlist**: leave it empty and cerberus promotes *every*
+  OTel resource attribute to a Prometheus label — unbounded cardinality (see
+  [Prometheus resource-attribute labels](#prometheus-resource-attribute-labels)).
+  List only the attributes you actually query or group on.
+
+Any `CERBERUS_SCHEMA_*` knob without a typed key still passes through as
+`schema.<KEY>` (e.g. `schema: { CLUSTER: main }` → `CERBERUS_SCHEMA_CLUSTER`);
+the typed keys win on conflict.
+
+**Co-location is probabilistic, not node-local routing.**
+`affinityPresets.colocateWithClickHouse` only influences *where cerberus pods
+schedule* — it appends a podAffinity term (soft `preferred` by default, hard
+`required` opt-in) onto whatever `affinity` the operator already set. Query
+traffic still targets `clickhouse.addr`, which is the ClickHouse **Service**;
+that Service round-robins across all `N` replicas, so a co-located cerberus pod
+reaches the node-local replica only ~`1/N` of the time. The preset is worth
+enabling to cut cross-AZ hops (set `topologyKey:
+topology.kubernetes.io/zone`, or pair it with `Service.spec.trafficDistribution:
+PreferClose` / `internalTrafficPolicy: Local` on the ClickHouse Service), but it
+does **not** guarantee a node-local query path. True node-local CH preference —
+a headless Service or per-pod endpoint with client-side replica locality — is a
+deferred, app-side concern, not something the scheduling preset can deliver.
 
 ## Lifecycle
 
@@ -658,9 +725,9 @@ data already persisted.
   version string is injected via `-ldflags` so `Version` in
   `cmd/cerberus/main.go` reflects the tag.
 - **Release** — the build output is combined with the deployment
-  configuration. In Kubernetes that means a specific image SHA in
-  `test/e2e/k3s/cerberus.yaml` (or the operator's chart) plus the
-  `cerberus-config` ConfigMap. The release is immutable: rolling back
+  configuration. In Kubernetes that means a specific image tag/SHA in the
+  Helm values (`test/e2e/k3s/cerberus-values.yaml` for the e2e stack) plus
+  the chart-rendered env ConfigMap. The release is immutable: rolling back
   means redeploying the previous tag, not editing files in place.
 - **Run** — the container is started; the process reads its
   configuration from the environment and binds its HTTP listener. No

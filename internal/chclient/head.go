@@ -33,7 +33,7 @@ const (
 // breaker, tighter than the data-head default (breakerThreshold = 5). The
 // readiness ping is low-rate: health.go coalesces concurrent k8s probes into
 // one ping per ~2s TTL window, and the k8s readinessProbe in
-// test/e2e/k3s/cerberus.yaml runs at periodSeconds=3 / failureThreshold=5
+// test/e2e/k3s/cerberus-values.yaml runs at periodSeconds=3 / failureThreshold=5
 // (a 15s eviction budget). A total-CH outage now flips /readyz red ONLY via
 // failed probe pings (decoupled from data-plane traffic, #94), so the probe
 // breaker must trip well inside that 15s budget: at ~3s per ping a 3-failure

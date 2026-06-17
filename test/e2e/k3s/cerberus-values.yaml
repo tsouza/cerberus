@@ -1,0 +1,202 @@
+# Helm values for the k3d e2e deployment of cerberus.
+#
+# DOGFOODING: the e2e cluster deploys cerberus via the SAME chart published to
+# `oci://ghcr.io/tsouza/cerberus/charts/cerberus` (`deploy/helm/cerberus`),
+# installed by `just e2e-up` with `helm upgrade --install`. This is the only
+# place the chart is exercised in a LIVE cluster — `chart-validate` only lints /
+# templates / kubeconforms it statically. A chart bug (bad env mapping, broken
+# probe, wrong port) now fails the dashboard + chaos e2e lanes, not just review.
+#
+# It intentionally drives a wide slice of the chart surface: typed clickhouse /
+# otlp / autoCreate blocks, the chart-managed Secret (inline password), the
+# free-form `config` passthrough, `extraEnv`, full probe + resource overrides,
+# a NodePort Service, the HPA (autoscaling), a PodDisruptionBudget, and a
+# dedicated ServiceAccount.
+#
+# Two 0.2.0 HA features are NOT exercised here and cannot be on single-node
+# k3d: `schema.replicated` needs a real multi-replica ClickHouse + Keeper
+# cluster, and `affinityPresets.colocateWithClickHouse` needs >1 node to mean
+# anything. Both are covered by `chart-validate` (helm template + kubeconform)
+# against `ci/ha-values.yaml` instead.
+
+image:
+  repository: cerberus
+  tag: e2e
+  # Never, not IfNotPresent: this image exists ONLY via the k3d import — there
+  # is no registry to fall back to. IfNotPresent masked a silent import failure
+  # as a nonsense remote pull ("pull access denied for cerberus:e2e", run
+  # 27274975563) and the pod sat in ImagePullBackOff. Never fails immediately
+  # and names the real problem: the image is missing from the node.
+  pullPolicy: Never
+
+clickhouse:
+  addr: ["clickhouse:9000"]
+  database: otel
+  username: cerberus
+  # Inline password → the chart renders a managed Secret and wires
+  # CERBERUS_CH_PASSWORD via secretKeyRef. Dogfoods the createSecret path; this
+  # is a throwaway in-cluster credential, never a real one.
+  password: cerberus
+  dialTimeout: 10s
+
+# Provision the OTel-CH schema at boot. The otel-collector's clickhouseexporter
+# (create_schema: true) also owns schema creation as telemetry first flows, but
+# that's gated on telemetry actually arriving — a cold cluster has a window
+# where the tables don't exist yet. Letting cerberus apply the same idempotent
+# DDL at startup shortens the not-ready window so the dashboard readiness wait
+# doesn't ride the collector's timing. The boot-time requirements check's
+# absent-schema branch is the real safety net (boots NOT READY and re-probes
+# rather than crash-looping).
+autoCreate:
+  schema: true
+
+# Self-observability OTLP export — cerberus pushes its own metrics + traces +
+# logs to the in-cluster gateway, which forwards them to ClickHouse. Reading
+# those rows back through cerberus closes the dogfood loop (see the "Cerberus
+# self-observability" Grafana dashboard). Empty endpoint disables export.
+otlp:
+  endpoint: otel-collector-gateway.cerberus.svc:4317
+  insecure: true
+
+# Free-form passthrough for CERBERUS_* knobs without a typed block — exercises
+# the chart's `config:` long-tail rendering.
+config:
+  # Per-query sample budget (Prometheus --query.max-samples parity). 5M samples
+  # sit comfortably inside the pod memory limit; the binary default (50M)
+  # assumes Prom's ~16-byte samples, which cerberus rows (label-map-carrying)
+  # are not. A query crossing the budget gets the upstream-parity 422
+  # errorType=execution rejection instead of OOMKilling the pod (the
+  # query-of-death loop from run 27269987620).
+  CERBERUS_QUERY_MAX_SAMPLES: "5000000"
+  # Per-query ClickHouse memory cap (max_memory_usage stamped on every
+  # data-plane query). The sample budget bounds cerberus-process memory; this
+  # bounds CLICKHOUSE-process memory for a single query. Run 27277793810: the
+  # iterate-time-ranges 24h/15s tuple demanded 2.12 GiB inside ClickHouse and
+  # tripped the server-total cap mid-stream (502 errorType=internal); the
+  # explicit 1 GiB per-query cap turns it into the deterministic 422
+  # resource-exhausted rejection pinned in iterate-time-ranges.spec.ts.
+  CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
+  # Enable the gated net/http/pprof debug endpoints (/debug/pprof/*) for the
+  # e2e lane ONLY. Off in every production manifest; on here so the "Dump
+  # cluster state on failure" e2e step can wget /debug/pprof/heap from the
+  # running pod before teardown when a restart is detected — the live heap
+  # profile is the only artifact that pinpoints which query shape blew the
+  # budget (a --previous log dump is empty for an OOMKill).
+  CERBERUS_DEBUG_PPROF: "true"
+
+extraEnv:
+  # Go's GC doesn't see cgroup limits — GOMEMLIMIT keeps heap pressure below
+  # the cgroup ceiling so allocation bursts from the heavy auto-discovered
+  # Playwright specs trigger GC instead of the OOM killer. Evidence: runs
+  # 27263112345 / 27269987620 OOMKilled at 256Mi then 512Mi during the
+  # iterate-time-ranges (range, step) matrix sweep. rc.5 bump (→1228MiB, paired
+  # with the 1536Mi limit below): the ResourceAttributes-as-Prom-labels feature
+  # promotes OTel resource keys into every series' label map, a measured ~+65%
+  # per-query heap (GC-recoverable, scales with rows × resource-key count, not a
+  # leak) — GOMEMLIMIT rises proportionally to keep the GC reclaiming before the
+  # cgroup OOMs.
+  - name: GOMEMLIMIT
+    value: 1228MiB
+
+resources:
+  requests:
+    # 250m so the scheduler weights cerberus fairly against CH + the collector
+    # + the Playwright suite on a 4-vCPU CI node. No CPU limit — bursting is
+    # fine; it's the probe kills under starvation that hurt.
+    cpu: 250m
+    memory: 128Mi
+  limits:
+    # 1536Mi (was 1Gi, 512Mi, 256Mi): the Playwright dashboard sweep buffers
+    # full query_range matrices per request, and the rc.5 resource-attr feature
+    # raised per-query heap ~65% (measured). 1536Mi gives the bounded workload
+    # honest headroom; GOMEMLIMIT=1228MiB (~80%) backs the heap off before this
+    # ceiling. Operators promoting many high-cardinality resource keys should
+    # size memory accordingly or trim the set via prom.resourceLabels.
+    memory: 1536Mi
+
+# /readyz pings ClickHouse (small TTL cache so the probe doesn't hammer CH) and
+# reports the auto-create-schema invariant. A failure removes the pod from the
+# Service endpoints WITHOUT restarting it — backpressure, not crash. Budgets are
+# sized for a saturated CI node: /readyz pings a SHARED dependency, so a tight
+# budget evicts ALL endpoints together when the suite drives CH hard (Grafana
+# then surfaces "connection refused" mid-sweep). 5s × 5 ≈ 15-21s of sustained
+# CH saturation before eviction; recovery stays fast via the 3s period.
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 3
+  timeoutSeconds: 5
+  failureThreshold: 5
+
+# /healthz is dependency-free: a failure means the process is wedged and k8s
+# should restart the pod. timeoutSeconds was previously unset — the k8s default
+# (1s) is a hair-trigger on a contended CI node (a CPU-starved but healthy
+# process missing three 1s probes got KILLED into CrashLoopBackOff exactly while
+# the suite was load-bursting). 5s × 6 still restarts a genuinely wedged process
+# within ~60s.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# NodePort 30080 — k3d maps host 8080 → nodePort 30080 (see `just e2e-up`).
+service:
+  type: NodePort
+  port: 8080
+  targetPort: 8080
+  nodePort: 30080
+
+# Horizontal scale-out is the right lever for a stateless gateway. minReplicas:2
+# survives a single-pod failure; maxReplicas:4 is the CI ceiling, NOT a product
+# recommendation (run 27272406583: a higher ceiling let the load burst scale
+# cerberus out until ClickHouse was saturated and the freshest replica
+# crash-looped). 70% targets the pod's CPU request. With the HPA enabled the
+# chart omits the Deployment's replicas field so the two controllers don't
+# fight.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+      selectPolicy: Max
+
+# Exercise the PDB template — with minReplicas:2 a maxUnavailable:1 keeps one
+# pod serving through a voluntary disruption (node drain / rolling restart).
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Exercise the ServiceAccount template (dedicated SA, no token automount —
+# cerberus never calls the kube API).
+serviceAccount:
+  create: true
+automountServiceAccountToken: false
+
+# The chart's own selector uses app.kubernetes.io/name, but the e2e chaos
+# tooling targets pods by the legacy `app: cerberus` label: the chaos
+# NetworkPolicy (test/e2e/chaos/manifests/deny-egress-clickhouse.yaml) scopes
+# its podSelector to it, and chaos-run.mjs / e2e-cerberus-restart-gate.mjs
+# select / count pods with `-l app=cerberus`. Add it as a pod label so those
+# selectors keep matching without rewriting the chaos harness.
+podLabels:
+  app: cerberus

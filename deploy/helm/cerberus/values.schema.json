@@ -88,7 +88,29 @@
         "timeout": { "type": "string" }
       }
     },
-    "schema": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ttl": { "type": "string" },
+        "replicated": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "zookeeperPath": { "type": "string" }
+          }
+        }
+      },
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "requirementsCheck": { "type": "boolean" },
+    "prom": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resourceLabels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
     "http": {
       "type": "object",
       "additionalProperties": false,
@@ -176,6 +198,22 @@
     "nodeSelector": { "type": "object" },
     "tolerations": { "type": "array" },
     "affinity": { "type": "object" },
+    "affinityPresets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "colocateWithClickHouse": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mode": { "type": "string", "enum": ["preferred", "required"] },
+            "podSelector": { "type": "object" },
+            "topologyKey": { "type": "string" }
+          }
+        }
+      }
+    },
     "topologySpreadConstraints": { "type": "array" },
     "priorityClassName": { "type": "string" },
     "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },

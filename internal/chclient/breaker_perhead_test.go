@@ -309,7 +309,7 @@ func TestForHead_NeutralClassificationsPerHead(t *testing.T) {
 	}
 }
 
-// k8s readiness budget pins from test/e2e/k3s/cerberus.yaml. Duplicated here
+// k8s readiness budget pins from test/e2e/k3s/cerberus-values.yaml. Duplicated here
 // as named consts so this sized test fails loudly if the manifest tightens the
 // eviction window below what the probe breaker can trip inside.
 const (

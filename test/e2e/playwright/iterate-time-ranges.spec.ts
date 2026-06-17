@@ -48,7 +48,7 @@
  * Memory-limit dual contract (run 27277793810): cerberus stamps a
  * 1 GiB per-query `max_memory_usage` cap on every ClickHouse
  * data-plane query (CERBERUS_CH_QUERY_MAX_MEMORY in
- * test/e2e/k3s/cerberus.yaml + docker-compose.yml). cerberus's matrix
+ * test/e2e/k3s/cerberus-values.yaml + docker-compose.yml). cerberus's matrix
  * SQL shape materialises O(anchors × samples) inside ClickHouse, so a
  * wide-window / fine-step tuple (the 24h/15s run-27277793810 case
  * demanded 2.12 GiB) can cross the cap — and whether a given tuple
@@ -148,7 +148,7 @@ const RESOLUTION_CAP_MESSAGE =
   'exceeded maximum resolution of 11,000 points per timeseries';
 
 // ClickHouse per-query memory cap pinned by both stacks via
-// CERBERUS_CH_QUERY_MAX_MEMORY (test/e2e/k3s/cerberus.yaml,
+// CERBERUS_CH_QUERY_MAX_MEMORY (test/e2e/k3s/cerberus-values.yaml,
 // docker-compose.yml). Kept as a literal so a stack-config drift
 // breaks this pin instead of silently changing the contract.
 const CH_QUERY_MAX_MEMORY_BYTES = 1_073_741_824;

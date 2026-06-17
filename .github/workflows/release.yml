@@ -116,7 +116,10 @@ jobs:
         with:
           version: v3.21.1
 
-      - uses: sigstore/cosign-installer@v4
+      # cosign-installer publishes NO moving v4 major tag (only v3 floats);
+      # pin the exact latest v4 patch or the job fails with "unable to resolve
+      # action sigstore/cosign-installer@v4".
+      - uses: sigstore/cosign-installer@v4.1.2
 
       - uses: oras-project/setup-oras@v2
 
