@@ -2,13 +2,102 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
-## [v1.0.0-RC1]
+## [v1.0.0] — 2026-06-17
 
-The first release candidate on the `v1.0.0` line. This is an early,
-experimental cut: the three heads parse → lower → execute and the
-differential harnesses gate every merge, but the surface is still
-evolving and must be validated against your own corpus before any real
-use.
+First general-availability release. Cerberus is a drop-in Prometheus /
+Loki / Tempo HTTP gateway for ClickHouse: each head parses with its
+reference upstream parser, lowers to a shared plan IR, runs a rule-based
+optimizer, and emits parameterised ClickHouse SQL — so Grafana, alerting,
+and CLI tooling see three normal datasources speaking unmodified PromQL /
+LogQL / TraceQL.
+
+**Wire-format API stability.** The three upstream HTTP surfaces cerberus
+serves are the 1.0 compatibility contract and follow semantic versioning
+from here. The query languages are the upstream parsers' own, so they
+track upstream. The `CERBERUS_*` configuration surface is stable;
+additive changes only within 1.x.
+
+This is a young, actively-developed project: a confident 1.0 because the
+behaviour is held to reference engines by differential harnesses on every
+merge — not because every edge is explored. Two areas carry honestly lower
+confidence and are called out below.
+
+### Capabilities at 1.0
+
+- **PromQL** scored against the third-party CNCF / PromLabs
+  [PromQL Compliance Tester](https://github.com/prometheus/compliance) —
+  574/574 cases passing against a real Prometheus, no allow-list — plus
+  subqueries, `histogram_quantile` over classic and native histograms,
+  `predict_linear` / `holt_winters`, `@start()` / `@end()`,
+  `group_left` / `group_right`, and the full instant + range-query surface.
+- **LogQL** diffed against a real Loki on Grafana's own `pkg/logql/bench`
+  corpus: pipeline stages (`| json` / `| logfmt` / `| pattern` / `| unpack`
+  / `| line_format` / `| label_format` / …), metric queries, structured
+  metadata, and the `/labels` / `/series` / `/index/stats` metadata surface.
+- **TraceQL** diffed against a real Tempo: structural operators, nested-set
+  intrinsics in `| select(...)`, set ops, `group` / `coalesce`, the metrics
+  pipeline, and the `/api/search` + tag-discovery surface.
+- **Coverage** ([`docs/coverage.md`](docs/coverage.md)): 226 of 228
+  catalogued symbols supported across the three heads, 2 intentional
+  parity rejections (bare `start()` / `end()`), **zero** wrong-rejections.
+- **OpenTelemetry-native** schema (the `clickhouseexporter` table shape),
+  with resource attributes projected as Prometheus labels and the
+  `CERBERUS_SCHEMA_*` overrides for non-default layouts.
+- **Operations**: `ReplicatedMergeTree` / `Replicated`-database schema
+  bootstrap (`CERBERUS_AUTO_CREATE_SCHEMA`), per-head ClickHouse circuit
+  breakers, OTLP self-telemetry export, `/readyz` / `/healthz` probes, and
+  the full ClickHouse connection surface (TLS, timeouts, pool sizing).
+- **Performance**: single-pass prefix-sum range aggregation, sharded
+  pushdown solver, PREWHERE promotion + late materialisation, metadata
+  fan-in batching, and an optional experimental native-rate path
+  (`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`, off by default) — all held
+  against regression by the compute-fan-out perf-guard ratchets.
+
+### Changed since the v1.0.0-rc series
+
+- **Metadata endpoints scan the full `[start,end]` window.** `/api/v1/series`,
+  `/labels`, and `/label/<name>/values` enumerate every series/label/value
+  with any sample in the requested window instead of an instant staleness
+  window at `now`, fixing intermittent empty results for late-arriving
+  (delta-temporality) data.
+- **Instant range-vector queries anchor to `time=T`**, not ClickHouse
+  wall-clock, closing an intermittent empty-window class.
+- **GCP / cloud metric-name translation**: slash-containing OTel names,
+  `histogram_quantile` over `sum_over_time` of delta-histogram buckets,
+  aggregated-range ÷ scalar, and standalone `_sum` / `_count`-suffixed
+  gauges all resolve.
+- **Resource attributes as Prometheus labels** (env / namespace / pod /
+  cluster) with bounded query-time memory.
+- **Replicated schema**: emit explicit bare `ReplicatedMergeTree` under a
+  `Replicated` database; cold-cluster boot creates the database itself
+  instead of fatally exiting.
+- **Full ClickHouse connection configuration** surface exposed (TLS,
+  read timeout, pool limits).
+
+### Known limitations (honest at 1.0)
+
+- **TraceQL conformance is the lightest of the three heads.** There is no
+  third-party TraceQL conformance suite; its corpus is cerberus-owned
+  author-written TXTAR diffed against a real Tempo, so its breadth is
+  author-bounded rather than reference-derived. Raising TraceQL's
+  confidence is the top post-1.0 item. See
+  [`docs/compatibility.md`](docs/compatibility.md).
+- **Cerberus is a query gateway, not a store.** It runs no ingestion and
+  caches nothing (only the `/readyz` TTL); bring your own ClickHouse and
+  OTel pipeline.
+- **Per-head circuit-breaker recovery may briefly flap** as HALF-OPEN
+  probes re-converge after a ClickHouse restart ([#94]).
+
+## [v1.0.0-rc.1]
+
+The first published release candidate on the `v1.0.0` line — the core
+slice plus the advanced-QL surface. This was an early cut: the three
+heads parse → lower → execute and the differential harnesses gate every
+merge, but the surface was still evolving. The `rc.2` → `rc.9`
+prereleases that followed (replicated-schema bootstrap, resource-attribute
+labels, the perf collapses, and the GCP / metadata query-translation
+fixes) are summarised under [v1.0.0] above and listed individually on the
+[releases page](https://github.com/tsouza/cerberus/releases).
 
 ### Added
 
@@ -234,9 +323,10 @@ maintainer-accepted caveats specific to this candidate:
   Do not stand it in for a running Prometheus / Loki / Tempo deployment
   without first evaluating it against your own queries and data.
 
-## [v0.1.0] — Seed
+## v0.1.0 — Seed (pre-release history, not tagged)
 
-First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
+The seed series (PR1–PR7 + admin + roadmap) that predates the published
+`v1.0.0-rc.*` tags:
 
 - Module `github.com/tsouza/cerberus` on `go 1.26.2` with the `replace github.com/hashicorp/memberlist => github.com/grafana/memberlist@…` hygiene fix.
 - Shared plan IR (`internal/chplan`), ClickHouse SQL emitter (`internal/chsql`), TXTAR spec runner under `test/spec/`.
@@ -247,5 +337,5 @@ First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
 - CI: two-job workflow (`check` + `lint`), commitlint relaxed for Dependabot, markdownlint, mutation testing (gremlins) on a nightly cron.
 - Branch protection on `main`: required checks, linear history, no force pushes / deletions.
 
-[v1.0.0-RC1]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC1
-[v0.1.0]: https://github.com/tsouza/cerberus/releases/tag/v0.1.0
+[v1.0.0]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0
+[v1.0.0-rc.1]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-rc.1

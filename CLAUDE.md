@@ -119,15 +119,6 @@ replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-
 
 Grafana's Loki, Tempo, and `dskit` all use a forked memberlist internally (via their own `replace` directives). Those replaces **do not propagate** to consumers. Without our own replace, the build fails with `undefined: memberlist.NodeState`, `mlCfg.NodeSelection`, `mlCfg.PushPullNodes` from `dskit/kv/memberlist`. If you bump Loki / Tempo and the build breaks here, check whether they've updated their pinned memberlist version and bump ours in lock-step.
 
-## GitHub identity
-
-Local SSH config has two GitHub identities:
-
-- `github.com` (default) → `tsouza-squid` (work). **Don't push cerberus work through this.**
-- `github.com-tsouza` → `tsouza` (personal). All cerberus commits + pushes go through this alias. Remote URL is `git@github.com-tsouza:tsouza/cerberus.git`.
-
-`gh` CLI may need `gh auth switch -u tsouza` if it lands on a different account. Project ops require the `project` scope on the `tsouza` token.
-
 ## Pointers if you're lost
 
 - "How does this PR ship?" → branch + push + `gh pr create` → CI must pass → squash-merge with `gh pr merge --squash --delete-branch`.
