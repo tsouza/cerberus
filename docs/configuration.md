@@ -227,12 +227,12 @@ turns the head's limiter ON at its conservative default cap, a falsy value
 leaves that head unlimited. `CERBERUS_ADMIT_DISABLED` is a master switch that
 turns every head off at once.
 
-| Variable                  | Type | Default | Description                                                                       |
+| Variable                  | Type | Default | Description                                                                      |
 | ------------------------- | ---- | ------- | -------------------------------------------------------------------------------- |
-| `CERBERUS_ADMIT_DISABLED` | bool | `false` | Disable admission control entirely on every head (handy for local development).   |
-| `CERBERUS_ADMIT_PROM`     | bool | `true`  | Enable the Prom API in-flight limiter (default cap 64). Falsy = head unlimited.   |
-| `CERBERUS_ADMIT_LOKI`     | bool | `true`  | Enable the Loki API in-flight limiter (default cap 64). Falsy = head unlimited.   |
-| `CERBERUS_ADMIT_TEMPO`    | bool | `true`  | Enable the Tempo API in-flight limiter (default cap 32). Falsy = head unlimited.  |
+| `CERBERUS_ADMIT_DISABLED` | bool | `false` | Disable admission control entirely on every head (handy for local development).  |
+| `CERBERUS_ADMIT_PROM`     | bool | `true`  | Enable the Prom API in-flight limiter (default cap 64). Falsy = head unlimited.  |
+| `CERBERUS_ADMIT_LOKI`     | bool | `true`  | Enable the Loki API in-flight limiter (default cap 64). Falsy = head unlimited.  |
+| `CERBERUS_ADMIT_TEMPO`    | bool | `true`  | Enable the Tempo API in-flight limiter (default cap 32). Falsy = head unlimited. |
 
 ## Logging
 
