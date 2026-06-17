@@ -1,22 +1,17 @@
 name: chart-ci
 
-# Validation for the Helm chart. Path-filtered to chart assets, so it is
-# INFORMATIONAL (not a required status check — a path-filtered workflow can
-# never satisfy branch protection on PRs that don't touch the chart). Lint +
-# helm-docs drift + values.schema.json validation + kubeconform manifest
-# validation + image-existence guard + chart-testing (ct) lint/install
-# against the ci/*-values.yaml fixtures.
+# Validation for the Helm chart. Runs on EVERY PR so it CAN be a required
+# status check (branch protection): a `changes` filter short-circuits the
+# heavy steps to a green no-op when no chart files changed, and runs the
+# full lint / helm-docs-drift / kubeconform / ct-lint suite when they do.
+# Unlike a path-filtered workflow (which can never satisfy branch
+# protection on PRs that don't touch the chart), this job reports a result
+# on every PR — so adding `chart-validate` to the required checks actually
+# GATES chart changes.
 on:
   pull_request:
-    paths:
-      - 'deploy/helm/**'
-      - '.github/workflows/chart-ci.yml'
-      - '.github/scripts/chart-publish.mjs'
   push:
     branches: [main]
-    paths:
-      - 'deploy/helm/**'
-      - '.github/workflows/chart-ci.yml'
   workflow_dispatch:
 
 permissions:
@@ -34,40 +29,69 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: azure/setup-helm@v5
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            chart:
+              - 'deploy/helm/**'
+              - '.github/workflows/chart-ci.yml'
+              - '.github/scripts/chart-publish.mjs'
+              - '.github/scripts/chart-kubeconform.mjs'
+
+      - if: steps.changes.outputs.chart == 'true'
+        uses: azure/setup-helm@v5
         with:
           version: v3.21.1
 
       - name: helm lint
+        if: steps.changes.outputs.chart == 'true'
         run: helm lint "$CHART_DIR"
 
       - name: helm-docs drift check
+        if: steps.changes.outputs.chart == 'true'
         uses: docker://jnorwood/helm-docs:v1.14.2
         with:
           args: --chart-search-root=deploy/helm --template-files=README.md.gotmpl
 
       - name: Fail on README drift
+        if: steps.changes.outputs.chart == 'true'
         run: |
           git diff --exit-code "$CHART_DIR/README.md" \
             || { echo "::error::README.md is stale — run helm-docs and commit the result"; exit 1; }
 
-      - name: Install kubeconform
-        uses: taiki-e/install-action@v2
+      # kubeconform is installed via `go install` (not taiki-e/install-action):
+      # kubeconform 0.8.0 needs Go 1.26 and isn't in install-action's manifest
+      # yet, and the cargo-binstall fallback fails (kubeconform isn't a crate).
+      # go install is the canonical, version-pinned, checksum-verified path.
+      - if: steps.changes.outputs.chart == 'true'
+        uses: actions/setup-go@v6
         with:
-          tool: kubeconform@0.8.0
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kubeconform
+        if: steps.changes.outputs.chart == 'true'
+        run: |
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Render + kubeconform + image-existence guard
+        if: steps.changes.outputs.chart == 'true'
         env:
           KUBE_VERSION: '1.33.0'
         run: node .github/scripts/chart-kubeconform.mjs
 
       - name: chart-testing (ct) lint
+        if: steps.changes.outputs.chart == 'true'
         uses: helm/chart-testing-action@v2
 
-      - name: ct lint — enforce the version bump
-        run: ct lint --charts "$CHART_DIR" --target-branch "${{ github.event.repository.default_branch }}" --validate-maintainers=false
-
-      - uses: helm/kind-action@v1
-
-      - name: ct install against the default-values fixture
-        run: ct install --charts "$CHART_DIR" --target-branch "${{ github.event.repository.default_branch }}" --helm-extra-set-args "--set=autoCreate.schema=false"
+      # No `--charts` override: let ct's changed-chart detection drive the
+      # version-bump enforcement. A PR that touches CI/scripts but not the
+      # chart content is a green no-op; a PR that changes the chart must bump
+      # Chart.yaml `version:`. (No `ct install` / kind step: cerberus needs a
+      # live ClickHouse to pass readiness, which a bare kind cluster lacks —
+      # helm template + kubeconform already validate rendering.)
+      - name: ct lint — enforce the version bump on real chart changes
+        if: steps.changes.outputs.chart == 'true'
+        run: ct lint --chart-dirs deploy/helm --target-branch "${{ github.event.repository.default_branch }}" --validate-maintainers=false
