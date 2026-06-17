@@ -261,7 +261,7 @@ matrix is released once the response is written). Size cerberus's memory limit
 (and `GOMEMLIMIT`, which Go's GC needs since it does not read cgroup limits)
 for the heavier per-query footprint, **or** trim the promoted set with
 `CERBERUS_PROM_RESOURCE_LABELS` so only the keys you query on carry the cost.
-The e2e manifest (`test/e2e/k3s/cerberus.yaml`) sizes the pod at 1536Mi /
+The e2e manifest (`test/e2e/k3s/cerberus-values.yaml`) sizes the pod at 1536Mi /
 `GOMEMLIMIT=1228MiB` for the promote-all default under the full dashboard
 sweep; a tighter allowlist lets you run leaner.
 
@@ -308,7 +308,7 @@ port to the outside world; cerberus itself only knows how to bind and
 serve.
 
 The same binding semantics apply in every environment: `docker compose
-up` exposes `8080:8080`, `test/e2e/k3s/cerberus.yaml` declares a
+up` exposes `8080:8080`, `test/e2e/k3s/cerberus-values.yaml` declares a
 `NodePort` on `30080 → 8080`, and a local `./cerberus` run from source
 listens on `:8080`. No env-var translation is needed between deployment
 targets.
@@ -374,10 +374,12 @@ concurrency bugs.
 
 ### Kubernetes HorizontalPodAutoscaler
 
-The e2e manifests at `test/e2e/k3s/cerberus-hpa.yaml` ship a working
-HPA reference: it scales replicas on CPU + in-flight request count
-(via the `cerberus_query_inflight` gauge exported through OTLP). The
-file is also a runnable example for production deployments.
+The chart's `autoscaling` block ships a working HPA: the e2e values
+(`test/e2e/k3s/cerberus-values.yaml`) enable it at 2–4 replicas on 70 %
+CPU utilisation with a fast scale-up / slow scale-down `behavior`
+policy. Because cerberus is stateless, CPU is a faithful proxy for
+query load; `autoscaling.extraMetrics` can add a custom in-flight-request
+signal where a metrics adapter is available.
 
 ### Helm: production HA against Replicated ClickHouse
 
@@ -723,9 +725,9 @@ data already persisted.
   version string is injected via `-ldflags` so `Version` in
   `cmd/cerberus/main.go` reflects the tag.
 - **Release** — the build output is combined with the deployment
-  configuration. In Kubernetes that means a specific image SHA in
-  `test/e2e/k3s/cerberus.yaml` (or the operator's chart) plus the
-  `cerberus-config` ConfigMap. The release is immutable: rolling back
+  configuration. In Kubernetes that means a specific image tag/SHA in the
+  Helm values (`test/e2e/k3s/cerberus-values.yaml` for the e2e stack) plus
+  the chart-rendered env ConfigMap. The release is immutable: rolling back
   means redeploying the previous tag, not editing files in place.
 - **Run** — the container is started; the process reads its
   configuration from the environment and binds its HTTP listener. No

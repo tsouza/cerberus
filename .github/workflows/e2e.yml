@@ -793,6 +793,13 @@ jobs:
         with:
           tool: just
 
+      # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
+      # the published chart), so the runner needs helm.
+      - uses: azure/setup-helm@v5
+        if: env.RUN_SHARD == 'true'
+        with:
+          version: v3.21.1
+
       - name: Install k3d
         if: env.RUN_SHARD == 'true'
         run: |
@@ -1153,6 +1160,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
+      # the published chart), so the runner needs helm.
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.21.1
 
       - name: Install k3d
         run: |

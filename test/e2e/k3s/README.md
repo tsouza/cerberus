@@ -1,22 +1,41 @@
 # `test/e2e/k3s/` — self-contained E2E stack
 
-This directory ships a one-shot k3d/k3s manifest set that brings up
-cerberus together with ClickHouse, Grafana, an OpenTelemetry Collector
-pipeline, and a synthetic OTLP workload. `just e2e-up` applies the
-whole `kustomization.yaml` via `kubectl apply -k`.
+This directory ships a one-shot k3d/k3s stack that brings up cerberus
+together with ClickHouse, Grafana, an OpenTelemetry Collector pipeline,
+and a synthetic OTLP workload. `just e2e-up`:
+
+1. applies the surrounding fixtures (`kustomization.yaml`) via
+   `kubectl apply -k`, then
+2. **deploys cerberus itself via its published Helm chart**
+   (`deploy/helm/cerberus`, values in `cerberus-values.yaml`) with
+   `helm upgrade --install`.
+
+This **dogfoods the chart**: the e2e cluster is the only place the chart
+is exercised in a *live* cluster (the `chart-validate` job only
+lints / templates / kubeconforms it statically). A chart regression —
+a bad env mapping, a broken probe, a wrong port — now fails the
+dashboard + chaos e2e lanes, not just review.
 
 ## Components
 
-| Manifest                  | What it deploys                                                                      |
-| ------------------------- | ------------------------------------------------------------------------------------ |
-| `namespace.yaml`          | The `cerberus` namespace everything lives in.                                        |
-| `clickhouse.yaml`         | Single-node ClickHouse (Deployment + Service + PVC-backed data dir) for `otel`.      |
-| `cerberus.yaml`           | Cerberus Deployment + NodePort Service (host `:8080`).                               |
-| `cerberus-hpa.yaml`       | HorizontalPodAutoscaler scaling cerberus on CPU utilisation (2–10 replicas).         |
-| `grafana.yaml`            | Grafana 11 with provisioned Cerberus-{Prometheus,Loki,Tempo} datasources.            |
-| `grafana-dashboards.yaml` | Dashboard provider config + `Cerberus self-observability` dashboard ConfigMap.       |
-| `otel-collector.yaml`     | Gateway Deployment + per-node DaemonSet, RBAC, ServiceAccount, two ConfigMaps.       |
-| `sample-app.yaml`         | Three `telemetrygen` Deployments (traces / metrics / logs) targeting the gateway.    |
+| Source                      | What it deploys                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cerberus-values.yaml`      | **Cerberus** — installed via `deploy/helm/cerberus` Helm chart: Deployment, NodePort Service (host `:8080`), HPA, PDB, ServiceAccount, env ConfigMap, CH-password Secret. |
+| `namespace.yaml`            | The `cerberus` namespace everything lives in.                                                                                                                             |
+| `clickhouse.yaml`           | Single-node ClickHouse (Deployment + Service + PVC-backed data dir) for `otel`.                                                                                           |
+| `grafana.yaml`              | Grafana 11 with provisioned Cerberus-{Prometheus,Loki,Tempo} datasources.                                                                                                 |
+| `grafana-dashboards.yaml`   | Dashboard provider config + `Cerberus self-observability` dashboard ConfigMap.                                                                                            |
+| `otel-collector.yaml`       | Gateway Deployment + per-node DaemonSet, RBAC, ServiceAccount, two ConfigMaps.                                                                                            |
+| `sample-app.yaml`           | Three `telemetrygen` Deployments (traces / metrics / logs) targeting the gateway.                                                                                         |
+
+The chart features exercised by `cerberus-values.yaml` (typed
+clickhouse / otlp / autoCreate blocks, the chart-managed Secret, the
+`config` passthrough, `extraEnv`, probe + resource overrides, NodePort
+Service, HPA, PDB, ServiceAccount) are listed at the top of that file.
+The two 0.2.0 HA features that need a real multi-node / multi-replica
+cluster (`schema.replicated`, `affinityPresets.colocateWithClickHouse`)
+cannot run on single-node k3d and are covered by `chart-validate`
+against `deploy/helm/cerberus/ci/ha-values.yaml` instead.
 
 ## Dual-data-source model
 
@@ -64,11 +83,11 @@ lockstep. There is no parallel hand-maintained schema.
 
 ### Order of operations on `just e2e-up`
 
-1. ClickHouse starts.
-2. Cerberus starts. If `CERBERUS_AUTO_CREATE_SCHEMA=1` (default off
-   in the k3s manifests; toggle via `cerberus.yaml`'s ConfigMap), it
-   creates the OTel schema. Otherwise the collector creates it on
-   first write.
+1. ClickHouse starts (from the kustomize fixtures).
+2. Cerberus is installed via Helm and starts. `cerberus-values.yaml`
+   sets `autoCreate.schema: true` (→ `CERBERUS_AUTO_CREATE_SCHEMA`), so
+   it creates the OTel schema at boot. Otherwise the collector creates
+   it on first write.
 3. The OTel collector gateway starts, applies the schema if it does
    not exist yet, accepts connections.
 4. The collector agents and sample-app come up and start writing.
@@ -91,10 +110,9 @@ gate test execution on the pipeline being live (it usually takes
 
 ## Horizontal scale-out (HPA)
 
-`cerberus-hpa.yaml` ships a `HorizontalPodAutoscaler` targeting the
-`cerberus` Deployment. It is wired into `kustomization.yaml` so
-`just e2e-up` (and any `kubectl apply -k test/e2e/k3s/`) brings the
-autoscaler up alongside everything else.
+The chart's `autoscaling` block (enabled in `cerberus-values.yaml`)
+renders a `HorizontalPodAutoscaler` targeting the `cerberus` Deployment,
+brought up by the `helm upgrade --install` in `just e2e-up`.
 
 Defaults:
 
@@ -109,9 +127,9 @@ Defaults:
 - Scale-up: up to 3 pods per 60s, 30s stabilisation window.
 - Scale-down: 1 pod per 300s, 5-minute stabilisation window.
 
-The Deployment manifest deliberately omits the `replicas:` field so
-the HPA owns the count. Setting both would cause the controllers to
-fight on every reconcile.
+The chart omits the Deployment's `replicas:` field whenever
+`autoscaling.enabled` is true, so the HPA owns the count. Setting both
+would cause the controllers to fight on every reconcile.
 
 ### Verifying
 
@@ -132,9 +150,9 @@ pods become Ready.
   load; this manifest's value is sized for the CI runner.
 - **Quieter scale-down** — increase `scaleDown.stabilizationWindowSeconds`
   for workloads with predictable diurnal dips.
-- **Load-aware scaling** — see the commented block at the bottom of
-  `cerberus-hpa.yaml` for the prometheus-adapter recipe that scales
-  on `rate(cerberus_queries_total[1m])` instead of CPU.
+- **Load-aware scaling** — set `autoscaling.extraMetrics` in the chart
+  values for a prometheus-adapter recipe that scales on
+  `rate(cerberus_queries_total[1m])` instead of CPU.
 
 ### Pairing with admission caps
 

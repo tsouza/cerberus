@@ -482,8 +482,19 @@ e2e-up: e2e-down
         fi; \
         echo "    ok $ref"; \
     done
-    @echo "==> applying manifests"
+    @echo "==> applying fixture manifests (CH, Grafana, collector, sample apps)"
     kubectl apply -k test/e2e/k3s/
+    @# cerberus is deployed via its OWN Helm chart so the e2e cluster dogfoods
+    @# the published chart (deploy/helm/cerberus) — a chart bug now fails the
+    @# dashboard/chaos lanes, not just `chart-validate`'s static lint. The
+    @# kustomize apply above already created the `cerberus` namespace; --wait
+    @# blocks until the Deployment is Available (the per-pod wait below is then
+    @# a no-op, kept for symmetry with the other components).
+    @echo "==> installing cerberus via Helm chart (deploy/helm/cerberus)"
+    helm upgrade --install cerberus deploy/helm/cerberus \
+        --namespace cerberus \
+        --values test/e2e/k3s/cerberus-values.yaml \
+        --wait --timeout 180s
     @echo "==> waiting for pods (up to 3 min)"
     kubectl -n cerberus wait --for=condition=Available deployment/clickhouse              --timeout=180s
     kubectl -n cerberus wait --for=condition=Available deployment/cerberus                --timeout=180s

@@ -103,7 +103,7 @@ function surfaceLastTerminated(pods) {
     }
     if (sawOOM) {
       error('cerberus container was OOMKilled (Reason=OOMKilled / exitCode 137) — '
-        + 'the memory limit in test/e2e/k3s/cerberus.yaml was exceeded. The '
+        + 'the memory limit in test/e2e/k3s/cerberus-values.yaml was exceeded. The '
         + '--previous log tail is EMPTY for an OOM kill; see the heap profile '
         + 'artifact + `kubectl top` usage above for the query shape that blew '
         + 'the budget.');

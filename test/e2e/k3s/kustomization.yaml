@@ -3,11 +3,13 @@ kind: Kustomization
 
 namespace: cerberus
 
+# cerberus itself is NOT listed here — it is deployed via its own Helm chart
+# (`deploy/helm/cerberus`, values in `cerberus-values.yaml`) by `just e2e-up`,
+# so the e2e cluster dogfoods the published chart. This kustomization owns only
+# the surrounding fixtures (ClickHouse, Grafana, the collector, sample apps).
 resources:
   - namespace.yaml
   - clickhouse.yaml
-  - cerberus.yaml
-  - cerberus-hpa.yaml
   - grafana.yaml
   - grafana-dashboards.yaml
   - otel-collector.yaml
