@@ -67,6 +67,30 @@ func admitCap(enabled bool, defaultCap int) int {
 	return defaultCap
 }
 
+// newAdmitLimiters builds the per-head admission-control limiters. When
+// CERBERUS_ADMIT_DISABLED=true every limiter is nil and the middleware
+// short-circuits to a pass-through wrapper. Otherwise each per-head toggle
+// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} (boolean) selects the head's default cap
+// when truthy, or leaves the head unlimited (nil limiter) when falsy.
+// admit.New returns nil for a non-positive cap, so a disabled head and a
+// zero cap collapse to the same pass-through path.
+func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *admit.Limiter, *admit.Limiter) {
+	if cfg.Admit.Disabled {
+		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
+		return nil, nil, nil
+	}
+	promCap := admitCap(cfg.Admit.Prom, config.DefaultAdmitProm)
+	lokiCap := admitCap(cfg.Admit.Loki, config.DefaultAdmitLoki)
+	tempoCap := admitCap(cfg.Admit.Tempo, config.DefaultAdmitTempo)
+	logger.Info(
+		"admission control enabled",
+		"prom", promCap,
+		"loki", lokiCap,
+		"tempo", tempoCap,
+	)
+	return admit.New("prom", promCap), admit.New("loki", lokiCap), admit.New("tempo", tempoCap)
+}
+
 func main() {
 	if isVersionFlag(os.Args) {
 		fmt.Fprintln(os.Stdout, Version)
@@ -188,31 +212,8 @@ func run() error {
 		)
 	}
 
-	// Build per-head admission-control limiters. When
-	// CERBERUS_ADMIT_DISABLED=true every limiter is nil and the
-	// middleware short-circuits to a pass-through wrapper. Otherwise each
-	// per-head toggle CERBERUS_ADMIT_{PROM,LOKI,TEMPO} (boolean) selects
-	// the head's default cap when truthy, or leaves the head unlimited
-	// (nil limiter) when falsy. admit.New returns nil for a non-positive
-	// cap, so a disabled head and a zero cap collapse to the same
-	// pass-through path.
-	var promLimiter, lokiLimiter, tempoLimiter *admit.Limiter
-	if !cfg.Admit.Disabled {
-		promCap := admitCap(cfg.Admit.Prom, config.DefaultAdmitProm)
-		lokiCap := admitCap(cfg.Admit.Loki, config.DefaultAdmitLoki)
-		tempoCap := admitCap(cfg.Admit.Tempo, config.DefaultAdmitTempo)
-		promLimiter = admit.New("prom", promCap)
-		lokiLimiter = admit.New("loki", lokiCap)
-		tempoLimiter = admit.New("tempo", tempoCap)
-		logger.Info(
-			"admission control enabled",
-			"prom", promCap,
-			"loki", lokiCap,
-			"tempo", tempoCap,
-		)
-	} else {
-		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
-	}
+	// Build per-head admission-control limiters (see newAdmitLimiters).
+	promLimiter, lokiLimiter, tempoLimiter := newAdmitLimiters(cfg, logger)
 
 	// The trace mux carries the three Prom/Loki/Tempo APIs and is
 	// wrapped with otelhttp so every request becomes a server span.
