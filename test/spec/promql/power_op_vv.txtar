@@ -1,35 +1,37 @@
 -- query.promql --
 up ^ on(instance) up
 -- sql --
-SELECT ? AS `MetricName`, L.`Attributes` AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, pow(L.`Value`, R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
+SELECT ? AS `MetricName`, L.`Attributes` AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, pow(L.`Value`, R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
 -- args --
 [0] string = ""
-[1] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[2] string = "service.name"
-[3] string = "service_name"
-[4] string = "service.name"
-[5] string = "service_name"
-[6] string = "up"
-[7] string = "2026-01-01 00:00:01.000000000"
-[8] int64 = 9
-[9] string = "2026-01-01 00:00:01.000000000"
-[10] int64 = 9
-[11] int64 = 300000000000
-[12] string = "instance"
-[13] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[14] string = "service.name"
-[15] string = "service_name"
+[1] string = ""
+[2] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "up"
+[8] string = "2026-01-01 00:00:01.000000000"
+[9] int64 = 9
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] int64 = 300000000000
+[13] string = "instance"
+[14] string = ""
+[15] string = "many-to-many matching not allowed: matching labels must be unique on one side"
 [16] string = "service.name"
 [17] string = "service_name"
-[18] string = "up"
-[19] string = "2026-01-01 00:00:01.000000000"
-[20] int64 = 9
+[18] string = "service.name"
+[19] string = "service_name"
+[20] string = "up"
 [21] string = "2026-01-01 00:00:01.000000000"
 [22] int64 = 9
-[23] int64 = 300000000000
-[24] string = "instance"
-[25] string = "instance"
+[23] string = "2026-01-01 00:00:01.000000000"
+[24] int64 = 9
+[25] int64 = 300000000000
 [26] string = "instance"
+[27] string = "instance"
+[28] string = "instance"
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

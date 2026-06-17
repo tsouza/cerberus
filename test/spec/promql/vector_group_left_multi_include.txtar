@@ -1,43 +1,45 @@
 -- query.promql --
 http_requests_total * on(job) group_left(env, region) machine_role
 -- sql --
-SELECT ? AS `MetricName`, mapConcat(L.`Attributes`, mapFilter((k, v) -> k IN (?, ?), R.`Attributes`)) AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
+SELECT ? AS `MetricName`, mapConcat(L.`Attributes`, mapFilter((k, v) -> k IN (?, ?), R.`Attributes`)) AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
 -- args --
 [0] string = ""
 [1] string = "env"
 [2] string = "region"
-[3] string = "service.name"
-[4] string = "service_name"
-[5] string = "service.name"
-[6] string = "service_name"
-[7] string = "http_requests_total"
-[8] string = "http.requests.total"
-[9] string = "http.requests/total"
-[10] string = "http.requests_total"
-[11] string = "http/requests/total"
-[12] string = "http/requests_total"
-[13] string = "http_requests.total"
-[14] string = "2026-01-01 00:00:01.000000000"
-[15] int64 = 9
-[16] string = "2026-01-01 00:00:01.000000000"
-[17] int64 = 9
-[18] int64 = 300000000000
-[19] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[20] string = "service.name"
-[21] string = "service_name"
+[3] string = ""
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "http_requests_total"
+[9] string = "http.requests.total"
+[10] string = "http.requests/total"
+[11] string = "http.requests_total"
+[12] string = "http/requests/total"
+[13] string = "http/requests_total"
+[14] string = "http_requests.total"
+[15] string = "2026-01-01 00:00:01.000000000"
+[16] int64 = 9
+[17] string = "2026-01-01 00:00:01.000000000"
+[18] int64 = 9
+[19] int64 = 300000000000
+[20] string = ""
+[21] string = "many-to-many matching not allowed: matching labels must be unique on one side"
 [22] string = "service.name"
 [23] string = "service_name"
-[24] string = "machine_role"
-[25] string = "machine.role"
-[26] string = "machine/role"
-[27] string = "2026-01-01 00:00:01.000000000"
-[28] int64 = 9
+[24] string = "service.name"
+[25] string = "service_name"
+[26] string = "machine_role"
+[27] string = "machine.role"
+[28] string = "machine/role"
 [29] string = "2026-01-01 00:00:01.000000000"
 [30] int64 = 9
-[31] int64 = 300000000000
-[32] string = "job"
-[33] string = "job"
+[31] string = "2026-01-01 00:00:01.000000000"
+[32] int64 = 9
+[33] int64 = 300000000000
 [34] string = "job"
+[35] string = "job"
+[36] string = "job"
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

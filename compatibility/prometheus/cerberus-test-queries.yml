@@ -251,6 +251,17 @@ test_cases:
   - query: 'max_over_time((time() - max(demo_batch_last_success_timestamp_seconds) < 1000)[5m:10s] offset 5m)'
   - query: 'avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])'
 
+  # Vector-vector binary op over range-vector (rate) operands. Before
+  # the vector-join MetricName/TimeUnix fix these produced ClickHouse
+  # code 47 (Unknown expression identifier '_join_MetricName' /
+  # 'TimeUnix') because an instant range-vector operand's RangeWindow
+  # subquery projects neither MetricName nor TimeUnix, yet the join side
+  # read both. The first is the minimal repro; the last mirrors the
+  # production Grafana query shape (topk over sum-by over rate+rate).
+  - query: 'rate(demo_cpu_usage_seconds_total[1m]) + rate(demo_cpu_usage_seconds_total[1m])'
+  - query: 'rate(demo_cpu_usage_seconds_total[1m]) / rate(demo_cpu_usage_seconds_total[1m])'
+  - query: 'topk(10, sum by(instance) (rate(demo_cpu_usage_seconds_total[1m]) + rate(demo_http_requests_total[1m])))'
+
   # Wrong-rejection burndown (rejection-parity catalogue, 2026-06):
   # value-level coverage for every shape cerberus newly accepts. Each
   # entry below 422'd on cerberus before the burndown while reference

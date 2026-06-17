@@ -174,10 +174,46 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "binop_increase_plus_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "binop_metric_minus_time",
     "routed": true,
     "k": 8,
     "reason": "routed"
+  },
+  {
+    "query": "binop_prod_repro",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "binop_rate_div_rate_ignoring",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "binop_rate_div_rate_on",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "binop_rate_plus_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "binop_sumby_rate_plus_sumby_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "binop_time_arith_range",
@@ -1566,6 +1602,12 @@
     "reason": "routed"
   },
   {
+    "query": "scalar_mul_rate",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "scalar_single_series",
     "routed": false,
     "k": 0,
@@ -1594,6 +1636,24 @@
     "routed": true,
     "k": 8,
     "reason": "routed"
+  },
+  {
+    "query": "setop_and_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_or_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_unless_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "sgn_metric",
@@ -1951,6 +2011,12 @@
   },
   {
     "query": "topk_fractional_k",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "topk_over_rate_binop",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
