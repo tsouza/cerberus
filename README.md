@@ -127,6 +127,24 @@ The surrounding runtime contract (lifecycle, scaling, the solver and
 experimental knobs in context) lives in
 [`docs/operations.md`](docs/operations.md).
 
+### Helm (Kubernetes)
+
+A production Helm chart lives in
+[`deploy/helm/cerberus`](deploy/helm/cerberus) and is published as an OCI
+artifact (cosign-signed, with SLSA provenance):
+
+```sh
+helm install cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus --version <x.y.z> \
+  --set clickhouse.addr='{clickhouse:9000}' \
+  --set clickhouse.existingSecret=ch-creds
+```
+
+The chart is stateless and secure-by-default, with typed
+ClickHouse / OTLP / schema / admit blocks plus full escape hatches
+(`extraEnv`, sidecars, affinity, ingress, HPA, PDB, NetworkPolicy). See
+the [chart README](deploy/helm/cerberus/README.md) for the complete values
+reference and a production HA example.
+
 ## Architecture
 
 Cerberus has **one** query pipeline, not three. Each head parses with its

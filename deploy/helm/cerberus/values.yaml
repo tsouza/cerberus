@@ -132,10 +132,41 @@ otlp:
   # -- Export timeout (CERBERUS_OTLP_TIMEOUT).
   timeout: ""
 
-# -- Schema overrides. Each key is suffixed onto `CERBERUS_SCHEMA_` verbatim,
-# e.g. `{TTL: "30d", CLUSTER: "main"}` → CERBERUS_SCHEMA_TTL / _CLUSTER. See
-# docs/configuration.md for the full CERBERUS_SCHEMA_* surface.
-schema: {}
+# -- Schema / DDL configuration (lowered to CERBERUS_SCHEMA_* env). The typed
+# keys (`ttl`, `replicated`) take precedence; any OTHER key is passed through
+# verbatim as CERBERUS_SCHEMA_<KEY> (the long tail — see docs/configuration.md),
+# e.g. `schema: { CLUSTER: "main" }` → CERBERUS_SCHEMA_CLUSTER.
+schema:
+  # -- Per-signal retention TTL (CERBERUS_SCHEMA_TTL), e.g. "2w" / "30d".
+  ttl: ""
+  # -- Replicated-ClickHouse (HA) schema. Emits a Replicated database +
+  # ReplicatedMergeTree tables instead of plain MergeTree — required for any
+  # multi-replica ClickHouse cluster.
+  replicated:
+    # -- Enable Replicated-DB schema (CERBERUS_SCHEMA_DATABASE_REPLICATED).
+    enabled: false
+    # -- ZooKeeper/Keeper path for the Replicated database
+    # (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH). MUST contain the `{shard}` /
+    # `{replica}` macros and mirror the ClickHouse cluster's Replicated-DB
+    # coordination path, e.g. "/clickhouse/databases/otel/{shard}/{replica}".
+    zookeeperPath: ""
+
+# -- Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify
+# the ClickHouse connection + schema are usable at boot. Non-fatal — logs and
+# retries rather than crash-looping. Emitted into env only when true.
+requirementsCheck: false
+
+# -- Prometheus head configuration.
+prom:
+  # -- OTel resource attributes to project as Prometheus labels (joined to
+  # CERBERUS_PROM_RESOURCE_LABELS). This is a BOUNDED ALLOWLIST: leave it empty
+  # and cerberus promotes EVERY resource attribute → unbounded label
+  # cardinality. List only the keys you actually query / group on.
+  resourceLabels: []
+    # - deployment.environment.name
+    # - k8s.namespace.name
+    # - k8s.pod.name
+    # - service.name
 
 http:
   # -- HTTP listen address (CERBERUS_HTTP_ADDR). The port here must match
@@ -323,8 +354,33 @@ startupProbe: {}
 nodeSelector: {}
 # -- Tolerations.
 tolerations: []
-# -- Affinity.
+# -- Affinity. Composed UNDER `affinityPresets` below — any field set here
+# wins; the presets only inject podAffinity terms.
 affinity: {}
+
+# -- Scheduling affinity presets (a convenience over hand-writing raw
+# affinity). Composed over `affinity` above.
+affinityPresets:
+  # -- Co-locate cerberus pods with the ClickHouse pods they query, to keep
+  # the hot native :9000 path node-local instead of crossing nodes/AZs.
+  # CAVEAT: this gives only PROBABILISTIC locality (~1/N), because
+  # `clickhouse.addr` is the ClickHouse Service, which round-robins across all
+  # replicas — it cuts cross-AZ traffic but does not guarantee the node-local
+  # replica is queried. See the chart README + docs/operations.md.
+  colocateWithClickHouse:
+    # -- Enable the co-location podAffinity.
+    enabled: false
+    # -- "preferred" (soft — cerberus still schedules if no ClickHouse node
+    # has room) or "required" (hard — only schedules onto a ClickHouse node).
+    mode: preferred
+    # -- Label selector identifying the ClickHouse pods to sit with.
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: clickhouse
+    # -- Topology domain: kubernetes.io/hostname (same node) or
+    # topology.kubernetes.io/zone (same AZ).
+    topologyKey: kubernetes.io/hostname
+
 # -- Topology spread constraints.
 topologySpreadConstraints: []
 # -- PriorityClass name.

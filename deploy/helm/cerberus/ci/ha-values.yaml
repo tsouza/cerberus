@@ -1,0 +1,53 @@
+# ct / helm-template fixture: production HA — exercises all four 0.2.0 blocks
+# (Replicated-ClickHouse schema, prom.resourceLabels, requirementsCheck, and
+# the colocateWithClickHouse affinity preset). Mirrors a real Replicated-CH
+# deployment behind an OTel gateway.
+replicaCount: 3
+
+clickhouse:
+  addr:
+    - clickhouse.clickhouse.svc.cluster.local:9000
+  database: otel
+  username: default
+  existingSecret: cerberus-ch-credentials
+  protocol: native
+
+admit:
+  tempo: false
+
+autoCreate:
+  schema: true
+  database: true
+
+requirementsCheck: true
+
+schema:
+  ttl: "2w"
+  replicated:
+    enabled: true
+    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+
+prom:
+  resourceLabels:
+    - deployment.environment.name
+    - k8s.cluster.name
+    - k8s.namespace.name
+    - k8s.deployment.name
+    - k8s.node.name
+    - k8s.pod.name
+    - k8s.container.name
+    - service.name
+    - service.instance.id
+
+otlp:
+  endpoint: o11y-gateway.o11y.svc.cluster.local:4317
+  insecure: true
+
+affinityPresets:
+  colocateWithClickHouse:
+    enabled: true
+    mode: preferred
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: clickhouse
+    topologyKey: kubernetes.io/hostname

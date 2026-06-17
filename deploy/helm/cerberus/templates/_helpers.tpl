@@ -164,8 +164,34 @@ CERBERUS_ADMIT_PROM: {{ .Values.admit.prom | quote }}
 CERBERUS_ADMIT_LOKI: {{ .Values.admit.loki | quote }}
 CERBERUS_ADMIT_TEMPO: {{ .Values.admit.tempo | quote }}
 CERBERUS_ADMIT_DISABLED: {{ .Values.admit.disabled | quote }}
+{{- if .Values.requirementsCheck }}
+CERBERUS_REQUIREMENTS_CHECK: "true"
+{{- end }}
+{{- with .Values.prom }}
+{{- if .resourceLabels }}
+CERBERUS_PROM_RESOURCE_LABELS: {{ join "," .resourceLabels | quote }}
+{{- end }}
+{{- end }}
+{{- /* Replicated-ClickHouse (HA) schema — typed keys win over the generic
+       schema.<KEY> passthrough below. */}}
+{{- with .Values.schema.ttl }}
+CERBERUS_SCHEMA_TTL: {{ . | quote }}
+{{- end }}
+{{- with .Values.schema.replicated }}
+{{- if .enabled }}
+CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"
+{{- with .zookeeperPath }}
+CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* Generic schema.<KEY> long-tail passthrough; skip the typed sub-keys
+       (ttl / replicated) handled above so a duplicate env key is never
+       emitted into the ConfigMap. */}}
 {{- range $k, $v := .Values.schema }}
+{{- if not (has $k (list "ttl" "replicated")) }}
 CERBERUS_SCHEMA_{{ $k }}: {{ $v | quote }}
+{{- end }}
 {{- end }}
 {{- with .Values.http.addr }}
 CERBERUS_HTTP_ADDR: {{ . | quote }}
@@ -207,3 +233,31 @@ ConfigMap and reach the container via envFrom.
 {{ tpl (toYaml .) $ }}
 {{- end }}
 {{- end }}
+
+{{/*
+cerberus.affinity — composes the optional colocateWithClickHouse podAffinity
+preset over the operator-supplied .Values.affinity. The preset only INJECTS a
+pod-affinity term (preferred/soft by default, required/hard opt-in) targeting
+the ClickHouse pods, appending to any podAffinity the operator already
+declared; every other affinity field the operator sets is preserved verbatim
+(.Values.affinity wins). Renders nothing when neither is set.
+*/}}
+{{- define "cerberus.affinity" -}}
+{{- $affinity := deepCopy (default (dict) .Values.affinity) -}}
+{{- $preset := dig "colocateWithClickHouse" (dict) (default (dict) .Values.affinityPresets) -}}
+{{- if $preset.enabled -}}
+{{- $term := dict "labelSelector" (dict "matchLabels" $preset.podSelector.matchLabels) "topologyKey" $preset.topologyKey -}}
+{{- $podAffinity := deepCopy (default (dict) $affinity.podAffinity) -}}
+{{- if eq (default "preferred" $preset.mode) "required" -}}
+{{- $existing := default (list) $podAffinity.requiredDuringSchedulingIgnoredDuringExecution -}}
+{{- $_ := set $podAffinity "requiredDuringSchedulingIgnoredDuringExecution" (append $existing $term) -}}
+{{- else -}}
+{{- $existing := default (list) $podAffinity.preferredDuringSchedulingIgnoredDuringExecution -}}
+{{- $_ := set $podAffinity "preferredDuringSchedulingIgnoredDuringExecution" (append $existing (dict "weight" 100 "podAffinityTerm" $term)) -}}
+{{- end -}}
+{{- $_ := set $affinity "podAffinity" $podAffinity -}}
+{{- end -}}
+{{- if $affinity -}}
+{{ toYaml $affinity }}
+{{- end -}}
+{{- end -}}

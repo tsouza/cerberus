@@ -379,6 +379,71 @@ HPA reference: it scales replicas on CPU + in-flight request count
 (via the `cerberus_query_inflight` gauge exported through OTLP). The
 file is also a runnable example for production deployments.
 
+### Helm: production HA against Replicated ClickHouse
+
+The chart at `deploy/helm/cerberus` (published to
+`oci://ghcr.io/tsouza/cerberus/charts/cerberus`) ships first-class typed
+values for a multi-replica deployment. A representative production HA
+`values.yaml`:
+
+```yaml
+replicaCount: 3
+clickhouse:
+  addr: ["clickhouse.clickhouse.svc.cluster.local:9000"]
+  database: otel
+  existingSecret: cerberus-ch-credentials   # password via Secret, never inline
+requirementsCheck: true                     # boot-time ClickHouse preflight
+schema:
+  ttl: "2w"
+  replicated:
+    enabled: true                           # Replicated DB + ReplicatedMergeTree
+    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+prom:
+  resourceLabels:                           # bounded allowlist — see below
+    - service.name
+    - k8s.namespace.name
+    - k8s.pod.name
+affinityPresets:
+  colocateWithClickHouse:
+    enabled: true
+    mode: preferred
+    topologyKey: kubernetes.io/hostname
+```
+
+Each typed block lowers to the canonical env:
+
+- `schema.replicated.enabled` → `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`
+  and `schema.replicated.zookeeperPath` →
+  `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH`, driving the bare
+  `ReplicatedMergeTree` emission documented under
+  [Auto-create schema](#auto-create-schema-single-node-vs-clustered). The
+  path **must** carry the `{shard}` / `{replica}` macros.
+- `requirementsCheck` → `CERBERUS_REQUIREMENTS_CHECK=true` (see
+  [Startup requirements preflight](#startup-requirements-preflight)).
+- `prom.resourceLabels` → comma-joined `CERBERUS_PROM_RESOURCE_LABELS`. This
+  is a **bounded allowlist**: leave it empty and cerberus promotes *every*
+  OTel resource attribute to a Prometheus label — unbounded cardinality (see
+  [Prometheus resource-attribute labels](#prometheus-resource-attribute-labels)).
+  List only the attributes you actually query or group on.
+
+Any `CERBERUS_SCHEMA_*` knob without a typed key still passes through as
+`schema.<KEY>` (e.g. `schema: { CLUSTER: main }` → `CERBERUS_SCHEMA_CLUSTER`);
+the typed keys win on conflict.
+
+**Co-location is probabilistic, not node-local routing.**
+`affinityPresets.colocateWithClickHouse` only influences *where cerberus pods
+schedule* — it appends a podAffinity term (soft `preferred` by default, hard
+`required` opt-in) onto whatever `affinity` the operator already set. Query
+traffic still targets `clickhouse.addr`, which is the ClickHouse **Service**;
+that Service round-robins across all `N` replicas, so a co-located cerberus pod
+reaches the node-local replica only ~`1/N` of the time. The preset is worth
+enabling to cut cross-AZ hops (set `topologyKey:
+topology.kubernetes.io/zone`, or pair it with `Service.spec.trafficDistribution:
+PreferClose` / `internalTrafficPolicy: Local` on the ClickHouse Service), but it
+does **not** guarantee a node-local query path. True node-local CH preference —
+a headless Service or per-pod endpoint with client-side replica locality — is a
+deferred, app-side concern, not something the scheduling preset can deliver.
+
 ## Lifecycle
 
 ### Startup

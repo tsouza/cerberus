@@ -65,6 +65,57 @@ extraEnv:
     value: "1228MiB"
 ```
 
+## Production HA (Replicated ClickHouse)
+
+For a multi-replica ClickHouse cluster, enable the Replicated-DB schema and run
+cerberus with several replicas:
+
+```yaml
+replicaCount: 3
+requirementsCheck: true               # boot-time CH readiness check
+schema:
+  ttl: "2w"
+  replicated:
+    enabled: true                     # ReplicatedMergeTree + Replicated database
+    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+prom:
+  # BOUNDED allowlist — leave empty and EVERY resource attribute becomes a
+  # label (unbounded cardinality). List only what you query/group on.
+  resourceLabels:
+    - service.name
+    - k8s.namespace.name
+    - k8s.pod.name
+```
+
+`schema.replicated.zookeeperPath` **must** contain the `{shard}` / `{replica}`
+macros and mirror the ClickHouse cluster's own Replicated-DB coordination path.
+
+### Co-locating with ClickHouse
+
+`affinityPresets.colocateWithClickHouse` injects a podAffinity term so cerberus
+pods prefer (or require) nodes already running ClickHouse:
+
+```yaml
+affinityPresets:
+  colocateWithClickHouse:
+    enabled: true
+    mode: preferred                   # soft; "required" = hard node pinning
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: clickhouse
+    topologyKey: kubernetes.io/hostname
+```
+
+**Caveat — this is probabilistic, not node-local routing.** The preset only
+influences *where cerberus pods land*. Query traffic still flows to
+`clickhouse.addr`, which is the ClickHouse **Service** — it round-robins across
+all `N` replicas, so a co-located pod hits the local replica only ~`1/N` of the
+time. The preset cuts cross-AZ hops (pair it with `topologyKey:
+topology.kubernetes.io/zone` to keep traffic same-zone) but does **not**
+guarantee the node-local replica answers the query. True node-local CH
+preference (a headless-Service / per-pod endpoint with client-side locality)
+is a deferred, app-side concern — see the v0.2.0 release notes.
+
 {{ template "chart.maintainersSection" . }}
 
 {{ template "chart.requirementsSection" . }}

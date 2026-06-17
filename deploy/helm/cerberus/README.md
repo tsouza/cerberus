@@ -5,7 +5,7 @@
      pipe-aligned, and the version footer adds a trailing blank — both are
      owned by helm-docs; realigning would fight the chart-ci drift check. -->
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.0](https://img.shields.io/badge/AppVersion-1.0.0-informational?style=flat-square)
+![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.0](https://img.shields.io/badge/AppVersion-1.0.0-informational?style=flat-square)
 
 Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
 
@@ -63,6 +63,57 @@ extraEnv:
     value: "1228MiB"
 ```
 
+## Production HA (Replicated ClickHouse)
+
+For a multi-replica ClickHouse cluster, enable the Replicated-DB schema and run
+cerberus with several replicas:
+
+```yaml
+replicaCount: 3
+requirementsCheck: true               # boot-time CH readiness check
+schema:
+  ttl: "2w"
+  replicated:
+    enabled: true                     # ReplicatedMergeTree + Replicated database
+    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+prom:
+  # BOUNDED allowlist — leave empty and EVERY resource attribute becomes a
+  # label (unbounded cardinality). List only what you query/group on.
+  resourceLabels:
+    - service.name
+    - k8s.namespace.name
+    - k8s.pod.name
+```
+
+`schema.replicated.zookeeperPath` **must** contain the `{shard}` / `{replica}`
+macros and mirror the ClickHouse cluster's own Replicated-DB coordination path.
+
+### Co-locating with ClickHouse
+
+`affinityPresets.colocateWithClickHouse` injects a podAffinity term so cerberus
+pods prefer (or require) nodes already running ClickHouse:
+
+```yaml
+affinityPresets:
+  colocateWithClickHouse:
+    enabled: true
+    mode: preferred                   # soft; "required" = hard node pinning
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: clickhouse
+    topologyKey: kubernetes.io/hostname
+```
+
+**Caveat — this is probabilistic, not node-local routing.** The preset only
+influences *where cerberus pods land*. Query traffic still flows to
+`clickhouse.addr`, which is the ClickHouse **Service** — it round-robins across
+all `N` replicas, so a co-located pod hits the local replica only ~`1/N` of the
+time. The preset cuts cross-AZ hops (pair it with `topologyKey:
+topology.kubernetes.io/zone` to keep traffic same-zone) but does **not**
+guarantee the node-local replica answers the query. True node-local CH
+preference (a headless-Service / per-pod endpoint with client-side locality)
+is a deferred, app-side concern — see the v0.2.0 release notes.
+
 ## Maintainers
 
 | Name | Email | Url |
@@ -81,7 +132,13 @@ Kubernetes: `>=1.23.0-0`
 | admit.loki | bool | `true` | Admit LogQL queries (CERBERUS_ADMIT_LOKI). |
 | admit.prom | bool | `true` | Admit PromQL queries (CERBERUS_ADMIT_PROM). |
 | admit.tempo | bool | `true` | Admit TraceQL queries (CERBERUS_ADMIT_TEMPO). |
-| affinity | object | `{}` | Affinity. |
+| affinity | object | `{}` | Affinity. Composed UNDER `affinityPresets` below — any field set here wins; the presets only inject podAffinity terms. |
+| affinityPresets | object | `{"colocateWithClickHouse":{"enabled":false,"mode":"preferred","podSelector":{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}},"topologyKey":"kubernetes.io/hostname"}}` | Scheduling affinity presets (a convenience over hand-writing raw affinity). Composed over `affinity` above. |
+| affinityPresets.colocateWithClickHouse | object | `{"enabled":false,"mode":"preferred","podSelector":{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}},"topologyKey":"kubernetes.io/hostname"}` | Co-locate cerberus pods with the ClickHouse pods they query, to keep the hot native :9000 path node-local instead of crossing nodes/AZs. CAVEAT: this gives only PROBABILISTIC locality (~1/N), because `clickhouse.addr` is the ClickHouse Service, which round-robins across all replicas — it cuts cross-AZ traffic but does not guarantee the node-local replica is queried. See the chart README + docs/operations.md. |
+| affinityPresets.colocateWithClickHouse.enabled | bool | `false` | Enable the co-location podAffinity. |
+| affinityPresets.colocateWithClickHouse.mode | string | `"preferred"` | "preferred" (soft — cerberus still schedules if no ClickHouse node has room) or "required" (hard — only schedules onto a ClickHouse node). |
+| affinityPresets.colocateWithClickHouse.podSelector | object | `{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}}` | Label selector identifying the ClickHouse pods to sit with. |
+| affinityPresets.colocateWithClickHouse.topologyKey | string | `"kubernetes.io/hostname"` | Topology domain: kubernetes.io/hostname (same node) or topology.kubernetes.io/zone (same AZ). |
 | args | list | `[]` | Full override of the container args. |
 | autoCreate | object | `{"database":false,"schema":true}` | Auto-create toggles (lowered to CERBERUS_AUTO_CREATE_* env). See fields below. |
 | autoCreate.database | bool | `false` | Create the target database if absent (CERBERUS_AUTO_CREATE_DATABASE). |
@@ -158,10 +215,17 @@ Kubernetes: `>=1.23.0-0`
 | podLabels | object | `{}` | Extra pod labels (tpl-rendered). |
 | podSecurityContext | object | `{"fsGroup":65532,"runAsGroup":65532,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod-level security context. Defaults to distroless:nonroot (uid/gid 65532). |
 | priorityClassName | string | `""` | PriorityClass name. |
+| prom | object | `{"resourceLabels":[]}` | Prometheus head configuration. |
+| prom.resourceLabels | list | `[]` | OTel resource attributes to project as Prometheus labels (joined to CERBERUS_PROM_RESOURCE_LABELS). This is a BOUNDED ALLOWLIST: leave it empty and cerberus promotes EVERY resource attribute → unbounded label cardinality. List only the keys you actually query / group on. |
 | readinessProbe | object | `{"failureThreshold":5,"httpGet":{"path":"/readyz","port":"http"},"initialDelaySeconds":2,"periodSeconds":3,"timeoutSeconds":5}` | Readiness probe. `/readyz` pings ClickHouse (with a small TTL cache); a failure removes the pod from the Service endpoints (backpressure, no restart). |
 | replicaCount | int | `2` | Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA owns the replica count then). |
+| requirementsCheck | bool | `false` | Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify the ClickHouse connection + schema are usable at boot. Non-fatal — logs and retries rather than crash-looping. Emitted into env only when true. |
 | resources | object | `{"limits":{"memory":"1536Mi"},"requests":{"cpu":"250m","memory":"128Mi"}}` | Pod resource requests/limits. Mirrors the reference k3s manifest: a small request, a generous memory limit, no CPU limit (bursting is fine; probe kills under CPU starvation are the real risk). If you change limits.memory, set GOMEMLIMIT (~80%) via extraEnv. |
-| schema | object | `{}` | Schema overrides. Each key is suffixed onto `CERBERUS_SCHEMA_` verbatim, e.g. `{TTL: "30d", CLUSTER: "main"}` → CERBERUS_SCHEMA_TTL / _CLUSTER. See docs/configuration.md for the full CERBERUS_SCHEMA_* surface. |
+| schema | object | `{"replicated":{"enabled":false,"zookeeperPath":""},"ttl":""}` | Schema / DDL configuration (lowered to CERBERUS_SCHEMA_* env). The typed keys (`ttl`, `replicated`) take precedence; any OTHER key is passed through verbatim as CERBERUS_SCHEMA_<KEY> (the long tail — see docs/configuration.md), e.g. `schema: { CLUSTER: "main" }` → CERBERUS_SCHEMA_CLUSTER. |
+| schema.replicated | object | `{"enabled":false,"zookeeperPath":""}` | Replicated-ClickHouse (HA) schema. Emits a Replicated database + ReplicatedMergeTree tables instead of plain MergeTree — required for any multi-replica ClickHouse cluster. |
+| schema.replicated.enabled | bool | `false` | Enable Replicated-DB schema (CERBERUS_SCHEMA_DATABASE_REPLICATED). |
+| schema.replicated.zookeeperPath | string | `""` | ZooKeeper/Keeper path for the Replicated database (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH). MUST contain the `{shard}` / `{replica}` macros and mirror the ClickHouse cluster's Replicated-DB coordination path, e.g. "/clickhouse/databases/otel/{shard}/{replica}". |
+| schema.ttl | string | `""` | Per-signal retention TTL (CERBERUS_SCHEMA_TTL), e.g. "2w" / "30d". |
 | securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true}` | Container-level security context. |
 | service.annotations | object | `{}` | Service annotations. |
 | service.appProtocol | string | `"http"` | appProtocol on the Service port (helps L7-aware meshes/ingress). |
