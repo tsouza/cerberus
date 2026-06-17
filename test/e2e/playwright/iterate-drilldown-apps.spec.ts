@@ -206,7 +206,12 @@ async function sweepDrilldownApp(
   const requestBodies = new WeakMap<Request, string>();
   const onRequest = (req: Request) => {
     if (!req.url().includes('/api/ds/query')) return;
-    const body = req.postData();
+    // postData() (the decoded string) is intermittently empty even at
+    // request-fire time for the rapid two-level drill; postDataBuffer()
+    // reads the raw bytes and is occasionally populated when the string
+    // form isn't. Take whichever is non-empty so the request-side
+    // dangling-operand reconciler has a body to match.
+    const body = req.postData() || req.postDataBuffer()?.toString('utf8') || '';
     if (body) requestBodies.set(req, body);
   };
   page.on('request', onRequest);
@@ -238,11 +243,19 @@ async function sweepDrilldownApp(
         // Only read the body when it's a failure so we don't spam
         // memory with 1MB success bodies.
         if (status < 200 || status > 299) {
+          // Read the failure body the instant the response arrives, before a
+          // drill navigation can evict it. text() loses the race some of the
+          // time; fall back to the raw buffer body() (a second read path) so
+          // the response-side init-race reconciler (DANGLING_TRACEQL_REJECTION)
+          // has the `unexpected &&` body to match even when text() throws.
           try {
-            const text = await resp.text();
-            bodyPreview = truncate(text, 600);
+            bodyPreview = truncate(await resp.text(), 600);
           } catch {
-            bodyPreview = '<unreadable>';
+            try {
+              bodyPreview = truncate((await resp.body()).toString('utf8'), 600);
+            } catch {
+              bodyPreview = '<unreadable>';
+            }
           }
         }
         captured.push({
