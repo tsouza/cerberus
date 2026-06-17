@@ -140,12 +140,14 @@ type Config struct {
 	// these cerberus-specific values resolve to.
 	OTLP OTLPConfig
 
-	// Admit configures per-handler concurrency caps. When Admit.Disabled
+	// Admit configures per-handler admission control. When Admit.Disabled
 	// is true cerberus skips the admission middleware entirely and every
-	// request is admitted. When false, each API head (Prom / Loki /
-	// Tempo) gets its own counted semaphore — requests above the cap
-	// are rejected with HTTP 503 + Retry-After: 1 so well-behaved
-	// clients back off and CH stays out of overload.
+	// request is admitted. Otherwise each per-head toggle (Admit.Prom /
+	// Loki / Tempo) enables a counted semaphore for that API head at its
+	// conservative default cap — requests above the cap are rejected with
+	// HTTP 503 + Retry-After: 1 so well-behaved clients back off and CH
+	// stays out of overload. A falsy per-head toggle leaves that head
+	// unlimited.
 	Admit AdmitConfig
 }
 
@@ -211,27 +213,35 @@ type SchemaProvisioning struct {
 	DatabaseReplicatedReplica string
 }
 
-// AdmitConfig holds the per-handler concurrency cap knobs.
+// AdmitConfig holds the per-handler admission-control toggles.
 //
-// Defaults are deliberately conservative — easy to lift via env, hard
-// to accidentally deny-of-service legitimate traffic with the
-// out-of-the-box values. Tempo's default is half of Prom/Loki because
-// trace queries are typically the heaviest per-call (full trace span
-// fetches + tag-value scans across wide column sets).
+// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} are boolean enable switches: truthy
+// turns the per-head concurrency limiter ON at its conservative default
+// cap (see DefaultAdmitProm / Loki / Tempo); falsy leaves that head with
+// no limiter (unlimited concurrency). Tempo's default cap is half of
+// Prom/Loki because trace queries are typically the heaviest per-call
+// (full trace span fetches + tag-value scans across wide column sets).
+//
+// Every field is a bool routed through the shared parseBool helper, so
+// the Helm chart can render plain YAML bools (`true`/`false`) straight
+// into the env without the binary crash-looping on strconv.Atoi.
 type AdmitConfig struct {
 	// Disabled, when true, removes admission control entirely. Handy
 	// for local development where artificial caps mask real
 	// concurrency bugs. Default false (admission control enabled).
 	Disabled bool
 
-	// MaxInflightProm caps simultaneous in-flight Prom API requests.
-	MaxInflightProm int
+	// Prom enables the in-flight concurrency limiter for the Prom API
+	// head. Default true (enabled at DefaultAdmitProm).
+	Prom bool
 
-	// MaxInflightLoki caps simultaneous in-flight Loki API requests.
-	MaxInflightLoki int
+	// Loki enables the in-flight concurrency limiter for the Loki API
+	// head. Default true (enabled at DefaultAdmitLoki).
+	Loki bool
 
-	// MaxInflightTempo caps simultaneous in-flight Tempo API requests.
-	MaxInflightTempo int
+	// Tempo enables the in-flight concurrency limiter for the Tempo API
+	// head. Default true (enabled at DefaultAdmitTempo).
+	Tempo bool
 }
 
 // HTTPServerConfig holds the cerberus HTTP server's net/http timeout knobs
@@ -489,9 +499,9 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_OTLP_TIMEOUT          default "10s"
 //	CERBERUS_OTLP_EXPORT_INTERVAL  default "10s" (metric PeriodicReader flush interval)
 //	CERBERUS_ADMIT_DISABLED        default "false"
-//	CERBERUS_ADMIT_PROM            default 64
-//	CERBERUS_ADMIT_LOKI            default 64
-//	CERBERUS_ADMIT_TEMPO           default 32
+//	CERBERUS_ADMIT_PROM            default "true"  (enable Prom admission limiter)
+//	CERBERUS_ADMIT_LOKI            default "true"  (enable Loki admission limiter)
+//	CERBERUS_ADMIT_TEMPO           default "true"  (enable Tempo admission limiter)
 //
 // Standard OTEL_EXPORTER_OTLP_* env vars are also honored by the OTel
 // Go SDK and complement these — see docs/observability.md.
@@ -848,9 +858,9 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envOTLPTimeout, defaultOTLPTimeout.String())
 	v.SetDefault(envOTLPExportInterval, defaultOTLPExportInterval.String())
 	v.SetDefault(envAdmitDisabled, defaultAdmitDisabled)
-	v.SetDefault(envAdmitProm, defaultAdmitProm)
-	v.SetDefault(envAdmitLoki, defaultAdmitLoki)
-	v.SetDefault(envAdmitTempo, defaultAdmitTempo)
+	v.SetDefault(envAdmitProm, defaultAdmitEnabled)
+	v.SetDefault(envAdmitLoki, defaultAdmitEnabled)
+	v.SetDefault(envAdmitTempo, defaultAdmitEnabled)
 
 	// Optional config file: cerberus.yaml in the working directory or
 	// /etc/cerberus. Env vars always win (viper precedence: explicit
@@ -894,6 +904,11 @@ const (
 	defaultCHBreakerEnabled   = true
 	defaultCHKeepAliveEnabled = true
 	defaultAdmitDisabled      = false
+	// defaultAdmitEnabled is the per-head ADMIT_{PROM,LOKI,TEMPO}
+	// default: admission control ON out of the box. A truthy toggle
+	// enables the limiter at the head's default cap (DefaultAdmitProm /
+	// Loki / Tempo); a falsy toggle leaves the head unlimited.
+	defaultAdmitEnabled = true
 )
 
 const (
@@ -1131,52 +1146,48 @@ func breakerFromEnv(v *viper.Viper) (breakerConfig, error) {
 	}, nil
 }
 
-// Default per-handler concurrency caps. Tempo gets a smaller cap
-// because trace queries (search + tag-value scans + per-trace span
-// fetches) are heavier than Prom/Loki metric queries.
+// DefaultAdmitProm, DefaultAdmitLoki and DefaultAdmitTempo are the
+// per-head concurrency caps applied when the corresponding boolean
+// toggle CERBERUS_ADMIT_{PROM,LOKI,TEMPO} is enabled; cmd/cerberus reads
+// them to size each limiter. Tempo gets a smaller cap because trace
+// queries (search + tag-value scans + per-trace span fetches) are
+// heavier than Prom/Loki metric queries.
 const (
-	defaultAdmitProm  = 64
-	defaultAdmitLoki  = 64
-	defaultAdmitTempo = 32
+	DefaultAdmitProm  = 64
+	DefaultAdmitLoki  = 64
+	DefaultAdmitTempo = 32
 )
 
 // admitFromEnv reads CERBERUS_ADMIT_* knobs from the viper loader.
-// Unset values use the conservative defaults above. Setting any cap
-// to 0 disables admission control for that head specifically (a
-// finer-grained alternative to CERBERUS_ADMIT_DISABLED, which kills
-// every head). Negative caps are rejected — they almost certainly
-// mean a typo.
+// Every knob is a boolean routed through getBool (the shared parseBool
+// helper), so "1"/"0"/"true"/"false" are all accepted interchangeably,
+// case-insensitive. A truthy ADMIT_{PROM,LOKI,TEMPO} enables the per-head
+// concurrency limiter at its conservative default cap; a falsy value
+// leaves that head unlimited — a finer-grained alternative to
+// CERBERUS_ADMIT_DISABLED, which kills every head at once. Unset values
+// fall back to the registered defaults.
 func admitFromEnv(v *viper.Viper) (AdmitConfig, error) {
 	disabled, err := getBool(v, envAdmitDisabled)
 	if err != nil {
 		return AdmitConfig{}, err
 	}
-	prom, err := getInt(v, envAdmitProm)
+	prom, err := getBool(v, envAdmitProm)
 	if err != nil {
 		return AdmitConfig{}, err
 	}
-	loki, err := getInt(v, envAdmitLoki)
+	loki, err := getBool(v, envAdmitLoki)
 	if err != nil {
 		return AdmitConfig{}, err
 	}
-	tempo, err := getInt(v, envAdmitTempo)
+	tempo, err := getBool(v, envAdmitTempo)
 	if err != nil {
 		return AdmitConfig{}, err
-	}
-	for name, val := range map[string]int{
-		envAdmitProm:  prom,
-		envAdmitLoki:  loki,
-		envAdmitTempo: tempo,
-	} {
-		if val < 0 {
-			return AdmitConfig{}, fmt.Errorf("%s: must be >= 0, got %d", name, val)
-		}
 	}
 	return AdmitConfig{
-		Disabled:         disabled,
-		MaxInflightProm:  prom,
-		MaxInflightLoki:  loki,
-		MaxInflightTempo: tempo,
+		Disabled: disabled,
+		Prom:     prom,
+		Loki:     loki,
+		Tempo:    tempo,
 	}, nil
 }
 
@@ -1344,16 +1355,34 @@ func getInt64(v *viper.Viper, key string) (int64, error) {
 	return n, nil
 }
 
-// getBool resolves key and parses it with the standard strconv.ParseBool
-// vocabulary ("1"/"0", "t"/"f", "true"/"false", case-insensitive). A
-// value that fails to parse is rejected with an error naming the env
-// var — preserving the historical fail-fast-on-misconfiguration contract.
+// parseBool is the single shared boolean parser for every CERBERUS_*
+// boolean config knob. It is backed by strconv.ParseBool, so it accepts
+// the full vocabulary "1"/"0", "t"/"f"/"T"/"F", "true"/"false"/"TRUE"/
+// "FALSE" (case-insensitive) interchangeably. Surrounding whitespace is
+// trimmed first so a pasted newline / space parses the same as the bare
+// token. A value outside the accepted vocabulary is rejected.
+//
+// Routing every boolean field through this one function guarantees a
+// uniform convention across the whole config surface: AUTO_CREATE_*,
+// OTLP_INSECURE, REQUIREMENTS_CHECK, SCHEMA_DATABASE_REPLICATED and the
+// ADMIT_* toggles all parse identically. This is what lets the Helm
+// chart render a plain YAML bool (`true`) into CERBERUS_ADMIT_PROM
+// without the binary crash-looping on `strconv.Atoi("true")`.
+func parseBool(s string) (bool, error) {
+	return strconv.ParseBool(strings.TrimSpace(s))
+}
+
+// getBool resolves key and parses it through the shared parseBool helper
+// (the standard strconv.ParseBool vocabulary: "1"/"0", "t"/"f",
+// "true"/"false", case-insensitive). A value that fails to parse is
+// rejected with an error naming the env var — preserving the historical
+// fail-fast-on-misconfiguration contract.
 func getBool(v *viper.Viper, key string) (bool, error) {
 	raw := getString(v, key)
 	if raw == "" {
 		return false, fmt.Errorf("%s: missing value", key)
 	}
-	b, err := strconv.ParseBool(raw)
+	b, err := parseBool(raw)
 	if err != nil {
 		return false, fmt.Errorf("%s: invalid boolean %q: %w", key, raw, err)
 	}

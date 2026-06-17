@@ -55,6 +55,42 @@ func isVersionFlag(args []string) bool {
 	return false
 }
 
+// admitCap translates a per-head admission toggle into the concurrency
+// cap handed to admit.New. An enabled head uses its default cap; a
+// disabled head returns 0, which admit.New maps to a nil (pass-through)
+// limiter. Keeping the enabled/disabled cases symmetric here means the
+// only knob the operator sees is a plain boolean.
+func admitCap(enabled bool, defaultCap int) int {
+	if !enabled {
+		return 0
+	}
+	return defaultCap
+}
+
+// newAdmitLimiters builds the per-head admission-control limiters. When
+// CERBERUS_ADMIT_DISABLED=true every limiter is nil and the middleware
+// short-circuits to a pass-through wrapper. Otherwise each per-head toggle
+// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} (boolean) selects the head's default cap
+// when truthy, or leaves the head unlimited (nil limiter) when falsy.
+// admit.New returns nil for a non-positive cap, so a disabled head and a
+// zero cap collapse to the same pass-through path.
+func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *admit.Limiter, *admit.Limiter) {
+	if cfg.Admit.Disabled {
+		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
+		return nil, nil, nil
+	}
+	promCap := admitCap(cfg.Admit.Prom, config.DefaultAdmitProm)
+	lokiCap := admitCap(cfg.Admit.Loki, config.DefaultAdmitLoki)
+	tempoCap := admitCap(cfg.Admit.Tempo, config.DefaultAdmitTempo)
+	logger.Info(
+		"admission control enabled",
+		"prom", promCap,
+		"loki", lokiCap,
+		"tempo", tempoCap,
+	)
+	return admit.New("prom", promCap), admit.New("loki", lokiCap), admit.New("tempo", tempoCap)
+}
+
 func main() {
 	if isVersionFlag(os.Args) {
 		fmt.Fprintln(os.Stdout, Version)
@@ -176,25 +212,8 @@ func run() error {
 		)
 	}
 
-	// Build per-head admission-control limiters. When
-	// CERBERUS_ADMIT_DISABLED=true every limiter is nil and the
-	// middleware short-circuits to a pass-through wrapper. Otherwise
-	// each cap comes from CERBERUS_ADMIT_{PROM,LOKI,TEMPO} (or the
-	// conservative defaults — see internal/config.admitFromEnv).
-	var promLimiter, lokiLimiter, tempoLimiter *admit.Limiter
-	if !cfg.Admit.Disabled {
-		promLimiter = admit.New("prom", cfg.Admit.MaxInflightProm)
-		lokiLimiter = admit.New("loki", cfg.Admit.MaxInflightLoki)
-		tempoLimiter = admit.New("tempo", cfg.Admit.MaxInflightTempo)
-		logger.Info(
-			"admission control enabled",
-			"prom", cfg.Admit.MaxInflightProm,
-			"loki", cfg.Admit.MaxInflightLoki,
-			"tempo", cfg.Admit.MaxInflightTempo,
-		)
-	} else {
-		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
-	}
+	// Build per-head admission-control limiters (see newAdmitLimiters).
+	promLimiter, lokiLimiter, tempoLimiter := newAdmitLimiters(cfg, logger)
 
 	// The trace mux carries the three Prom/Loki/Tempo APIs and is
 	// wrapped with otelhttp so every request becomes a server span.
