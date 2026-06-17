@@ -96,7 +96,7 @@ extraEnv:
   # leak) — GOMEMLIMIT rises proportionally to keep the GC reclaiming before the
   # cgroup OOMs.
   - name: GOMEMLIMIT
-    value: 1228MiB
+    value: 2048MiB
 
 resources:
   requests:
@@ -106,13 +106,15 @@ resources:
     cpu: 250m
     memory: 128Mi
   limits:
-    # 1536Mi (was 1Gi, 512Mi, 256Mi): the Playwright dashboard sweep buffers
-    # full query_range matrices per request, and the rc.5 resource-attr feature
-    # raised per-query heap ~65% (measured). 1536Mi gives the bounded workload
-    # honest headroom; GOMEMLIMIT=1228MiB (~80%) backs the heap off before this
-    # ceiling. Operators promoting many high-cardinality resource keys should
-    # size memory accordingly or trim the set via prom.resourceLabels.
-    memory: 1536Mi
+    # 2560Mi (was 1536Mi, 1Gi, 512Mi, 256Mi): the Playwright dashboard sweep
+    # buffers full query_range matrices per request, and the rc.5 resource-attr
+    # feature raised per-query heap ~65% (measured). 1536Mi proved borderline --
+    # the dashboard-smoke shard OOMKilled (exit 137) even with every spec passing
+    # -- so 2560Mi gives the bounded workload honest headroom; GOMEMLIMIT=2048MiB
+    # (~80%) backs the heap off before this ceiling. Operators promoting many
+    # high-cardinality resource keys should size memory accordingly or trim the
+    # set via prom.resourceLabels.
+    memory: 2560Mi
 
 # /readyz pings ClickHouse (small TTL cache so the probe doesn't hammer CH) and
 # reports the auto-create-schema invariant. A failure removes the pod from the
