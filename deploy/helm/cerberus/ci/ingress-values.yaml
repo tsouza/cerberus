@@ -8,7 +8,7 @@ clickhouse:
     - clickhouse-b:9000
   database: otel
   username: cerberus
-  password: "s3cret-inline"
+  password: "changeme"   # placeholder — exercises the chart-Secret render path only
 
 otlp:
   endpoint: "otel-collector-gateway.observability.svc:4317"
