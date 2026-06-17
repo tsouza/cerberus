@@ -281,31 +281,54 @@ func TestHTTPServer_ListenAndServeErrServerClosed(t *testing.T) {
 }
 
 // TestHTTPServer_Shutdown_BlocksNewConnections: after Shutdown the
-// underlying listener is closed — Accept must return net.ErrClosed.
-// Pin the contract that distinguishes Shutdown from a keep-alive
-// drain. (We intentionally do NOT dial the freed port: on busy CI
-// runners the kernel can hand the same ephemeral port to an unrelated
-// listener between Shutdown and the dial, and the test would flake on
-// an OS-level race that has nothing to do with our shutdown contract.
-// Accept() returning ErrClosed is the load-bearing signal.)
+// underlying listener is closed — a subsequent Accept must return
+// net.ErrClosed. This pins the contract that distinguishes Shutdown
+// from a keep-alive drain.
+//
+// srv.Shutdown() returning ALREADY guarantees the listener fd is closed
+// (closeListenersLocked runs before Shutdown returns), so we assert
+// closure DIRECTLY on the test goroutine rather than waiting on the
+// Serve goroutine — whose Accept loop may never run at all if Shutdown
+// wins the startup race. http.Server.Serve has a pre-Accept
+// registration guard (trackListener returns false once shuttingDown is
+// set), so a legal schedule has Serve return http.ErrServerClosed
+// WITHOUT ever calling Accept. The old test gated its assertion on a
+// channel fed only from INSIDE Accept; in that guard-bail schedule the
+// sole sender was unreachable and the select waited out the full budget
+// (the ~10s "Accept did not return after Shutdown" flake). Asserting on
+// the calling goroutine removes the scheduling dependency entirely.
+//
+// We DRAIN the listener rather than asserting the FIRST Accept: the
+// sanity dial below leaves a connection in the kernel accept backlog,
+// and once the listener is closed the first Accept may still hand back
+// that already-queued connection (a real *net.TCPConn, nil error) before
+// the close is observed — so a single Accept is itself non-deterministic
+// (~2% nil-error). Draining until a non-nil error yields the listener's
+// TERMINAL state, which is permanently net.ErrClosed: the backlog is
+// finite, so the loop converges in O(queued conns) and pins exactly the
+// contract we care about — no NEW connection can ever be served again.
+//
+// (We intentionally do NOT dial the freed port to prove closure: on
+// busy CI runners the kernel can hand the same ephemeral port to an
+// unrelated listener between Shutdown and the dial, and the test would
+// flake on an OS-level race that has nothing to do with our shutdown
+// contract. The terminal Accept() error is the load-bearing,
+// scheduling-free signal.)
 func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
-	srv := &http.Server{
-		Handler:           http.NewServeMux(),
-		ReadHeaderTimeout: time.Second,
-	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
 
-	// Wrap the listener so we can observe Accept returns after Shutdown
-	// closes it. http.Server calls ln.Close() inside Shutdown.
-	acceptErr := make(chan error, 1)
-	wrapped := &acceptRecorder{Listener: ln, errCh: acceptErr}
-	go func() { _ = srv.Serve(wrapped) }()
+	srv := &http.Server{
+		Handler:           http.NewServeMux(),
+		ReadHeaderTimeout: time.Second,
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
 
-	// Sanity-check the listener is up.
+	// Sanity-check the listener is reachable before we shut down.
 	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 	if err != nil {
 		t.Fatalf("dial before shutdown: %v", err)
@@ -318,34 +341,43 @@ func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	// After Shutdown the listener's Accept loop must exit with
-	// net.ErrClosed — that's the kernel-level signal that no new
-	// connection can be served by this server.
+	// CONTRACT: Shutdown returning guarantees the listener fd is closed.
+	// Drain any backlogged connection, then assert the terminal Accept
+	// returns net.ErrClosed — synchronously, on THIS goroutine. No
+	// dependence on the Serve goroutine's scheduling: whether Serve
+	// reached its accept loop or bailed at the trackListener guard, the
+	// listener is permanently closed once Shutdown returns, so this loop
+	// converges to net.ErrClosed regardless. The drain is bounded by the
+	// finite kernel backlog, not by a timer.
+	var acceptErr error
+	for {
+		c, e := ln.Accept()
+		if c != nil {
+			_ = c.Close()
+		}
+		if e != nil {
+			acceptErr = e
+			break
+		}
+	}
+	if !errors.Is(acceptErr, net.ErrClosed) {
+		t.Errorf("Accept on closed listener returned %v; want net.ErrClosed", acceptErr)
+	}
+
+	// And Serve itself must terminate with ErrServerClosed (covers both
+	// the "reached accept loop then woke on Close" path and the "bailed at
+	// the registration guard" path — both are correct Shutdown outcomes).
+	// This wait is a bounded liveness backstop, not the primary assertion:
+	// Serve is guaranteed to return one of these once Shutdown has closed
+	// the listener and set inShutdown, so the channel's sender always runs.
 	select {
-	case got := <-acceptErr:
-		if !errors.Is(got, net.ErrClosed) {
-			t.Errorf("Accept after Shutdown returned %v; want net.ErrClosed", got)
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve returned %v; want http.ErrServerClosed", err)
 		}
 	case <-time.After(lifecycleTestBudget):
-		t.Fatal("Accept did not return after Shutdown")
+		t.Fatal("Serve did not return after Shutdown")
 	}
-}
-
-// acceptRecorder wraps a net.Listener and forwards the first non-nil
-// Accept error to errCh. http.Server.Shutdown calls ln.Close, which
-// makes the in-flight Accept return net.ErrClosed.
-type acceptRecorder struct {
-	net.Listener
-	errCh chan<- error
-	once  sync.Once
-}
-
-func (a *acceptRecorder) Accept() (net.Conn, error) {
-	c, err := a.Listener.Accept()
-	if err != nil {
-		a.once.Do(func() { a.errCh <- err })
-	}
-	return c, err
 }
 
 // TestHTTPServer_GoroutineDeltaWithinBound is a lightweight goroutine-leak
