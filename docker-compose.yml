@@ -1,7 +1,7 @@
 # One-command local dev stack for cerberus.
 #
 #   docker compose up --wait
-#   open http://localhost:3000   # Grafana (admin/admin)
+#   open http://localhost:3000   # Grafana (anonymous auto-login as Admin)
 #
 # Services:
 #   clickhouse      single-node CH server, OTel-aware (db=otel,
