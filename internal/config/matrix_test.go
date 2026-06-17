@@ -468,13 +468,13 @@ func TestFromEnv_Log_FormatErrorMessageMentionsKey(t *testing.T) {
 	}
 }
 
-// TestFromEnv_AdmitDisabled_DoesNotCascadeToCaps confirms setting
-// CERBERUS_ADMIT_DISABLED=true leaves the per-head caps intact in the
+// TestFromEnv_AdmitDisabled_DoesNotCascadeToToggles confirms setting
+// CERBERUS_ADMIT_DISABLED=true leaves the per-head toggles intact in the
 // resolved Config. The wiring in main.go is responsible for skipping
 // limiter construction — the config layer just reports both signals.
-func TestFromEnv_AdmitDisabled_DoesNotCascadeToCaps(t *testing.T) {
+func TestFromEnv_AdmitDisabled_DoesNotCascadeToToggles(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_DISABLED", "true")
-	t.Setenv("CERBERUS_ADMIT_PROM", "256")
+	t.Setenv("CERBERUS_ADMIT_PROM", "true")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
@@ -482,53 +482,43 @@ func TestFromEnv_AdmitDisabled_DoesNotCascadeToCaps(t *testing.T) {
 	if !cfg.Admit.Disabled {
 		t.Errorf("Disabled = false; want true")
 	}
-	if cfg.Admit.MaxInflightProm != 256 {
-		t.Errorf("MaxInflightProm = %d; want 256 (caps reported even when disabled)", cfg.Admit.MaxInflightProm)
+	if !cfg.Admit.Prom {
+		t.Errorf("Admit.Prom = false; want true (per-head toggle reported even when globally disabled)")
 	}
 }
 
-// TestFromEnv_AdmitZeroIsAllowed pins the "zero disables this head"
-// contract — the config layer accepts 0 (only negative values fail).
-func TestFromEnv_AdmitZeroIsAllowed(t *testing.T) {
-	t.Setenv("CERBERUS_ADMIT_LOKI", "0")
+// TestFromEnv_AdmitFalsyDisablesHead pins the "falsy disables this head"
+// contract — a per-head toggle accepts 0/false to leave that head
+// unlimited without touching the others.
+func TestFromEnv_AdmitFalsyDisablesHead(t *testing.T) {
+	t.Setenv("CERBERUS_ADMIT_LOKI", "false")
 	cfg, err := FromEnv()
 	if err != nil {
-		t.Fatalf("FromEnv with zero loki: %v", err)
+		t.Fatalf("FromEnv with loki disabled: %v", err)
 	}
-	if cfg.Admit.MaxInflightLoki != 0 {
-		t.Errorf("MaxInflightLoki = %d; want 0", cfg.Admit.MaxInflightLoki)
+	if cfg.Admit.Loki {
+		t.Errorf("Admit.Loki = true; want false")
 	}
-}
-
-// TestFromEnv_AdmitLargeValueRoundtrip confirms large but valid ints
-// survive the parser (no premature overflow check).
-func TestFromEnv_AdmitLargeValueRoundtrip(t *testing.T) {
-	t.Setenv("CERBERUS_ADMIT_TEMPO", "100000")
-	cfg, err := FromEnv()
-	if err != nil {
-		t.Fatalf("FromEnv: %v", err)
-	}
-	if cfg.Admit.MaxInflightTempo != 100000 {
-		t.Errorf("MaxInflightTempo = %d; want 100000", cfg.Admit.MaxInflightTempo)
+	if !cfg.Admit.Prom || !cfg.Admit.Tempo {
+		t.Errorf("disabling loki must not touch prom/tempo: prom=%v tempo=%v", cfg.Admit.Prom, cfg.Admit.Tempo)
 	}
 }
 
-// TestFromEnv_AdmitTempoNegative ensures every per-head cap reports
-// negative values consistently. (The existing Prom-specific test
-// confirms the symmetric path.)
-func TestFromEnv_AdmitTempoNegative(t *testing.T) {
+// TestFromEnv_AdmitTempoGarbage ensures a value outside the boolean
+// vocabulary fails fast for the tempo head too (symmetry with prom).
+func TestFromEnv_AdmitTempoGarbage(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_TEMPO", "-5")
 	if _, err := FromEnv(); err == nil {
-		t.Fatal("FromEnv: want error for negative tempo, got nil")
+		t.Fatal("FromEnv: want error for non-boolean tempo, got nil")
 	}
 }
 
-// TestFromEnv_AdmitLokiNegative covers the loki-cap negative-path
+// TestFromEnv_AdmitLokiGarbage covers the loki-head garbage-rejection
 // symmetry.
-func TestFromEnv_AdmitLokiNegative(t *testing.T) {
+func TestFromEnv_AdmitLokiGarbage(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_LOKI", "-10")
 	if _, err := FromEnv(); err == nil {
-		t.Fatal("FromEnv: want error for negative loki, got nil")
+		t.Fatal("FromEnv: want error for non-boolean loki, got nil")
 	}
 }
 

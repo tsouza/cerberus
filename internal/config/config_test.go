@@ -366,8 +366,8 @@ func TestFromEnv_SchemaOverrides(t *testing.T) {
 	}
 }
 
-// TestFromEnv_Admit_Defaults verifies the conservative defaults for
-// the per-handler concurrency caps when no env vars are set.
+// TestFromEnv_Admit_Defaults verifies admission control is enabled on
+// every head out of the box when no env vars are set.
 func TestFromEnv_Admit_Defaults(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_DISABLED", "")
 	t.Setenv("CERBERUS_ADMIT_PROM", "")
@@ -380,23 +380,25 @@ func TestFromEnv_Admit_Defaults(t *testing.T) {
 	if cfg.Admit.Disabled {
 		t.Errorf("Admit.Disabled = true; want false")
 	}
-	if cfg.Admit.MaxInflightProm != defaultAdmitProm {
-		t.Errorf("MaxInflightProm = %d; want %d", cfg.Admit.MaxInflightProm, defaultAdmitProm)
+	if !cfg.Admit.Prom {
+		t.Errorf("Admit.Prom = false; want true")
 	}
-	if cfg.Admit.MaxInflightLoki != defaultAdmitLoki {
-		t.Errorf("MaxInflightLoki = %d; want %d", cfg.Admit.MaxInflightLoki, defaultAdmitLoki)
+	if !cfg.Admit.Loki {
+		t.Errorf("Admit.Loki = false; want true")
 	}
-	if cfg.Admit.MaxInflightTempo != defaultAdmitTempo {
-		t.Errorf("MaxInflightTempo = %d; want %d", cfg.Admit.MaxInflightTempo, defaultAdmitTempo)
+	if !cfg.Admit.Tempo {
+		t.Errorf("Admit.Tempo = false; want true")
 	}
 }
 
 // TestFromEnv_Admit_Overrides confirms env-var overrides flow through.
+// The ADMIT_* family is boolean: a falsy value disables that head's
+// limiter without disabling admission control entirely.
 func TestFromEnv_Admit_Overrides(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_DISABLED", "true")
-	t.Setenv("CERBERUS_ADMIT_PROM", "128")
-	t.Setenv("CERBERUS_ADMIT_LOKI", "16")
-	t.Setenv("CERBERUS_ADMIT_TEMPO", "8")
+	t.Setenv("CERBERUS_ADMIT_PROM", "false")
+	t.Setenv("CERBERUS_ADMIT_LOKI", "0")
+	t.Setenv("CERBERUS_ADMIT_TEMPO", "true")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
@@ -404,31 +406,91 @@ func TestFromEnv_Admit_Overrides(t *testing.T) {
 	if !cfg.Admit.Disabled {
 		t.Errorf("Admit.Disabled = false; want true")
 	}
-	if cfg.Admit.MaxInflightProm != 128 {
-		t.Errorf("MaxInflightProm = %d; want 128", cfg.Admit.MaxInflightProm)
+	if cfg.Admit.Prom {
+		t.Errorf("Admit.Prom = true; want false")
 	}
-	if cfg.Admit.MaxInflightLoki != 16 {
-		t.Errorf("MaxInflightLoki = %d; want 16", cfg.Admit.MaxInflightLoki)
+	if cfg.Admit.Loki {
+		t.Errorf("Admit.Loki = true; want false (0 is falsy)")
 	}
-	if cfg.Admit.MaxInflightTempo != 8 {
-		t.Errorf("MaxInflightTempo = %d; want 8", cfg.Admit.MaxInflightTempo)
-	}
-}
-
-// TestFromEnv_Admit_RejectsNegative ensures a negative cap fails fast
-// at startup rather than silently disabling admission control.
-func TestFromEnv_Admit_RejectsNegative(t *testing.T) {
-	t.Setenv("CERBERUS_ADMIT_PROM", "-1")
-	if _, err := FromEnv(); err == nil {
-		t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=-1: want error, got nil")
+	if !cfg.Admit.Tempo {
+		t.Errorf("Admit.Tempo = false; want true")
 	}
 }
 
-// TestFromEnv_Admit_RejectsGarbage ensures a non-integer value also
-// fails fast.
+// TestFromEnv_Admit_AcceptsYAMLBool is the end-to-end regression for the
+// Helm-chart crash: a default `helm install` renders the YAML bool
+// `true` into CERBERUS_ADMIT_PROM, which the old strconv.Atoi parser
+// rejected ("invalid integer \"true\"") and crash-looped cerberus. The
+// shared parseBool path now loads `true`/`false` cleanly.
+func TestFromEnv_Admit_AcceptsYAMLBool(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"true", true},
+		{"false", false},
+		{"TRUE", true},
+		{"False", false},
+		{"1", true},
+		{"0", false},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("CERBERUS_ADMIT_PROM", tc.raw)
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=%q: unexpected error %v", tc.raw, err)
+			}
+			if cfg.Admit.Prom != tc.want {
+				t.Errorf("Admit.Prom = %v; want %v for %q", cfg.Admit.Prom, tc.want, tc.raw)
+			}
+		})
+	}
+}
+
+// TestFromEnv_Admit_RejectsGarbage ensures a value outside the boolean
+// vocabulary fails fast at startup rather than silently mis-parsing.
 func TestFromEnv_Admit_RejectsGarbage(t *testing.T) {
-	t.Setenv("CERBERUS_ADMIT_PROM", "not-a-number")
+	t.Setenv("CERBERUS_ADMIT_PROM", "maybe")
 	if _, err := FromEnv(); err == nil {
-		t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=not-a-number: want error, got nil")
+		t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=maybe: want error, got nil")
+	}
+}
+
+// TestParseBool is the table-driven contract for the shared boolean
+// parser every CERBERUS_* boolean knob routes through. It must accept
+// the full strconv.ParseBool vocabulary (1/0/true/false, case-
+// insensitive) and reject anything else.
+func TestParseBool(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		want    bool
+		wantErr bool
+	}{
+		{"1", true, false},
+		{"0", false, false},
+		{"true", true, false},
+		{"false", false, false},
+		{"TRUE", true, false},
+		{"False", false, false},
+		{"  true  ", true, false},
+		{"maybe", false, true},
+		{"2", false, true},
+		{"", false, true},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			got, err := parseBool(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseBool(%q): want error, got nil", tc.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBool(%q): unexpected error %v", tc.raw, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseBool(%q) = %v; want %v", tc.raw, got, tc.want)
+			}
+		})
 	}
 }

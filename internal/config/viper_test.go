@@ -102,14 +102,14 @@ func TestFromEnv_ViperDefaults_NoEnv(t *testing.T) {
 	if cfg.Admit.Disabled {
 		t.Errorf("Admit.Disabled = true; want false")
 	}
-	if cfg.Admit.MaxInflightProm != defaultAdmitProm {
-		t.Errorf("MaxInflightProm = %d; want %d", cfg.Admit.MaxInflightProm, defaultAdmitProm)
+	if !cfg.Admit.Prom {
+		t.Errorf("Admit.Prom = false; want true (enabled by default)")
 	}
-	if cfg.Admit.MaxInflightLoki != defaultAdmitLoki {
-		t.Errorf("MaxInflightLoki = %d; want %d", cfg.Admit.MaxInflightLoki, defaultAdmitLoki)
+	if !cfg.Admit.Loki {
+		t.Errorf("Admit.Loki = false; want true (enabled by default)")
 	}
-	if cfg.Admit.MaxInflightTempo != defaultAdmitTempo {
-		t.Errorf("MaxInflightTempo = %d; want %d", cfg.Admit.MaxInflightTempo, defaultAdmitTempo)
+	if !cfg.Admit.Tempo {
+		t.Errorf("Admit.Tempo = false; want true (enabled by default)")
 	}
 }
 
