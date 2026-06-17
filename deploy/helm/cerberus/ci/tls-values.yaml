@@ -1,0 +1,25 @@
+# ct lint fixture: exercises the ClickHouse TLS file-mount path + existingSecret
+# password ref (no chart Secret rendered).
+clickhouse:
+  addr:
+    - clickhouse:9440
+  database: otel
+  username: cerberus
+  existingSecret: cerberus-ch-credentials
+  passwordKey: password
+  tls:
+    enabled: true
+    serverName: clickhouse.internal
+    existingSecret: clickhouse-client-tls
+    caFileKey: ca.crt
+    certFileKey: tls.crt
+    keyFileKey: tls.key
+
+extraVolumes:
+  - name: extra-ca
+    configMap:
+      name: corporate-ca
+extraVolumeMounts:
+  - name: extra-ca
+    mountPath: /etc/ssl/corp
+    readOnly: true

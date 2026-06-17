@@ -1,0 +1,74 @@
+{{ template "chart.header" . }}
+
+<!-- markdownlint-disable MD060 MD012 -->
+<!-- Tables (including the helm-docs-generated values table) are not
+     pipe-aligned, and the version footer adds a trailing blank — both are
+     owned by helm-docs; realigning would fight the chart-ci drift check. -->
+
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+cerberus is a single, stateless gateway that speaks the Prometheus, Loki, and
+Tempo HTTP wire formats and lowers every query into parameterised ClickHouse
+SQL. Point three Grafana datasources at one cerberus endpoint.
+
+{{ template "chart.homepageLine" . }}
+
+## TL;DR
+
+```console
+helm install my-cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus \
+  --set clickhouse.addr='{clickhouse:9000}' \
+  --set clickhouse.existingSecret=ch-creds
+```
+
+## Configuration strategy
+
+cerberus is configured **100% via environment variables** — there is no config
+file. This chart lowers three layers into env:
+
+1. **Typed blocks** (`clickhouse` / `otlp` / `autoCreate` / `admit` / `schema` /
+   `http`) → canonical `CERBERUS_*` env in a ConfigMap; the ClickHouse password
+   flows through a Secret (`existingSecret` preferred).
+2. **`config: {}`** — a free-form map rendered verbatim as `KEY: value` env. Use
+   it for any `CERBERUS_*` knob not covered by a typed block (the long tail; see
+   [docs/configuration.md](https://github.com/tsouza/cerberus/blob/main/docs/configuration.md)).
+3. **`extraEnv` / `extraEnvFrom`** — raw container env (supports `valueFrom`).
+
+**Precedence (last wins):** typed blocks < `config` < `extraEnv`.
+
+## Observability
+
+cerberus exposes **no Prometheus `/metrics` endpoint** — self-telemetry is
+**pushed via OTLP**. There is intentionally no `ServiceMonitor` in this chart.
+Set `otlp.endpoint` to enable export; leave it empty to disable.
+
+## Health endpoints
+
+| Probe     | Path       | Behaviour                                                        |
+| --------- | ---------- | --------------------------------------------------------------- |
+| Liveness  | `/healthz` | Dependency-free; a failure restarts the pod.                    |
+| Readiness | `/readyz`  | Pings ClickHouse; a failure ejects the pod from Service endpoints (no restart). |
+
+## Memory sizing
+
+`resources.limits.memory` defaults to `1536Mi` with no CPU limit. cerberus's Go
+heap doesn't see the cgroup limit; if you change the memory limit, set
+`GOMEMLIMIT` (~80%) via `extraEnv`:
+
+```yaml
+extraEnv:
+  - name: GOMEMLIMIT
+    value: "1228MiB"
+```
+
+{{ template "chart.maintainersSection" . }}
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "helm-docs.versionFooter" . }}

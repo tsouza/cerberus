@@ -1,0 +1,12 @@
+{{- $env := include "cerberus.nonSecretEnv" . | trim -}}
+{{- if $env }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cerberus.envConfigMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.labels" . | nindent 4 }}
+data:
+  {{- $env | nindent 2 }}
+{{- end }}

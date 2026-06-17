@@ -1,0 +1,64 @@
+cerberus has been deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+cerberus is a drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse.
+Point three Grafana datasources (Prometheus, Loki, Tempo) at the single
+cerberus endpoint below — it speaks all three wire formats on one port.
+
+1. Reach the gateway:
+{{- if .Values.ingress.enabled }}
+  Ingress is enabled. Try:
+  {{- range .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host | default "<your-host>" }}{{ .path }}
+  {{- end }}
+  {{- end }}
+{{- else if eq .Values.service.type "NodePort" }}
+  Get the NodePort URL:
+    export NODE_PORT=$(kubectl get -n {{ .Release.Namespace }} svc {{ include "cerberus.fullname" . }} -o jsonpath="{.spec.ports[0].nodePort}")
+    export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+    echo "http://$NODE_IP:$NODE_PORT"
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  Wait for the LoadBalancer IP:
+    kubectl get -n {{ .Release.Namespace }} svc -w {{ include "cerberus.fullname" . }}
+{{- else }}
+  ClusterIP — port-forward to it:
+    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "cerberus.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+    # then: curl http://127.0.0.1:{{ .Values.service.port }}/readyz
+{{- end }}
+
+  In-cluster DNS:
+    {{ include "cerberus.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+
+2. Health:
+   Liveness  : GET /healthz  (dependency-free; restarts a wedged process)
+   Readiness : GET /readyz   (pings ClickHouse; removes the pod from the
+               Service endpoints under backpressure, no restart)
+
+3. Observability — IMPORTANT:
+   cerberus exposes NO Prometheus /metrics endpoint. Self-telemetry (metrics,
+   traces, logs) is PUSHED via OTLP. There is NO ServiceMonitor in this chart.
+   Configure export with `otlp.endpoint` (and `otlp.insecure`); an empty
+   endpoint disables self-telemetry entirely.
+{{- if not .Values.otlp.endpoint }}
+   (otlp.endpoint is currently empty → self-telemetry export is OFF.)
+{{- else }}
+   Exporting to: {{ .Values.otlp.endpoint }}
+{{- end }}
+
+4. ClickHouse connection:
+   Address(es): {{ join "," .Values.clickhouse.addr }}
+   Database   : {{ .Values.clickhouse.database }}
+{{- if and .Values.clickhouse.password (not .Values.clickhouse.existingSecret) }}
+
+   WARNING: clickhouse.password is set inline. The chart created a Secret, but
+   for production prefer `clickhouse.existingSecret` so the password never
+   lives in your values file or Helm release history.
+{{- end }}
+
+5. Memory sizing note:
+   resources.limits.memory is {{ .Values.resources.limits.memory }}. cerberus's
+   Go heap does not see the cgroup limit on its own — if you change the memory
+   limit, set GOMEMLIMIT (~80% of the limit) via extraEnv, e.g.:
+     extraEnv:
+       - name: GOMEMLIMIT
+         value: "1228MiB"

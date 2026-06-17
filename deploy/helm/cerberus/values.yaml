@@ -1,0 +1,339 @@
+# Default values for cerberus.
+# This is a YAML-formatted file. Every key is annotated for helm-docs (`# --`).
+#
+# cerberus is configured 100% via environment variables (there is no config
+# file). The chart lowers three layers of values into env:
+#   1. Typed blocks (clickhouse / otlp / autoCreate / admit / schema / http) →
+#      canonical CERBERUS_* env in a ConfigMap (password → Secret).
+#   2. `config: {}` free-form map → verbatim KEY: value env (the ~100-knob long
+#      tail you don't want enumerated here).
+#   3. `extraEnv` / `extraEnvFrom` → raw container env (supports valueFrom).
+# Precedence (last wins): typed blocks < config < extraEnv.
+
+# -- Override the chart name (defaults to the chart's own name, `cerberus`).
+nameOverride: ""
+# -- Override the fully-qualified release name (`<release>-cerberus` by default).
+fullnameOverride: ""
+# -- Extra labels added to every rendered object (tpl-rendered). NOT added to
+# selectors (those are immutable).
+commonLabels: {}
+
+# -- Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA
+# owns the replica count then).
+replicaCount: 2
+
+image:
+  # -- cerberus container image repository.
+  repository: ghcr.io/tsouza/cerberus
+  # -- Image tag. Defaults to the chart's appVersion (e.g. `1.0.0`) when empty.
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Optional image digest (`sha256:...`). When set, pins by digest and is
+  # appended as `@<digest>` after the tag.
+  digest: ""
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+serviceAccount:
+  # -- Create a dedicated ServiceAccount.
+  create: true
+  # -- Name of the ServiceAccount to use/create. Generated from the fullname
+  # when empty.
+  name: ""
+  # -- Annotations for the ServiceAccount (e.g. IRSA / Workload Identity).
+  annotations: {}
+  # -- Mount the SA token into the SA itself. cerberus calls no k8s API → false.
+  automountServiceAccountToken: false
+
+# -- Mount the ServiceAccount token into the pod. cerberus calls no k8s API →
+# false (defence in depth).
+automountServiceAccountToken: false
+
+# ---------------------------------------------------------------------------
+# ClickHouse connection — lowered to CERBERUS_CH_* env.
+# ---------------------------------------------------------------------------
+
+# -- ClickHouse connection block (lowered to CERBERUS_CH_* env). See fields below.
+clickhouse:
+  # -- ClickHouse address list (`host:port`), joined with `,` into
+  # CERBERUS_CH_ADDR. Native protocol is 9000 (9440 TLS); HTTP is 8123.
+  addr:
+    - clickhouse:9000
+  # -- Target database (CERBERUS_CH_DATABASE).
+  database: otel
+  # -- ClickHouse username (CERBERUS_CH_USERNAME).
+  username: default
+  # -- Wire protocol: `native` or `http` (CERBERUS_CH_PROTOCOL).
+  protocol: native
+  # -- Dial timeout (CERBERUS_CH_DIAL_TIMEOUT).
+  dialTimeout: 10s
+  # -- Inline password. Renders a chart-managed Secret. PREFER `existingSecret`
+  # in production so the password never lands in values / release history.
+  password: ""
+  # -- Name of a pre-existing Secret holding the ClickHouse password. Takes
+  # precedence over `password` (no chart Secret is rendered).
+  existingSecret: ""
+  # -- Key within the Secret (chart-managed or existing) holding the password.
+  passwordKey: password
+  tls:
+    # -- Enable TLS to ClickHouse (CERBERUS_CH_TLS_ENABLED).
+    enabled: false
+    # -- Skip server cert verification (CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY).
+    # Insecure — for testing only.
+    insecureSkipVerify: false
+    # -- Override the TLS server name (SNI) (CERBERUS_CH_TLS_SERVER_NAME).
+    serverName: ""
+    # -- Name of a Secret holding the TLS cert files. When set, it is mounted at
+    # /etc/cerberus/tls and the CERBERUS_CH_TLS_*_FILE env point at the keys
+    # below.
+    existingSecret: ""
+    # -- Key in the TLS Secret for the CA cert → CERBERUS_CH_TLS_CA_FILE.
+    caFileKey: ca.crt
+    # -- Key in the TLS Secret for the client cert → CERBERUS_CH_TLS_CERT_FILE.
+    certFileKey: tls.crt
+    # -- Key in the TLS Secret for the client key → CERBERUS_CH_TLS_KEY_FILE.
+    keyFileKey: tls.key
+
+# ---------------------------------------------------------------------------
+# Structured knobs.
+# ---------------------------------------------------------------------------
+
+# -- Auto-create toggles (lowered to CERBERUS_AUTO_CREATE_* env). See fields below.
+autoCreate:
+  # -- Apply the OTel-CH schema DDL at boot (CERBERUS_AUTO_CREATE_SCHEMA).
+  schema: true
+  # -- Create the target database if absent (CERBERUS_AUTO_CREATE_DATABASE).
+  database: false
+
+admit:
+  # -- Admit PromQL queries (CERBERUS_ADMIT_PROM).
+  prom: true
+  # -- Admit LogQL queries (CERBERUS_ADMIT_LOKI).
+  loki: true
+  # -- Admit TraceQL queries (CERBERUS_ADMIT_TEMPO).
+  tempo: true
+  # -- Disable admission entirely (CERBERUS_ADMIT_DISABLED).
+  disabled: false
+
+otlp:
+  # -- OTLP gRPC endpoint for cerberus self-telemetry export
+  # (CERBERUS_OTLP_ENDPOINT). EMPTY disables self-telemetry export entirely.
+  # cerberus has NO /metrics endpoint — this is the only observability path.
+  endpoint: ""
+  # -- Use an insecure (plaintext) OTLP connection (CERBERUS_OTLP_INSECURE).
+  insecure: false
+  # -- Comma-separated OTLP headers, e.g. `authorization=Bearer xxx`
+  # (CERBERUS_OTLP_HEADERS).
+  headers: ""
+  # -- Export interval (CERBERUS_OTLP_EXPORT_INTERVAL).
+  exportInterval: ""
+  # -- Export timeout (CERBERUS_OTLP_TIMEOUT).
+  timeout: ""
+
+# -- Schema overrides. Each key is suffixed onto `CERBERUS_SCHEMA_` verbatim,
+# e.g. `{TTL: "30d", CLUSTER: "main"}` → CERBERUS_SCHEMA_TTL / _CLUSTER. See
+# docs/configuration.md for the full CERBERUS_SCHEMA_* surface.
+schema: {}
+
+http:
+  # -- HTTP listen address (CERBERUS_HTTP_ADDR). The port here must match
+  # `service.targetPort`.
+  addr: ":8080"
+
+# -- Log level: one of debug, info, warn, error (CERBERUS_LOG_LEVEL).
+logLevel: info
+# -- Log format: json or text (CERBERUS_LOG_FORMAT).
+logFormat: json
+
+# ---------------------------------------------------------------------------
+# Free-form env + escape hatches (the long tail of CERBERUS_* knobs).
+# ---------------------------------------------------------------------------
+
+# -- Arbitrary env vars rendered verbatim into the env ConfigMap. Use for any
+# CERBERUS_* knob not covered by a typed block above, e.g.
+# `{CERBERUS_QUERY_MAX_SAMPLES: "5000000", CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"}`.
+# Overrides the typed defaults.
+config: {}
+# -- Raw container env entries (supports `valueFrom` — fieldRef / secretKeyRef /
+# resourceFieldRef). Overrides everything (envFrom is lowest precedence). Use
+# for GOMEMLIMIT, downward-API values, externally-managed secrets.
+extraEnv: []
+# -- Raw `envFrom` sources (configMapRef / secretRef) merged after the chart's
+# own env ConfigMap.
+extraEnvFrom: []
+# -- Args appended to the container when `args`/`command` are unset.
+extraArgs: []
+# -- Full override of the container command (entrypoint).
+command: []
+# -- Full override of the container args.
+args: []
+# -- Extra volumes (tpl-rendered).
+extraVolumes: []
+# -- Extra volume mounts on the cerberus container (tpl-rendered).
+extraVolumeMounts: []
+# -- Extra sidecar containers (tpl-rendered).
+extraContainers: []
+# -- Init containers (tpl-rendered).
+initContainers: []
+# -- Arbitrary extra manifests rendered into the release (tpl-rendered list).
+extraManifests: []
+# -- Container lifecycle hooks.
+lifecycle: {}
+# -- Extra annotations on the Deployment object.
+deploymentAnnotations: {}
+# -- Extra pod annotations (tpl-rendered). Merged with the config/secret
+# checksum annotations.
+podAnnotations: {}
+# -- Extra pod labels (tpl-rendered).
+podLabels: {}
+
+# ---------------------------------------------------------------------------
+# Hardened security defaults — ON. cerberus is stateless and writes nothing to
+# its rootfs, so read-only rootfs is safe.
+# ---------------------------------------------------------------------------
+
+# -- Pod-level security context. Defaults to distroless:nonroot (uid/gid 65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+# -- Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # -- Service type.
+  type: ClusterIP
+  # -- Service port (the cerberus wire endpoint for all three heads).
+  port: 8080
+  # -- Container target port. Must match the port in `http.addr`.
+  targetPort: 8080
+  # -- appProtocol on the Service port (helps L7-aware meshes/ingress).
+  appProtocol: http
+  # -- Service annotations.
+  annotations: {}
+  # -- NodePort (only honoured when `type: NodePort`).
+  nodePort: null
+  # -- loadBalancerClass (only honoured when `type: LoadBalancer`).
+  loadBalancerClass: ""
+
+ingress:
+  # -- Enable an Ingress for the gateway.
+  enabled: false
+  # -- IngressClass name.
+  className: ""
+  # -- Ingress annotations (tpl-rendered).
+  annotations: {}
+  # -- Ingress hosts + paths.
+  hosts:
+    - host: cerberus.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- Ingress TLS blocks.
+  tls: []
+
+# -- Pod resource requests/limits. Mirrors the reference k3s manifest: a small
+# request, a generous memory limit, no CPU limit (bursting is fine; probe kills
+# under CPU starvation are the real risk). If you change limits.memory, set
+# GOMEMLIMIT (~80%) via extraEnv.
+resources:
+  requests:
+    cpu: 250m
+    memory: 128Mi
+  limits:
+    memory: 1536Mi
+
+autoscaling:
+  # -- Enable a HorizontalPodAutoscaler. When true, `replicaCount` is ignored.
+  enabled: false
+  # -- Minimum replicas (survives a single-pod failure at >=2).
+  minReplicas: 2
+  # -- Maximum replicas.
+  maxReplicas: 4
+  # -- Target average CPU utilisation %. cerberus's hot path is CPU-bound on the
+  # gateway side, so CPU is a faithful load proxy. Set to null to drop it.
+  targetCPUUtilizationPercentage: 70
+  # -- Target average memory utilisation %. OFF by default — a memory target
+  # thrashes against GOMEMLIMIT-driven heap (rc.5 OOM finding).
+  targetMemoryUtilizationPercentage: null
+  # -- Extra HPA metric specs appended verbatim (e.g. custom/Pods metrics).
+  extraMetrics: []
+  # -- HPA scaling behaviour. Empty uses the cluster default. The reference
+  # manifest uses scaleUp-fast / scaleDown-slow.
+  behavior: {}
+
+podDisruptionBudget:
+  # -- Create a PodDisruptionBudget.
+  enabled: false
+  # -- Minimum available pods (used when `maxUnavailable` is null).
+  minAvailable: 1
+  # -- Maximum unavailable pods (mutually exclusive with `minAvailable`).
+  maxUnavailable: null
+
+networkPolicy:
+  # -- Create a NetworkPolicy. Egress auto-allows the ClickHouse port(s) (parsed
+  # from `clickhouse.addr`), DNS, and the OTLP endpoint port (parsed from
+  # `otlp.endpoint`).
+  enabled: false
+  # -- Ingress peer selectors on the gateway port. Empty = allow from anywhere;
+  # narrow to e.g. the Grafana namespace.
+  ingress: []
+  # -- Extra egress rules appended to the auto-derived ClickHouse/DNS/OTLP set.
+  egress: []
+
+# -- Deployment update strategy.
+updateStrategy:
+  type: RollingUpdate
+
+# -- Liveness probe. Dependency-free `/healthz`; a failure restarts the pod.
+# Budgets are sized for a saturated node (5s timeout, 6 failures ≈ 60s).
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+# -- Readiness probe. `/readyz` pings ClickHouse (with a small TTL cache); a
+# failure removes the pod from the Service endpoints (backpressure, no restart).
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 3
+  timeoutSeconds: 5
+  failureThreshold: 5
+# -- Startup probe (off by default).
+startupProbe: {}
+
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity.
+affinity: {}
+# -- Topology spread constraints.
+topologySpreadConstraints: []
+# -- PriorityClass name.
+priorityClassName: ""
+# -- Termination grace period (seconds).
+terminationGracePeriodSeconds: 30
+# -- Use the host network namespace.
+hostNetwork: false
+# -- DNS policy.
+dnsPolicy: ""
+# -- DNS config.
+dnsConfig: {}
