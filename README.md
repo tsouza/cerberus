@@ -3,18 +3,17 @@
 **Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse.**
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
-> [!WARNING]
-> **EXPERIMENTAL — NOT PRODUCTION-READY.** Cerberus is in the `v1.0.0-rc.*`
-> release-candidate stage, early and under active development (see the
-> [releases page](https://github.com/tsouza/cerberus/releases) for the
-> current tag). The differential harnesses run on every
-> PR and score parity against real Prometheus / Loki / Tempo, but correctness,
-> performance, and operational behaviour are still being shaken out, and the
-> surface is evolving. **Validate it against your
-> own corpus before pointing anything real at it** — do not stand it in for
-> a running Prom / Loki / Tempo deployment without that evaluation — and
-> expect breaking changes. See [`CHANGELOG.md`](CHANGELOG.md) for what has
-> landed so far.
+> [!NOTE]
+> **1.0.0 — stable wire API, young project.** The Prometheus / Loki /
+> Tempo HTTP surfaces cerberus serves are its 1.0 compatibility contract
+> and follow semantic versioning from here. Behaviour is held to reference
+> Prometheus / Loki / Tempo by differential harnesses on every merge
+> (PromQL at **574/574** on the CNCF compliance tester). It's a confident
+> 1.0 on behaviour — but a young, actively-developed project, so evaluate
+> it against your own corpus before production, and expect TraceQL to carry
+> the lightest conformance confidence of the three heads
+> ([details](#compatibility)). See [`CHANGELOG.md`](CHANGELOG.md) for what
+> has landed.
 
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)

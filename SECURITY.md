@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-cerberus is pre-1.0; only the latest tagged release (or `main` if no tag exists) is supported. Once v1.0 ships, this section will document an N-1 support window.
+Security fixes land on the latest tagged release. As the 1.x line grows we'll widen this to an N-1 support window; until there's more than one minor release to support, "latest release (or `main`)" is the supported surface.
 
 ## Reporting a vulnerability
 
