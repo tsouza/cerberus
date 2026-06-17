@@ -50,6 +50,18 @@ type lowerCtx struct {
 	// kept for byte-stable SQL on the existing fixtures.
 	step          time.Duration
 	inRangeVector bool
+	// metadataFullRange marks a lowering driven by a Prometheus metadata
+	// endpoint (/series, /labels, /label/<name>/values). Metadata
+	// enumerates which series/labels/values have ANY sample in the
+	// requested [start,end] window — NOT the latest-per-series staleness
+	// semantics of an instant query. When set, the bare-selector path
+	// emits a closed [start,end] Timestamp filter (start/end carried in
+	// ctx.start/ctx.end; a zero bound is omitted) and collapses to one
+	// row per series WITHOUT the 5m LWR staleness window — so a series
+	// whose only sample sits early in the window still surfaces. Set only
+	// by [LowerMetadataRange]; every query-evaluation path leaves it
+	// false and keeps the instant/range LWR semantics.
+	metadataFullRange bool
 	// outerByLabels carries the by-clause labels of an enclosing
 	// vector aggregation, threaded down so the inner selector path
 	// can inflate Attributes with the top-level OTel-CH columns

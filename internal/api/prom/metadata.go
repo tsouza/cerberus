@@ -14,7 +14,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 )
@@ -211,6 +210,34 @@ type renderedQuery struct {
 // all metric tables, plus the synthetic `__name__` for the metric-name
 // dimension. Optional `match[]` selectors narrow the result to labels of
 // the matched series only.
+// parseMetadataWindow extracts the optional `start` / `end` parameters
+// shared by the metadata endpoints (/series, /labels, /label/<name>/values).
+// r.ParseForm must already have run. Both bounds are optional; an absent
+// one returns zero-time, which promql.LowerMetadataRange treats as "no
+// bound on that side" (whole-table scan, matching reference Prometheus's
+// min/max-retention default). A malformed value is a bad_data error. The
+// returned [start,end] is the closed window a metadata enumeration scans —
+// it must NOT be collapsed to an instant staleness window at `end`, which
+// silently drops any series/label/value whose only sample sits earlier in
+// the window.
+func parseMetadataWindow(r *http.Request) (start, end time.Time, err error) {
+	if raw := r.Form.Get("start"); raw != "" {
+		t, perr := format.ParseTimeProm(raw, time.Time{})
+		if perr != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid 'start' parameter: %w", perr)
+		}
+		start = t
+	}
+	if raw := r.Form.Get("end"); raw != "" {
+		t, perr := format.ParseTimeProm(raw, time.Time{})
+		if perr != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid 'end' parameter: %w", perr)
+		}
+		end = t
+	}
+	return start, end, nil
+}
+
 func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
@@ -218,12 +245,17 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	}
 	matchers := r.Form["match[]"]
 
+	startT, endT, err := parseMetadataWindow(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+
 	var names []string
-	var err error
 	if len(matchers) == 0 {
 		names, err = h.fetchLabelNames(r.Context())
 	} else {
-		names, err = h.fetchLabelNamesMatched(r.Context(), matchers)
+		names, err = h.fetchLabelNamesMatched(r.Context(), matchers, startT, endT)
 	}
 	if err != nil {
 		h.respondError(w, err)
@@ -248,12 +280,14 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 // across metric tables. For other labels we read `Attributes[<name>]` and
 // drop the empty-string sentinel.
 //
-// Optional `start` / `end` parameters anchor the LWR (latest-with-respect-
-// to-T) window used when lowering each `match[]` selector. Without them
-// the lowering defaults to `now64(9)` and the staleness window may
-// exclude any sample older than the default lookback — the request would
-// then return an empty value list even when matching rows exist in the
-// table.
+// Optional `start` / `end` parameters bound the closed [start,end] window
+// the `match[]` enumeration scans (promql.LowerMetadataRange). A value is
+// returned if it appears on any series with a sample ANYWHERE in that
+// window — not just within a staleness lookback at `end`. Without the
+// bounds the scan covers the whole table. (Reference Prometheus matches
+// label values over the full [start,end] metadata range; an instant
+// staleness window would drop a value whose only sample sits early in the
+// range — the rc.9 /series window-drop bug, same class.)
 func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
@@ -271,35 +305,17 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	}
 	matchers := r.Form["match[]"]
 
-	// `start` / `end` are optional on label/values; when present they
-	// anchor the matcher lowering's eval timestamp so the LWR window
-	// can include samples within the requested range. Parse errors are
-	// reported as bad_data; missing values fall through as zero-time
-	// (handler retains the legacy `now64(9)` default in that case).
-	startRaw := r.Form.Get("start")
-	endRaw := r.Form.Get("end")
-	var startT, endT time.Time
-	if startRaw != "" {
-		t, err := format.ParseTimeProm(startRaw, time.Time{})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, ErrBadData,
-				fmt.Errorf("invalid 'start' parameter: %w", err))
-			return
-		}
-		startT = t
-	}
-	if endRaw != "" {
-		t, err := format.ParseTimeProm(endRaw, time.Time{})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, ErrBadData,
-				fmt.Errorf("invalid 'end' parameter: %w", err))
-			return
-		}
-		endT = t
+	// `start` / `end` are optional on label/values; when present they bound
+	// the closed [start,end] window the matcher enumeration scans (see
+	// parseMetadataWindow + promql.LowerMetadataRange). Missing values fall
+	// through as zero-time (no bound on that side — whole-table scan).
+	startT, endT, err := parseMetadataWindow(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
 	}
 
 	var values []string
-	var err error
 	if len(matchers) == 0 {
 		values, err = h.fetchLabelValues(r.Context(), name)
 	} else {
@@ -512,6 +528,18 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Grafana's `label_values(metric, label)` template vars and panel
+	// series probes pass the dashboard time range as start/end. Honour it
+	// as the closed enumeration window — evaluating /series at wall-clock
+	// `now` with a 5m staleness window (the pre-fix behaviour) silently
+	// dropped any series whose newest sample was older than 5m (late
+	// delta-temporality ingestion), so the env dropdown flapped empty.
+	startT, endT, err := parseMetadataWindow(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+
 	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
 	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
 	// (classic-histogram companion variants). See the per-helper docstrings
@@ -525,7 +553,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	// N round-trips → 1. Pathologically broad probes chunk into ⌈N/K⌉
 	// bounded queries (still ≪ N); see fetchSeries.
 	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
-	sets, err := h.fetchSeries(r.Context(), variants)
+	sets, err := h.fetchSeries(r.Context(), variants, startT, endT)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -756,16 +784,17 @@ func (h *Handler) catalogNameTables() (bareTables []string, histogramTable strin
 // — would see only `__name__` and render "Unable to fetch labels".
 // Non-histogram inputs short-circuit through the no-op (single-element)
 // return of the expander.
-func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
+func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string, start, end time.Time) ([]string, error) {
 	// Fan-in batching (task #71): the variant fan-out across all matchers
 	// collapses into ONE combined query (chunked under CH's max_query_size
 	// when broad). Each variant lowers to its inner matcher SELECT; the
 	// arms UNION-ALL into the FROM source of a single
 	// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` — N round-trips → 1
 	// (⌈N/K⌉ for a pathologically broad probe), same distinct key set the
-	// per-arm loop collected.
+	// per-arm loop collected. start/end bound the closed metadata window
+	// each variant scans (zero = whole table).
 	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
-	keys, err := h.labelKeysForMatchers(ctx, variants)
+	keys, err := h.labelKeysForMatchers(ctx, variants, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -849,7 +878,7 @@ func (h *Handler) matcherArms(ctx context.Context, matchers []string, start, end
 // breaches maxRenderedQueryBytes. The caller (fetchLabelNamesMatched)
 // re-dedupes via format.NormalizeLabelNames, so the per-query key sets can
 // overlap safely. An empty variant list yields no keys (and no query).
-func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string) ([]string, error) {
+func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string, start, end time.Time) ([]string, error) {
 	if len(matchers) == 0 {
 		return nil, nil
 	}
@@ -863,7 +892,7 @@ func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string) (
 	}
 	var all []string
 	for _, chunk := range chunkMatcherVariants(matchers) {
-		arms, err := h.matcherArms(ctx, chunk, time.Time{}, time.Time{})
+		arms, err := h.matcherArms(ctx, chunk, start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -972,22 +1001,19 @@ func (h *Handler) labelValueCombine(name string) func([]chsql.Frag) (string, []a
 	}
 }
 
-// matcherSQL lowers a single matcher to its inner SQL + args. The caller
-// wraps this in whatever projection it needs (DISTINCT mapKeys, etc.).
-// When end is non-zero the lowering threads start/end through to
-// promql.LowerAt so the matcher's LWR window anchors at the request's
-// `end` rather than the lowering default (`now64(9)`).
+// matcherSQL lowers a single /labels or /label/<name>/values matcher to
+// its inner SQL + args. The caller wraps this in whatever projection it
+// needs (DISTINCT mapKeys, DISTINCT Attributes[name], etc.). start/end
+// bound the closed [start,end] metadata window (promql.LowerMetadataRange);
+// a zero bound is omitted. The full-range window — not an instant
+// staleness window at `end` — is what lets these endpoints surface a
+// label/value whose only sample sits early in the requested range.
 func (h *Handler) matcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
 	expr, err := h.parseExpr(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	var plan chplan.Node
-	if !end.IsZero() {
-		plan, err = promql.LowerAt(ctx, expr, h.Schema, start, end)
-	} else {
-		plan, err = promql.Lower(ctx, expr, h.Schema)
-	}
+	plan, err := promql.LowerMetadataRange(ctx, expr, h.Schema, start, end)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
@@ -1040,14 +1066,10 @@ func expandSeriesMatchers(parser promparser.Parser, matchers []string, histogram
 // breaches maxRenderedQueryBytes — typical requests stay one round-trip;
 // only a pathologically broad probe fans into a few bounded queries
 // (still ≪ N), merged through the dedup below.
-func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[string]string, error) {
+func (h *Handler) fetchSeries(ctx context.Context, matchers []string, start, end time.Time) ([]map[string]string, error) {
 	if len(matchers) == 0 {
 		return nil, nil
 	}
-	// Series matchers don't carry @ start()/end(); pass `now` for both
-	// anchors so any literal @<ts> still resolves but the start()/end()
-	// variants surface as errors at lowering time.
-	now := time.Now()
 
 	seen := make(map[string]map[string]string)
 	// No labelMemo here: this loop folds samples from SEVERAL independent
@@ -1058,7 +1080,7 @@ func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[str
 	// per series, not K samples per series, and the `seen` map already dedups
 	// by canonical key. So normalise directly, per row.
 	for _, chunk := range chunkMatcherVariants(matchers) {
-		samples, err := h.fetchSeriesChunk(ctx, chunk, now)
+		samples, err := h.fetchSeriesChunk(ctx, chunk, start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -1081,7 +1103,7 @@ func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[str
 // when the rendered-size guard splits) over a single arm-cap chunk of
 // matcher variants and returns the raw samples. The caller folds the
 // per-chunk samples into the cross-chunk dedup.
-func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, now time.Time) ([]chclient.Sample, error) {
+func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, start, end time.Time) ([]chclient.Sample, error) {
 	// Single-matcher fast path: run the lowered Sample-shape SELECT
 	// directly as the top-level statement — byte-identical to the
 	// pre-#71 per-arm query (the engine ran this same SQL). Avoids
@@ -1089,7 +1111,7 @@ func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, now t
 	// (…)` boundary, which some CH drivers (chdb) refuse to cast back to
 	// MAP.
 	if len(matchers) == 1 {
-		sql, args, err := h.seriesMatcherSQL(ctx, matchers[0], now, now)
+		sql, args, err := h.seriesMatcherSQL(ctx, matchers[0], start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -1103,7 +1125,7 @@ func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, now t
 	// byte budget.
 	arms := make([]chsql.Frag, 0, len(matchers))
 	for _, m := range matchers {
-		s, a, err := h.seriesMatcherSQL(ctx, m, now, now)
+		s, a, err := h.seriesMatcherSQL(ctx, m, start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -1144,19 +1166,17 @@ func (h *Handler) querySamples(ctx context.Context, sql string, args []any) ([]c
 // optimize, emit. The Sample shape is what lets every variant become a
 // UNION-ALL arm of the one combined query fetchSeries runs.
 //
-// start/end anchor the matcher lowering's eval timestamp (`now` for both
-// on the series path); zero-time falls back to the lowering default.
+// start/end bound the closed [start,end] metadata window the matcher
+// enumeration scans (promql.LowerMetadataRange) — NOT an instant
+// staleness window at `end`. A zero start/end omits that bound. This is
+// what makes /series return a series with any in-window sample instead of
+// only series with a sample in the last 5m at wall-clock `now`.
 func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
 	expr, err := h.parseExpr(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	var plan chplan.Node
-	if !end.IsZero() {
-		plan, err = promql.LowerAt(ctx, expr, h.Schema, start, end)
-	} else {
-		plan, err = promql.Lower(ctx, expr, h.Schema)
-	}
+	plan, err := promql.LowerMetadataRange(ctx, expr, h.Schema, start, end)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
