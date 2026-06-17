@@ -1,0 +1,78 @@
+# ct lint fixture: exercises ingress + hpa + pdb + networkpolicy + the env
+# escape hatches + an inline ClickHouse password (chart Secret path).
+replicaCount: 3
+
+clickhouse:
+  addr:
+    - clickhouse-a:9000
+    - clickhouse-b:9000
+  database: otel
+  username: cerberus
+  password: "s3cret-inline"
+
+otlp:
+  endpoint: "otel-collector-gateway.observability.svc:4317"
+  insecure: true
+
+config:
+  CERBERUS_QUERY_MAX_SAMPLES: "5000000"
+  CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
+
+extraEnv:
+  - name: GOMEMLIMIT
+    value: "1228MiB"
+  - name: POD_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+
+schema:
+  TTL: "30d"
+  CLUSTER: "main"
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+  hosts:
+    - host: cerberus.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: cerberus-tls
+      hosts:
+        - cerberus.example.com
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+      selectPolicy: Max
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: grafana

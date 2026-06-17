@@ -55,6 +55,31 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `RELEASE_SELF_JOBS` (default `preflight,goreleaser`).
   - Exit: `0` when every non-self, non-scheduled, non-flaky-UI check on the
     commit is green, `1` otherwise (with one `::error::` per red/pending lane).
+- **`chart-publish.mjs`** — `release.yml`, the `chart-release` job. Three
+  subcommands (argv[2]): `version-gate` compares the local Chart.yaml
+  `version:` against the latest chart tag in the OCI registry and sets the
+  `publish=true|false` + `version` step outputs (an app-only `v*` tag must NOT
+  republish an unchanged chart); `push` runs `helm push` and parses the pushed
+  `sha256:` digest out of helm's output into the `digest` + `ref` step outputs
+  for the downstream cosign-sign / attest steps; `ah-metadata` idempotently
+  pushes `artifacthub-repo.yml` as the special Artifact Hub OCI artifact via
+  `oras`.
+  - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `OCI_REPO` (default
+    `oci://ghcr.io/tsouza/cerberus/charts`), `CHART_NAME` (default `cerberus`),
+    `CHART_TGZ` (push only), `GITHUB_OUTPUT` (runner-provided).
+  - Exit: `0` on success (gate sets `publish` either way); `1` on a parse
+    failure / `helm push` / `oras push` error, or when the version-gate cannot
+    definitively determine existence (fails closed, with one `::error::`).
+- **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
+  step. Renders the chart for the default values and every `ci/*-values.yaml`
+  fixture, schema-validates each manifest set with `kubeconform -strict`, and
+  probes the rendered container image tag against the registry (fails only on a
+  DEFINITIVE not-found — the guard for an `appVersion` pointing at an
+  unpublished tag).
+  - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `KUBE_VERSION` (default
+    `1.28.0`), `SKIP_IMAGE_CHECK` (set `1` to skip the registry probe).
+  - Exit: `0` when all fixtures validate + images present; `1` on any
+    kubeconform failure or a missing image.
 - **`compat-step-summary.mjs`** — `compatibility.yml`, the three
   `Append score to step summary` steps.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that

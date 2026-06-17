@@ -3,8 +3,18 @@ name: release
 on:
   push:
     tags:
+      # App releases: `vX.Y.Z` (+ prerelease). Runs preflight + goreleaser
+      # (binary/image/provenance) AND chart-release — which publishes the
+      # chart ONLY if its Chart.yaml version changed, so an app-only tag never
+      # republishes an unchanged chart.
       - 'v*.*.*'
       - 'v*.*.*-*'
+      # Chart-only releases: `chart-vX.Y.Z` — the chart has its OWN SemVer
+      # line, so a chart-only change (template fix, new toggle, values change)
+      # ships without re-tagging the app. goreleaser is guarded off these tags
+      # (see its `if:`); only preflight + chart-release run.
+      - 'chart-v*.*.*'
+      - 'chart-v*.*.*-*'
 
 permissions:
   contents: write
@@ -32,11 +42,14 @@ jobs:
         run: node .github/scripts/release-preflight.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_SELF_JOBS: preflight,goreleaser
+          RELEASE_SELF_JOBS: preflight,goreleaser,chart-release
 
   release:
     name: goreleaser
     needs: preflight
+    # App-binary release only — skipped on chart-only `chart-v*` tags (those
+    # publish just the chart via chart-release below).
+    if: ${{ !startsWith(github.ref_name, 'chart-v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -76,3 +89,71 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/*.tar.gz'
+
+  # Publish the Helm chart to GHCR as an OCI artifact, cosign-sign it keyless,
+  # attest provenance, and (idempotently) push the Artifact Hub metadata. Gated
+  # on the same preflight as the binary release. The chart is published ONLY
+  # when its Chart.yaml `version:` differs from what's already in the registry —
+  # an app-only `v*` tag must not republish an unchanged chart (chart-publish.mjs
+  # version-gate). cosign + oras are installed via their official actions.
+  chart-release:
+    name: chart-release
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      CHART_DIR: deploy/helm/cerberus
+      OCI_REPO: oci://ghcr.io/${{ github.repository_owner }}/cerberus/charts
+      CHART_NAME: cerberus
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.4
+
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: oras-project/setup-oras@v1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: gate
+        name: Chart version gate (skip if unchanged)
+        run: node .github/scripts/chart-publish.mjs version-gate
+
+      - name: helm package
+        if: steps.gate.outputs.publish == 'true'
+        run: helm package "$CHART_DIR" --destination "$RUNNER_TEMP"
+
+      - id: push
+        name: helm push + capture digest
+        if: steps.gate.outputs.publish == 'true'
+        run: node .github/scripts/chart-publish.mjs push
+        env:
+          CHART_TGZ: ${{ runner.temp }}/cerberus-${{ steps.gate.outputs.version }}.tgz
+
+      - name: cosign sign (keyless)
+        if: steps.gate.outputs.publish == 'true'
+        run: cosign sign --yes "${{ steps.push.outputs.ref }}"
+
+      - name: Attest chart provenance
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/cerberus/charts/cerberus
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Push Artifact Hub metadata
+        if: steps.gate.outputs.publish == 'true'
+        run: node .github/scripts/chart-publish.mjs ah-metadata

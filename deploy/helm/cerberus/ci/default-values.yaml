@@ -1,0 +1,14 @@
+# ct install fixture: minimal install against an in-cluster ClickHouse stub.
+# `auto-create-schema` is disabled so the pod doesn't fatal on a stub CH that
+# can't actually apply DDL; readiness still pings the stub TCP port.
+clickhouse:
+  addr:
+    - clickhouse:9000
+  database: otel
+  username: default
+autoCreate:
+  schema: false
+  database: false
+# Keep self-telemetry off in the throwaway cluster.
+otlp:
+  endpoint: ""

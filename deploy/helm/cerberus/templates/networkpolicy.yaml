@@ -1,0 +1,60 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cerberus.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cerberus.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+      {{- with .Values.networkPolicy.ingress }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    # Auto-allowed egress, derived from the typed connection values: the
+    # ClickHouse data plane, DNS resolution, and (when set) the OTLP collector.
+    {{- $chPorts := list }}
+    {{- range .Values.clickhouse.addr }}
+    {{- $hp := splitList ":" . }}
+    {{- if eq (len $hp) 2 }}
+    {{- $chPorts = append $chPorts (last $hp | int) }}
+    {{- end }}
+    {{- end }}
+    {{- $chPorts = $chPorts | uniq }}
+    {{- if $chPorts }}
+    - ports:
+        {{- range $chPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    # DNS — UDP + TCP 53, to any peer (CoreDNS / kube-dns).
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if .Values.otlp.endpoint }}
+    {{- $otlpHostPort := splitList ":" (regexReplaceAll "^https?://" .Values.otlp.endpoint "") }}
+    {{- if eq (len $otlpHostPort) 2 }}
+    # OTLP self-telemetry export endpoint.
+    - ports:
+        - protocol: TCP
+          port: {{ last $otlpHostPort | int }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

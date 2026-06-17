@@ -1,0 +1,53 @@
+apiVersion: v2
+name: cerberus
+description: Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
+type: application
+
+# version is the chart's OWN SemVer line, versioned INDEPENDENTLY of the app
+# (appVersion). It answers "will my existing values.yaml survive a helm
+# upgrade?" and is the publish trigger: a chart-only fix bumps this without an
+# app re-tag; an app-only release bumps appVersion + a PATCH here for the new
+# default image. Starts 0.x because the values contract is not yet frozen.
+version: 0.1.0
+
+# appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
+# aren't coerced to floats. image.tag defaults from this when left empty.
+appVersion: "1.0.0"
+
+# autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
+# 1.21+; 1.23 is the conservative floor matching the manifests this chart
+# mirrors. The -0 suffix makes pre-release kubeVersions (e.g. EKS 1.23.x-eks)
+# compare correctly.
+kubeVersion: ">=1.23.0-0"
+
+home: https://github.com/tsouza/cerberus
+sources:
+  - https://github.com/tsouza/cerberus
+maintainers:
+  - name: tsouza
+    url: https://github.com/tsouza
+keywords:
+  - prometheus
+  - loki
+  - tempo
+  - clickhouse
+  - observability
+  - promql
+  - logql
+  - traceql
+  - gateway
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: source
+      url: https://github.com/tsouza/cerberus
+    - name: documentation
+      url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
+  artifacthub.io/images: |
+    - name: cerberus
+      image: ghcr.io/tsouza/cerberus:v1.0.0
+  # Bump the `1.0.0` floor here when the chart raises its minimum supported
+  # cerberus release; informational for Artifact Hub's compatibility hints.
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial cerberus Helm chart

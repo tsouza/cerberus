@@ -1,0 +1,73 @@
+name: chart-ci
+
+# Validation for the Helm chart. Path-filtered to chart assets, so it is
+# INFORMATIONAL (not a required status check — a path-filtered workflow can
+# never satisfy branch protection on PRs that don't touch the chart). Lint +
+# helm-docs drift + values.schema.json validation + kubeconform manifest
+# validation + image-existence guard + chart-testing (ct) lint/install
+# against the ci/*-values.yaml fixtures.
+on:
+  pull_request:
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/chart-ci.yml'
+      - '.github/scripts/chart-publish.mjs'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/chart-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CHART_DIR: deploy/helm/cerberus
+
+jobs:
+  chart-validate:
+    name: chart-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.4
+
+      - name: helm lint
+        run: helm lint "$CHART_DIR"
+
+      - name: helm-docs drift check
+        uses: docker://jnorwood/helm-docs:v1.14.2
+        with:
+          args: --chart-search-root=deploy/helm --template-files=README.md.gotmpl
+
+      - name: Fail on README drift
+        run: |
+          git diff --exit-code "$CHART_DIR/README.md" \
+            || { echo "::error::README.md is stale — run helm-docs and commit the result"; exit 1; }
+
+      - name: Install kubeconform
+        uses: taiki-e/install-action@v2
+        with:
+          tool: kubeconform@0.6.7
+
+      - name: Render + kubeconform + image-existence guard
+        env:
+          KUBE_VERSION: '1.28.0'
+        run: node .github/scripts/chart-kubeconform.mjs
+
+      - name: chart-testing (ct) lint
+        uses: helm/chart-testing-action@v2
+
+      - name: ct lint — enforce the version bump
+        run: ct lint --charts "$CHART_DIR" --target-branch "${{ github.event.repository.default_branch }}" --validate-maintainers=false
+
+      - uses: helm/kind-action@v1
+
+      - name: ct install against the default-values fixture
+        run: ct install --charts "$CHART_DIR" --target-branch "${{ github.event.repository.default_branch }}" --helm-extra-set-args "--set=autoCreate.schema=false"
