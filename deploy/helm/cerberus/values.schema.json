@@ -40,6 +40,15 @@
         "username": { "type": "string" },
         "protocol": { "type": "string", "enum": ["native", "http"] },
         "dialTimeout": { "type": "string" },
+        "pool": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxOpenConns": { "type": ["integer", "null"], "minimum": 0 },
+            "maxIdleConns": { "type": ["integer", "null"], "minimum": 0 },
+            "connMaxLifetime": { "type": "string" }
+          }
+        },
         "password": { "type": "string" },
         "existingSecret": { "type": "string" },
         "passwordKey": { "type": "string" },
@@ -104,6 +113,22 @@
       "additionalProperties": { "type": ["string", "number", "boolean"] }
     },
     "requirementsCheck": { "type": "boolean" },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxSamples": { "type": ["integer", "null"], "minimum": 0 },
+        "timeout": { "type": "string" },
+        "chMaxMemory": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pprof": { "type": "boolean" }
+      }
+    },
     "prom": {
       "type": "object",
       "additionalProperties": false,

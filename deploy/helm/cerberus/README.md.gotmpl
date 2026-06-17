@@ -30,15 +30,50 @@ helm install my-cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus \
 cerberus is configured **100% via environment variables** — there is no config
 file. This chart lowers three layers into env:
 
-1. **Typed blocks** (`clickhouse` / `otlp` / `autoCreate` / `admit` / `schema` /
-   `http`) → canonical `CERBERUS_*` env in a ConfigMap; the ClickHouse password
-   flows through a Secret (`existingSecret` preferred).
+1. **Typed blocks** (`clickhouse` / `query` / `otlp` / `autoCreate` / `admit` /
+   `schema` / `http` / `debug` / `prom`) → canonical `CERBERUS_*` env in a
+   ConfigMap; the ClickHouse password flows through a Secret (`existingSecret`
+   preferred).
 2. **`config: {}`** — a free-form map rendered verbatim as `KEY: value` env. Use
    it for any `CERBERUS_*` knob not covered by a typed block (the long tail; see
    [docs/configuration.md](https://github.com/tsouza/cerberus/blob/main/docs/configuration.md)).
 3. **`extraEnv` / `extraEnvFrom`** — raw container env (supports `valueFrom`).
 
 **Precedence (last wins):** typed blocks < `config` < `extraEnv`.
+
+### Full configuration surface
+
+cerberus reads roughly **90 `CERBERUS_*` environment variables**. The chart
+guarantees **every one of them is reachable** — nothing the binary reads is
+unreachable from values:
+
+- **Typed blocks** cover the common knobs plus the ones that need *special
+  rendering* the free-form map can't express: the ClickHouse password (Secret /
+  `existingSecret`), the TLS client certs (`clickhouse.tls.existingSecret`
+  mounts a Secret and points `CERBERUS_CH_TLS_*_FILE` at it), and the
+  list-valued `prom.resourceLabels` (joined into
+  `CERBERUS_PROM_RESOURCE_LABELS`). High-value operational knobs are first-class
+  too: `query.*` (query / memory limits), `clickhouse.pool.*` (connection
+  pool), `schema.*` (TTL / Replicated-DB), `debug.pprof`.
+- **`config: {}`** reaches the **entire long tail verbatim** — every *scalar*
+  `CERBERUS_*` knob is settable as `KEY: value`, whether or not a typed block
+  exists for it. That includes the ClickHouse breaker / keepalive / compression
+  tuning (`CERBERUS_CH_BREAKER_*`, `CERBERUS_CH_KEEPALIVE_*`,
+  `CERBERUS_CH_COMPRESSION*`), the HTTP server timeouts
+  (`CERBERUS_HTTP_*_TIMEOUT`), the solver / shard tuning (`CERBERUS_EVAL_ROUTE`,
+  `CERBERUS_SHARD_*`, `CERBERUS_SOLVER_TIMEOUT`), and the per-signal schema
+  overrides (`CERBERUS_SCHEMA_*`, `CERBERUS_SCHEMA_METRICS_*_TABLE`).
+
+The authoritative, per-knob inventory (names, defaults, semantics) lives in
+[docs/configuration.md](https://github.com/tsouza/cerberus/blob/main/docs/configuration.md).
+Reach for a typed block where one exists; use `config` for everything else:
+
+```yaml
+config:
+  CERBERUS_EVAL_ROUTE: "single"          # disable solver routing
+  CERBERUS_CH_BREAKER_THRESHOLD: "0.5"   # CH circuit-breaker tuning
+  CERBERUS_SCHEMA_METRICS_GAUGE_TABLE: "otel_metrics_gauge"
+```
 
 ## Observability
 
