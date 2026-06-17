@@ -120,6 +120,35 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 	return plan, nil
 }
 
+// LowerMetadataRange lowers a bare metadata matcher (one match[] selector
+// from /api/v1/series, /api/v1/labels, or /api/v1/label/<name>/values)
+// over the FULL [start,end] request window.
+//
+// Reference Prometheus answers these metadata endpoints by enumerating
+// every series/label/value with ANY sample anywhere in [start,end]. That
+// is NOT the instant-query contract [LowerAt] implements: an instant
+// lowering anchors a 5-minute LWR staleness window at `end` and collapses
+// to the latest sample per series — which silently drops any series whose
+// only sample sits earlier in the requested window (the rc.9 /series
+// empty-window bug, and the same defect in /labels + /label/<name>/values
+// once you account for late-arriving samples). LowerMetadataRange is the
+// single chokepoint that gives all three endpoints the correct full-range
+// window: the [metadataFullRange] flag routes the bare-selector path to
+// [wrapMetadataFullRange], which emits a closed `Timestamp >= start AND
+// Timestamp <= end` filter (a zero start/end omits that bound — whole-
+// table scan, matching reference defaults) with NO staleness collapse.
+func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
+	defer span.End()
+	plan, err := lower(expr, s, lowerCtx{start: start, end: end, metadataFullRange: true})
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
+	return plan, nil
+}
+
 func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch e := expr.(type) {
 	case *parser.VectorSelector:
@@ -503,6 +532,14 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		}
 		return wrapRangeLatestPerSeries(selectorInput, pred, anchor, ctx, s), nil
 	}
+	// Metadata enumeration (/series, /labels, /label/<name>/values): full
+	// [start,end] window, no LWR staleness collapse — see
+	// [wrapMetadataFullRange]. Checked before the instant LWR wrap because
+	// metadata lowerings run with step==0 and inRangeVector==false, so they
+	// fall through to exactly this seam.
+	if ctx.metadataFullRange {
+		return wrapMetadataFullRange(selectorInput, pred, ctx.start, ctx.end, s), nil
+	}
 	// Instant-vector context: the LWR wrapper applies both the
 	// `Timestamp <= anchor` upper bound and the staleness lower
 	// bound, so we DON'T pre-add the modifier's timeBoundExpr here —
@@ -643,6 +680,12 @@ func lowerCompanionUnion(
 			return wrapRangeAbsoluteAtBroadcast(selectorInput, nil, anchor, ctx, s), nil
 		}
 		return wrapRangeLatestPerSeries(selectorInput, nil, anchor, ctx, s), nil
+	}
+	// Metadata enumeration over the (Gauge, Sum) union: full [start,end]
+	// window, no LWR staleness collapse — same seam as the single-table
+	// path above. pred is nil here (already applied per union arm).
+	if ctx.metadataFullRange {
+		return wrapMetadataFullRange(selectorInput, nil, ctx.start, ctx.end, s), nil
 	}
 	return wrapInstantLatestPerSeries(selectorInput, nil, anchor, s), nil
 }
@@ -945,6 +988,98 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrTsAlias}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// wrapMetadataFullRange filters (scan, pred) to the closed [start,end]
+// request window and collapses to one row per `(MetricName, Attributes)`
+// series via `any()`. It is the metadata-endpoint analogue of
+// [wrapInstantLatestPerSeries]: same canonical 4-column Sample output
+// shape, but with two deliberate differences that implement metadata
+// enumeration semantics instead of instant-query semantics —
+//
+//   - WINDOW: a closed `Timestamp >= start AND Timestamp <= end` filter
+//     (each bound omitted when zero — a no-bound side scans the whole
+//     table, matching reference Prometheus's min/max-retention default),
+//     NOT the instant `(end - 5m, end]` LWR + staleness window. A series
+//     whose only sample sits early in [start,end] must still surface.
+//   - COLLAPSE: `any(TimeUnix)` / `any(Value)` per series — we only need
+//     existence-of-a-series, not the latest-per-series value — so there
+//     is no `argMax`/`max` LWR pick. The downstream /series dedup and the
+//     /labels + /label/<name>/values DISTINCT projections fold the
+//     one-row-per-series output exactly as they did the instant shape.
+//
+// Collapsing here (rather than streaming every in-window sample) bounds
+// the row count to the number of distinct series, keeping a wide
+// metadata window cheap on the wire.
+func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.Time, s schema.Metrics) chplan.Node {
+	combined := pred
+	addBound := func(b chplan.Expr) {
+		if combined == nil {
+			combined = b
+			return
+		}
+		combined = &chplan.Binary{Op: chplan.OpAnd, Left: combined, Right: b}
+	}
+	if !start.IsZero() {
+		addBound(&chplan.Binary{
+			Op:    chplan.OpGe,
+			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+			Right: metadataBoundExpr(start),
+		})
+	}
+	if !end.IsZero() {
+		addBound(&chplan.Binary{
+			Op:    chplan.OpLe,
+			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+			Right: metadataBoundExpr(end),
+		})
+	}
+
+	input := scan
+	if combined != nil {
+		input = &chplan.Filter{Input: scan, Predicate: combined}
+	}
+
+	const (
+		metaTsAlias    = "meta_ts"
+		metaValueAlias = "meta_value"
+	)
+	agg := &chplan.Aggregate{
+		Input: input,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.MetricNameColumn},
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: metaTsAlias},
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: metaValueAlias},
+		},
+	}
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: metaTsAlias}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: metaValueAlias}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// metadataBoundExpr renders a metadata window bound as a
+// `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)` literal — the same
+// literal shape [anchorBaseExpr] emits for an absolute eval anchor, so
+// the metadata window bounds read identically to the instant-query
+// bounds in emitted SQL.
+func metadataBoundExpr(t time.Time) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "toDateTime64",
+		Args: []chplan.Expr{
+			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
+			&chplan.LitInt{V: chplan.NanoScale},
 		},
 	}
 }
