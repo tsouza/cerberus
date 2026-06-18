@@ -139,7 +139,7 @@ func chPoolOptions(cfg Config) chpool.Options {
 // shape was not the matrix projection (the caller falls back to the row path),
 // with err nil. A non-nil err is a real failure already classified + recorded
 // against the breaker, exactly as the row path's QueryCursor open failure.
-func (c *Client) queryCursorColumnar(ctx context.Context, sql string, args ...any) (Cursor, bool, error) {
+func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql string, args ...any) (Cursor, bool, error) {
 	// Bind the positional `?` args into the raw SQL body ch-go sends. An
 	// unbindable arg type (outside the matrix path's closed string/int/float
 	// set) defers to the row path BEFORE any dial or breaker touch — the
@@ -149,7 +149,7 @@ func (c *Client) queryCursorColumnar(ctx context.Context, sql string, args ...an
 		return nil, false, nil
 	}
 
-	pool, err := c.columnar.acquirePool()
+	pool, err := d.matrix.acquirePool()
 	if err != nil {
 		c.br.record(ctx, err)
 		return nil, false, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))

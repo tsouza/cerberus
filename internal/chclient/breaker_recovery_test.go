@@ -50,7 +50,7 @@ func newRecoveryTestClient(conn recoveryPinger, interval, pingTimeout time.Durat
 	// window=0 keeps the default rolling failure window; openInterval=interval
 	// makes the OPEN backoff elapse on the same tiny cadence the loop ticks at.
 	def, registry := buildBreakers(false, 0, 0, interval, nil)
-	c := &Client{br: def, breakers: registry}
+	c := &Client{br: def, breakers: registry, cursorDecoder: rowDecoder{}}
 	c.recovery = startRecoveryLoop(conn, breakerList(def, registry), interval, pingTimeout)
 	return c
 }
