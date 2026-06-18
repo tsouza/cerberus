@@ -109,6 +109,7 @@ import {
 } from '@playwright/test';
 
 import {
+  awaitSeedFixtureSignal,
   awaitSelfTelemetryRangeSignal,
   captureConsoleErrors,
   describeSweepDepth,
@@ -622,6 +623,13 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // rate()-able — parity with dsquery.spec.ts + lints.spec.ts. Loud
   // deadline failure, never a skip.
   await awaitSelfTelemetryRangeSignal(request);
+  // The wait above only covers cerberus SELF-TELEMETRY. The showcase-*
+  // surfaces this crawl audits render the one-shot FIXTURE seed, whose
+  // compose service has no healthcheck — so the boot can hand off to the
+  // crawl before the seed's first INSERT lands and the showcase-promql
+  // set-operator panel (`up unless up{job="db"}`) renders an empty
+  // anti-join. Gate the crawl on the seed being queryable too.
+  await awaitSeedFixtureSignal(request);
 
   // The engine drives no login flow — every stack config declares
   // anonymousAuth and the crawl proves the assumption live before

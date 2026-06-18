@@ -294,3 +294,53 @@ export async function awaitSelfTelemetryRangeSignal(
     await awaitSelfTelemetryExprSignal(request, expr, deadlineSec);
   }
 }
+
+/**
+ * Block until the deterministic FIXTURE seed the showcase-* dashboards
+ * depend on has landed in ClickHouse and is queryable over the probe
+ * window, or throw after `deadlineSec`.
+ *
+ * Why this is needed ON TOP of awaitSelfTelemetryRangeSignal: that wait
+ * gates on cerberus's own SELF-TELEMETRY (`cerberus_queries_total`),
+ * which the collector exports continuously. It says NOTHING about the
+ * separate, one-shot FIXTURE seed (the `test/e2e/seed` program's `up`,
+ * `http_requests_total`, exp-histogram, … rows) that the showcase-promql
+ * / showcase-logql dashboards render. The fixture seed runs as the
+ * `seed` compose service, which has NO healthcheck — so
+ * `docker compose up --wait` (the exact compose-smoke CI boot) returns
+ * as soon as cerberus + grafana are healthy, WITHOUT waiting for the
+ * seed's initial INSERT. Playwright then probes the showcase panels in a
+ * race with that first seed tick.
+ *
+ * The `set operators: and / or / unless` panel's `up unless up{job="db"}`
+ * target is the sharpest victim: when the probe lands before the seed's
+ * `up{job="api"}` rows exist (and the collector's own self-scrape `up`
+ * is absent or has gone stale outside the 5m window), the anti-join over
+ * an `up` set that holds only `{job="db"}` — or nothing — yields zero
+ * series, tripping the default:nonempty contract. Adversarial repro on a
+ * healthy compose stack: truncating the gauge table reproduces count=0
+ * on that exact target deterministically.
+ *
+ * We gate on the panel's OWN expression so "warmup passed" implies "the
+ * showcase-promql set-operator panel has data": once this returns, an
+ * empty `up unless up{job="db"}` frame is a real bug (seed/eval/expr),
+ * never a boot race. Polls cerberus DIRECTLY (not through Grafana) for
+ * the same wire-vs-decode isolation as awaitSelfTelemetryExprSignal. The
+ * deadline failure is loud and actionable (a seed regression), never a
+ * skip.
+ */
+export async function awaitSeedFixtureSignal(
+  request: APIRequestContext,
+  deadlineSec = 120,
+): Promise<void> {
+  // The exact target the showcase-promql set-operator panel renders.
+  // The seeded `up{job="api"}` series is the deterministic non-`db`
+  // member that keeps this anti-join nonempty for the life of the
+  // rolling re-seed; probing the panel expression itself closes the
+  // gap between "the seed exists" and "the panel has series".
+  await awaitSelfTelemetryExprSignal(
+    request,
+    'up unless up{job="db"}',
+    deadlineSec,
+  );
+}

@@ -61,6 +61,7 @@ import {
 
 import {
   type VariableJSON,
+  awaitSeedFixtureSignal,
   awaitSelfTelemetryRangeSignal,
   checkDashboardVariable,
   describeSweepDepth,
@@ -529,6 +530,14 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
     // bounded, data-driven wait so an empty panel is a real bug, not a
     // boot race. Loud deadline failure, never a skip.
     await awaitSelfTelemetryRangeSignal(request);
+    // The previous wait only covers cerberus SELF-TELEMETRY. The
+    // showcase-* dashboards render the one-shot FIXTURE seed, whose
+    // compose service has no healthcheck — so `docker compose up --wait`
+    // can hand off to Playwright before the first seed INSERT lands. Gate
+    // the showcase-promql set-operator panel (`up unless up{job="db"}`) on
+    // the seed being queryable too, so an empty anti-join is a real bug,
+    // not a seed boot race.
+    await awaitSeedFixtureSignal(request);
   });
 
   for (const d of dashboards) {
