@@ -482,12 +482,16 @@ jobs:
           docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== otel-collector logs (last 200) ==="
           docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
-          # Infra-flake breadcrumb: if the captured state shows a disk /
-          # eviction signal, print a loud, actionable one-liner so a
-          # reviewer knows this is an infra flake (full runner disk), not a
-          # code regression — a fresh-runner re-run is the fix.
-          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage|no space left on device' /tmp/compose-state.log; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          # Infra-flake breadcrumb. Fire ONLY on a REAL disk-full signal —
+          # the kernel ENOSPC string in a container log, or root >=90% full.
+          # The bare field names
+          # 'DiskPressure'/'ephemeral-storage' were dropped: they are k8s
+          # terms that don't appear in compose container logs anyway, and
+          # keeping them invited the same false-positive that plagued the
+          # k3d lanes (see the dashboard job + PR diagnosis).
+          if grep -qiE 'no space left on device' /tmp/compose-state.log \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real disk-full / ephemeral-storage eviction detected (ENOSPC or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
           fi
 
       - name: teardown
@@ -635,8 +639,15 @@ jobs:
           docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== otel-collector logs (last 200) ==="
           docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
-          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage|no space left on device' /tmp/compose-state.log; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          # Fire ONLY on a REAL disk-full signal — the kernel ENOSPC string
+          # in a container log, or root >=90% full. The bare field names
+          # 'DiskPressure'/'ephemeral-storage' were dropped: they are k8s
+          # terms that don't appear in compose container logs anyway, and
+          # keeping them invited the same false-positive that plagued the
+          # k3d lanes (see the dashboard job + PR diagnosis).
+          if grep -qiE 'no space left on device' /tmp/compose-state.log \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real disk-full / ephemeral-storage eviction detected (ENOSPC or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
           fi
 
       - name: teardown
@@ -1072,12 +1083,30 @@ jobs:
           tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
           echo "=== rolling seeder port-forward log (tail 50) ==="
           tail -50 /tmp/cerberus-e2e-seed-pf.log 2>/dev/null || true
-          # Infra-flake breadcrumb: if the captured cluster state shows a
-          # disk / eviction signal, print a loud, actionable one-liner so a
-          # reviewer knows this is an infra flake (full runner disk), not a
-          # code regression — a fresh-runner re-run is the fix.
-          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage' /tmp/cluster-state.log 2>/dev/null; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          # Infra-flake breadcrumb: fire ONLY on a REAL ephemeral-storage
+          # eviction, so a reviewer can trust the "safe to re-run" hint.
+          #
+          # The previous guard grepped cluster-state.log for the bare field
+          # names 'DiskPressure' / 'ephemeral-storage'. But `kubectl describe
+          # nodes` (tee'd into that file above) ALWAYS prints those words on a
+          # HEALTHY node — `DiskPressure  False`, `KubeletHasNoDiskPressure`,
+          # `ephemeral-storage: <capacity>Ki`. So the breadcrumb fired on
+          # EVERY k3d failure regardless of cause (e.g. a cerberus /readyz 503
+          # timing bug), mislabelling real regressions as "infra flake, safe
+          # to re-run" and inventing a recurring disk flake that the df
+          # numbers show never happened (root sits <40% on these 145 GB
+          # runners; there is no /mnt). See PR for the full diagnosis.
+          #
+          # Match only the AFFIRMATIVE-pressure signals, none of which appear
+          # on a healthy node:
+          #   no space left on device   - the kernel ENOSPC string
+          #   DiskPressure +True        - the node condition flipped True
+          #   KubeletHasDiskPressure    - the pressure event (NOT the healthy
+          #   NodeHasDiskPressure         'KubeletHasNoDiskPressure'/'No' form)
+          #   Evicted                   - a pod actually evicted
+          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
           fi
 
       - name: Tear down
@@ -1352,11 +1381,18 @@ jobs:
           kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
           echo "=== rolling seeder log (tail 200) ==="
           tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
-          # Infra-flake breadcrumb: a disk / eviction signal in the captured
-          # cluster state means a full runner disk, not a code regression —
-          # a fresh-runner re-run is the fix.
-          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage' /tmp/cluster-state.log 2>/dev/null; then
-            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          # Infra-flake breadcrumb: fire ONLY on a REAL ephemeral-storage
+          # eviction. The previous guard grepped for the bare field names
+          # 'DiskPressure' / 'ephemeral-storage', which `kubectl describe
+          # nodes` ALWAYS prints on a healthy node ('DiskPressure  False',
+          # 'KubeletHasNoDiskPressure', 'ephemeral-storage: <cap>Ki'), so it
+          # fired on every chaos failure regardless of cause. Match only the
+          # affirmative-pressure signals (none present on a healthy node) plus
+          # a true root-disk-full threshold. See the dashboard job + PR for
+          # the full diagnosis.
+          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
           fi
 
       - name: Tear down
