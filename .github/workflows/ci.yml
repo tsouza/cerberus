@@ -216,6 +216,19 @@ jobs:
             !compatibility/loki/upstream/**
             !**/node_modules/**
 
+      # doc-to-code reference integrity. Greps docs/**/*.md for inline
+      # `(internal|cmd|test|deploy)/<path>.go[:line]` (+ dir) citations and
+      # HARD-FAILS on a path that no longer exists or a line pin past EOF.
+      # See .github/scripts/doc-refs.mjs + .github/scripts/README.md. The
+      # `--test` guard pins the extraction regex + verdict logic so the
+      # detectors can't silently rot into a no-op (same idiom as the
+      # compose-smoke / dashboard matrix guards).
+      - name: doc-refs self-test (regex + verdict guard)
+        run: node --test .github/scripts/doc-refs.test.mjs
+
+      - name: doc-to-code reference check
+        run: node .github/scripts/doc-refs.mjs
+
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
   # NON-NEGOTIABLE rule is "no t.Skip in test files — fix the bug, do
   # not skip." Greps `*_test.go` for `t.Skip` / `t.Skipf` / `t.SkipNow`
@@ -346,3 +359,47 @@ jobs:
         run: node .github/scripts/clickhouse-version-sync.mjs --self-test
       - name: ClickHouse version-sync gate
         run: node .github/scripts/clickhouse-version-sync.mjs
+
+  # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
+  # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no
+  # network is touched, so it CANNOT flake on a slow/blocked host — every
+  # check is a same-process filesystem + in-document anchor resolution. It
+  # validates that every relative `[text](./other.md#anchor)` link points at a
+  # file that exists AND, for `#fragment` links, that the target heading /
+  # anchor exists in the target document. External `http(s)://` links are
+  # NOT checked here — host availability is inherently flaky and must never
+  # red a PR or abort a tag; that lives in the schedule-only
+  # `link-check-external.yml` workflow instead.
+  #
+  # Runs on pull_request AND push-to-main so it is eligible as a required
+  # status check (branch protection) and is enumerated by the release
+  # preflight gate (release-preflight.mjs gates every non-self push-to-main
+  # check-run), making it a release gate too.
+  #
+  # Vendored upstream snapshots under `compatibility/*/upstream/**` are
+  # excluded, mirroring the markdownlint + forbid-skip exclude set — they are
+  # reference material outside cerberus's authorship boundary.
+  link-check:
+    name: link-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # OFFLINE link + fragment check. `--root-dir` anchors absolute-style
+      # `/foo` links at the repo root; `--include-fragments` turns on the
+      # in-document `#anchor` existence check. `fail: true` makes a broken
+      # link/anchor fail the job. No `GITHUB_TOKEN` and no network: this lane
+      # is deterministic by construction.
+      - name: lychee (offline internal links + anchors)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          fail: true
+          args: >-
+            --offline
+            --include-fragments
+            --root-dir "$GITHUB_WORKSPACE"
+            --exclude-path compatibility/prometheus/upstream
+            --exclude-path compatibility/tempo/upstream
+            --exclude-path compatibility/loki/upstream
+            --exclude-path node_modules
+            "**/*.md"

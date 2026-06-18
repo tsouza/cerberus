@@ -1,0 +1,76 @@
+name: link-check-external
+
+# EXTERNAL link checker. Deliberately split from the OFFLINE internal
+# `link-check` job in ci.yml: external `http(s)://` links depend on third-
+# party host availability, which is inherently flaky. A transient 5xx / DNS
+# blip / rate-limit on someone else's server must NEVER red a PR or abort a
+# release tag, so this lane runs ONLY on a weekly schedule + manual dispatch
+# and reports `fail: false`. The internal gate (offline, deterministic) is
+# the one wired into PRs and the release preflight.
+on:
+  schedule:
+    # Mondays 06:00 UTC. Weekly is plenty for catching link rot.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+# `issues: write` lets the tracking-issue step open/update the rot report.
+# `contents: read` for the checkout.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: link-check-external
+  cancel-in-progress: false
+
+jobs:
+  external-links:
+    name: external-links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Persist lychee's response cache across runs so a known-good link is
+      # not re-fetched every week (and a known-bad one is not hammered).
+      - name: Restore lychee cache
+        uses: actions/cache@v4
+        with:
+          path: .lycheecache
+          key: lychee-${{ github.run_id }}
+          restore-keys: |
+            lychee-
+
+      # ONLINE check: no `--offline`. `--cache` + `--max-cache-age 1d` reuse
+      # recent verdicts; `GITHUB_TOKEN` is passed so github.com links are
+      # checked authenticated (dodging the anonymous API rate-limit that
+      # otherwise yields false 429/404 negatives). `fail: false` -> the job
+      # stays green even with dead links; the report below carries the signal.
+      # The same upstream-snapshot + node_modules excludes as the internal gate.
+      - name: lychee (external links)
+        id: lychee
+        uses: lycheeverse/lychee-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          fail: false
+          output: ./lychee-report.md
+          args: >-
+            --cache
+            --max-cache-age 1d
+            --exclude-path compatibility/prometheus/upstream
+            --exclude-path compatibility/tempo/upstream
+            --exclude-path compatibility/loki/upstream
+            --exclude-path node_modules
+            "**/*.md"
+
+      # Open or update a single tracking issue when rot is found. `exit_code`
+      # is non-zero iff lychee saw at least one broken link. The action
+      # de-dupes by title, so reruns update the existing issue rather than
+      # spamming new ones. Never fails the job.
+      - name: Open/update link-rot tracking issue
+        if: steps.lychee.outputs.exit_code != 0
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: Weekly external link check found dead links
+          content-filepath: ./lychee-report.md
+          labels: link-rot, automated

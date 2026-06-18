@@ -51,7 +51,7 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Reference**: a real `prom/prometheus` container seeded with the
   *same* fixture as cerberus's ClickHouse (the seeder reads the CH rows
   back and mirrors them into Prometheus over remote-write — see
-  `cmd/seed/prom_remote.go` — so both backends answer from byte-identical
+  `compatibility/prometheus/cmd/seed/prom_remote.go` — so both backends answer from byte-identical
   data).
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
