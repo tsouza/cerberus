@@ -764,6 +764,76 @@ Logs are written as an event stream — see
 [`observability.md`](observability.md#logging) for the full contract
 (stderr stream shape, OTLP bridge, slog attribute conventions).
 
+## query_log mining
+
+Every data-plane query cerberus runs stamps the ClickHouse `query_id` with
+cerberus's active trace id (always on, no flag). That ties each row in
+`system.query_log` back to the cerberus trace — and, with the optional DARK
+flags from [`configuration.md`](configuration.md#query-instrumentation-phase-0),
+gives operators the join keys to cluster and rank cerberus's SQL by cost.
+
+Join a cerberus trace to its ClickHouse execution:
+
+```sql
+SELECT query_duration_ms, memory_usage, read_rows, read_bytes, query
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND query_id = '<cerberus trace id>'
+```
+
+Top query shapes by p99 latency (cluster by ClickHouse's normalized hash):
+
+```sql
+SELECT
+    normalized_query_hash,
+    count() AS runs,
+    quantile(0.99)(query_duration_ms) AS p99_ms,
+    any(query) AS sample
+FROM system.query_log
+WHERE type = 'QueryFinish' AND event_time > now() - INTERVAL 1 DAY
+GROUP BY normalized_query_hash
+ORDER BY p99_ms DESC
+LIMIT 20
+```
+
+Top shapes by peak memory:
+
+```sql
+SELECT
+    normalized_query_hash,
+    count() AS runs,
+    max(memory_usage) AS peak_bytes,
+    any(query) AS sample
+FROM system.query_log
+WHERE type = 'QueryFinish' AND event_time > now() - INTERVAL 1 DAY
+GROUP BY normalized_query_hash
+ORDER BY peak_bytes DESC
+LIMIT 20
+```
+
+With `CERBERUS_LOG_COMMENT_SHAPE=true`, every query also carries a compact,
+literal-free cerberus shape id in `log_comment` (`cerb:<root>[;mod...]`), so you
+can pivot on the cerberus-assigned shape rather than ClickHouse's literal-
+sensitive hash — and filter to cerberus traffic with `log_comment LIKE 'cerb:%'`:
+
+```sql
+SELECT
+    log_comment AS shape,
+    count() AS runs,
+    quantile(0.99)(query_duration_ms) AS p99_ms,
+    max(memory_usage) AS peak_bytes
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND log_comment LIKE 'cerb:%'
+  AND event_time > now() - INTERVAL 1 DAY
+GROUP BY log_comment
+ORDER BY p99_ms DESC
+LIMIT 20
+```
+
+The async reconciler that would persist this corpus and feed it back into rule
+tuning is a later roadmap phase; today these flags only emit the join keys.
+
 ## Admin commands
 
 Cerberus has no embedded admin REPL. Schema operations are owned by

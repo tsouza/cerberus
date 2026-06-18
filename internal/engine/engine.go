@@ -139,10 +139,18 @@ func strategyFor(meta Meta) string {
 // Applied identically on the eager (QueryPlan) and streaming
 // (QueryPlanCursor) execute sites so the native path is gated the same
 // way regardless of which one runs.
-func execContext(ctx context.Context, plan chplan.Node) context.Context {
+//
+// On top of the always-on ts-grid gate, execContext layers the DARK,
+// flag-gated settings rules from e.Settings (optimize_aggregation_in_order,
+// log_comment shape id). Each rule is OFF unless its CERBERUS_* flag is set,
+// so the default ctx is byte-identical to before these rules existed. Every
+// rule writes through chclient.WithQuerySetting, so a plan that triggers more
+// than one rule carries all of them on the one per-request settings map.
+func (e *Engine) execContext(ctx context.Context, plan chplan.Node) context.Context {
 	if planHasTSGridNative(plan) {
-		return chclient.WithTSGridSetting(ctx)
+		ctx = chclient.WithTSGridSetting(ctx)
 	}
+	ctx = e.Settings.apply(ctx, plan)
 	return ctx
 }
 
@@ -201,6 +209,13 @@ type Engine struct {
 	// (so the phase-2 flip is a config change) but dormant at the default
 	// config.
 	Solver *solver.Solver
+
+	// Settings carries the optional, DARK-by-default per-query ClickHouse
+	// settings rules the engine evaluates against the post-optimize plan
+	// (optimize_aggregation_in_order, log_comment shape id). The zero value
+	// is "every rule off": every existing call path is byte-unchanged. Wired
+	// from the CERBERUS_* flags in cmd/cerberus. See SettingsRules.
+	Settings SettingsRules
 }
 
 // Lang adapts a query-language head (PromQL / LogQL / TraceQL) to
@@ -365,7 +380,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
 	start := time.Now()
-	samples, err := e.Client.Query(execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
+	samples, err := e.Client.Query(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
@@ -571,7 +586,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	cursor, err := cq.QueryCursor(execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
+	cursor, err := cq.QueryCursor(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
 	execT.Done(ctx)
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)

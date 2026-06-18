@@ -253,10 +253,12 @@ func run() error {
 	lokiHandler.Version = Version
 	lokiHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	lokiHandler.TailWriteTimeout = cfg.LokiTailWriteTimeout
+	lokiHandler.Engine.Settings = settingsRules(cfg)
 	lokiHandler.Mount(traceMux)
 
 	tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 	tempoHandler.Limiter = tempoLimiter
+	tempoHandler.Engine.Settings = settingsRules(cfg)
 	tempoHandler.Mount(traceMux)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
@@ -353,12 +355,34 @@ const solverGateReserve = 2
 // Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
 func newPromHandler(client *chclient.Client, cfg config.Config, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
-	h.Engine = &engine.Engine{Optimizer: h.Optimizer, Client: client, Solver: evalSolver}
+	h.Engine = &engine.Engine{
+		Optimizer: h.Optimizer,
+		Client:    client,
+		Solver:    evalSolver,
+		Settings:  settingsRules(cfg),
+	}
 	h.Limiter = limiter
 	h.Version = Version
 	h.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	return h
+}
+
+// settingsRules builds the DARK-by-default per-query ClickHouse settings
+// rules from the CERBERUS_* config. Both rule flags default false, so the
+// returned value is "every rule off" unless an operator opted in; the schema
+// instances are always supplied so the aggregation-in-order eligibility check
+// can map ANY scanned signal table to its sort-key prefix regardless of which
+// head runs the query. Shared by all three heads' engines so a single env
+// flag flips the rule uniformly.
+func settingsRules(cfg config.Config) engine.SettingsRules {
+	return engine.SettingsRules{
+		OptimizeAggregationInOrder: cfg.OptimizeAggregationInOrder,
+		LogCommentShape:            cfg.LogCommentShape,
+		Metrics:                    cfg.Schema,
+		Traces:                     cfg.Traces,
+		Logs:                       cfg.Logs,
+	}
 }
 
 func buildSolver(

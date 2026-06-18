@@ -127,6 +127,31 @@ type Config struct {
 	// chDB differential sweep proves the timeSeriesDeltaToGrid mapping.
 	ExperimentalTSGridRange bool
 
+	// OptimizeAggregationInOrder, when true, lets the engine stamp the
+	// ClickHouse setting `optimize_aggregation_in_order=1` on a data-plane
+	// query whose post-optimize plan has an Aggregate GROUP BY that is a
+	// genuine bare-column PREFIX of the scanned table's sorting key (see
+	// internal/engine.SettingsRules). The setting is RESULT-EQUIVALENT --
+	// it changes only the aggregation execution strategy, never the rows --
+	// and exists well below cerberus's CH 24.8 floor, so it is version-safe.
+	//
+	// Default false: it ships DARK behind CERBERUS_OPTIMIZE_AGGREGATION_IN_
+	// ORDER so the corpus-driven optimization roadmap can enable it per
+	// environment. Even on, the eligibility check is conservative and only
+	// stamps when the GROUP BY is provably a sort-key prefix.
+	OptimizeAggregationInOrder bool
+
+	// LogCommentShape, when true, lets the engine stamp ClickHouse
+	// `log_comment` with a COMPACT, literal-free cerberus shape id
+	// (emit-root plan node kind + key modifiers, never any literal values)
+	// so operators with query_log enabled can cluster system.query_log rows
+	// by normalized_query_hash + log_comment. log_comment is a free-form
+	// annotation ignored by execution, so stamping it is result-neutral and
+	// version-safe.
+	//
+	// Default false: it ships DARK behind CERBERUS_LOG_COMMENT_SHAPE.
+	LogCommentShape bool
+
 	// Log configures cerberus's own structured logging (stdlib log/slog).
 	// See LogConfig for the env-var contract.
 	Log LogConfig
@@ -398,6 +423,8 @@ const (
 	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
 	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envOptimizeAggInOrder  = "CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER"
+	envLogCommentShape     = "CERBERUS_LOG_COMMENT_SHAPE"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
 	envLogLevel            = "CERBERUS_LOG_LEVEL"
 	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
@@ -504,6 +531,14 @@ const configFileBaseName = "cerberus"
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
 //	    >= 25.6 (prod / compose / e2e are on 25.8, so this floor is met by
 //	    default); on older servers the native query 500s with UNKNOWN_FUNCTION
+//	CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER default "false" — stamp
+//	    optimize_aggregation_in_order=1 on queries whose Aggregate GROUP BY
+//	    is a bare-column prefix of the scanned table's sorting key. Result-
+//	    equivalent execution knob, safe on CH 24.8; DARK by default.
+//	CERBERUS_LOG_COMMENT_SHAPE     default "false" — stamp a compact, literal-
+//	    free cerberus shape id into ClickHouse log_comment so query_log rows
+//	    cluster by normalized_query_hash + log_comment. Result-neutral, safe
+//	    on CH 24.8; DARK by default.
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
 //	CERBERUS_OTLP_ENDPOINT         default ""   (empty → exporters disabled)
@@ -680,22 +715,24 @@ func FromEnv() (Config, error) {
 		extra:        surface.ch,
 	})
 	return Config{
-		HTTPAddr:                getString(v, envHTTPAddr),
-		HTTPServer:              surface.httpServer,
-		LokiTailWriteTimeout:    surface.lokiTailWriteTimeout,
-		ClickHouse:              chCfg,
-		Schema:                  schema.DefaultOTelMetricsFromEnv(),
-		Logs:                    schema.DefaultOTelLogsFromEnv(),
-		Traces:                  schema.DefaultOTelTracesFromEnv(),
-		AutoCreateSchema:        flags.AutoCreate,
-		AutoCreateDatabase:      flags.AutoCreateDatabase,
-		SchemaProvisioning:      schemaProvisioning,
-		RequirementsCheck:       flags.RequirementsCheck,
-		ExperimentalTSGridRange: flags.TSGridRange,
-		DebugPProf:              flags.DebugPProf,
-		Log:                     logCfg,
-		OTLP:                    otlp,
-		Admit:                   admit,
+		HTTPAddr:                   getString(v, envHTTPAddr),
+		HTTPServer:                 surface.httpServer,
+		LokiTailWriteTimeout:       surface.lokiTailWriteTimeout,
+		ClickHouse:                 chCfg,
+		Schema:                     schema.DefaultOTelMetricsFromEnv(),
+		Logs:                       schema.DefaultOTelLogsFromEnv(),
+		Traces:                     schema.DefaultOTelTracesFromEnv(),
+		AutoCreateSchema:           flags.AutoCreate,
+		AutoCreateDatabase:         flags.AutoCreateDatabase,
+		SchemaProvisioning:         schemaProvisioning,
+		RequirementsCheck:          flags.RequirementsCheck,
+		ExperimentalTSGridRange:    flags.TSGridRange,
+		DebugPProf:                 flags.DebugPProf,
+		OptimizeAggregationInOrder: flags.OptimizeAggInOrder,
+		LogCommentShape:            flags.LogCommentShape,
+		Log:                        logCfg,
+		OTLP:                       otlp,
+		Admit:                      admit,
 	}, nil
 }
 
@@ -763,6 +800,8 @@ var allEnvKeys = []string{
 	envSchemaDBReplReplica,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
+	envOptimizeAggInOrder,
+	envLogCommentShape,
 	envLogFormat,
 	envLogLevel,
 	envOTLPEndpoint,
@@ -863,6 +902,8 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
+	v.SetDefault(envOptimizeAggInOrder, defaultOptimizeAggInOrder)
+	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
 	v.SetDefault(envOTLPEndpoint, defaultOTLPEndpoint)
@@ -909,6 +950,8 @@ const (
 	defaultSchemaTTL          = "0s"
 	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
+	defaultOptimizeAggInOrder = false
+	defaultLogCommentShape    = false
 	defaultLogFormat          = "text"
 	defaultLogLevel           = "info"
 	defaultOTLPEndpoint       = ""
@@ -1486,6 +1529,8 @@ type bootFlags struct {
 	RequirementsCheck  bool
 	TSGridRange        bool
 	DebugPProf         bool
+	OptimizeAggInOrder bool
+	LogCommentShape    bool
 }
 
 // bootFlagsFromEnv parses the boolean boot toggles, failing fast on a
@@ -1519,12 +1564,22 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	if err != nil {
 		return bootFlags{}, err
 	}
+	optimizeAggInOrder, err := getBool(v, envOptimizeAggInOrder)
+	if err != nil {
+		return bootFlags{}, err
+	}
+	logCommentShape, err := getBool(v, envLogCommentShape)
+	if err != nil {
+		return bootFlags{}, err
+	}
 	return bootFlags{
 		AutoCreate:         autoCreate,
 		AutoCreateDatabase: autoCreateDatabase,
 		RequirementsCheck:  requirementsCheck,
 		TSGridRange:        tsGridRange,
 		DebugPProf:         debugPProf,
+		OptimizeAggInOrder: optimizeAggInOrder,
+		LogCommentShape:    logCommentShape,
 	}, nil
 }
 

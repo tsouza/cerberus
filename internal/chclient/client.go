@@ -720,23 +720,25 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 //     effective timeout, after any per-request WithQueryTimeout override,
 //     is > 0). `throw` aborts an over-long query with TIMEOUT_EXCEEDED
 //     (code 159) rather than returning partial results.
-//   - SettingExperimentalTSGridAggregate=1 — ONLY when ctx was marked by
-//     WithTSGridSetting (the engine marks it when the emitted plan
-//     contains a chplan.RangeWindowNative node). The experimental knob
-//     is added to the SAME map as max_memory_usage, never via a second
-//     independent clickhouse.WithSettings wrap — a second wrap REPLACES
-//     rather than unions the settings map (clickhouse-go context.go:
+//   - the per-request settings map attached by WithQuerySetting — every
+//     plan-shape-gated setting the engine stamps for THIS query
+//     (SettingExperimentalTSGridAggregate=1 when the plan has a
+//     chplan.RangeWindowNative node; optimize_aggregation_in_order=1 when
+//     the GROUP BY is a sorting-key prefix; ...). Merged into the SAME map
+//     as max_memory_usage, never via a second independent
+//     clickhouse.WithSettings wrap — a second wrap REPLACES rather than
+//     unions the settings map (clickhouse-go context.go:
 //     `c.settings = maps.Clone(q.settings)`), which would silently drop
-//     the memory cap. Merging here keeps both knobs on the one map.
+//     the memory cap. Merging here keeps every knob on the one map.
 //
 // Kept as its own method (rather than inlined into queryContext) so
 // tests can assert the settings content directly — the driver stores
 // QueryOptions under an unexported context key with no public getter.
 func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
-	wantTSGrid := wantTSGridSetting(ctx)
+	perQuery := querySettingsFromContext(ctx)
 	timeout := c.effectiveQueryTimeout(ctx)
 	blockSize := maxBlockSizeFromContext(ctx)
-	if c.maxMemory <= 0 && timeout <= 0 && !wantTSGrid && blockSize == 0 {
+	if c.maxMemory <= 0 && timeout <= 0 && len(perQuery) == 0 && blockSize == 0 {
 		return nil
 	}
 	s := clickhouse.Settings{}
@@ -751,8 +753,11 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		s[settingMaxExecutionTime] = timeout.Seconds()
 		s[settingTimeoutOverflowMode] = timeoutOverflowModeThrow
 	}
-	if wantTSGrid {
-		s[SettingExperimentalTSGridAggregate] = 1
+	// Plan-shape-gated per-request settings ride on top of the client-wide
+	// caps. They are merged last so a future shape-gated override of a cap
+	// is intentional and visible here, not accidental.
+	for name, value := range perQuery {
+		s[name] = value
 	}
 	if blockSize > 0 {
 		// Per-request override (WithMaxBlockSize) — only ever set by the
@@ -765,19 +770,49 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 
 // queryContext derives the context every data-plane query runs under:
 // the caller's ctx plus the per-query ClickHouse settings from
-// querySettings. clickhouse.Context merges with any QueryOptions
+// querySettings and the ClickHouse query_id stamped from the active
+// trace id. clickhouse.Context merges per-option with any QueryOptions
 // already on ctx (e.g. the progress callback installed by
-// WithProgressFor), so stacking is safe. When no settings are
-// configured the ctx is returned unchanged.
+// WithProgressFor), so stacking is safe and the existing options are
+// preserved. When neither a setting nor a query_id is available the ctx
+// is returned unchanged.
 //
 // Exec (DDL / DML) deliberately does NOT go through this — see
 // Config.MaxQueryMemoryBytes.
 func (c *Client) queryContext(ctx context.Context) context.Context {
 	s := c.querySettings(ctx)
-	if s == nil {
+	queryID := queryIDFromContext(ctx)
+	if s == nil && queryID == "" {
 		return ctx
 	}
-	return clickhouse.Context(ctx, clickhouse.WithSettings(s))
+	opts := make([]clickhouse.QueryOption, 0, 2)
+	if s != nil {
+		opts = append(opts, clickhouse.WithSettings(s))
+	}
+	if queryID != "" {
+		opts = append(opts, clickhouse.WithQueryID(queryID))
+	}
+	return clickhouse.Context(ctx, opts...)
+}
+
+// queryIDFromContext derives the ClickHouse query_id for a data-plane
+// dispatch from cerberus's active trace id. The otelhttp server span makes
+// a valid trace id available on every request ctx; stamping it as the CH
+// query_id lets operators later join their SQL back to system.query_log on
+// the cerberus trace id (the query_id column), and ties the CH side of a
+// request to the same trace the cerberus spans carry.
+//
+// This is observational and harmless: query_id is free-form on the wire and
+// only ever an identifier ClickHouse echoes back into query_log. When no
+// valid trace is present (no-op tracer in tests, a non-instrumented caller),
+// the trace id is the all-zero invalid id; we return "" and leave query_id
+// unset so the driver generates its own — query_id is never an error path.
+func queryIDFromContext(ctx context.Context) string {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.HasTraceID() {
+		return ""
+	}
+	return sc.TraceID().String()
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is

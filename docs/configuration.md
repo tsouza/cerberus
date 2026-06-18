@@ -416,6 +416,49 @@ the SQL array machinery leaves at high cardinality. Default off is byte-for-byte
 the established fan-out. See [`performance.md`](performance.md#the-durable-answer)
 for the why and [`benchmarks.md`](benchmarks.md) for the recorded numbers.
 
+## Query instrumentation (Phase-0)
+
+These flags ship the first slice of the ClickHouse-optimization roadmap:
+per-query instrumentation that lets operators mine `system.query_log`, plus one
+conservative, result-equivalent settings win. Both the DARK flags below default
+**off**, and every behaviour here is safe on ClickHouse 24.8 (cerberus's minimum
+floor) — none adopts a 25.x feature.
+
+| Variable                                 | Type | Default | Description                                                                                                                                                           |
+| ---------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- --|
+| `CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` | bool | `false` | Stamp `optimize_aggregation_in_order=1` on queries whose post-optimize `Aggregate` GROUP BY is a bare-column **prefix** of the scanned table's sorting key.           |
+| `CERBERUS_LOG_COMMENT_SHAPE`             | bool | `false` | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`. |
+
+**Always-on (no flag): `query_id`.** Every data-plane query cerberus dispatches
+carries a ClickHouse `query_id` set to cerberus's active trace id. This is
+observational and harmless — `query_id` is a free-form identifier ClickHouse
+echoes into `system.query_log` — and it lets operators join their SQL back to
+the cerberus trace that issued it. When no trace is present (an un-instrumented
+caller) the driver generates its own id; `query_id` is never an error path.
+
+`CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` is **result-equivalent**: the setting
+changes only ClickHouse's aggregation execution strategy (consume rows in sort
+order, emit each group as its key block is exhausted), never the rows returned.
+The eligibility check is conservative — it stamps **only** when the plan has a
+single `Aggregate` whose GROUP BY keys are all bare columns and form an ordered
+prefix of the scanned table's sorting key (e.g. metrics group by
+`MetricName` / `(MetricName, Attributes)` against the
+`(MetricName, Attributes, ServiceName, ...)` sort key). A reordered, gapped, or
+non-prefix GROUP BY, a union/join, or a renamed table all fail closed and the
+setting is not sent. The setting predates the 24.8 floor, so it is version-safe.
+
+`CERBERUS_LOG_COMMENT_SHAPE` emits a shape id built from the emit-root plan node
+kind plus structural modifiers (aggregate key arity, presence of a range window
+/ join / union / limit) and **never any literal** — no metric names, label
+values, timestamps, or group-by column names. `log_comment` is a free-form
+annotation ClickHouse ignores during execution, so stamping it is result-neutral
+and version-safe. See [`operations.md`](operations.md#query_log-mining) for the
+mining queries this enables.
+
+> This is Phase-0 of the optimization roadmap. The async `query_log` reconciler
+> (corpus persistence + feedback-driven rule tuning) is deliberately deferred to
+> a later phase; these flags only emit the join keys it will consume.
+
 ## Loki streaming
 
 | Variable                           | Type     | Default | Description                                                                                            |
