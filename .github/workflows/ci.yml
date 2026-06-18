@@ -146,6 +146,22 @@ jobs:
       - name: go-arch-lint
         run: go-arch-lint check
 
+      # opt-feature-table drift gate. The structural feature table (id /
+      # minVersion / stability) in docs/clickhouse-optimizations.md is
+      # GENERATED from internal/chopt/registry.go by cmd/optdocs. Regenerate
+      # and fail if the committed block differs from what the registry
+      # produces, so a new registry feature can never go missing from the doc
+      # (the ts_grid_changes / ts_grid_resets audit gap, made structurally
+      # impossible). Same git-diff-exit-code pattern as chart-ci's
+      # helm-docs-drift gate. Runs on every PR and on push to main, so the
+      # release-preflight (which requires every push-to-main check on the
+      # tagged commit to be green) gates the release on it too.
+      - name: opt-feature-table drift check
+        run: |
+          go generate ./internal/chopt/
+          git diff --exit-code -- docs/clickhouse-optimizations.md \
+            || { echo "::error::docs/clickhouse-optimizations.md is stale — run 'just gen-opt-docs' and commit the result"; exit 1; }
+
       # actionlint validates the workflow files themselves (expression
       # contexts, action inputs, shellcheck of run blocks). GitHub
       # rejects invalid workflow files SERVER-side as zero-job

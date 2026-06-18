@@ -48,6 +48,17 @@ install:
 clean:
     rm -rf bin/ dist/
 
+# === Generate ===
+
+# Regenerate the structural feature table (id / minVersion / stability) in
+# docs/clickhouse-optimizations.md from internal/chopt/registry.go, the single
+# source of truth. Adding a feature to the registry lands it in the doc here;
+# CI fails any PR whose generated block drifts (git diff --exit-code). The rich
+# hand-authored columns (experimental setting, effect prose) stay outside the
+# markers and are untouched. Same as `go generate ./internal/chopt/`.
+gen-opt-docs:
+    go run ./cmd/optdocs -doc docs/clickhouse-optimizations.md
+
 # === Test ===
 
 # Run unit + spec tests with race detector.
