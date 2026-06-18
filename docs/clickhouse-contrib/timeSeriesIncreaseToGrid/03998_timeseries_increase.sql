@@ -1,8 +1,9 @@
 -- Functional test for timeSeriesIncreaseToGrid.
 -- CI-UNVALIDATED: authored against ClickHouse master source as of 2026-06-18,
 -- NOT executed in this environment. Place at
--- tests/queries/0_stateless/03999_timeseries_increase.sql in a ClickHouse fork
--- (rename to a free 0399x/04xxx number if it collides).
+-- tests/queries/0_stateless/03998_timeseries_increase.sql in a ClickHouse fork
+-- (03998 verified free against master 2026-06-18; renumber if it collides on
+-- your target tag).
 --
 -- Core assertion: increase(c[w]) == rate(c[w]) * w, cell by cell, including
 -- NULL alignment. The new aggregate reuses the rate kernel's counter-reset

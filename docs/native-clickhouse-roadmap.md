@@ -200,6 +200,12 @@ Mirrored against ClickHouse `master` as of 2026-06-18. Exact files/lines:
   experimental gate at line ~253 reads
   `allow_experimental_time_series_aggregate_functions` (OR
   `allow_experimental_time_series_table`).
+- `src/Core/Settings.cpp:8238` — `DECLARE_WITH_ALIAS(Bool,
+  allow_experimental_time_series_aggregate_functions, false, ..., EXPERIMENTAL,
+  allow_experimental_ts_to_grid_aggregate_function)`. Confirms the short name
+  (`allow_experimental_ts_to_grid_aggregate_function`, used by the docs and the
+  stateless tests) IS the registered alias of the gate-checked long name, so
+  setting either enables the function.
 - `src/AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesBase.h`
   — `State { UnorderedMapWithMemoryTracking<size_t, Bucket> buckets; }`;
   `doInsertResultInto` sets `adjust_to_resets = is_rate` and accumulates
@@ -210,14 +216,18 @@ Mirrored against ClickHouse `master` as of 2026-06-18. Exact files/lines:
 
 Uncertainty / things to re-verify before applying:
 
-- **Setting-name split.** The runtime ENFORCEMENT check
+- **Setting-name split (RESOLVED).** The runtime ENFORCEMENT check
   (`AggregateFunctionTimeseriesHelpers.cpp:253`) reads
   `allow_experimental_time_series_aggregate_functions`; the docs strings and the
   stateless tests use `allow_experimental_ts_to_grid_aggregate_function`. These
-  appear to be aliases (test sets the short one and the functions run). The
-  staged contrib documents both; cerberus's engine stamps the long name
-  (`chopt` note in `internal/chopt/registry.go`). Confirm aliasing on the target
-  tag.
+  are confirmed aliases: `src/Core/Settings.cpp:8238` declares the long name with
+  `DECLARE_WITH_ALIAS(..., EXPERIMENTAL,
+  allow_experimental_ts_to_grid_aggregate_function)`, so setting the short name
+  sets the gate-checked long name. (DeepWiki incorrectly reported them as
+  distinct settings; the raw `Settings.cpp` source disproves that.) The staged
+  contrib documents both; cerberus's engine stamps the long name (`chopt` note
+  in `internal/chopt/registry.go`). Re-confirm the `DECLARE_WITH_ALIAS` survives
+  on the target release tag.
 - **`fillResultValue` line numbers drift.** The function body was read via
   DeepWiki + raw GitHub; exact line numbers shift between releases. The patch is
   expressed as minimal anchored edits, not absolute-line hunks, to survive this.

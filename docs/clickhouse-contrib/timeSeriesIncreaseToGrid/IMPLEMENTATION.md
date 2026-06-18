@@ -41,8 +41,9 @@ branch, one guard tweak, one registration line, one test.
 2. `src/AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesHelpers.cpp`
    — one new `FunctionDocumentation` block + one `factory.registerFunction`
    line.
-3. `tests/queries/0_stateless/03999_timeseries_increase.{sql,reference}`
-   — new functional test (provided in this directory).
+3. `tests/queries/0_stateless/03998_timeseries_increase.{sql,reference}`
+   — new functional test (provided in this directory; `03998_` verified free
+   against `master` on 2026-06-18, `03999_` is taken).
 
 No new source files. No registration plumbing beyond the one factory line —
 `createAggregateFunctionTimeseries` and `createWithValueType` are fully generic
@@ -238,8 +239,20 @@ No new setting. The function is gated by the same check at
 
 The family's docs and stateless tests enable it via the alias setting
 `allow_experimental_ts_to_grid_aggregate_function = 1` (which the test in this
-directory uses). Both names work on `master`; confirm aliasing on the target
-tag.
+directory uses). The alias is REAL and verified: `src/Core/Settings.cpp:8238`
+declares
+
+```cpp
+DECLARE_WITH_ALIAS(Bool, allow_experimental_time_series_aggregate_functions, false, R"(
+...
+)", EXPERIMENTAL, allow_experimental_ts_to_grid_aggregate_function)
+```
+
+so `SET allow_experimental_ts_to_grid_aggregate_function = 1` sets the
+gate-checked `allow_experimental_time_series_aggregate_functions`. The short name
+is the registered alias of the long name — both enable the function on `master`.
+Re-confirm the `DECLARE_WITH_ALIAS` line survives on the target release tag (the
+family is experimental and setting names have churned).
 
 ## What is deliberately NOT done (laziness discipline)
 

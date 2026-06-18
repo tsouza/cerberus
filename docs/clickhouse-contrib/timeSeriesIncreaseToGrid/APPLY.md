@@ -49,11 +49,13 @@ line.
 ## 3. Install the functional test
 
 ```sh
-cp /path/to/cerberus/docs/clickhouse-contrib/timeSeriesIncreaseToGrid/03999_timeseries_increase.sql        tests/queries/0_stateless/
-cp /path/to/cerberus/docs/clickhouse-contrib/timeSeriesIncreaseToGrid/03999_timeseries_increase.reference  tests/queries/0_stateless/
+cp /path/to/cerberus/docs/clickhouse-contrib/timeSeriesIncreaseToGrid/03998_timeseries_increase.sql        tests/queries/0_stateless/
+cp /path/to/cerberus/docs/clickhouse-contrib/timeSeriesIncreaseToGrid/03998_timeseries_increase.reference  tests/queries/0_stateless/
 ```
 
-If `03999_` collides, renumber both files to a free slot (e.g. `04xxx`).
+`03998_` was verified free against `master` on 2026-06-18 (note `03999_` is
+taken by `03999_hive_text_variable_columns_off_and_extras.sh`). If `03998_`
+collides on your target tag, renumber both files to a free slot (e.g. `04xxx`).
 
 ## 4. Build
 
@@ -67,7 +69,7 @@ ninja clickhouse        # or `ninja` for the full build
 
 ```sh
 cd ..
-./tests/clickhouse-test 03999_timeseries_increase
+./tests/clickhouse-test 03998_timeseries_increase
 ```
 
 The `.reference` asserts two impl-independent invariants:
@@ -85,7 +87,7 @@ pattern). If your build reports a different split but still says `ALL OK` and
 `0`, the function is CORRECT — regenerate the reference:
 
 ```sh
-./tests/clickhouse-test --generate 03999_timeseries_increase
+./tests/clickhouse-test --generate 03998_timeseries_increase
 # or capture the actual output and overwrite the .reference
 ```
 
@@ -94,7 +96,7 @@ The `ALL OK` / `0` strings are the assertions; the counts are timing-derived.
 ## 6. Open the upstream PR
 
 ```sh
-git add src/AggregateFunctions/TimeSeries/ tests/queries/0_stateless/03999_timeseries_increase.*
+git add src/AggregateFunctions/TimeSeries/ tests/queries/0_stateless/03998_timeseries_increase.*
 git commit -m "Add timeSeriesIncreaseToGrid aggregate (PromQL increase on a grid)"
 git push origin feature/timeSeriesIncreaseToGrid
 gh pr create --repo ClickHouse/ClickHouse --base master \
