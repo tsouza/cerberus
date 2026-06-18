@@ -143,7 +143,17 @@ docker_manifests:
       - "ghcr.io/tsouza/cerberus:latest-arm64"
 
 release:
-  draft: false
+  # draft:true so goreleaser creates the GitHub release as a DRAFT (mutable)
+  # and can attach the binary archives + checksums to it. The repo has
+  # immutable releases enabled, which freezes a release the moment it is
+  # PUBLISHED -- so a published release cannot receive assets afterwards
+  # (422 "cannot upload assets to an immutable release"). release.yml flips
+  # the draft to published in a step AFTER goreleaser + provenance attest, so
+  # it is frozen WITH the assets already attached. The tag must be pushed
+  # WITHOUT pre-creating a release (push the git tag only, never
+  # `gh release create`), or goreleaser would find an already-immutable
+  # release and fail the same way.
+  draft: true
   prerelease: auto
   github:
     owner: tsouza
