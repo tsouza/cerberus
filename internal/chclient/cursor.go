@@ -385,6 +385,24 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	// Columnar matrix decode (CERBERUS_COLUMNAR_MATRIX_DECODE) routes the
+	// four-column `query_range` matrix shape through a dedicated ch-go dial
+	// so each series' label map is built once per run instead of once per
+	// row. It reuses the SAME conn-agnostic plumbing (breaker allow/record,
+	// query_id stamping, settings, budget, span, recorder) and produces
+	// byte-identical Samples; a non-matrix shape (or a transport failure on
+	// the matrix probe) falls back to the row path below. Off by default.
+	if c.columnar != nil {
+		cur, ok, err := c.queryCursorColumnar(ctx, sql, args...)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return cur, nil
+		}
+		// Not the matrix shape (or columnar probe declined) — fall through
+		// to the row path, byte-unchanged from the flag-off behaviour.
+	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	rows, err := c.queryOpen(ctx, sql, args...)

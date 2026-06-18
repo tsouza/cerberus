@@ -399,84 +399,85 @@ type OTLPConfig struct {
 // strings — the CERBERUS_* contract is load-bearing (docs + surface
 // tests pin these names).
 const (
-	envHTTPAddr            = "CERBERUS_HTTP_ADDR"
-	envCHAddr              = "CERBERUS_CH_ADDR"
-	envCHDatabase          = "CERBERUS_CH_DATABASE"
-	envCHUsername          = "CERBERUS_CH_USERNAME"
-	envCHPassword          = "CERBERUS_CH_PASSWORD"
-	envCHDialTimeout       = "CERBERUS_CH_DIAL_TIMEOUT"
-	envCHMaxOpenConns      = "CERBERUS_CH_MAX_OPEN_CONNS"
-	envCHMaxIdleConns      = "CERBERUS_CH_MAX_IDLE_CONNS"
-	envCHConnMaxLifetime   = "CERBERUS_CH_CONN_MAX_LIFETIME"
-	envCHKeepAliveEnabled  = "CERBERUS_CH_KEEPALIVE_ENABLED"
-	envCHKeepAliveIdle     = "CERBERUS_CH_KEEPALIVE_IDLE"
-	envCHKeepAliveInterval = "CERBERUS_CH_KEEPALIVE_INTERVAL"
-	envCHKeepAliveCount    = "CERBERUS_CH_KEEPALIVE_COUNT"
-	envQueryMaxSamples     = "CERBERUS_QUERY_MAX_SAMPLES"
-	envQueryTimeout        = "CERBERUS_QUERY_TIMEOUT"
-	envCHQueryMaxMemory    = "CERBERUS_CH_QUERY_MAX_MEMORY"
-	envCHBreakerEnabled    = "CERBERUS_CH_BREAKER_ENABLED"
-	envCHBreakerThreshold  = "CERBERUS_CH_BREAKER_THRESHOLD"
-	envCHBreakerWindow     = "CERBERUS_CH_BREAKER_WINDOW"
-	envCHBreakerOpenIntrvl = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
-	envCHProtocol          = "CERBERUS_CH_PROTOCOL"
-	envCHConnOpenStrategy  = "CERBERUS_CH_CONN_OPEN_STRATEGY"
-	envCHReadTimeout       = "CERBERUS_CH_READ_TIMEOUT"
-	envCHCompression       = "CERBERUS_CH_COMPRESSION"
-	envCHCompressionLevel  = "CERBERUS_CH_COMPRESSION_LEVEL"
-	envCHBlockBufferSize   = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
-	envCHMaxComprBuffer    = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
-	envCHFreeBufOnRelease  = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
-	envCHDebug             = "CERBERUS_CH_DEBUG"
-	envCHTLSEnabled        = "CERBERUS_CH_TLS_ENABLED"
-	envCHTLSCAFile         = "CERBERUS_CH_TLS_CA_FILE"
-	envCHTLSCertFile       = "CERBERUS_CH_TLS_CERT_FILE"
-	envCHTLSKeyFile        = "CERBERUS_CH_TLS_KEY_FILE"
-	envCHTLSServerName     = "CERBERUS_CH_TLS_SERVER_NAME"
-	envCHTLSSkipVerify     = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
-	envCHHTTPHeaders       = "CERBERUS_CH_HTTP_HEADERS"
-	envCHHTTPURLPath       = "CERBERUS_CH_HTTP_URL_PATH"
-	envCHHTTPMaxConns      = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
-	envCHHTTPProxyURL      = "CERBERUS_CH_HTTP_PROXY_URL"
-	envHTTPReadTimeout     = "CERBERUS_HTTP_READ_TIMEOUT"
-	envHTTPReadHdrTimeout  = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
-	envHTTPWriteTimeout    = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
-	envHTTPIdleTimeout     = "CERBERUS_HTTP_IDLE_TIMEOUT"
-	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
-	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
-	envDebugPProf          = "CERBERUS_DEBUG_PPROF"
-	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
-	envAutoCreateDatabase  = "CERBERUS_AUTO_CREATE_DATABASE"
-	envSchemaCluster       = "CERBERUS_SCHEMA_CLUSTER"
-	envSchemaTableEngine   = "CERBERUS_SCHEMA_TABLE_ENGINE"
-	envSchemaTTL           = "CERBERUS_SCHEMA_TTL"
-	envSchemaTTLMetrics    = "CERBERUS_SCHEMA_TTL_METRICS"
-	envSchemaTTLLogs       = "CERBERUS_SCHEMA_TTL_LOGS"
-	envSchemaTTLTraces     = "CERBERUS_SCHEMA_TTL_TRACES"
-	envSchemaDBReplicated  = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
-	envSchemaDBReplPath    = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
-	envSchemaDBReplShard   = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
-	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
-	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
-	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
-	envLogCommentShape     = "CERBERUS_LOG_COMMENT_SHAPE"
-	envCHOptimizations     = "CERBERUS_CH_OPTIMIZATIONS"
-	envCHOptimizationsMode = "CERBERUS_CH_OPTIMIZATIONS_MODE"
-	envCHOptCorpusEnabled  = "CERBERUS_CH_OPT_CORPUS_ENABLED"
-	envCHOptCorpusInterval = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
-	envCHOptCorpusSinkPath = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
-	envCHOptCorpusRing     = "CERBERUS_CH_OPT_CORPUS_RING"
-	envLogFormat           = "CERBERUS_LOG_FORMAT"
-	envLogLevel            = "CERBERUS_LOG_LEVEL"
-	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
-	envOTLPInsecure        = "CERBERUS_OTLP_INSECURE"
-	envOTLPHeaders         = "CERBERUS_OTLP_HEADERS"
-	envOTLPTimeout         = "CERBERUS_OTLP_TIMEOUT"
-	envOTLPExportInterval  = "CERBERUS_OTLP_EXPORT_INTERVAL"
-	envAdmitDisabled       = "CERBERUS_ADMIT_DISABLED"
-	envAdmitProm           = "CERBERUS_ADMIT_PROM"
-	envAdmitLoki           = "CERBERUS_ADMIT_LOKI"
-	envAdmitTempo          = "CERBERUS_ADMIT_TEMPO"
+	envHTTPAddr             = "CERBERUS_HTTP_ADDR"
+	envCHAddr               = "CERBERUS_CH_ADDR"
+	envCHDatabase           = "CERBERUS_CH_DATABASE"
+	envCHUsername           = "CERBERUS_CH_USERNAME"
+	envCHPassword           = "CERBERUS_CH_PASSWORD"
+	envCHDialTimeout        = "CERBERUS_CH_DIAL_TIMEOUT"
+	envCHMaxOpenConns       = "CERBERUS_CH_MAX_OPEN_CONNS"
+	envCHMaxIdleConns       = "CERBERUS_CH_MAX_IDLE_CONNS"
+	envCHConnMaxLifetime    = "CERBERUS_CH_CONN_MAX_LIFETIME"
+	envCHKeepAliveEnabled   = "CERBERUS_CH_KEEPALIVE_ENABLED"
+	envCHKeepAliveIdle      = "CERBERUS_CH_KEEPALIVE_IDLE"
+	envCHKeepAliveInterval  = "CERBERUS_CH_KEEPALIVE_INTERVAL"
+	envCHKeepAliveCount     = "CERBERUS_CH_KEEPALIVE_COUNT"
+	envQueryMaxSamples      = "CERBERUS_QUERY_MAX_SAMPLES"
+	envQueryTimeout         = "CERBERUS_QUERY_TIMEOUT"
+	envCHQueryMaxMemory     = "CERBERUS_CH_QUERY_MAX_MEMORY"
+	envCHBreakerEnabled     = "CERBERUS_CH_BREAKER_ENABLED"
+	envCHBreakerThreshold   = "CERBERUS_CH_BREAKER_THRESHOLD"
+	envCHBreakerWindow      = "CERBERUS_CH_BREAKER_WINDOW"
+	envCHBreakerOpenIntrvl  = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
+	envCHProtocol           = "CERBERUS_CH_PROTOCOL"
+	envCHConnOpenStrategy   = "CERBERUS_CH_CONN_OPEN_STRATEGY"
+	envCHReadTimeout        = "CERBERUS_CH_READ_TIMEOUT"
+	envCHCompression        = "CERBERUS_CH_COMPRESSION"
+	envCHCompressionLevel   = "CERBERUS_CH_COMPRESSION_LEVEL"
+	envCHBlockBufferSize    = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
+	envCHMaxComprBuffer     = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
+	envCHFreeBufOnRelease   = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
+	envColumnarMatrixDecode = "CERBERUS_COLUMNAR_MATRIX_DECODE"
+	envCHDebug              = "CERBERUS_CH_DEBUG"
+	envCHTLSEnabled         = "CERBERUS_CH_TLS_ENABLED"
+	envCHTLSCAFile          = "CERBERUS_CH_TLS_CA_FILE"
+	envCHTLSCertFile        = "CERBERUS_CH_TLS_CERT_FILE"
+	envCHTLSKeyFile         = "CERBERUS_CH_TLS_KEY_FILE"
+	envCHTLSServerName      = "CERBERUS_CH_TLS_SERVER_NAME"
+	envCHTLSSkipVerify      = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
+	envCHHTTPHeaders        = "CERBERUS_CH_HTTP_HEADERS"
+	envCHHTTPURLPath        = "CERBERUS_CH_HTTP_URL_PATH"
+	envCHHTTPMaxConns       = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
+	envCHHTTPProxyURL       = "CERBERUS_CH_HTTP_PROXY_URL"
+	envHTTPReadTimeout      = "CERBERUS_HTTP_READ_TIMEOUT"
+	envHTTPReadHdrTimeout   = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
+	envHTTPWriteTimeout     = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
+	envHTTPIdleTimeout      = "CERBERUS_HTTP_IDLE_TIMEOUT"
+	envHTTPMaxHeaderBytes   = "CERBERUS_HTTP_MAX_HEADER_BYTES"
+	envLokiTailWriteTO      = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envDebugPProf           = "CERBERUS_DEBUG_PPROF"
+	envAutoCreateSchema     = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envAutoCreateDatabase   = "CERBERUS_AUTO_CREATE_DATABASE"
+	envSchemaCluster        = "CERBERUS_SCHEMA_CLUSTER"
+	envSchemaTableEngine    = "CERBERUS_SCHEMA_TABLE_ENGINE"
+	envSchemaTTL            = "CERBERUS_SCHEMA_TTL"
+	envSchemaTTLMetrics     = "CERBERUS_SCHEMA_TTL_METRICS"
+	envSchemaTTLLogs        = "CERBERUS_SCHEMA_TTL_LOGS"
+	envSchemaTTLTraces      = "CERBERUS_SCHEMA_TTL_TRACES"
+	envSchemaDBReplicated   = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
+	envSchemaDBReplPath     = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
+	envSchemaDBReplShard    = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
+	envSchemaDBReplReplica  = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
+	envRequirementsCheck    = "CERBERUS_REQUIREMENTS_CHECK"
+	envExperimentalTSGrid   = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envLogCommentShape      = "CERBERUS_LOG_COMMENT_SHAPE"
+	envCHOptimizations      = "CERBERUS_CH_OPTIMIZATIONS"
+	envCHOptimizationsMode  = "CERBERUS_CH_OPTIMIZATIONS_MODE"
+	envCHOptCorpusEnabled   = "CERBERUS_CH_OPT_CORPUS_ENABLED"
+	envCHOptCorpusInterval  = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
+	envCHOptCorpusSinkPath  = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
+	envCHOptCorpusRing      = "CERBERUS_CH_OPT_CORPUS_RING"
+	envLogFormat            = "CERBERUS_LOG_FORMAT"
+	envLogLevel             = "CERBERUS_LOG_LEVEL"
+	envOTLPEndpoint         = "CERBERUS_OTLP_ENDPOINT"
+	envOTLPInsecure         = "CERBERUS_OTLP_INSECURE"
+	envOTLPHeaders          = "CERBERUS_OTLP_HEADERS"
+	envOTLPTimeout          = "CERBERUS_OTLP_TIMEOUT"
+	envOTLPExportInterval   = "CERBERUS_OTLP_EXPORT_INTERVAL"
+	envAdmitDisabled        = "CERBERUS_ADMIT_DISABLED"
+	envAdmitProm            = "CERBERUS_ADMIT_PROM"
+	envAdmitLoki            = "CERBERUS_ADMIT_LOKI"
+	envAdmitTempo           = "CERBERUS_ADMIT_TEMPO"
 )
 
 // configFileBaseName is the base name (without extension) viper looks
@@ -521,6 +522,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_BLOCK_BUFFER_SIZE  default 0 (unset → driver 2; valid 1..255)
 //	CERBERUS_CH_MAX_COMPRESSION_BUFFER default 0 (unset → driver 10 MiB; bytes, > 0)
 //	CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE default "false"
+//	CERBERUS_COLUMNAR_MATRIX_DECODE default "false" (route query_range matrix shape through ch-go columnar decode)
 //	CERBERUS_CH_DEBUG              default "false" (clickhouse-go legacy stdout debug)
 //	CERBERUS_CH_TLS_ENABLED        default "false" (dial CH over TLS; sub-knobs require this)
 //	CERBERUS_CH_TLS_CA_FILE        default "" (PEM CA bundle path)
@@ -801,6 +803,7 @@ var allEnvKeys = []string{
 	envCHBlockBufferSize,
 	envCHMaxComprBuffer,
 	envCHFreeBufOnRelease,
+	envColumnarMatrixDecode,
 	envCHDebug,
 	envCHTLSEnabled,
 	envCHTLSCAFile,
@@ -907,6 +910,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envCHBlockBufferSize, defaultCHBlockBufferSize)
 	v.SetDefault(envCHMaxComprBuffer, defaultCHMaxCompressionBuffer)
 	v.SetDefault(envCHFreeBufOnRelease, defaultCHFreeBufOnConnRelease)
+	v.SetDefault(envColumnarMatrixDecode, defaultColumnarMatrixDecode)
 	v.SetDefault(envCHDebug, defaultCHDebug)
 	v.SetDefault(envCHTLSEnabled, defaultCHTLSEnabled)
 	v.SetDefault(envCHTLSCAFile, "")
@@ -1080,6 +1084,7 @@ const (
 	defaultCHMaxCompressionBuffer = 0
 	defaultCHHTTPMaxConns         = 0
 	defaultCHFreeBufOnConnRelease = false
+	defaultColumnarMatrixDecode   = false
 	defaultCHDebug                = false
 	defaultCHTLSEnabled           = false
 	defaultCHTLSSkipVerify        = false

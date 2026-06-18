@@ -337,6 +337,30 @@ type Config struct {
 	// Prometheus ?timeout= query param min's with this default per
 	// request (see WithQueryTimeout).
 	QueryTimeout time.Duration
+
+	// ColumnarMatrixDecode, when true, routes QueryCursor's `query_range`
+	// matrix shape — the four-column (MetricName, Attributes Map(String,
+	// String), TimeUnix, Value) projection the prom matrix pivot drains —
+	// through a dedicated ch-go (low-level) decode path instead of the
+	// per-row driver.Rows.Scan path. The columnar path reads each block's
+	// Attributes Map sub-columns (proto.ColMap Keys/Values, exported by
+	// ch-go but UNREACHABLE via clickhouse-go/v2's public API) as typed
+	// slices and builds each series' label map ONCE per contiguous run
+	// rather than once per row, eliminating the per-row reflect.MakeMap +
+	// boxed SetMapIndex the row path pays on every sample even though the
+	// cursor interns and discards all but the first per series (~47x faster
+	// / ~38,000x fewer allocs on a 1M-row matrix in the GO/NO-GO measurement
+	// that motivated this path).
+	//
+	// Default false: the row path is byte-unchanged when this is off, and
+	// the columnar path produces BYTE-IDENTICAL Samples (same interning,
+	// same SeriesID order, same budget-exceeded *TooManySamplesError) when
+	// on — see the integration parity test. Any non-matrix QueryCursor shape
+	// (the five-column Loki log-stream projection, metadata endpoints) falls
+	// back to the row path even when the flag is set; the flag selects the
+	// columnar decode ONLY for the exact matrix projection. Wired from
+	// CERBERUS_COLUMNAR_MATRIX_DECODE.
+	ColumnarMatrixDecode bool
 }
 
 // Client is a stateless wrapper over a clickhouse-go/v2 connection pool.
@@ -395,6 +419,17 @@ type Client struct {
 	// every data-plane query via queryContext (overridable per-request,
 	// min'd, via WithQueryTimeout). 0 = setting not sent.
 	queryTimeout time.Duration
+
+	// columnar, when non-nil, is the dedicated ch-go (low-level) decode path
+	// used ONLY for QueryCursor's `query_range` matrix shape when
+	// Config.ColumnarMatrixDecode is set. It owns a SECOND dial (lazily
+	// established on first use) distinct from the clickhouse-go/v2 pool the
+	// rest of the methods share — the row path, Exec, Ping, and every other
+	// query method are untouched. nil (the default) means the flag is off and
+	// QueryCursor always takes the row path. Shared across ForHead views (it
+	// is a value copied by the shallow copy, but its lazily-dialled client is
+	// guarded by its own mutex so the views share one ch-go connection).
+	columnar *columnarMatrixDecoder
 
 	// recovery owns the background breaker-recovery goroutine (see
 	// recoveryLoop). It is non-nil ONLY on the root Client that New created
@@ -693,6 +728,15 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 		maxMemory:    cfg.MaxQueryMemoryBytes,
 		queryTimeout: cfg.QueryTimeout,
 	}
+	// Wire the dedicated ch-go columnar matrix decode path ONLY when the
+	// operator opted in (CERBERUS_COLUMNAR_MATRIX_DECODE). It owns a second
+	// dial mapped 1:1 off the same Config (TLS / auth / addr / dial timeout),
+	// established lazily on first matrix query so a flag-on replica that never
+	// serves a matrix query opens no extra socket. nil keeps QueryCursor on
+	// the row path verbatim.
+	if cfg.ColumnarMatrixDecode {
+		c.columnar = newColumnarMatrixDecoder(cfg)
+	}
 	// Start the active background breaker-recovery loop on the ROOT Client
 	// (ForHead views are shallow copies that share — never restart — it).
 	// The tick cadence is the breaker's own resolved OPEN-state backoff, so
@@ -945,6 +989,12 @@ func newWithConn(conn driver.Conn) *Client {
 func (c *Client) Close() error {
 	if c.recovery != nil {
 		c.recovery.stop()
+	}
+	// Tear down the dedicated ch-go columnar pool if the flag wired one (and
+	// it was ever dialled). Closing the same decoder twice — or from a ForHead
+	// view that shares the pointer — is a no-op after the first.
+	if c.columnar != nil {
+		c.columnar.close()
 	}
 	if c.conn == nil {
 		return nil
