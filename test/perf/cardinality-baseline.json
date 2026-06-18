@@ -1890,6 +1890,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/binop_ignoring_instance_strips_instance",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/binop_increase_plus_rate",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -1901,6 +1911,16 @@
   },
   {
     "fixture": "promql/binop_metric_minus_time",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/binop_on_job_strips_instance",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
