@@ -15,9 +15,10 @@ import (
 //     side-effect column that fails the query at execution time when
 //     the matching key collapses multiple distinct series ("many-to-
 //     many matching not allowed: matching labels must be unique on one
-//     side"). Output Attributes preserves the left side's full label
-//     set (one representative series per match key, picked via
-//     argMax(Attributes, TimeUnix)).
+//     side"). Output Attributes is the left side's label set reduced to
+//     the matching labels (on()/ignoring()) per Prometheus resultMetric
+//     — see outputMatchSetFrag. With default matching (no on/ignoring)
+//     that reduction is a no-op so the full LHS label set survives.
 //
 //   - CardManyToOne (`group_left(<labels>)`): left side keeps
 //     per-series granularity (the "many"); right side aggregates per
@@ -442,7 +443,7 @@ func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
 		return Col(attrsCol)
 	}
 	if m.On && len(m.Labels) == 0 {
-		// on() with no labels — group everything onto a single
+		// on() with no labels - group everything onto a single
 		// match-key. CH doesn't allow an empty IN list, so emit a
 		// constant tuple.
 		return Call("tuple")
@@ -465,15 +466,88 @@ func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	return func(b *Builder) { b.MapFilterExcept(attrsCol, m.Labels...) }
 }
 
+// outputMatchSetFrag returns a Frag for the qualified output Attributes
+// of a CardOneToOne join, reduced to the matching label set per
+// Prometheus's `resultMetric` (promql/engine.go):
+//
+//	if matching.Card == parser.CardOneToOne {
+//	    if matching.On { enh.lb.Keep(matching.MatchingLabels...) }
+//	    else           { enh.lb.Del(matching.MatchingLabels...) }
+//	}
+//
+// This reduction is gated only on the cardinality being one-to-one - it
+// runs for arithmetic, bool-comparison, AND bare-comparison ops alike.
+// The op only governs `__name__` (shouldDropMetricName), handled
+// separately by outputMetricNameFrag/vectorJoinDropsName. The shapes:
+//
+//   - default matching (Labels empty, On false): full Attributes,
+//     unchanged - Del() of nothing drops nothing.
+//   - on(labels): mapFilter((k, v) -> k IN (...), Attributes) - keep
+//     only the on(...) labels (Keep()).
+//   - on() with no labels: an empty map (Keep() with no labels) - the
+//     constant-false mapFilter preserves the Map(String, String) type
+//     while yielding {}.
+//   - ignoring(labels): the complementary mapFilter - drop the ignored
+//     labels (Del()).
+//   - ignoring() with no labels: full Attributes, unchanged - Del() of
+//     nothing.
+//
+// `side` is the bare L / R qualifier the output projection reads from
+// (always "L" for one-to-one).
+func outputMatchSetFrag(m chplan.VectorMatch, side, attrsCol string) Frag {
+	qual := qualColFrag(side, attrsCol)
+	if len(m.Labels) == 0 {
+		if m.On {
+			// on() - Keep() with no labels yields an empty map. A
+			// constant-false predicate keeps the Map(String, String)
+			// type so wrapping SELECTs still see a map column.
+			return Call(
+				"mapFilter",
+				Lambda2("k", "v", InlineLit(int64(0))),
+				qual,
+			)
+		}
+		// default matching or ignoring() - no labels to drop.
+		return qual
+	}
+	if m.On {
+		lbls := make([]Frag, len(m.Labels))
+		for i, lbl := range m.Labels {
+			lbls[i] = Lit(lbl)
+		}
+		return Call(
+			"mapFilter",
+			Lambda2("k", "v", In(BareIdent("k"), lbls...)),
+			qual,
+		)
+	}
+	// ignoring(labels) - drop the ignored labels via the complementary
+	// mapFilter.
+	lbls := make([]Frag, len(m.Labels))
+	for i, lbl := range m.Labels {
+		lbls[i] = Lit(lbl)
+	}
+	return Call(
+		"mapFilter",
+		Lambda2("k", "v", Not(Paren(In(BareIdent("k"), lbls...)))),
+		qual,
+	)
+}
+
 // outputAttributesFrag returns a Frag for the output Attributes
-// expression. For CardOneToOne the output equals the "many" side's
-// Attributes. For group_left(<labels>) the output merges the named
-// labels from the "one" side onto the "many" side via mapConcat (CH's
-// later-key-wins map merge). group_right mirrors with roles swapped.
+// expression. For CardOneToOne the output is the LHS Attributes reduced
+// to the matching label set (on()/ignoring()), matching Prometheus's
+// `resultMetric` Keep/Del logic — see outputMatchSetFrag. For
+// group_left(<labels>) the output merges the named labels from the
+// "one" side onto the "many" side's full Attributes via mapConcat (CH's
+// later-key-wins map merge); group_right mirrors with roles swapped. The
+// CardOneToOne reduction does NOT apply to group_left/right - Prometheus
+// skips the Keep/Del block for those cards, keeping the many side's full
+// labels (then overlaying Include).
 //
 // When no Include labels are present (bare `group_left` without an
 // explicit label list, which is uncommon but parser-legal), the
-// "many" side's Attributes flows through unchanged — this matches
+// "many" side's Attributes flows through unchanged - this matches
 // Prometheus's behaviour where bare group_left/right copies nothing
 // beyond the matching key.
 func outputAttributesFrag(j *chplan.VectorJoin) Frag {
@@ -485,21 +559,25 @@ func outputAttributesFrag(j *chplan.VectorJoin) Frag {
 	case chplan.CardOneToMany:
 		manySide = "R"
 	}
-	if manySide == "" || len(j.Include) == 0 {
-		// Either CardOneToOne or bare group_left/right — output is
-		// the "many" side's Attributes (L for OneToOne and ManyToOne,
-		// R for OneToMany). The explicit `AS Attributes` alias is
-		// load-bearing for the R side: ClickHouse keeps the `R.`
-		// qualifier in the output column name of an unaliased
-		// right-table projection (the left side collapses to the bare
-		// column name), so without the alias every wrapping SELECT
-		// fails with "Unknown expression identifier 'Attributes'" —
-		// the group_right bug the showcase-promql sweep surfaced.
-		side := "L"
-		if manySide == "R" {
-			side = "R"
-		}
-		return As(qualColFrag(side, attrs), attrs)
+	if manySide == "" {
+		// CardOneToOne — output is the LHS Attributes reduced to the
+		// matching label set per Prometheus resultMetric. The explicit
+		// `AS Attributes` alias re-canonicalises the column name.
+		return As(outputMatchSetFrag(j.Match, "L", attrs), attrs)
+	}
+	if len(j.Include) == 0 {
+		// Bare group_left/right (no Include labels) - output is the
+		// "many" side's full Attributes (L for ManyToOne, R for
+		// OneToMany). The CardOneToOne Keep/Del reduction does NOT
+		// apply here (Prometheus skips it for group_x). The explicit
+		// `AS Attributes` alias is load-bearing for the R side:
+		// ClickHouse keeps the `R.` qualifier in the output column name
+		// of an unaliased right-table projection (the left side
+		// collapses to the bare column name), so without the alias
+		// every wrapping SELECT fails with "Unknown expression
+		// identifier 'Attributes'" - the group_right bug the
+		// showcase-promql sweep surfaced.
+		return As(qualColFrag(manySide, attrs), attrs)
 	}
 
 	// group_left/right with Include labels — overlay the "one" side's
@@ -667,7 +745,7 @@ func aliasedFrag(inner Frag, bareAlias string) Frag {
 //   - default (Labels empty, On false) → L.Attributes = R.Attributes
 //   - on(l1, l2)                       → AND of L.Attributes[k] = R.Attributes[k]
 //   - ignoring(l1, l2)                 → mapFilter-stripped equality
-//   - on() with no labels              → 1 = 1 (per-side aggregation
+//   - on() with no labels              -> 1 = 1 (per-side aggregation
 //     already collapses to one row via the throwIf guard).
 //
 // When stepAligned is true the rendered predicate additionally ANDs in
@@ -694,7 +772,7 @@ func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 		return Eq(qualColFrag("L", attrsCol), qualColFrag("R", attrsCol))
 	}
 	if m.On && len(m.Labels) == 0 {
-		// on() with no labels — every row on the left pairs with
+		// on() with no labels - every row on the left pairs with
 		// every row on the right. The per-side aggregation already
 		// collapses each side to one row via the throwIf-guard, so
 		// the join condition is just a constant TRUE.

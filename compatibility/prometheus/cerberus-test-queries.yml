@@ -135,6 +135,21 @@ test_cases:
   - query: 'sum without(job) (demo_memory_usage_bytes) / on(instance, type) group_left(job) demo_memory_usage_bytes'
   - query: 'demo_memory_usage_bytes / on(instance, job) group_left demo_num_cpus'
   - query: 'demo_memory_usage_bytes / on(instance, type, job, non_existent) demo_memory_usage_bytes'
+  # One-to-one arithmetic with on(SUBSET): Prometheus reduces the output
+  # label set to exactly the on() labels, dropping every non-matching
+  # label (here `job` and `type`). Cerberus previously retained the full
+  # LHS label set; this case pins the reduction against real Prometheus.
+  - query: 'demo_memory_usage_bytes {{.arithBinOp}} on(instance) demo_memory_usage_bytes'
+    variant_args: ['arithBinOp']
+  # One-to-one arithmetic with ignoring(SET): the output drops exactly
+  # the ignored labels (and __name__), keeping the rest. Here `job` is
+  # dropped, `instance` and `type` survive.
+  - query: 'demo_memory_usage_bytes {{.arithBinOp}} ignoring(job) demo_memory_usage_bytes'
+    variant_args: ['arithBinOp']
+  # bool-comparison with on(SUBSET): a transformation, so the output is
+  # likewise reduced to the on() labels.
+  - query: 'demo_memory_usage_bytes {{.compBinOp}} bool on(instance) demo_memory_usage_bytes'
+    variant_args: ['compBinOp']
   # TODO(upstream): Add non-explicit many-to-one / one-to-many that errors.
   # TODO(upstream): Add many-to-many match that errors.
 
