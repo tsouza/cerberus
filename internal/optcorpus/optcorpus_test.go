@@ -179,6 +179,67 @@ func TestRun_DrainsSeamThenReconciles(t *testing.T) {
 	}
 }
 
+func TestEvictExpired_DropsNeverFinishedIDsOlderThanTTL(t *testing.T) {
+	// A query observed but never joined to a query_log row must be dropped once
+	// it is older than the TTL (the lookback window), so it stops riding every
+	// per-interval IN(...).
+	src := newFakeSource()
+	r := New(src, &memSink{}, Options{RingCapacity: 8, TTL: time.Hour})
+
+	clock := time.Unix(1_000_000, 0).UTC()
+	r.now = func() time.Time { return clock }
+
+	r.Observe(Record{QueryID: "stale", ShapeID: "cerb:scan"})
+	clock = clock.Add(30 * time.Minute)
+	r.Observe(Record{QueryID: "fresh", ShapeID: "cerb:scan"})
+
+	// Advance past the TTL relative to "stale" (observed at t0) but not past it
+	// for "fresh" (observed at t0+30m): cutoff = now-1h.
+	clock = clock.Add(40 * time.Minute) // now = t0 + 70m
+
+	if n := r.evictExpired(); n != 1 {
+		t.Fatalf("evictExpired = %d; want 1 (only the stale id)", n)
+	}
+	ids := r.snapshotIDs()
+	if len(ids) != 1 || ids[0] != "fresh" {
+		t.Errorf("after eviction ids = %v; want [fresh]", ids)
+	}
+}
+
+func TestEvictExpired_RefreshedObservationSurvives(t *testing.T) {
+	// Re-observing an id (a retried dispatch reuses the trace id) refreshes its
+	// observation time, so it is not TTL-evicted on the old timestamp.
+	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, TTL: time.Hour})
+	clock := time.Unix(2_000_000, 0).UTC()
+	r.now = func() time.Time { return clock }
+
+	r.Observe(Record{QueryID: "retried", ShapeID: "cerb:a"})
+	clock = clock.Add(50 * time.Minute)
+	r.Observe(Record{QueryID: "retried", ShapeID: "cerb:b"}) // refresh
+	clock = clock.Add(20 * time.Minute)                      // 70m since first, 20m since refresh
+
+	if n := r.evictExpired(); n != 0 {
+		t.Fatalf("evictExpired = %d; want 0 (refreshed id is within TTL)", n)
+	}
+	if ids := r.snapshotIDs(); len(ids) != 1 || ids[0] != "retried" {
+		t.Errorf("refreshed id evicted: ids = %v; want [retried]", ids)
+	}
+}
+
+func TestEvictExpired_DisabledWhenTTLNonPositive(t *testing.T) {
+	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8}) // TTL unset (0)
+	clock := time.Unix(3_000_000, 0).UTC()
+	r.now = func() time.Time { return clock }
+	r.Observe(Record{QueryID: "x", ShapeID: "cerb:scan"})
+	clock = clock.Add(1000 * time.Hour)
+	if n := r.evictExpired(); n != 0 {
+		t.Fatalf("evictExpired with TTL<=0 = %d; want 0 (disabled)", n)
+	}
+	if len(r.snapshotIDs()) != 1 {
+		t.Error("TTL disabled but id was evicted")
+	}
+}
+
 func TestObserve_EmptyQueryID_Ignored(t *testing.T) {
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 4})
 	r.Observe(Record{QueryID: "", ShapeID: "cerb:scan"})

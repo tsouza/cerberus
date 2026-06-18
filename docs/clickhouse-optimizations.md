@@ -74,14 +74,18 @@ against, and any skips or the deprecation notice (below).
 ## Feature registry
 
 Each feature is a registry entry: a stable id, a minimum `major.minor`
-version, a stability class (`stable` or `experimental`), an optional
-ClickHouse experimental setting to co-stamp, and an `apply` behaviour that
-acts on the per-query path when the feature is in the resolved set.
+version, a stability class (`stable` or `experimental`), and an `apply`
+behaviour that acts on the per-query path when the feature is in the resolved
+set. The "experimental setting" column below is informational: where a feature
+needs an `allow_experimental_*` setting, that setting is co-stamped by the
+**engine plan path** (it inspects the post-optimize plan and stamps the setting
+on exactly the queries that use the native node), not carried as a registry
+field.
 
 | id                     | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                     |
 | ---------------------- | ---------- | ------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `aggregation_in_order` | 24.8       | stable       | -                                                    | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent. |
-| `condition_cache`      | 25.3       | stable       | -                                                    | stamps `use_query_condition_cache=1` on predicate-stable read paths. Result-equivalent (a cache).                                                         |
+| `condition_cache`      | 25.3       | stable       | -                                                    | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                   |
 | `ts_grid_range`        | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                  |
 
 Notes:
@@ -312,13 +316,15 @@ const (
   Experimental
 )
 
-// Feature is one registry entry.
+// Feature is one registry entry. The per-feature allow_experimental_* setting
+// is NOT a field: stamping it lives in the engine plan path (planHasTSGridNative
+// -> chclient.WithTSGridSetting), so it fires on exactly the queries that use
+// the native node rather than on every query the feature is enabled for.
 type Feature struct {
-  ID                  string    // stable id, e.g. "aggregation_in_order"
-  MinVersion          Version   // minimum supporting CH version
-  Stability           Stability // Stable | Experimental
-  ExperimentalSetting string    // optional CH allow_experimental_* setting to co-stamp; "" if none
-  Doc                 string    // one-line operator-facing description
+  ID         string    // stable id, e.g. "aggregation_in_order"
+  MinVersion Version   // minimum supporting CH version
+  Stability  Stability // Stable | Experimental
+  Doc        string    // one-line operator-facing description
 }
 
 // Mode governs how an unsupported explicit request is handled.
@@ -380,11 +386,11 @@ const (
 
 Seeded `Registry()` entries (verbatim):
 
-| ID                     | MinVersion | Stability      | ExperimentalSetting                                  |
-| ---------------------- | ---------- | -------------- | ---------------------------------------------------- |
-| `aggregation_in_order` | `{24, 8}`  | `Stable`       | `""`                                                 |
-| `condition_cache`      | `{25, 3}`  | `Stable`       | `""`                                                 |
-| `ts_grid_range`        | `{25, 6}`  | `Experimental` | `allow_experimental_time_series_aggregate_functions` |
+| ID                     | MinVersion | Stability      |
+| ---------------------- | ---------- | -------------- |
+| `aggregation_in_order` | `{24, 8}`  | `Stable`       |
+| `condition_cache`      | `{25, 3}`  | `Stable`       |
+| `ts_grid_range`        | `{25, 6}`  | `Experimental` |
 
 ### New config field names + env consts (`internal/config`)
 
@@ -452,9 +458,10 @@ The legacy `LegacyFlag` is carried on `Config` (e.g.
 
 ### `EnabledSet` consumption points
 
-1. **`internal/engine.SettingsRules`** — gains a feature-gated form. The
-   existing `OptimizeAggregationInOrder bool` is driven by
-   `set.Has(chopt.FeatureAggregationInOrder)`; add a
+1. **`internal/engine.SettingsRules`** — gains a feature-gated form. Its
+   `OptimizeAggregationInOrder bool` is driven solely by
+   `set.Has(chopt.FeatureAggregationInOrder)` (there is no separate env flag;
+   per-feature control is via the `CERBERUS_CH_OPTIMIZATIONS` list); add a
    `ConditionCache bool` driven by `set.Has(chopt.FeatureConditionCache)`,
    whose `apply` stamps `use_query_condition_cache=1` on predicate-stable
    read paths. `LogCommentShape` is unchanged (its own dark flag /
@@ -481,13 +488,16 @@ The legacy `LegacyFlag` is carried on `Config` (e.g.
 ```go
 // internal/engine/query_settings_rules.go
 const settingUseQueryConditionCache = "use_query_condition_cache" // value 1
+const settingEnableAnalyzer = "enable_analyzer"                   // value 1
 ```
 
 Stamped via `chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 1)`
 only when `SettingsRules.ConditionCache` is true AND the read path is
-predicate-stable (gate conservatively; it needs `enable_analyzer`). No-op
-below 25.3 (the feature is simply absent from the resolved set there, so
-`ConditionCache` is false).
+predicate-stable. Because the condition cache is gated behind the analyzer,
+cerberus co-stamps `enable_analyzer=1` alongside it (result-equivalent) so the
+cache is honored even if an operator disabled the analyzer. No-op below 25.3
+(the feature is simply absent from the resolved set there, so `ConditionCache`
+is false).
 
 ### Reconciler package (`internal/optcorpus`)
 

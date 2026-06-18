@@ -49,18 +49,43 @@ const (
 type CHQueryLogSource struct {
 	conn    CHConn
 	timeout time.Duration
+	window  time.Duration
 }
+
+// defaultQueryLogWindow is the fallback event_time lookback for the corpus
+// SELECT when a non-positive window is supplied. It matches the historical
+// hardcoded `INTERVAL 1 HOUR` and is also the floor QueryLogWindow enforces.
+const defaultQueryLogWindow = time.Hour
 
 // NewCHQueryLogSource builds a CHQueryLogSource over conn (typically
 // chclient.Client.Conn()). timeout bounds each corpus SELECT in wall-clock via
 // a derived context (in addition to the server-side max_execution_time cap); a
 // non-positive timeout falls back to a conservative default so the reconciler
-// goroutine can never block indefinitely on a single scan.
-func NewCHQueryLogSource(conn CHConn, timeout time.Duration) *CHQueryLogSource {
+// goroutine can never block indefinitely on a single scan. window is the
+// event_time lookback the SELECT bounds itself to (derived from the reconcile
+// interval via QueryLogWindow so it always comfortably covers two intervals); a
+// non-positive window falls back to the 1h default.
+func NewCHQueryLogSource(conn CHConn, timeout, window time.Duration) *CHQueryLogSource {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &CHQueryLogSource{conn: conn, timeout: timeout}
+	if window <= 0 {
+		window = defaultQueryLogWindow
+	}
+	return &CHQueryLogSource{conn: conn, timeout: timeout, window: window}
+}
+
+// QueryLogWindow derives the system.query_log event_time lookback from the
+// reconcile interval. The window must comfortably cover more than one interval
+// so a query observed just after one scan is still inside the lookback on the
+// next scan (which runs ~one interval later); it is max(2*interval, 1h). The 1h
+// floor keeps the window sane for very short intervals.
+func QueryLogWindow(interval time.Duration) time.Duration {
+	w := 2 * interval
+	if w < defaultQueryLogWindow {
+		return defaultQueryLogWindow
+	}
+	return w
 }
 
 // corpusSettings is the conservative ClickHouse settings map stamped on every
@@ -84,7 +109,10 @@ func corpusSettings() clickhouse.Settings {
 // out of the ProfileEvents map by name so the row decode is a fixed,
 // strongly-typed shape. The query is bounded to a recent window so a large
 // query_log does not get scanned in full each interval, and grouped to one row
-// per query_id (a distributed query_log can carry initial + remote rows).
+// per query_id (a distributed query_log can carry initial + remote rows). The
+// lookback window is bound at call time (derived from the reconcile interval via
+// QueryLogWindow) rather than hardcoded, so a longer interval still covers more
+// than one scan worth of dispatched queries.
 const queryLogSQL = `
 SELECT
   query_id,
@@ -97,7 +125,7 @@ SELECT
   sum(ProfileEvents['RowsReadByPrewhereReaders'])    AS prewhere_rows
 FROM system.query_log
 WHERE type = 'QueryFinish'
-  AND event_time > now() - INTERVAL 1 HOUR
+  AND event_time > now() - INTERVAL ? SECOND
   AND query_id IN (?)
 GROUP BY query_id`
 
@@ -114,7 +142,8 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 	// background corpus scan cannot starve the data plane on a huge query_log.
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(corpusSettings()))
 
-	rows, err := s.conn.Query(ctx, queryLogSQL, ids)
+	windowSeconds := int64(s.window / time.Second)
+	rows, err := s.conn.Query(ctx, queryLogSQL, windowSeconds, ids)
 	if err != nil {
 		return nil, fmt.Errorf("optcorpus: query system.query_log: %w", err)
 	}

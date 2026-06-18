@@ -27,6 +27,15 @@ const settingOptimizeAggregationInOrder = "optimize_aggregation_in_order"
 // is never stamped (version-safe fallback to no-op).
 const settingUseQueryConditionCache = "use_query_condition_cache"
 
+// settingEnableAnalyzer turns on ClickHouse's new query analyzer. The query
+// condition cache is gated behind the analyzer, so cerberus co-stamps
+// enable_analyzer=1 wherever it stamps use_query_condition_cache=1 to ensure
+// the cache is honored even if an operator disabled the analyzer at the
+// server/profile level. It is RESULT-EQUIVALENT (an execution-planner choice,
+// not a result rewrite) and the analyzer is GA on every server the
+// condition_cache feature resolves on (>= 25.3), so co-stamping is version-safe.
+const settingEnableAnalyzer = "enable_analyzer"
+
 // settingLogComment is ClickHouse's free-form per-query annotation. When set
 // it is copied verbatim into system.query_log.log_comment, letting operators
 // GROUP BY a cerberus-assigned shape id. Free-form and ignored by execution,
@@ -106,6 +115,11 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 	}
 	if r.ConditionCache && predicateStableForConditionCache(plan) {
 		ctx = chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 1)
+		// The condition cache is gated behind the analyzer; co-stamp
+		// enable_analyzer=1 so the cache is honored even if an operator
+		// disabled the analyzer. Result-equivalent and version-safe on the
+		// >= 25.3 servers this rule resolves on.
+		ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
 	}
 	if r.LogCommentShape {
 		if id := planShapeID(plan); id != "" {

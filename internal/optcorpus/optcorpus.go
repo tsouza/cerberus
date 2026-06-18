@@ -123,6 +123,15 @@ type Options struct {
 	// <= 0 reconciliation is driven only by an explicit reconcileOnce call
 	// (used by tests); production always supplies a positive interval.
 	Interval time.Duration
+	// TTL bounds how long an observed query_id is kept in the join index when it
+	// is never joined to a finished query_log row (e.g. a query that errored, was
+	// killed, or whose row never lands). Such ids are otherwise only forgotten on
+	// a successful join, so without a TTL they linger in every per-interval
+	// IN(...) until evicted by ring pressure. TTL is set to the query_log
+	// lookback window: an id older than the window can no longer match a row the
+	// source can still see, so it is dropped. When <= 0 TTL eviction is disabled
+	// (ids are forgotten only on join or ring eviction).
+	TTL time.Duration
 	// Logger receives the non-fatal error logs. When nil slog.Default is used.
 	Logger *slog.Logger
 }
@@ -141,6 +150,8 @@ type Reconciler struct {
 	sink   Sink
 	cap    int
 	every  time.Duration
+	ttl    time.Duration
+	now    func() time.Time
 	logger *slog.Logger
 
 	// ingest carries Records from the data-plane seam to the drain. A
@@ -152,6 +163,11 @@ type Reconciler struct {
 	head  int            // next write position (mod cap)
 	count int            // number of live records (<= cap)
 	byID  map[string]int // query_id -> slot index in ring (for the join)
+	// seenAt records when each live query_id was observed, for TTL eviction of
+	// ids that never join to a finished row. Kept in lockstep with byID: an entry
+	// is added on Observe and removed wherever the byID entry is (forget, ring
+	// eviction, replace-in-place refreshes the timestamp).
+	seenAt map[string]time.Time
 
 	// dropped counts ObserveQuery records shed because the ingest buffer was
 	// full, for a rate-limited diagnostic. It is touched only via its atomic
@@ -180,10 +196,13 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 		sink:   sink,
 		cap:    capacity,
 		every:  opts.Interval,
+		ttl:    opts.TTL,
+		now:    time.Now,
 		logger: logger,
 		ingest: make(chan Record, buffer),
 		ring:   make([]Record, capacity),
 		byID:   make(map[string]int, capacity),
+		seenAt: make(map[string]time.Time, capacity),
 	}
 }
 
@@ -201,9 +220,11 @@ func (r *Reconciler) Observe(rec Record) {
 
 	// Replace an existing record for the same query_id in place rather than
 	// consuming a new slot (defensive: a re-Observe of the same per-dispatch
-	// query_id updates rather than duplicates the ring entry).
+	// query_id updates rather than duplicates the ring entry). Refresh its
+	// observation time so a re-observed id is not TTL-evicted prematurely.
 	if idx, ok := r.byID[rec.QueryID]; ok {
 		r.ring[idx] = rec
+		r.seenAt[rec.QueryID] = r.now()
 		return
 	}
 
@@ -214,12 +235,14 @@ func (r *Reconciler) Observe(rec Record) {
 		evicted := r.ring[slot]
 		if r.byID[evicted.QueryID] == slot {
 			delete(r.byID, evicted.QueryID)
+			delete(r.seenAt, evicted.QueryID)
 		}
 	} else {
 		r.count++
 	}
 	r.ring[slot] = rec
 	r.byID[rec.QueryID] = slot
+	r.seenAt[rec.QueryID] = r.now()
 	r.head = (r.head + 1) % r.cap
 }
 
@@ -307,7 +330,34 @@ func (r *Reconciler) forget(ids []string) {
 		// slot is simply no longer reachable for a join and will be overwritten
 		// by a future Observe.
 		delete(r.byID, id)
+		delete(r.seenAt, id)
 	}
+}
+
+// evictExpired drops join-index entries for ids observed longer ago than the
+// TTL. These are queries that were dispatched but never joined to a finished
+// query_log row (errored, killed, or whose row never landed); once they are
+// older than the source's lookback window they can no longer match a visible
+// row, so keeping them only bloats every per-interval IN(...). Returns the
+// number evicted (for a diagnostic). A non-positive TTL disables eviction. Like
+// forget, it drops only the byID/seenAt entries; the ring slot is reclaimed by
+// a future Observe. Safe for concurrent Observe.
+func (r *Reconciler) evictExpired() int {
+	if r.ttl <= 0 {
+		return 0
+	}
+	cutoff := r.now().Add(-r.ttl)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	evicted := 0
+	for id, seen := range r.seenAt {
+		if seen.Before(cutoff) {
+			delete(r.byID, id)
+			delete(r.seenAt, id)
+			evicted++
+		}
+	}
+	return evicted
 }
 
 // Run drives the reconcile loop on the configured interval until ctx is
@@ -344,6 +394,12 @@ func (r *Reconciler) Run(ctx context.Context) {
 // early WITHOUT taking the process down. Exposed (unexported) so tests can
 // drive a single reconcile deterministically.
 func (r *Reconciler) reconcileOnce(ctx context.Context) {
+	// Drop ids older than the lookback window before snapshotting, so a
+	// never-finished query is not carried in the IN(...) forever (it can no
+	// longer match a row the source can still see).
+	if n := r.evictExpired(); n > 0 {
+		r.logger.Debug("optcorpus: evicted stale unobserved query_ids", "evicted", n)
+	}
 	ids := r.snapshotIDs()
 	if len(ids) == 0 {
 		return

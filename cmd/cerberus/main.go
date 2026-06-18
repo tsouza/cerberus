@@ -442,8 +442,7 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 // (unknown feature id, or an unsupported explicit id under enforcing) is still
 // fatal — that is a typo/operator error, independent of connectivity.
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, error) {
-	server, err := client.ProbeVersion(ctx)
-	resolvedVersion := chopt.Version{Major: server.Major, Minor: server.Minor}
+	resolvedVersion, err := client.ProbeVersion(ctx)
 	if err != nil {
 		// Connectivity fallback: assume the supported floor so 24.8-safe
 		// stable features still resolve under auto; newer features stay off
@@ -510,10 +509,17 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	if srcTimeout <= 0 || srcTimeout > 30*time.Second {
 		srcTimeout = 30 * time.Second
 	}
-	src := optcorpus.NewCHQueryLogSource(client.Conn(), srcTimeout)
+	// Derive the query_log lookback from the reconcile interval so a longer
+	// interval still covers more than one scan worth of dispatched queries
+	// (instead of a fixed 1h window). The same window drives the reconciler's
+	// TTL eviction of never-finished ids.
+	window := optcorpus.QueryLogWindow(cfg.CHOptCorpus.Interval)
+	src := optcorpus.NewCHQueryLogSource(client.Conn(), srcTimeout, window)
 	rec := optcorpus.New(src, sink, optcorpus.Options{
-		Interval: cfg.CHOptCorpus.Interval,
-		Logger:   logger.With("component", "optcorpus"),
+		Interval:     cfg.CHOptCorpus.Interval,
+		RingCapacity: cfg.CHOptCorpus.RingCapacity,
+		TTL:          window,
+		Logger:       logger.With("component", "optcorpus"),
 	})
 	attachQueryObserver(rec, engines...)
 	go func() {

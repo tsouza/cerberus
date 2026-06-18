@@ -463,20 +463,28 @@ server is simply not enabled, so the binary keeps emitting its 24.8-safe SQL.
 | `CERBERUS_CH_OPT_CORPUS_ENABLED`   | bool     | `false` | Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access). |
 | `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | duration | `60s`   | How often the reconciler joins recently-dispatched query_ids back to `system.query_log`.             |
 | `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | string   | (unset) | JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink.            |
+| `CERBERUS_CH_OPT_CORPUS_RING`      | int      | `4096`  | Ring capacity for tracked query_ids; caps memory + the per-interval `IN(...)`. Default 4096.         |
 
 The reconciler is **production-only**: chDB (the parity test substrate) has no
 `system.query_log`, so it is never started there. Errors are logged, never fatal.
 See [`operations.md`](operations.md#query_log-mining) for the mining queries.
+
+The reconciler's `system.query_log` lookback window is **derived** from the
+interval (`max(2*interval, 1h)`), not fixed, so a longer interval still covers
+more than one scan's worth of dispatched queries. The same window doubles as a
+TTL: a query that is dispatched but never joins to a finished `query_log` row
+(it errored, was killed, or its row never landed) is dropped from the join index
+once it is older than the window, instead of riding every per-interval `IN(...)`
+until ring pressure evicts it.
 
 ### Per-query instrumentation
 
 These DARK flags default **off** and every behaviour here is safe on ClickHouse
 24.8 (cerberus's minimum floor) — none adopts a 25.x feature.
 
-| Variable                                 | Type | Default | Description                                                                                                                                                           |
-| ---------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- --|
-| `CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` | bool | `false` | Stamp `optimize_aggregation_in_order=1` on queries whose post-optimize `Aggregate` GROUP BY is a bare-column **prefix** of the scanned table's sorting key.           |
-| `CERBERUS_LOG_COMMENT_SHAPE`             | bool | `false` | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`. |
+| Variable                     | Type | Default | Description                                                                                                                                                           |
+| ---------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- --|
+| `CERBERUS_LOG_COMMENT_SHAPE` | bool | `false` | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`. |
 
 **Always-on (no flag): `query_id`.** Every data-plane query cerberus dispatches
 carries a ClickHouse `query_id` of the form `<trace id>-<span id>-<counter>`:
@@ -489,16 +497,18 @@ collide on one `query_id`, which ClickHouse rejects with code 216 ("Query with
 id = X is already running"). When no trace is present (an un-instrumented
 caller) the driver generates its own id; `query_id` is never an error path.
 
-`CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` is **result-equivalent**: the setting
-changes only ClickHouse's aggregation execution strategy (consume rows in sort
-order, emit each group as its key block is exhausted), never the rows returned.
-The eligibility check is conservative — it stamps **only** when the plan has a
-single `Aggregate` whose GROUP BY keys are all bare columns and form an ordered
-prefix of the scanned table's sorting key (e.g. metrics group by
-`MetricName` / `(MetricName, Attributes)` against the
+The `optimize_aggregation_in_order=1` stamp (the `aggregation_in_order` feature)
+is **result-equivalent**: the setting changes only ClickHouse's aggregation
+execution strategy (consume rows in sort order, emit each group as its key block
+is exhausted), never the rows returned. The eligibility check is conservative —
+it stamps **only** when the plan has a single `Aggregate` whose GROUP BY keys are
+all bare columns and form an ordered prefix of the scanned table's sorting key
+(e.g. metrics group by `MetricName` / `(MetricName, Attributes)` against the
 `(MetricName, Attributes, ServiceName, ...)` sort key). A reordered, gapped, or
 non-prefix GROUP BY, a union/join, or a renamed table all fail closed and the
 setting is not sent. The setting predates the 24.8 floor, so it is version-safe.
+This feature has no dedicated env flag; enable or exclude it per environment via
+the `CERBERUS_CH_OPTIMIZATIONS` list (under `auto` it is enabled by default).
 
 `CERBERUS_LOG_COMMENT_SHAPE` emits a shape id built from the emit-root plan node
 kind plus structural modifiers (aggregate key arity, presence of a range window
@@ -508,11 +518,10 @@ annotation ClickHouse ignores during execution, so stamping it is result-neutral
 and version-safe. See [`operations.md`](operations.md#query_log-mining) for the
 mining queries this enables.
 
-`CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` and `CERBERUS_LOG_COMMENT_SHAPE` are the
-original DARK toggles. `aggregation_in_order` is now also driven by the
-auto-picker (it is a stable 24.8 feature, so `auto` enables it); the dark env
-flag remains for explicit per-environment control. `log_comment` stays its own
-dark flag, paired with the corpus reconciler above.
+`aggregation_in_order` is driven solely by the auto-picker / `CERBERUS_CH_OPTIMIZATIONS`
+list (it is a stable 24.8 feature, so `auto` enables it); it has no dedicated env
+flag. `CERBERUS_LOG_COMMENT_SHAPE` stays its own dark flag, paired with the corpus
+reconciler above.
 
 ## Loki streaming
 

@@ -320,9 +320,9 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 func TestRegistry_SeededEntries(t *testing.T) {
 	reg := Registry()
 	want := map[string]Feature{
-		FeatureAggregationInOrder: {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable, ExperimentalSetting: ""},
-		FeatureConditionCache:     {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable, ExperimentalSetting: ""},
-		FeatureTSGridRange:        {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental, ExperimentalSetting: "allow_experimental_time_series_aggregate_functions"},
+		FeatureAggregationInOrder: {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable},
+		FeatureConditionCache:     {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable},
+		FeatureTSGridRange:        {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -333,8 +333,8 @@ func TestRegistry_SeededEntries(t *testing.T) {
 			t.Errorf("unexpected feature %q", f.ID)
 			continue
 		}
-		if f.MinVersion != w.MinVersion || f.Stability != w.Stability || f.ExperimentalSetting != w.ExperimentalSetting {
-			t.Errorf("feature %q = %+v; want minVersion/stability/setting %+v", f.ID, f, w)
+		if f.MinVersion != w.MinVersion || f.Stability != w.Stability {
+			t.Errorf("feature %q = %+v; want minVersion/stability %+v", f.ID, f, w)
 		}
 	}
 }

@@ -128,20 +128,6 @@ type Config struct {
 	// chDB differential sweep proves the timeSeriesDeltaToGrid mapping.
 	ExperimentalTSGridRange bool
 
-	// OptimizeAggregationInOrder, when true, lets the engine stamp the
-	// ClickHouse setting `optimize_aggregation_in_order=1` on a data-plane
-	// query whose post-optimize plan has an Aggregate GROUP BY that is a
-	// genuine bare-column PREFIX of the scanned table's sorting key (see
-	// internal/engine.SettingsRules). The setting is RESULT-EQUIVALENT --
-	// it changes only the aggregation execution strategy, never the rows --
-	// and exists well below cerberus's CH 24.8 floor, so it is version-safe.
-	//
-	// Default false: it ships DARK behind CERBERUS_OPTIMIZE_AGGREGATION_IN_
-	// ORDER so the corpus-driven optimization roadmap can enable it per
-	// environment. Even on, the eligibility check is conservative and only
-	// stamps when the GROUP BY is provably a sort-key prefix.
-	OptimizeAggregationInOrder bool
-
 	// LogCommentShape, when true, lets the engine stamp ClickHouse
 	// `log_comment` with a COMPACT, literal-free cerberus shape id
 	// (emit-root plan node kind + key modifiers, never any literal values)
@@ -217,6 +203,12 @@ type CHOptCorpusConfig struct {
 	// SinkPath is the JSONL sink path (CERBERUS_CH_OPT_CORPUS_SINK_PATH). Empty
 	// disables the file sink.
 	SinkPath string
+	// RingCapacity bounds the in-memory ring of recently-dispatched query_ids
+	// the reconciler tracks (CERBERUS_CH_OPT_CORPUS_RING, default 4096). It caps
+	// the reconciler's memory and the size of each per-interval IN(...) join; the
+	// ring drops the oldest id when full. A non-positive value falls back to the
+	// optcorpus default.
+	RingCapacity int
 }
 
 // SchemaProvisioning carries the DDL-shaping knobs the auto-create hook
@@ -466,13 +458,13 @@ const (
 	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
 	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
-	envOptimizeAggInOrder  = "CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER"
 	envLogCommentShape     = "CERBERUS_LOG_COMMENT_SHAPE"
 	envCHOptimizations     = "CERBERUS_CH_OPTIMIZATIONS"
 	envCHOptimizationsMode = "CERBERUS_CH_OPTIMIZATIONS_MODE"
 	envCHOptCorpusEnabled  = "CERBERUS_CH_OPT_CORPUS_ENABLED"
 	envCHOptCorpusInterval = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
 	envCHOptCorpusSinkPath = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
+	envCHOptCorpusRing     = "CERBERUS_CH_OPT_CORPUS_RING"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
 	envLogLevel            = "CERBERUS_LOG_LEVEL"
 	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
@@ -579,10 +571,6 @@ const configFileBaseName = "cerberus"
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
 //	    >= 25.6 (prod / compose / e2e are on 25.8, so this floor is met by
 //	    default); on older servers the native query 500s with UNKNOWN_FUNCTION
-//	CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER default "false" — stamp
-//	    optimize_aggregation_in_order=1 on queries whose Aggregate GROUP BY
-//	    is a bare-column prefix of the scanned table's sorting key. Result-
-//	    equivalent execution knob, safe on CH 24.8; DARK by default.
 //	CERBERUS_LOG_COMMENT_SHAPE     default "false" — stamp a compact, literal-
 //	    free cerberus shape id into ClickHouse log_comment so query_log rows
 //	    cluster by normalized_query_hash + log_comment. Result-neutral, safe
@@ -757,27 +745,26 @@ func FromEnv() (Config, error) {
 		extra:        surface.ch,
 	})
 	return Config{
-		HTTPAddr:                   getString(v, envHTTPAddr),
-		HTTPServer:                 surface.httpServer,
-		LokiTailWriteTimeout:       surface.lokiTailWriteTimeout,
-		ClickHouse:                 chCfg,
-		Schema:                     schema.DefaultOTelMetricsFromEnv(),
-		Logs:                       schema.DefaultOTelLogsFromEnv(),
-		Traces:                     schema.DefaultOTelTracesFromEnv(),
-		AutoCreateSchema:           flags.AutoCreate,
-		AutoCreateDatabase:         flags.AutoCreateDatabase,
-		SchemaProvisioning:         schemaProvisioning,
-		RequirementsCheck:          flags.RequirementsCheck,
-		DebugPProf:                 flags.DebugPProf,
-		OptimizeAggregationInOrder: flags.OptimizeAggInOrder,
-		LogCommentShape:            flags.LogCommentShape,
-		CHOptimizations:            flags.CHOptimizations,
-		CHOptimizationsMode:        flags.CHOptimizationsMode,
-		LegacyTSGridFlag:           flags.TSGrid,
-		CHOptCorpus:                flags.CHOptCorpus,
-		Log:                        logCfg,
-		OTLP:                       otlp,
-		Admit:                      admit,
+		HTTPAddr:             getString(v, envHTTPAddr),
+		HTTPServer:           surface.httpServer,
+		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
+		ClickHouse:           chCfg,
+		Schema:               schema.DefaultOTelMetricsFromEnv(),
+		Logs:                 schema.DefaultOTelLogsFromEnv(),
+		Traces:               schema.DefaultOTelTracesFromEnv(),
+		AutoCreateSchema:     flags.AutoCreate,
+		AutoCreateDatabase:   flags.AutoCreateDatabase,
+		SchemaProvisioning:   schemaProvisioning,
+		RequirementsCheck:    flags.RequirementsCheck,
+		DebugPProf:           flags.DebugPProf,
+		LogCommentShape:      flags.LogCommentShape,
+		CHOptimizations:      flags.CHOptimizations,
+		CHOptimizationsMode:  flags.CHOptimizationsMode,
+		LegacyTSGridFlag:     flags.TSGrid,
+		CHOptCorpus:          flags.CHOptCorpus,
+		Log:                  logCfg,
+		OTLP:                 otlp,
+		Admit:                admit,
 	}, nil
 }
 
@@ -845,13 +832,13 @@ var allEnvKeys = []string{
 	envSchemaDBReplReplica,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
-	envOptimizeAggInOrder,
 	envLogCommentShape,
 	envCHOptimizations,
 	envCHOptimizationsMode,
 	envCHOptCorpusEnabled,
 	envCHOptCorpusInterval,
 	envCHOptCorpusSinkPath,
+	envCHOptCorpusRing,
 	envLogFormat,
 	envLogLevel,
 	envOTLPEndpoint,
@@ -952,7 +939,6 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
-	v.SetDefault(envOptimizeAggInOrder, defaultOptimizeAggInOrder)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
 	setCHOptDefaults(v)
 	v.SetDefault(envLogFormat, defaultLogFormat)
@@ -996,6 +982,7 @@ func setCHOptDefaults(v *viper.Viper) {
 	v.SetDefault(envCHOptCorpusEnabled, defaultCHOptCorpusEnabled)
 	v.SetDefault(envCHOptCorpusInterval, defaultCHOptCorpusInterval.String())
 	v.SetDefault(envCHOptCorpusSinkPath, defaultCHOptCorpusSinkPath)
+	v.SetDefault(envCHOptCorpusRing, defaultCHOptCorpusRing)
 }
 
 // Built-in defaults, kept as named constants so newLoader's SetDefault
@@ -1013,7 +1000,6 @@ const (
 	defaultSchemaTTL          = "0s"
 	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
-	defaultOptimizeAggInOrder = false
 	defaultLogCommentShape    = false
 	// defaultCHOptimizations is "auto": enable every stable feature the
 	// connected server supports, never an experimental one. This preserves the
@@ -1031,14 +1017,18 @@ const (
 	// defaultCHOptCorpusSinkPath is empty: no JSONL sink unless an operator
 	// supplies a path.
 	defaultCHOptCorpusSinkPath = ""
-	defaultLogFormat           = "text"
-	defaultLogLevel            = "info"
-	defaultOTLPEndpoint        = ""
-	defaultOTLPInsecure        = false
-	defaultOTLPHeaders         = ""
-	defaultCHBreakerEnabled    = true
-	defaultCHKeepAliveEnabled  = true
-	defaultAdmitDisabled       = false
+	// defaultCHOptCorpusRing is the reconciler ring capacity when the operator
+	// does not override it. It mirrors optcorpus's own internal default; the
+	// reconciler clamps a non-positive value to the same floor.
+	defaultCHOptCorpusRing    = 4096
+	defaultLogFormat          = "text"
+	defaultLogLevel           = "info"
+	defaultOTLPEndpoint       = ""
+	defaultOTLPInsecure       = false
+	defaultOTLPHeaders        = ""
+	defaultCHBreakerEnabled   = true
+	defaultCHKeepAliveEnabled = true
+	defaultAdmitDisabled      = false
 	// The per-head ADMIT_{PROM,LOKI,TEMPO} defaults are the numeric caps
 	// DefaultAdmitProm / Loki / Tempo (registered directly as the viper
 	// defaults): admission control is ON out of the box at each head's
@@ -1633,10 +1623,9 @@ type bootFlags struct {
 	// distinguish "unset" (no effect) from an explicit value (force
 	// enable/disable ts_grid_range). Config.ExperimentalTSGridRange is then
 	// back-filled from the resolved EnabledSet, not from this flag directly.
-	TSGrid             chopt.LegacyFlag
-	DebugPProf         bool
-	OptimizeAggInOrder bool
-	LogCommentShape    bool
+	TSGrid          chopt.LegacyFlag
+	DebugPProf      bool
+	LogCommentShape bool
 	// CHOptimizations / CHOptimizationsMode / CHOptCorpus carry the
 	// CERBERUS_CH_OPTIMIZATIONS* + CERBERUS_CH_OPT_CORPUS_* knobs. They live on
 	// bootFlags (rather than a separate parse in FromEnv) so all the boot-time
@@ -1685,10 +1674,6 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	if err != nil {
 		return bootFlags{}, err
 	}
-	optimizeAggInOrder, err := getBool(v, envOptimizeAggInOrder)
-	if err != nil {
-		return bootFlags{}, err
-	}
 	logCommentShape, err := getBool(v, envLogCommentShape)
 	if err != nil {
 		return bootFlags{}, err
@@ -1703,7 +1688,6 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 		RequirementsCheck:   requirementsCheck,
 		TSGrid:              chopt.LegacyFlag{Set: tsGridSet, Value: tsGridValue},
 		DebugPProf:          debugPProf,
-		OptimizeAggInOrder:  optimizeAggInOrder,
 		LogCommentShape:     logCommentShape,
 		CHOptimizations:     chOpt.Optimizations,
 		CHOptimizationsMode: chOpt.Mode,
@@ -1743,10 +1727,10 @@ func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 }
 
 // chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a
-// CHOptCorpusConfig. The enable bool and interval duration each fail fast on a
-// malformed value; the sink path resolves via getString (empty is valid and
-// simply disables the file sink). Extracted from FromEnv so the parses live in
-// one place.
+// CHOptCorpusConfig. The enable bool, interval duration, and ring capacity each
+// fail fast on a malformed value; the sink path resolves via getString (empty is
+// valid and simply disables the file sink). Extracted from FromEnv so the parses
+// live in one place.
 func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
 	enabled, err := getBool(v, envCHOptCorpusEnabled)
 	if err != nil {
@@ -1756,10 +1740,15 @@ func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
 	if err != nil {
 		return CHOptCorpusConfig{}, err
 	}
+	ring, err := getInt(v, envCHOptCorpusRing)
+	if err != nil {
+		return CHOptCorpusConfig{}, err
+	}
 	return CHOptCorpusConfig{
-		Enabled:  enabled,
-		Interval: interval,
-		SinkPath: getString(v, envCHOptCorpusSinkPath),
+		Enabled:      enabled,
+		Interval:     interval,
+		SinkPath:     getString(v, envCHOptCorpusSinkPath),
+		RingCapacity: ring,
 	}, nil
 }
 

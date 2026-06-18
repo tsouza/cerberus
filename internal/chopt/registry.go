@@ -37,15 +37,22 @@ const (
 )
 
 // Feature is one registry entry: a stable id, the minimum major.minor server
-// version that supports it, its stability class, an optional ClickHouse
-// allow_experimental_* setting to co-stamp on exactly the queries that use the
-// feature, and a one-line operator-facing description.
+// version that supports it, its stability class, and a one-line operator-facing
+// description.
+//
+// Note: the per-feature ClickHouse allow_experimental_* setting is NOT a
+// registry field. Stamping that setting lives in the engine plan path: the
+// engine inspects the post-optimize plan (planHasTSGridNative) and co-stamps
+// allow_experimental_time_series_aggregate_functions=1 via
+// chclient.WithTSGridSetting on exactly the queries that use the native node,
+// rather than on every query merely because the feature is enabled. Carrying a
+// setting name on the registry entry as well would be a dead second source of
+// truth, so it is intentionally absent here.
 type Feature struct {
-	ID                  string
-	MinVersion          Version
-	Stability           Stability
-	ExperimentalSetting string
-	Doc                 string
+	ID         string
+	MinVersion Version
+	Stability  Stability
+	Doc        string
 }
 
 // registry is the seeded feature table. It is value data (no init-time
@@ -53,25 +60,22 @@ type Feature struct {
 // mutate the canonical entries.
 var registry = []Feature{
 	{
-		ID:                  FeatureAggregationInOrder,
-		MinVersion:          Version{Major: 24, Minor: 8},
-		Stability:           Stable,
-		ExperimentalSetting: "",
-		Doc:                 "stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)",
+		ID:         FeatureAggregationInOrder,
+		MinVersion: Version{Major: 24, Minor: 8},
+		Stability:  Stable,
+		Doc:        "stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)",
 	},
 	{
-		ID:                  FeatureConditionCache,
-		MinVersion:          Version{Major: 25, Minor: 3},
-		Stability:           Stable,
-		ExperimentalSetting: "",
-		Doc:                 "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)",
+		ID:         FeatureConditionCache,
+		MinVersion: Version{Major: 25, Minor: 3},
+		Stability:  Stable,
+		Doc:        "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)",
 	},
 	{
-		ID:                  FeatureTSGridRange,
-		MinVersion:          Version{Major: 25, Minor: 6},
-		Stability:           Experimental,
-		ExperimentalSetting: "allow_experimental_time_series_aggregate_functions",
-		Doc:                 "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental, explicit-only)",
+		ID:         FeatureTSGridRange,
+		MinVersion: Version{Major: 25, Minor: 6},
+		Stability:  Experimental,
+		Doc:        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental, explicit-only)",
 	},
 }
 

@@ -14,8 +14,8 @@ All notable changes to cerberus will be documented in this file. The format roug
   an immutable enabled-set: under `auto` it enables every **stable** feature the
   server supports and never an experimental one; an explicit list honours the
   mode for unsupported features (WARN+skip vs FATAL) and a typo'd id is always
-  fatal. The seeded registry: `aggregation_in_order` (24.8, stable — the former
-  dark `CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` rule, now auto-enabled),
+  fatal. The seeded registry: `aggregation_in_order` (24.8, stable, auto-enabled —
+  stamps `optimize_aggregation_in_order=1` on sort-key-prefix GROUP BY plans),
   `condition_cache` (25.3, stable — stamps `use_query_condition_cache=1` on
   predicate-stable read paths), and `ts_grid_range` (25.6, experimental,
   explicit-only). Everything is version-safe: a feature whose floor exceeds the

@@ -37,6 +37,10 @@ func TestApply_StampsConditionCache_OnPredicateStablePath(t *testing.T) {
 	if got := settingValue(ctx, settingUseQueryConditionCache); got != 1 {
 		t.Errorf("ConditionCache on + predicate-stable: setting = %v; want 1", got)
 	}
+	// The condition cache is analyzer-gated, so enable_analyzer=1 is co-stamped.
+	if got := settingValue(ctx, settingEnableAnalyzer); got != 1 {
+		t.Errorf("ConditionCache on + predicate-stable: enable_analyzer = %v; want 1", got)
+	}
 }
 
 // TestApply_ConditionCache_OffByDefault confirms the rule is DARK when the
@@ -48,6 +52,9 @@ func TestApply_ConditionCache_OffByDefault(t *testing.T) {
 	if got := settingValue(off, settingUseQueryConditionCache); got != nil {
 		t.Errorf("ConditionCache off (server < 25.3): setting = %v; want absent", got)
 	}
+	if got := settingValue(off, settingEnableAnalyzer); got != nil {
+		t.Errorf("ConditionCache off (server < 25.3): enable_analyzer = %v; want absent", got)
+	}
 }
 
 // TestApply_ConditionCache_NotStampedWithoutPredicate confirms the conservative
@@ -58,6 +65,9 @@ func TestApply_ConditionCache_NotStampedWithoutPredicate(t *testing.T) {
 	ctx := conditionCacheRules().apply(context.Background(), plan)
 	if got := settingValue(ctx, settingUseQueryConditionCache); got != nil {
 		t.Errorf("bare scan (no predicate): setting = %v; want absent (conservative gate)", got)
+	}
+	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
+		t.Errorf("bare scan (no predicate): enable_analyzer = %v; want absent (conservative gate)", got)
 	}
 }
 
