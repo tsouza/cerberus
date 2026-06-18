@@ -32,6 +32,21 @@ once at boot before any handler serves). The fallback is a CONCRETE default
 implementation (the fan-out lowerer, the row decoder), not a nil field — always
 wired.
 
+**4. Keep the quickstart able to demo it.** When a new optimization's floor
+exceeds the quickstart's ClickHouse version, bump the quickstart
+(`docker-compose.yml` + the compatibility image tags) and every version
+reference to a version that supports it, and update the central versions file
+(`versions.yaml`). `versions.yaml` is the single source of truth for the
+ClickHouse versions the deployment surface depends on (`min_clickhouse` =
+preflight floor, `quickstart_clickhouse` = the demo image tag, `chdb_substrate`
+= the test substrate); the per-feature floors stay in
+`internal/chopt/registry.go` and are NOT duplicated there. The
+version-consistency check
+(`.github/scripts/clickhouse-version-sync.mjs`, wired into the `forbid-skip`
+gate) derives the highest enabled floor from the registry and FAILS if the
+quickstart is too old, so a floor-raising optimization that forgets this bump
+cannot merge.
+
 **The hard invariant:** the per-query hot path is a plain interface call with NO
 branch of any kind — no `if cfg.X`, no `optSet.Has(...)`, no `serverAtLeast(...)`,
 no `ProbeVersion`, and no nil / presence check of a strategy

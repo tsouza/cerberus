@@ -28,6 +28,16 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+- **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
+  ClickHouse version-consistency gate. Reads `versions.yaml` (the single
+  source of truth) and asserts the docker-compose quickstart + compatibility
+  image tags, the preflight floor, and the chDB substrate all match it, and
+  that the quickstart is new enough for every optimization it enables (floors
+  derived from `internal/chopt/registry.go`, not duplicated). See
+  `docs/optimization-rules.md` (Rule 1, step 4).
+  - Args: `--self-test` pins the parse / compare / drift-detection logic
+    (run as a CI step before the gate); no args runs the gate over the tree.
+  - Exit: `0` consistent (or self-test green), `1` on any drift.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).

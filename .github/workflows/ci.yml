@@ -332,3 +332,17 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: escape-hatch
+      # ClickHouse version-consistency gate. versions.yaml is the single
+      # source of truth for the ClickHouse versions the deployment surface
+      # depends on (min floor, quickstart image, chDB substrate); this check
+      # asserts the docker-compose quickstart + compatibility image tags,
+      # the preflight floor, and the substrate all match it, AND - the
+      # critical one - that the quickstart is new enough to demo every
+      # optimization it enables (floors derived from internal/chopt/registry.go,
+      # which stays the SoT for per-feature floors). When a new optimization's
+      # floor exceeds the quickstart, this fails until the quickstart and
+      # versions.yaml are bumped - see docs/optimization-rules.md (Rule 1).
+      - name: ClickHouse version-sync self-test
+        run: node .github/scripts/clickhouse-version-sync.mjs --self-test
+      - name: ClickHouse version-sync gate
+        run: node .github/scripts/clickhouse-version-sync.mjs
