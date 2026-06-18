@@ -5,7 +5,7 @@
      pipe-aligned, and the version footer adds a trailing blank — both are
      owned by helm-docs; realigning would fight the chart-ci drift check. -->
 
-![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.0](https://img.shields.io/badge/AppVersion-1.0.0-informational?style=flat-square)
+![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.1](https://img.shields.io/badge/AppVersion-1.0.1-informational?style=flat-square)
 
 Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
 
@@ -28,15 +28,50 @@ helm install my-cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus \
 cerberus is configured **100% via environment variables** — there is no config
 file. This chart lowers three layers into env:
 
-1. **Typed blocks** (`clickhouse` / `otlp` / `autoCreate` / `admit` / `schema` /
-   `http`) → canonical `CERBERUS_*` env in a ConfigMap; the ClickHouse password
-   flows through a Secret (`existingSecret` preferred).
+1. **Typed blocks** (`clickhouse` / `query` / `otlp` / `autoCreate` / `admit` /
+   `schema` / `http` / `debug` / `prom`) → canonical `CERBERUS_*` env in a
+   ConfigMap; the ClickHouse password flows through a Secret (`existingSecret`
+   preferred).
 2. **`config: {}`** — a free-form map rendered verbatim as `KEY: value` env. Use
    it for any `CERBERUS_*` knob not covered by a typed block (the long tail; see
    [docs/configuration.md](https://github.com/tsouza/cerberus/blob/main/docs/configuration.md)).
 3. **`extraEnv` / `extraEnvFrom`** — raw container env (supports `valueFrom`).
 
 **Precedence (last wins):** typed blocks < `config` < `extraEnv`.
+
+### Full configuration surface
+
+cerberus reads roughly **90 `CERBERUS_*` environment variables**. The chart
+guarantees **every one of them is reachable** — nothing the binary reads is
+unreachable from values:
+
+- **Typed blocks** cover the common knobs plus the ones that need *special
+  rendering* the free-form map can't express: the ClickHouse password (Secret /
+  `existingSecret`), the TLS client certs (`clickhouse.tls.existingSecret`
+  mounts a Secret and points `CERBERUS_CH_TLS_*_FILE` at it), and the
+  list-valued `prom.resourceLabels` (joined into
+  `CERBERUS_PROM_RESOURCE_LABELS`). High-value operational knobs are first-class
+  too: `query.*` (query / memory limits), `clickhouse.pool.*` (connection
+  pool), `schema.*` (TTL / Replicated-DB), `debug.pprof`.
+- **`config: {}`** reaches the **entire long tail verbatim** — every *scalar*
+  `CERBERUS_*` knob is settable as `KEY: value`, whether or not a typed block
+  exists for it. That includes the ClickHouse breaker / keepalive / compression
+  tuning (`CERBERUS_CH_BREAKER_*`, `CERBERUS_CH_KEEPALIVE_*`,
+  `CERBERUS_CH_COMPRESSION*`), the HTTP server timeouts
+  (`CERBERUS_HTTP_*_TIMEOUT`), the solver / shard tuning (`CERBERUS_EVAL_ROUTE`,
+  `CERBERUS_SHARD_*`, `CERBERUS_SOLVER_TIMEOUT`), and the per-signal schema
+  overrides (`CERBERUS_SCHEMA_*`, `CERBERUS_SCHEMA_METRICS_*_TABLE`).
+
+The authoritative, per-knob inventory (names, defaults, semantics) lives in
+[docs/configuration.md](https://github.com/tsouza/cerberus/blob/main/docs/configuration.md).
+Reach for a typed block where one exists; use `config` for everything else:
+
+```yaml
+config:
+  CERBERUS_EVAL_ROUTE: "single"          # disable solver routing
+  CERBERUS_CH_BREAKER_THRESHOLD: "0.5"   # CH circuit-breaker tuning
+  CERBERUS_SCHEMA_METRICS_GAUGE_TABLE: "otel_metrics_gauge"
+```
 
 ## Observability
 
@@ -151,13 +186,17 @@ Kubernetes: `>=1.23.0-0`
 | autoscaling.minReplicas | int | `2` | Minimum replicas (survives a single-pod failure at >=2). |
 | autoscaling.targetCPUUtilizationPercentage | int | `70` | Target average CPU utilisation %. cerberus's hot path is CPU-bound on the gateway side, so CPU is a faithful load proxy. Set to null to drop it. |
 | autoscaling.targetMemoryUtilizationPercentage | string | `nil` | Target average memory utilisation %. OFF by default — a memory target thrashes against GOMEMLIMIT-driven heap (rc.5 OOM finding). |
-| clickhouse | object | `{"addr":["clickhouse:9000"],"database":"otel","dialTimeout":"10s","existingSecret":"","password":"","passwordKey":"password","protocol":"native","tls":{"caFileKey":"ca.crt","certFileKey":"tls.crt","enabled":false,"existingSecret":"","insecureSkipVerify":false,"keyFileKey":"tls.key","serverName":""},"username":"default"}` | ClickHouse connection block (lowered to CERBERUS_CH_* env). See fields below. |
+| clickhouse | object | `{"addr":["clickhouse:9000"],"database":"otel","dialTimeout":"10s","existingSecret":"","password":"","passwordKey":"password","pool":{"connMaxLifetime":"","maxIdleConns":null,"maxOpenConns":null},"protocol":"native","tls":{"caFileKey":"ca.crt","certFileKey":"tls.crt","enabled":false,"existingSecret":"","insecureSkipVerify":false,"keyFileKey":"tls.key","serverName":""},"username":"default"}` | ClickHouse connection block (lowered to CERBERUS_CH_* env). See fields below. |
 | clickhouse.addr | list | `["clickhouse:9000"]` | ClickHouse address list (`host:port`), joined with `,` into CERBERUS_CH_ADDR. Native protocol is 9000 (9440 TLS); HTTP is 8123. |
 | clickhouse.database | string | `"otel"` | Target database (CERBERUS_CH_DATABASE). |
 | clickhouse.dialTimeout | string | `"10s"` | Dial timeout (CERBERUS_CH_DIAL_TIMEOUT). |
 | clickhouse.existingSecret | string | `""` | Name of a pre-existing Secret holding the ClickHouse password. Takes precedence over `password` (no chart Secret is rendered). |
 | clickhouse.password | string | `""` | Inline password. Renders a chart-managed Secret. PREFER `existingSecret` in production so the password never lands in values / release history. |
 | clickhouse.passwordKey | string | `"password"` | Key within the Secret (chart-managed or existing) holding the password. |
+| clickhouse.pool | object | `{"connMaxLifetime":"","maxIdleConns":null,"maxOpenConns":null}` | ClickHouse connection-pool tuning. Each key is emitted to env only when set; leave a key null/unset to keep the binary's own default. |
+| clickhouse.pool.connMaxLifetime | string | `""` | Max connection lifetime (CERBERUS_CH_CONN_MAX_LIFETIME). Binary default: 30s. |
+| clickhouse.pool.maxIdleConns | string | `nil` | Max idle connections (CERBERUS_CH_MAX_IDLE_CONNS). Binary default: 5. |
+| clickhouse.pool.maxOpenConns | string | `nil` | Max open connections (CERBERUS_CH_MAX_OPEN_CONNS). Binary default: 10. |
 | clickhouse.protocol | string | `"native"` | Wire protocol: `native` or `http` (CERBERUS_CH_PROTOCOL). |
 | clickhouse.tls.caFileKey | string | `"ca.crt"` | Key in the TLS Secret for the CA cert → CERBERUS_CH_TLS_CA_FILE. |
 | clickhouse.tls.certFileKey | string | `"tls.crt"` | Key in the TLS Secret for the client cert → CERBERUS_CH_TLS_CERT_FILE. |
@@ -169,7 +208,9 @@ Kubernetes: `>=1.23.0-0`
 | clickhouse.username | string | `"default"` | ClickHouse username (CERBERUS_CH_USERNAME). |
 | command | list | `[]` | Full override of the container command (entrypoint). |
 | commonLabels | object | `{}` | Extra labels added to every rendered object (tpl-rendered). NOT added to selectors (those are immutable). |
-| config | object | `{}` | Arbitrary env vars rendered verbatim into the env ConfigMap. Use for any CERBERUS_* knob not covered by a typed block above, e.g. `{CERBERUS_QUERY_MAX_SAMPLES: "5000000", CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"}`. Overrides the typed defaults. |
+| config | object | `{}` | Arbitrary env vars rendered verbatim into the env ConfigMap. This is the completeness escape hatch: EVERY scalar CERBERUS_* knob the binary reads is settable here as `KEY: value` even when no typed block exists for it (the long tail — CH breaker/keepalive/compression tuning, HTTP server timeouts, solver / shard knobs, schema metric-table overrides, etc.). See the full inventory in docs/configuration.md. Use a typed block above where one exists; reach for `config` for everything else. Overrides the typed defaults. Example: `{CERBERUS_EVAL_ROUTE: "single", CERBERUS_CH_BREAKER_THRESHOLD: "0.5"}`. |
+| debug | object | `{"pprof":false}` | Debug / profiling toggles. |
+| debug.pprof | bool | `false` | Expose the net/http/pprof handlers on the HTTP listener (CERBERUS_DEBUG_PPROF). Off by default; enable transiently for profiling. |
 | deploymentAnnotations | object | `{}` | Extra annotations on the Deployment object. |
 | dnsConfig | object | `{}` | DNS config. |
 | dnsPolicy | string | `""` | DNS policy. |
@@ -217,6 +258,10 @@ Kubernetes: `>=1.23.0-0`
 | priorityClassName | string | `""` | PriorityClass name. |
 | prom | object | `{"resourceLabels":[]}` | Prometheus head configuration. |
 | prom.resourceLabels | list | `[]` | OTel resource attributes to project as Prometheus labels (joined to CERBERUS_PROM_RESOURCE_LABELS). This is a BOUNDED ALLOWLIST: leave it empty and cerberus promotes EVERY resource attribute → unbounded label cardinality. List only the keys you actually query / group on. |
+| query | object | `{"chMaxMemory":null,"maxSamples":null,"timeout":""}` | Query safety limits. Each key is emitted to env only when set; leave a key null/empty to keep the binary's own default. These cap the blast radius of a single expensive query. |
+| query.chMaxMemory | string | `nil` | Per-query ClickHouse server-side memory ceiling in bytes (CERBERUS_CH_QUERY_MAX_MEMORY). Binary default: 1073741824 (1 GiB). |
+| query.maxSamples | string | `nil` | Max samples a single query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Binary default: 50000000. |
+| query.timeout | string | `""` | Per-query wall-clock timeout (CERBERUS_QUERY_TIMEOUT). Binary default: 2m. Also derives the ClickHouse socket read timeout when CH_READ_TIMEOUT is unset. |
 | readinessProbe | object | `{"failureThreshold":5,"httpGet":{"path":"/readyz","port":"http"},"initialDelaySeconds":2,"periodSeconds":3,"timeoutSeconds":5}` | Readiness probe. `/readyz` pings ClickHouse (with a small TTL cache); a failure removes the pod from the Service endpoints (backpressure, no restart). |
 | replicaCount | int | `2` | Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA owns the replica count then). |
 | requirementsCheck | bool | `false` | Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify the ClickHouse connection + schema are usable at boot. Non-fatal — logs and retries rather than crash-looping. Emitted into env only when true. |

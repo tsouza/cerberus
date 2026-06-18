@@ -1,0 +1,26 @@
+# ct / helm-template fixture: operational tuning — exercises the 0.3.0 typed
+# blocks (query safety limits, ClickHouse connection pool, debug.pprof) plus
+# the `config` long-tail passthrough that reaches every remaining CERBERUS_*
+# knob the binary reads.
+clickhouse:
+  addr:
+    - clickhouse:9000
+  pool:
+    maxOpenConns: 20
+    maxIdleConns: 8
+    connMaxLifetime: 1m
+
+query:
+  maxSamples: 5000000
+  timeout: 90s
+  chMaxMemory: 2147483648
+
+debug:
+  pprof: true
+
+# Long-tail knobs with no typed block — reached verbatim via the passthrough.
+config:
+  CERBERUS_EVAL_ROUTE: "single"
+  CERBERUS_CH_BREAKER_THRESHOLD: "0.5"
+  CERBERUS_HTTP_READ_TIMEOUT: "30s"
+  CERBERUS_SCHEMA_METRICS_GAUGE_TABLE: "otel_metrics_gauge"

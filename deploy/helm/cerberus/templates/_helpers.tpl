@@ -128,6 +128,20 @@ CERBERUS_CH_PROTOCOL: {{ . | quote }}
 {{- with $ch.dialTimeout }}
 CERBERUS_CH_DIAL_TIMEOUT: {{ . | quote }}
 {{- end }}
+{{- /* ClickHouse connection-pool tuning (CERBERUS_CH_*). Each key is emitted
+       only when set, so an unset pool block stays byte-identical to the
+       binary's own defaults. */ -}}
+{{- with $ch.pool }}
+{{- if not (kindIs "invalid" .maxOpenConns) }}
+CERBERUS_CH_MAX_OPEN_CONNS: {{ int64 .maxOpenConns | quote }}
+{{- end }}
+{{- if not (kindIs "invalid" .maxIdleConns) }}
+CERBERUS_CH_MAX_IDLE_CONNS: {{ int64 .maxIdleConns | quote }}
+{{- end }}
+{{- with .connMaxLifetime }}
+CERBERUS_CH_CONN_MAX_LIFETIME: {{ . | quote }}
+{{- end }}
+{{- end }}
 {{- if $ch.tls.enabled }}
 CERBERUS_CH_TLS_ENABLED: "true"
 {{- with $ch.tls.insecureSkipVerify }}
@@ -166,6 +180,22 @@ CERBERUS_ADMIT_TEMPO: {{ .Values.admit.tempo | quote }}
 CERBERUS_ADMIT_DISABLED: {{ .Values.admit.disabled | quote }}
 {{- if .Values.requirementsCheck }}
 CERBERUS_REQUIREMENTS_CHECK: "true"
+{{- end }}
+{{- /* Query safety limits (CERBERUS_QUERY_* / CERBERUS_CH_QUERY_MAX_MEMORY).
+       Emitted only when set so an unset block keeps the binary defaults. */ -}}
+{{- with .Values.query }}
+{{- if not (kindIs "invalid" .maxSamples) }}
+CERBERUS_QUERY_MAX_SAMPLES: {{ int64 .maxSamples | quote }}
+{{- end }}
+{{- with .timeout }}
+CERBERUS_QUERY_TIMEOUT: {{ . | quote }}
+{{- end }}
+{{- if not (kindIs "invalid" .chMaxMemory) }}
+CERBERUS_CH_QUERY_MAX_MEMORY: {{ int64 .chMaxMemory | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.debug.pprof }}
+CERBERUS_DEBUG_PPROF: "true"
 {{- end }}
 {{- with .Values.prom }}
 {{- if .resourceLabels }}
