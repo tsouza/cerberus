@@ -13,28 +13,32 @@ import (
 type Mode int
 
 const (
-	// Permissive (the default) skips an unsupported explicit feature with a
-	// WARN and continues startup.
-	Permissive Mode = iota
-	// Enforcing turns an unsupported explicit feature into a FATAL startup
-	// error.
-	Enforcing
+	// Enforcing (the default) turns an unsupported explicit feature into a
+	// FATAL startup error. It is the default because `auto` and `off` already
+	// cover the graceful paths -- `auto` is "best available" and silently
+	// skips unsupported features -- so an operator who provides an EXPLICIT
+	// feature list is asserting "I require these", which should fail loudly
+	// when the connected ClickHouse version cannot honour the request.
+	Enforcing Mode = iota
+	// Permissive skips an unsupported explicit feature with a WARN and
+	// continues startup. Opt in via CERBERUS_CH_OPTIMIZATIONS_MODE=permissive.
+	Permissive
 )
 
 // ParseMode parses the CERBERUS_CH_OPTIMIZATIONS_MODE value. It accepts
 // "permissive" and "enforcing" (case-insensitive, surrounding whitespace
 // trimmed) and rejects anything else with an error naming the offending value,
 // preserving cerberus's fail-fast-on-misconfiguration contract. An empty
-// string resolves to the default Permissive so an unset env var is not an
+// string resolves to the default Enforcing so an unset env var is not an
 // error (internal/config seeds the default, but ParseMode is defensive).
 func ParseMode(s string) (Mode, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "permissive":
-		return Permissive, nil
-	case "enforcing":
+	case "", "enforcing":
 		return Enforcing, nil
+	case "permissive":
+		return Permissive, nil
 	default:
-		return Permissive, fmt.Errorf("invalid optimizations mode %q: want \"permissive\" or \"enforcing\"", s)
+		return Enforcing, fmt.Errorf("invalid optimizations mode %q: want \"permissive\" or \"enforcing\"", s)
 	}
 }
 

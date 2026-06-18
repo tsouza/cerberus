@@ -21,10 +21,10 @@ Two environment variables drive the whole suite. Both follow the standard
 cerberus config idiom (per-key viper `BindEnv`, fail-fast parse, env > file
 > default).
 
-| Env var                          | Type   | Default      | Meaning                                                                          |
-| -------------------------------- | ------ | ------------ | -------------------------------------------------------------------------------- |
-| `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`       | `auto`, `off`, or a comma-separated list of feature ids.                         |
-| `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `permissive` | `enforcing` or `permissive`. Governs how an unsupported requested id is handled. |
+| Env var                          | Type   | Default     | Meaning                                                                          |
+| -------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`      | `auto`, `off`, or a comma-separated list of feature ids.                         |
+| `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `enforcing` | `enforcing` or `permissive`. Governs how an unsupported requested id is handled. |
 
 ### `CERBERUS_CH_OPTIMIZATIONS`
 
@@ -45,13 +45,15 @@ connected server is too old to support. It is **ignored** under `auto` and
 `off` (under `auto` an unsupported feature is silently skipped because auto
 is "best available"; under `off` nothing is selected at all).
 
-- **`permissive`** (default) — an explicitly-requested but unsupported
-  feature is **skipped with a `WARN`**:
+- **`enforcing`** (default) — an explicitly-requested but unsupported feature
+  is a **FATAL startup error** naming the feature, the required version, and
+  the server version. The process exits non-zero. This is the default because
+  `auto`/`off` already cover the graceful paths, so an operator who names an
+  explicit feature list is asserting "I require these".
+- **`permissive`** — an explicitly-requested but unsupported feature is
+  **skipped with a `WARN`**:
   `ch_opt '<id>' disabled: needs ClickHouse >=X.Y, server is A.B`.
   Startup continues.
-- **`enforcing`** — an explicitly-requested but unsupported feature is a
-  **FATAL startup error** naming the feature, the required version, and the
-  server version. The process exits non-zero.
 
 An **unknown** feature id is fatal in **both** modes.
 
@@ -331,8 +333,8 @@ type Feature struct {
 type Mode int
 
 const (
-  Permissive Mode = iota // WARN + skip (default)
-  Enforcing              // FATAL
+  Enforcing  Mode = iota // FATAL (default)
+  Permissive            // WARN + skip
 )
 
 func ParseMode(s string) (Mode, error) // "permissive"|"enforcing"
@@ -399,14 +401,14 @@ alongside `envExperimentalTSGrid`, and append to `allEnvKeys`):
 
 ```go
 envCHOptimizations     = "CERBERUS_CH_OPTIMIZATIONS"          // string, default "auto"
-envCHOptimizationsMode = "CERBERUS_CH_OPTIMIZATIONS_MODE"     // string, default "permissive"
+envCHOptimizationsMode = "CERBERUS_CH_OPTIMIZATIONS_MODE"     // string, default "enforcing"
 envCHOptCorpusEnabled  = "CERBERUS_CH_OPT_CORPUS_ENABLED"     // bool,   default false
 envCHOptCorpusInterval = "CERBERUS_CH_OPT_CORPUS_INTERVAL"    // dur,    default 60s
 envCHOptCorpusSinkPath = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"   // string, default ""
 ```
 
 Defaults via `v.SetDefault(envCHOptimizations, "auto")` and
-`v.SetDefault(envCHOptimizationsMode, "permissive")` etc., in `newLoader`.
+`v.SetDefault(envCHOptimizationsMode, "enforcing")` etc., in `newLoader`.
 Reads use the existing idiom: `getString` for the two optimization knobs and
 the sink path, `getBool` for the corpus-enable, `getDuration` for the
 interval. The legacy tri-state uses `explicitlySet(v, envExperimentalTSGrid)`

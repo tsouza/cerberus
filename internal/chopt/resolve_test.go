@@ -19,8 +19,8 @@ func TestParseMode(t *testing.T) {
 		{"enforcing", Enforcing, false},
 		{"PERMISSIVE", Permissive, false},
 		{"  enforcing  ", Enforcing, false},
-		{"", Permissive, false},
-		{"strict", Permissive, true},
+		{"", Enforcing, false}, // empty resolves to the default (enforcing)
+		{"strict", Enforcing, true},
 	}
 	for _, tc := range cases {
 		got, err := ParseMode(tc.in)

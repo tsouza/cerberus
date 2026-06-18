@@ -147,9 +147,10 @@ type Config struct {
 	CHOptimizations string
 
 	// CHOptimizationsMode is the parsed CERBERUS_CH_OPTIMIZATIONS_MODE
-	// (enforcing | permissive). It governs how the resolver treats an
-	// explicitly-requested feature the connected server is too old for: WARN +
-	// skip (permissive) vs FATAL (enforcing). Ignored under auto/off.
+	// (enforcing | permissive, default enforcing). It governs how the resolver
+	// treats an explicitly-requested feature the connected server is too old
+	// for: FATAL (enforcing, default) vs WARN + skip (permissive). Ignored
+	// under auto/off.
 	CHOptimizationsMode chopt.Mode
 
 	// LegacyTSGridFlag carries the tri-state deprecated
@@ -1007,9 +1008,11 @@ const (
 	// 24.8-safe stable wins (aggregation_in_order) and any newer stable feature
 	// (condition_cache on >= 25.3) automatically.
 	defaultCHOptimizations = "auto"
-	// defaultCHOptimizationsMode is "permissive": an explicitly-requested but
-	// unsupported feature is skipped with a WARN rather than aborting startup.
-	defaultCHOptimizationsMode = "permissive"
+	// defaultCHOptimizationsMode is "enforcing": an explicitly-requested but
+	// unsupported feature ABORTS startup (FATAL). `auto`/`off` already cover the
+	// graceful paths, so naming an explicit feature list means "I require these".
+	// Set CERBERUS_CH_OPTIMIZATIONS_MODE=permissive to WARN-and-skip instead.
+	defaultCHOptimizationsMode = "enforcing"
 	// defaultCHOptCorpusEnabled is false: the query_log performance-corpus
 	// reconciler is opt-in (it needs system.query_log access and is
 	// production-only; chDB has no query_log).

@@ -440,10 +440,10 @@ env-var reference.
 
 ### The auto-picker
 
-| Variable                         | Type   | Default      | Description                                                                                                                            |
-| -------------------------------- | ------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`       | `auto` (enable every **stable** feature the probed server supports), `off` (enable nothing), or a comma-separated list of feature ids. |
-| `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `permissive` | `permissive` (an explicitly-requested but unsupported feature is skipped with a `WARN`) or `enforcing` (it is a FATAL startup error).  |
+| Variable                         | Type   | Default     | Description                                                                                                                                                                |
+| -------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`      | `auto` (enable every **stable** feature the probed server supports), `off` (enable nothing), or a comma-separated list of feature ids.                                     |
+| `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `enforcing` | `enforcing` (default; an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`. |
 
 Resolution runs **once at startup**, after a `SELECT version()` probe, into an
 immutable enabled-set logged at boot. Under `auto`, **experimental** features are
