@@ -61,12 +61,12 @@ parse the query  →  lower to the plan IR  →  optimize (optimizer.Default)
 Nothing is stubbed: the SQL measured is the SQL cerberus emits, and it runs on the same 500k-row dataset described above. The query shapes span all three heads and the API endpoints a Grafana dashboard actually hits — an instant evaluation, a **`query_range`** rate over a step grid (the workhorse panel query), a `/series` label lookup, a TraceQL span search, and a LogQL range count.
 
 | query                   | head    | scan rows | latency |
-| ----------------------- | ------- | --------: | ------: |
-| instant query           | promql  |   500,000 |  66.1ms |
-| range query (240 steps) | promql  |   500,000 | 529.9ms |
-| series lookup           | promql  |   500,000 |  17.5ms |
-| TraceQL search          | traceql |   500,000 |  18.5ms |
-| LogQL range             | logql   |   500,000 |  42.2ms |
+| ----------------------- | ------- | --------- | ------- |
+| instant query           | promql  | 500,000   | 66.1ms  |
+| range query (240 steps) | promql  | 500,000   | 529.9ms |
+| series lookup           | promql  | 500,000   | 17.5ms  |
+| TraceQL search          | traceql | 500,000   | 18.5ms  |
+| LogQL range             | logql   | 500,000   | 42.2ms  |
 
 ![End-to-end latency by query shape](benchmarks/e2e-latency.svg)
 
@@ -91,11 +91,11 @@ Because native rate *removes* the fan-out, the two levers do not stack: with nat
 
 **The focus query** is the same rate range query_range from the table above — `sum(rate(e2e_http_requests[5m]))` over 1h at a 15s step (fan-out F = Range/Step = **20**, grid N = **241** steps), on the **500,000**-row metrics seed. Each strategy drives the full pipeline for its configuration and reports two numbers: the measured **wall** time and the modeled per-statement **peak memory**.
 
-| strategy             | statements |    wall | peak mem | note                                    |
-| -------------------- | ---------: | ------: | -------: | --------------------------------------- |
-| single (native off)  |          1 | 522.9ms |  216 MiB | baseline — whole fan-out in one query   |
-| sharded (native off) |          8 | 915.1ms |  123 MiB | fan-out sliced to fit (K=8 shards)      |
-| native rate          |          1 |  83.8ms |   11 MiB | fan-out removed (single-pass aggregate) |
+| strategy             | statements | wall    | peak mem | note                                    |
+| -------------------- | ---------- | ------- | -------- | --------------------------------------- |
+| single (native off)  | 1          | 522.9ms | 216 MiB  | baseline — whole fan-out in one query   |
+| sharded (native off) | 8          | 915.1ms | 123 MiB  | fan-out sliced to fit (K=8 shards)      |
+| native rate          | 1          | 83.8ms  | 11 MiB   | fan-out removed (single-pass aggregate) |
 
 `auto` (the production default) picks the sharded route for this query when native rate is off; with native rate on it collapses to a single statement — so `auto` does not earn its own row, it lands on one of the three above depending on the flag.
 
@@ -118,9 +118,9 @@ The matrix showed *that* sharding cuts per-query memory; this section shows it a
 **The fixture.** `sum(rate(bench_shard_total[5m]))` @ 15s over 1h — fan-out F = **20**, grid N = **241**. Seeded with **13,000** series and **3,393,000** scanned samples, sized so a single statement crosses the cap while every shard stays under it.
 
 | route                | statements | (sample,anchor) pairs | modeled peak | vs 1.00 GiB cap       |
-| -------------------- | ---------: | --------------------: | -----------: | --------------------- |
-| A — single statement |          1 |            62,660,000 |     1.32 GiB | **OOM** (exceeds cap) |
-| B — sharded (K=8)    |          8 |       8,060,000 (max) |      174 MiB | clears                |
+| -------------------- | ---------- | --------------------- | ------------ | --------------------- |
+| A — single statement | 1          | 62,660,000            | 1.32 GiB     | **OOM** (exceeds cap) |
+| B — sharded (K=8)    | 8          | 8,060,000 (max)       | 174 MiB      | clears                |
 
 Route A's modeled peak (**1.32 GiB**) **exceeds** the cap; every route-B shard's modeled peak (**174 MiB**) sits under it with **5.9× headroom**. The shards partition route A's work exactly — the per-shard pair counts sum to route A's total (62,660,000), with no double-count — so the worst shard carries ~1/K of the fan-out, a **7.8×** reduction.
 
@@ -136,11 +136,11 @@ A query optimization is only durable if it stays bounded as the data grows. Each
 
 Scan rows held fixed at 180,000.
 
-| param |   wall | peak rows | fan_factor |
-| ----: | -----: | --------: | ---------: |
-|    61 | 21.2ms |    48,000 |       0.27 |
-|   121 | 25.1ms |    84,000 |       0.47 |
-|   241 | 38.2ms |   156,000 |       0.87 |
+| param | wall   | peak rows | fan_factor |
+| ----- | ------ | --------- | ---------- |
+| 61    | 21.2ms | 48,000    | 0.27       |
+| 121   | 25.1ms | 84,000    | 0.47       |
+| 241   | 38.2ms | 156,000   | 0.87       |
 
 ![range_lwr scaling](benchmarks/scaling-range_lwr.svg)
 
@@ -150,11 +150,11 @@ Parameter grew **4.0×** across the sweep; wall grew **1.8×** (sub-linear). `fa
 
 Scan rows held fixed at 9.
 
-| param |    wall | peak rows | fan_factor |
-| ----: | ------: | --------: | ---------: |
-|     2 |  21.6ms |         3 |       0.33 |
-|     4 |  66.7ms |         5 |       0.56 |
-|     8 | 318.9ms |         9 |       1.00 |
+| param | wall    | peak rows | fan_factor |
+| ----- | ------- | --------- | ---------- |
+| 2     | 21.6ms  | 3         | 0.33       |
+| 4     | 66.7ms  | 5         | 0.56       |
+| 8     | 318.9ms | 9         | 1.00       |
 
 ![setop_chain scaling](benchmarks/scaling-setop_chain.svg)
 
@@ -166,8 +166,8 @@ Parameter grew **4.0×** across the sweep; wall grew **14.8×** (tracks the para
 
 Cerberus's optimizer rewrites each plan before emission. These are the individual wins, each pairing the **naive** pre-optimization SQL against the **optimized** shape cerberus actually emits, both run live on chDB. The `win` column is the deterministic structural ratio where one exists (granules read, rows scanned, peak cardinality), else the indicative wall-time speedup.
 
-| optimization              |   win | basis                                         |
-| ------------------------- | ----: | --------------------------------------------- |
+| optimization              | win   | basis                                         |
+| ------------------------- | ----- | --------------------------------------------- |
 | range-LWR collapse        | 56.9× | wall time (indicative)                        |
 | set-op single-pass        | 18.1× | arm rows scanned (deterministic)              |
 | MetricName-first ORDER BY | 17.0× | granules read (deterministic)                 |
@@ -207,44 +207,48 @@ Cerberus's optimizer rewrites each plan before emission. These are the individua
 
 ## Micro-benchmarks
 
-Per-stage Go benchmarks, no database involved — they isolate the cost of one pipeline stage so an allocation regression in, say, lowering can't hide behind a fast query. `allocs/op` and `B/op` are deterministic; `ns/op` is indicative. Read the `package` column as the stage: `promql`/`logql`/`traceql` parse + lower, `optimizer` rewrites the plan, `chsql` emits SQL, `chplan` is the IR, `api/*` is the wire layer.
+Per-stage Go benchmarks, no database involved — they isolate the cost of one pipeline stage so an allocation regression in, say, lowering can't hide behind a fast query. `allocs/op` and `B/op` are deterministic; `ns/op` is indicative. Read the `package` column as the stage: `promql`/`logql`/`traceql` parse + lower, `optimizer` rewrites the plan, `chsql` emits SQL, `chplan` is the IR, `solver` is the sharded-pushdown slicer (`Slice/K=*` measures one `unpinSpine` plus K `ReanchorRange` calls on the copy-on-write off-spine sharing path), `api/*` is the wire layer.
 
-| package    | benchmark                            |         ns/op |          B/op | allocs/op |
-| ---------- | ------------------------------------ | ------------: | ------------: | --------: |
-| api/format | CanonicalKey_Large                   |         2,508 |         1,016 |         8 |
-| api/format | CanonicalKey_Small                   |           710 |           216 |         6 |
-| api/format | PromLabelToOTelCandidates_Cached     |            45 |             0 |         0 |
-| api/format | PromLabelToOTelCandidates_SumByQuery |           299 |             0 |         0 |
-| api/format | PromLabelToOTelCandidates_Uncached   |         1,378 |           136 |         4 |
-| api/prom   | ExecuteRangeStreaming                |   144,739,449 |   120,175,240 |   1402461 |
-| api/prom   | HandleLabels                         |        87,205 |        28,027 |       161 |
-| api/prom   | HandleQueryRange_Large               |     2,022,945 |     1,614,742 |     16325 |
-| api/prom   | HandleQueryRange_Small               |       248,646 |       110,661 |      1101 |
-| api/prom   | HandleQuery_Small                    |       183,543 |        49,244 |       492 |
-| api/prom   | HandleSeries/broad                   | 4,311,226,392 | 4,965,324,523 |  37765296 |
-| api/prom   | HandleSeries/typical                 |     2,258,302 |     2,062,501 |     18988 |
-| api/prom   | StreamingCursor_100K_Series          | 1,550,127,460 | 1,529,472,056 |  15598476 |
-| api/prom   | StreamingCursor_1M_Points            | 1,423,789,780 | 1,432,337,993 |  14759491 |
-| api/prom   | StreamingCursor_Stop_Mid             |    91,919,924 |    77,311,208 |    851937 |
-| chclient   | RowsCursor_DrainLarge                |     3,807,831 |     2,320,259 |     80002 |
-| chclient   | RowsCursor_DrainSmall                |        32,643 |        17,056 |       602 |
-| chplan     | Equal                                |         1,658 |             0 |         0 |
-| chplan     | Walk                                 |           231 |            80 |         5 |
-| chsql      | Builder_NewAndBuild                  |         3,354 |         1,064 |        12 |
-| chsql      | Frag_Construction                    |         1,179 |           952 |        34 |
-| chsql      | QueryBuilder_Build                   |         2,668 |         1,064 |        12 |
-| logql      | Lower_LineFilterChain                |         1,320 |           968 |        22 |
-| logql      | Lower_MetricForm                     |         5,851 |         4,640 |       119 |
-| logql      | Lower_StreamMatcher                  |         1,157 |           680 |        15 |
-| optimizer  | Driver_Run                           |         9,566 |         4,880 |        62 |
-| promql     | Lower_Aggregation                    |         5,524 |         4,019 |       100 |
-| promql     | Lower_Binary                         |         3,456 |         2,576 |        64 |
-| promql     | Lower_Instant                        |         3,491 |         2,080 |        50 |
-| promql     | Lower_Range                          |         2,181 |         1,160 |        25 |
-| promql     | Lower_Subquery                       |         2,590 |         1,464 |        29 |
-| traceql    | Lower_AttributeMatcher               |         2,282 |           624 |        13 |
-| traceql    | Lower_MetricsPipeline                |         1,338 |           713 |        13 |
-| traceql    | Lower_StructuralChain                |         1,744 |         1,240 |        24 |
+| package    | benchmark                            | ns/op         | B/op          | allocs/op |
+| ---------- | ------------------------------------ | ------------- | ------------- | --------- |
+| api/format | CanonicalKey_Large                   | 2,508         | 1,016         | 8         |
+| api/format | CanonicalKey_Small                   | 710           | 216           | 6         |
+| api/format | PromLabelToOTelCandidates_Cached     | 45            | 0             | 0         |
+| api/format | PromLabelToOTelCandidates_SumByQuery | 299           | 0             | 0         |
+| api/format | PromLabelToOTelCandidates_Uncached   | 1,378         | 136           | 4         |
+| api/prom   | ExecuteRangeStreaming                | 144,739,449   | 120,175,240   | 1402461   |
+| api/prom   | HandleLabels                         | 87,205        | 28,027        | 161       |
+| api/prom   | HandleQueryRange_Large               | 2,022,945     | 1,614,742     | 16325     |
+| api/prom   | HandleQueryRange_Small               | 248,646       | 110,661       | 1101      |
+| api/prom   | HandleQuery_Small                    | 183,543       | 49,244        | 492       |
+| api/prom   | HandleSeries/broad                   | 4,311,226,392 | 4,965,324,523 | 37765296  |
+| api/prom   | HandleSeries/typical                 | 2,258,302     | 2,062,501     | 18988     |
+| api/prom   | StreamingCursor_100K_Series          | 1,550,127,460 | 1,529,472,056 | 15598476  |
+| api/prom   | StreamingCursor_1M_Points            | 1,423,789,780 | 1,432,337,993 | 14759491  |
+| api/prom   | StreamingCursor_Stop_Mid             | 91,919,924    | 77,311,208    | 851937    |
+| chclient   | RowsCursor_DrainLarge                | 3,807,831     | 2,320,259     | 80002     |
+| chclient   | RowsCursor_DrainSmall                | 32,643        | 17,056        | 602       |
+| chplan     | Equal                                | 1,658         | 0             | 0         |
+| chplan     | Walk                                 | 231           | 80            | 5         |
+| chsql      | Builder_NewAndBuild                  | 3,354         | 1,064         | 12        |
+| chsql      | Frag_Construction                    | 1,179         | 952           | 34        |
+| chsql      | QueryBuilder_Build                   | 2,668         | 1,064         | 12        |
+| logql      | Lower_LineFilterChain                | 1,320         | 968           | 22        |
+| logql      | Lower_MetricForm                     | 5,851         | 4,640         | 119       |
+| logql      | Lower_StreamMatcher                  | 1,157         | 680           | 15        |
+| optimizer  | Driver_Run                           | 9,566         | 4,880         | 62        |
+| promql     | Lower_Aggregation                    | 5,524         | 4,019         | 100       |
+| promql     | Lower_Binary                         | 3,456         | 2,576         | 64        |
+| promql     | Lower_Instant                        | 3,491         | 2,080         | 50        |
+| promql     | Lower_Range                          | 2,181         | 1,160         | 25        |
+| promql     | Lower_Subquery                       | 2,590         | 1,464         | 29        |
+| solver     | Slice/K=2                            | 1,900         | 1,984         | 28        |
+| solver     | Slice/K=4                            | 2,700         | 3,072         | 37        |
+| solver     | Slice/K=8                            | 3,650         | 5,376         | 54        |
+| solver     | Slice/K=16                           | 5,570         | 9,184         | 83        |
+| traceql    | Lower_AttributeMatcher               | 2,282         | 624           | 13        |
+| traceql    | Lower_MetricsPipeline                | 1,338         | 713           | 13        |
+| traceql    | Lower_StructuralChain                | 1,744         | 1,240         | 24        |
 
 ## Reproducing
 
@@ -262,3 +266,5 @@ just bench-report   # measures everything and rewrites this file in place
 - [`docs/performance.md`](performance.md) — the optimizer + perf architecture these numbers exercise.
 - [`docs/solver.md`](solver.md) — the sharded-pushdown solver (route B) in full: eligibility, slicing geometry, the memory cap.
 - [`docs/test-strategy.md`](test-strategy.md) — the perf-assessment test layers (scaling harness, corpus profiler, cardinality ratchet) that gate structural regressions in CI.
+
+The wall-clock micro-benchmarks above (including `solver.Slice/K=*`) run in the **weekly informational** `perf-benchmark` lane (`benchstat` diff, never gates) to avoid runner-variance flake. The deterministic structural regressions are guarded by the **gating** `perf-guards` chDB job instead: `TestOrderByDecision_ChDB` (granule-prune ratio floor), `TestSeriesFanout_ChDB` (the /series fan-in ceiling), and `TestSliceAllocs_ChDB` (the slicer copy-on-write allocation pin — fails if `slice()`'s allocs/op regress past their K=4 / K=16 bounds, i.e. if the off-spine sharing reverts to a per-shard `CloneNode`).

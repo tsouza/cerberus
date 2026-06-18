@@ -97,8 +97,11 @@ header.
 ## Slicing geometry
 
 Slicing decomposes the eval grid into `K` disjoint, on-grid anchor sub-grids
-and re-anchors a deep copy of the plan onto each. It is pure arithmetic over
-the anchor grid plus one re-anchor per slice; the input plan is never mutated.
+and re-anchors a copy-on-write view of the plan onto each: each shard SHARES the
+immutable off-spine subtree verbatim and clones only the `O(spine-depth)`
+re-gridded spine path. It is pure arithmetic over the anchor grid plus one
+re-anchor per slice; the input plan is never mutated, and no shard ever aliases
+a mutable node.
 
 Anchors are defined backward from `End`:
 
@@ -148,13 +151,22 @@ emptied. `D` is the cumulative spine lookback recovered by walking the spine.
 **Re-anchoring.** The plan that reaches the slicer is pinned at the full
 request grid (the grid-prediction guard already verified it sits exactly
 there). To re-grid each slice onto a sub-window, the slicer first builds one
-deep, spine-unpinned copy: the windowed-spine bounds (`RangeWindow` /
-`RangeLWR` `Start`, `End`, and the matrix `OuterRange`) are zeroed. This is
-safe because signal 5 already proved every spine node sits on the predicted
-grid, so the zeroed information is exactly what the re-anchor recomputes.
-`ReanchorRange` then fills each slice's grid into a deep copy of that base.
-Off-spine nodes are carried verbatim by the clone; the original plan is never
-touched.
+spine-unpinned, copy-on-write view (`unpinSpine`): the windowed-spine bounds
+(`RangeWindow` / `RangeLWR` `Start`, `End`, and the matrix `OuterRange`) are
+zeroed. This is safe because signal 5 already proved every spine node sits on
+the predicted grid, so the zeroed information is exactly what the re-anchor
+recomputes. `unpinSpine` clones ONLY the spine-path nodes it zeroes (and their
+ancestors back to the root, the `O(spine-depth)` chain) and SHARES every
+immutable off-spine subtree -- with a descend-and-clone guard that, on an
+off-spine subtree which itself carries a windowed node needing zeroing (e.g. a
+`TopK.KExpr` computed-K plan), clones the path down to that inner node so the
+shared original is never mutated. `ReanchorRange` then fills each slice's grid
+in, again sharing the immutable off-spine across all `K` shards rather than deep
+copying it. The original plan is never touched, and the no-mutate-after-slice
+invariant holds: the shards run through emit only, which never mutates a plan
+node in place, so the shared off-spine is safe to alias (enforced by the
+immutability guards in `internal/solver`). A later pass that mutates a shared
+off-spine node must add its own clone.
 
 ## Execution and cursor model
 

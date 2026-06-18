@@ -90,6 +90,8 @@ field.
 | `condition_cache`        | 25.3       | stable       | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                      |
 | `ts_grid_range`          | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                                     |
 | `ts_grid_resample`       | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto).                |
+| `ts_grid_changes`        | 25.9       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<counter>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate. Explicit-only (never auto).                                               |
+| `ts_grid_resets`         | 25.9       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate. Explicit-only (never auto).                                                 |
 | `columnar_result_decode` | none       | opt-in       | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Explicit-only (never auto). |
 
 Notes:
@@ -117,6 +119,18 @@ Notes:
   (`[anchor - lookback, anchor]`) which matches reference Prometheus, vs the
   fan-out's half-open `(anchor - lookback, anchor]`; they diverge only on a
   sample landing exactly on the left boundary.
+- **`ts_grid_changes`** / **`ts_grid_resets`** are the `changes()` / `resets()`
+  siblings of the `timeSeries*ToGrid` family: both are experimental and
+  **never** enabled by `auto`, reachable only by explicit listing in
+  `CERBERUS_CH_OPTIMIZATIONS`. Their floor is **25.9, NOT 25.6** -- the
+  `timeSeriesChangesToGrid` / `timeSeriesResetsToGrid` aggregates shipped a
+  quarter after the 25.6 rate/resample set, in ClickHouse PR #86010 (CH 25.9);
+  a 25.6 floor would mis-advertise support on 25.6-25.8 and fail with
+  `UNKNOWN_AGGREGATE_FUNCTION`. They share the same family experimental setting
+  (`allow_experimental_time_series_aggregate_functions`), co-stamped by the
+  engine on exactly the queries that emit the native node. Each wires as an
+  independent boot-decided PromQL lowering strategy (either can be on without
+  the other, and independently of `ts_grid_range` / `ts_grid_resample`).
 - **`columnar_result_decode`** is a **client-side** decode optimization with
   **no version floor** (`minVersion` is the always-available zero floor): it
   changes how cerberus reads the result blocks, not what it asks the server to
@@ -300,8 +314,11 @@ Nothing in this suite can break ClickHouse 24.8:
 - `aggregation_in_order` and `log_comment` are 24.8-safe (long-standing
   result-equivalent / free-form knobs).
 - `condition_cache` activates only on `>= 25.3`; below that it is a no-op.
-- `ts_grid_range` activates only on `>= 25.6` and is experimental
-  (explicit-only).
+- `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.6` and are
+  experimental (explicit-only).
+- `ts_grid_changes` and `ts_grid_resets` activate only on `>= 25.9` and are
+  experimental (explicit-only); their native aggregates shipped a quarter after
+  the 25.6 family (CH PR #86010).
 - `columnar_result_decode` is client-side and version-agnostic (no server
   setting); it is explicit-only, so `auto` never engages it.
 - Under `auto`, an unsupported feature is simply not enabled.
@@ -310,8 +327,14 @@ Nothing in this suite can break ClickHouse 24.8:
 
 ## Build contract
 
-This section pins the exact public API, config names, consumption points,
-and wiring the builders must implement verbatim. It is derived from the
+This section is the **illustrative** API / config / wiring sketch the suite was
+built from. The feature list below is illustrative, not a verbatim mirror of the
+registry: the live source of truth for the feature ids, floors, and stability
+classes is the [Feature registry](#feature-registry) table above (and
+`internal/chopt/registry.go`), which now seeds seven features
+(`aggregation_in_order`, `condition_cache`, `ts_grid_range`, `ts_grid_resample`,
+`ts_grid_changes`, `ts_grid_resets`, `columnar_result_decode`). Treat the code
+blocks here as the shape, not the current count. It is derived from the
 `feat/chclient-query-instrumentation` foundation
 (`internal/chclient/query_settings.go`, `internal/engine/plan_shape_id.go`,
 `internal/engine/query_settings_rules.go`, `internal/config/config.go`,
@@ -388,7 +411,8 @@ func (s EnabledSet) Has(id string) bool
 func (s EnabledSet) IDs() []string // sorted, for boot logging
 
 // Registry returns the seeded feature registry (aggregation_in_order,
-// condition_cache, ts_grid_range). Exposed so tests can enumerate it.
+// condition_cache, ts_grid_range, ts_grid_resample, ts_grid_changes,
+// ts_grid_resets, columnar_result_decode). Exposed so tests can enumerate it.
 func Registry() []Feature
 
 // Resolve runs ONCE at startup, after the version probe. It returns the
@@ -404,19 +428,28 @@ stringly-typed drift):
 
 ```go
 const (
-  FeatureAggregationInOrder = "aggregation_in_order"
-  FeatureConditionCache     = "condition_cache"
-  FeatureTSGridRange        = "ts_grid_range"
+  FeatureAggregationInOrder   = "aggregation_in_order"
+  FeatureConditionCache       = "condition_cache"
+  FeatureTSGridRange          = "ts_grid_range"
+  FeatureTSGridResample       = "ts_grid_resample"
+  FeatureTSGridChanges        = "ts_grid_changes"
+  FeatureTSGridResets         = "ts_grid_resets"
+  FeatureColumnarResultDecode = "columnar_result_decode"
 )
 ```
 
-Seeded `Registry()` entries (verbatim):
+Seeded `Registry()` entries (illustrative -- the registry in
+`internal/chopt/registry.go` is the source of truth):
 
-| ID                       | MinVersion   | Stability        |
-| ------------------------ | ------------ | ---------------- |
-| `aggregation_in_order`   | `{24, 8}`    | `Stable`         |
-| `condition_cache`        | `{25, 3}`    | `Stable`         |
-| `ts_grid_range`          | `{25, 6}`    | `Experimental`   |
+| ID                       | MinVersion          | Stability        |
+| ------------------------ | ------------------- | ---------------- |
+| `aggregation_in_order`   | `{24, 8}`           | `Stable`         |
+| `condition_cache`        | `{25, 3}`           | `Stable`         |
+| `ts_grid_range`          | `{25, 6}`           | `Experimental`   |
+| `ts_grid_resample`       | `{25, 6}`           | `Experimental`   |
+| `ts_grid_changes`        | `{25, 9}`           | `Experimental`   |
+| `ts_grid_resets`         | `{25, 9}`           | `Experimental`   |
+| `columnar_result_decode` | `AlwaysAvailable`   | `Experimental`   |
 
 ### New config field names + env consts (`internal/config`)
 

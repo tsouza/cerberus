@@ -75,10 +75,12 @@ speedup, and a reflection or library clone that cannot preserve unexported and
 interface fields correctly is disqualified regardless of its speed.)
 
 The real lever is structural: clone LESS. On the slicer hot path,
-`chplan.ReanchorRange` deep-copies a byte-identical off-spine subtree K+1
-times; copy-on-write sharing of the immutable off-spine collapses that to
-O(spine-depth) and measures 9-13x faster with ~17x fewer allocations at
-K = 2..16.
+`chplan.ReanchorRange` used to deep-copy a byte-identical off-spine subtree K+1
+times; copy-on-write sharing of the immutable off-spine now collapses that to
+O(spine-depth). On the committed reproducible `BenchmarkSlice` (the canonical
+`sum by (job)(rate(...))` shape) this measures ~2-2.5x faster with ~50-73% fewer
+allocations at K = 2..16. A wide off-spine subtree can push the win far higher
+(the 17-37x range), but that is an outlier, not the representative figure.
 
 Process rule: any change motivated by cloning cost must be backed by a
 benchmark against the current code, in a throwaway tree, before it is adopted.
