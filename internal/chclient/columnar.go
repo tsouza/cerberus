@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// columnar.go — the production "5A" columnar `query_range` matrix decode.
+// columnar.go — the columnar `query_range` matrix decode.
 //
 // The clickhouse-go/v2 row path pays column.Map.row (reflect.MakeMap + a
 // boxed SetMapIndex per entry) on EVERY row of a matrix, then the cursor
