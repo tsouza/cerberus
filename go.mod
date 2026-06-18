@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/axiomhq/hyperloglog v0.2.6
-	github.com/chdb-io/chdb-go v1.11.0
+	github.com/chdb-io/chdb-go v1.12.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/snappy v1.0.0
@@ -13,7 +13,7 @@ require (
 	github.com/grafana/loki/v3 v3.7.1
 	github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.152.0
-	github.com/prometheus/common v0.68.1
+	github.com/prometheus/common v0.69.0
 	github.com/prometheus/prometheus v0.311.3
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
