@@ -264,6 +264,19 @@ bench-report:
     @echo "Diff of regenerated benchmark document:"
     @git --no-pager diff --stat docs/benchmarks.md || true
 
+# Regenerate docs/configuration.md from the single source of truth in
+# internal/config: the CERBERUS_* env-key metadata (config.EnvDocs) and the
+# LIVE viper loader defaults (config.DocDefaults). docs/configuration.md is a
+# GENERATED file — do not hand-edit it; edit the EnvDoc metadata in
+# internal/config/envdocs.go (or the preamble in cmd/config-docs/template.go)
+# and rerun this. The config-docs CI gate runs `git diff --exit-code` on the
+# regenerated file, so a stale doc (or an undocumented new env var) fails CI.
+gen-config-docs:
+    go run ./cmd/config-docs -out docs/configuration.md
+    @echo
+    @echo "Diff of regenerated configuration document:"
+    @git --no-pager diff --stat docs/configuration.md || true
+
 # === Mutation testing ===
 
 # Run gremlins across internal/. Slow; expect minutes. Honors .gremlins.yaml.
