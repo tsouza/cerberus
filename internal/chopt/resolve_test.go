@@ -47,6 +47,65 @@ func TestResolve_Off(t *testing.T) {
 	}
 }
 
+func TestResolve_Off_LegacyTrue_StaysEmpty(t *testing.T) {
+	// "off" is the absolute kill-switch: a stale legacy
+	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=true must NOT resurrect the
+	// experimental native-rate path. The new knob wins; legacy is ignored with
+	// the deprecation + 'ignored' warnings (permissive), the set stays empty.
+	set, warns, err := Resolve(Config{
+		Optimizations: "off",
+		Mode:          Permissive,
+		LegacyTSGrid:  LegacyFlag{Set: true, Value: true},
+	}, v(25, 6))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(set.IDs()) != 0 {
+		t.Errorf("off + legacy-true set = %v; want empty (off is absolute)", set.IDs())
+	}
+	if set.Has(FeatureTSGridRange) {
+		t.Error("legacy true resurrected ts_grid_range under off; off must be absolute")
+	}
+	if !hasDeprecation(warns) {
+		t.Errorf("legacy set must emit deprecation warning; warns = %v", warns)
+	}
+	if !anyContains(warns, "ignored") {
+		t.Errorf("off + legacy must warn legacy ignored; warns = %v", warns)
+	}
+}
+
+func TestResolve_Off_LegacyTrue_EnforcingFatal(t *testing.T) {
+	// Under enforcing, an ignored legacy flag (because off was chosen
+	// explicitly) is fatal, same as legacy + an explicit list.
+	_, _, err := Resolve(Config{
+		Optimizations: "off",
+		Mode:          Enforcing,
+		LegacyTSGrid:  LegacyFlag{Set: true, Value: true},
+	}, v(25, 6))
+	if err == nil {
+		t.Fatal("off + legacy-true under enforcing: want fatal, got nil")
+	}
+}
+
+func TestResolve_Off_LegacyFalse_StaysEmpty(t *testing.T) {
+	// off + legacy-false: off wins, legacy ignored (deprecation only emitted),
+	// set stays empty.
+	set, warns, err := Resolve(Config{
+		Optimizations: "off",
+		Mode:          Permissive,
+		LegacyTSGrid:  LegacyFlag{Set: true, Value: false},
+	}, v(25, 6))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(set.IDs()) != 0 {
+		t.Errorf("off + legacy-false set = %v; want empty", set.IDs())
+	}
+	if !hasDeprecation(warns) {
+		t.Errorf("legacy set must emit deprecation warning; warns = %v", warns)
+	}
+}
+
 func TestResolve_Auto_EnablesStableSupportedOnly(t *testing.T) {
 	// On 25.8 both stable features (aggregation_in_order 24.8, condition_cache
 	// 25.3) are supported; ts_grid_range is experimental and must NOT be auto.

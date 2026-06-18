@@ -28,15 +28,21 @@ All notable changes to cerberus will be documented in this file. The format roug
   server-side cost (read rows/bytes, duration, memory, ProfileEvents) and
   appends `(shape-id, opts, timings)` tuples to a durable JSONL sink an operator
   can mine. Production-only (chDB has no `system.query_log`); errors are logged,
-  never fatal.
+  never fatal. The dispatch seam is non-blocking and O(1) (a single buffered
+  channel send into a fixed-size circular ring), so it never serializes the
+  prom/loki/tempo heads or taxes the data plane; the `system.query_log` scan is
+  resource-capped (`max_execution_time`, `max_threads=1`, low `priority`,
+  row/byte read limits) so it cannot starve data-plane queries.
 
 ### Deprecated
 
 - **`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`** is soft-deprecated in favour of
   `CERBERUS_CH_OPTIMIZATIONS` (list `ts_grid_range`). It keeps working — it is
-  re-routed through the optimization resolver (explicit `true` force-enables,
-  `false` force-disables, unset has no effect; the new knob wins when both are
-  set) — and emits a one-time startup deprecation warning.
+  re-routed through the optimization resolver (under `auto`: explicit `true`
+  force-enables, `false` force-disables, unset has no effect; any explicit
+  `CERBERUS_CH_OPTIMIZATIONS` choice — a list **or** the `off` kill-switch —
+  overrides the legacy flag, so `off` stays absolute) — and emits a one-time
+  startup deprecation warning.
 
 ## [v1.0.0] — 2026-06-17
 

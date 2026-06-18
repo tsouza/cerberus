@@ -25,6 +25,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -101,11 +102,23 @@ type SourceRow struct {
 // query_ids are tracked, the oldest evicted as new ones arrive.
 const defaultRingCapacity = 4096
 
+// defaultObserveBuffer is the fallback capacity of the non-blocking ingest
+// channel that decouples the data-plane dispatch seam (ObserveQuery) from the
+// ring. It is sized to absorb a burst between drains without blocking; when it
+// is momentarily full ObserveQuery drops the Record (the corpus is a
+// best-effort sample, never a system of record), so a dispatch never blocks on
+// a slow drain.
+const defaultObserveBuffer = 8192
+
 // Options configures a Reconciler.
 type Options struct {
 	// RingCapacity bounds the in-memory ring of observed Records. When <= 0
 	// defaultRingCapacity is used. The ring drops the oldest record when full.
 	RingCapacity int
+	// ObserveBuffer is the capacity of the non-blocking ingest channel between
+	// the data-plane dispatch seam (ObserveQuery) and the drain. When <= 0
+	// defaultObserveBuffer is used.
+	ObserveBuffer int
 	// Interval is how often Run reconciles the ring against the source. When
 	// <= 0 reconciliation is driven only by an explicit reconcileOnce call
 	// (used by tests); production always supplies a positive interval.
@@ -115,9 +128,14 @@ type Options struct {
 }
 
 // Reconciler holds the bounded ring of observed Records and reconciles them
-// against a QueryLogSource on an interval, writing joined Rows to a Sink. It
-// is safe for concurrent Observe calls (the engine dispatch seam) alongside a
-// single Run loop.
+// against a QueryLogSource on an interval, writing joined Rows to a Sink.
+//
+// The data-plane dispatch seam (ObserveQuery) never touches the ring mutex: it
+// does a single non-blocking channel send and returns, so it cannot serialize
+// the three head engines (prom/loki/tempo) against each other nor pay any
+// per-query ring cost. The Run goroutine drains that channel into the ring via
+// the synchronous Observe, which itself is O(1): the ring is a fixed-size
+// circular buffer, so eviction overwrites the slot in place with no reindex.
 type Reconciler struct {
 	src    QueryLogSource
 	sink   Sink
@@ -125,9 +143,21 @@ type Reconciler struct {
 	every  time.Duration
 	logger *slog.Logger
 
-	mu   sync.Mutex
-	ring []Record       // bounded FIFO; oldest at index 0
-	byID map[string]int // query_id -> index in ring (for the join)
+	// ingest carries Records from the data-plane seam to the drain. A
+	// non-blocking send keeps the dispatch path off the ring mutex entirely.
+	ingest chan Record
+
+	mu    sync.Mutex
+	ring  []Record       // fixed-size circular buffer, len == cap once filled
+	head  int            // next write position (mod cap)
+	count int            // number of live records (<= cap)
+	byID  map[string]int // query_id -> slot index in ring (for the join)
+
+	// dropped counts ObserveQuery records shed because the ingest buffer was
+	// full, for a rate-limited diagnostic. It is touched only via its atomic
+	// methods (incremented on the data-plane seam, Swap-and-logged on the
+	// drain), so it never needs the ring mutex.
+	dropped atomic.Uint64
 }
 
 // New builds a Reconciler over src and sink with opts. It does not start any
@@ -136,6 +166,10 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 	capacity := opts.RingCapacity
 	if capacity <= 0 {
 		capacity = defaultRingCapacity
+	}
+	buffer := opts.ObserveBuffer
+	if buffer <= 0 {
+		buffer = defaultObserveBuffer
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -147,15 +181,17 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 		cap:    capacity,
 		every:  opts.Interval,
 		logger: logger,
-		ring:   make([]Record, 0, capacity),
+		ingest: make(chan Record, buffer),
+		ring:   make([]Record, capacity),
 		byID:   make(map[string]int, capacity),
 	}
 }
 
 // Observe registers a dispatched query's Record in the bounded ring. When the
-// ring is full it drops the oldest record (FIFO eviction) to keep memory
-// bounded. A Record with an empty QueryID is ignored (no join key). Safe for
-// concurrent callers.
+// ring is full it overwrites the oldest slot in place (O(1) circular-buffer
+// eviction, no reindex). A Record with an empty QueryID is ignored (no join
+// key). Safe for concurrent callers, though in production only the single Run
+// drain calls it; the data-plane seam is ObserveQuery (non-blocking).
 func (r *Reconciler) Observe(rec Record) {
 	if rec.QueryID == "" {
 		return
@@ -164,52 +200,80 @@ func (r *Reconciler) Observe(rec Record) {
 	defer r.mu.Unlock()
 
 	// Replace an existing record for the same query_id in place rather than
-	// growing the ring (defensive: a re-Observe of the same per-dispatch
+	// consuming a new slot (defensive: a re-Observe of the same per-dispatch
 	// query_id updates rather than duplicates the ring entry).
 	if idx, ok := r.byID[rec.QueryID]; ok {
 		r.ring[idx] = rec
 		return
 	}
-	if len(r.ring) >= r.cap {
-		r.evictOldestLocked()
+
+	slot := r.head
+	if r.count == r.cap {
+		// Full: the slot we are about to overwrite holds the oldest record;
+		// drop its index so the join no longer points at the reused slot.
+		evicted := r.ring[slot]
+		if r.byID[evicted.QueryID] == slot {
+			delete(r.byID, evicted.QueryID)
+		}
+	} else {
+		r.count++
 	}
-	r.ring = append(r.ring, rec)
-	r.byID[rec.QueryID] = len(r.ring) - 1
+	r.ring[slot] = rec
+	r.byID[rec.QueryID] = slot
+	r.head = (r.head + 1) % r.cap
 }
 
-// ObserveQuery adapts the engine.QueryObserver seam onto Observe: it builds a
-// Record from the dispatch-seam tuple and ring-buffers it. The engine calls
-// this once per dispatched query when the reconciler is registered as the
-// Engine's QueryObserver.
+// ObserveQuery is the data-plane dispatch seam (engine.QueryObserver). It does
+// a single non-blocking channel send and returns, so a dispatched query never
+// touches the ring mutex, never serializes against the other head engines, and
+// never pays any per-query ring cost. When the ingest buffer is momentarily
+// full the Record is DROPPED (the corpus is a best-effort sample, not a system
+// of record) and counted for a rate-limited diagnostic; the drop is strictly
+// preferable to blocking a data-plane dispatch on the corpus.
 func (r *Reconciler) ObserveQuery(queryID, shapeID string, opts []string, language string) {
-	r.Observe(Record{
+	if queryID == "" {
+		return
+	}
+	rec := Record{
 		QueryID:  queryID,
 		ShapeID:  shapeID,
 		Opts:     opts,
 		Language: language,
-	})
-}
-
-// evictOldestLocked drops ring[0] and reindexes. Caller holds r.mu. It keeps
-// the ring a simple bounded FIFO; the reindex is O(n) but only runs at
-// capacity, and n is the (bounded) ring size.
-func (r *Reconciler) evictOldestLocked() {
-	oldest := r.ring[0]
-	delete(r.byID, oldest.QueryID)
-	r.ring = r.ring[1:]
-	for i := range r.ring {
-		r.byID[r.ring[i].QueryID] = i
+	}
+	select {
+	case r.ingest <- rec:
+	default:
+		r.dropped.Add(1)
 	}
 }
 
-// snapshotIDs returns a copy of the currently-tracked query_ids. Safe for
-// concurrent Observe.
+// drainIngest moves all currently-buffered Records from the ingest channel
+// into the ring. Called from the Run goroutine (the reconcile tick and at
+// startup), never from the data plane. It is bounded by what is buffered so it
+// cannot spin: it stops as soon as the channel is momentarily empty.
+func (r *Reconciler) drainIngest() {
+	for {
+		select {
+		case rec := <-r.ingest:
+			r.Observe(rec)
+		default:
+			if n := r.dropped.Swap(0); n > 0 {
+				r.logger.Warn("optcorpus: dropped observed queries (ingest buffer full)", "dropped", n)
+			}
+			return
+		}
+	}
+}
+
+// snapshotIDs returns a copy of the currently-tracked query_ids. The byID map
+// is the canonical live set (the circular ring may hold stale slots that byID
+// no longer points at). Safe for concurrent Observe.
 func (r *Reconciler) snapshotIDs() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	ids := make([]string, len(r.ring))
-	for i := range r.ring {
-		ids[i] = r.ring[i].QueryID
+	ids := make([]string, 0, len(r.byID))
+	for id := range r.byID {
+		ids = append(ids, id)
 	}
 	return ids
 }
@@ -226,30 +290,23 @@ func (r *Reconciler) recordFor(id string) (Record, bool) {
 	return r.ring[idx], true
 }
 
-// forget drops the supplied ids from the ring after they have been reconciled
-// and written, so a later interval does not re-query and re-write them. Safe
-// for concurrent Observe.
+// forget drops the supplied ids from the join index after they have been
+// reconciled and written, so a later interval does not re-query and re-write
+// them. The ring slot itself is left in place (it will be overwritten by a
+// future Observe); only the byID entry -- the canonical live set -- is removed.
+// Safe for concurrent Observe.
 func (r *Reconciler) forget(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	drop := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		drop[id] = struct{}{}
-	}
-	kept := r.ring[:0]
-	for _, rec := range r.ring {
-		if _, gone := drop[rec.QueryID]; gone {
-			delete(r.byID, rec.QueryID)
-			continue
-		}
-		kept = append(kept, rec)
-	}
-	r.ring = kept
-	for i := range r.ring {
-		r.byID[r.ring[i].QueryID] = i
+		// Drop only the join index. The ring slot stays physically occupied
+		// (r.count unchanged) so eviction keeps advancing head correctly; the
+		// slot is simply no longer reachable for a join and will be overwritten
+		// by a future Observe.
+		delete(r.byID, id)
 	}
 }
 
@@ -268,8 +325,14 @@ func (r *Reconciler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Final drain so Records buffered on the seam at shutdown are not
+			// silently lost; no reconcile (ctx is already done).
+			r.drainIngest()
 			return
 		case <-ticker.C:
+			// Pull everything the data-plane seam buffered since the last tick
+			// into the ring, then reconcile the ring against the source.
+			r.drainIngest()
 			r.reconcileOnce(ctx)
 		}
 	}

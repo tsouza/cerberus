@@ -502,7 +502,15 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 		logger.Warn("ch_opt corpus sink unavailable; reconciler disabled", "err", err)
 		return
 	}
-	src := optcorpus.NewCHQueryLogSource(client.Conn())
+	// Bound each corpus SELECT in wall-clock to a fraction of the reconcile
+	// interval (capped) so a stuck scan can never outlive its slot or pin the
+	// reconciler goroutine; the server-side max_execution_time is the primary
+	// cap, this is the belt-and-braces client deadline.
+	srcTimeout := cfg.CHOptCorpus.Interval / 2
+	if srcTimeout <= 0 || srcTimeout > 30*time.Second {
+		srcTimeout = 30 * time.Second
+	}
+	src := optcorpus.NewCHQueryLogSource(client.Conn(), srcTimeout)
 	rec := optcorpus.New(src, sink, optcorpus.Options{
 		Interval: cfg.CHOptCorpus.Interval,
 		Logger:   logger.With("component", "optcorpus"),

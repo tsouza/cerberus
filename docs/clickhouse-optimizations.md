@@ -121,15 +121,21 @@ The legacy boolean `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` keeps working and
 is **re-routed through the resolver** rather than read directly by its
 downstream consumers. It maps onto the `ts_grid_range` registry feature:
 
-- **explicitly `true`** — force-enable `ts_grid_range` (as if it were
-  listed), still subject to version gating and mode.
-- **explicitly `false`** — force-disable `ts_grid_range`, even if it would
-  otherwise be selected.
+The legacy alias only takes effect under the **default `auto`** selection;
+any explicit `CERBERUS_CH_OPTIMIZATIONS` choice (a feature list **or** the
+`off` kill-switch) overrides it.
+
+- **explicitly `true`** (under `auto`) — force-enable `ts_grid_range` (as if
+  it were listed), still subject to version gating and mode.
+- **explicitly `false`** (under `auto`) — force-disable `ts_grid_range`, even
+  if it would otherwise be selected.
 - **unset** — no effect. The framework resolves normally; under `auto`,
   `ts_grid_range` stays off because it is experimental.
-- **both legacy and a new explicit `CERBERUS_CH_OPTIMIZATIONS` list set** —
-  the new `CERBERUS_CH_OPTIMIZATIONS` **wins**. The legacy flag is ignored
-  with a `WARN` (or FATAL under `enforcing`).
+- **legacy set AND any explicit `CERBERUS_CH_OPTIMIZATIONS` choice** (a feature
+  list **or** `off`) — the new `CERBERUS_CH_OPTIMIZATIONS` **wins**. The legacy
+  flag is ignored with a `WARN` (or FATAL under `enforcing`). In particular
+  `off` is **absolute**: a stale legacy env var can never resurrect
+  `ts_grid_range` under `off`.
 
 When the legacy flag is set, cerberus emits a **one-time startup deprecation
 warning** pointing to `CERBERUS_CH_OPTIMIZATIONS`.
@@ -168,7 +174,12 @@ guarded off there.
   `WHERE query_id IN (recent ids) AND type = 'QueryFinish'`, reading
   `read_rows`, `read_bytes`, `query_duration_ms`, `memory_usage`,
   `ProfileEvents` (notably `QueryConditionCacheHits` and
-  `RowsReadByPrewhereReaders`), and `normalized_query_hash`.
+  `RowsReadByPrewhereReaders`), and `normalized_query_hash`. The scan is
+  bounded to a recent event-time window **and** carries conservative
+  ClickHouse resource caps (`max_execution_time`, `max_threads=1`, a low
+  `priority`, `max_rows_to_read` / `max_bytes_to_read` with `break` overflow)
+  plus a client-side context deadline, so it can never starve the data plane
+  or pin the reconciler goroutine even on a huge `system.query_log`.
 - **Joins** each row back to its shape-id and writes the
   `(shape-id, enabled-opts, timings)` tuple to a durable sink. The v1 sink
   is a JSONL file at a configurable path; the row shape is exposed so a
@@ -176,8 +187,16 @@ guarded off there.
 
 ### Guarantees
 
-- Memory is bounded (the ring evicts oldest ids).
-- The query is rate-limited to one batch per interval.
+- Memory is bounded: a fixed-size circular ring evicts the oldest id in
+  O(1) (no per-query reindex).
+- **Data-plane isolation**: the dispatch seam does a single non-blocking
+  channel send and returns — it never takes the ring lock, never serializes
+  the prom/loki/tempo head engines against each other, and never pays any
+  per-query ring cost. The `Run` goroutine drains that channel into the ring.
+  Under a momentary burst the seam drops the sample (the corpus is a
+  best-effort sample, not a system of record) rather than block a query.
+- The query is rate-limited to one batch per interval and resource-capped
+  (see above) so it cannot compete with data-plane queries unbounded.
 - Errors are **logged, never fatal** — a query_log read failure degrades the
   corpus, it never takes the binary down.
 - Clean shutdown on context cancel.

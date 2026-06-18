@@ -116,11 +116,14 @@ const (
 //
 // The legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias is layered on top:
 //
-//   - both the legacy flag AND a new explicit list set -> the new
-//     CERBERUS_CH_OPTIMIZATIONS wins; the legacy flag is ignored with a WARN
-//     (Permissive) or a FATAL err (Enforcing).
-//   - otherwise an explicit legacy true force-enables ts_grid_range (subject to
-//     version + mode), an explicit legacy false force-disables it.
+//   - the legacy flag AND any explicit CERBERUS_CH_OPTIMIZATIONS choice (a
+//     feature list OR "off") -> the new CERBERUS_CH_OPTIMIZATIONS wins; the
+//     legacy flag is ignored with a WARN (Permissive) or a FATAL err
+//     (Enforcing). In particular "off" is absolute: a stale legacy env var can
+//     never resurrect ts_grid_range under "off".
+//   - under the default "auto" an explicit legacy true force-enables
+//     ts_grid_range (subject to version + mode), an explicit legacy false
+//     force-disables it.
 //   - whenever the legacy flag is set at all, a one-time deprecation warning is
 //     appended pointing at CERBERUS_CH_OPTIMIZATIONS.
 //
@@ -130,7 +133,6 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	if selection == "" {
 		selection = selectionAuto
 	}
-	explicitList := selection != selectionAuto && selection != selectionOff
 
 	enabled := make(map[string]struct{})
 	var warnings []string
@@ -152,7 +154,13 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 		warnings = append(warnings, warns...)
 	}
 
-	legacyWarns, err := applyLegacyTSGrid(cfg, server, explicitList, enabled)
+	// The legacy alias is overridden whenever the operator made an explicit
+	// non-default choice via CERBERUS_CH_OPTIMIZATIONS -- that includes both an
+	// explicit feature list AND the "off" kill-switch. "off" must mean off
+	// absolutely: a stale legacy env var may not resurrect ts_grid_range. Only
+	// the default "auto" lets the legacy alias take effect.
+	legacyOverridden := selection != selectionAuto
+	legacyWarns, err := applyLegacyTSGrid(cfg, server, legacyOverridden, enabled)
 	if err != nil {
 		return EnabledSet{}, nil, err
 	}
@@ -193,7 +201,13 @@ func resolveExplicitList(selection string, mode Mode, server Version, enabled ma
 // alias onto the resolved set. It returns the deprecation / override warnings,
 // or a fatal error when the alias forces an enable that the server is too old
 // for under Enforcing.
-func applyLegacyTSGrid(cfg Config, server Version, explicitList bool, enabled map[string]struct{}) ([]string, error) {
+//
+// overridden is true when the operator made an explicit non-default
+// CERBERUS_CH_OPTIMIZATIONS choice -- an explicit feature list OR the "off"
+// kill-switch. In both cases the new knob wins and the legacy flag is ignored
+// (WARN under Permissive, FATAL under Enforcing); the legacy alias only takes
+// effect under the default "auto".
+func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[string]struct{}) ([]string, error) {
 	if !cfg.LegacyTSGrid.Set {
 		return nil, nil
 	}
@@ -203,9 +217,10 @@ func applyLegacyTSGrid(cfg Config, server Version, explicitList bool, enabled ma
 		"CERBERUS_EXPERIMENTAL_TS_GRID_RANGE is deprecated; use CERBERUS_CH_OPTIMIZATIONS (list ts_grid_range to enable the native rate path)",
 	}
 
-	// When a new explicit CERBERUS_CH_OPTIMIZATIONS list is also set, the new
-	// knob wins and the legacy flag is ignored.
-	if explicitList {
+	// When the operator made an explicit CERBERUS_CH_OPTIMIZATIONS choice (a
+	// feature list or the "off" kill-switch), the new knob wins and the legacy
+	// flag is ignored.
+	if overridden {
 		msg := "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE ignored: CERBERUS_CH_OPTIMIZATIONS is set and takes precedence"
 		if cfg.Mode == Enforcing {
 			return nil, fmt.Errorf("%s", msg)

@@ -102,6 +102,83 @@ func TestObserve_RingBounded_DropsOldest(t *testing.T) {
 	}
 }
 
+func TestObserve_ReplaceInPlace_NoGrowth(t *testing.T) {
+	// A retried dispatch reuses the trace id; re-Observing the same query_id
+	// must replace in place, not consume a new slot.
+	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 3})
+	r.Observe(Record{QueryID: "q0", ShapeID: "cerb:a"})
+	r.Observe(Record{QueryID: "q0", ShapeID: "cerb:b"})
+	ids := r.snapshotIDs()
+	if len(ids) != 1 {
+		t.Fatalf("ring size = %d; want 1 (replace in place)", len(ids))
+	}
+	rec, ok := r.recordFor("q0")
+	if !ok || rec.ShapeID != "cerb:b" {
+		t.Errorf("replace-in-place lost the latest record: %+v ok=%v", rec, ok)
+	}
+}
+
+func TestObserveQuery_NonBlocking_DropsWhenBufferFull(t *testing.T) {
+	// The data-plane seam must NEVER block: with a tiny ingest buffer and no
+	// drain running, overflowing ObserveQuery calls are dropped, not blocked.
+	// (If they blocked, this test would hang.)
+	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, ObserveBuffer: 2})
+	for i := 0; i < 1000; i++ {
+		r.ObserveQuery("q"+strconv.Itoa(i), "cerb:scan", nil, "promql")
+	}
+	// Nothing reached the ring yet (no drain ran); the seam only buffers.
+	if n := len(r.snapshotIDs()); n != 0 {
+		t.Errorf("ring populated without a drain; got %d", n)
+	}
+	if r.dropped.Load() == 0 {
+		t.Error("expected dropped count > 0 when ingest buffer overflowed")
+	}
+}
+
+func TestDrainIngest_MovesSeamRecordsIntoRing(t *testing.T) {
+	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, ObserveBuffer: 16})
+	r.ObserveQuery("qa", "cerb:a", []string{"condition_cache"}, "logql")
+	r.ObserveQuery("qb", "cerb:b", nil, "promql")
+	r.drainIngest()
+	ids := r.snapshotIDs()
+	if len(ids) != 2 {
+		t.Fatalf("after drain ring size = %d; want 2", len(ids))
+	}
+	rec, ok := r.recordFor("qa")
+	if !ok || rec.ShapeID != "cerb:a" || rec.Language != "logql" {
+		t.Errorf("drain dropped seam metadata: %+v ok=%v", rec, ok)
+	}
+}
+
+func TestRun_DrainsSeamThenReconciles(t *testing.T) {
+	// End-to-end through the non-blocking seam: ObserveQuery -> Run drains ->
+	// reconcile joins the seeded source row and writes it to the sink.
+	src := newFakeSource()
+	sink := &memSink{}
+	r := New(src, sink, Options{RingCapacity: 8, ObserveBuffer: 16, Interval: time.Millisecond})
+	src.seed(SourceRow{QueryID: "qz", NormalizedQueryHash: 7, ReadRows: 10})
+	r.ObserveQuery("qz", "cerb:scan", nil, "traceql")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	deadline := time.After(time.Second)
+	for {
+		if rows := sink.snapshot(); len(rows) == 1 {
+			if rows[0].ShapeID != "cerb:scan" || rows[0].ReadRows != 10 {
+				t.Errorf("seam->reconcile join wrong: %+v", rows[0])
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("seam record never reconciled to sink")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func TestObserve_EmptyQueryID_Ignored(t *testing.T) {
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 4})
 	r.Observe(Record{QueryID: "", ShapeID: "cerb:scan"})
