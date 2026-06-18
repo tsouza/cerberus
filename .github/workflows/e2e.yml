@@ -348,8 +348,8 @@ jobs:
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
         with:
           docker-images: false
-          large-packages: true
-          tool-cache: true
+          large-packages: false
+          tool-cache: false
       - name: Disk free (after reclaim)
         run: df -h
 
@@ -558,8 +558,8 @@ jobs:
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
         with:
           docker-images: false
-          large-packages: true
-          tool-cache: true
+          large-packages: false
+          tool-cache: false
       - name: Disk free (after reclaim)
         run: df -h
 
@@ -844,8 +844,8 @@ jobs:
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
         with:
           docker-images: false
-          large-packages: true
-          tool-cache: true
+          large-packages: false
+          tool-cache: false
       - name: Disk free (after reclaim)
         if: env.RUN_SHARD == 'true'
         run: df -h
@@ -1246,8 +1246,8 @@ jobs:
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
         with:
           docker-images: false
-          large-packages: true
-          tool-cache: true
+          large-packages: false
+          tool-cache: false
       - name: Disk free (after reclaim)
         run: df -h
 
