@@ -1302,6 +1302,12 @@
     "reason": "routed"
   },
   {
+    "query": "native_changes_range_step",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "native_rate_range_step",
     "routed": true,
     "k": 8,
@@ -1309,6 +1315,12 @@
   },
   {
     "query": "native_resample_range_step",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "native_resets_range_step",
     "routed": true,
     "k": 8,
     "reason": "routed"

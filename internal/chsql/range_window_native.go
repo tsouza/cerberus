@@ -28,20 +28,43 @@ const (
 )
 
 // nativeTSGridFn maps a PromQL range function to its ClickHouse-native
-// timeSeries*ToGrid aggregate. The first cut carries "rate" only; the
-// map is the single extension point for the rest of the family
-// (timeSeriesDeltaToGrid, timeSeriesDerivToGrid, …) once each is
-// differentially proven equivalent to its PromQL counterpart.
+// timeSeries*ToGrid aggregate. The map is the single extension point for the
+// rest of the family (timeSeriesDeltaToGrid, timeSeriesDerivToGrid, …) once
+// each is differentially proven equivalent to its PromQL counterpart.
+//
+// Every entry renders through the IDENTICAL emitRangeWindowNative shape — the
+// `(start, end, step_s, Range_s)(ts, value)` parametric aggregate paired with a
+// lockstep timeSeriesRange axis — because the whole family shares one paren/arg
+// signature. The per-func difference is purely the aggregate NAME and the
+// ClickHouse version floor at which it first shipped:
+//
+//   - rate    -> timeSeriesRateToGrid    (family floor v25.6, >= 2 samples/window)
+//   - changes -> timeSeriesChangesToGrid (v25.9 — PR #86010, >= 1 sample/window)
+//   - resets  -> timeSeriesResetsToGrid  (v25.9 — PR #86010, >= 1 sample/window)
+//
+// changes/resets are COUNT functions (Array(Nullable(Float64)) one count per
+// grid point, NULL where no in-window sample), so the same
+// `WHERE grid_val IS NOT NULL` filter and `toFloat64` cast apply verbatim. The
+// 25.9 floor is enforced upstream by the chopt feature gate (FeatureTSGridChanges
+// / FeatureTSGridResets, MinVersion 25.9) — the emitter is version-agnostic and
+// only needs the name.
 var nativeTSGridFn = map[string]string{
-	"rate": "timeSeriesRateToGrid",
+	"rate":    "timeSeriesRateToGrid",
+	"changes": "timeSeriesChangesToGrid",
+	"resets":  "timeSeriesResetsToGrid",
 }
 
 // emitRangeWindowNative renders a chplan.RangeWindowNative — the
-// experimental ClickHouse-native lowering of an eligible
-// `rate(<counter>[<range>])` query_range expression. It produces EXACTLY
-// the per-(series, anchor) row shape the fan-out matrix path
-// (emitWindowedArrayExtrapolatedMatrix) produces, so the wrapping
-// outer-sum Aggregate is byte-for-byte unaffected by the substitution:
+// experimental ClickHouse-native lowering of an eligible matrix range
+// function (`rate` / `changes` / `resets`) over a query_range expression.
+// The aggregate NAME is selected per r.Func via nativeTSGridFn; the SQL
+// SHAPE is identical across the family. It produces EXACTLY the
+// per-(series, anchor) row shape the matching fan-out matrix path produces
+// (emitWindowedArrayExtrapolatedMatrix for rate; emitRangeWindowChanges /
+// emitRangeWindowResets for changes / resets), so the wrapping outer
+// Aggregate is byte-for-byte unaffected by the substitution. Shown for
+// rate; changes / resets swap only the aggregate name (and emit a per-window
+// COUNT rather than an extrapolated rate):
 //
 //	SELECT <group cols>, anchor_ts, anchor_ts AS <TimestampColumn>,
 //	       toFloat64(grid_val) AS <ValueColumn>
@@ -61,12 +84,15 @@ var nativeTSGridFn = map[string]string{
 //     the two parallel arrays IN LOCKSTEP, so each rate value lands on
 //     the same row as its timeSeriesRange anchor — guaranteeing the
 //     anchor_ts column is the same grid the fan-out walks.
-//   - `WHERE grid_val IS NOT NULL` converts the native NULL cells (< 2
-//     samples in the window — timeSeriesRateToGrid returns
-//     Array(Nullable(Float64))) into ABSENT rows, exactly what the
-//     fan-out's `WHERE length(window_vals) >= 2` does. Without it, NULLs
-//     would flow into the outer sum and diverge from Prom's drop-series
-//     semantics.
+//   - `WHERE grid_val IS NOT NULL` converts the native NULL cells into
+//     ABSENT rows, exactly what the fan-out's `WHERE length(window_vals)`
+//     guard does. The per-func NULL threshold matches the fan-out: rate's
+//     timeSeriesRateToGrid NULLs a window with < 2 samples (mirroring the
+//     fan-out's `>= 2`); changes/resets' timeSeriesChangesToGrid /
+//     timeSeriesResetsToGrid require only >= 1 sample (mirroring the
+//     fan-out's `>= 1`), so a single-sample window emits a 0 count rather
+//     than NULL. Without this filter, NULLs would flow into the outer
+//     aggregate and diverge from Prom's drop-series semantics.
 //   - `toFloat64(grid_val)` strips the Nullable so the Value column is a
 //     non-nullable Float64 — load-bearing for prod clickhouse-go
 //     strictness (chDB tolerates Nullable; prod 502s). The IS NOT NULL
@@ -93,7 +119,7 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	}
 	fnName, ok := nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowNative func %q (only rate is supported)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: RangeWindowNative func %q (supported: rate, changes, resets)", ErrUnsupported, r.Func)
 	}
 
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)

@@ -1,0 +1,74 @@
+# Experimental: the ClickHouse-native timeSeriesResetsToGrid lowering for
+# `sum by (X) (resets(counter[range]))` in range mode (Step > 0). This is the
+# always-on SQL-shape coverage floor for the `ts_grid_resets` feature: the
+# `experimental_ts_grid_resets` section opts the fixture into a
+# RangeLowerers.Resets = NativeResetsLowerer, so the lowering emits a
+# chplan.RangeWindowNative (Func=resets -> the timeSeriesResetsToGrid parametric
+# aggregate + parallel timeSeriesRange axis + ARRAY JOIN + IS NOT NULL filter)
+# instead of the arrayPopBack/arrayPopFront `c < p` fan-out. The wrapping
+# outer-sum Aggregate is byte-identical to the fan-out; only the windowed-count
+# subquery differs.
+#
+# VERSION FLOOR 25.9 (NOT 25.6). timeSeriesResetsToGrid shipped in PR #86010
+# (ClickHouse 25.9) alongside timeSeriesChangesToGrid — empirically confirmed
+# ABSENT on the 25.8 chDB substrate. The chdb-tagged dual-emit parity test
+# (range_window_resets_chdb_test.go) feature-detects via system.functions and
+# FALLS BACK to fan-out-only validation on a sub-25.9 substrate: native==fan-out
+# parity is VERSION-GATED, proven on a >= 25.9 server, not auto-proven here. This
+# SQL-shape golden still pins the emit unconditionally.
+#
+# resets() is a counter-reset COUNT over the window: each adjacent pair
+# (prev, curr) with curr < prev contributes 1. Native timeSeriesResetsToGrid
+# needs >= 1 sample/window (a single-sample window is a 0 count, not absent),
+# mirroring the fan-out's `length(window_vals) >= 1` guard.
+
+-- query.promql --
+sum by(job) (resets(http_requests_total[5m]))
+-- range_step --
+30s
+-- experimental_ts_grid_resets --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "job"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "http_requests_total"
+[8] string = "http.requests.total"
+[9] string = "http.requests/total"
+[10] string = "http.requests_total"
+[11] string = "http/requests/total"
+[12] string = "http/requests_total"
+[13] string = "http_requests.total"
+[14] string = "job"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("job", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+    RangeWindowNative func=resets range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `anchor_ts` AS `TimeUnix`, toFloat64(`grid_val`) AS `Value` FROM (SELECT `Attributes`, timeSeriesResetsToGrid(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY `Attributes`[?], `TimeUnix`)

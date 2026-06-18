@@ -84,6 +84,31 @@ type stalenessLowerInput struct {
 	timestampCol, valueCol       string
 }
 
+// ChangesLowerer lowers a range-mode changes(<v>[range]) RangeWindow to a
+// chplan node. It ALWAYS returns a valid lowering: the native impl emits the
+// native RangeWindowNative (Func="changes" -> timeSeriesChangesToGrid) for a
+// shape-eligible window and delegates to its embedded fan-out fallback for any
+// other shape; the fan-out impl returns the generic RangeWindow directly. The
+// shape eligibility is intrinsic and lives inside the implementation; it is NOT
+// a feature-flag branch.
+type ChangesLowerer interface {
+	// LowerChanges returns the chplan node for rw — the native
+	// RangeWindowNative for a shape the impl handles, or the fan-out lowering
+	// otherwise. It never returns nil.
+	LowerChanges(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
+// ResetsLowerer lowers a range-mode resets(<counter>[range]) RangeWindow to a
+// chplan node, mirroring [ChangesLowerer]: native impl emits RangeWindowNative
+// (Func="resets" -> timeSeriesResetsToGrid) for an eligible window, fan-out
+// fallback otherwise. It never returns nil.
+type ResetsLowerer interface {
+	// LowerResets returns the chplan node for rw — the native RangeWindowNative
+	// for a shape the impl handles, or the fan-out lowering otherwise. It never
+	// returns nil.
+	LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // RangeLowerers is the boot-wired dispatch table the lowering reads. Each field
 // is the CONCRETE strategy for one promql function family, decided once at
 // boot. Every field is ALWAYS non-nil on the lowering path — a fan-out-only
@@ -100,6 +125,14 @@ type RangeLowerers struct {
 	// shapes. Concrete fan-out impl when the native path is off; never nil on
 	// the lowering path.
 	Staleness StalenessLowerer
+	// Changes handles range-mode changes(...) shapes (native
+	// timeSeriesChangesToGrid, server >= 25.9). Concrete fan-out impl when the
+	// native path is off; never nil on the lowering path.
+	Changes ChangesLowerer
+	// Resets handles range-mode resets(...) shapes (native
+	// timeSeriesResetsToGrid, server >= 25.9). Concrete fan-out impl when the
+	// native path is off; never nil on the lowering path.
+	Resets ResetsLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -114,6 +147,12 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.Staleness == nil {
 		l.Staleness = FanoutStalenessLowerer{}
+	}
+	if l.Changes == nil {
+		l.Changes = FanoutChangesLowerer{}
+	}
+	if l.Resets == nil {
+		l.Resets = FanoutResetsLowerer{}
 	}
 	return l
 }
@@ -205,4 +244,72 @@ func (NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node
 		TimestampCol:  in.timestampCol,
 		ValueCol:      in.valueCol,
 	}
+}
+
+// FanoutChangesLowerer is the concrete DEFAULT ChangesLowerer: it returns the
+// generic fan-out RangeWindow (the arrayPopBack/arrayPopFront `c != p` count)
+// unchanged. It is the fallback the native impl embeds AND the strategy a
+// fan-out-only deployment wires directly.
+type FanoutChangesLowerer struct{}
+
+// LowerChanges returns the fan-out RangeWindow rw unchanged.
+func (FanoutChangesLowerer) LowerChanges(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeChangesLowerer is the boot-wired ChangesLowerer that emits the native
+// timeSeriesChangesToGrid lowering (a chplan.RangeWindowNative with
+// Func="changes") for shape-eligible changes range-windows. cmd/cerberus wires
+// it ONLY when chopt resolved the ts_grid_changes feature (server >= 25.9) at
+// boot. It embeds a concrete Fallback (the fan-out impl): a shape it cannot
+// handle delegates to Fallback rather than returning nil, so the interface
+// method ALWAYS yields a valid lowering and the dispatch site stays branch-free.
+type NativeChangesLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutChangesLowerer{}.
+	Fallback ChangesLowerer
+}
+
+// LowerChanges returns a RangeWindowNative for an eligible range-mode changes
+// shape, or delegates to the embedded Fallback otherwise. The eligibility
+// predicate is the intrinsic SHAPE check (changes func, materialised grid,
+// plain Scan/Filter input) — see nativeTSGridMatrixNode.
+func (n NativeChangesLowerer) LowerChanges(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "changes", s); native != nil {
+		return native
+	}
+	return n.Fallback.LowerChanges(rw, s)
+}
+
+// FanoutResetsLowerer is the concrete DEFAULT ResetsLowerer: it returns the
+// generic fan-out RangeWindow (the arrayPopBack/arrayPopFront `c < p` count)
+// unchanged. It is the fallback the native impl embeds AND the strategy a
+// fan-out-only deployment wires directly.
+type FanoutResetsLowerer struct{}
+
+// LowerResets returns the fan-out RangeWindow rw unchanged.
+func (FanoutResetsLowerer) LowerResets(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeResetsLowerer is the boot-wired ResetsLowerer that emits the native
+// timeSeriesResetsToGrid lowering (a chplan.RangeWindowNative with
+// Func="resets") for shape-eligible resets range-windows. cmd/cerberus wires it
+// ONLY when chopt resolved the ts_grid_resets feature (server >= 25.9) at boot.
+// It embeds a concrete Fallback for shapes it cannot handle, so the interface
+// method always yields a valid lowering and the dispatch site stays branch-free.
+type NativeResetsLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutResetsLowerer{}.
+	Fallback ResetsLowerer
+}
+
+// LowerResets returns a RangeWindowNative for an eligible range-mode resets
+// shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
+// check as changes (resets func, materialised grid, plain Scan/Filter input).
+func (n NativeResetsLowerer) LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "resets", s); native != nil {
+		return native
+	}
+	return n.Fallback.LowerResets(rw, s)
 }
