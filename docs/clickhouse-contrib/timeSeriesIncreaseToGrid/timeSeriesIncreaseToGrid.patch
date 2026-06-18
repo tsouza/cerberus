@@ -1,0 +1,125 @@
+CI-UNVALIDATED: not compiled in this environment; fidelity-reviewed against
+ClickHouse master source as of 2026-06-18. Line numbers are approximate and
+drift between releases — apply by matching the anchored context, not by offset.
+If `git apply` rejects on offset, apply the three hunks by hand per
+IMPLEMENTATION.md (they are intentionally tiny).
+
+This patch reuses the existing AggregateFunctionTimeseriesExtrapolatedValue
+kernel. It (1) adds a trailing defaulted `is_increase` flag to the Traits,
+(2) extends getName(), (3) guards only the divide-by-window, and (4) registers
+timeSeriesIncreaseToGrid via an alias that pins is_increase=true so the generic
+factory still sees a five-parameter template-template.
+
+--- a/src/AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesExtrapolatedValue.h
++++ b/src/AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesExtrapolatedValue.h
+@@
+-template <bool array_arguments_, typename TimestampType_, typename IntervalType_, typename ValueType_, bool is_rate_>
++template <bool array_arguments_, typename TimestampType_, typename IntervalType_, typename ValueType_, bool is_rate_, bool is_increase_ = false>
+ struct AggregateFunctionTimeseriesExtrapolatedValueTraits
+ {
+     static constexpr bool array_arguments = array_arguments_;
+     static constexpr bool is_rate = is_rate_;
++    /// increase() reuses the rate kernel (counter-reset correction + zero-clamp)
++    /// but emits the un-divided total: rate * window. is_rate stays true; this
++    /// flag turns OFF only the final divide-by-window in fillResultValue().
++    static constexpr bool is_increase = is_increase_;
+
+     using TimestampType = TimestampType_;
+     using IntervalType = IntervalType_;
+     using ValueType = ValueType_;
+
+     static String getName()
+     {
+-        return is_rate ? "timeSeriesRateToGrid" : "timeSeriesDeltaToGrid";
++        if (is_increase)
++            return "timeSeriesIncreaseToGrid";
++        return is_rate ? "timeSeriesRateToGrid" : "timeSeriesDeltaToGrid";
+     }
+@@
+     };
+ };
+
++/// Traits alias for timeSeriesIncreaseToGrid: the ExtrapolatedValue kernel with
++/// is_rate=true (keeps reset + zero-clamp correction) and is_increase=true
++/// (turns off the divide-by-window). It forwards the first five template
++/// parameters and PINS the sixth, so it is itself a five-parameter
++/// template-template and binds createAggregateFunctionTimeseries's
++/// `template <bool, typename, typename, typename, bool> class FunctionTraits`
++/// with no factory changes.
++template <bool array_arguments_, typename TimestampType_, typename IntervalType_, typename ValueType_, bool is_rate_>
++using AggregateFunctionTimeseriesIncreaseTraits =
++    AggregateFunctionTimeseriesExtrapolatedValueTraits<array_arguments_, TimestampType_, IntervalType_, ValueType_, is_rate_, /*is_increase=*/true>;
++
+ /// Aggregate function to calculate extrapolated values (rate and delta) of timeseries on the specified grid
+ template <typename Traits>
+ class AggregateFunctionTimeseriesExtrapolatedValue final :
+@@
+     static constexpr bool is_rate = Traits::is_rate;
++    static constexpr bool is_increase = Traits::is_increase;
+@@
+         Float64 factor = extrapolate_to_interval / static_cast<Float64>(sampled_interval);
+
+-        if constexpr (is_rate)
++        if constexpr (is_rate && !is_increase)
+             factor = factor * static_cast<Float64>(Base::timestamp_scale_multiplier) / static_cast<Float64>(Base::window);
+
+         value_difference *= factor;
+
+         result = static_cast<ValueType>(value_difference);
+         null = 0;
+--- a/src/AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesHelpers.cpp
++++ b/src/AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesHelpers.cpp
+@@
++    /// timeSeriesIncreaseToGrid reuses the ExtrapolatedValue kernel with the
++    /// rate counter-correction (is_rate=true) but WITHOUT the divide-by-window
++    /// (is_increase=true). The alias pins is_increase so the generic factory
++    /// (which only threads is_rate) still produces a five-arg template-template.
++    FunctionDocumentation::Description description_timeSeriesIncreaseToGrid = R"(
++Aggregate function that takes time series data as pairs of timestamps and values and calculates [PromQL-like increase](https://prometheus.io/docs/prometheus/latest/querying/functions/#increase) from this data on a regular time grid described by start timestamp, end timestamp and step.
++For each point on the grid the samples for calculating `increase` are considered within the specified time window. `increase` is `rate` multiplied by the window length: it is the counter-reset-corrected, boundary-extrapolated total increase over the window, not divided by the window seconds.
++
++:::warning
++This function is experimental, enable it by setting `allow_experimental_ts_to_grid_aggregate_function=true`.
++:::
++    )";
++    FunctionDocumentation::Syntax syntax_timeSeriesIncreaseToGrid = R"(
++timeSeriesIncreaseToGrid(start_timestamp, end_timestamp, grid_step, staleness)(timestamp, value)
++    )";
++    FunctionDocumentation::Parameters parameters_timeSeriesIncreaseToGrid = {
++        {"start_timestamp", "Specifies start of the grid.", {"UInt32", "DateTime"}},
++        {"end_timestamp", "Specifies end of the grid.", {"UInt32", "DateTime"}},
++        {"grid_step", "Specifies step of the grid in seconds.", {"UInt32"}},
++        {"staleness", "Specifies the maximum staleness in seconds of the considered samples. The staleness window is a left-open and right-closed interval.", {"UInt32"}}
++    };
++    FunctionDocumentation::Arguments arguments_timeSeriesIncreaseToGrid = {
++        {"timestamp", "Timestamp of the sample. Can be individual values or arrays.", {"UInt32", "DateTime", "Array(UInt32)", "Array(DateTime)"}},
++        {"value", "Value of the time series corresponding to the timestamp. Can be individual values or arrays.", {"Float*", "Array(Float*)"}}
++    };
++    FunctionDocumentation::ReturnedValue returned_value_timeSeriesIncreaseToGrid = {"Returns increase values on the specified grid. The returned array contains one value for each time grid point. The value is NULL if there are not enough samples within the window to calculate the increase value for a particular grid point.", {"Array(Nullable(Float64))"}};
++    FunctionDocumentation::Examples examples_timeSeriesIncreaseToGrid = {
++    {
++        "Basic usage with individual timestamp-value pairs",
++        R"(
++WITH
++    [110, 120, 130, 140, 190, 200, 210, 220, 230]::Array(DateTime) AS timestamps,
++    [1, 1, 3, 4, 5, 5, 8, 12, 13]::Array(Float32) AS values,
++    90 AS start_ts,
++    90 + 120 AS end_ts,
++    15 AS step_seconds,
++    45 AS window_seconds
++SELECT timeSeriesIncreaseToGrid(start_ts, end_ts, step_seconds, window_seconds)(timestamps, values);
++        )",
++        R"(
++-- increase == rate * window for the same series/window; NULL cells match rate.
++        )"
++    }
++    };
++    FunctionDocumentation::IntroducedIn introduced_in_timeSeriesIncreaseToGrid = {25, 11};
++    FunctionDocumentation::Category category_timeSeriesIncreaseToGrid = FunctionDocumentation::Category::AggregateFunction;
++    FunctionDocumentation documentation_timeSeriesIncreaseToGrid = {description_timeSeriesIncreaseToGrid, syntax_timeSeriesIncreaseToGrid, arguments_timeSeriesIncreaseToGrid, parameters_timeSeriesIncreaseToGrid, returned_value_timeSeriesIncreaseToGrid, examples_timeSeriesIncreaseToGrid, introduced_in_timeSeriesIncreaseToGrid, category_timeSeriesIncreaseToGrid};
++
++    factory.registerFunction("timeSeriesIncreaseToGrid",
++        {createAggregateFunctionTimeseries<true, false, AggregateFunctionTimeseriesIncreaseTraits, AggregateFunctionTimeseriesExtrapolatedValue>, documentation_timeSeriesIncreaseToGrid});
++
+     factory.registerFunction("timeSeriesDeltaToGrid",
+         {createAggregateFunctionTimeseries<false, false, AggregateFunctionTimeseriesExtrapolatedValueTraits, AggregateFunctionTimeseriesExtrapolatedValue>, documentation_timeSeriesDeltaToGrid});
