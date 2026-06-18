@@ -41,10 +41,6 @@ import "context"
 // the package note in internal/chsql/range_window_native.go).
 const SettingExperimentalTSGridAggregate = "allow_experimental_time_series_aggregate_functions"
 
-type tsGridSettingKeyType struct{}
-
-var tsGridSettingKey = tsGridSettingKeyType{}
-
 // WithTSGridSetting returns a ctx that signals the data-plane query
 // methods to add SettingExperimentalTSGridAggregate=1 to the per-query
 // ClickHouse settings map. The engine calls this ONLY when the emitted
@@ -53,15 +49,14 @@ var tsGridSettingKey = tsGridSettingKeyType{}
 // the unrelated ones (a plain unknown setting can itself error on an
 // older ClickHouse, so it must not be sent globally).
 //
-// The signal is a context value rather than a Client field so it is
-// per-request, not per-connection: two concurrent requests, one native
-// and one not, must not cross-contaminate each other's settings.
+// It is now one writer into the generalised per-request settings carrier
+// (WithQuerySetting): the ts-grid gate is just one (name, value) the engine
+// stamps for a particular plan shape, alongside the other plan-shape-gated
+// settings. Routing through the shared carrier means a single query that is
+// BOTH native-rate and aggregation-in-order eligible carries both settings
+// on the one map rather than one wrap clobbering the other. The carrier is
+// a context value, not a Client field, so it stays per-request: two
+// concurrent requests, one native and one not, never cross-contaminate.
 func WithTSGridSetting(ctx context.Context) context.Context {
-	return context.WithValue(ctx, tsGridSettingKey, true)
-}
-
-// wantTSGridSetting reports whether ctx was marked by WithTSGridSetting.
-func wantTSGridSetting(ctx context.Context) bool {
-	v, _ := ctx.Value(tsGridSettingKey).(bool)
-	return v
+	return WithQuerySetting(ctx, SettingExperimentalTSGridAggregate, 1)
 }

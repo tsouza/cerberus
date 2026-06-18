@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -720,23 +722,25 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 //     effective timeout, after any per-request WithQueryTimeout override,
 //     is > 0). `throw` aborts an over-long query with TIMEOUT_EXCEEDED
 //     (code 159) rather than returning partial results.
-//   - SettingExperimentalTSGridAggregate=1 — ONLY when ctx was marked by
-//     WithTSGridSetting (the engine marks it when the emitted plan
-//     contains a chplan.RangeWindowNative node). The experimental knob
-//     is added to the SAME map as max_memory_usage, never via a second
-//     independent clickhouse.WithSettings wrap — a second wrap REPLACES
-//     rather than unions the settings map (clickhouse-go context.go:
+//   - the per-request settings map attached by WithQuerySetting — every
+//     plan-shape-gated setting the engine stamps for THIS query
+//     (SettingExperimentalTSGridAggregate=1 when the plan has a
+//     chplan.RangeWindowNative node; optimize_aggregation_in_order=1 when
+//     the GROUP BY is a sorting-key prefix; ...). Merged into the SAME map
+//     as max_memory_usage, never via a second independent
+//     clickhouse.WithSettings wrap — a second wrap REPLACES rather than
+//     unions the settings map (clickhouse-go context.go:
 //     `c.settings = maps.Clone(q.settings)`), which would silently drop
-//     the memory cap. Merging here keeps both knobs on the one map.
+//     the memory cap. Merging here keeps every knob on the one map.
 //
 // Kept as its own method (rather than inlined into queryContext) so
 // tests can assert the settings content directly — the driver stores
 // QueryOptions under an unexported context key with no public getter.
 func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
-	wantTSGrid := wantTSGridSetting(ctx)
+	perQuery := querySettingsFromContext(ctx)
 	timeout := c.effectiveQueryTimeout(ctx)
 	blockSize := maxBlockSizeFromContext(ctx)
-	if c.maxMemory <= 0 && timeout <= 0 && !wantTSGrid && blockSize == 0 {
+	if c.maxMemory <= 0 && timeout <= 0 && len(perQuery) == 0 && blockSize == 0 {
 		return nil
 	}
 	s := clickhouse.Settings{}
@@ -751,8 +755,11 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		s[settingMaxExecutionTime] = timeout.Seconds()
 		s[settingTimeoutOverflowMode] = timeoutOverflowModeThrow
 	}
-	if wantTSGrid {
-		s[SettingExperimentalTSGridAggregate] = 1
+	// Plan-shape-gated per-request settings ride on top of the client-wide
+	// caps. They are merged last so a future shape-gated override of a cap
+	// is intentional and visible here, not accidental.
+	for name, value := range perQuery {
+		s[name] = value
 	}
 	if blockSize > 0 {
 		// Per-request override (WithMaxBlockSize) — only ever set by the
@@ -763,21 +770,96 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	return s
 }
 
+// queryIDKeyType keys the per-dispatch ClickHouse query_id on a context, so
+// the unique id is computed ONCE per dispatch (in queryContext) and the SAME
+// value is read by everything that needs it (the CH WithQueryID stamp here,
+// and any out-of-band reader that later joins system.query_log back to the
+// dispatch). A counter-derived id is non-deterministic, so it MUST be cached
+// rather than recomputed — see queryIDFromContext.
+type queryIDKeyType struct{}
+
+var queryIDKey = queryIDKeyType{}
+
+// queryIDCounter is a process-global monotonic sequence mixed into every
+// per-dispatch query_id. It guarantees two concurrent CH queries issued under
+// the SAME trace (a Grafana dashboard fanning out one trace across many
+// panels, a vector-join / fan-out PromQL dispatching several CH queries) never
+// collide on the same query_id — which ClickHouse rejects with code 216
+// ("Query with id = X is already running").
+var queryIDCounter atomic.Uint64
+
 // queryContext derives the context every data-plane query runs under:
 // the caller's ctx plus the per-query ClickHouse settings from
-// querySettings. clickhouse.Context merges with any QueryOptions
+// querySettings and a per-dispatch ClickHouse query_id derived from the
+// active trace. clickhouse.Context merges per-option with any QueryOptions
 // already on ctx (e.g. the progress callback installed by
-// WithProgressFor), so stacking is safe. When no settings are
-// configured the ctx is returned unchanged.
+// WithProgressFor), so stacking is safe and the existing options are
+// preserved. When neither a setting nor a query_id is available the ctx
+// is returned unchanged.
+//
+// The query_id is computed ONCE here, stored on the returned context, and
+// reused by queryIDFromContext, so the value stamped via WithQueryID is the
+// exact same value any later reader observes — a non-deterministic
+// counter-derived id MUST be cached, never recomputed.
 //
 // Exec (DDL / DML) deliberately does NOT go through this — see
 // Config.MaxQueryMemoryBytes.
 func (c *Client) queryContext(ctx context.Context) context.Context {
 	s := c.querySettings(ctx)
-	if s == nil {
+	queryID, ctx := ensureQueryID(ctx)
+	if s == nil && queryID == "" {
 		return ctx
 	}
-	return clickhouse.Context(ctx, clickhouse.WithSettings(s))
+	opts := make([]clickhouse.QueryOption, 0, 2)
+	if s != nil {
+		opts = append(opts, clickhouse.WithSettings(s))
+	}
+	if queryID != "" {
+		opts = append(opts, clickhouse.WithQueryID(queryID))
+	}
+	return clickhouse.Context(ctx, opts...)
+}
+
+// ensureQueryID returns the per-dispatch ClickHouse query_id for ctx,
+// generating and caching it on the context if absent. It is the single
+// generation seam: queryContext calls it once per dispatch so the stamped id
+// and any later reader (queryIDFromContext) agree on one value.
+//
+// The id has the form "<traceID>-<spanID>-<counter>" so the trace id stays a
+// greppable PREFIX in query_log.query_id (operators can still
+// `WHERE query_id LIKE '<traceID>%'` or split on '-' to recover the trace),
+// while the span id + process-global counter make it UNIQUE per dispatch:
+//   - the counter disambiguates concurrent dispatches within one process, so
+//     a single trace fanning out many CH queries never collides (no code 216);
+//   - the span id disambiguates two cerberus replicas that share a trace and
+//     could otherwise pick the same counter value.
+//
+// When no valid trace is present (no-op tracer in tests, a non-instrumented
+// caller) the trace id is the all-zero invalid id; the returned id is ""
+// (nothing cached) so the driver self-generates one — query_id is never an
+// error path.
+func ensureQueryID(ctx context.Context) (string, context.Context) {
+	if id, ok := ctx.Value(queryIDKey).(string); ok {
+		return id, ctx
+	}
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.HasTraceID() {
+		return "", ctx
+	}
+	id := sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
+		strconv.FormatUint(queryIDCounter.Add(1), 10)
+	return id, context.WithValue(ctx, queryIDKey, id)
+}
+
+// queryIDFromContext returns the per-dispatch ClickHouse query_id stamped on
+// ctx by queryContext, or "" when none was stamped (an un-instrumented
+// dispatch, or a ctx that never flowed through queryContext). It is the read
+// side of the cache: it returns the EXACT value that was stamped via
+// WithQueryID, so a reader joining system.query_log by query_id observes the
+// same id ClickHouse recorded.
+func queryIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(queryIDKey).(string)
+	return id
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is
