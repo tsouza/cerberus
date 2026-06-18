@@ -451,12 +451,23 @@ never enabled — they require explicit listing — which preserves the historic
 "experimental paths off out of the box" default. An **unknown** feature id is a
 fatal startup error in **both** modes (a typo guard). The registry seeds
 `aggregation_in_order` (24.8, stable), `condition_cache` (25.3, stable),
-`ts_grid_range` (25.6, experimental), and `ts_grid_resample` (25.6,
-experimental — opts the range-mode instant-vector staleness shape onto native
-`timeSeriesResampleToGridWithStaleness`); see
+`ts_grid_range` (25.6, experimental), `ts_grid_resample` (25.6, experimental —
+opts the range-mode instant-vector staleness shape onto native
+`timeSeriesResampleToGridWithStaleness`), and `columnar_result_decode` (no
+version floor, opt-in); see
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the full table.
 Everything is version-safe: a feature whose floor sits above the connected
 server is simply not enabled, so the binary keeps emitting its 24.8-safe SQL.
+
+`columnar_result_decode` is a **client-side** decode optimization: it routes the
+`query_range` matrix shape through the low-level ch-go columnar path (building
+each series' label map once per run instead of once per row) and touches **no
+server setting**, so it carries no version floor and works on any
+native-protocol server. It is **opt-in only** (a perf tradeoff — a second ch-go
+dial), so `auto` never selects it; enable it by listing it explicitly:
+`CERBERUS_CH_OPTIMIZATIONS=columnar_result_decode`. There is **no** standalone
+env var for it — like every other optimization it is reached only through the
+`CERBERUS_CH_OPTIMIZATIONS` list.
 
 ### The performance-corpus reconciler
 
@@ -484,9 +495,9 @@ until ring pressure evicts it.
 These DARK flags default **off** and every behaviour here is safe on ClickHouse
 24.8 (cerberus's minimum floor) — none adopts a 25.x feature.
 
-| Variable                     | Type | Default | Description                                                                                                                                                           |
-| ---------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- --|
-| `CERBERUS_LOG_COMMENT_SHAPE` | bool | `false` | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`. |
+| Variable                     | Type | Default | Description                                                                                                                                                            |
+| ---------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_LOG_COMMENT_SHAPE` | bool | `false` | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`.  |
 
 **Always-on (no flag): `query_id`.** Every data-plane query cerberus dispatches
 carries a ClickHouse `query_id` of the form `<trace id>-<span id>-<counter>`:

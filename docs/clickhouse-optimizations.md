@@ -21,10 +21,10 @@ Two environment variables drive the whole suite. Both follow the standard
 cerberus config idiom (per-key viper `BindEnv`, fail-fast parse, env > file
 > default).
 
-| Env var                          | Type   | Default     | Meaning                                                                          |
-|----------------------------------|--------|-------------|----------------------------------------------------------------------------------|
-| `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`      | `auto`, `off`, or a comma-separated list of feature ids.                         |
-| `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `enforcing` | `enforcing` or `permissive`. Governs how an unsupported requested id is handled. |
+| Env var                            | Type     | Default       | Meaning                                                                            |
+| ---------------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPTIMIZATIONS`        | string   | `auto`        | `auto`, `off`, or a comma-separated list of feature ids.                           |
+| `CERBERUS_CH_OPTIMIZATIONS_MODE`   | string   | `enforcing`   | `enforcing` or `permissive`. Governs how an unsupported requested id is handled.   |
 
 ### `CERBERUS_CH_OPTIMIZATIONS`
 
@@ -64,11 +64,11 @@ produces an immutable `EnabledSet` that is logged at boot. It is the single
 source of truth every consumer reads from; nothing downstream re-reads the
 raw env.
 
-| `CERBERUS_CH_OPTIMIZATIONS` | Effect                                                                                                                        |
-|-----------------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| `off`                       | Empty set.                                                                                                                    |
-| `auto`                      | Every stable feature with `minVersion <= server`. Experimental features excluded.                                             |
-| explicit list               | Per id: supported -> enable; unsupported -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes). |
+| `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `off`                         | Empty set.                                                                                                                      |
+| `auto`                        | Every stable feature with `minVersion <= server`. Experimental features excluded.                                               |
+| explicit list                 | Per id: supported -> enable; unsupported -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes).   |
 
 The boot log records the resolved set, the server version it resolved
 against, and any skips or the deprecation notice (below).
@@ -84,12 +84,13 @@ needs an `allow_experimental_*` setting, that setting is co-stamped by the
 on exactly the queries that use the native node), not carried as a registry
 field.
 
-| id                     | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                                         |
-|------------------------|------------|--------------|------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `aggregation_in_order` | 24.8       | stable       | -                                                    | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                     |
-| `condition_cache`      | 25.3       | stable       | -                                                    | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                       |
-| `ts_grid_range`        | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                      |
-| `ts_grid_resample`     | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto). |
+| id                       | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                                                        |
+| ------------------------ | ---------- | ------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aggregation_in_order`   | 24.8       | stable       | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                    |
+| `condition_cache`        | 25.3       | stable       | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                      |
+| `ts_grid_range`          | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                                     |
+| `ts_grid_resample`       | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto).                |
+| `columnar_result_decode` | none       | opt-in       | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Explicit-only (never auto). |
 
 Notes:
 
@@ -116,6 +117,16 @@ Notes:
   (`[anchor - lookback, anchor]`) which matches reference Prometheus, vs the
   fan-out's half-open `(anchor - lookback, anchor]`; they diverge only on a
   sample landing exactly on the left boundary.
+- **`columnar_result_decode`** is a **client-side** decode optimization with
+  **no version floor** (`minVersion` is the always-available zero floor): it
+  changes how cerberus reads the result blocks, not what it asks the server to
+  do, so it works on any native-protocol server and touches no ClickHouse
+  setting. It is **opt-in only** (a perf tradeoff — it owns a second ch-go dial,
+  established lazily on the first `query_range` matrix query), so `auto` never
+  selects it; list it explicitly
+  (`CERBERUS_CH_OPTIMIZATIONS=columnar_result_decode`) to engage it. The decode
+  is byte-parity-verified against the row path (`TestColumnarMatrixParity_E2E`).
+  It is the registry's example of a non-version-gated opt-in feature.
 
 ## Runtime version probe
 
@@ -220,11 +231,11 @@ guarded off there.
 
 ### Config flags
 
-| Env var                            | Type     | Default | Meaning                                                    |
-|------------------------------------|----------|---------|------------------------------------------------------------|
-| `CERBERUS_CH_OPT_CORPUS_ENABLED`   | bool     | `false` | Enable the reconciler (needs `system.query_log` access).   |
-| `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | duration | `60s`   | How often to reconcile recent query_ids against query_log. |
-| `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | string   | (unset) | JSONL sink path. Empty disables the file sink.             |
+| Env var                              | Type       | Default   | Meaning                                                      |
+| ------------------------------------ | ---------- | --------- | ------------------------------------------------------------ |
+| `CERBERUS_CH_OPT_CORPUS_ENABLED`     | bool       | `false`   | Enable the reconciler (needs `system.query_log` access).     |
+| `CERBERUS_CH_OPT_CORPUS_INTERVAL`    | duration   | `60s`     | How often to reconcile recent query_ids against query_log.   |
+| `CERBERUS_CH_OPT_CORPUS_SINK_PATH`   | string     | (unset)   | JSONL sink path. Empty disables the file sink.               |
 
 ### Mining the corpus
 
@@ -291,6 +302,8 @@ Nothing in this suite can break ClickHouse 24.8:
 - `condition_cache` activates only on `>= 25.3`; below that it is a no-op.
 - `ts_grid_range` activates only on `>= 25.6` and is experimental
   (explicit-only).
+- `columnar_result_decode` is client-side and version-agnostic (no server
+  setting); it is explicit-only, so `auto` never engages it.
 - Under `auto`, an unsupported feature is simply not enabled.
 
 ---
@@ -399,11 +412,11 @@ const (
 
 Seeded `Registry()` entries (verbatim):
 
-| ID                     | MinVersion | Stability      |
-|------------------------|------------|----------------|
-| `aggregation_in_order` | `{24, 8}`  | `Stable`       |
-| `condition_cache`      | `{25, 3}`  | `Stable`       |
-| `ts_grid_range`        | `{25, 6}`  | `Experimental` |
+| ID                       | MinVersion   | Stability        |
+| ------------------------ | ------------ | ---------------- |
+| `aggregation_in_order`   | `{24, 8}`    | `Stable`         |
+| `condition_cache`        | `{25, 3}`    | `Stable`         |
+| `ts_grid_range`          | `{25, 6}`    | `Experimental`   |
 
 ### New config field names + env consts (`internal/config`)
 

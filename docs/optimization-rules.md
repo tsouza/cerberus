@@ -28,9 +28,12 @@ Rationale: the version decision happens once; the codepath is fixed for the
 process lifetime; the hot path carries no repeated flag reads and no risk of
 version logic drifting back into it.
 
-How to add one: register a `chopt` feature with its real `serverAtLeast`
-floor, resolve it into the boot `EnabledSet`, select the concrete strategy at
-construction, and call through the interface per query.
+How to add one: register a `chopt` feature with its `serverAtLeast` floor (a
+real `minVersion`, or `chopt.AlwaysAvailable` for a client-side optimization
+that depends on no server version — see Rule 3), resolve it into the boot
+`EnabledSet`, select the concrete strategy at construction (or, when the
+resolve must run after the client is built, install it once at boot before any
+handler serves), and call through the interface per query.
 
 In tree: the `promql.RangeLowerers` native-lowering strategies (rate,
 staleness / resample); the `chclient.cursorDecoder` (row vs columnar matrix
@@ -57,3 +60,45 @@ K = 2..16.
 
 Process rule: any change motivated by cloning cost must be backed by a
 benchmark against the current code, in a throwaway tree, before it is adopted.
+
+## Rule 3: every performance toggle is a registered `chopt` feature, never a standalone `CERBERUS_*` env bool
+
+Every performance / optimization toggle MUST be a named feature registered in
+the `chopt` registry and reached through `CERBERUS_CH_OPTIMIZATIONS`, resolved
+once at boot into the immutable `chopt.EnabledSet`. It MUST NOT be a standalone
+`CERBERUS_*` environment bool with its own parse, default, and read site.
+
+Why:
+
+- **One surface.** Operators tune every optimization through a single env var
+  (`CERBERUS_CH_OPTIMIZATIONS=auto|off|<list>`) plus its mode
+  (`CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing|permissive`). A per-knob
+  `CERBERUS_X` bool fragments that surface into env sprawl, each with its own
+  default and silent-typo failure mode.
+- **Uniform semantics for free.** Registry features inherit `auto` (best
+  available), `off` (absolute kill-switch), explicit-list opt-in, the
+  enforcing-vs-permissive unsupported-feature policy, and the unknown-id typo
+  guard. A standalone bool re-implements none of these and gets none of them.
+- **One boot-resolution path.** The decision is resolved exactly once, after
+  the version probe, into the `EnabledSet` every consumer reads via
+  `EnabledSet.Has(...)`. There is no second source of truth and no per-knob
+  read scattered through config.
+
+How:
+
+- Register the feature in `internal/chopt/registry.go`: give it an `ID`, a
+  `Stability` (`Stable` for auto-eligible result-equivalent features,
+  `Experimental` / opt-in for tradeoffs that must stay off by default), and a
+  floor — a real `minVersion`, or `chopt.AlwaysAvailable` when it depends on no
+  server version (a purely client-side optimization).
+- Consume it via `EnabledSet.Has(FeatureX)` at the boot wiring point (Rule 1);
+  never re-read the environment downstream.
+
+Example — **`columnar_result_decode`** is a non-version-gated opt-in feature:
+it is a client-side decode (the ch-go columnar `query_range` matrix path), so
+its floor is `chopt.AlwaysAvailable` (no server version requirement) and its
+stability is opt-in (never enabled by `auto`, since the second ch-go dial is a
+tradeoff). It replaced the standalone `CERBERUS_COLUMNAR_MATRIX_DECODE` bool,
+which violated this rule. The chclient keeps a source-agnostic
+`Config.ColumnarMatrixDecode` knob, but its production value flows from
+`EnabledSet.Has(FeatureColumnarResultDecode)` at boot, not from any env var.

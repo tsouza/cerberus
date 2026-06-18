@@ -503,6 +503,15 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// resolved set, not the raw env.
 	cfg.ExperimentalTSGridRange = set.Has(chopt.FeatureTSGridRange)
 
+	// Install the client-side columnar matrix decode when the resolved set
+	// enables it. columnar_result_decode is a chopt feature (opt-in, never
+	// auto), so its enable decision flows through the EnabledSet exactly like
+	// every other optimization rather than a standalone env bool. The client
+	// was built on the row path at New (the version probe above needed it); this
+	// is the one boot-time swap, run before any handler serves. cfg.ClickHouse
+	// is the Config the columnar strategy's second ch-go dial maps off of.
+	client.UseColumnarMatrixDecode(set.Has(chopt.FeatureColumnarResultDecode), cfg.ClickHouse)
+
 	logger.Info(
 		"clickhouse optimizations resolved",
 		"selection", cfg.CHOptimizations,

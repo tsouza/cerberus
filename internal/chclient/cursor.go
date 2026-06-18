@@ -385,11 +385,12 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	// Dispatch to the cursor-decode strategy resolved at construction. It is
-	// ALWAYS non-nil: the row path by default, the columnar strategy (which
-	// embeds the row path as its fallback) when CERBERUS_COLUMNAR_MATRIX_DECODE
-	// was set at boot. No branch here — the strategy already encodes the
-	// choice, and the columnar strategy makes the per-block matrix-shape /
-	// bindable-args decision internally before delegating to its row fallback.
+	// Dispatch to the cursor-decode strategy resolved at boot. It is ALWAYS
+	// non-nil: the row path by default, the columnar strategy (which embeds the
+	// row path as its fallback) when the columnar matrix decode was enabled at
+	// boot (the chopt columnar_result_decode feature). No branch here — the
+	// strategy already encodes the choice, and the columnar strategy makes the
+	// per-block matrix-shape / bindable-args decision internally before
+	// delegating to its row fallback.
 	return c.cursorDecoder.decode(c, ctx, sql, args...)
 }
