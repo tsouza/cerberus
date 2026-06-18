@@ -122,14 +122,20 @@ autoCreate:
   # -- Create the target database if absent (CERBERUS_AUTO_CREATE_DATABASE).
   database: false
 
+# Per-head admission control (in-flight concurrency caps). prom / loki / tempo
+# each accept EITHER an explicit integer cap OR a boolean: `true` enables the
+# head at its conservative default cap (64 / 64 / 32), `false` (or `0`) leaves
+# the head unlimited, and a positive integer (e.g. `2`) pins an exact cap.
+# `disabled: true` is the master switch that removes admission control on every
+# head at once.
 admit:
-  # -- Admit PromQL queries (CERBERUS_ADMIT_PROM).
+  # -- Prom API in-flight cap (CERBERUS_ADMIT_PROM): integer cap, or true (default cap 64) / false (unlimited).
   prom: true
-  # -- Admit LogQL queries (CERBERUS_ADMIT_LOKI).
+  # -- Loki API in-flight cap (CERBERUS_ADMIT_LOKI): integer cap, or true (default cap 64) / false (unlimited).
   loki: true
-  # -- Admit TraceQL queries (CERBERUS_ADMIT_TEMPO).
+  # -- Tempo API in-flight cap (CERBERUS_ADMIT_TEMPO): integer cap, or true (default cap 32) / false (unlimited).
   tempo: true
-  # -- Disable admission entirely (CERBERUS_ADMIT_DISABLED).
+  # -- Disable admission entirely on every head (CERBERUS_ADMIT_DISABLED).
   disabled: false
 
 otlp:

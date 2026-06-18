@@ -5,7 +5,7 @@
      pipe-aligned, and the version footer adds a trailing blank — both are
      owned by helm-docs; realigning would fight the chart-ci drift check. -->
 
-![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.1](https://img.shields.io/badge/AppVersion-1.0.1-informational?style=flat-square)
+![Version: 0.3.1](https://img.shields.io/badge/Version-0.3.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.2](https://img.shields.io/badge/AppVersion-1.0.2-informational?style=flat-square)
 
 Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
 
@@ -163,10 +163,10 @@ Kubernetes: `>=1.23.0-0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| admit.disabled | bool | `false` | Disable admission entirely (CERBERUS_ADMIT_DISABLED). |
-| admit.loki | bool | `true` | Admit LogQL queries (CERBERUS_ADMIT_LOKI). |
-| admit.prom | bool | `true` | Admit PromQL queries (CERBERUS_ADMIT_PROM). |
-| admit.tempo | bool | `true` | Admit TraceQL queries (CERBERUS_ADMIT_TEMPO). |
+| admit.disabled | bool | `false` | Disable admission entirely on every head (CERBERUS_ADMIT_DISABLED). |
+| admit.loki | bool | `true` | Loki API in-flight cap (CERBERUS_ADMIT_LOKI): integer cap, or true (default cap 64) / false (unlimited). |
+| admit.prom | bool | `true` | Prom API in-flight cap (CERBERUS_ADMIT_PROM): integer cap, or true (default cap 64) / false (unlimited). |
+| admit.tempo | bool | `true` | Tempo API in-flight cap (CERBERUS_ADMIT_TEMPO): integer cap, or true (default cap 32) / false (unlimited). |
 | affinity | object | `{}` | Affinity. Composed UNDER `affinityPresets` below — any field set here wins; the presets only inject podAffinity terms. |
 | affinityPresets | object | `{"colocateWithClickHouse":{"enabled":false,"mode":"preferred","podSelector":{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}},"topologyKey":"kubernetes.io/hostname"}}` | Scheduling affinity presets (a convenience over hand-writing raw affinity). Composed over `affinity` above. |
 | affinityPresets.colocateWithClickHouse | object | `{"enabled":false,"mode":"preferred","podSelector":{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}},"topologyKey":"kubernetes.io/hostname"}` | Co-locate cerberus pods with the ClickHouse pods they query, to keep the hot native :9000 path node-local instead of crossing nodes/AZs. CAVEAT: this gives only PROBABILISTIC locality (~1/N), because `clickhouse.addr` is the ClickHouse Service, which round-robins across all replicas — it cuts cross-AZ traffic but does not guarantee the node-local replica is queried. See the chart README + docs/operations.md. |
