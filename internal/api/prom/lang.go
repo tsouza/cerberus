@@ -46,13 +46,14 @@ type lang struct {
 	End    time.Time
 	Step   time.Duration
 
-	// ExperimentalTSGridRange opts the eligible rate query_range shape
-	// into the ClickHouse-native timeSeriesRateToGrid lowering. Threaded
-	// from Handler.ExperimentalTSGridRange (which reads
-	// Config.ExperimentalTSGridRange). Only the range path
-	// (executeRangeStreaming) sets it true; instant queries leave it
-	// false. Default false → the default arrayJoin fan-out.
-	ExperimentalTSGridRange bool
+	// Lowerers is the BOOT-WIRED polymorphic dispatch table for the
+	// ClickHouse-native timeSeries*ToGrid family (rate / staleness). Threaded
+	// from Handler.Lowerers (built once at boot in cmd/cerberus from the
+	// resolved chopt.EnabledSet). Only the range path (executeRangeStreaming)
+	// sets it; instant queries leave it zero. The zero value is the all-fan-out
+	// default. The lowering dispatches through this table with NO per-query
+	// feature-flag / version read.
+	Lowerers promql.RangeLowerers
 }
 
 // Compile-time check that *lang satisfies engine.Lang.
@@ -109,7 +110,7 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
-		promql.LowerOpts{ExperimentalTSGridRange: l.ExperimentalTSGridRange})
+		promql.LowerOpts{Lowerers: l.Lowerers})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}

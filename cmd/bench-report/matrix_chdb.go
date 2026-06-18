@@ -238,16 +238,22 @@ func measureMatrixCell(ctx context.Context, s *session, iters int, st matrixStra
 }
 
 // lowerMatrixPlan lowers + optimizes the focus query for the given tsgrid
-// state, exactly as the query_range handler does (LowerAtRangeOpts threads
-// LowerOpts.ExperimentalTSGridRange from Config.ExperimentalTSGridRange).
+// state, exactly as the query_range handler does (LowerAtRangeOpts threads the
+// boot-wired LowerOpts.Lowerers table; here `tsgrid` selects between the
+// all-fan-out default and the native-rate strategy the prom handler wires when
+// chopt resolves ts_grid_range).
 func lowerMatrixPlan(ctx context.Context, tsgrid bool) (chplan.Node, error) {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(matrixQuery)
 	if err != nil {
 		return nil, err
 	}
+	var lowerers promql.RangeLowerers
+	if tsgrid {
+		lowerers.Rate = promql.NativeRateLowerer{}
+	}
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, schema.DefaultOTelMetrics(),
-		matrixStart, matrixEnd, matrixStep, promql.LowerOpts{ExperimentalTSGridRange: tsgrid})
+		matrixStart, matrixEnd, matrixStep, promql.LowerOpts{Lowerers: lowerers})
 	if err != nil {
 		return nil, err
 	}

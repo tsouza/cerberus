@@ -76,15 +76,17 @@ type lowerCtx struct {
 	// without branch (see [lowerAggregate]).
 	outerByLabels []string
 
-	// experimentalTSGridRange opts the eligible `rate(<counter>[<range>])`
-	// query_range shape into the ClickHouse-native `timeSeriesRateToGrid`
-	// lowering (a RangeWindowNative node) instead of the default
-	// arrayJoin fan-out (a RangeWindow node). Threaded from
-	// Config.ExperimentalTSGridRange via [LowerAtRangeOpts]. Default
-	// false — every other lowering path is byte-identical to today's, and
-	// the only callers that set it true are the query_range handler
-	// adapters. See [lowerRangeVectorCall] for the gating predicate.
-	experimentalTSGridRange bool
+	// lowerers is the BOOT-WIRED polymorphic dispatch table for the
+	// ClickHouse-native timeSeries*ToGrid family (rate / staleness). It is
+	// decided ONCE at boot from the resolved chopt.EnabledSet and threaded in
+	// via [LowerAtRangeOpts]; the per-query lowering reads it WITHOUT any
+	// feature-flag or server-version conditional (a nil strategy field IS the
+	// fan-out fallback). The zero value is the all-fan-out default, so every
+	// caller that does not opt in (every path but the query_range handler)
+	// lowers byte-identically to the pre-seam behaviour. See
+	// [RangeLowerers] and [lowerRangeVectorCall] / [wrapRangeLatestPerSeries]
+	// for the per-query dispatch sites.
+	lowerers RangeLowerers
 
 	// attributesPreMerged signals that the selector input already carries
 	// the resource-attribute merge in its `Attributes` column — i.e. each

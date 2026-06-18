@@ -133,7 +133,7 @@ func innerScanColumns(t *testing.T, optimize bool) []string {
 	rangeEnd := rangeStart.Add(5 * time.Minute)
 	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
 		rangeStart, rangeEnd, 30*time.Second,
-		promql.LowerOpts{ExperimentalTSGridRange: true})
+		promql.LowerOpts{Lowerers: promql.RangeLowerers{Rate: promql.NativeRateLowerer{}}})
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}

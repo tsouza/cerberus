@@ -211,9 +211,13 @@ func runDualEmit(t *testing.T, db *sql.DB, native, optimize bool) map[gridCell]f
 	}
 	rangeStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	rangeEnd := rangeStart.Add(5 * time.Minute)
+	var lowerers promql.RangeLowerers
+	if native {
+		lowerers.Rate = promql.NativeRateLowerer{}
+	}
 	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
 		rangeStart, rangeEnd, 30*time.Second,
-		promql.LowerOpts{ExperimentalTSGridRange: native})
+		promql.LowerOpts{Lowerers: lowerers})
 	if err != nil {
 		t.Fatalf("lower (native=%v): %v", native, err)
 	}
