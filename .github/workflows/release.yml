@@ -90,6 +90,19 @@ jobs:
         with:
           subject-path: 'dist/*.tar.gz'
 
+      # goreleaser created the release as a DRAFT (see .goreleaser.yml
+      # release.draft) so it could attach the binary archives + checksums
+      # while the release was still mutable. Flip it to published now, AFTER
+      # the assets and provenance are in place: the repo's immutable-releases
+      # policy then freezes the release WITH its assets. Publishing up-front
+      # (e.g. `gh release create`) would lock it before goreleaser could
+      # upload -- the 422 that broke v1.0.1. Idempotent: a no-op if already
+      # published.
+      - name: Publish the release (flip draft -> published)
+        run: gh release edit "${{ github.ref_name }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # Publish the Helm chart to GHCR as an OCI artifact, cosign-sign it keyless,
   # attest provenance, and (idempotently) push the Artifact Hub metadata. Gated
   # on the same preflight as the binary release. The chart is published ONLY
