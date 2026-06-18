@@ -222,17 +222,21 @@ simultaneous in-flight requests. Requests above the cap are rejected with HTTP
 of overload. Tempo's cap is half of Prom / Loki because trace queries are
 typically the heaviest per-call.
 
-`CERBERUS_ADMIT_{PROM,LOKI,TEMPO}` are boolean enable toggles: a truthy value
-turns the head's limiter ON at its conservative default cap, a falsy value
-leaves that head unlimited. `CERBERUS_ADMIT_DISABLED` is a master switch that
-turns every head off at once.
+`CERBERUS_ADMIT_{PROM,LOKI,TEMPO}` set the per-head in-flight concurrency cap.
+Each accepts **either** an explicit non-negative integer cap **or** a boolean
+alias: `true` enables the head at its conservative default cap, `false` (or
+`0`) leaves that head unlimited, and a positive integer (e.g. `2`) pins an exact
+cap. `1`/`0` read as the integer caps 1 and 0, so the canonical 1/0/true/false
+all behave intuitively while an exact cap stays expressible. A negative or
+otherwise unparseable value is rejected at startup. `CERBERUS_ADMIT_DISABLED` is
+a separate master switch that turns every head off at once.
 
-| Variable                  | Type | Default | Description                                                                      |
-| ------------------------- | ---- | ------- | -------------------------------------------------------------------------------- |
-| `CERBERUS_ADMIT_DISABLED` | bool | `false` | Disable admission control entirely on every head (handy for local development).  |
-| `CERBERUS_ADMIT_PROM`     | bool | `true`  | Enable the Prom API in-flight limiter (default cap 64). Falsy = head unlimited.  |
-| `CERBERUS_ADMIT_LOKI`     | bool | `true`  | Enable the Loki API in-flight limiter (default cap 64). Falsy = head unlimited.  |
-| `CERBERUS_ADMIT_TEMPO`    | bool | `true`  | Enable the Tempo API in-flight limiter (default cap 32). Falsy = head unlimited. |
+| Variable                  | Type        | Default | Description                                                                                       |
+| ------------------------- | ----------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `CERBERUS_ADMIT_DISABLED` | bool        | `false` | Disable admission control entirely on every head (handy for local development).                   |
+| `CERBERUS_ADMIT_PROM`     | int \| bool | `true`  | Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
+| `CERBERUS_ADMIT_LOKI`     | int \| bool | `true`  | Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
+| `CERBERUS_ADMIT_TEMPO`    | int \| bool | `true`  | Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited. |
 
 ## Logging
 

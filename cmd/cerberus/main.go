@@ -55,23 +55,11 @@ func isVersionFlag(args []string) bool {
 	return false
 }
 
-// admitCap translates a per-head admission toggle into the concurrency
-// cap handed to admit.New. An enabled head uses its default cap; a
-// disabled head returns 0, which admit.New maps to a nil (pass-through)
-// limiter. Keeping the enabled/disabled cases symmetric here means the
-// only knob the operator sees is a plain boolean.
-func admitCap(enabled bool, defaultCap int) int {
-	if !enabled {
-		return 0
-	}
-	return defaultCap
-}
-
 // newAdmitLimiters builds the per-head admission-control limiters. When
 // CERBERUS_ADMIT_DISABLED=true every limiter is nil and the middleware
-// short-circuits to a pass-through wrapper. Otherwise each per-head toggle
-// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} (boolean) selects the head's default cap
-// when truthy, or leaves the head unlimited (nil limiter) when falsy.
+// short-circuits to a pass-through wrapper. Otherwise each per-head cap
+// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} sizes its limiter directly (resolved by
+// config.admitFromEnv from an explicit integer or a true/false alias).
 // admit.New returns nil for a non-positive cap, so a disabled head and a
 // zero cap collapse to the same pass-through path.
 func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *admit.Limiter, *admit.Limiter) {
@@ -79,9 +67,9 @@ func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *
 		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
 		return nil, nil, nil
 	}
-	promCap := admitCap(cfg.Admit.Prom, config.DefaultAdmitProm)
-	lokiCap := admitCap(cfg.Admit.Loki, config.DefaultAdmitLoki)
-	tempoCap := admitCap(cfg.Admit.Tempo, config.DefaultAdmitTempo)
+	promCap := cfg.Admit.Prom
+	lokiCap := cfg.Admit.Loki
+	tempoCap := cfg.Admit.Tempo
 	logger.Info(
 		"admission control enabled",
 		"prom", promCap,

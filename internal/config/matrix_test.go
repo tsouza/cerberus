@@ -469,7 +469,7 @@ func TestFromEnv_Log_FormatErrorMessageMentionsKey(t *testing.T) {
 }
 
 // TestFromEnv_AdmitDisabled_DoesNotCascadeToToggles confirms setting
-// CERBERUS_ADMIT_DISABLED=true leaves the per-head toggles intact in the
+// CERBERUS_ADMIT_DISABLED=true leaves the per-head caps intact in the
 // resolved Config. The wiring in main.go is responsible for skipping
 // limiter construction — the config layer just reports both signals.
 func TestFromEnv_AdmitDisabled_DoesNotCascadeToToggles(t *testing.T) {
@@ -482,34 +482,52 @@ func TestFromEnv_AdmitDisabled_DoesNotCascadeToToggles(t *testing.T) {
 	if !cfg.Admit.Disabled {
 		t.Errorf("Disabled = false; want true")
 	}
-	if !cfg.Admit.Prom {
-		t.Errorf("Admit.Prom = false; want true (per-head toggle reported even when globally disabled)")
+	if cfg.Admit.Prom != DefaultAdmitProm {
+		t.Errorf("Admit.Prom = %d; want %d (per-head cap reported even when globally disabled)", cfg.Admit.Prom, DefaultAdmitProm)
 	}
 }
 
 // TestFromEnv_AdmitFalsyDisablesHead pins the "falsy disables this head"
-// contract — a per-head toggle accepts 0/false to leave that head
-// unlimited without touching the others.
+// contract — a per-head cap accepts 0/false to leave that head unlimited
+// (cap 0) without touching the others.
 func TestFromEnv_AdmitFalsyDisablesHead(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_LOKI", "false")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv with loki disabled: %v", err)
 	}
-	if cfg.Admit.Loki {
-		t.Errorf("Admit.Loki = true; want false")
+	if cfg.Admit.Loki != 0 {
+		t.Errorf("Admit.Loki = %d; want 0", cfg.Admit.Loki)
 	}
-	if !cfg.Admit.Prom || !cfg.Admit.Tempo {
-		t.Errorf("disabling loki must not touch prom/tempo: prom=%v tempo=%v", cfg.Admit.Prom, cfg.Admit.Tempo)
+	if cfg.Admit.Prom != DefaultAdmitProm || cfg.Admit.Tempo != DefaultAdmitTempo {
+		t.Errorf("disabling loki must not touch prom/tempo: prom=%d tempo=%d", cfg.Admit.Prom, cfg.Admit.Tempo)
 	}
 }
 
-// TestFromEnv_AdmitTempoGarbage ensures a value outside the boolean
-// vocabulary fails fast for the tempo head too (symmetry with prom).
+// TestFromEnv_AdmitIntegerCap pins the explicit-integer cap path the e2e
+// chaos overlay depends on — CERBERUS_ADMIT_{PROM,LOKI,TEMPO}=2 forces a
+// low backpressure cap, distinct from the boolean default-cap alias.
+func TestFromEnv_AdmitIntegerCap(t *testing.T) {
+	t.Setenv("CERBERUS_ADMIT_PROM", "2")
+	t.Setenv("CERBERUS_ADMIT_LOKI", "2")
+	t.Setenv("CERBERUS_ADMIT_TEMPO", "2")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv with integer admit caps: %v", err)
+	}
+	if cfg.Admit.Prom != 2 || cfg.Admit.Loki != 2 || cfg.Admit.Tempo != 2 {
+		t.Errorf("integer caps not honoured: prom=%d loki=%d tempo=%d; want 2/2/2",
+			cfg.Admit.Prom, cfg.Admit.Loki, cfg.Admit.Tempo)
+	}
+}
+
+// TestFromEnv_AdmitTempoGarbage ensures a negative cap (outside the int /
+// true-false vocabulary) fails fast for the tempo head too (symmetry with
+// prom).
 func TestFromEnv_AdmitTempoGarbage(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_TEMPO", "-5")
 	if _, err := FromEnv(); err == nil {
-		t.Fatal("FromEnv: want error for non-boolean tempo, got nil")
+		t.Fatal("FromEnv: want error for negative tempo cap, got nil")
 	}
 }
 
@@ -518,7 +536,7 @@ func TestFromEnv_AdmitTempoGarbage(t *testing.T) {
 func TestFromEnv_AdmitLokiGarbage(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_LOKI", "-10")
 	if _, err := FromEnv(); err == nil {
-		t.Fatal("FromEnv: want error for non-boolean loki, got nil")
+		t.Fatal("FromEnv: want error for negative loki cap, got nil")
 	}
 }
 

@@ -364,7 +364,10 @@ heads with a counted semaphore that caps simultaneous in-flight
 requests. Caps are env-driven via `CERBERUS_ADMIT_PROM` /
 `CERBERUS_ADMIT_LOKI` / `CERBERUS_ADMIT_TEMPO` (defaults: 64 / 64 / 32
 — Tempo is half because trace queries are typically the heaviest
-per-call). Requests above the cap are rejected with HTTP 503 +
+per-call). Each accepts an explicit integer cap or a boolean alias
+(`true` = the default cap, `false`/`0` = that head unlimited), so a plain
+chart bool and a precise operator cap both work. Requests above the cap
+are rejected with HTTP 503 +
 `Retry-After: 1` so well-behaved clients back off and ClickHouse stays
 out of overload.
 
