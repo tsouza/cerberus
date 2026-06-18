@@ -25,13 +25,15 @@
 //     ClickHouse returns the array element's default (0) for
 //     `cum[0]`, which matches the "no bucket consumed yet" semantics
 //     when idx = 1, so the formula needs no explicit guard.
-//  6. Edge cases:
+//  6. Edge cases (Prometheus quantile.go:114-119):
 //     - total = 0 → NaN.
-//     - phi <= 0 → lower edge of the lowest bucket:
+//     - phi < 0 → -Inf (out of domain).
+//     - phi > 1 → +Inf (out of domain).
+//     - phi == 0 → lower edge of the lowest bucket (in domain):
 //     `-pow(base, NegativeOffset + length(Negative))` if any
 //     negative observations exist; otherwise 0 (matches Phase 1
 //     convention for non-negative distributions).
-//     - phi >= 1 → upper edge of the highest bucket:
+//     - phi == 1 → upper edge of the highest bucket (in domain):
 //     `pow(base, PositiveOffset + length(Positive))` when positive
 //     observations exist; else `ZeroThreshold` when zero bucket is
 //     non-empty; else `-pow(base, NegativeOffset)` (upper edge of
@@ -136,16 +138,18 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	// canonicalises it to `0`). Both ride verbatim (the IfNonZero
 	// precedent in builder.go).
 	nan := verbatim("nan")
+	negInf := verbatim("-inf")
+	posInf := verbatim("inf")
 	zeroF := verbatim("0.0")
 
-	// phi <= 0 → smallest-bucket lower edge:
+	// phi == 0 → smallest-bucket lower edge:
 	//   if(nlen > 0, -pow(base, no + nlen), 0.0)
 	phiLow := If(
 		Gt(w.nLen(), InlineLit(0)),
 		Neg(Call("pow", w.base(), Add(Col(no), w.nLen()))),
 		zeroF,
 	)
-	// phi >= 1 → largest-bucket upper edge:
+	// phi == 1 → largest-bucket upper edge:
 	//   if(plen > 0, pow(base, po + plen),
 	//      if(zc > 0, zt, -pow(base, no)))
 	phiHigh := If(
@@ -181,17 +185,27 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		),
 	)
 
-	// Outer chain:
+	// Outer chain (Prometheus quantile.go:114-119):
 	//   if(total = 0, nan,
-	//     if(phi <= 0, phiLow,
-	//       if(phi >= 1, phiHigh,
-	//         if(idx <= nlen, negInterp,
-	//           if(idx = nlen + 1, zeroInterp, posInterp)))))
+	//     if(phi < 0, -inf,
+	//       if(phi > 1, inf,
+	//         if(phi = 0, phiLow,
+	//           if(phi = 1, phiHigh,
+	//             if(idx <= nlen, negInterp,
+	//               if(idx = nlen + 1, zeroInterp, posInterp)))))))
+	//
+	// phi < 0 / phi > 1 are OUT of domain (-Inf / +Inf). phi == 0 and
+	// phi == 1 are IN domain and saturate to the smallest-bucket lower
+	// edge / largest-bucket upper edge respectively (the same phiLow /
+	// phiHigh edges the old saturating branches produced). ClickHouse
+	// parses the bare `inf` / `-inf` tokens as Float64.
 	core := If(Eq(w.total(), InlineLit(0)), nan,
-		If(Lte(w.phi(), InlineLit(0)), phiLow,
-			If(Gte(w.phi(), InlineLit(1)), phiHigh,
-				If(Lte(w.idx(), w.nLen()), negInterp,
-					If(Eq(w.idx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp)))))
+		If(Lt(w.phi(), InlineLit(0)), negInf,
+			If(Gt(w.phi(), InlineLit(1)), posInf,
+				If(Eq(w.phi(), InlineLit(0)), phiLow,
+					If(Eq(w.phi(), InlineLit(1)), phiHigh,
+						If(Lte(w.idx(), w.nLen()), negInterp,
+							If(Eq(w.idx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp)))))))
 
 	if h.PhiExpr == nil {
 		return core

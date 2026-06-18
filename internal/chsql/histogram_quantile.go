@@ -27,13 +27,14 @@ import (
 //     and cum at idx-1. The trailing +Inf bucket (idx == length(cum))
 //     returns the highest explicit bound — matching upstream Prometheus.
 //
-// Prom edge cases mirrored:
+// Prom edge cases mirrored (quantile.go:114-119):
 //
 //   - total = 0 (empty histogram) → NaN.
-//   - phi >= 1 → highest explicit bound (so p1.0 reads from the last
-//     finite edge, not +Inf).
-//   - phi <= 0 → lowest explicit bound (Prom's convention for
-//     non-negative observations).
+//   - phi < 0 → -Inf (out of domain).
+//   - phi > 1 → +Inf (out of domain).
+//   - phi == 1 → highest explicit bound (in domain; the idx == length(cum)
+//     guard reads the last finite edge, not +Inf).
+//   - phi == 0 → lowest explicit bound (in domain; idx == 1 lower edge).
 //   - Any other phi → linear interpolation per the steps above.
 //
 // The outer QueryBuilder projects the GroupBy columns aliased per
@@ -121,6 +122,8 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// canonicalised `0`, so they ride verbatim (the same posture as
 	// IfNonZero's `0.0` fallback in builder.go).
 	nan := verbatim("nan")
+	negInf := verbatim("-inf")
+	posInf := verbatim("inf")
 	zeroF := verbatim("0.0")
 	highestBound := Subscript(Col(eb), lengthEB) // ExplicitBounds[length(ExplicitBounds)]
 	target := Paren(Mul(phi(), arraySumBC))      // (phi * arraySum(bc))
@@ -188,12 +191,18 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// Nested edge-case chain, outermost first:
 	//   if(length(bc) = 0, nan,
 	//      if(arraySum(bc) = 0, nan,
-	//         if(phi <= 0, 0.0,
-	//            if(phi >= 1, highest_bound, idxBranch))))
+	//         if(phi < 0, -inf,
+	//            if(phi > 1, inf, idxBranch))))
+	//
+	// Prometheus semantics (quantile.go:114-119): phi < 0 → -Inf, phi > 1
+	// → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
+	// fall through to idxBranch: phi == 0 → target 0 → idx 1 → lower edge
+	// 0.0; phi == 1 → target arraySum → idx == length(cum) → highest finite
+	// bound. ClickHouse parses the bare `inf` / `-inf` tokens as Float64.
 	core := If(Eq(lengthBC, InlineLit(0)), nan,
 		If(Eq(arraySumBC, InlineLit(0)), nan,
-			If(Lte(phi(), InlineLit(0)), zeroF,
-				If(Gte(phi(), InlineLit(1)), highestBound, idxBranch))))
+			If(Lt(phi(), InlineLit(0)), negInf,
+				If(Gt(phi(), InlineLit(1)), posInf, idxBranch))))
 
 	if h.PhiExpr == nil {
 		return core
