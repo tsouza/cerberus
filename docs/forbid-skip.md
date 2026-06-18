@@ -20,31 +20,39 @@ known baseline instead of re-deriving from CI failure tickers.
 
 ## Where the patterns live
 
-The patterns run in **two places**, and the two MUST stay in sync:
+The scans are implemented **once**, in `.github/scripts/forbid-skip.mjs`,
+which runs ONE discipline check per invocation selected by the `$CHECK`
+env var (`t-skip`, `not-implemented`, `soft-assert`, `should-skip`,
+`escape-hatch`). The regexes were extracted out of the old inline
+`ci.yml` bash into that script so the CI job and the local pre-push hook
+share a single source of truth. The script runs from **two callers**, and
+the two MUST stay in sync:
 
 1. `.github/workflows/ci.yml` job `forbid-skip` — required status check
-   on `main`.
+   on `main`. Each scan is a step that runs
+   `node .github/scripts/forbid-skip.mjs` with the matching `CHECK`.
 2. `lefthook.yml` `pre-push` hook — local-mirror of the same gate so a
    push that would have failed CI fails locally first.
 
 `scripts/test-forbid-skip.sh` is the assertion that the regexes still
 match their canonical positive examples and still reject the matching
 counter-examples below. It runs both as a standalone unit-test (invoke
-the script directly) and as a step inside the `forbid-skip` CI job. The
-lefthook `forbid-skip-self-test` command runs the same script on
-pre-push.
+the script directly) and as the "Self-test forbid-skip regex set" step
+inside the `forbid-skip` CI job. The lefthook `forbid-skip-self-test`
+command runs the same script on pre-push.
 
-The two locations carry **identical** patterns for rows 1–5 of the
-summary table below. Row 6 is enforced by the CI `forbid-skip` job step
-"Reject should_skip overlay entries", which rejects every non-empty
-`should_skip:` block in `compatibility/**/*.{yml,yaml}` outright.
+The `should_skip:` overlay rejection is the `should-skip` check, and the
+escape-hatch rejection is the `escape-hatch` check; both are CHECK
+selectors in the same `forbid-skip.mjs`, not separate inline steps.
 
 ## Adding a new pattern
 
 When a new offender shape is discovered:
 
-1. Add the new regex to **both** `.github/workflows/ci.yml` and
-   `lefthook.yml` in the same PR.
+1. Add the new regex to the matching `$CHECK` scan in
+   `.github/scripts/forbid-skip.mjs` (or add a new `$CHECK` and wire a
+   step for it in **both** `.github/workflows/ci.yml` and `lefthook.yml`)
+   in the same PR.
 2. Add a new row to the summary table below + a detailed subsection
    covering the regex, its intent, a match-example, and a
    counter-example.
@@ -58,19 +66,33 @@ shape.
 
 ## Summary
 
-| #   | Intent                                                                                                      | Scope                                                           | Origin        |
-| --- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------- |
-| 1   | Reject `t.Skip[fN]?` calls                                                                                  | `*_test.go`                                                     | #309          |
-| 2   | Reject "not implemented" wording in production code                                                         | `internal/**/*.go` (non-test)                                   | #197          |
-| 3   | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
-| 4   | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
-| 5   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
-| 6   | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
+The gate is **five `$CHECK` scans** (one `forbid-skip.mjs` invocation
+each). Two of them — `t-skip` and `not-implemented` — are a single regex
+apiece; the `soft-assert` scan bundles three related shapes (patterns 3-5
+below) into one invocation; `should-skip` and `escape-hatch` are the
+structural overlay / allow-list rejections. The pattern rows below
+expand the regexes; the `CHECK` column maps each to the scan that runs it.
 
-Row 6 rejects any non-empty `should_skip:` block outright (see
-`.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
-overlay entries"). The only accepted form is `should_skip: []`; any
-element under the key fails CI.
+| #   | CHECK             | Intent                                                                                                      | Scope                                                           | Origin        |
+| --- | ----------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------- |
+| 1   | `t-skip`          | Reject `t.Skip[fN]?` calls                                                                                  | `*_test.go`                                                     | #309          |
+| 2   | `not-implemented` | Reject "not implemented" wording in production code                                                         | `internal/**/*.go` (non-test)                                   | #197          |
+| 3   | `soft-assert`     | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
+| 4   | `soft-assert`     | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
+| 5   | `soft-assert`     | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
+| 6   | `should-skip`     | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
+| 7   | `escape-hatch`    | Reject test-suite escape-hatch / tolerance primitives                                                       | `*.ts`, `*.tsx`, `*.go`                                         | #712 / #844   |
+
+So: **seven documented pattern rows across five `$CHECK` scans**. The
+prior "6 patterns" framing both predated the escape-hatch row (a
+pre-existing documentation gap — the scan has shipped since #712/#844 but
+was never tabled here) and counted the three `soft-assert` shapes as
+separate "patterns" while the gate runs them as one check.
+
+Row 6 (`should-skip`) rejects any non-empty `should_skip:` block outright
+(`forbid-skip.mjs` `CHECK=should-skip`, the "Reject should_skip overlay
+entries" step). The only accepted form is `should_skip: []`; any element
+under the key fails CI.
 
 Vendored upstream snapshots under `compatibility/*/upstream/**` are
 excluded from every test-file / fixture grep — they sit outside
@@ -180,12 +202,44 @@ used in real tests.
 
 ## Pattern 6 — `should_skip:` compatibility overlay
 
-The `forbid-skip` CI job step "Reject should_skip overlay entries"
-rejects ANY non-empty `should_skip:` block in
-`compatibility/**/*.{yml,yaml}` outright. A compatibility corpus entry
-is either scored against the reference or it is not in the corpus —
-there is no per-case skip overlay, so the gate forbids the construct
-itself rather than auditing each entry's tracking ref.
+The `should-skip` scan (`forbid-skip.mjs` `CHECK=should-skip`, the
+"Reject should_skip overlay entries" CI step) rejects ANY non-empty
+`should_skip:` block in `compatibility/**/*.{yml,yaml}` outright. A
+compatibility corpus entry is either scored against the reference or it
+is not in the corpus — there is no per-case skip overlay, so the gate
+forbids the construct itself rather than auditing each entry's tracking
+ref.
+
+## Pattern 7 - test escape-hatch primitives (PR #712, widened #844)
+
+The `escape-hatch` scan (`forbid-skip.mjs` `CHECK=escape-hatch`, the
+"Reject test escape-hatch patterns" CI step) rejects the allow-list /
+tolerance / soft-assert primitives that mask a real failure instead of
+surfacing it. The deletion of the harness escape-hatch mechanisms landed
+in #712; the scan keeps them from coming back.
+
+Regex (ERE alternation over `*.ts`, `*.tsx`, `*.go`, excluding
+`compatibility/*/upstream/**`, `**/node_modules/**`, `vendor/**`,
+`.claude/**`):
+
+```text
+EXPECTED_EMPTY|EXPECTED_TOLERATED|isKnownTolerated|tolerated404|
+expect\.soft|should_tolerate|skipReason|SkipReason|
+APP_NOT_INSTALLED_BANNER_PATTERNS|DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE
+```
+
+Each alternative is a documented anti-pattern: `EXPECTED_EMPTY` /
+`EXPECTED_TOLERATED` / `isKnownTolerated*` / `tolerated404` are allow-list
+arrays consulted before failing; `expect.soft(...)` is a Playwright
+assertion that records a failure but lets the test continue; `should_skip`
+/ `should_tolerate` in code re-introduce the removed YAML schema;
+`skipReason` / `SkipReason` is the removed loki-driver overlay skip field.
+The rule: every assertion must fail loud — fix the bug at the source
+(cerberus code, seed, dashboard, panel) rather than mask it.
+
+- Matches: `if (EXPECTED_TOLERATED.includes(name)) return;`
+- Matches: `expect.soft(rows).toHaveLength(0)`
+- Does NOT match: `expect(rows).toHaveLength(0)` (a hard assertion)
 
 ## Redundancy review
 
@@ -201,7 +255,9 @@ redundancies — each catches a shape the others would miss:
   patterns 3 / 4 because pattern 5 needs the `perl -0777` slurp to
   span lines.
 
-The gate's total active pattern count: **6** (patterns 1–6 above).
-Patterns 1–5 run over Go test files / production code;
-pattern 6 is the strict overlay-entry rejection over the compatibility
-YAML.
+The gate's total active pattern count: **7** documented pattern rows
+(patterns 1–7 above), run as **5 `$CHECK` scans** (patterns 3–5 share the
+single `soft-assert` scan). Patterns 1–5 run over Go test files /
+production code; pattern 6 is the strict overlay-entry rejection over the
+compatibility YAML; pattern 7 (`escape-hatch`) runs over the `*.ts` /
+`*.tsx` / `*.go` tree.

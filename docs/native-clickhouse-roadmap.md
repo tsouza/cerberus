@@ -1,8 +1,8 @@
 # Native ClickHouse roadmap — shipping cerberus's heavy lowerings as `timeSeries*ToGrid` aggregates
 
 Status: research synthesis + ranked roadmap. The first weapon
-(`timeSeriesIncreaseToGrid`) is staged ready-to-apply under
-[`docs/clickhouse-contrib/timeSeriesIncreaseToGrid/`](./clickhouse-contrib/timeSeriesIncreaseToGrid/).
+(`timeSeriesIncreaseToGrid`) was staged out-of-tree as a ClickHouse upstream
+contribution (removed from this repo in #987).
 
 CI-UNVALIDATED: no C++ in this roadmap or the staged contrib was compiled in
 this environment. Everything is source-grounded and fidelity-reviewed against
@@ -116,8 +116,9 @@ Cerberus-side follow-up: add `"increase": "timeSeriesIncreaseToGrid"` to
 setting is stamped by the engine (`chopt.FeatureTSGridRange` ->
 `allow_experimental_time_series_aggregate_functions=1`), not emitted as SQL.
 
-Full instructions, the C++ snippet/patch, and the test are staged under
-[`docs/clickhouse-contrib/timeSeriesIncreaseToGrid/`](./clickhouse-contrib/timeSeriesIncreaseToGrid/).
+The full instructions, the C++ snippet/patch, and the test were staged
+out-of-tree as a ClickHouse upstream contribution (removed from this repo in
+PR #987).
 
 ## Bypass-SQL verdict
 

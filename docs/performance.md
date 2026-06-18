@@ -44,8 +44,10 @@ Two architectural invariants frame the whole approach:
   `sum(rate(m[5m]))` at a fine step over a wide range), where one statement's
   peak intermediate cardinality exceeds the CH memory cap. For *that class
   only*, the `internal/solver` orchestrator ([`solver.md`](solver.md))
-  re-anchors `K` deep copies of the **same already-optimized plan** onto
-  disjoint slices of the anchor grid, emits each via the existing `chsql.Emit`,
+  re-anchors `K` copy-on-write views of the **same already-optimized plan** onto
+  disjoint slices of the anchor grid -- each shard shares the immutable off-spine
+  subtree and clones only the `O(spine-depth)` re-gridded spine path --
+  emits each via the existing `chsql.Emit`,
   and concatenates the result streams behind the existing cursor. There is **no
   new evaluator and no new SQL template** — every shard runs the same
   compat-gated route-A SQL, restricted to its anchor sub-grid. The solver routes
@@ -186,6 +188,17 @@ the unknown shapes.
 Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.
+
+A separate structural win holds the slicer's copy-on-write off-spine sharing in
+place. `chplan.ReanchorRange` shares the immutable off-spine subtree across the
+`K` shards instead of `CloneNode`-ing it K+1 times; the wall-clock measurement
+lives in the weekly informational `perf-benchmark` lane
+(`internal/solver.BenchmarkSlice`, which never gates), so the gating guard is a
+deterministic allocation pin -- `TestSliceAllocs_ChDB` in the `perf-guards` chDB
+job. It asserts `slice()`'s allocs/op stays under a pinned ceiling at K=4 and
+K=16, so a revert of the COW sharing back to a per-shard `CloneNode` re-inflates
+the allocation count past the bound and fails a required check rather than
+silently regressing.
 
 ### Set-op chains: N-ary linearisation
 

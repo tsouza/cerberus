@@ -261,6 +261,13 @@ jobs:
   #   - TestSeriesFanout_ChDB: a don't-regress-upward /series round-trip
   #     ceiling (the #790 fan-in batching is held off main, so this pins
   #     the current N rather than asserting ==1).
+  #   - TestSliceAllocs_ChDB: a don't-regress-upward allocation pin on the
+  #     plan-slicer copy-on-write off-spine sharing. It asserts (*Planner)
+  #     .slice()'s allocs/op stay under a bound at K=4 and K=16, so a revert
+  #     of the COW sharing in internal/chplan/reanchor.go back to a per-shard
+  #     CloneNode re-inflates the count past the bound and fails here. The
+  #     wall-clock companion (internal/solver.BenchmarkSlice) is informational
+  #     in perf-benchmark.yml; this is the gating arm.
   #
   # Wall-clock perf stays in the informational `perf-benchmark.yml`
   # (benchstat, never gates) to avoid runner-variance flake; only the

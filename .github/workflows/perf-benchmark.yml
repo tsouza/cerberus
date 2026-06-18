@@ -30,6 +30,7 @@ on:
       - 'internal/traceql/**'
       - 'internal/chplan/**'
       - 'internal/chsql/**'
+      - 'internal/solver/**'
       - 'internal/optimizer/**'
       - 'internal/chclient/**'
       - 'internal/api/format/**'

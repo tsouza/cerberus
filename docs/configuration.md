@@ -453,8 +453,10 @@ fatal startup error in **both** modes (a typo guard). The registry seeds
 `aggregation_in_order` (24.8, stable), `condition_cache` (25.3, stable),
 `ts_grid_range` (25.6, experimental), `ts_grid_resample` (25.6, experimental —
 opts the range-mode instant-vector staleness shape onto native
-`timeSeriesResampleToGridWithStaleness`), and `columnar_result_decode` (no
-version floor, opt-in); see
+`timeSeriesResampleToGridWithStaleness`), `ts_grid_changes` (25.9, experimental
+-- opts `changes()` onto native `timeSeriesChangesToGrid`), `ts_grid_resets`
+(25.9, experimental -- opts `resets()` onto native `timeSeriesResetsToGrid`), and
+`columnar_result_decode` (no version floor, opt-in); see
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the full table.
 Everything is version-safe: a feature whose floor sits above the connected
 server is simply not enabled, so the binary keeps emitting its 24.8-safe SQL.
