@@ -398,27 +398,21 @@ jobs:
       # per-target error in a /api/ds/query body fails the job — that
       # was the gap that let dashboard-load regressions land on main
       # for hours unnoticed.
-      # No npm cache here — the playwright suite doesn't currently
-      # ship a package-lock.json, and setup-node's cache lookup hard-
-      # fails before the install fallback below ever runs when the
-      # cache-dependency-path is unresolvable. Re-add cache: npm once a
-      # lockfile lands under test/e2e/playwright/.
+      # npm cache keyed on the playwright suite's lockfile (it now ships one).
+      # Speeds `npm ci` inside the cached-browsers action below; the heavy item
+      # (chromium) is cached separately by that action.
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'test/e2e/playwright/package-lock.json'
 
-      - name: install Playwright deps
-        working-directory: test/e2e/playwright
-        run: |
-          # npm ci needs a lockfile; fall back to `npm install` if the
-          # repo doesn't ship one yet (the existing playwright suite
-          # uses the same pattern in the k3d e2e job).
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install --no-audit --no-fund
-          fi
-          npx playwright install --with-deps chromium
+      # Installs npm deps + chromium, caching ~/.cache/ms-playwright keyed on
+      # the resolved Playwright version. Shared key across every shard of every
+      # run -> the ~15-min CDN chromium download is paid once per version, not
+      # once per shard. On a cache hit it runs only `install-deps` (fast).
+      - name: install Playwright + browsers (cached)
+        uses: ./.github/actions/setup-playwright-browsers
 
       - name: playwright compose-grafana-smoke (${{ matrix.name }})
         id: playwright_smoke
@@ -591,16 +585,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'test/e2e/playwright/package-lock.json'
 
-      - name: install Playwright deps
-        working-directory: test/e2e/playwright
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install --no-audit --no-fund
-          fi
-          npx playwright install --with-deps chromium
+      # See compose-smoke-shard: cached npm deps + chromium, shared version-keyed
+      # ~/.cache/ms-playwright so the chromium download is paid once per version.
+      - name: install Playwright + browsers (cached)
+        uses: ./.github/actions/setup-playwright-browsers
 
       - name: playwright compose-grafana-smoke (${{ matrix.name }})
         id: playwright_smoke
@@ -868,7 +859,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: 'test/e2e/playwright/package.json'
+          cache-dependency-path: 'test/e2e/playwright/package-lock.json'
 
       - uses: taiki-e/install-action@v2
         if: env.RUN_SHARD == 'true'
@@ -916,12 +907,12 @@ jobs:
         if: env.RUN_SHARD == 'true' && matrix.runGoE2E
         run: just e2e-run
 
-      - name: Install Playwright + browsers
+      # See compose-smoke-shard: cached npm deps + chromium, shared version-keyed
+      # ~/.cache/ms-playwright so the chromium download is paid once per version
+      # (the k3d dashboard lane shares the same cache key as the compose lanes).
+      - name: Install Playwright + browsers (cached)
         if: env.RUN_SHARD == 'true'
-        working-directory: test/e2e/playwright
-        run: |
-          npm ci || npm install
-          npx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-playwright-browsers
 
       # ---- smoke shards (CRAWL_STACK unset => crawl/** ignored) ----
       # Runs this shard's assigned non-crawl spec subset (the space-joined list
