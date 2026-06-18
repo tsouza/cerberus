@@ -337,6 +337,30 @@ type Config struct {
 	// Prometheus ?timeout= query param min's with this default per
 	// request (see WithQueryTimeout).
 	QueryTimeout time.Duration
+
+	// ColumnarMatrixDecode, when true, routes QueryCursor's `query_range`
+	// matrix shape — the four-column (MetricName, Attributes Map(String,
+	// String), TimeUnix, Value) projection the prom matrix pivot drains —
+	// through a dedicated ch-go (low-level) decode path instead of the
+	// per-row driver.Rows.Scan path. The columnar path reads each block's
+	// Attributes Map sub-columns (proto.ColMap Keys/Values, exported by
+	// ch-go but UNREACHABLE via clickhouse-go/v2's public API) as typed
+	// slices and builds each series' label map ONCE per contiguous run
+	// rather than once per row, eliminating the per-row reflect.MakeMap +
+	// boxed SetMapIndex the row path pays on every sample even though the
+	// cursor interns and discards all but the first per series (~47x faster
+	// / ~38,000x fewer allocs on a 1M-row matrix in the GO/NO-GO measurement
+	// that motivated this path).
+	//
+	// Default false: the row path is byte-unchanged when this is off, and
+	// the columnar path produces BYTE-IDENTICAL Samples (same interning,
+	// same SeriesID order, same budget-exceeded *TooManySamplesError) when
+	// on — see the integration parity test. Any non-matrix QueryCursor shape
+	// (the five-column Loki log-stream projection, metadata endpoints) falls
+	// back to the row path even when the flag is set; the flag selects the
+	// columnar decode ONLY for the exact matrix projection. Wired from
+	// CERBERUS_COLUMNAR_MATRIX_DECODE.
+	ColumnarMatrixDecode bool
 }
 
 // Client is a stateless wrapper over a clickhouse-go/v2 connection pool.
@@ -395,6 +419,18 @@ type Client struct {
 	// every data-plane query via queryContext (overridable per-request,
 	// min'd, via WithQueryTimeout). 0 = setting not sent.
 	queryTimeout time.Duration
+
+	// cursorDecoder is the cursor-decode strategy resolved ONCE at
+	// construction and ALWAYS non-nil — QueryCursor dispatches to it with no
+	// branch. The default is the concrete rowDecoder (the clickhouse-go/v2 row
+	// path). When Config.ColumnarMatrixDecode is set, construction swaps in a
+	// columnarDecoder that owns a SECOND ch-go dial (lazily established on
+	// first use) for the `query_range` matrix shape and embeds the rowDecoder
+	// as its fallback for every other shape. The flag is read exactly once, at
+	// wiring time; the dispatch site never sees it. Shared across ForHead views
+	// (the columnar strategy's lazily-dialled pool is guarded by its own mutex
+	// so the views share one ch-go connection).
+	cursorDecoder cursorDecoder
 
 	// recovery owns the background breaker-recovery goroutine (see
 	// recoveryLoop). It is non-nil ONLY on the root Client that New created
@@ -693,6 +729,22 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 		maxMemory:    cfg.MaxQueryMemoryBytes,
 		queryTimeout: cfg.QueryTimeout,
 	}
+	// Resolve the cursor-decode strategy ONCE, here at construction. The
+	// default is the concrete row path; the flag (CERBERUS_COLUMNAR_MATRIX_
+	// DECODE) is read exactly here and nowhere else. When set, the columnar
+	// strategy wraps the row path as its fallback and owns a second ch-go dial
+	// mapped 1:1 off the same Config (TLS / auth / addr / dial timeout),
+	// established lazily on first matrix query so a flag-on replica that never
+	// serves a matrix query opens no extra socket. QueryCursor then dispatches
+	// to c.cursorDecoder with no branch.
+	if cfg.ColumnarMatrixDecode {
+		c.cursorDecoder = columnarDecoder{
+			matrix:   newColumnarMatrixDecoder(cfg),
+			fallback: rowDecoder{},
+		}
+	} else {
+		c.cursorDecoder = rowDecoder{}
+	}
 	// Start the active background breaker-recovery loop on the ROOT Client
 	// (ForHead views are shallow copies that share — never restart — it).
 	// The tick cadence is the breaker's own resolved OPEN-state backoff, so
@@ -929,7 +981,12 @@ func newWithConn(conn driver.Conn) *Client {
 	// tests. nil metrics = the no-telemetry path (these tests assert breaker
 	// state via currentState(), not via the metric label).
 	def, registry := buildBreakers(false, 0, 0, 0, nil)
-	return &Client{conn: conn, br: def, breakers: registry}
+	c := &Client{conn: conn, br: def, breakers: registry}
+	// The cursor-decode strategy is ALWAYS non-nil — the row path is the
+	// default, matching production New with the columnar flag off. QueryCursor
+	// dispatches to it unconditionally, so the seam must wire it too.
+	c.cursorDecoder = rowDecoder{}
+	return c
 }
 
 // Close stops the background breaker-recovery goroutine (joining it so the
@@ -946,6 +1003,12 @@ func (c *Client) Close() error {
 	if c.recovery != nil {
 		c.recovery.stop()
 	}
+	// Tear down any decode-strategy-owned resources. The row strategy owns
+	// none (no-op); the columnar strategy tears down its dedicated ch-go pool
+	// if it was ever dialled. The strategy is always non-nil, so no branch —
+	// and closing it twice, or from a ForHead view that shares the value, is a
+	// no-op after the first (the pool's own mutex + nil-out guards it).
+	c.cursorDecoder.close()
 	if c.conn == nil {
 		return nil
 	}
