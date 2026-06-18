@@ -38,6 +38,8 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Args: `--self-test` pins the parse / compare / drift-detection logic
     (run as a CI step before the gate); no args runs the gate over the tree.
   - Exit: `0` consistent (or self-test green), `1` on any drift.
+  - The CHECK-arm count here is the source of truth for the "N checks"
+    claim in `docs/forbid-skip.md`, asserted live by `doc-counts.mjs`.
 - **`doc-refs.mjs`** — `ci.yml`, the `doc-to-code reference check` step in
   the `lint` job. The GATE that keeps prose docs honest about the code they
   cite: greps `docs/**/*.md` for inline `(internal|cmd|test|deploy)/<path>.go`
@@ -65,6 +67,34 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Exit: `0` when every cited path exists + pins are in range (or self-test
     passes), `1` on any dead reference / out-of-range pin (or a failed
     self-test).
+- **`doc-counts.mjs`** — `ci.yml`, the `forbid-skip` job step "Assert
+  doc-stated counts match source". The assert-from-source gate that stops
+  doc-stated integer counts from drifting away from the source structures
+  they describe. It derives each count LIVE — NOT from a hardcoded literal
+  (which would just relocate the staleness) — and asserts every matching
+  prose claim equals it:
+  - **forbid-skip CHECK count** — parses the `case '<name>':` arms of the
+    `CHECK` switch in `forbid-skip.mjs` (today: 5 — `t-skip`,
+    `not-implemented`, `soft-assert`, `should-skip`, `escape-hatch`) and
+    asserts the "N checks / scans / CHECK categories" claims in
+    `docs/forbid-skip.md` match. The doc distinguishes the 7 regex pattern
+    ROWS from the 5 dispatched scans; the gate keys on the scan/check
+    vocabulary, never the ambiguous bare "patterns".
+  - **test-layer count** — counts the DISTINCT integer layer numbers across
+    the `### Layer N[sub]` headings in `docs/test-strategy.md` (1..13,
+    collapsing 2a/2b/6d/7b to their integer = 13) and asserts the
+    "N-layer test map" / "tested in N layers" claims in `CLAUDE.md`,
+    `docs/test-strategy.md`, and `README.md` match.
+  - Counts are parsed from the actual structures (switch arms / markdown
+    headings), never from a string match on the prose they validate, so a
+    doc can only go green by matching reality.
+  - **`--self-test`** is a meta-test that feeds the derivers / extractors
+    deliberately-drifted inputs and proves each assertion FAILS on a
+    mismatch (and ACCEPTS the corrected wording). The CI step runs
+    `--self-test` first, then the real assertion.
+  - Env: none (paths are repo-relative to the script).
+  - Exit: `0` when every doc count matches source (or every self-test
+    meta-assertion passes), `1` on any drift / undetected mutation.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).

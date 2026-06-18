@@ -359,6 +359,18 @@ jobs:
         run: node .github/scripts/clickhouse-version-sync.mjs --self-test
       - name: ClickHouse version-sync gate
         run: node .github/scripts/clickhouse-version-sync.mjs
+      # Assert-from-source doc-count gate. Doc prose states integer counts
+      # that DESCRIBE source structures ("N forbid-skip checks", "N-layer
+      # test map"); those literals rot the moment the structure grows. This
+      # step derives each count LIVE from the source (the forbid-skip CHECK
+      # switch arms; the `### Layer N` headings in docs/test-strategy.md) and
+      # fails on any doc that drifts from it. The `--self-test` run proves
+      # each assertion still FAILS on a deliberate mismatch — see
+      # .github/scripts/README.md.
+      - name: Assert doc-stated counts match source
+        run: |
+          node .github/scripts/doc-counts.mjs --self-test
+          node .github/scripts/doc-counts.mjs
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no
