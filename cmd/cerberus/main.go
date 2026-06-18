@@ -398,11 +398,15 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 //
 //	rate      = enabled ? NativeRateLowerer{Fallback: FanoutRateLowerer{}} : FanoutRateLowerer{}
 //	staleness = enabled ? NativeStalenessLowerer{Fallback: FanoutStalenessLowerer{}} : FanoutStalenessLowerer{}
+//	changes   = enabled ? NativeChangesLowerer{Fallback: FanoutChangesLowerer{}} : FanoutChangesLowerer{}
+//	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
 //
 // The fan-out impl is the concrete DEFAULT (never nil), and the native impl
 // embeds it as the fallback for shapes it cannot handle. The features are
 // independent, so the table composes per-function — native rate can be on while
-// native staleness is off, and vice versa. The per-query lowering then
+// native staleness / changes / resets are off, and vice versa (changes/resets
+// also carry a higher 25.9 floor than rate/resample's 25.6). The per-query
+// lowering then
 // dispatches through this table as a plain interface method call: NO
 // feature/version read, NO nil/presence check.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
@@ -416,6 +420,16 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
 	} else {
 		l.Staleness = promql.FanoutStalenessLowerer{}
+	}
+	if optSet.Has(chopt.FeatureTSGridChanges) {
+		l.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
+	} else {
+		l.Changes = promql.FanoutChangesLowerer{}
+	}
+	if optSet.Has(chopt.FeatureTSGridResets) {
+		l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+	} else {
+		l.Resets = promql.FanoutResetsLowerer{}
 	}
 	return l
 }

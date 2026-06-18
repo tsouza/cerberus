@@ -1919,7 +1919,24 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// returned node IS the lowering (native or fan-out RangeWindow); rate
 		// drops `__name__`, so it never matches the name-preservation wrap and
 		// flows through as-is.
-		node = ctx.lowerers.Rate.LowerRate(rw, s)
+		//
+		// The function family is selected by c.Func.Name — pure AST/func
+		// dispatch, NOT a feature/version branch (that decision is baked into
+		// WHICH concrete strategy boot wired into each field). Each strategy is
+		// always non-nil (withDefaults), always returns a valid lowering, and
+		// keeps its own intrinsic shape-eligibility inside the impl. rate /
+		// changes / resets each route to their own boot-wired strategy; every
+		// other range fn (increase / delta / *_over_time / ...) keeps the fan-out
+		// rw via the rate strategy's pass-through (those funcs have no native
+		// timeSeries*ToGrid aggregate proven equivalent yet).
+		switch c.Func.Name {
+		case "changes":
+			node = ctx.lowerers.Changes.LowerChanges(rw, s)
+		case "resets":
+			node = ctx.lowerers.Resets.LowerResets(rw, s)
+		default:
+			node = ctx.lowerers.Rate.LowerRate(rw, s)
+		}
 	}
 	// `last_over_time` and `first_over_time` preserve `__name__`
 	// per Prometheus semantics — they're position-shift reducers that
@@ -1986,7 +2003,41 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // emit knob (the matrix anchor span) that the native grid encodes
 // directly via Start/End/Step.
 func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.RangeWindowNative {
-	if rw.Func != "rate" {
+	return nativeTSGridMatrixNode(rw, "rate", s)
+}
+
+// nativeTSGridMatrixNode returns a chplan.RangeWindowNative when rw is a
+// SHAPE-eligible query_range matrix-function RangeWindow whose Func matches
+// wantFunc; otherwise nil (the calling Native*Lowerer then delegates to its
+// embedded fan-out fallback). It is the generalisation of the rate-only
+// predicate to the whole timeSeries*ToGrid matrix family — rate, changes,
+// resets — which share ONE node shape (RangeWindowNative) and ONE eligibility
+// contract: the only per-func difference is the aggregate name the emitter
+// selects from chsql.nativeTSGridFn off RangeWindowNative.Func.
+//
+// Like the rate predicate it reads NO feature flag or server version — the
+// boot decision of whether the native path is active lives in WHICH strategy
+// cmd/cerberus wired (Native*Lowerer vs Fanout*Lowerer); this is a pure shape
+// classifier called only from inside a Native*Lowerer. The clauses, every one
+// of which sends the query down the unchanged fan-out path on failure:
+//
+//   - rw.Func must equal wantFunc. The caller passes its own family token
+//     ("rate" / "changes" / "resets"), so a rate strategy never claims a
+//     changes window and vice versa. The 4th aggregate param binds to the
+//     PromQL matrix [range] (rw.Range) for ALL three (NOT a 5m staleness
+//     lookback — that is the bare-selector resample shape, a different node).
+//   - The window must be the materialised range grid: Step > 0 and both Start
+//     and End pinned.
+//   - rw.Identity must be false (the bare-vector subquery no-op path) and
+//     rw.Input must be a plain Scan / Filter, optionally wrapped in the
+//     canonical selector-attributes Project — the row-shape relation the
+//     native emitter consumes.
+//
+// The OuterRange field is intentionally NOT copied: it is a fan-out-only emit
+// knob (the matrix anchor span) that the native grid encodes directly via
+// Start/End/Step.
+func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics) *chplan.RangeWindowNative {
+	if rw.Func != wantFunc {
 		return nil
 	}
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {

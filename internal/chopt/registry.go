@@ -42,6 +42,30 @@ const (
 	// tradeoff (a second ch-go dial), so auto never selects it; it engages only
 	// when listed explicitly in CERBERUS_CH_OPTIMIZATIONS.
 	FeatureColumnarResultDecode = "columnar_result_decode"
+
+	// FeatureTSGridChanges opts eligible changes(<v>[<range>]) query_range
+	// shapes onto the native timeSeriesChangesToGrid aggregate (the per-window
+	// value-change count), retiring the arrayPopBack/arrayPopFront `c != p`
+	// fan-out (internal/chsql.emitRangeWindowChanges). Like the rest of the
+	// family it is Experimental and explicit-only (NEVER enabled by auto; no
+	// legacy env alias — list it in CERBERUS_CH_OPTIMIZATIONS to enable).
+	//
+	// IMPORTANT — the floor is 25.9, NOT the 25.6 of rate/resample.
+	// timeSeriesChangesToGrid/ResetsToGrid shipped a full quarter later (PR
+	// #86010, merged 2025-09-08, ClickHouse 25.9), empirically confirmed ABSENT
+	// on the 25.8 chDB substrate. A 25.6 floor here would mis-advertise support
+	// on 25.6-25.8 servers and 502 with UNKNOWN_AGGREGATE_FUNCTION. The
+	// experimental allow_experimental_time_series_aggregate_functions gate is
+	// shared with the rest of the family.
+	FeatureTSGridChanges = "ts_grid_changes"
+
+	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
+	// shapes onto the native timeSeriesResetsToGrid aggregate (the per-window
+	// counter-reset count), retiring the arrayPopBack/arrayPopFront `c < p`
+	// fan-out (internal/chsql.emitRangeWindowResets). Experimental and
+	// explicit-only, same 25.9 floor and same experimental gate as
+	// FeatureTSGridChanges (the two are siblings from PR #86010).
+	FeatureTSGridResets = "ts_grid_resets"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -120,13 +144,25 @@ var registry = []Feature{
 		Stability:  Experimental,
 		Doc:        "decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only)",
 	},
+	{
+		ID:         FeatureTSGridChanges,
+		MinVersion: Version{Major: 25, Minor: 9},
+		Stability:  Experimental,
+		Doc:        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental, explicit-only, server >= 25.9)",
+	},
+	{
+		ID:         FeatureTSGridResets,
+		MinVersion: Version{Major: 25, Minor: 9},
+		Stability:  Experimental,
+		Doc:        "opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental, explicit-only, server >= 25.9)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
-// columnar_result_decode). The copy keeps the canonical entries immutable from
-// the caller's side. Exposed so tests can enumerate the gates and the docs
-// generator can render the table.
+// columnar_result_decode, ts_grid_changes, ts_grid_resets). The copy keeps the
+// canonical entries immutable from the caller's side. Exposed so tests can
+// enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

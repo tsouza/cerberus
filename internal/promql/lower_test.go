@@ -106,15 +106,24 @@ func TestLower(t *testing.T) {
 				// fixture's lowering — the always-on SQL-shape coverage floor
 				// for the native timeSeriesRateToGrid path. An
 				// `experimental_ts_grid_resample:` section wires the
-				// native-staleness strategy (timeSeriesResampleToGridWithStaleness).
-				// Without either section the default all-fan-out table is used,
-				// so every existing fixture stays byte-identical.
+				// native-staleness strategy (timeSeriesResampleToGridWithStaleness);
+				// `experimental_ts_grid_changes:` wires NativeChangesLowerer
+				// (timeSeriesChangesToGrid); `experimental_ts_grid_resets:` wires
+				// NativeResetsLowerer (timeSeriesResetsToGrid). Without any of
+				// these sections the default all-fan-out table is used, so every
+				// existing fixture stays byte-identical.
 				var lowerers promql.RangeLowerers
 				if _, native := c.Section("experimental_ts_grid_range"); native {
 					lowerers.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
 				}
 				if _, resample := c.Section("experimental_ts_grid_resample"); resample {
 					lowerers.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+				}
+				if _, changes := c.Section("experimental_ts_grid_changes"); changes {
+					lowerers.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
+				}
+				if _, resets := c.Section("experimental_ts_grid_resets"); resets {
+					lowerers.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
 				}
 				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, s, rangeStart, rangeEnd, stepDur,
 					promql.LowerOpts{Lowerers: lowerers})
