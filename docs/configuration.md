@@ -405,6 +405,16 @@ take route B; everything else stays byte-identical on route A.
 | ------------------------------------- | ---- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` | bool | `false` | Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Scope is `rate` only. |
 
+> **Deprecated:** `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is soft-deprecated in
+> favour of `CERBERUS_CH_OPTIMIZATIONS` (list `ts_grid_range` to enable the
+> native rate path). It is re-routed through the optimization resolver and
+> remains honoured for backward compatibility: explicit `true` force-enables
+> `ts_grid_range` (subject to version + mode), explicit `false` force-disables
+> it, and unset has no effect. Setting it emits a one-time startup deprecation
+> warning; if `CERBERUS_CH_OPTIMIZATIONS` is also set, the new knob wins and the
+> legacy flag is ignored. See
+> [`clickhouse-optimizations.md`](clickhouse-optimizations.md#legacy-alias-cerberus_experimental_ts_grid_range).
+
 `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` **requires ClickHouse ≥ 25.6** — the
 `timeSeries*ToGrid` family was introduced in CH v25.6.0; on any older server a
 native-path query errors with `UNKNOWN_FUNCTION`, so the flag **must stay off**
@@ -416,13 +426,52 @@ the SQL array machinery leaves at high cardinality. Default off is byte-for-byte
 the established fan-out. See [`performance.md`](performance.md#the-durable-answer)
 for the why and [`benchmarks.md`](benchmarks.md) for the recorded numbers.
 
-## Query instrumentation (Phase-0)
+## ClickHouse optimizations
 
-These flags ship the first slice of the ClickHouse-optimization roadmap:
-per-query instrumentation that lets operators mine `system.query_log`, plus one
-conservative, result-equivalent settings win. Both the DARK flags below default
-**off**, and every behaviour here is safe on ClickHouse 24.8 (cerberus's minimum
-floor) — none adopts a 25.x feature.
+cerberus ships a cohesive ClickHouse-optimization suite: an auto-picker that
+enables the stable, server-supported optimizations for the connected ClickHouse
+version, an enforcing/permissive policy for explicitly-requested features, a
+per-query instrumentation layer that lets operators mine `system.query_log`, and
+an async performance-corpus reconciler. The canonical spec — the registry,
+version gating, the runtime version probe, `condition_cache`, the legacy alias
+migration, and the corpus mining queries — lives in
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md). This section is the
+env-var reference.
+
+### The auto-picker
+
+| Variable                         | Type   | Default      | Description                                                                                                                            |
+| -------------------------------- | ------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`       | `auto` (enable every **stable** feature the probed server supports), `off` (enable nothing), or a comma-separated list of feature ids. |
+| `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `permissive` | `permissive` (an explicitly-requested but unsupported feature is skipped with a `WARN`) or `enforcing` (it is a FATAL startup error).  |
+
+Resolution runs **once at startup**, after a `SELECT version()` probe, into an
+immutable enabled-set logged at boot. Under `auto`, **experimental** features are
+never enabled — they require explicit listing — which preserves the historical
+"experimental paths off out of the box" default. An **unknown** feature id is a
+fatal startup error in **both** modes (a typo guard). The registry seeds
+`aggregation_in_order` (24.8, stable), `condition_cache` (25.3, stable), and
+`ts_grid_range` (25.6, experimental); see
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the full table.
+Everything is version-safe: a feature whose floor sits above the connected
+server is simply not enabled, so the binary keeps emitting its 24.8-safe SQL.
+
+### The performance-corpus reconciler
+
+| Variable                           | Type     | Default | Description                                                                                          |
+| ---------------------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPT_CORPUS_ENABLED`   | bool     | `false` | Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access). |
+| `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | duration | `60s`   | How often the reconciler joins recently-dispatched query_ids back to `system.query_log`.             |
+| `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | string   | (unset) | JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink.            |
+
+The reconciler is **production-only**: chDB (the parity test substrate) has no
+`system.query_log`, so it is never started there. Errors are logged, never fatal.
+See [`operations.md`](operations.md#query_log-mining) for the mining queries.
+
+### Per-query instrumentation
+
+These DARK flags default **off** and every behaviour here is safe on ClickHouse
+24.8 (cerberus's minimum floor) — none adopts a 25.x feature.
 
 | Variable                                 | Type | Default | Description                                                                                                                                                           |
 | ---------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- --|
@@ -459,9 +508,11 @@ annotation ClickHouse ignores during execution, so stamping it is result-neutral
 and version-safe. See [`operations.md`](operations.md#query_log-mining) for the
 mining queries this enables.
 
-> This is Phase-0 of the optimization roadmap. The async `query_log` reconciler
-> (corpus persistence + feedback-driven rule tuning) is deliberately deferred to
-> a later phase; these flags only emit the join keys it will consume.
+`CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` and `CERBERUS_LOG_COMMENT_SHAPE` are the
+original DARK toggles. `aggregation_in_order` is now also driven by the
+auto-picker (it is a stable 24.8 feature, so `auto` enables it); the dark env
+flag remains for explicit per-environment control. `log_comment` stays its own
+dark flag, paired with the corpus reconciler above.
 
 ## Loki streaming
 

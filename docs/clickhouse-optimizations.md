@@ -159,9 +159,10 @@ guarded off there.
 
 - Keeps a **bounded** in-memory ring/map of recently-dispatched cerberus
   `query_id`s, each mapped to `{shape-id, enabled-opts, query language}`.
-  The `query_id` is the trace-id stamp and the shape-id is the literal-free
-  `cerb:<root>[;<modifier>...]` log_comment shape from the instrumentation
-  foundation.
+  The `query_id` is the per-dispatch `<trace id>-<span id>-<counter>` stamp
+  (unique per CH dispatch, with the trace id as its prefix) and the shape-id is
+  the literal-free `cerb:<root>[;<modifier>...]` log_comment shape from the
+  instrumentation foundation.
 - **Periodically** (configurable interval) issues a single rate-limited
   `SELECT` against `system.query_log` for the recent ids:
   `WHERE query_id IN (recent ids) AND type = 'QueryFinish'`, reading
@@ -478,7 +479,7 @@ package optcorpus
 
 // Record is one dispatched query's identity, registered when cerberus sends it.
 type Record struct {
-  QueryID  string   // CH query_id (trace id), the join key into query_log
+  QueryID  string   // CH query_id (<traceID>-<spanID>-<counter>), join key into query_log
   ShapeID  string   // cerb:<root>[;mod...] from engine.planShapeID
   Opts     []string // resolved enabled-opts that rode this query
   Language string   // "promql" | "logql" | "traceql"

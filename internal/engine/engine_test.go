@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -45,17 +47,21 @@ func (f *fakeLang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Nod
 // row set. It also remembers how many times it was called so the
 // short-circuit tests can assert it was bypassed.
 type fakeQuerier struct {
-	rows    []chclient.Sample
-	err     error
-	gotSQL  string
-	gotArgs []any
-	calls   int
+	rows       []chclient.Sample
+	err        error
+	gotSQL     string
+	gotArgs    []any
+	calls      int
+	captureCtx func(context.Context)
 }
 
-func (f *fakeQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+func (f *fakeQuerier) Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error) {
 	f.calls++
 	f.gotSQL = sql
 	f.gotArgs = args
+	if f.captureCtx != nil {
+		f.captureCtx(ctx)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -66,6 +72,61 @@ func newEngine(q *fakeQuerier) *engine.Engine {
 	return &engine.Engine{
 		Optimizer: optimizer.Default(),
 		Client:    q,
+	}
+}
+
+// recordingObserver captures the query_id the engine hands the corpus
+// reconciler at the dispatch seam, so a test can assert it equals the id the
+// chclient query path observes on the same dispatch ctx.
+type recordingObserver struct {
+	queryIDs []string
+}
+
+func (o *recordingObserver) ObserveQuery(queryID, _ string, _ []string, _ string) {
+	o.queryIDs = append(o.queryIDs, queryID)
+}
+
+// TestEngine_QueryID_ObserverAndDispatchAgree proves the single-source-of-truth
+// the per-dispatch query_id depends on: the id the engine records into the
+// corpus reconciler (QueryObserver.ObserveQuery) is the EXACT same id present on
+// the ctx the chclient dispatch sees (chclient.QueryIDFromContext), so the
+// reconciler's later system.query_log join matches the id ClickHouse recorded.
+// It also confirms the id is non-empty and trace-prefixed under a real trace.
+func TestEngine_QueryID_ObserverAndDispatchAgree(t *testing.T) {
+	t.Parallel()
+
+	tid := trace.TraceID{
+		0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+		0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+	}
+	sid := trace.SpanID{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	var dispatchID string
+	q := &fakeQuerier{captureCtx: func(c context.Context) {
+		dispatchID = chclient.QueryIDFromContext(c)
+	}}
+	obs := &recordingObserver{}
+	eng := newEngine(q)
+	eng.QueryObserver = obs
+
+	if _, err := eng.Query(ctx, &fakeLang{name: "promql"}, "up"); err != nil {
+		t.Fatalf("Query: unexpected err: %v", err)
+	}
+
+	if len(obs.queryIDs) != 1 {
+		t.Fatalf("observer saw %d query_ids; want exactly 1", len(obs.queryIDs))
+	}
+	observed := obs.queryIDs[0]
+	if observed == "" {
+		t.Fatal("observer query_id is empty; want a per-dispatch id under a real trace")
+	}
+	if !strings.HasPrefix(observed, tid.String()+"-") {
+		t.Errorf("observed query_id %q is not trace-prefixed", observed)
+	}
+	if dispatchID != observed {
+		t.Errorf("dispatch ctx query_id = %q; want the observed %q (reconciler join would break)", dispatchID, observed)
 	}
 }
 

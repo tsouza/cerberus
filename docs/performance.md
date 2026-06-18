@@ -286,8 +286,9 @@ default until the arithmetic floor itself moves.
 
 ## Native rate: exactness vs. scale (should I enable it?)
 
-There is one optional knob in the rate-range story —
-`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` — and it asks you a single, honest
+There is one optional knob in the rate-range story — `ts_grid_range`, listed in
+`CERBERUS_CH_OPTIMIZATIONS` (or the deprecated `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
+alias, re-routed through the same resolver) — and it asks you a single, honest
 question: **do you want results that are identical to Prometheus down to the
 last bit, or results that scale to millions of rows on flat memory?** You only
 have to think about it for `rate(...)` range queries (the `sum(rate(...[5m]))`
@@ -295,6 +296,14 @@ panel shape); everything else is unaffected. For almost every deployment the
 default — *off* — is the right answer, and you can stop reading here. The rest
 of this section is for the case where a query is large enough that "scales to
 millions of rows" starts to matter.
+
+`ts_grid_range` is **experimental**, so the optimization auto-picker
+(`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) never turns it on for you — it
+must be listed explicitly. The auto-picker DOES, however, enable the stable,
+result-equivalent wins for your server automatically: `aggregation_in_order`
+(24.8+) and `condition_cache` (25.3+). Those need no thought; this knob is the
+one deliberate trade-off you opt into. See
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the auto-picker.
 
 ### Default (off): exact, Prometheus-identical, sub-second at realistic scale
 

@@ -2,6 +2,42 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
+## [Unreleased]
+
+### Added
+
+- **ClickHouse-optimization suite + auto-picker.** A cohesive optimization
+  layer driven by two knobs: `CERBERUS_CH_OPTIMIZATIONS` (`auto` | `off` |
+  comma-separated feature ids, default `auto`) and
+  `CERBERUS_CH_OPTIMIZATIONS_MODE` (`permissive` | `enforcing`, default
+  `permissive`). At startup cerberus probes `SELECT version()` once and resolves
+  an immutable enabled-set: under `auto` it enables every **stable** feature the
+  server supports and never an experimental one; an explicit list honours the
+  mode for unsupported features (WARN+skip vs FATAL) and a typo'd id is always
+  fatal. The seeded registry: `aggregation_in_order` (24.8, stable — the former
+  dark `CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` rule, now auto-enabled),
+  `condition_cache` (25.3, stable — stamps `use_query_condition_cache=1` on
+  predicate-stable read paths), and `ts_grid_range` (25.6, experimental,
+  explicit-only). Everything is version-safe: a feature whose floor exceeds the
+  connected server is simply not enabled, so cerberus keeps emitting its
+  24.8-safe SQL. See [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md).
+- **Async `system.query_log` performance-corpus reconciler**
+  (`CERBERUS_CH_OPT_CORPUS_ENABLED`, off by default; `CERBERUS_CH_OPT_CORPUS_INTERVAL`,
+  `CERBERUS_CH_OPT_CORPUS_SINK_PATH`). A bounded background reconciler joins
+  recently-dispatched cerberus query_ids back to `system.query_log` for their
+  server-side cost (read rows/bytes, duration, memory, ProfileEvents) and
+  appends `(shape-id, opts, timings)` tuples to a durable JSONL sink an operator
+  can mine. Production-only (chDB has no `system.query_log`); errors are logged,
+  never fatal.
+
+### Deprecated
+
+- **`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`** is soft-deprecated in favour of
+  `CERBERUS_CH_OPTIMIZATIONS` (list `ts_grid_range`). It keeps working — it is
+  re-routed through the optimization resolver (explicit `true` force-enables,
+  `false` force-disables, unset has no effect; the new knob wins when both are
+  set) — and emits a one-time startup deprecation warning.
+
 ## [v1.0.0] — 2026-06-17
 
 First general-availability release. Cerberus is a drop-in Prometheus /

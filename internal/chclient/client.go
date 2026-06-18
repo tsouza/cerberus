@@ -862,6 +862,38 @@ func queryIDFromContext(ctx context.Context) string {
 	return id
 }
 
+// EnsureQueryID is the exported single-source-of-truth seam for the
+// per-dispatch ClickHouse query_id. It returns the id for ctx (generating and
+// caching it on the returned context if absent) so the engine can fix ONE id
+// at the dispatch seam — BEFORE the corpus reconciler records it and BEFORE
+// the chclient query path stamps it via WithQueryID — and have both observe
+// the same value. The returned context MUST be the one threaded into the
+// chclient dispatch (queryContext reads the cached id rather than minting a
+// second one); the corpus reconciler then reads the identical id via
+// QueryIDFromContext.
+//
+// The id has the form "<traceID>-<spanID>-<counter>": the trace id is a
+// greppable prefix (operators join system.query_log on `LIKE '<traceID>-%'`)
+// and the span id + process-global counter make it unique per CH dispatch, so
+// the many concurrent queries a single trace fans out never collide on one
+// query_id (which ClickHouse rejects with code 216). When no valid trace is
+// present the id is "" (nothing cached) and the driver self-generates one.
+func EnsureQueryID(ctx context.Context) (string, context.Context) {
+	return ensureQueryID(ctx)
+}
+
+// QueryIDFromContext is the exported read side of the per-dispatch query_id:
+// it returns the same ClickHouse query_id queryContext stamps onto a
+// dispatched query, or "" when none has been fixed on ctx. The id is the
+// per-dispatch "<traceID>-<spanID>-<counter>" minted by EnsureQueryID — read
+// it ONLY on a ctx that has already flowed through EnsureQueryID (the engine
+// dispatch seam), so the async query_log performance-corpus reconciler records
+// the exact join key it later matches against system.query_log.query_id. It is
+// observational and never an error path.
+func QueryIDFromContext(ctx context.Context) string {
+	return queryIDFromContext(ctx)
+}
+
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is
 // exposed so packages that need the raw driver — notably
 // internal/schema/ddl, which calls driver.Conn.Exec on the upstream OTel

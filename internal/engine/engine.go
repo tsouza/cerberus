@@ -146,12 +146,34 @@ func strategyFor(meta Meta) string {
 // so the default ctx is byte-identical to before these rules existed. Every
 // rule writes through chclient.WithQuerySetting, so a plan that triggers more
 // than one rule carries all of them on the one per-request settings map.
-func (e *Engine) execContext(ctx context.Context, plan chplan.Node) context.Context {
+func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string) context.Context {
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
 	ctx = e.Settings.apply(ctx, plan)
+	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
+	// flows into the chclient dispatch, so the corpus reconciler records the
+	// exact same id the chclient query path later stamps via WithQueryID. The
+	// id is non-deterministic (a process-global counter keeps it unique per
+	// dispatch, avoiding ClickHouse code 216), so it MUST be generated once and
+	// shared rather than recomputed by each consumer.
+	queryID, ctx := chclient.EnsureQueryID(ctx)
+	e.observeQuery(queryID, plan, language)
 	return ctx
+}
+
+// observeQuery feeds the corpus reconciler (when registered) the dispatch-seam
+// tuple for plan: the per-dispatch CH query_id (fixed once in execContext via
+// chclient.EnsureQueryID, the SAME id the chclient query path stamps via
+// WithQueryID), the literal-free plan shape-id, the resolved enabled-opts, and
+// the query language. It is a no-op when no observer is registered (the
+// default) or when there is no valid trace id to join on, so the hot path is
+// byte-unchanged unless the corpus is enabled.
+func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string) {
+	if e.QueryObserver == nil || queryID == "" {
+		return
+	}
+	e.QueryObserver.ObserveQuery(queryID, planShapeID(plan), e.Settings.enabledOpts(), language)
 }
 
 // planHasTSGridNative reports whether plan contains a
@@ -216,6 +238,24 @@ type Engine struct {
 	// is "every rule off": every existing call path is byte-unchanged. Wired
 	// from the CERBERUS_* flags in cmd/cerberus. See SettingsRules.
 	Settings SettingsRules
+
+	// QueryObserver is the OPTIONAL hook the async query_log performance-corpus
+	// reconciler registers to learn, at the dispatch seam, the (query_id,
+	// shape-id, enabled-opts, language) tuple of each query cerberus sends. It
+	// is nil unless CERBERUS_CH_OPT_CORPUS_ENABLED is set, so the default path
+	// is byte-unchanged. The engine calls ObserveQuery exactly where the
+	// query_id (trace id on ctx) and shape-id (planShapeID) are already
+	// computed; the reconciler later joins those ids back to system.query_log.
+	QueryObserver QueryObserver
+}
+
+// QueryObserver is the narrow seam the corpus reconciler registers on the
+// Engine. ObserveQuery is called once per dispatched query with the CH
+// query_id (the join key into system.query_log), the literal-free plan
+// shape-id, the resolved enabled-opts that rode the query, and the query
+// language. It must be non-blocking and cheap (the reconciler ring-buffers).
+type QueryObserver interface {
+	ObserveQuery(queryID, shapeID string, opts []string, language string)
 }
 
 // Lang adapts a query-language head (PromQL / LogQL / TraceQL) to
@@ -380,7 +420,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
 	start := time.Now()
-	samples, err := e.Client.Query(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
+	samples, err := e.Client.Query(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name()), sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
@@ -586,7 +626,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	cursor, err := cq.QueryCursor(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
+	cursor, err := cq.QueryCursor(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name()), sql, args...)
 	execT.Done(ctx)
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)

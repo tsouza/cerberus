@@ -113,6 +113,7 @@
       "additionalProperties": { "type": ["string", "number", "boolean"] }
     },
     "requirementsCheck": { "type": "boolean" },
+    "chOptimizations": { "type": "string" },
     "query": {
       "type": "object",
       "additionalProperties": false,
