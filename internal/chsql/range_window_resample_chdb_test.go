@@ -166,7 +166,7 @@ func runResampleEmit(t *testing.T, db *sql.DB, native, optimize bool) map[resamp
 	rangeEnd := rangeStart.Add(10 * time.Minute)
 	var lowerers promql.RangeLowerers
 	if native {
-		lowerers.Staleness = promql.NativeStalenessLowerer{}
+		lowerers.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
 	}
 	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
 		rangeStart, rangeEnd, time.Minute,

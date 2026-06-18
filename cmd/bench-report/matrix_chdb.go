@@ -250,7 +250,7 @@ func lowerMatrixPlan(ctx context.Context, tsgrid bool) (chplan.Node, error) {
 	}
 	var lowerers promql.RangeLowerers
 	if tsgrid {
-		lowerers.Rate = promql.NativeRateLowerer{}
+		lowerers.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
 	}
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, schema.DefaultOTelMetrics(),
 		matrixStart, matrixEnd, matrixStep, promql.LowerOpts{Lowerers: lowerers})

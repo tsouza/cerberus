@@ -393,18 +393,29 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 // for the ClickHouse-native timeSeries*ToGrid family from the resolved
 // optimization EnabledSet. The feature/version decision is made HERE, ONCE, at
 // boot (optSet was produced by the single boot-time version probe in
-// resolveCHOptimizations): each native strategy is wired only when its feature
-// resolved, and left nil (the fan-out fallback) otherwise. The features are
+// resolveCHOptimizations) and is the ONLY place the feature is read: each field
+// is wired to a CONCRETE non-nil strategy —
+//
+//	rate      = enabled ? NativeRateLowerer{Fallback: FanoutRateLowerer{}} : FanoutRateLowerer{}
+//	staleness = enabled ? NativeStalenessLowerer{Fallback: FanoutStalenessLowerer{}} : FanoutStalenessLowerer{}
+//
+// The fan-out impl is the concrete DEFAULT (never nil), and the native impl
+// embeds it as the fallback for shapes it cannot handle. The features are
 // independent, so the table composes per-function — native rate can be on while
 // native staleness is off, and vice versa. The per-query lowering then
-// dispatches through this table with NO feature-flag or server-version read.
+// dispatches through this table as a plain interface method call: NO
+// feature/version read, NO nil/presence check.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 	if optSet.Has(chopt.FeatureTSGridRange) {
-		l.Rate = promql.NativeRateLowerer{}
+		l.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
+	} else {
+		l.Rate = promql.FanoutRateLowerer{}
 	}
 	if optSet.Has(chopt.FeatureTSGridResample) {
-		l.Staleness = promql.NativeStalenessLowerer{}
+		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+	} else {
+		l.Staleness = promql.FanoutStalenessLowerer{}
 	}
 	return l
 }

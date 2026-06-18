@@ -111,10 +111,10 @@ func TestLower(t *testing.T) {
 				// so every existing fixture stays byte-identical.
 				var lowerers promql.RangeLowerers
 				if _, native := c.Section("experimental_ts_grid_range"); native {
-					lowerers.Rate = promql.NativeRateLowerer{}
+					lowerers.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
 				}
 				if _, resample := c.Section("experimental_ts_grid_resample"); resample {
-					lowerers.Staleness = promql.NativeStalenessLowerer{}
+					lowerers.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
 				}
 				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, s, rangeStart, rangeEnd, stepDur,
 					promql.LowerOpts{Lowerers: lowerers})
