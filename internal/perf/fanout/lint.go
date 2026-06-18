@@ -193,6 +193,7 @@ func collapsesFanout(n chplan.Node) bool {
 		*chplan.RangeWindow,
 		*chplan.RangeWindowNative,
 		*chplan.RangeLWR,
+		*chplan.RangeWindowResample,
 		*chplan.RangeBucketFanout,
 		*chplan.MetricsCompare,
 		*chplan.MetricsAggregate,

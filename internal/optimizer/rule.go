@@ -384,6 +384,12 @@ func rewriteUnaryNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (
 			cp.Input = in
 			return &cp
 		})
+	case *chplan.RangeWindowResample:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.RangeBucketFanout:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v

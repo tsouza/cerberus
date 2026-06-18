@@ -71,16 +71,18 @@ type Handler struct {
 	// behaviour when build metadata is unset).
 	Version string
 
-	// ExperimentalTSGridRange, when true, threads
-	// promql.LowerOpts{ExperimentalTSGridRange: true} into the
-	// query_range lowering so eligible `rate(<counter>[<range>])`
-	// expressions lower to the ClickHouse-native timeSeriesRateToGrid
-	// path (chplan.RangeWindowNative). Wired from
-	// Config.ExperimentalTSGridRange in cmd/cerberus. Default false (the
-	// arrayJoin fan-out). Only the range-streaming path consults it —
-	// instant queries and metadata queries never produce a rate
-	// query_range grid, so they are unaffected.
-	ExperimentalTSGridRange bool
+	// Lowerers is the BOOT-WIRED polymorphic dispatch table for the
+	// ClickHouse-native timeSeries*ToGrid family (native rate +
+	// native staleness). It is threaded into the query_range lowering so
+	// eligible shapes lower to the native nodes (chplan.RangeWindowNative /
+	// chplan.RangeWindowResample) instead of the generic SQL fan-out. Built
+	// ONCE at boot in cmd/cerberus from the resolved chopt.EnabledSet
+	// (per-function; native rate and native staleness are independent). The
+	// zero value (nil strategy fields) is the all-fan-out default. Only the
+	// range-streaming path consults it — instant and metadata queries never
+	// produce a rate / range-staleness query_range grid, so they are
+	// unaffected.
+	Lowerers promql.RangeLowerers
 
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
@@ -617,12 +619,12 @@ func (h *Handler) executeRangeStreaming(
 	step time.Duration,
 ) (chclient.Cursor, map[string]string, error) {
 	l := &lang{
-		Parser:                  h.parser,
-		Schema:                  h.Schema,
-		Start:                   start,
-		End:                     end,
-		Step:                    step,
-		ExperimentalTSGridRange: h.ExperimentalTSGridRange,
+		Parser:   h.parser,
+		Schema:   h.Schema,
+		Start:    start,
+		End:      end,
+		Step:     step,
+		Lowerers: h.Lowerers,
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-

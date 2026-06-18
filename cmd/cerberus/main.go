@@ -31,6 +31,7 @@ import (
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -383,9 +384,29 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	}
 	h.Limiter = limiter
 	h.Version = Version
-	h.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
+	h.Lowerers = nativeRangeLowerers(optSet)
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	return h
+}
+
+// nativeRangeLowerers builds the BOOT-WIRED polymorphic lowering dispatch table
+// for the ClickHouse-native timeSeries*ToGrid family from the resolved
+// optimization EnabledSet. The feature/version decision is made HERE, ONCE, at
+// boot (optSet was produced by the single boot-time version probe in
+// resolveCHOptimizations): each native strategy is wired only when its feature
+// resolved, and left nil (the fan-out fallback) otherwise. The features are
+// independent, so the table composes per-function — native rate can be on while
+// native staleness is off, and vice versa. The per-query lowering then
+// dispatches through this table with NO feature-flag or server-version read.
+func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
+	var l promql.RangeLowerers
+	if optSet.Has(chopt.FeatureTSGridRange) {
+		l.Rate = promql.NativeRateLowerer{}
+	}
+	if optSet.Has(chopt.FeatureTSGridResample) {
+		l.Staleness = promql.NativeStalenessLowerer{}
+	}
+	return l
 }
 
 // newLokiHandler builds the Loki head's handler with its limiter, version,

@@ -1,0 +1,51 @@
+# Native timeSeriesResampleToGridWithStaleness lowering of a range-mode bare
+# instant-vector selector (the staleness / instant-vector-selection shape).
+# The `experimental_ts_grid_resample:` section wires the boot-decided
+# native-staleness strategy into the lowering, so `up` over query_range lowers
+# to a chplan.RangeWindowResample (the native aggregate) instead of the default
+# RangeLWR argMax sample-fan-out.
+#
+# This is the always-on SQL-shape coverage floor for the native resample path
+# (the per-(series, anchor) value PARITY against the fan-out is proven on the
+# chDB substrate by TestNativeTSGridResample_DualEmitParity). The native node
+# carries the latest in-window sample forward to each grid anchor and drops the
+# anchors with no in-window sample (the PromQL staleness gap), identical to the
+# RangeLWR fan-out it replaces.
+-- query.promql --
+up
+-- range_step --
+1m
+-- experimental_ts_grid_resample --
+on
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:30', 9), 1.0),
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:02:30', 9), 7.0);
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "up"
+-- expected_rows --
+[
+  ["up", {"job": "api"}, "2026-01-01T00:01:00Z", 1],
+  ["up", {"job": "api"}, "2026-01-01T00:02:00Z", 1],
+  ["up", {"job": "api"}, "2026-01-01T00:03:00Z", 7],
+  ["up", {"job": "api"}, "2026-01-01T00:04:00Z", 7],
+  ["up", {"job": "api"}, "2026-01-01T00:05:00Z", 7]
+]
+-- chplan --
+RangeWindowResample step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Filter predicate=(MetricName = "up")
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(`grid_val`) AS `Value` FROM (SELECT `MetricName`, `Attributes`, timeSeriesResampleToGridWithStaleness(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 60, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 60) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) GROUP BY `MetricName`, `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL

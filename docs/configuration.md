@@ -450,8 +450,10 @@ immutable enabled-set logged at boot. Under `auto`, **experimental** features ar
 never enabled — they require explicit listing — which preserves the historical
 "experimental paths off out of the box" default. An **unknown** feature id is a
 fatal startup error in **both** modes (a typo guard). The registry seeds
-`aggregation_in_order` (24.8, stable), `condition_cache` (25.3, stable), and
-`ts_grid_range` (25.6, experimental); see
+`aggregation_in_order` (24.8, stable), `condition_cache` (25.3, stable),
+`ts_grid_range` (25.6, experimental), and `ts_grid_resample` (25.6,
+experimental — opts the range-mode instant-vector staleness shape onto native
+`timeSeriesResampleToGridWithStaleness`); see
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the full table.
 Everything is version-safe: a feature whose floor sits above the connected
 server is simply not enabled, so the binary keeps emitting its 24.8-safe SQL.

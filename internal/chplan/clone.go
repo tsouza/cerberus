@@ -56,6 +56,10 @@ func CloneNode(n Node) Node {
 		c := *v
 		c.Input = CloneNode(v.Input)
 		return &c
+	case *RangeWindowResample:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		return &c
 	case *RangeBucketFanout:
 		c := *v
 		c.Input = CloneNode(v.Input)

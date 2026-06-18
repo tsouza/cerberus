@@ -176,12 +176,17 @@ func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string)
 	e.QueryObserver.ObserveQuery(queryID, planShapeID(plan), e.Settings.enabledOpts(), language)
 }
 
-// planHasTSGridNative reports whether plan contains a
-// chplan.RangeWindowNative node anywhere in the tree.
+// planHasTSGridNative reports whether plan contains a node from the
+// experimental timeSeries*ToGrid family anywhere in the tree — either a
+// chplan.RangeWindowNative (timeSeriesRateToGrid) or a
+// chplan.RangeWindowResample (timeSeriesResampleToGridWithStaleness). Both
+// share the allow_experimental_time_series_aggregate_functions gate, so the
+// engine stamps the experimental setting on a query carrying EITHER node.
 func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.Walk(plan, func(n chplan.Node) bool {
-		if _, ok := n.(*chplan.RangeWindowNative); ok {
+		switch n.(type) {
+		case *chplan.RangeWindowNative, *chplan.RangeWindowResample:
 			found = true
 			return false // stop descending this branch
 		}

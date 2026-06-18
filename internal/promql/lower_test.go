@@ -102,14 +102,22 @@ func TestLower(t *testing.T) {
 					t.Fatalf("fixture %s: parse range_step %q: %v", c.Name, rs, perr)
 				}
 				// An `experimental_ts_grid_range:` section (any non-empty
-				// body) opts the fixture into the native timeSeriesRateToGrid
-				// lowering — the always-on SQL-shape coverage floor for the
-				// experimental flag. Without the section the default
-				// (arrayJoin fan-out) path is exercised, so every existing
-				// fixture stays byte-identical.
-				_, native := c.Section("experimental_ts_grid_range")
+				// body) wires the boot-decided native-rate strategy into the
+				// fixture's lowering — the always-on SQL-shape coverage floor
+				// for the native timeSeriesRateToGrid path. An
+				// `experimental_ts_grid_resample:` section wires the
+				// native-staleness strategy (timeSeriesResampleToGridWithStaleness).
+				// Without either section the default all-fan-out table is used,
+				// so every existing fixture stays byte-identical.
+				var lowerers promql.RangeLowerers
+				if _, native := c.Section("experimental_ts_grid_range"); native {
+					lowerers.Rate = promql.NativeRateLowerer{}
+				}
+				if _, resample := c.Section("experimental_ts_grid_resample"); resample {
+					lowerers.Staleness = promql.NativeStalenessLowerer{}
+				}
 				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, s, rangeStart, rangeEnd, stepDur,
-					promql.LowerOpts{ExperimentalTSGridRange: native})
+					promql.LowerOpts{Lowerers: lowerers})
 			} else {
 				plan, err = promql.LowerAt(context.Background(), expr, s, instantEval, instantEval)
 			}

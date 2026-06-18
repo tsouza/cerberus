@@ -44,13 +44,14 @@ func planShapeID(plan chplan.Node) string {
 // plan. The order is fixed so the same shape always produces the same id.
 func shapeModifiers(plan chplan.Node) []string {
 	var (
-		mods      []string
-		aggKeys   = -1
-		hasRange  bool
-		hasLimit  bool
-		hasJoin   bool
-		hasUnion  bool
-		hasNative bool
+		mods        []string
+		aggKeys     = -1
+		hasRange    bool
+		hasLimit    bool
+		hasJoin     bool
+		hasUnion    bool
+		hasNative   bool
+		hasResample bool
 	)
 	chplan.Walk(plan, func(n chplan.Node) bool {
 		switch v := n.(type) {
@@ -63,6 +64,8 @@ func shapeModifiers(plan chplan.Node) []string {
 			hasRange = true
 		case *chplan.RangeWindowNative:
 			hasNative = true
+		case *chplan.RangeWindowResample:
+			hasResample = true
 		case *chplan.Limit:
 			hasLimit = true
 		case *chplan.Scan:
@@ -82,6 +85,9 @@ func shapeModifiers(plan chplan.Node) []string {
 	}
 	if hasNative {
 		mods = append(mods, "rwn")
+	}
+	if hasResample {
+		mods = append(mods, "rwr")
 	}
 	if hasJoin {
 		mods = append(mods, "join")
@@ -112,6 +118,8 @@ func nodeKind(n chplan.Node) string {
 		return "rw"
 	case *chplan.RangeWindowNative:
 		return "rwn"
+	case *chplan.RangeWindowResample:
+		return "rwr"
 	case *chplan.Limit:
 		return "limit"
 	case *chplan.OrderBy:
