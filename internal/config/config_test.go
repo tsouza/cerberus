@@ -380,20 +380,21 @@ func TestFromEnv_Admit_Defaults(t *testing.T) {
 	if cfg.Admit.Disabled {
 		t.Errorf("Admit.Disabled = true; want false")
 	}
-	if !cfg.Admit.Prom {
-		t.Errorf("Admit.Prom = false; want true")
+	if cfg.Admit.Prom != DefaultAdmitProm {
+		t.Errorf("Admit.Prom = %d; want %d (default cap)", cfg.Admit.Prom, DefaultAdmitProm)
 	}
-	if !cfg.Admit.Loki {
-		t.Errorf("Admit.Loki = false; want true")
+	if cfg.Admit.Loki != DefaultAdmitLoki {
+		t.Errorf("Admit.Loki = %d; want %d (default cap)", cfg.Admit.Loki, DefaultAdmitLoki)
 	}
-	if !cfg.Admit.Tempo {
-		t.Errorf("Admit.Tempo = false; want true")
+	if cfg.Admit.Tempo != DefaultAdmitTempo {
+		t.Errorf("Admit.Tempo = %d; want %d (default cap)", cfg.Admit.Tempo, DefaultAdmitTempo)
 	}
 }
 
 // TestFromEnv_Admit_Overrides confirms env-var overrides flow through.
-// The ADMIT_* family is boolean: a falsy value disables that head's
-// limiter without disabling admission control entirely.
+// The per-head ADMIT_* caps accept a falsy value ("false"/"0") to leave
+// that head unlimited (cap 0) and a truthy value ("true") to enable at the
+// head's default cap, independent of the CERBERUS_ADMIT_DISABLED master.
 func TestFromEnv_Admit_Overrides(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_DISABLED", "true")
 	t.Setenv("CERBERUS_ADMIT_PROM", "false")
@@ -406,33 +407,41 @@ func TestFromEnv_Admit_Overrides(t *testing.T) {
 	if !cfg.Admit.Disabled {
 		t.Errorf("Admit.Disabled = false; want true")
 	}
-	if cfg.Admit.Prom {
-		t.Errorf("Admit.Prom = true; want false")
+	if cfg.Admit.Prom != 0 {
+		t.Errorf("Admit.Prom = %d; want 0 (false disables the head)", cfg.Admit.Prom)
 	}
-	if cfg.Admit.Loki {
-		t.Errorf("Admit.Loki = true; want false (0 is falsy)")
+	if cfg.Admit.Loki != 0 {
+		t.Errorf("Admit.Loki = %d; want 0 (\"0\" disables the head)", cfg.Admit.Loki)
 	}
-	if !cfg.Admit.Tempo {
-		t.Errorf("Admit.Tempo = false; want true")
+	if cfg.Admit.Tempo != DefaultAdmitTempo {
+		t.Errorf("Admit.Tempo = %d; want %d (\"true\" = default cap)", cfg.Admit.Tempo, DefaultAdmitTempo)
 	}
 }
 
-// TestFromEnv_Admit_AcceptsYAMLBool is the end-to-end regression for the
-// Helm-chart crash: a default `helm install` renders the YAML bool
-// `true` into CERBERUS_ADMIT_PROM, which the old strconv.Atoi parser
-// rejected ("invalid integer \"true\"") and crash-looped cerberus. The
-// shared parseBool path now loads `true`/`false` cleanly.
-func TestFromEnv_Admit_AcceptsYAMLBool(t *testing.T) {
+// TestFromEnv_Admit_AcceptsIntOrBool pins the per-head cap contract: an
+// explicit integer caps the head at that value, while the boolean
+// spellings act as aliases ("true" -> the head's default cap, "false"/"0"
+// -> unlimited). The boolean path is also the end-to-end regression for
+// the Helm-chart crash — a default `helm install` renders the YAML bool
+// `true` into CERBERUS_ADMIT_PROM, which a strict integer parser would
+// reject ("invalid integer \"true\"") and crash-loop cerberus. The
+// explicit-integer path (e.g. "2") is what the e2e chaos overlay relies on
+// to force a low backpressure cap.
+func TestFromEnv_Admit_AcceptsIntOrBool(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
-		want bool
+		want int
 	}{
-		{"true", true},
-		{"false", false},
-		{"TRUE", true},
-		{"False", false},
-		{"1", true},
-		{"0", false},
+		{"true", DefaultAdmitProm},
+		{"t", DefaultAdmitProm},
+		{"TRUE", DefaultAdmitProm},
+		{"false", 0},
+		{"False", 0},
+		{"f", 0},
+		{"0", 0},
+		{"1", 1},
+		{"2", 2},
+		{"128", 128},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			t.Setenv("CERBERUS_ADMIT_PROM", tc.raw)
@@ -441,18 +450,23 @@ func TestFromEnv_Admit_AcceptsYAMLBool(t *testing.T) {
 				t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=%q: unexpected error %v", tc.raw, err)
 			}
 			if cfg.Admit.Prom != tc.want {
-				t.Errorf("Admit.Prom = %v; want %v for %q", cfg.Admit.Prom, tc.want, tc.raw)
+				t.Errorf("Admit.Prom = %d; want %d for %q", cfg.Admit.Prom, tc.want, tc.raw)
 			}
 		})
 	}
 }
 
-// TestFromEnv_Admit_RejectsGarbage ensures a value outside the boolean
-// vocabulary fails fast at startup rather than silently mis-parsing.
+// TestFromEnv_Admit_RejectsGarbage ensures a value outside the int/bool
+// vocabulary (and a negative cap) fails fast at startup rather than
+// silently mis-parsing.
 func TestFromEnv_Admit_RejectsGarbage(t *testing.T) {
-	t.Setenv("CERBERUS_ADMIT_PROM", "maybe")
-	if _, err := FromEnv(); err == nil {
-		t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=maybe: want error, got nil")
+	for _, raw := range []string{"maybe", "-1", "1.5", "2x"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("CERBERUS_ADMIT_PROM", raw)
+			if _, err := FromEnv(); err == nil {
+				t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=%q: want error, got nil", raw)
+			}
+		})
 	}
 }
 

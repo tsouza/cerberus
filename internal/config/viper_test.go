@@ -102,14 +102,14 @@ func TestFromEnv_ViperDefaults_NoEnv(t *testing.T) {
 	if cfg.Admit.Disabled {
 		t.Errorf("Admit.Disabled = true; want false")
 	}
-	if !cfg.Admit.Prom {
-		t.Errorf("Admit.Prom = false; want true (enabled by default)")
+	if cfg.Admit.Prom != DefaultAdmitProm {
+		t.Errorf("Admit.Prom = %d; want %d (default cap)", cfg.Admit.Prom, DefaultAdmitProm)
 	}
-	if !cfg.Admit.Loki {
-		t.Errorf("Admit.Loki = false; want true (enabled by default)")
+	if cfg.Admit.Loki != DefaultAdmitLoki {
+		t.Errorf("Admit.Loki = %d; want %d (default cap)", cfg.Admit.Loki, DefaultAdmitLoki)
 	}
-	if !cfg.Admit.Tempo {
-		t.Errorf("Admit.Tempo = false; want true (enabled by default)")
+	if cfg.Admit.Tempo != DefaultAdmitTempo {
+		t.Errorf("Admit.Tempo = %d; want %d (default cap)", cfg.Admit.Tempo, DefaultAdmitTempo)
 	}
 }
 
