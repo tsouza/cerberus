@@ -177,6 +177,21 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 	if err != nil {
 		return nil, err
 	}
+	// Range-vector operands (instant rate/irate/increase/delta and
+	// aggregations over them) emit a "derived" shape — [group-keys...,
+	// Value] — that carries no TimeUnix column, exactly as it carries no
+	// MetricName (see joinMetricNameFrag). When such an operand feeds an
+	// instant-mode join, the per-side aggregation must NOT read the
+	// operand's TimeUnix: max(TimeUnix) / argMax(Value, TimeUnix) would
+	// reference a column that does not materialise and ClickHouse fails
+	// with code 47 "Unknown expression identifier 'TimeUnix'". Synthesize
+	// the join-side timestamp the same way the top-level instant-sample
+	// projection does (handler.go wrapWithSampleProjection ->
+	// synthesizedAnchor), and collapse the already-unique per-series row
+	// with any(Value). StepAligned (range) joins always run over a
+	// matrix-shape operand that surfaces anchor_ts AS TimeUnix, so they
+	// keep the real-timestamp path.
+	derived := !j.StepAligned && !vectorJoinOperandCarriesTimestamp(n, j.TimestampColumn)
 	inner := NewQuery().From(sub)
 	if role == roleMany {
 		// Step-aligned ("range mode") joins keep TimeUnix in the
@@ -187,25 +202,33 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 		// TimeUnix off the GROUP BY and uses max(TimeUnix) to pick
 		// the latest LWR sample — byte-stable for the existing
 		// fixtures.
-		if j.StepAligned {
+		switch {
+		case j.StepAligned:
 			inner.Select(
-				As(Col(j.MetricNameColumn), joinAlias(j.MetricNameColumn)),
+				joinMetricNameFrag(j),
 				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
 				As(Col(j.TimestampColumn), joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.MetricNameColumn),
 				Col(j.AttributesColumn),
 				Col(j.TimestampColumn),
 			)
-		} else {
+		case derived:
 			inner.Select(
-				As(Col(j.MetricNameColumn), joinAlias(j.MetricNameColumn)),
+				joinMetricNameFrag(j),
+				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				joinTimestampFrag(j),
+				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
+			).GroupBy(
+				Col(j.AttributesColumn),
+			)
+		default:
+			inner.Select(
+				joinMetricNameFrag(j),
 				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
 				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.MetricNameColumn),
 				Col(j.AttributesColumn),
 			)
 		}
@@ -226,13 +249,27 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 		if j.StepAligned {
 			groupFrags = append(groupFrags, Col(j.TimestampColumn))
 		}
-		inner.Select(
-			argMaxAs(j.MetricNameColumn, j.TimestampColumn, joinAlias(j.MetricNameColumn)),
-			argMaxAs(j.AttributesColumn, j.TimestampColumn, joinAlias(j.AttributesColumn)),
-			aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
-			argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
-			matchCheckFrag(j.AttributesColumn),
-		).GroupBy(groupFrags...)
+		if derived {
+			// Range-vector operand: no TimeUnix to argMax by. The
+			// instant operand is already one row per series, so any()
+			// picks the representative Attributes/Value and the
+			// timestamp is synthesized (see the roleMany note above).
+			inner.Select(
+				joinMetricNameFrag(j),
+				aggAnyAs(j.AttributesColumn, joinAlias(j.AttributesColumn)),
+				joinTimestampFrag(j),
+				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
+				matchCheckFrag(j.AttributesColumn),
+			).GroupBy(groupFrags...)
+		} else {
+			inner.Select(
+				joinMetricNameFrag(j),
+				argMaxAs(j.AttributesColumn, j.TimestampColumn, joinAlias(j.AttributesColumn)),
+				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
+				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
+				matchCheckFrag(j.AttributesColumn),
+			).GroupBy(groupFrags...)
+		}
 	}
 
 	// Outer Project: rename `_join_*` back to canonical column names
@@ -261,9 +298,111 @@ func joinAlias(col string) string {
 	return "_join_" + col
 }
 
+// joinMetricNameFrag projects a constant empty string into the per-side
+// `_join_MetricName` slot instead of reading the operand's MetricName
+// column. A vector-vector binary op always drops `__name__` from its
+// output (vectorJoinDropsName) and the join key / label matching derive
+// solely from Attributes (PromQL vector matching excludes `__name__`), so
+// the side never consumes the operand's MetricName value. Reading
+// `Col(MetricName)` here was invalid for range-vector operands
+// (rate/irate/increase/delta), whose RangeWindow subquery projects only
+// [Attributes, anchor_ts, TimeUnix, Value] and carries no MetricName
+// column -- producing ClickHouse code 47 "Unknown expression identifier
+// '_join_MetricName'". A literal keeps the codegen valid for every
+// operand shape; the outer rename (`_join_MetricName AS MetricName`) and
+// the byte value match outputMetricNameFrag's existing `” AS MetricName`.
+func joinMetricNameFrag(j *chplan.VectorJoin) Frag {
+	return As(Lit(""), joinAlias(j.MetricNameColumn))
+}
+
+// joinTimestampFrag projects a synthesized instant anchor into the
+// per-side `_join_TimeUnix` slot for range-vector operands that carry no
+// real timestamp column (instant rate/irate/increase/delta and
+// aggregations over them). The byte shape `now64(9) -
+// toIntervalNanosecond(5000000000)` matches chplan.NowNanoMinusStaleness
+// — the same anchor the top-level instant-sample projection
+// (api/prom/handler.go synthesizedAnchor) stamps on these derived-shape
+// rows — so a V-V binop over rate() carries the identical timestamp it
+// would have carried unjoined. It is a scalar constant, so it is
+// projected directly rather than wrapped in an aggregate (the per-side
+// GROUP BY is Attributes-only and a constant needs no aggregation).
+func joinTimestampFrag(j *chplan.VectorJoin) Frag {
+	return As(
+		Sub(Call("now64", InlineLit(int64(chplan.NanoScale))),
+			Call("toIntervalNanosecond", InlineLit(stalenessLookbackNanos))),
+		joinAlias(j.TimestampColumn),
+	)
+}
+
+// stalenessLookbackNanos mirrors chplan's instant-anchor staleness
+// lookback (5s in nanoseconds): the synthesized join-side timestamp
+// lands 5 seconds before the server clock, matching the top-level
+// synthesizedAnchor so a joined rate() row stamps the same instant it
+// would unjoined.
+const stalenessLookbackNanos = int64(5_000_000_000)
+
 // aggMaxAs returns a Frag for `max(<col>) AS <alias>`.
 func aggMaxAs(col, alias string) Frag {
 	return As(Call("max", Col(col)), alias)
+}
+
+// aggAnyAs returns a Frag for `any(<col>) AS <alias>`. Used on the
+// derived-shape (range-vector) join side where the operand is already
+// one row per series, so any() picks that single representative without
+// needing a TimeUnix to argMax by.
+func aggAnyAs(col, alias string) Frag {
+	return As(Call("any", Col(col)), alias)
+}
+
+// vectorJoinOperandCarriesTimestamp reports whether the join operand n
+// projects a real per-row timestamp column named tsCol. It mirrors the
+// inverse of api/prom/handler.go isDerivedShape: RangeWindow /
+// RangeWindowNative / Aggregate roots emit a [group-keys..., Value]
+// derived shape that carries no TimeUnix, while an LWR-style Project
+// that names the canonical timestamp output (or any other node) does.
+// A Project is canonical-carrying only when one of its projections
+// outputs tsCol; otherwise the value-rewrite Project shape (e.g. abs /
+// clamp over a RangeWindow) stays derived. Filter / canonical Project
+// are transparent and recurse into their input.
+func vectorJoinOperandCarriesTimestamp(n chplan.Node, tsCol string) bool {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		// Matrix-shape (OuterRange > 0) surfaces anchor_ts AS TimeUnix;
+		// instant-shape carries only [group-keys..., Value].
+		return v.OuterRange > 0
+	case *chplan.RangeWindowNative:
+		// Always matrix-shape: explodes the grid and surfaces a per-row
+		// anchor_ts under the timestamp column.
+		return true
+	case *chplan.Aggregate:
+		// sum/avg/... by(...) over a range vector projects only the
+		// group keys + aggregated Value; no per-row timestamp survives.
+		return false
+	case *chplan.Filter:
+		return vectorJoinOperandCarriesTimestamp(v.Input, tsCol)
+	case *chplan.Project:
+		for _, p := range v.Projections {
+			if projectionOutputsColumn(p, tsCol) {
+				return true
+			}
+		}
+		return vectorJoinOperandCarriesTimestamp(v.Input, tsCol)
+	}
+	// Scan, LWR, and every other canonical-shape node carry TimeUnix.
+	return true
+}
+
+// projectionOutputsColumn reports whether projection p exposes an output
+// column named col — either via an explicit Alias or a bare ColumnRef to
+// col with no rewrite. Mirrors api/prom/handler.go projectionOutputName.
+func projectionOutputsColumn(p chplan.Projection, col string) bool {
+	if p.Alias != "" {
+		return p.Alias == col
+	}
+	if cr, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return cr.Name == col
+	}
+	return false
 }
 
 // argMaxAs returns a Frag for `argMax(<valCol>, <byCol>) AS <alias>`.

@@ -1,0 +1,70 @@
+-- query.promql --
+rate(http_requests_a_total[5m]) unless rate(http_requests_b_total[5m])
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_a_total', map('job', 'api'),   toDateTime64('2025-12-31 23:59:31', 9), 10.0),
+    ('http_requests_a_total', map('job', 'api'),   toDateTime64('2026-01-01 00:00:00', 9), 40.0),
+    ('http_requests_a_total', map('job', 'web'),   toDateTime64('2025-12-31 23:59:31', 9), 100.0),
+    ('http_requests_a_total', map('job', 'web'),   toDateTime64('2026-01-01 00:00:00', 9), 400.0),
+    ('http_requests_b_total', map('job', 'api'),   toDateTime64('2025-12-31 23:59:31', 9), 5.0),
+    ('http_requests_b_total', map('job', 'api'),   toDateTime64('2026-01-01 00:00:00', 9), 20.0);
+-- expected_rows --
+[
+  ["", {"job": "web"}, "2025-12-31T23:59:56Z", 1.367816091954023]
+]
+-- args --
+[0] string = ""
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "http_requests_a_total"
+[6] string = "http.requests.a.total"
+[7] string = "http.requests.a/total"
+[8] string = "http.requests.a_total"
+[9] string = "http.requests/a/total"
+[10] string = "http.requests/a_total"
+[11] string = "http.requests_a.total"
+[12] string = "http.requests_a_total"
+[13] string = "http/requests/a/total"
+[14] string = "http/requests/a_total"
+[15] string = "http/requests_a_total"
+[16] string = "http_requests.a.total"
+[17] string = "http_requests.a_total"
+[18] string = "http_requests_a.total"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = "service.name"
+[22] string = "service_name"
+[23] string = "http_requests_b_total"
+[24] string = "http.requests.b.total"
+[25] string = "http.requests.b/total"
+[26] string = "http.requests.b_total"
+[27] string = "http.requests/b/total"
+[28] string = "http.requests/b_total"
+[29] string = "http.requests_b.total"
+[30] string = "http.requests_b_total"
+[31] string = "http/requests/b/total"
+[32] string = "http/requests/b_total"
+[33] string = "http/requests_b_total"
+[34] string = "http_requests.b.total"
+[35] string = "http_requests.b_total"
+[36] string = "http_requests_b.total"
+-- chplan --
+VectorSetOp op=unless match=default
+  RangeWindow func=rate range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_a_total", "http.requests.a.total", "http.requests.a/total", "http.requests.a_total", "http.requests/a/total", "http.requests/a_total", "http.requests_a.total", "http.requests_a_total", "http/requests/a/total", "http/requests/a_total", "http/requests_a_total", "http_requests.a.total", "http_requests.a_total", "http_requests_a.total"))
+        Scan(otel_metrics_sum)
+  RangeWindow func=rate range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_b_total", "http.requests.b.total", "http.requests.b/total", "http.requests.b_total", "http.requests/b/total", "http.requests/b_total", "http.requests_b.total", "http.requests_b_total", "http/requests/b/total", "http/requests/b_total", "http/requests_b_total", "http_requests.b.total", "http_requests.b_total", "http_requests_b.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT ? AS `MetricName`, `Attributes`, (now64(9) - toIntervalNanosecond(5000000000)) AS `TimeUnix`, `Value` FROM (SELECT `Attributes`, if(sampled_interval > 0, counter_delta * (sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300, nan) AS `Value` FROM (SELECT `Attributes`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) GROUP BY `Attributes`)))) WHERE length(`window_vals`) >= 2)) WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM (SELECT `Attributes`, if(sampled_interval > 0, counter_delta * (sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300, nan) AS `Value` FROM (SELECT `Attributes`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) GROUP BY `Attributes`)))) WHERE length(`window_vals`) >= 2))))

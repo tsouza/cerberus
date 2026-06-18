@@ -288,3 +288,51 @@ jobs:
 
       - name: Run perf regression guards (chDB)
         run: just perf-chdb
+
+  # `integration-promql` runs the chDB-backed EXOTIC PromQL integration
+  # suite (test/integration/promql). It seeds ONE rich, fixed OTel fixture
+  # (a mirror of the prometheus/compliance reference demo service) into an
+  # ephemeral chDB session, mounts the real prom.Handler, and asserts every
+  # query in the ~10-category exotic matrix against the from-scratch oracle
+  # (test/property/oracle/promql) via property.CompareOutcomes.
+  #
+  # It is ORTHOGONAL to `roundtrip`: roundtrip pins per-fixture SQL shape
+  # with self-derived (circular) expected_rows, catching CH execution
+  # errors + golden drift; this suite drives the live parse -> lower ->
+  # optimize -> emit -> execute pipeline against a TRUSTED, SUT-independent
+  # oracle, catching SEMANTIC lowering/optimizer/emitter bugs the roundtrip
+  # misses. CAT 1 (binary-op-over-rate) is the durable regression net for
+  # the production code-47 break.
+  #
+  # No golden file + no GOLDEN_UPDATE: expected results are computed at run
+  # time by the oracle, so a pass proves PromQL semantics, not reproduction
+  # of a recording.
+  integration-promql:
+    name: integration (promql)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Cache libchdb.so
+        uses: actions/cache@v5
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v4.0.2
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run exotic PromQL integration suite (chDB)
+        run: go test -tags chdb -count=1 ./test/integration/promql/...

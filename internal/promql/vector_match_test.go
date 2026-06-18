@@ -186,11 +186,15 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		// The "many" (left) side aggregates over (MetricName, Attributes).
-		// Per-side aggregation is wrapped in an outer Project that renames
+		// The "many" (left) side aggregates by Attributes only. It no
+		// longer groups by MetricName: the per-side projection emits a
+		// constant `'' AS _join_MetricName` (joinMetricNameFrag) instead
+		// of reading the operand's MetricName, so MetricName is not a
+		// grouping key (a constant cannot be grouped). Per-side
+		// aggregation is wrapped in an outer Project that renames
 		// `_join_*` aliases back to canonical names, so the GROUP BY
-		// clause closes with `)) AS L` (inner agg + outer Project).
-		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`)) AS L") {
+		// clause closes with `)) AS L`.
+		if !strings.Contains(sql, "GROUP BY `Attributes`)) AS L") {
 			t.Errorf("expected left side per-series aggregation; got:\n%s", sql)
 		}
 		// The "one" (right) side aggregates by the matching key with
@@ -214,10 +218,12 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		// Right side is the "many" → per-series aggregation. The
-		// per-side outer Project closes the inner agg's GROUP BY with
-		// a second `)`.
-		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`)) AS R") {
+		// Right side is the "many" → per-series aggregation. It groups
+		// by Attributes only (not MetricName): the per-side projection
+		// emits a constant `'' AS _join_MetricName` (joinMetricNameFrag)
+		// instead of reading the operand's MetricName. The per-side outer
+		// Project closes the inner agg's GROUP BY with a second `)`.
+		if !strings.Contains(sql, "GROUP BY `Attributes`)) AS R") {
 			t.Errorf("expected right side per-series aggregation; got:\n%s", sql)
 		}
 		// Output MetricName is empty (arithmetic V-V drops `__name__`

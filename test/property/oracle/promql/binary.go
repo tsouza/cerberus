@@ -129,6 +129,15 @@ func vectorVectorOp(b *parser.BinaryExpr, lhs, rhs []VectorRow, evalTsMs int64) 
 		matching = &parser.VectorMatching{Card: parser.CardOneToOne}
 	}
 
+	// Set operators (and / or / unless) are their own matching mode: they
+	// pair series by the on()/ignoring() key and filter whole series in or
+	// out rather than computing an element-wise value. Per Prom they carry
+	// CardManyToMany and never use group_left/right; the output preserves
+	// the surviving side's full label set (minus __name__).
+	if isSetOp(b.Op) {
+		return setOp(b.Op, matching, lhs, rhs, evalTsMs), nil
+	}
+
 	swapped := matching.Card == parser.CardOneToMany
 	if swapped {
 		lhs, rhs = rhs, lhs
@@ -184,6 +193,66 @@ func vectorVectorOp(b *parser.BinaryExpr, lhs, rhs []VectorRow, evalTsMs int64) 
 	}
 	sortVectorRows(out)
 	return out, nil
+}
+
+// isSetOp reports whether op is one of the three PromQL set operators.
+func isSetOp(op parser.ItemType) bool {
+	switch op {
+	case parser.LAND, parser.LOR, parser.LUNLESS:
+		return true
+	}
+	return false
+}
+
+// setOp implements `and` / `or` / `unless` per Prometheus's
+// promql/engine.go::VectorBinop set-op paths:
+//
+//   - `and`:    keep every LHS row whose matching key also appears in RHS.
+//   - `unless`: keep every LHS row whose matching key does NOT appear in
+//     RHS.
+//   - `or`:     all LHS rows, plus RHS rows whose matching key is absent
+//     from the LHS key set.
+//
+// The output preserves each surviving row's full label set minus __name__;
+// set ops never reshape labels or copy across sides.
+func setOp(op parser.ItemType, m *parser.VectorMatching, lhs, rhs []VectorRow, evalTsMs int64) []VectorRow {
+	rhsKeys := make(map[string]struct{}, len(rhs))
+	for _, r := range rhs {
+		rhsKeys[matchKey(r.Labels, m)] = struct{}{}
+	}
+
+	out := make([]VectorRow, 0, len(lhs))
+	switch op {
+	case parser.LAND:
+		for _, l := range lhs {
+			if _, ok := rhsKeys[matchKey(l.Labels, m)]; ok {
+				out = append(out, setOpRow(l, evalTsMs))
+			}
+		}
+	case parser.LUNLESS:
+		for _, l := range lhs {
+			if _, ok := rhsKeys[matchKey(l.Labels, m)]; !ok {
+				out = append(out, setOpRow(l, evalTsMs))
+			}
+		}
+	case parser.LOR:
+		lhsKeys := make(map[string]struct{}, len(lhs))
+		for _, l := range lhs {
+			lhsKeys[matchKey(l.Labels, m)] = struct{}{}
+			out = append(out, setOpRow(l, evalTsMs))
+		}
+		for _, r := range rhs {
+			if _, ok := lhsKeys[matchKey(r.Labels, m)]; !ok {
+				out = append(out, setOpRow(r, evalTsMs))
+			}
+		}
+	}
+	sortVectorRows(out)
+	return out
+}
+
+func setOpRow(r VectorRow, evalTsMs int64) VectorRow {
+	return VectorRow{Labels: DropLabel(r.Labels, MetricNameLabel), T: evalTsMs, V: r.V}
 }
 
 // applyBinary applies the binary op to two floats and returns (value,
