@@ -45,7 +45,7 @@ var matrixColumns = [...]string{"MetricName", "Attributes", "TimeUnix", "Value"}
 
 // columnarMatrixDecoder owns the dedicated ch-go pool used for the columnar
 // matrix decode. It is built (lazily-dialled, mirroring clickhouse.Open's lazy
-// semantics) once per Client when CERBERUS_COLUMNAR_MATRIX_DECODE is set, and
+// semantics) once per Client when the columnar matrix decode is enabled, and
 // shared by every ForHead view of that Client.
 type columnarMatrixDecoder struct {
 	cfg Config

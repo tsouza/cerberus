@@ -4,38 +4,63 @@ Binding rules for how performance optimizations are built in cerberus. They
 exist because the cheap-looking version of an optimization tends to either rot
 the hot path or get adopted without evidence.
 
-## Rule 1: version- and feature-gated optimizations are boot-wired strategies, never per-query branches
+## Rule 1: every optimization is a registered `chopt` feature, resolved once at boot, wired as a pure-polymorphic strategy
 
 Every optimization whose use depends on the ClickHouse server version, a
-resolved feature, or an operator toggle MUST be selected once at boot and
-wired into a concrete polymorphic strategy. The per-query hot path is a plain
-interface call with no branch of any kind.
+resolved feature, or an operator toggle follows ONE lifecycle end to end —
+register, resolve at boot, dispatch through a strategy — with no per-query
+branch. This is a single rule, not separate ones.
 
-- The version / feature / flag is read exactly once, at startup, when the
-  `chopt.EnabledSet` is resolved from the single server-version probe, and is
-  used to choose the concrete strategy implementation.
-- The query path must contain no `if cfg.X`, no `optSet.Has(...)`, no
-  `serverAtLeast(...)`, no `ProbeVersion`, and no nil / presence check of a
-  strategy (`if c.strategy != nil`). The decision is already made.
-- The fallback is a CONCRETE default implementation (the fan-out lowerer, the
-  row decoder), not a nil field. It is always wired.
-- Query-shape eligibility ("is this rate over a counter", "is this a matrix
-  block") is allowed, but lives INSIDE the chosen strategy, which delegates to
-  its embedded fallback for shapes it cannot handle. It never appears at the
-  dispatch site.
+**1. Register it as a `chopt` feature.** Every performance / optimization toggle
+MUST be a named feature in the `chopt` registry, reached through
+`CERBERUS_CH_OPTIMIZATIONS` — never a standalone `CERBERUS_*` environment bool
+with its own parse, default, and read site. Register it in
+`internal/chopt/registry.go` with an `ID`, a `Stability` (`Stable` for
+auto-eligible result-equivalent features; `Experimental` / opt-in for tradeoffs
+that must stay off by default), and a floor — a real `minVersion`, or
+`chopt.AlwaysAvailable` when it depends on no server version (a purely
+client-side optimization).
 
-Rationale: the version decision happens once; the codepath is fixed for the
-process lifetime; the hot path carries no repeated flag reads and no risk of
-version logic drifting back into it.
+**2. Resolve it once at boot.** The feature is read exactly once, at startup,
+when `chopt.EnabledSet` is resolved from the single server-version probe. There
+is no second source of truth and no per-knob env read scattered through config.
 
-How to add one: register a `chopt` feature with its real `serverAtLeast`
-floor, resolve it into the boot `EnabledSet`, select the concrete strategy at
-construction, and call through the interface per query.
+**3. Wire it as a concrete polymorphic strategy.** The resolved
+`EnabledSet.Has(FeatureX)` selects a concrete strategy implementation at
+construction (or, when resolve must run after the client is built, installed
+once at boot before any handler serves). The fallback is a CONCRETE default
+implementation (the fan-out lowerer, the row decoder), not a nil field — always
+wired.
 
-In tree: the `promql.RangeLowerers` native-lowering strategies (rate,
-staleness / resample); the `chclient.cursorDecoder` (row vs columnar matrix
-decode); the engine query-settings strategies (`aggregation_in_order`,
-`condition_cache`).
+**The hard invariant:** the per-query hot path is a plain interface call with NO
+branch of any kind — no `if cfg.X`, no `optSet.Has(...)`, no `serverAtLeast(...)`,
+no `ProbeVersion`, and no nil / presence check of a strategy
+(`if c.strategy != nil`). The decision is already made; at query time every
+optimization has already landed. Query-shape eligibility ("is this rate over a
+counter", "is this a matrix block") is allowed, but lives INSIDE the chosen
+strategy, which delegates to its embedded fallback for shapes it cannot handle —
+it never appears at the dispatch site.
+
+Rationale: one env surface (operators tune everything through
+`CERBERUS_CH_OPTIMIZATIONS=auto|off|<list>` plus
+`CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing|permissive`); uniform semantics for
+free (auto / off / explicit-list opt-in / enforcing-vs-permissive policy /
+unknown-id typo guard — a standalone bool re-implements and inherits none of
+these); one boot-resolution path; and a hot path with no repeated flag reads and
+no risk of version logic drifting back into it. The version decision happens
+once; the codepath is fixed for the process lifetime.
+
+In tree: the `promql.RangeLowerers` native-lowering strategies (rate, staleness
+/ resample); the `chclient.cursorDecoder` (row vs columnar matrix decode); the
+engine query-settings strategies (`aggregation_in_order`, `condition_cache`).
+**`columnar_result_decode`** is the worked non-version-gated example: a
+client-side ch-go columnar `query_range` decode, so its floor is
+`chopt.AlwaysAvailable` (no server version requirement) and its stability is
+opt-in (never enabled by `auto`, since the second ch-go dial is a tradeoff). It
+replaced the standalone `CERBERUS_COLUMNAR_MATRIX_DECODE` bool that violated this
+rule; the chclient keeps a source-agnostic `Config.ColumnarMatrixDecode` knob,
+but its production value flows from `EnabledSet.Has(FeatureColumnarResultDecode)`
+at boot, not from any env var.
 
 ## Rule 2: speed up cloning by cloning less, not by cloning faster
 

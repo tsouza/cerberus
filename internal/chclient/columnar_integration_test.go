@@ -21,7 +21,8 @@ func asTooMany(err error, target **chclient.TooManySamplesError) bool {
 }
 
 // columnar_integration_test.go — the parity gate for the production columnar
-// `query_range` matrix decode (CERBERUS_COLUMNAR_MATRIX_DECODE). It spins one
+// `query_range` matrix decode (the chopt columnar_result_decode feature; the
+// chclient knob is Config.ColumnarMatrixDecode). It spins one
 // real ClickHouse, ingests a representative matrix (several series, each with
 // many samples), then drains the SAME query through both the default row path
 // and the flag-on columnar path and asserts the decoded Samples are

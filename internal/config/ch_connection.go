@@ -29,7 +29,6 @@ type chExtra struct {
 	BlockBufferSize      uint8
 	MaxCompressionBuffer int
 	FreeBufOnConnRelease bool
-	ColumnarMatrixDecode bool
 	Debug                bool
 	HTTPHeaders          map[string]string
 	HTTPURLPath          string
@@ -266,12 +265,6 @@ func chExtraFromEnv(v *viper.Viper) (chExtra, error) {
 		return chExtra{}, err
 	}
 	out.FreeBufOnConnRelease = freeBuf
-
-	columnarMatrix, err := getBool(v, envColumnarMatrixDecode)
-	if err != nil {
-		return chExtra{}, err
-	}
-	out.ColumnarMatrixDecode = columnarMatrix
 
 	debug, err := getBool(v, envCHDebug)
 	if err != nil {
@@ -610,7 +603,6 @@ func applyCHExtra(cc *chclient.Config, c chExtra) {
 	cc.BlockBufferSize = c.BlockBufferSize
 	cc.MaxCompressionBuffer = c.MaxCompressionBuffer
 	cc.FreeBufOnConnRelease = c.FreeBufOnConnRelease
-	cc.ColumnarMatrixDecode = c.ColumnarMatrixDecode
 	cc.Debug = c.Debug
 	cc.HTTPHeaders = c.HTTPHeaders
 	cc.HTTPURLPath = c.HTTPURLPath

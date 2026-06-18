@@ -31,7 +31,28 @@ const (
 	// timeSeries*ToGrid family floor (25.6) and the same experimental
 	// allow_experimental_time_series_aggregate_functions gate.
 	FeatureTSGridResample = "ts_grid_resample"
+
+	// FeatureColumnarResultDecode routes the four-column query_range matrix
+	// projection through a dedicated ch-go (low-level) columnar decode path
+	// instead of the per-row clickhouse-go/v2 Scan path, building each series'
+	// label map once per contiguous run rather than once per row. It is a
+	// CLIENT-SIDE decode optimization: it touches no server setting and works
+	// on any native-protocol server, so it carries NO version floor
+	// (AlwaysAvailable). It is opt-in-only (Experimental stability): a perf
+	// tradeoff (a second ch-go dial), so auto never selects it; it engages only
+	// when listed explicitly in CERBERUS_CH_OPTIMIZATIONS.
+	FeatureColumnarResultDecode = "columnar_result_decode"
 )
+
+// AlwaysAvailable is the zero version floor for a feature that depends on no
+// server-version gate at all (a purely client-side optimization such as
+// columnar_result_decode). Version{} is the additive identity of AtLeast:
+// every probed server version satisfies AtLeast(AlwaysAvailable), so listing
+// such a feature explicitly never trips the "needs ClickHouse >=X" fail-fast,
+// in either enforcing or permissive mode. It is named rather than written as a
+// bare Version{} literal so the registry entry reads as an intentional "no
+// version requirement" rather than a forgotten / zero-valued field.
+var AlwaysAvailable = Version{Major: 0, Minor: 0}
 
 // Stability classifies a registry feature. Auto enables stable features only;
 // experimental features require explicit listing (preserving cerberus's
@@ -93,12 +114,19 @@ var registry = []Feature{
 		Stability:  Experimental,
 		Doc:        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental, explicit-only)",
 	},
+	{
+		ID:         FeatureColumnarResultDecode,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		Doc:        "decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
-// (aggregation_in_order, condition_cache, ts_grid_range). The copy keeps the
-// canonical entries immutable from the caller's side. Exposed so tests can
-// enumerate the gates and the docs generator can render the table.
+// (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
+// columnar_result_decode). The copy keeps the canonical entries immutable from
+// the caller's side. Exposed so tests can enumerate the gates and the docs
+// generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

@@ -358,8 +358,13 @@ type Config struct {
 	// on — see the integration parity test. Any non-matrix QueryCursor shape
 	// (the five-column Loki log-stream projection, metadata endpoints) falls
 	// back to the row path even when the flag is set; the flag selects the
-	// columnar decode ONLY for the exact matrix projection. Wired from
-	// CERBERUS_COLUMNAR_MATRIX_DECODE.
+	// columnar decode ONLY for the exact matrix projection.
+	//
+	// This is the chclient's own source-agnostic knob. In production it is NOT
+	// populated from an env var: cmd/cerberus leaves it false at New and calls
+	// Client.UseColumnarMatrixDecode after the chopt EnabledSet resolves
+	// columnar_result_decode (see internal/chopt). Setting it true here directly
+	// is the construction path the parity test uses.
 	ColumnarMatrixDecode bool
 }
 
@@ -420,14 +425,16 @@ type Client struct {
 	// min'd, via WithQueryTimeout). 0 = setting not sent.
 	queryTimeout time.Duration
 
-	// cursorDecoder is the cursor-decode strategy resolved ONCE at
-	// construction and ALWAYS non-nil — QueryCursor dispatches to it with no
-	// branch. The default is the concrete rowDecoder (the clickhouse-go/v2 row
-	// path). When Config.ColumnarMatrixDecode is set, construction swaps in a
-	// columnarDecoder that owns a SECOND ch-go dial (lazily established on
-	// first use) for the `query_range` matrix shape and embeds the rowDecoder
-	// as its fallback for every other shape. The flag is read exactly once, at
-	// wiring time; the dispatch site never sees it. Shared across ForHead views
+	// cursorDecoder is the cursor-decode strategy resolved ONCE at boot and
+	// ALWAYS non-nil — QueryCursor dispatches to it with no branch. The default
+	// is the concrete rowDecoder (the clickhouse-go/v2 row path). When the
+	// columnar matrix decode is enabled the Client swaps in a columnarDecoder
+	// that owns a SECOND ch-go dial (lazily established on first use) for the
+	// `query_range` matrix shape and embeds the rowDecoder as its fallback for
+	// every other shape. The decision lands either at construction
+	// (Config.ColumnarMatrixDecode set — the parity-test path) or via
+	// UseColumnarMatrixDecode at boot (the production path, after the chopt
+	// resolve); the dispatch site never sees it. Shared across ForHead views
 	// (the columnar strategy's lazily-dialled pool is guarded by its own mutex
 	// so the views share one ch-go connection).
 	cursorDecoder cursorDecoder
@@ -730,21 +737,21 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 		queryTimeout: cfg.QueryTimeout,
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
-	// default is the concrete row path; the flag (CERBERUS_COLUMNAR_MATRIX_
-	// DECODE) is read exactly here and nowhere else. When set, the columnar
-	// strategy wraps the row path as its fallback and owns a second ch-go dial
-	// mapped 1:1 off the same Config (TLS / auth / addr / dial timeout),
-	// established lazily on first matrix query so a flag-on replica that never
-	// serves a matrix query opens no extra socket. QueryCursor then dispatches
-	// to c.cursorDecoder with no branch.
-	if cfg.ColumnarMatrixDecode {
-		c.cursorDecoder = columnarDecoder{
-			matrix:   newColumnarMatrixDecoder(cfg),
-			fallback: rowDecoder{},
-		}
-	} else {
-		c.cursorDecoder = rowDecoder{}
-	}
+	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
+	// the columnar strategy wraps the row path as its fallback and owns a second
+	// ch-go dial mapped 1:1 off the same Config (TLS / auth / addr / dial
+	// timeout), established lazily on first matrix query so a flag-on replica
+	// that never serves a matrix query opens no extra socket. QueryCursor then
+	// dispatches to c.cursorDecoder with no branch.
+	//
+	// In production the source of this decision is the resolved chopt
+	// EnabledSet, not a per-knob env var: cmd/cerberus passes
+	// Config.ColumnarMatrixDecode=false here (the version probe the EnabledSet
+	// resolves against needs this very client) and then calls
+	// UseColumnarMatrixDecode at boot, after the resolve, before any handler
+	// serves. The construction-time branch remains the path the parity test
+	// exercises (it builds a Client with the field set directly).
+	c.cursorDecoder = newCursorDecoder(cfg)
 	// Start the active background breaker-recovery loop on the ROOT Client
 	// (ForHead views are shallow copies that share — never restart — it).
 	// The tick cadence is the breaker's own resolved OPEN-state backoff, so

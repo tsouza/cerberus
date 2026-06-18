@@ -205,6 +205,33 @@ func TestResolve_ExplicitTSGrid_Supported(t *testing.T) {
 	assertSet(t, set, FeatureTSGridRange)
 }
 
+func TestResolve_ColumnarResultDecode_OptInOnly(t *testing.T) {
+	// columnar_result_decode is opt-in only: auto must NOT enable it, even on a
+	// brand-new server, since it is a perf tradeoff (a second ch-go dial).
+	autoSet, _, err := Resolve(Config{Optimizations: "auto"}, v(25, 8))
+	if err != nil {
+		t.Fatalf("Resolve(auto): %v", err)
+	}
+	if autoSet.Has(FeatureColumnarResultDecode) {
+		t.Error("auto must not enable columnar_result_decode (opt-in only)")
+	}
+}
+
+func TestResolve_ColumnarResultDecode_NoVersionFloor(t *testing.T) {
+	// columnar_result_decode is a client-side decode with no version gate
+	// (MinVersion AlwaysAvailable): listing it explicitly enables it on ANY
+	// server version, in enforcing mode, with no "needs ClickHouse >=X" error.
+	for _, ver := range []Version{{Major: 24, Minor: 0}, {Major: 24, Minor: 8}, {Major: 99, Minor: 9}} {
+		set, _, err := Resolve(Config{Optimizations: "columnar_result_decode", Mode: Enforcing}, ver)
+		if err != nil {
+			t.Fatalf("Resolve(columnar_result_decode) on %s: %v", ver, err)
+		}
+		if !set.Has(FeatureColumnarResultDecode) {
+			t.Errorf("columnar_result_decode not enabled on %s", ver)
+		}
+	}
+}
+
 func TestResolve_LegacyTrue_ForceEnables(t *testing.T) {
 	set, warns, err := Resolve(Config{
 		Optimizations: "auto",
@@ -320,10 +347,11 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 func TestRegistry_SeededEntries(t *testing.T) {
 	reg := Registry()
 	want := map[string]Feature{
-		FeatureAggregationInOrder: {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable},
-		FeatureConditionCache:     {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable},
-		FeatureTSGridRange:        {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental},
-		FeatureTSGridResample:     {ID: FeatureTSGridResample, MinVersion: v(25, 6), Stability: Experimental},
+		FeatureAggregationInOrder:   {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable},
+		FeatureConditionCache:       {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable},
+		FeatureTSGridRange:          {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental},
+		FeatureTSGridResample:       {ID: FeatureTSGridResample, MinVersion: v(25, 6), Stability: Experimental},
+		FeatureColumnarResultDecode: {ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, Stability: Experimental},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

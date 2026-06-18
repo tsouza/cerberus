@@ -10,13 +10,19 @@ import (
 //
 // QueryCursor's per-query dispatch holds NO branch: the Client carries a
 // single, always-non-nil cursorDecoder, wired at boot. The default is the
-// concrete rowDecoder (the clickhouse-go/v2 row path, byte-unchanged). When
-// Config.ColumnarMatrixDecode is set, construction swaps in a columnarDecoder
-// that embeds the rowDecoder as its fallback. Query-time is then a plain
-// method call — `c.cursorDecoder.decode(c, ...)` — with every optimisation
-// already landed at boot. The flag is read exactly once, in
-// assembleClientFromConn; the dispatch site never sees it, nor a nil/presence
-// check standing in for it.
+// concrete rowDecoder (the clickhouse-go/v2 row path, byte-unchanged). When the
+// columnar matrix decode is enabled the Client swaps in a columnarDecoder that
+// embeds the rowDecoder as its fallback. Query-time is then a plain method call
+// — `c.cursorDecoder.decode(c, ...)` — with every optimisation already landed
+// at boot. The dispatch site never sees the decision, nor a nil/presence check
+// standing in for it.
+//
+// The enable decision has two wiring points, both at boot: construction
+// (newCursorDecoder, when Config.ColumnarMatrixDecode is set — the path the
+// parity test drives) and UseColumnarMatrixDecode (the production path: cmd
+// installs it after the chopt EnabledSet resolves columnar_result_decode, since
+// that resolve needs the version probe and therefore the already-built client).
+// Either way the strategy is resolved ONCE, before any handler serves.
 //
 // The strategy is client-agnostic: decode takes the *Client to act on as an
 // argument rather than capturing one, so a ForHead shallow copy reuses the SAME
@@ -40,6 +46,49 @@ type cursorDecoder interface {
 	// row strategy owns none (no-op); the columnar strategy tears down its
 	// dedicated ch-go pool if it was ever dialled.
 	close()
+}
+
+// newCursorDecoder resolves the decode strategy from a Config: the columnar
+// strategy (embedding the row path as its fallback) when
+// Config.ColumnarMatrixDecode is set, the bare row path otherwise. It is the
+// single wiring point shared by Client construction and the boot-time
+// UseColumnarMatrixDecode install, so the two paths can never drift on how the
+// columnar strategy is built.
+func newCursorDecoder(cfg Config) cursorDecoder {
+	if cfg.ColumnarMatrixDecode {
+		return columnarDecoder{
+			matrix:   newColumnarMatrixDecoder(cfg),
+			fallback: rowDecoder{},
+		}
+	}
+	return rowDecoder{}
+}
+
+// UseColumnarMatrixDecode installs the columnar matrix decode strategy at boot,
+// AFTER construction but BEFORE any handler serves a query. It exists because
+// the production decision source -- the resolved chopt EnabledSet -- is only
+// known after cmd/cerberus probes the server version, which needs this very
+// client; New therefore comes up on the row path and cmd swaps the strategy in
+// here once columnar_result_decode is confirmed enabled. The decode strategy is
+// still resolved exactly ONCE per process (just slightly later than New) and is
+// never toggled at query time; the dispatch site in QueryCursor stays
+// branch-free. on=false is a no-op (the row default already stands); a redundant
+// on=true re-wire tears down any previously-installed columnar pool first so the
+// call leaks no ch-go socket if invoked twice.
+//
+// cfg is the SAME chclient.Config the client was built from: the columnar
+// strategy owns a second ch-go dial mapped 1:1 off it (addr / auth / TLS / dial
+// timeout), so cmd passes cfg.ClickHouse straight through. It MUST be called
+// before the client begins serving (cmd does, between the optimization resolve
+// and handler.Mount); it is not safe to call concurrently with in-flight
+// QueryCursor calls.
+func (c *Client) UseColumnarMatrixDecode(on bool, cfg Config) {
+	if !on {
+		return
+	}
+	c.cursorDecoder.close()
+	cfg.ColumnarMatrixDecode = true
+	c.cursorDecoder = newCursorDecoder(cfg)
 }
 
 // rowDecoder is the default, always-present decode strategy: the
@@ -79,8 +128,8 @@ func (rowDecoder) decode(c *Client, ctx context.Context, sql string, args ...any
 // clickhouse-go/v2 pool is owned by the Client and closed via c.conn.Close).
 func (rowDecoder) close() {}
 
-// columnarDecoder is the decode strategy wired at boot when
-// Config.ColumnarMatrixDecode is set. It routes the four-column `query_range`
+// columnarDecoder is the decode strategy wired at boot when the columnar matrix
+// decode is enabled. It routes the four-column `query_range`
 // matrix shape through a dedicated ch-go dial (each series' label map built
 // once per run instead of once per row) and embeds a rowDecoder as the
 // fallback for every non-matrix / unbindable shape — the shape decision lives
