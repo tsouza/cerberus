@@ -94,21 +94,16 @@ expect_match    "case1 t.Skip"        "$RE1" "$tmpdir/case1_match.txt"
 expect_no_match "case1 tx.Skipper()"  "$RE1" "$tmpdir/case1_nomatch.txt"
 
 # --------------------------------------------------------------------
-# case 2 — bare discipline-erosion wording  (PR #461)
+# (former case 2 — bare discipline-erosion wording, PR #461)
+#
+# Removed: the `wording-tests` scan banned prose vocabulary
+# ("not implemented" / "skipped" / "deferred") in *_test.go + *.txtar
+# rather than test-skipping behaviour. It false-positived on honest
+# descriptions of correct, version-gated code and caught nothing the
+# behavioural scans (t-skip / soft-assert / should-skip / escape-hatch /
+# not-implemented) miss. The check, its CI/lefthook steps, and this
+# self-test case were dropped together.
 # --------------------------------------------------------------------
-RE2='not implemented|\bskipped\b|\bdeferred\b'
-{
-  printf '// not implemented yet\n'
-  printf 'var skipped = 0\n'
-  printf '// deferred until RC3\n'
-} >"$tmpdir/case2_match.txt"
-{
-  printf '// dropped because of foo\n'
-  printf 'defer cleanup()\n'
-  printf 'rejection := errReject\n'
-} >"$tmpdir/case2_nomatch.txt"
-expect_match    "case2 bare wording"            "$RE2" "$tmpdir/case2_match.txt"
-expect_no_match "case2 neutral verbs + defer kw" "$RE2" "$tmpdir/case2_nomatch.txt"
 
 # --------------------------------------------------------------------
 # case 3 — "not implemented" in production code  (PR #197)

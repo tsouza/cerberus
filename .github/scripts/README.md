@@ -24,8 +24,8 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 
 ## Modules
 
-- **`forbid-skip.mjs`** — `ci.yml`, the six `forbid-skip` discipline scans.
-  - Env: `CHECK` is one of `t-skip`, `wording-tests`, `not-implemented`,
+- **`forbid-skip.mjs`** — `ci.yml`, the five `forbid-skip` discipline scans.
+  - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the

@@ -16,8 +16,6 @@
 // Env contract:
 //   CHECK  one of:
 //     t-skip            Reject t.Skip / t.Skipf / t.SkipNow in *_test.go
-//     wording-tests     Reject "not implemented"/"skipped"/"deferred" in
-//                       *_test.go + *.txtar
 //     not-implemented   Reject "not implemented" in internal/**/*.go (prod)
 //     soft-assert       Reject soft-assertion / silent-recover patterns
 //     should-skip       Reject non-empty should_skip: overlay entries
@@ -79,21 +77,6 @@ switch (CHECK) {
     if (matched) {
       log(output);
       fail('t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip');
-    }
-    break;
-  }
-
-  case 'wording-tests': {
-    const { matched, output } = grepFiles({
-      pathspecs: ['*_test.go', '*.txtar', ':!:compatibility/*/upstream/**'],
-      grepFlags: ['-niEH'],
-      regex: 'not implemented|\\bskipped\\b|\\bdeferred\\b',
-    });
-    if (matched) {
-      log(output);
-      fail(
-        'discipline-erosion wording ("not implemented" / "skipped" / "deferred") found in test files or TXTAR fixtures — implement the feature, rewrite to a neutral verb (dropped / excluded / rejected / bypassed), or remove the comment',
-      );
     }
     break;
   }
@@ -187,7 +170,7 @@ switch (CHECK) {
   }
 
   default:
-    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, wording-tests, not-implemented, soft-assert, should-skip, escape-hatch)`);
+    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, not-implemented, soft-assert, should-skip, escape-hatch)`);
     process.exit(1);
 }
 
