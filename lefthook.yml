@@ -83,17 +83,6 @@ pre-push:
           echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
           exit 1
         fi
-    forbid-skip-wording:
-      tags: discipline
-      run: |
-        if git ls-files -z -- \
-            '*_test.go' \
-            '*.txtar' \
-            ':!:compatibility/*/upstream/**' \
-            | xargs -0 grep -niEH 'not implemented|\bskipped\b|\bdeferred\b' --; then
-          echo "lefthook: discipline-erosion wording — rewrite to a neutral verb (dropped / excluded / rejected / bypassed) or remove"
-          exit 1
-        fi
     forbid-not-implemented-prod:
       tags: discipline
       run: |

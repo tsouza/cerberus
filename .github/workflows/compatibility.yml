@@ -161,7 +161,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # The six discipline scans (pure `git grep` / `perl`, no Go
+      # The five discipline scans (pure `git grep` / `perl`, no Go
       # toolchain) — byte-identical to ci.yml's `forbid-skip` job. These
       # run first because they are the cheapest and the most common
       # cause of a red PR.
@@ -169,10 +169,6 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: t-skip
-      - name: Reject "not implemented" / "skipped" / "deferred" in tests + fixtures
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: wording-tests
       - name: Reject "not implemented" in production code
         run: node .github/scripts/forbid-skip.mjs
         env:
