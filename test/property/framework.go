@@ -501,6 +501,13 @@ func valuesClose(a, b float64) bool {
 	if a != a && b != b { // both NaN
 		return true
 	}
+	// Infinity handling: PromQL produces +Inf / -Inf for x/0 and the
+	// histogram_quantile phi-out-of-range cases. Two same-signed
+	// infinities are equal; the subtraction below would otherwise yield
+	// NaN (Inf-Inf) and flag a spurious mismatch.
+	if isInf(a) || isInf(b) {
+		return a == b
+	}
 	delta := a - b
 	if delta < 0 {
 		delta = -delta
@@ -519,6 +526,12 @@ func valuesClose(a, b float64) bool {
 		}
 	}
 	return delta <= relEpsilon*scale
+}
+
+// isInf reports whether v is +Inf or -Inf. Defined locally so the
+// comparator doesn't pull in math just for the one check.
+func isInf(v float64) bool {
+	return v > 1.7976931348623157e308 || v < -1.7976931348623157e308
 }
 
 // dumpDataset renders the dataset for a failure log. Compact enough
