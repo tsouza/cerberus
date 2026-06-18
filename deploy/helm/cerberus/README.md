@@ -5,7 +5,7 @@
      pipe-aligned, and the version footer adds a trailing blank — both are
      owned by helm-docs; realigning would fight the chart-ci drift check. -->
 
-![Version: 0.3.1](https://img.shields.io/badge/Version-0.3.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.2](https://img.shields.io/badge/AppVersion-1.0.2-informational?style=flat-square)
+![Version: 0.3.2](https://img.shields.io/badge/Version-0.3.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.2](https://img.shields.io/badge/AppVersion-1.0.2-informational?style=flat-square)
 
 Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
 
@@ -186,6 +186,7 @@ Kubernetes: `>=1.23.0-0`
 | autoscaling.minReplicas | int | `2` | Minimum replicas (survives a single-pod failure at >=2). |
 | autoscaling.targetCPUUtilizationPercentage | int | `70` | Target average CPU utilisation %. cerberus's hot path is CPU-bound on the gateway side, so CPU is a faithful load proxy. Set to null to drop it. |
 | autoscaling.targetMemoryUtilizationPercentage | string | `nil` | Target average memory utilisation %. OFF by default — a memory target thrashes against GOMEMLIMIT-driven heap (rc.5 OOM finding). |
+| chOptimizations | string | `"auto"` | ClickHouse-optimization auto-picker (CERBERUS_CH_OPTIMIZATIONS). `auto` (the default) probes the connected ClickHouse version once at startup and enables every stable, result-equivalent optimization the server supports — `aggregation_in_order` (24.8+) and `condition_cache` (25.3+) — for free, with zero tuning and no risk on older servers (a feature above the server's version is simply not enabled). Set `off` to disable all, or a comma-separated list of feature ids to pin an explicit selection. See docs/clickhouse-optimizations.md. |
 | clickhouse | object | `{"addr":["clickhouse:9000"],"database":"otel","dialTimeout":"10s","existingSecret":"","password":"","passwordKey":"password","pool":{"connMaxLifetime":"","maxIdleConns":null,"maxOpenConns":null},"protocol":"native","tls":{"caFileKey":"ca.crt","certFileKey":"tls.crt","enabled":false,"existingSecret":"","insecureSkipVerify":false,"keyFileKey":"tls.key","serverName":""},"username":"default"}` | ClickHouse connection block (lowered to CERBERUS_CH_* env). See fields below. |
 | clickhouse.addr | list | `["clickhouse:9000"]` | ClickHouse address list (`host:port`), joined with `,` into CERBERUS_CH_ADDR. Native protocol is 9000 (9440 TLS); HTTP is 8123. |
 | clickhouse.database | string | `"otel"` | Target database (CERBERUS_CH_DATABASE). |

@@ -148,25 +148,34 @@ func TestFromEnv_AutoCreateSchema_Whitespace(t *testing.T) {
 	}
 }
 
-// TestFromEnv_ExperimentalTSGridRange_Default confirms the experimental
-// native-rate flag defaults OFF when unset — the default behaviour
-// (arrayJoin fan-out) is preserved and the compose / e2e / compatibility
-// lanes (ClickHouse 25.8; the native path stays experimental even though
-// the function now exists) stay green.
+// TestFromEnv_ExperimentalTSGridRange_Default confirms the legacy
+// experimental native-rate alias is UNSET when no env var is supplied: the
+// tri-state LegacyTSGridFlag carries Set=false (no effect), so the chopt
+// resolver leaves ts_grid_range off under auto and the default behaviour
+// (arrayJoin fan-out) is preserved. FromEnv no longer resolves
+// ExperimentalTSGridRange directly — cmd/cerberus back-fills it from the
+// resolved EnabledSet after the version probe — so the field is the zero
+// value (false) here.
 func TestFromEnv_ExperimentalTSGridRange_Default(t *testing.T) {
 	t.Setenv("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", "")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
 	}
+	if cfg.LegacyTSGridFlag.Set {
+		t.Errorf("LegacyTSGridFlag.Set = true; want false (unset)")
+	}
 	if cfg.ExperimentalTSGridRange {
-		t.Errorf("ExperimentalTSGridRange = true; want false (default)")
+		t.Errorf("ExperimentalTSGridRange = true; want false (back-filled in main, not FromEnv)")
 	}
 }
 
 // TestFromEnv_ExperimentalTSGridRange_Parsing covers the strconv.ParseBool
-// vocabulary the flag accepts, with the load-bearing assertion that
-// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=true flips it on.
+// vocabulary the legacy alias accepts. The load-bearing assertion is that an
+// explicit value populates the tri-state LegacyTSGridFlag{Set:true, Value:...}
+// so cmd/cerberus can re-route it through the chopt resolver (force enable on
+// true, force disable on false). ExperimentalTSGridRange itself is no longer
+// resolved in FromEnv.
 func TestFromEnv_ExperimentalTSGridRange_Parsing(t *testing.T) {
 	cases := []struct {
 		val  string
@@ -184,8 +193,11 @@ func TestFromEnv_ExperimentalTSGridRange_Parsing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FromEnv: %v", err)
 			}
-			if cfg.ExperimentalTSGridRange != tc.want {
-				t.Errorf("ExperimentalTSGridRange = %v; want %v", cfg.ExperimentalTSGridRange, tc.want)
+			if !cfg.LegacyTSGridFlag.Set {
+				t.Errorf("LegacyTSGridFlag.Set = false; want true (explicit value)")
+			}
+			if cfg.LegacyTSGridFlag.Value != tc.want {
+				t.Errorf("LegacyTSGridFlag.Value = %v; want %v", cfg.LegacyTSGridFlag.Value, tc.want)
 			}
 		})
 	}

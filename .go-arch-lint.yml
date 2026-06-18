@@ -119,6 +119,14 @@ components:
   # via chclient, builds the introspection SQL via chsql, validates the
   # configured schema shape. Wired from cmd/ after the schema-create step.
   preflight:      { in: preflight }
+  # ClickHouse-optimization auto-selection: feature registry + resolver +
+  # version compare. Pure leaf (stdlib only); used cross-cuttingly by config
+  # (parses the knobs), chclient (version probe), and cmd (resolves at boot)
+  # -> declared a commonComponent below.
+  chopt:          { in: chopt }
+  # Async system.query_log performance-corpus reconciler. Leaf; wired from
+  # cmd only (off by default).
+  optcorpus:      { in: optcorpus }
 
 # commonComponents are importable from every layer without an explicit
 # `mayDependOn` entry. These are the cross-cutting utility packages
@@ -134,6 +142,7 @@ commonComponents:
   - api-health
   - chclienttest
   - qlcommon
+  - chopt
 
 deps:
   # chplan is the foundation. No internal dependencies declared — entries

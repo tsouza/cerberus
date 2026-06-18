@@ -183,36 +183,6 @@ func TestRunIfEnabledOnDelegatesToRun(t *testing.T) {
 	}
 }
 
-func TestParseCHVersion(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		in        string
-		want      chVersion
-		wantOK    bool
-		wantMajor int
-	}{
-		{in: "25.8.2.1", want: chVersion{25, 8}, wantOK: true},
-		{in: "25.8.2.1-lts", want: chVersion{25, 8}, wantOK: true},
-		{in: "24.3.1.2557-stable", want: chVersion{24, 3}, wantOK: true},
-		{in: "25.6", want: chVersion{25, 6}, wantOK: true},
-		{in: "  25.8.2.1  ", want: chVersion{25, 8}, wantOK: true},
-		{in: "25", wantOK: false},
-		{in: "lts.8", wantOK: false},
-		{in: "", wantOK: false},
-		{in: "garbage", wantOK: false},
-	}
-	for _, tc := range cases {
-		got, ok := parseCHVersion(tc.in)
-		if ok != tc.wantOK {
-			t.Errorf("parseCHVersion(%q): ok=%v, want %v", tc.in, ok, tc.wantOK)
-			continue
-		}
-		if ok && got != tc.want {
-			t.Errorf("parseCHVersion(%q): got %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestMinVersionMaxOfApplicable(t *testing.T) {
 	t.Parallel()
 	// Native rate disabled → base floor.
@@ -224,7 +194,7 @@ func TestMinVersionMaxOfApplicable(t *testing.T) {
 	// so enabling native rate raises the effective floor to the native one.
 	on := Requirements{NativeRateEnabled: true}
 	got := on.minVersion()
-	if !got.atLeast(minCHBase) || !got.atLeast(minCHNativeRate) {
+	if !got.AtLeast(minCHBase) || !got.AtLeast(minCHNativeRate) {
 		t.Errorf("native-rate on: min=%v must be >= both base %v and native %v", got, minCHBase, minCHNativeRate)
 	}
 	if got != minCHNativeRate {

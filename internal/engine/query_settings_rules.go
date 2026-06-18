@@ -16,6 +16,26 @@ import (
 // is version-safe.
 const settingOptimizeAggregationInOrder = "optimize_aggregation_in_order"
 
+// settingUseQueryConditionCache is the ClickHouse setting that turns on the
+// query condition cache: the server caches, per data part, which granules a
+// WHERE predicate already selected, so a later query with the SAME predicate
+// skips re-evaluating it on the cached parts. It is RESULT-EQUIVALENT (a
+// cache, not a result rewrite) and lands in ClickHouse 25.3, gated behind the
+// analyzer. cerberus stamps it only when the condition_cache feature resolved
+// in (server >= 25.3) AND the read path is predicate-stable; below 25.3 the
+// feature is absent from the resolved set, so ConditionCache is false and this
+// is never stamped (version-safe fallback to no-op).
+const settingUseQueryConditionCache = "use_query_condition_cache"
+
+// settingEnableAnalyzer turns on ClickHouse's new query analyzer. The query
+// condition cache is gated behind the analyzer, so cerberus co-stamps
+// enable_analyzer=1 wherever it stamps use_query_condition_cache=1 to ensure
+// the cache is honored even if an operator disabled the analyzer at the
+// server/profile level. It is RESULT-EQUIVALENT (an execution-planner choice,
+// not a result rewrite) and the analyzer is GA on every server the
+// condition_cache feature resolves on (>= 25.3), so co-stamping is version-safe.
+const settingEnableAnalyzer = "enable_analyzer"
+
 // settingLogComment is ClickHouse's free-form per-query annotation. When set
 // it is copied verbatim into system.query_log.log_comment, letting operators
 // GROUP BY a cerberus-assigned shape id. Free-form and ignored by execution,
@@ -42,6 +62,16 @@ type SettingsRules struct {
 	// about the plan shape is unclear it does NOT stamp.
 	OptimizeAggregationInOrder bool
 
+	// ConditionCache, when true, stamps use_query_condition_cache=1 on a
+	// predicate-stable read path so ClickHouse's query condition cache can skip
+	// re-evaluating an already-seen WHERE predicate on cached parts. It is
+	// driven by the condition_cache registry feature, which only resolves in on
+	// server >= 25.3; below that the feature is absent from the resolved set,
+	// so this flag is false and nothing is stamped (24.8-safe no-op). The cache
+	// is result-equivalent, so this is safe whenever it fires; the eligibility
+	// check (predicateStableForConditionCache) is still conservative.
+	ConditionCache bool
+
 	// LogCommentShape, when true, stamps log_comment with a compact cerberus
 	// shape id (planShapeID) carrying the emit-root node kind plus key
 	// modifiers and NEVER any literal values, so operators with query_log
@@ -58,6 +88,23 @@ type SettingsRules struct {
 	Logs    schema.Logs
 }
 
+// enabledOpts returns the ids of the optimization rules currently enabled on
+// the SettingsRules, sorted, for the corpus reconciler to record alongside a
+// dispatched query's shape-id. It reports the rules that COULD fire for a
+// query (the resolved EnabledSet membership), not which actually fired on a
+// given plan; that keeps the recorded opts stable per cerberus process and
+// lets the corpus attribute observed cost to the active optimization posture.
+func (r SettingsRules) enabledOpts() []string {
+	var opts []string
+	if r.OptimizeAggregationInOrder {
+		opts = append(opts, "aggregation_in_order")
+	}
+	if r.ConditionCache {
+		opts = append(opts, "condition_cache")
+	}
+	return opts
+}
+
 // apply layers the enabled settings rules onto ctx for plan. Each rule that
 // fires writes through chclient.WithQuerySetting so they accumulate on the
 // one per-request settings map. With both flags off, ctx is returned
@@ -65,6 +112,14 @@ type SettingsRules struct {
 func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Context {
 	if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(plan) {
 		ctx = chclient.WithQuerySetting(ctx, settingOptimizeAggregationInOrder, 1)
+	}
+	if r.ConditionCache && predicateStableForConditionCache(plan) {
+		ctx = chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 1)
+		// The condition cache is gated behind the analyzer; co-stamp
+		// enable_analyzer=1 so the cache is honored even if an operator
+		// disabled the analyzer. Result-equivalent and version-safe on the
+		// >= 25.3 servers this rule resolves on.
+		ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
 	}
 	if r.LogCommentShape {
 		if id := planShapeID(plan); id != "" {
@@ -112,6 +167,34 @@ func (r SettingsRules) eligibleForAggregationInOrder(plan chplan.Node) bool {
 	}
 	sortKey := r.sortingKeyPrefixFor(table)
 	return isOrderedPrefix(groupCols, sortKey)
+}
+
+// predicateStableForConditionCache reports whether plan is a read path the
+// query condition cache can help: it must carry an actual WHERE predicate (a
+// chplan.Filter node over a Scan) so there is a granule-selection result to
+// cache and reuse on a later identical-predicate query. The cache is
+// result-equivalent regardless, so this gate is purely about "is there a
+// predicate worth caching"; it is deliberately conservative — a plan with no
+// Filter (a bare full-table scan) gains nothing from the condition cache, so
+// the setting is not stamped there. A union/multi-table plan still qualifies
+// as long as it filters: the cache is keyed per data part, so it composes
+// across the scanned tables without correctness risk.
+//
+// The whole rule is additionally gated upstream by ConditionCache, which only
+// resolves in on ClickHouse >= 25.3, so this never fires on an older server.
+func predicateStableForConditionCache(plan chplan.Node) bool {
+	hasFilter := false
+	hasScan := false
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		switch n.(type) {
+		case *chplan.Filter:
+			hasFilter = true
+		case *chplan.Scan:
+			hasScan = true
+		}
+		return true
+	})
+	return hasFilter && hasScan
 }
 
 // singleAggregate returns the sole Aggregate in plan, or ok=false when there

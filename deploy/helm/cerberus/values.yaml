@@ -177,6 +177,15 @@ schema:
 # retries rather than crash-looping. Emitted into env only when true.
 requirementsCheck: false
 
+# -- ClickHouse-optimization auto-picker (CERBERUS_CH_OPTIMIZATIONS). `auto`
+# (the default) probes the connected ClickHouse version once at startup and
+# enables every stable, result-equivalent optimization the server supports —
+# `aggregation_in_order` (24.8+) and `condition_cache` (25.3+) — for free, with
+# zero tuning and no risk on older servers (a feature above the server's version
+# is simply not enabled). Set `off` to disable all, or a comma-separated list of
+# feature ids to pin an explicit selection. See docs/clickhouse-optimizations.md.
+chOptimizations: auto
+
 # -- Query safety limits. Each key is emitted to env only when set; leave a key
 # null/empty to keep the binary's own default. These cap the blast radius of a
 # single expensive query.

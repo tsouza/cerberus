@@ -176,7 +176,8 @@ spike-class).
 
 ### Experimental: native rate (`timeSeriesRateToGrid`)
 
-`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (**default `false`**) opts the eligible
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (**default `false`**, **deprecated -> use
+`CERBERUS_CH_OPTIMIZATIONS`** with `ts_grid_range` listed) opts the eligible
 `rate(<counter>[<range>])` query_range shape into ClickHouse's compiled
 `timeSeriesRateToGrid` aggregate instead of the default arrayJoin fan-out. The
 native operator computes the same Prometheus `extrapolatedRate` *inside the
@@ -775,8 +776,12 @@ many concurrent queries a single trace fans out (a Grafana dashboard loading
 panels, a vector-join / fan-out PromQL) never collide on the same `query_id`
 (which ClickHouse would reject with code 216, "Query with id = X is already
 running"). With the optional DARK flags from
-[`configuration.md`](configuration.md#query-instrumentation-phase-0), operators
-also get the join keys to cluster and rank cerberus's SQL by cost.
+[`configuration.md`](configuration.md#per-query-instrumentation), operators also
+get the join keys to cluster and rank cerberus's SQL by cost. The async
+performance-corpus reconciler (`CERBERUS_CH_OPT_CORPUS_ENABLED`) automates
+exactly this join — it records the same per-dispatch `query_id` cerberus stamps
+and matches it back against `system.query_log`; see
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md#the-systemquery_log-performance-corpus-reconciler).
 
 Join a cerberus trace to its ClickHouse execution (match on the trace-id
 prefix — one trace maps to many per-dispatch `query_id`s):
@@ -838,8 +843,28 @@ ORDER BY p99_ms DESC
 LIMIT 20
 ```
 
-The async reconciler that would persist this corpus and feed it back into rule
-tuning is a later roadmap phase; today these flags only emit the join keys.
+Condition-cache effectiveness (once `condition_cache` is enabled — `auto` turns
+it on for servers >= 25.3):
+
+```sql
+SELECT
+    any(log_comment) AS shape,
+    sum(ProfileEvents['QueryConditionCacheHits']) AS cache_hits,
+    count() AS runs
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND log_comment LIKE 'cerb:%'
+  AND event_time > now() - INTERVAL 1 DAY
+GROUP BY normalized_query_hash
+ORDER BY cache_hits DESC
+LIMIT 20
+```
+
+The async performance-corpus reconciler (`CERBERUS_CH_OPT_CORPUS_ENABLED`)
+persists exactly this `(shape-id, opts, timings)` join to a durable JSONL sink
+so the corpus survives `query_log` TTL eviction and is minable offline. See
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md#the-systemquery_log-performance-corpus-reconciler)
+for its config and row shape.
 
 ## Admin commands
 

@@ -58,37 +58,21 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// chVersion is a major.minor ClickHouse version. Patch and build suffixes
-// are intentionally dropped: cerberus's SQL-surface requirements track
-// feature availability, which lands at minor-version granularity, so the
-// comparison is over (major, minor) only.
-type chVersion struct {
-	Major int
-	Minor int
-}
-
-// String renders the version as "<major>.<minor>" for the diagnostic
-// messages (the floor cerberus requires is always a bare major.minor).
-func (v chVersion) String() string { return strconv.Itoa(v.Major) + "." + strconv.Itoa(v.Minor) }
-
-// atLeast reports whether v is greater than or equal to min, comparing
-// major first and minor as the tie-break.
-func (v chVersion) atLeast(min chVersion) bool {
-	if v.Major != min.Major {
-		return v.Major > min.Major
-	}
-	return v.Minor >= min.Minor
-}
+// chopt.Version is the canonical major.minor ClickHouse version (parse +
+// compare); preflight reuses it rather than re-implementing the gate, so the
+// auto-picker and the preflight floor agree on what a server string means.
+// Patch and build suffixes are dropped: cerberus's SQL-surface requirements
+// track feature availability, which lands at minor-version granularity.
 
 // minCHBase is the supported / CI-tested ClickHouse floor — the version
 // README and docs state as the minimum. The differential compatibility
@@ -96,14 +80,14 @@ func (v chVersion) atLeast(min chVersion) bool {
 // and is green, so the SQL cerberus emits is exercised end-to-end against
 // this floor; the 24.8 empty-input / parse-unit / filter-path workarounds
 // are all emitted unconditionally.
-var minCHBase = chVersion{Major: 24, Minor: 8}
+var minCHBase = chopt.Version{Major: 24, Minor: 8}
 
 // minCHNativeRate is the ClickHouse floor the native timeSeriesRateToGrid
 // family was introduced at (v25.6.0). It only applies when the
 // experimental native-rate path is enabled; the effective requirement is
 // max(minCHBase, minCHNativeRate) so enabling a feature whose floor sits
 // above the base raises the requirement, and the base wins otherwise.
-var minCHNativeRate = chVersion{Major: 25, Minor: 6}
+var minCHNativeRate = chopt.Version{Major: 25, Minor: 6}
 
 // attrMapType is the ClickHouse type the OTel-CH attribute-map columns
 // (Attributes / ResourceAttributes / ScopeAttributes) must carry. Stored
@@ -135,10 +119,10 @@ type Requirements struct {
 // raised to the native-rate floor when that path is enabled. Encoded as
 // max-of-applicable-minimums (not a baked single number) so a future knob
 // whose floor exceeds the base raises the requirement generically.
-func (r Requirements) minVersion() chVersion {
+func (r Requirements) minVersion() chopt.Version {
 	min := minCHBase
 	if r.NativeRateEnabled {
-		if minCHNativeRate.atLeast(min) {
+		if minCHNativeRate.AtLeast(min) {
 			min = minCHNativeRate
 		}
 	}
@@ -427,55 +411,14 @@ func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []
 		return []string{"clickhouse version query returned no rows"}, nil, nil
 	}
 	raw := strings.TrimSpace(rows[0])
-	got, ok := parseCHVersion(raw)
+	got, ok := chopt.ParseVersion(raw)
 	if !ok {
 		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}, nil, nil
 	}
-	if !got.atLeast(min) {
+	if !got.AtLeast(min) {
 		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}, nil, nil
 	}
 	return nil, nil, nil
-}
-
-// parseCHVersion extracts the leading major.minor from a ClickHouse
-// version string. The wire format looks like "25.8.2.1", "25.8.2.1-lts",
-// or carries a build suffix; only the first two dot-separated integer
-// fields are read, and any trailing non-digit run on the minor field
-// (e.g. a "-lts" glued directly to it) is trimmed. Returns ok=false when
-// the string has no leading integer major or minor field.
-func parseCHVersion(s string) (chVersion, bool) {
-	fields := strings.Split(strings.TrimSpace(s), ".")
-	if len(fields) < 2 {
-		return chVersion{}, false
-	}
-	major, ok := leadingInt(fields[0])
-	if !ok {
-		return chVersion{}, false
-	}
-	minor, ok := leadingInt(fields[1])
-	if !ok {
-		return chVersion{}, false
-	}
-	return chVersion{Major: major, Minor: minor}, true
-}
-
-// leadingInt parses the leading run of ASCII digits in s. Returns
-// ok=false when s does not start with a digit, so a field like "lts" or
-// an empty field is rejected rather than silently coerced to 0.
-func leadingInt(s string) (int, bool) {
-	s = strings.TrimSpace(s)
-	end := 0
-	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
-		end++
-	}
-	if end == 0 {
-		return 0, false
-	}
-	n, err := strconv.Atoi(s[:end])
-	if err != nil {
-		return 0, false
-	}
-	return n, true
 }
 
 // tableReq describes the shape required of one configured table: its

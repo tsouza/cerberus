@@ -22,6 +22,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -127,20 +128,6 @@ type Config struct {
 	// chDB differential sweep proves the timeSeriesDeltaToGrid mapping.
 	ExperimentalTSGridRange bool
 
-	// OptimizeAggregationInOrder, when true, lets the engine stamp the
-	// ClickHouse setting `optimize_aggregation_in_order=1` on a data-plane
-	// query whose post-optimize plan has an Aggregate GROUP BY that is a
-	// genuine bare-column PREFIX of the scanned table's sorting key (see
-	// internal/engine.SettingsRules). The setting is RESULT-EQUIVALENT --
-	// it changes only the aggregation execution strategy, never the rows --
-	// and exists well below cerberus's CH 24.8 floor, so it is version-safe.
-	//
-	// Default false: it ships DARK behind CERBERUS_OPTIMIZE_AGGREGATION_IN_
-	// ORDER so the corpus-driven optimization roadmap can enable it per
-	// environment. Even on, the eligibility check is conservative and only
-	// stamps when the GROUP BY is provably a sort-key prefix.
-	OptimizeAggregationInOrder bool
-
 	// LogCommentShape, when true, lets the engine stamp ClickHouse
 	// `log_comment` with a COMPACT, literal-free cerberus shape id
 	// (emit-root plan node kind + key modifiers, never any literal values)
@@ -151,6 +138,31 @@ type Config struct {
 	//
 	// Default false: it ships DARK behind CERBERUS_LOG_COMMENT_SHAPE.
 	LogCommentShape bool
+
+	// CHOptimizations is the raw CERBERUS_CH_OPTIMIZATIONS value ("auto" |
+	// "off" | comma-separated feature ids). It is the auto-picker's selection;
+	// the actual EnabledSet is resolved ONCE in cmd/cerberus AFTER the runtime
+	// version probe (the probe needs a live connection, which FromEnv does not
+	// have), so FromEnv carries only the raw string here.
+	CHOptimizations string
+
+	// CHOptimizationsMode is the parsed CERBERUS_CH_OPTIMIZATIONS_MODE
+	// (enforcing | permissive, default enforcing). It governs how the resolver
+	// treats an explicitly-requested feature the connected server is too old
+	// for: FATAL (enforcing, default) vs WARN + skip (permissive). Ignored
+	// under auto/off.
+	CHOptimizationsMode chopt.Mode
+
+	// LegacyTSGridFlag carries the tri-state deprecated
+	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias (unset vs explicit true/false).
+	// cmd/cerberus passes it into chopt.Resolve so the legacy flag is re-routed
+	// through the resolver rather than read directly by the lowering/engine.
+	LegacyTSGridFlag chopt.LegacyFlag
+
+	// CHOptCorpus configures the async system.query_log performance-corpus
+	// reconciler (disabled by default; production-only — chDB has no
+	// query_log).
+	CHOptCorpus CHOptCorpusConfig
 
 	// Log configures cerberus's own structured logging (stdlib log/slog).
 	// See LogConfig for the env-var contract.
@@ -174,6 +186,30 @@ type Config struct {
 	// stays out of overload. A falsy per-head toggle leaves that head
 	// unlimited.
 	Admit AdmitConfig
+}
+
+// CHOptCorpusConfig configures the async system.query_log performance-corpus
+// reconciler (internal/optcorpus). The reconciler keeps a bounded ring of
+// recently-dispatched cerberus query_ids, periodically joins them back to
+// system.query_log for their server-side cost, and appends the
+// (shape-id, enabled-opts, timings) tuples to a durable JSONL sink. It is
+// disabled by default and production-only: chDB (the parity test substrate)
+// has no system.query_log, so the reconciler is never started there.
+type CHOptCorpusConfig struct {
+	// Enabled gates the whole reconciler (CERBERUS_CH_OPT_CORPUS_ENABLED).
+	Enabled bool
+	// Interval is how often the reconciler reconciles recent query_ids against
+	// system.query_log (CERBERUS_CH_OPT_CORPUS_INTERVAL, default 60s).
+	Interval time.Duration
+	// SinkPath is the JSONL sink path (CERBERUS_CH_OPT_CORPUS_SINK_PATH). Empty
+	// disables the file sink.
+	SinkPath string
+	// RingCapacity bounds the in-memory ring of recently-dispatched query_ids
+	// the reconciler tracks (CERBERUS_CH_OPT_CORPUS_RING, default 4096). It caps
+	// the reconciler's memory and the size of each per-interval IN(...) join; the
+	// ring drops the oldest id when full. A non-positive value falls back to the
+	// optcorpus default.
+	RingCapacity int
 }
 
 // SchemaProvisioning carries the DDL-shaping knobs the auto-create hook
@@ -423,8 +459,13 @@ const (
 	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
 	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
-	envOptimizeAggInOrder  = "CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER"
 	envLogCommentShape     = "CERBERUS_LOG_COMMENT_SHAPE"
+	envCHOptimizations     = "CERBERUS_CH_OPTIMIZATIONS"
+	envCHOptimizationsMode = "CERBERUS_CH_OPTIMIZATIONS_MODE"
+	envCHOptCorpusEnabled  = "CERBERUS_CH_OPT_CORPUS_ENABLED"
+	envCHOptCorpusInterval = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
+	envCHOptCorpusSinkPath = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
+	envCHOptCorpusRing     = "CERBERUS_CH_OPT_CORPUS_RING"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
 	envLogLevel            = "CERBERUS_LOG_LEVEL"
 	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
@@ -531,10 +572,6 @@ const configFileBaseName = "cerberus"
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
 //	    >= 25.6 (prod / compose / e2e are on 25.8, so this floor is met by
 //	    default); on older servers the native query 500s with UNKNOWN_FUNCTION
-//	CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER default "false" — stamp
-//	    optimize_aggregation_in_order=1 on queries whose Aggregate GROUP BY
-//	    is a bare-column prefix of the scanned table's sorting key. Result-
-//	    equivalent execution knob, safe on CH 24.8; DARK by default.
 //	CERBERUS_LOG_COMMENT_SHAPE     default "false" — stamp a compact, literal-
 //	    free cerberus shape id into ClickHouse log_comment so query_log rows
 //	    cluster by normalized_query_hash + log_comment. Result-neutral, safe
@@ -585,19 +622,13 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maxOpenConns, err := getInt(v, envCHMaxOpenConns)
+	maxOpenConns, err := getPositiveInt(v, envCHMaxOpenConns)
 	if err != nil {
 		return Config{}, err
 	}
-	if maxOpenConns <= 0 {
-		return Config{}, fmt.Errorf("%s: must be > 0, got %d", envCHMaxOpenConns, maxOpenConns)
-	}
-	maxIdleConns, err := getInt(v, envCHMaxIdleConns)
+	maxIdleConns, err := getPositiveInt(v, envCHMaxIdleConns)
 	if err != nil {
 		return Config{}, err
-	}
-	if maxIdleConns <= 0 {
-		return Config{}, fmt.Errorf("%s: must be > 0, got %d", envCHMaxIdleConns, maxIdleConns)
 	}
 	connMaxLifetime, err := getDuration(v, envCHConnMaxLifetime)
 	if err != nil {
@@ -715,24 +746,26 @@ func FromEnv() (Config, error) {
 		extra:        surface.ch,
 	})
 	return Config{
-		HTTPAddr:                   getString(v, envHTTPAddr),
-		HTTPServer:                 surface.httpServer,
-		LokiTailWriteTimeout:       surface.lokiTailWriteTimeout,
-		ClickHouse:                 chCfg,
-		Schema:                     schema.DefaultOTelMetricsFromEnv(),
-		Logs:                       schema.DefaultOTelLogsFromEnv(),
-		Traces:                     schema.DefaultOTelTracesFromEnv(),
-		AutoCreateSchema:           flags.AutoCreate,
-		AutoCreateDatabase:         flags.AutoCreateDatabase,
-		SchemaProvisioning:         schemaProvisioning,
-		RequirementsCheck:          flags.RequirementsCheck,
-		ExperimentalTSGridRange:    flags.TSGridRange,
-		DebugPProf:                 flags.DebugPProf,
-		OptimizeAggregationInOrder: flags.OptimizeAggInOrder,
-		LogCommentShape:            flags.LogCommentShape,
-		Log:                        logCfg,
-		OTLP:                       otlp,
-		Admit:                      admit,
+		HTTPAddr:             getString(v, envHTTPAddr),
+		HTTPServer:           surface.httpServer,
+		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
+		ClickHouse:           chCfg,
+		Schema:               schema.DefaultOTelMetricsFromEnv(),
+		Logs:                 schema.DefaultOTelLogsFromEnv(),
+		Traces:               schema.DefaultOTelTracesFromEnv(),
+		AutoCreateSchema:     flags.AutoCreate,
+		AutoCreateDatabase:   flags.AutoCreateDatabase,
+		SchemaProvisioning:   schemaProvisioning,
+		RequirementsCheck:    flags.RequirementsCheck,
+		DebugPProf:           flags.DebugPProf,
+		LogCommentShape:      flags.LogCommentShape,
+		CHOptimizations:      flags.CHOptimizations,
+		CHOptimizationsMode:  flags.CHOptimizationsMode,
+		LegacyTSGridFlag:     flags.TSGrid,
+		CHOptCorpus:          flags.CHOptCorpus,
+		Log:                  logCfg,
+		OTLP:                 otlp,
+		Admit:                admit,
 	}, nil
 }
 
@@ -800,8 +833,13 @@ var allEnvKeys = []string{
 	envSchemaDBReplReplica,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
-	envOptimizeAggInOrder,
 	envLogCommentShape,
+	envCHOptimizations,
+	envCHOptimizationsMode,
+	envCHOptCorpusEnabled,
+	envCHOptCorpusInterval,
+	envCHOptCorpusSinkPath,
+	envCHOptCorpusRing,
 	envLogFormat,
 	envLogLevel,
 	envOTLPEndpoint,
@@ -902,8 +940,8 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
-	v.SetDefault(envOptimizeAggInOrder, defaultOptimizeAggInOrder)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
+	setCHOptDefaults(v)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
 	v.SetDefault(envOTLPEndpoint, defaultOTLPEndpoint)
@@ -935,6 +973,19 @@ func newLoader() *viper.Viper {
 	return v
 }
 
+// setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and
+// CERBERUS_CH_OPT_CORPUS_* defaults. Extracted from newLoader so the
+// auto-picker + corpus knobs do not inflate newLoader's statement count; the
+// defaults are the exact values documented in docs/clickhouse-optimizations.md.
+func setCHOptDefaults(v *viper.Viper) {
+	v.SetDefault(envCHOptimizations, defaultCHOptimizations)
+	v.SetDefault(envCHOptimizationsMode, defaultCHOptimizationsMode)
+	v.SetDefault(envCHOptCorpusEnabled, defaultCHOptCorpusEnabled)
+	v.SetDefault(envCHOptCorpusInterval, defaultCHOptCorpusInterval.String())
+	v.SetDefault(envCHOptCorpusSinkPath, defaultCHOptCorpusSinkPath)
+	v.SetDefault(envCHOptCorpusRing, defaultCHOptCorpusRing)
+}
+
 // Built-in defaults, kept as named constants so newLoader's SetDefault
 // calls and the doc comment can't drift. String/bool defaults that have
 // no other natural home live here; the int / duration budget defaults
@@ -950,8 +1001,29 @@ const (
 	defaultSchemaTTL          = "0s"
 	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
-	defaultOptimizeAggInOrder = false
 	defaultLogCommentShape    = false
+	// defaultCHOptimizations is "auto": enable every stable feature the
+	// connected server supports, never an experimental one. This preserves the
+	// historical experimental-off-by-default posture while turning on the
+	// 24.8-safe stable wins (aggregation_in_order) and any newer stable feature
+	// (condition_cache on >= 25.3) automatically.
+	defaultCHOptimizations = "auto"
+	// defaultCHOptimizationsMode is "enforcing": an explicitly-requested but
+	// unsupported feature ABORTS startup (FATAL). `auto`/`off` already cover the
+	// graceful paths, so naming an explicit feature list means "I require these".
+	// Set CERBERUS_CH_OPTIMIZATIONS_MODE=permissive to WARN-and-skip instead.
+	defaultCHOptimizationsMode = "enforcing"
+	// defaultCHOptCorpusEnabled is false: the query_log performance-corpus
+	// reconciler is opt-in (it needs system.query_log access and is
+	// production-only; chDB has no query_log).
+	defaultCHOptCorpusEnabled = false
+	// defaultCHOptCorpusSinkPath is empty: no JSONL sink unless an operator
+	// supplies a path.
+	defaultCHOptCorpusSinkPath = ""
+	// defaultCHOptCorpusRing is the reconciler ring capacity when the operator
+	// does not override it. It mirrors optcorpus's own internal default; the
+	// reconciler clamps a non-positive value to the same floor.
+	defaultCHOptCorpusRing    = 4096
 	defaultLogFormat          = "text"
 	defaultLogLevel           = "info"
 	defaultOTLPEndpoint       = ""
@@ -1050,6 +1122,12 @@ const (
 // tailWriteTimeout in internal/api/loki/tail.go: the bound on a single
 // /tail WebSocket write before a slow / dead client is torn down.
 const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
+
+// defaultCHOptCorpusInterval is how often the query_log performance-corpus
+// reconciler reconciles recently-dispatched query_ids against
+// system.query_log. 60s keeps the query_log read rate-limited (one batch per
+// interval) while staying fresh enough to capture a recent shape's cost.
+const defaultCHOptCorpusInterval time.Duration = 60 * time.Second
 
 // defaultQueryMaxSamples is the default per-query sample budget,
 // mirroring upstream Prometheus's --query.max-samples default
@@ -1435,6 +1513,21 @@ func getInt(v *viper.Viper, key string) (int, error) {
 	return n, nil
 }
 
+// getPositiveInt resolves key as an int and additionally rejects a
+// non-positive value with an error naming the env var. It folds the repeated
+// "parse then require > 0" pattern (the connection-pool size knobs) into one
+// fail-fast helper.
+func getPositiveInt(v *viper.Viper, key string) (int, error) {
+	n, err := getInt(v, key)
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s: must be > 0, got %d", key, n)
+	}
+	return n, nil
+}
+
 // getInt64 resolves key and parses it as a base-10 int64 with the same
 // fail-fast, env-var-naming contract as getInt.
 func getInt64(v *viper.Viper, key string) (int64, error) {
@@ -1527,10 +1620,24 @@ type bootFlags struct {
 	AutoCreate         bool
 	AutoCreateDatabase bool
 	RequirementsCheck  bool
-	TSGridRange        bool
-	DebugPProf         bool
-	OptimizeAggInOrder bool
-	LogCommentShape    bool
+	// TSGrid is the tri-state legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE flag
+	// (unset vs explicit true/false). It is no longer a plain bool: the alias
+	// is re-routed through the chopt resolver in cmd/cerberus, which needs to
+	// distinguish "unset" (no effect) from an explicit value (force
+	// enable/disable ts_grid_range). Config.ExperimentalTSGridRange is then
+	// back-filled from the resolved EnabledSet, not from this flag directly.
+	TSGrid          chopt.LegacyFlag
+	DebugPProf      bool
+	LogCommentShape bool
+	// CHOptimizations / CHOptimizationsMode / CHOptCorpus carry the
+	// CERBERUS_CH_OPTIMIZATIONS* + CERBERUS_CH_OPT_CORPUS_* knobs. They live on
+	// bootFlags (rather than a separate parse in FromEnv) so all the boot-time
+	// toggle parsing — each fail-fast on a malformed value — stays in one
+	// place. The raw optimizations string is resolved against the probed server
+	// version in cmd/cerberus, not here.
+	CHOptimizations     string
+	CHOptimizationsMode chopt.Mode
+	CHOptCorpus         CHOptCorpusConfig
 }
 
 // bootFlagsFromEnv parses the boolean boot toggles, failing fast on a
@@ -1556,7 +1663,13 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	if err != nil {
 		return bootFlags{}, err
 	}
-	tsGridRange, err := getBool(v, envExperimentalTSGrid)
+	// Legacy ts-grid alias as a tri-state: Set distinguishes an explicit value
+	// (force enable/disable ts_grid_range through the resolver) from unset (no
+	// effect). The bool still parses through the same getBool vocabulary, so an
+	// explicit malformed value still fails fast. When unset, getBool resolves
+	// the seeded default (false), but Set=false makes the value irrelevant.
+	tsGridSet := explicitlySet(v, envExperimentalTSGrid)
+	tsGridValue, err := getBool(v, envExperimentalTSGrid)
 	if err != nil {
 		return bootFlags{}, err
 	}
@@ -1564,22 +1677,81 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	if err != nil {
 		return bootFlags{}, err
 	}
-	optimizeAggInOrder, err := getBool(v, envOptimizeAggInOrder)
-	if err != nil {
-		return bootFlags{}, err
-	}
 	logCommentShape, err := getBool(v, envLogCommentShape)
 	if err != nil {
 		return bootFlags{}, err
 	}
+	chOpt, err := chOptFromEnv(v)
+	if err != nil {
+		return bootFlags{}, err
+	}
 	return bootFlags{
-		AutoCreate:         autoCreate,
-		AutoCreateDatabase: autoCreateDatabase,
-		RequirementsCheck:  requirementsCheck,
-		TSGridRange:        tsGridRange,
-		DebugPProf:         debugPProf,
-		OptimizeAggInOrder: optimizeAggInOrder,
-		LogCommentShape:    logCommentShape,
+		AutoCreate:          autoCreate,
+		AutoCreateDatabase:  autoCreateDatabase,
+		RequirementsCheck:   requirementsCheck,
+		TSGrid:              chopt.LegacyFlag{Set: tsGridSet, Value: tsGridValue},
+		DebugPProf:          debugPProf,
+		LogCommentShape:     logCommentShape,
+		CHOptimizations:     chOpt.Optimizations,
+		CHOptimizationsMode: chOpt.Mode,
+		CHOptCorpus:         chOpt.Corpus,
+	}, nil
+}
+
+// chOptParsed groups the CERBERUS_CH_OPTIMIZATIONS* parse results so FromEnv
+// resolves them in a single call (keeping FromEnv's statement count down): the
+// raw selection string, the parsed enforcing/permissive mode, and the corpus
+// reconciler config.
+type chOptParsed struct {
+	Optimizations string
+	Mode          chopt.Mode
+	Corpus        CHOptCorpusConfig
+}
+
+// chOptFromEnv parses the CERBERUS_CH_OPTIMIZATIONS, CERBERUS_CH_OPTIMIZATIONS_
+// MODE, and CERBERUS_CH_OPT_CORPUS_* knobs. The mode fails fast on an invalid
+// value; the raw optimizations string is carried verbatim (it is resolved
+// against the probed server version in cmd/cerberus, not here). Extracted from
+// FromEnv so the parses live in one place.
+func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
+	mode, err := chopt.ParseMode(getString(v, envCHOptimizationsMode))
+	if err != nil {
+		return chOptParsed{}, fmt.Errorf("%s: %w", envCHOptimizationsMode, err)
+	}
+	corpus, err := chOptCorpusFromEnv(v)
+	if err != nil {
+		return chOptParsed{}, err
+	}
+	return chOptParsed{
+		Optimizations: getString(v, envCHOptimizations),
+		Mode:          mode,
+		Corpus:        corpus,
+	}, nil
+}
+
+// chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a
+// CHOptCorpusConfig. The enable bool, interval duration, and ring capacity each
+// fail fast on a malformed value; the sink path resolves via getString (empty is
+// valid and simply disables the file sink). Extracted from FromEnv so the parses
+// live in one place.
+func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
+	enabled, err := getBool(v, envCHOptCorpusEnabled)
+	if err != nil {
+		return CHOptCorpusConfig{}, err
+	}
+	interval, err := getDuration(v, envCHOptCorpusInterval)
+	if err != nil {
+		return CHOptCorpusConfig{}, err
+	}
+	ring, err := getInt(v, envCHOptCorpusRing)
+	if err != nil {
+		return CHOptCorpusConfig{}, err
+	}
+	return CHOptCorpusConfig{
+		Enabled:      enabled,
+		Interval:     interval,
+		SinkPath:     getString(v, envCHOptCorpusSinkPath),
+		RingCapacity: ring,
 	}, nil
 }
 

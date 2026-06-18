@@ -181,6 +181,9 @@ CERBERUS_ADMIT_DISABLED: {{ .Values.admit.disabled | quote }}
 {{- if .Values.requirementsCheck }}
 CERBERUS_REQUIREMENTS_CHECK: "true"
 {{- end }}
+{{- with .Values.chOptimizations }}
+CERBERUS_CH_OPTIMIZATIONS: {{ . | quote }}
+{{- end }}
 {{- /* Query safety limits (CERBERUS_QUERY_* / CERBERUS_CH_QUERY_MAX_MEMORY).
        Emitted only when set so an unset block keeps the binary defaults. */ -}}
 {{- with .Values.query }}

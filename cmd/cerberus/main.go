@@ -26,8 +26,10 @@ import (
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/solver"
@@ -138,6 +140,21 @@ func run() error {
 
 	warnIfClickHouseUnreachable(ctx, logger, client, cfg.ClickHouse)
 
+	// Resolve the ClickHouse-optimization auto-picker ONCE, here, after the
+	// client is built and the runtime version is probed. The probe needs a
+	// live connection (which config.FromEnv does not have), so FromEnv carried
+	// only the raw CERBERUS_CH_OPTIMIZATIONS selection + parsed mode + the
+	// tri-state legacy alias; this is where they become the immutable
+	// EnabledSet every consumer reads. A fatal resolve (unknown feature id in
+	// any mode, or an unsupported explicit id under enforcing) aborts startup.
+	// The resolved set then back-fills cfg.ExperimentalTSGridRange (the single
+	// source of truth for the legacy ts-grid consumers) and drives the
+	// per-query SettingsRules built below.
+	optSet, err := resolveCHOptimizations(ctx, logger, client, &cfg)
+	if err != nil {
+		return err
+	}
+
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
 	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse, schemaApplyConfig(cfg), cfg.AutoCreateSchema, cfg.AutoCreateDatabase)
@@ -245,21 +262,24 @@ func run() error {
 	// All three heads run on the shared engine.Engine pipeline; each
 	// engine is constructed below from a per-head Client VIEW + a seed
 	// optimizer and assigned onto the per-head handler.
-	promHandler := newPromHandler(promClient, cfg, evalSolver, promLimiter, logger)
+	promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
 	promHandler.Mount(traceMux)
 
-	lokiHandler := loki.New(lokiClient, cfg.Logs, logger.With("api", "loki"))
-	lokiHandler.Limiter = lokiLimiter
-	lokiHandler.Version = Version
-	lokiHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
-	lokiHandler.TailWriteTimeout = cfg.LokiTailWriteTimeout
-	lokiHandler.Engine.Settings = settingsRules(cfg)
+	lokiHandler := newLokiHandler(lokiClient, cfg, optSet, lokiLimiter, logger)
 	lokiHandler.Mount(traceMux)
 
 	tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 	tempoHandler.Limiter = tempoLimiter
-	tempoHandler.Engine.Settings = settingsRules(cfg)
+	tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 	tempoHandler.Mount(traceMux)
+
+	// Async query_log performance-corpus reconciler (off by default). When
+	// enabled it starts a background goroutine and registers itself as every
+	// head engine's QueryObserver so each dispatched query's (query_id,
+	// shape-id, opts, language) is ring-buffered and later joined back to
+	// system.query_log. A no-op when disabled, leaving the engines' observer
+	// nil (byte-unchanged hot path).
+	startOptCorpus(ctx, logger, client, cfg, promHandler.Engine, lokiHandler.Engine, tempoHandler.Engine)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -353,13 +373,13 @@ const solverGateReserve = 2
 // classifies for the shadow header, but never routes).
 // newPromHandler builds the prom head's handler with its engine (per-head
 // Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
-func newPromHandler(client *chclient.Client, cfg config.Config, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
+func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	h.Engine = &engine.Engine{
 		Optimizer: h.Optimizer,
 		Client:    client,
 		Solver:    evalSolver,
-		Settings:  settingsRules(cfg),
+		Settings:  settingsRules(cfg, optSet),
 	}
 	h.Limiter = limiter
 	h.Version = Version
@@ -368,20 +388,167 @@ func newPromHandler(client *chclient.Client, cfg config.Config, evalSolver *solv
 	return h
 }
 
-// settingsRules builds the DARK-by-default per-query ClickHouse settings
-// rules from the CERBERUS_* config. Both rule flags default false, so the
-// returned value is "every rule off" unless an operator opted in; the schema
-// instances are always supplied so the aggregation-in-order eligibility check
-// can map ANY scanned signal table to its sort-key prefix regardless of which
-// head runs the query. Shared by all three heads' engines so a single env
-// flag flips the rule uniformly.
-func settingsRules(cfg config.Config) engine.SettingsRules {
+// newLokiHandler builds the Loki head's handler with its limiter, version,
+// timeouts, and the resolved per-query optimization SettingsRules wired in.
+// Extracted (mirroring newPromHandler) so run's bootstrap stays within its
+// maintainability budget as the optimization suite adds wiring.
+func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiter *admit.Limiter, logger *slog.Logger) *loki.Handler {
+	h := loki.New(client, cfg.Logs, logger.With("api", "loki"))
+	h.Limiter = limiter
+	h.Version = Version
+	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
+	h.Engine.Settings = settingsRules(cfg, optSet)
+	return h
+}
+
+// settingsRules builds the per-query ClickHouse settings rules from the
+// resolved optimization EnabledSet plus the CERBERUS_* config. The
+// aggregation-in-order and condition-cache rules are now driven by the frozen
+// EnabledSet (set.Has(...)), not raw env flags: under the default `auto` the
+// stable 24.8-safe aggregation_in_order is on, and condition_cache is on when
+// the probed server is >= 25.3. log_comment shape stays its own dark flag
+// (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus reconciler. The
+// schema instances are always supplied so the eligibility checks can map ANY
+// scanned signal table to its sort-key prefix regardless of which head runs
+// the query. Shared by all three heads' engines so the rules flip uniformly.
+func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules {
 	return engine.SettingsRules{
-		OptimizeAggregationInOrder: cfg.OptimizeAggregationInOrder,
+		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
+		ConditionCache:             set.Has(chopt.FeatureConditionCache),
 		LogCommentShape:            cfg.LogCommentShape,
 		Metrics:                    cfg.Schema,
 		Traces:                     cfg.Traces,
 		Logs:                       cfg.Logs,
+	}
+}
+
+// resolveCHOptimizations probes the connected ClickHouse server version and
+// resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it ONCE, returning
+// the immutable EnabledSet. It back-fills cfg.ExperimentalTSGridRange from the
+// resolved set so the legacy ts-grid consumers (the PromQL lowering, the engine
+// native gate, the preflight version floor) read a single source of truth, and
+// logs the resolved set + the server version + any warnings (permissive skips
+// and the legacy-alias deprecation) at boot.
+//
+// The version probe is best-effort with respect to CONNECTIVITY: cerberus is
+// designed to boot even when ClickHouse is briefly unreachable (the
+// cerberus + collector startup race, where the background re-probe flips
+// /readyz once the schema lands). A probe that fails to reach the server is
+// therefore NOT fatal here; it falls back to the documented supported floor
+// (24.8) so the stable 24.8-safe optimizations still resolve under `auto`,
+// while any newer feature (condition_cache, ts_grid_range) stays off until a
+// restart re-probes against a reachable server. A genuine CONFIG fault
+// (unknown feature id, or an unsupported explicit id under enforcing) is still
+// fatal — that is a typo/operator error, independent of connectivity.
+func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, error) {
+	resolvedVersion, err := client.ProbeVersion(ctx)
+	if err != nil {
+		// Connectivity fallback: assume the supported floor so 24.8-safe
+		// stable features still resolve under auto; newer features stay off
+		// until a restart re-probes. Never fatal on a probe read error.
+		resolvedVersion = chopt.Version{Major: 24, Minor: 8}
+		logger.Warn(
+			"clickhouse version probe failed; resolving optimizations against the supported floor (restart to re-probe)",
+			"err", err,
+			"assumed_version", resolvedVersion.String(),
+		)
+	}
+
+	set, warnings, err := chopt.Resolve(chopt.Config{
+		Optimizations: cfg.CHOptimizations,
+		Mode:          cfg.CHOptimizationsMode,
+		LegacyTSGrid:  cfg.LegacyTSGridFlag,
+	}, resolvedVersion)
+	if err != nil {
+		return chopt.EnabledSet{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
+	}
+	for _, w := range warnings {
+		logger.Warn("ch_opt: " + w)
+	}
+
+	// Single source of truth: the legacy ts-grid bool is now derived from the
+	// resolved set, not the raw env.
+	cfg.ExperimentalTSGridRange = set.Has(chopt.FeatureTSGridRange)
+
+	logger.Info(
+		"clickhouse optimizations resolved",
+		"selection", cfg.CHOptimizations,
+		"mode", cfg.CHOptimizationsMode.String(),
+		"server_version", resolvedVersion.String(),
+		"enabled", strings.Join(set.IDs(), ","),
+	)
+	return set, nil
+}
+
+// startOptCorpus starts the async system.query_log performance-corpus
+// reconciler when CERBERUS_CH_OPT_CORPUS_ENABLED is set. It is production-only
+// (system.query_log access) and returns a no-op Observe sink plus a nil
+// reconciler when disabled, so the engine dispatch seam can call Observe
+// unconditionally. Errors building the JSONL sink are logged and degrade to
+// disabled — the reconciler never takes the binary down. The Run loop is
+// started on its own goroutine and stops on ctx cancel.
+func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg config.Config, engines ...*engine.Engine) {
+	if !cfg.CHOptCorpus.Enabled {
+		return
+	}
+	if cfg.CHOptCorpus.SinkPath == "" {
+		logger.Warn("ch_opt corpus enabled but CERBERUS_CH_OPT_CORPUS_SINK_PATH is empty; reconciler disabled")
+		return
+	}
+	sink, err := optcorpus.NewJSONLSink(cfg.CHOptCorpus.SinkPath)
+	if err != nil {
+		logger.Warn("ch_opt corpus sink unavailable; reconciler disabled", "err", err)
+		return
+	}
+	// Bound each corpus SELECT in wall-clock to a fraction of the reconcile
+	// interval (capped) so a stuck scan can never outlive its slot or pin the
+	// reconciler goroutine; the server-side max_execution_time is the primary
+	// cap, this is the belt-and-braces client deadline.
+	srcTimeout := cfg.CHOptCorpus.Interval / 2
+	if srcTimeout <= 0 || srcTimeout > 30*time.Second {
+		srcTimeout = 30 * time.Second
+	}
+	// Derive the query_log lookback from the reconcile interval so a longer
+	// interval still covers more than one scan worth of dispatched queries
+	// (instead of a fixed 1h window). The same window drives the reconciler's
+	// TTL eviction of never-finished ids.
+	window := optcorpus.QueryLogWindow(cfg.CHOptCorpus.Interval)
+	src := optcorpus.NewCHQueryLogSource(client.Conn(), srcTimeout, window)
+	rec := optcorpus.New(src, sink, optcorpus.Options{
+		Interval:     cfg.CHOptCorpus.Interval,
+		RingCapacity: cfg.CHOptCorpus.RingCapacity,
+		TTL:          window,
+		Logger:       logger.With("component", "optcorpus"),
+	})
+	attachQueryObserver(rec, engines...)
+	go func() {
+		rec.Run(ctx)
+		_ = sink.Close()
+	}()
+	logger.Info(
+		"ch_opt query_log performance-corpus reconciler started",
+		"interval", cfg.CHOptCorpus.Interval.String(),
+		"sink", cfg.CHOptCorpus.SinkPath,
+	)
+}
+
+// attachQueryObserver registers the corpus reconciler as the QueryObserver on
+// each supplied engine, but ONLY when corpus is non-nil. Passing a nil
+// *optcorpus.Reconciler through the engine.QueryObserver interface would create
+// a non-nil interface wrapping a nil pointer (the classic Go nil-interface
+// trap), so the engine's `QueryObserver == nil` guard would not fire and
+// ObserveQuery would nil-deref. The explicit nil check keeps the default
+// (corpus disabled) path a true nil interface, so the dispatch seam stays
+// byte-unchanged.
+func attachQueryObserver(corpus *optcorpus.Reconciler, engines ...*engine.Engine) {
+	if corpus == nil {
+		return
+	}
+	for _, eng := range engines {
+		if eng != nil {
+			eng.QueryObserver = corpus
+		}
 	}
 }
 
