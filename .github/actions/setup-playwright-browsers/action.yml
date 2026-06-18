@@ -1,0 +1,80 @@
+name: Setup Playwright browsers (cached)
+description: >
+  Install the Playwright npm deps and the chromium browser binary, caching
+  ~/.cache/ms-playwright keyed on the EXACT resolved Playwright version so the
+  ~15-min Microsoft-CDN chromium download is paid once per version (across all
+  shards and all runs) instead of on every shard of every run.
+
+# Why a composite action: the same install+cache logic runs in three e2e jobs
+# (compose-smoke-shard, compose-smoke-shard-info, dashboard-shard). Keeping the
+# cache-key derivation in one place means the key can't drift between jobs - a
+# correct shared key is the whole point (first shard populates, the rest restore).
+
+inputs:
+  working-directory:
+    description: Directory containing the Playwright package.json + lockfile.
+    required: false
+    default: test/e2e/playwright
+
+runs:
+  using: composite
+  steps:
+    # npm deps first: `npx playwright` and the version probe both need the
+    # @playwright/test package installed under node_modules.
+    - name: Install Playwright npm deps
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        # npm ci needs a lockfile; fall back to `npm install` if one is ever
+        # missing (keeps the action robust if the lockfile is removed).
+        if [ -f package-lock.json ]; then
+          npm ci
+        else
+          npm install --no-audit --no-fund
+        fi
+
+    # Resolve the EXACT browser-pinned version from playwright-core in the
+    # lockfile (NOT the `^1.50.0` range in package.json - that would let two
+    # runs at different resolved versions share a key and restore stale
+    # browsers). playwright-core is what actually pins the bundled chromium
+    # build; @playwright/test tracks it lockstep. Reading the lockfile (not
+    # `npx playwright --version`) keeps the key derivable without the binary.
+    - name: Resolve Playwright version
+      id: pw
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        version="$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")"
+        if [ -z "$version" ] || [ "$version" = "undefined" ]; then
+          echo "::error::could not resolve playwright-core version from package-lock.json"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Resolved Playwright version: $version"
+
+    # Cache the browser binaries, NOT node_modules - chromium is the 15-min
+    # download; node_modules is seconds. Key is version-only (+ OS), so:
+    #   * every shard in a run shares ONE key  -> first miss populates, rest hit
+    #   * every run at the same version hits    -> steady-state download = 0
+    #   * a Playwright bump changes the version -> key changes -> one fresh pull
+    - name: Cache Playwright browsers
+      id: cache
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-browsers-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+    # Cache HIT: browser binaries are already restored; only install the OS
+    # shared-library deps (apt; fast, not cached because they're an apt op, not
+    # the CDN download). Cache MISS: download chromium AND install OS deps.
+    - name: Install chromium (deps only on hit, browser + deps on miss)
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+          echo "Playwright browser cache hit - installing OS deps only."
+          npx playwright install-deps chromium
+        else
+          echo "Playwright browser cache miss - downloading chromium + OS deps."
+          npx playwright install --with-deps chromium
+        fi
