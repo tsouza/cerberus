@@ -24,11 +24,35 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 )
+
+// chdbEngineMu serializes ALL access to the chDB engine across the whole
+// test process.
+//
+// chDB / libchdb is an EMBEDDED ClickHouse: a single native engine is
+// shared by every `sql.Open("chdb", "")` in the process (the empty-DSN
+// sessions are NOT isolated — see applySeed's "chdb-go shares one engine
+// across a process" note). That engine is NOT thread-safe for concurrent
+// in-process execution. The round-trip suite runs fixtures under
+// t.Parallel() (see roundtrip_chdb_test.go) and spec.Walk fans each
+// fixture into a t.Run subtest, so without serialization two goroutines
+// can drive queries — and, worse, free native result state — at the same
+// time. The observed failure is an intermittent
+//
+//	SIGABRT: abort / signal arrived during cgo execution
+//
+// inside chdb-purego.(*result).Free, which fires when a *sql.Rows is
+// closed and when a *sql.DB is closed (driver teardown). To make this
+// safe, every chDB engine call — Open/Ping/Exec(SET), seed Exec, Query,
+// row iteration, rows.Close, AND the per-case db.Close — runs under this
+// mutex. Only the parse / lower / SQL-build work of OTHER cases stays
+// parallel; the engine span itself is single-threaded.
+var chdbEngineMu sync.Mutex
 
 // chdbEOFSentinel is the spurious end-of-iteration error chdb-go's
 // parquet driver returns instead of io.EOF (see chdb-go v1.11.0's
@@ -842,7 +866,17 @@ func openChDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open chdb: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	// db.Close tears down native engine state (chdb-purego result Free),
+	// so it must not race another case's engine call. The cleanup runs
+	// AFTER RunRoundTrip returns and has released chdbEngineMu, so it
+	// takes the lock itself here. (openChDB itself is always called with
+	// chdbEngineMu already held by RunRoundTrip, hence no lock around the
+	// Open/Ping/Exec below.)
+	t.Cleanup(func() {
+		chdbEngineMu.Lock()
+		defer chdbEngineMu.Unlock()
+		_ = db.Close()
+	})
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping chdb: %v", err)
 	}
@@ -1223,6 +1257,19 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	if strings.TrimSpace(rt.SQL) == "" {
 		t.Fatalf("fixture %s has seed/expected_rows but missing sql section", c.Name)
 	}
+
+	// Acquire the process-global chDB engine lock for the FULL engine
+	// span of this case: open/ping/seed, query, row iteration, and
+	// rows.Close (whose driver teardown calls native result Free — the
+	// site of the SIGABRT under parallel cases). The unlock is deferred
+	// FIRST so it runs LAST (after the deferred rows.Close below, defers
+	// being LIFO), keeping the lock held across the entire result
+	// lifecycle. The interleaved SQL-build helpers below are pure string
+	// work; holding the lock across them costs microseconds and keeps the
+	// scope coarse and deadlock-free. db.Close runs later, in t.Cleanup,
+	// which re-acquires this lock itself.
+	chdbEngineMu.Lock()
+	defer chdbEngineMu.Unlock()
 
 	db := openChDB(t)
 	applySeed(t, db, rt.Seed)
