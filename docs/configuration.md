@@ -430,10 +430,14 @@ floor) — none adopts a 25.x feature.
 | `CERBERUS_LOG_COMMENT_SHAPE`             | bool | `false` | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`. |
 
 **Always-on (no flag): `query_id`.** Every data-plane query cerberus dispatches
-carries a ClickHouse `query_id` set to cerberus's active trace id. This is
-observational and harmless — `query_id` is a free-form identifier ClickHouse
-echoes into `system.query_log` — and it lets operators join their SQL back to
-the cerberus trace that issued it. When no trace is present (an un-instrumented
+carries a ClickHouse `query_id` of the form `<trace id>-<span id>-<counter>`:
+the active trace id is the leading **prefix** (operators join their SQL back to
+the issuing trace with `query_id LIKE '<trace id>-%'`), while the span id and a
+process-global counter make the id **unique per CH dispatch**. The uniqueness
+is load-bearing, not cosmetic — a single trace fans out many concurrent CH
+queries (dashboard panels, fan-out PromQL), and a bare trace id would make them
+collide on one `query_id`, which ClickHouse rejects with code 216 ("Query with
+id = X is already running"). When no trace is present (an un-instrumented
 caller) the driver generates its own id; `query_id` is never an error path.
 
 `CERBERUS_OPTIMIZE_AGGREGATION_IN_ORDER` is **result-equivalent**: the setting

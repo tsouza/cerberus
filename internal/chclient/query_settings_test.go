@@ -2,6 +2,8 @@ package chclient
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -58,34 +60,59 @@ func TestQuerySettings_GeneralisedCarrierCoexists(t *testing.T) {
 	}
 }
 
-// TestQueryIDFromContext_TraceID — a valid active trace id becomes the
-// CH query_id; an un-instrumented ctx yields "" (driver generates its own,
-// never an error).
-func TestQueryIDFromContext_TraceID(t *testing.T) {
+// tracedCtx returns a context carrying a valid active span context built from
+// the supplied trace/span id bytes — the seam the otelhttp server span gives
+// every real request.
+func tracedCtx(tid trace.TraceID, sid trace.SpanID) context.Context {
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid})
+	return trace.ContextWithSpanContext(context.Background(), sc)
+}
+
+// TestEnsureQueryID_NoTrace — an un-instrumented ctx yields "" (the driver
+// generates its own id) and nothing is cached on the returned ctx.
+func TestEnsureQueryID_NoTrace(t *testing.T) {
 	t.Parallel()
 
-	if got := queryIDFromContext(context.Background()); got != "" {
-		t.Errorf("queryIDFromContext(plain) = %q; want empty", got)
+	id, out := ensureQueryID(context.Background())
+	if id != "" {
+		t.Errorf("ensureQueryID(plain) = %q; want empty", id)
 	}
+	if got := queryIDFromContext(out); got != "" {
+		t.Errorf("queryIDFromContext after no-trace ensure = %q; want empty", got)
+	}
+}
+
+// TestEnsureQueryID_TracePrefix — a valid trace yields a non-empty id whose
+// trace id is a greppable prefix (operators join query_log on `LIKE
+// '<traceID>%'`), and the id is cached so queryIDFromContext returns the
+// SAME value (consistency for any reader joining query_log).
+func TestEnsureQueryID_TracePrefix(t *testing.T) {
+	t.Parallel()
 
 	tid := trace.TraceID{
 		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
 	}
 	sid := trace.SpanID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid})
-	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	ctx := tracedCtx(tid, sid)
 
-	got := queryIDFromContext(ctx)
-	if want := tid.String(); got != want {
-		t.Errorf("queryIDFromContext(traced) = %q; want %q", got, want)
+	id, out := ensureQueryID(ctx)
+	if id == "" {
+		t.Fatal("ensureQueryID(traced) = empty; want a per-dispatch id")
+	}
+	if prefix := tid.String() + "-"; !strings.HasPrefix(id, prefix) {
+		t.Errorf("query_id %q is not prefixed by %q (trace id must stay greppable)", id, prefix)
+	}
+	if got := queryIDFromContext(out); got != id {
+		t.Errorf("queryIDFromContext = %q; want the cached %q (reader must see the stamped id)", got, id)
 	}
 }
 
-// TestQueryContext_StampsQueryID — queryContext stamps the trace-derived
-// query_id onto the dispatch context's ClickHouse QueryOptions even when no
-// settings are configured, so the join-to-query_log id always rides.
-func TestQueryContext_StampsQueryID(t *testing.T) {
+// TestEnsureQueryID_UniquePerDispatch — many dispatches under the SAME trace,
+// including from concurrent goroutines, each get a DISTINCT query_id (so
+// concurrent CH queries never collide on ClickHouse code 216), and every id
+// still carries the trace-id prefix.
+func TestEnsureQueryID_UniquePerDispatch(t *testing.T) {
 	t.Parallel()
 
 	tid := trace.TraceID{
@@ -93,8 +120,56 @@ func TestQueryContext_StampsQueryID(t *testing.T) {
 		0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
 	}
 	sid := trace.SpanID{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid})
-	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	prefix := tid.String() + "-"
+
+	const (
+		workers      = 16
+		perWorker    = 64
+		wantDistinct = workers * perWorker
+	)
+
+	var (
+		mu  sync.Mutex
+		ids = make(map[string]struct{}, wantDistinct)
+		wg  sync.WaitGroup
+	)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range perWorker {
+				// A fresh traced ctx per dispatch: the SAME trace/span, the
+				// shape a fan-out produces (one trace, many concurrent CH
+				// dispatches).
+				id, _ := ensureQueryID(tracedCtx(tid, sid))
+				if !strings.HasPrefix(id, prefix) {
+					t.Errorf("query_id %q lost the trace prefix %q", id, prefix)
+				}
+				mu.Lock()
+				ids[id] = struct{}{}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(ids) != wantDistinct {
+		t.Errorf("got %d distinct query_ids; want %d (concurrent dispatches must never collide)", len(ids), wantDistinct)
+	}
+}
+
+// TestQueryContext_StampsAndCachesQueryID — queryContext derives a new ctx
+// carrying a per-dispatch query_id even with no settings, and that id is the
+// SAME value queryIDFromContext returns (the stamp and the reader agree).
+func TestQueryContext_StampsAndCachesQueryID(t *testing.T) {
+	t.Parallel()
+
+	tid := trace.TraceID{
+		0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+		0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+	}
+	sid := trace.SpanID{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11}
+	ctx := tracedCtx(tid, sid)
 
 	// A bare client with no caps: queryContext must STILL derive a new ctx
 	// (carrying the query_id) rather than returning the input unchanged.
@@ -102,5 +177,10 @@ func TestQueryContext_StampsQueryID(t *testing.T) {
 	out := c.queryContext(ctx)
 	if out == ctx {
 		t.Fatal("queryContext returned the input ctx unchanged; want a query_id-stamped ctx")
+	}
+	if got := queryIDFromContext(out); got == "" {
+		t.Fatal("queryContext did not cache a query_id on the returned ctx")
+	} else if !strings.HasPrefix(got, tid.String()+"-") {
+		t.Errorf("cached query_id %q is not prefixed by the trace id", got)
 	}
 }

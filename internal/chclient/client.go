@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -768,20 +770,43 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	return s
 }
 
+// queryIDKeyType keys the per-dispatch ClickHouse query_id on a context, so
+// the unique id is computed ONCE per dispatch (in queryContext) and the SAME
+// value is read by everything that needs it (the CH WithQueryID stamp here,
+// and any out-of-band reader that later joins system.query_log back to the
+// dispatch). A counter-derived id is non-deterministic, so it MUST be cached
+// rather than recomputed — see queryIDFromContext.
+type queryIDKeyType struct{}
+
+var queryIDKey = queryIDKeyType{}
+
+// queryIDCounter is a process-global monotonic sequence mixed into every
+// per-dispatch query_id. It guarantees two concurrent CH queries issued under
+// the SAME trace (a Grafana dashboard fanning out one trace across many
+// panels, a vector-join / fan-out PromQL dispatching several CH queries) never
+// collide on the same query_id — which ClickHouse rejects with code 216
+// ("Query with id = X is already running").
+var queryIDCounter atomic.Uint64
+
 // queryContext derives the context every data-plane query runs under:
 // the caller's ctx plus the per-query ClickHouse settings from
-// querySettings and the ClickHouse query_id stamped from the active
-// trace id. clickhouse.Context merges per-option with any QueryOptions
+// querySettings and a per-dispatch ClickHouse query_id derived from the
+// active trace. clickhouse.Context merges per-option with any QueryOptions
 // already on ctx (e.g. the progress callback installed by
 // WithProgressFor), so stacking is safe and the existing options are
 // preserved. When neither a setting nor a query_id is available the ctx
 // is returned unchanged.
 //
+// The query_id is computed ONCE here, stored on the returned context, and
+// reused by queryIDFromContext, so the value stamped via WithQueryID is the
+// exact same value any later reader observes — a non-deterministic
+// counter-derived id MUST be cached, never recomputed.
+//
 // Exec (DDL / DML) deliberately does NOT go through this — see
 // Config.MaxQueryMemoryBytes.
 func (c *Client) queryContext(ctx context.Context) context.Context {
 	s := c.querySettings(ctx)
-	queryID := queryIDFromContext(ctx)
+	queryID, ctx := ensureQueryID(ctx)
 	if s == nil && queryID == "" {
 		return ctx
 	}
@@ -795,24 +820,46 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 	return clickhouse.Context(ctx, opts...)
 }
 
-// queryIDFromContext derives the ClickHouse query_id for a data-plane
-// dispatch from cerberus's active trace id. The otelhttp server span makes
-// a valid trace id available on every request ctx; stamping it as the CH
-// query_id lets operators later join their SQL back to system.query_log on
-// the cerberus trace id (the query_id column), and ties the CH side of a
-// request to the same trace the cerberus spans carry.
+// ensureQueryID returns the per-dispatch ClickHouse query_id for ctx,
+// generating and caching it on the context if absent. It is the single
+// generation seam: queryContext calls it once per dispatch so the stamped id
+// and any later reader (queryIDFromContext) agree on one value.
 //
-// This is observational and harmless: query_id is free-form on the wire and
-// only ever an identifier ClickHouse echoes back into query_log. When no
-// valid trace is present (no-op tracer in tests, a non-instrumented caller),
-// the trace id is the all-zero invalid id; we return "" and leave query_id
-// unset so the driver generates its own — query_id is never an error path.
-func queryIDFromContext(ctx context.Context) string {
+// The id has the form "<traceID>-<spanID>-<counter>" so the trace id stays a
+// greppable PREFIX in query_log.query_id (operators can still
+// `WHERE query_id LIKE '<traceID>%'` or split on '-' to recover the trace),
+// while the span id + process-global counter make it UNIQUE per dispatch:
+//   - the counter disambiguates concurrent dispatches within one process, so
+//     a single trace fanning out many CH queries never collides (no code 216);
+//   - the span id disambiguates two cerberus replicas that share a trace and
+//     could otherwise pick the same counter value.
+//
+// When no valid trace is present (no-op tracer in tests, a non-instrumented
+// caller) the trace id is the all-zero invalid id; the returned id is ""
+// (nothing cached) so the driver self-generates one — query_id is never an
+// error path.
+func ensureQueryID(ctx context.Context) (string, context.Context) {
+	if id, ok := ctx.Value(queryIDKey).(string); ok {
+		return id, ctx
+	}
 	sc := trace.SpanContextFromContext(ctx)
 	if !sc.HasTraceID() {
-		return ""
+		return "", ctx
 	}
-	return sc.TraceID().String()
+	id := sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
+		strconv.FormatUint(queryIDCounter.Add(1), 10)
+	return id, context.WithValue(ctx, queryIDKey, id)
+}
+
+// queryIDFromContext returns the per-dispatch ClickHouse query_id stamped on
+// ctx by queryContext, or "" when none was stamped (an un-instrumented
+// dispatch, or a ctx that never flowed through queryContext). It is the read
+// side of the cache: it returns the EXACT value that was stamped via
+// WithQueryID, so a reader joining system.query_log by query_id observes the
+// same id ClickHouse recorded.
+func queryIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(queryIDKey).(string)
+	return id
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is

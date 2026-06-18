@@ -766,19 +766,26 @@ Logs are written as an event stream — see
 
 ## query_log mining
 
-Every data-plane query cerberus runs stamps the ClickHouse `query_id` with
-cerberus's active trace id (always on, no flag). That ties each row in
-`system.query_log` back to the cerberus trace — and, with the optional DARK
-flags from [`configuration.md`](configuration.md#query-instrumentation-phase-0),
-gives operators the join keys to cluster and rank cerberus's SQL by cost.
+Every data-plane query cerberus runs stamps the ClickHouse `query_id` with a
+per-dispatch id of the form `<trace id>-<span id>-<counter>` (always on, no
+flag). The cerberus trace id is the leading **prefix**, so each row in
+`system.query_log` still joins back to the cerberus trace — while the span id
+and a process-global counter keep the id **unique per CH dispatch**, so the
+many concurrent queries a single trace fans out (a Grafana dashboard loading
+panels, a vector-join / fan-out PromQL) never collide on the same `query_id`
+(which ClickHouse would reject with code 216, "Query with id = X is already
+running"). With the optional DARK flags from
+[`configuration.md`](configuration.md#query-instrumentation-phase-0), operators
+also get the join keys to cluster and rank cerberus's SQL by cost.
 
-Join a cerberus trace to its ClickHouse execution:
+Join a cerberus trace to its ClickHouse execution (match on the trace-id
+prefix — one trace maps to many per-dispatch `query_id`s):
 
 ```sql
-SELECT query_duration_ms, memory_usage, read_rows, read_bytes, query
+SELECT query_id, query_duration_ms, memory_usage, read_rows, read_bytes, query
 FROM system.query_log
 WHERE type = 'QueryFinish'
-  AND query_id = '<cerberus trace id>'
+  AND query_id LIKE '<cerberus trace id>-%'
 ```
 
 Top query shapes by p99 latency (cluster by ClickHouse's normalized hash):
