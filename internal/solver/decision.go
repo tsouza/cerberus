@@ -102,7 +102,9 @@ const (
 )
 
 // Slice is one shard of the anchor-grid decomposition. Bounds are
-// anchor-grid-aligned; Plan is a re-anchored DEEP COPY of the optimized plan.
+// anchor-grid-aligned; Plan is a re-anchored view of the optimized plan that
+// SHARES the immutable off-spine subtrees with the original (only the
+// O(spine-depth) re-gridded spine nodes are cloned).
 type Slice struct {
 	// Index is the position in the oldest-first composition order.
 	Index int
@@ -118,7 +120,12 @@ type Slice struct {
 	// floor itself.
 	ScanFrom time.Time
 
-	// Plan is the re-anchored deep copy of the optimized plan for this
-	// slice. The original plan is never mutated.
+	// Plan is the re-anchored, share-immutable-off-spine view of the
+	// optimized plan for this slice: only the windowed spine is cloned and
+	// re-gridded; the off-spine subtrees are shared with the original (and
+	// across sibling shards). The original plan is never mutated, and the
+	// shards must not mutate a plan node in place (the no-mutate-after-slice
+	// contract — see slicer.go and the immutability guards in the solver
+	// tests). The solver runs each shard through emit only, which never does.
 	Plan chplan.Node
 }

@@ -9,12 +9,16 @@ import "fmt"
 // leaves n and every node/expr reachable from it byte-identical.
 //
 // CloneNode is exhaustive over every concrete Node type (the switch's
-// default panics rather than silently aliasing). That exhaustiveness is the
-// contract ReanchorRange leans on: a re-anchored shard plan must be a true
-// deep copy so the solver can run K of them concurrently without one
-// shard's rewrite bleeding into another (or into route A's plan). When a
-// new Node type is added, this switch and TestCloneNodeExhaustive in
-// clone_test.go fail in lock-step, forcing the author to extend the copy.
+// default panics rather than silently aliasing). That exhaustiveness backs
+// the solver's slicing path: ReanchorRange CLONES the O(spine-depth) re-
+// gridded spine nodes and SHARES the immutable off-spine subtree across the K
+// shards (a copy-on-write view, sound under the no-mutate-after-slice
+// contract); CloneNode is the fallback the slicer uses to deep-copy a subtree
+// when it genuinely must mutate it in isolation (e.g. the GUARDRAIL B
+// nested-subquery descend, where an off-spine subtree carries its own window
+// that must be zeroed). When a new Node type is added, this switch and
+// TestCloneNodeExhaustive in clone_test.go fail in lock-step, forcing the
+// author to extend the copy.
 //
 // CloneNode does NOT re-anchor anything — it is a pure copy. ReanchorRange
 // composes the copy with the grid rewrite.

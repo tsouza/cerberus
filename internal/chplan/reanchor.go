@@ -15,16 +15,31 @@ import (
 // re-anchored into a wrong-results shard plan.
 var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not match the predicted request grid")
 
-// ReanchorRange returns a deep copy of n whose windowed spine is re-anchored
-// to evaluate one row per anchor across [start, end], with each matrix
-// RangeWindow's own input spine widened by a further Range of lookback so
-// every anchor finds the samples it needs.
+// ReanchorRange returns a re-anchored view of n whose windowed spine is
+// re-anchored to evaluate one row per anchor across [start, end], with each
+// matrix RangeWindow's own input spine widened by a further Range of lookback
+// so every anchor finds the samples it needs.
 //
-// It is the head-agnostic, copy-not-mutate generalization of
+// It is the head-agnostic, no-mutate generalization of
 // promql.widenSubquerySpine (internal/promql/subquery.go): where
 // widenSubquerySpine mutates the spine in place, ReanchorRange leaves the
-// input Node and every expr tree reachable from it byte-identical and
-// returns a fresh tree the solver can run as one of K concurrent shards.
+// input Node and every expr tree reachable from it byte-identical.
+//
+// Structural sharing (copy-on-write). ReanchorRange clones only the
+// O(spine-depth) nodes it actually re-grids — the matrix RangeWindow /
+// RangeLWR / Project / Aggregate / TopK / Filter chain down the windowed
+// spine — and SHARES every immutable off-spine subtree, expr, projection,
+// and agg-func pointer with the input verbatim. The off-spine subtree is
+// byte-identical across all K shards (it does not move in time), so sharing
+// it is exactly equal to the old per-shard CloneNode (`Equal` is preserved)
+// while doing K+1 fewer full-subtree copies. The returned tree is therefore
+// NOT independently mutable: the solver runs the K shards through emit only,
+// which never mutates a plan node in place. That no-mutate-after-slice
+// contract is enforced by the differential immutability guards in
+// internal/solver (TestSlice_NoSharedMutation and siblings) and by the
+// per-arm immutability tests below — a future pass that mutates a shared
+// off-spine node in place must add its own clone or it will corrupt sibling
+// shards.
 //
 // Defensive grid-prediction check (the @-modifier guard, §"Eligibility signals" of
 // docs/solver.md). A windowed matrix node is re-anchored only
@@ -54,8 +69,8 @@ var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not ma
 // into their input with start.Add(-Range); instant RangeWindows (Step == 0)
 // terminate the walk; the wrapper nodes the subquery lowerings interpose
 // (Project / Aggregate / TopK / Filter) pass the requirement through
-// unchanged. Every other node type is copied verbatim — it is below the
-// spine and does not move in time.
+// unchanged. Every other node type is SHARED verbatim (the original pointer,
+// not a copy) — it is below the spine and does not move in time.
 //
 // RangeLWR (the bare-selector last-with-respect-to leaf, the deriv / idelta /
 // irate / instant-LWR / negative-offset families) re-anchors the same way:
@@ -76,15 +91,16 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		// Instant-shape RangeWindows resolve a single anchor themselves and
 		// terminate the walk (mirrors widenSubquerySpine's Step <= 0 guard).
 		if v.Step <= 0 {
-			return CloneNode(v), nil
+			// Instant-shape window: not re-gridded, share verbatim.
+			return v, nil
 		}
 		if err := checkPredictedGrid(v, start, end); err != nil {
 			return nil, err
 		}
+		// Clone only this spine node; GroupBy / Scalars / ScalarExprs are
+		// off-grid immutable, so share the original slice headers (the shard
+		// re-grids Start/End/OuterRange only — it never mutates these).
 		c := *v
-		c.GroupBy = cloneExprs(v.GroupBy)
-		c.Scalars = cloneFloats(v.Scalars)
-		c.ScalarExprs = cloneExprs(v.ScalarExprs)
 		c.Start = start
 		c.End = end
 		c.OuterRange = end.Sub(start)
@@ -104,14 +120,14 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		// anchor) value depends only on that window's membership, not on the
 		// scan lower bound — it is registered slice-invariant — so re-anchoring
 		// to a sub-grid yields exactly the rows route A would have produced for
-		// those anchors. Same copy-not-mutate + grid-prediction discipline as
+		// those anchors. Same no-mutate + grid-prediction discipline as
 		// the RangeWindow arm: the grid is filled only when the node is either
 		// unpinned (the slicer's unpinSpine shape) or already sits exactly on
 		// the predicted grid; an @-pinned divergence routes A via
 		// ErrReanchorGridMismatch.
 		if v.Step <= 0 {
-			// No anchor grid to re-grid (an instant-shape LWR); copy verbatim.
-			return CloneNode(v), nil
+			// No anchor grid to re-grid (an instant-shape LWR); share verbatim.
+			return v, nil
 		}
 		if err := checkPredictedGridLWR(v, start, end); err != nil {
 			return nil, err
@@ -134,19 +150,17 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Project{Input: input, Projections: cloneProjections(v.Projections)}, nil
+		// Projections are off-grid immutable: share the slice header.
+		return &Project{Input: input, Projections: v.Projections}, nil
 	case *Aggregate:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
 			return nil, err
 		}
-		return &Aggregate{
-			Input:              input,
-			GroupBy:            cloneExprs(v.GroupBy),
-			GroupByAliases:     cloneStrings(v.GroupByAliases),
-			AggFuncs:           cloneAggFuncs(v.AggFuncs),
-			DropEmptyOnNoGroup: v.DropEmptyOnNoGroup,
-		}, nil
+		// GroupBy / GroupByAliases / AggFuncs are off-grid immutable: share.
+		c := *v
+		c.Input = input
+		return &c, nil
 	case *TopK:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
@@ -154,23 +168,28 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		}
 		c := *v
 		c.Input = input
-		// KExpr is below the spine (a computed-K scalar plan): copy verbatim,
-		// it does not participate in the anchor grid.
-		c.KExpr = CloneNode(v.KExpr)
-		c.By = cloneExprs(v.By)
-		c.SortExpr = cloneExpr(v.SortExpr)
-		c.Columns = cloneStrings(v.Columns)
+		// KExpr / By / SortExpr / Columns are below the spine (KExpr is a
+		// computed-K scalar plan): off-grid immutable, share verbatim — they
+		// do not participate in the anchor grid.
 		return &c, nil
 	case *Filter:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
 			return nil, err
 		}
-		return &Filter{Input: input, Predicate: cloneExpr(v.Predicate)}, nil
+		// Predicate is off-grid immutable: share.
+		return &Filter{Input: input, Predicate: v.Predicate}, nil
 	default:
-		// Off the windowed spine: a verbatim deep copy. CloneNode is
-		// exhaustive, so an unhandled node type panics rather than aliasing.
-		return CloneNode(n), nil
+		// Off the windowed spine: SHARE the immutable subtree verbatim. The
+		// off-spine subtree is byte-identical across all K shards (it does not
+		// move in time), so sharing the original pointer is exactly equal to
+		// the old per-shard CloneNode while doing K+1 fewer subtree copies.
+		// Soundness rests on the no-mutate-after-slice contract: the solver
+		// runs each shard through emit only, never mutating a plan node in
+		// place (enforced by the differential immutability guards in
+		// internal/solver). A future pass that DOES mutate a shared node must
+		// clone it first or it will corrupt sibling shards.
+		return n, nil
 	}
 }
 

@@ -8,10 +8,12 @@ import (
 )
 
 // slice decomposes the eval grid into k disjoint, on-grid anchor sub-grids
-// and re-anchors a deep copy of plan onto each (docs §Decomposition "Primary
-// dimension"). It is the geometry half of the Planner: pure arithmetic over
-// the anchor grid plus a ReanchorRange per slice (which deep-copies, so the
-// input plan is never mutated).
+// and re-anchors a share-immutable-off-spine view of plan onto each (docs
+// §Decomposition "Primary dimension"). It is the geometry half of the
+// Planner: pure arithmetic over the anchor grid plus a ReanchorRange per
+// slice. ReanchorRange clones only the O(spine-depth) re-gridded spine nodes
+// and shares the immutable off-spine subtrees, so the input plan is never
+// mutated and the K shards never alias a mutable node.
 //
 // Anchors are defined backward from End: a_i = End - Offset - i*Step,
 // i in [0, N), N = OuterRange/Step + 1. With m = ceil(N/K) anchors per slice,
@@ -67,9 +69,10 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 	// [Start, End] (the Planner's grid-prediction guard already verified it
 	// sits exactly there). ReanchorRange only re-anchors a node whose bounds
 	// are either unpinned or already equal to the target grid, so to re-grid
-	// each slice onto a SUB-window we first build one deep, spine-UNPINNED
-	// copy of the plan; ReanchorRange then fills each slice's grid into it.
-	// The original plan is never touched — unpinSpine clones.
+	// each slice onto a SUB-window we first build one spine-UNPINNED, share-
+	// immutable-off-spine view of the plan; ReanchorRange then fills each
+	// slice's grid into it. The original plan is never touched — unpinSpine
+	// clones only the spine path and shares the off-spine subtrees.
 	base := unpinSpine(plan)
 
 	// m = ceil(N/K) anchors per slice (newest-first index space).
@@ -142,47 +145,163 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 	return slices, nil
 }
 
-// unpinSpine returns a deep copy of plan whose windowed-spine bounds
+// unpinSpine returns a copy-on-write view of plan whose windowed-spine bounds
 // (RangeWindow / RangeLWR Start, End, and the matrix OuterRange) are zeroed,
 // so ReanchorRange treats every spine node as the unpinned subquery-inner
-// shape and fills each slice's grid in. The original plan is never mutated:
-// the copy is produced by chplan.CloneNode, and only the cloned spine nodes
-// are zeroed. Off-spine nodes are carried verbatim by the clone.
+// shape and fills each slice's grid in.
+//
+// The original plan is never mutated. unpinSpine clones ONLY the spine-path
+// nodes it actually zeroes (and their ancestors back to the root, the
+// O(spine-depth) chain) and SHARES every immutable off-spine subtree verbatim
+// — the structural-sharing companion to ReanchorRange's off-spine sharing.
+// The returned tree therefore aliases the input's off-spine nodes; it is fed
+// straight into ReanchorRange (which shares them again onto each shard) and is
+// never mutated in place.
 //
 // Zeroing is safe because the Planner has already proven (signal 4) that
 // every spine node sits exactly on the grid the request predicts — so the
 // information being dropped is exactly the grid ReanchorRange recomputes.
+//
+// GUARDRAIL B (nested subqueries). Blanket off-spine sharing is exact only
+// when an off-spine subtree carries no windowed node that unpinSpine must
+// zero. An off-spine subtree reachable via a non-spine Node child (e.g. a
+// TopK.KExpr computed-K plan) CAN itself contain a RangeWindow / RangeLWR
+// that needs zeroing; sharing that subtree and zeroing it in place would
+// corrupt the caller's plan. So unpinSpine DESCENDS into off-spine children,
+// cloning the path to any inner windowed node it must zero, and shares only
+// the genuinely window-free subtrees. (ScalarSubquery interiors are reached
+// through Expr slots, not Node children; chplan.Walk and the Children() walk
+// here never descend into them, so they are carried by value inside the
+// shared/cloned node exactly as before — unpinSpine never zeroed them.)
 func unpinSpine(plan chplan.Node) chplan.Node {
-	c := chplan.CloneNode(plan)
-	var walk func(chplan.Node)
-	walk = func(n chplan.Node) {
-		switch v := n.(type) {
+	out, _ := unpinSpineCOW(plan)
+	return out
+}
+
+// unpinSpineCOW returns a copy-on-write rewrite of n with the windowed-spine
+// bounds zeroed. The second return reports whether the returned node is a
+// fresh clone (true) or the shared original (false), so a parent can decide
+// whether it too must clone (it must clone iff any child changed).
+//
+// Invariant: the returned node is `Equal` to the old CloneNode-then-zero
+// result, but allocates only along the path to a zeroed spine node.
+func unpinSpineCOW(n chplan.Node) (chplan.Node, bool) {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		input, _ := unpinSpineCOW(v.Input)
+		// A matrix window (Step > 0) is on the spine: clone + zero its grid.
+		// An instant window is not zeroed but must still clone if its input
+		// changed so the zeroing does not leak into the shared original.
+		if v.Step > 0 {
+			c := *v
+			c.Start = time.Time{}
+			c.End = time.Time{}
+			c.OuterRange = 0
+			c.Input = input
+			return &c, true
+		}
+		c := *v
+		c.Input = input
+		return &c, true
+	case *chplan.RangeLWR:
+		input, _ := unpinSpineCOW(v.Input)
+		c := *v
+		c.Start = time.Time{}
+		c.End = time.Time{}
+		c.Input = input
+		return &c, true
+	case *chplan.Filter:
+		input, changed := unpinSpineCOW(v.Input)
+		if !changed {
+			return v, false
+		}
+		c := *v
+		c.Input = input
+		return &c, true
+	case *chplan.Project:
+		input, changed := unpinSpineCOW(v.Input)
+		if !changed {
+			return v, false
+		}
+		c := *v
+		c.Input = input
+		return &c, true
+	}
+
+	// Off the recognised spine. Descend into every Node child (GUARDRAIL B:
+	// a child subtree -- e.g. a TopK.KExpr computed-K plan -- can itself carry
+	// a windowed node that must be zeroed). If no child carries one, share the
+	// original verbatim (the COW fast path). If one does, fall back to the
+	// pre-COW behavior for THIS subtree only: deep-copy it and zero the spine
+	// of the copy in place. That is byte-for-byte the old semantics, confined
+	// to the rare off-spine-window subtree, so blanket-sharing never mutates a
+	// node the caller still owns.
+	return descendOffSpine(n)
+}
+
+// descendOffSpine handles the off-spine case of unpinSpineCOW. It probes each
+// Node child for a windowed node that unpinSpine must zero; if none is found
+// the original node is shared verbatim. If one is found, the whole node is
+// deep-copied and its spine zeroed in place by zeroSpineInPlace -- exactly the
+// pre-COW path -- so the shared original is never touched.
+func descendOffSpine(n chplan.Node) (chplan.Node, bool) {
+	if !subtreeHasZeroableSpine(n) {
+		return n, false
+	}
+	cloned := chplan.CloneNode(n)
+	zeroSpineInPlace(cloned)
+	return cloned, true
+}
+
+// subtreeHasZeroableSpine reports whether the subtree rooted at n (descending
+// only through Node children, never through Expr-embedded ScalarSubquery
+// interiors -- which unpinSpine never zeroed) contains a windowed node whose
+// grid unpinSpine would zero: any RangeLWR, or a matrix RangeWindow (Step > 0).
+func subtreeHasZeroableSpine(n chplan.Node) bool {
+	found := false
+	chplan.Walk(n, func(node chplan.Node) bool {
+		switch v := node.(type) {
+		case *chplan.RangeLWR:
+			found = true
 		case *chplan.RangeWindow:
 			if v.Step > 0 {
-				v.Start = time.Time{}
-				v.End = time.Time{}
-				v.OuterRange = 0
+				found = true
 			}
-			walk(v.Input)
-			return
-		case *chplan.RangeLWR:
+		}
+		return !found
+	})
+	return found
+}
+
+// zeroSpineInPlace zeroes the windowed-spine bounds of an OWNED node tree in
+// place. It is the original (pre-COW) unpinSpine walk, retained for the
+// GUARDRAIL B off-spine fallback where unpinSpineCOW has already deep-copied
+// the subtree and may safely mutate the copy.
+func zeroSpineInPlace(n chplan.Node) {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		if v.Step > 0 {
 			v.Start = time.Time{}
 			v.End = time.Time{}
-			walk(v.Input)
-			return
-		case *chplan.Filter:
-			walk(v.Input)
-			return
-		case *chplan.Project:
-			walk(v.Input)
-			return
+			v.OuterRange = 0
 		}
-		for _, ch := range n.Children() {
-			walk(ch)
-		}
+		zeroSpineInPlace(v.Input)
+		return
+	case *chplan.RangeLWR:
+		v.Start = time.Time{}
+		v.End = time.Time{}
+		zeroSpineInPlace(v.Input)
+		return
+	case *chplan.Filter:
+		zeroSpineInPlace(v.Input)
+		return
+	case *chplan.Project:
+		zeroSpineInPlace(v.Input)
+		return
 	}
-	walk(c)
-	return c
+	for _, ch := range n.Children() {
+		zeroSpineInPlace(ch)
+	}
 }
 
 // spineOffsetAndD walks the windowed spine of plan to recover the Offset

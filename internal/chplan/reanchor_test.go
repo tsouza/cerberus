@@ -159,9 +159,14 @@ func TestReanchorRange_InstantTerminates(t *testing.T) {
 	}
 }
 
-// TestReanchorRange_OutputIsolated mutates the re-anchored output and
-// asserts the input is untouched — deep-copy isolation through the rewrite.
-func TestReanchorRange_OutputIsolated(t *testing.T) {
+// TestReanchorRange_SpineNodeIsCloned pins the COW contract on the spine
+// node itself: the re-gridded spine node is a FRESH clone, so re-anchoring a
+// shard onto a sub-grid (the solver's only mutation of the output) never
+// touches the input's bounds. The off-spine subtree (Input) and the off-grid
+// immutable slice headers (GroupBy) are deliberately SHARED — see
+// TestReanchorRange_OffSpineIsShared — so this test mutates only the cloned
+// spine fields.
+func TestReanchorRange_SpineNodeIsCloned(t *testing.T) {
 	t.Parallel()
 
 	in := matrixWindow(5*time.Minute, time.Minute, 0)
@@ -172,11 +177,41 @@ func TestReanchorRange_OutputIsolated(t *testing.T) {
 		t.Fatalf("ReanchorRange: %v", err)
 	}
 	rw := out.(*chplan.RangeWindow)
-	rw.GroupBy[0] = &chplan.ColumnRef{Name: "MUTATED"}
-	rw.Input.(*chplan.Scan).Table = "MUTATED"
+	if rw == in {
+		t.Fatal("ReanchorRange returned the same spine pointer (spine must be cloned)")
+	}
+	// Re-grid the shard further (what the slicer does per slice): this must
+	// not move the input's grid.
+	rw.Start = time.Unix(0, 0).UTC()
+	rw.End = time.Unix(1, 0).UTC()
+	rw.OuterRange = time.Second
+	rw.Range = 999 * time.Hour
 
 	if !in.Equal(snapshot) {
-		t.Fatal("mutating ReanchorRange output leaked into the input")
+		t.Fatal("re-gridding the cloned spine node leaked into the input")
+	}
+}
+
+// TestReanchorRange_OffSpineIsShared documents the COW contract explicitly:
+// the off-spine subtree is SHARED, not copied. The re-anchored output's
+// off-spine Input is the SAME pointer as the input's, and the off-grid
+// immutable GroupBy slice shares its backing array. This is the lever that
+// makes slicing K+1× cheaper; its soundness rests on the no-mutate-after-
+// slice contract enforced by the solver's differential immutability guard.
+func TestReanchorRange_OffSpineIsShared(t *testing.T) {
+	t.Parallel()
+
+	in := matrixWindow(5*time.Minute, time.Minute, 0)
+	out, err := chplan.ReanchorRange(in, time.Unix(1000, 0).UTC(), time.Unix(4600, 0).UTC())
+	if err != nil {
+		t.Fatalf("ReanchorRange: %v", err)
+	}
+	rw := out.(*chplan.RangeWindow)
+	if rw.Input != in.Input {
+		t.Fatal("off-spine Input was copied; COW requires it be shared")
+	}
+	if len(rw.GroupBy) == 0 || &rw.GroupBy[0] != &in.GroupBy[0] {
+		t.Fatal("off-grid immutable GroupBy was copied; COW requires the slice be shared")
 	}
 }
 
@@ -377,9 +412,12 @@ func TestReanchorRange_LWRInstantTerminates(t *testing.T) {
 	}
 }
 
-// TestReanchorRange_LWROutputIsolated: mutating the re-anchored RangeLWR output
-// must not leak into the input — deep-copy isolation through the LWR rewrite.
-func TestReanchorRange_LWROutputIsolated(t *testing.T) {
+// TestReanchorRange_LWRSpineNodeIsCloned: the COW contract on the RangeLWR
+// spine node. The re-gridded LWR is a fresh clone, so re-anchoring a shard
+// (the solver's only output mutation) never moves the input's grid. The
+// off-spine Input is SHARED — see TestReanchorRange_LWROffSpineIsShared — so
+// this test mutates only the cloned spine fields.
+func TestReanchorRange_LWRSpineNodeIsCloned(t *testing.T) {
 	t.Parallel()
 	in := lwrNode(time.Time{}, time.Time{}, time.Minute, 5*time.Minute, -5*time.Minute)
 	snapshot := chplan.CloneNode(in)
@@ -389,11 +427,31 @@ func TestReanchorRange_LWROutputIsolated(t *testing.T) {
 		t.Fatalf("ReanchorRange: %v", err)
 	}
 	r := out.(*chplan.RangeLWR)
+	if r == in {
+		t.Fatal("ReanchorRange returned the same RangeLWR pointer (spine must be cloned)")
+	}
+	r.Start = time.Unix(0, 0).UTC()
+	r.End = time.Unix(1, 0).UTC()
 	r.Offset = 999 * time.Hour
-	r.Input.(*chplan.Scan).Table = "MUTATED"
 
 	if !in.Equal(snapshot) {
-		t.Fatal("mutating ReanchorRange RangeLWR output leaked into the input")
+		t.Fatal("re-gridding the cloned RangeLWR spine node leaked into the input")
+	}
+}
+
+// TestReanchorRange_LWROffSpineIsShared documents that the RangeLWR's
+// off-spine Input subtree is SHARED, not copied — the COW lever for the
+// bare-selector family.
+func TestReanchorRange_LWROffSpineIsShared(t *testing.T) {
+	t.Parallel()
+	in := lwrNode(time.Time{}, time.Time{}, time.Minute, 5*time.Minute, -5*time.Minute)
+	out, err := chplan.ReanchorRange(in, time.Unix(1000, 0).UTC(), time.Unix(4600, 0).UTC())
+	if err != nil {
+		t.Fatalf("ReanchorRange: %v", err)
+	}
+	r := out.(*chplan.RangeLWR)
+	if r.Input != in.Input {
+		t.Fatal("off-spine Input was copied; COW requires it be shared")
 	}
 }
 
