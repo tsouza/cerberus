@@ -81,7 +81,7 @@ acts on the per-query path when the feature is in the resolved set.
 | id                     | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                     |
 | ---------------------- | ---------- | ------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `aggregation_in_order` | 24.8       | stable       | -                                                    | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent. |
-| ---------------------- | ---------- | ------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `condition_cache`      | 25.3       | stable       | -                                                    | stamps `use_query_condition_cache=1` on predicate-stable read paths. Result-equivalent (a cache).                                                         |
 | `ts_grid_range`        | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                  |
 
 Notes:

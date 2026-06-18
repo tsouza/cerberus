@@ -127,9 +127,9 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache)
 }
 
-func TestResolve_Auto_OldServerSkipsUnsupportedStable(t *testing.T) {
+func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	// On 24.8 only aggregation_in_order (24.8) is supported; condition_cache
-	// (25.3) is silently skipped under auto (no warning, "best available").
+	// (25.3) is silently excluded under auto (no warning, "best available").
 	set, warns, err := Resolve(Config{Optimizations: "auto"}, v(24, 8))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
