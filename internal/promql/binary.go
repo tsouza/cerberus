@@ -177,9 +177,20 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 	// The `time() <op> metric` and `metric <op> time()` shapes collapse
 	// to empty without this rewrite. Gated on default matching for the
 	// same reasons as the both-synthetic fold above.
+	//
+	// Broadcast is correct ONLY when the synthetic side is a genuine
+	// scalar (time(), zero-arg date fns, a scalar() fold). `vector(x)`
+	// also lowers to the synthetic-scalar IR shape, but PromQL types it
+	// as an instant VECTOR carrying empty `{}` labels — so `vector(1) +
+	// metric` is a vector-vector op matching on ALL labels, and `{}`
+	// never matches `{instance, job, ...}` (zero matches → empty result,
+	// NOT a broadcast). isVectorTypedSyntheticOperand peels the
+	// parser-level wrappers to detect that case and falls through to the
+	// regular VectorJoin, where the empty-label row joins by full
+	// Attributes and yields the empty result Prometheus produces.
 	if isDefaultMatching(b.VectorMatching) {
-		lSynth := isSyntheticScalarPlan(left, s)
-		rSynth := isSyntheticScalarPlan(right, s)
+		lSynth := isSyntheticScalarPlan(left, s) && !isVectorTypedSyntheticOperand(b.LHS)
+		rSynth := isSyntheticScalarPlan(right, s) && !isVectorTypedSyntheticOperand(b.RHS)
 		switch {
 		case lSynth && !rSynth:
 			return foldSyntheticVectorBinary(left, right, op, true /*scalarOnLeft*/, b.ReturnBool, s), nil
@@ -236,6 +247,35 @@ func isDefaultMatching(vm *parser.VectorMatching) bool {
 		len(vm.MatchingLabels) == 0 &&
 		len(vm.Include) == 0 &&
 		!vm.On
+}
+
+// isVectorTypedSyntheticOperand reports whether a binop operand is a
+// `vector(...)` Call — a PromQL ValueTypeVector that lowers to the same
+// synthetic-scalar IR shape as a genuine scalar but must NOT broadcast.
+//
+// `vector(1)` is an instant vector with empty `{}` labels and value 1 at
+// every step. A V-V op against it (`vector(1) + demo_num_cpus`) matches
+// on ALL labels, and `{}` can never match `{instance, job, ...}` → zero
+// matches → empty result. The broadcast path (foldSyntheticVectorBinary)
+// would wrongly treat it as a scalar, so the asymmetric synthetic fold
+// excludes vector-typed operands and lets them flow through VectorJoin.
+//
+// Genuine scalars (time(), zero-arg date functions, scalar() folds) are
+// ValueTypeScalar and return false here, so `scalar(x) + metric` still
+// broadcasts. ParenExpr / StepInvariantExpr wrappers are peeled so
+// `(vector(1)) + metric` and step-invariant-wrapped forms are detected.
+func isVectorTypedSyntheticOperand(e parser.Expr) bool {
+	for {
+		switch n := e.(type) {
+		case *parser.ParenExpr:
+			e = n.Expr
+		case *parser.StepInvariantExpr:
+			e = n.Expr
+		default:
+			call, ok := e.(*parser.Call)
+			return ok && call.Func != nil && call.Func.Name == "vector"
+		}
+	}
 }
 
 // foldSyntheticBinary builds the combined Project for a V-V binop

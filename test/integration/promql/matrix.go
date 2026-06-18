@@ -94,13 +94,16 @@ func cat2Histogram() []exoticCase {
 		{name: "cat2/hq_p90", promql: "histogram_quantile(0.9, sum by(le)(rate(" + h + "[5m])))"},
 		{name: "cat2/hq_p95", promql: "histogram_quantile(0.95, sum by(le)(rate(" + h + "[5m])))"},
 		{name: "cat2/hq_by_path", promql: "histogram_quantile(0.9, sum by(le, path)(rate(" + h + "[5m])))"},
+		// phi out of domain (Prometheus quantile.go:114-119): phi < 0 ->
+		// -Inf, phi > 1 -> +Inf. Pinned by Wave-0 fix (b); phi == 0 / 1
+		// stay in domain and fall through to the normal bucket search.
+		{name: "cat2/hq_phi_neg", promql: "histogram_quantile(-0.1, sum by(le)(rate(" + h + "[5m])))"},
+		{name: "cat2/hq_phi_over1", promql: "histogram_quantile(1.01, sum by(le)(rate(" + h + "[5m])))"},
 		// DEFERRED (cerberus-vs-oracle interpolation/edge divergences,
 		// outside the code-47 scope — see PR body):
 		//   - hq p50: cerberus's sub-bucket interpolation lands at a
 		//     different point than the oracle's bucketQuantile for the p50
-		//     rank (p90/p95 agree).
-		//   - phi out of range (-0.1 / 1.01): the oracle returns -Inf/+Inf
-		//     per spec; cerberus returns 0 / clamps.
+		//     rank (p90/p95 agree). Separate later PR (fix (a)).
 		//   - instant buckets (no rate): cerberus drops the {} series the
 		//     oracle keeps over raw cumulative bucket counts.
 	}
@@ -208,12 +211,15 @@ func cat8ScalarVector() []exoticCase {
 		{name: "cat8/scalar_vector_3", promql: "scalar(vector(3))"},
 		{name: "cat8/scalar_nonsingleton", promql: "scalar(" + mem + ")"},
 		{name: "cat8/scalar_of_sum", promql: "scalar(sum(demo_num_cpus))"},
-		// DEFERRED: `vector(1) + metric` — cerberus broadcasts the
-		// label-less vector(1) across the metric's series (keeping the
-		// metric labels), while the oracle treats it as a strict one-to-one
-		// vector match on disjoint label sets -> empty. A genuine
-		// vector(scalar)-broadcast semantics divergence, outside this
-		// suite's scope.
+		// `vector(1) + metric`: vector(1) is a label-less instant vector
+		// ({} labels), so a V-V op matches on ALL labels and {} never
+		// matches {instance, job} -> EMPTY. Pinned by Wave-0 fix (c)
+		// (vector-typed synthetic operand routes through VectorJoin instead
+		// of broadcasting).
+		{name: "cat8/vector1_plus_metric", promql: "vector(1) + demo_num_cpus"},
+		// Both operands are label-less {} vectors, so they DO match ->
+		// one {} row with value 3 (the both-synthetic fold).
+		{name: "cat8/vector1_plus_vector2", promql: "vector(1) + vector(2)"},
 	}
 }
 

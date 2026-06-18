@@ -121,7 +121,8 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 // arrayConcat(arrayReverse(NegativeBucketCounts), [ZeroCount],
 // PositiveBucketCounts) cum-sum over the full walk,
 // length(NegativeBucketCounts) boundary, negative/zero/positive
-// interpolation branches, and edge cases (total=0, phi<=0, phi>=1).
+// interpolation branches, and edge cases (total=0, phi<0 -> -inf,
+// phi>1 -> +inf, phi==0 / phi==1 in-domain saturation).
 func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 	t.Parallel()
 
@@ -152,8 +153,10 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		"arrayFirstIndex(c -> c >= (0.95",
 		"length(`NegativeBucketCounts`)",
 		"`PositiveOffset` + length(`PositiveBucketCounts`)",
-		"0.95 <= 0",
-		"0.95 >= 1",
+		"0.95 < 0",
+		"0.95 > 1",
+		"0.95 = 0",
+		"0.95 = 1",
 		"-`ZeroThreshold`",
 		"2 * `ZeroThreshold`",
 		"FROM `otel_metrics_exp_histogram`",
