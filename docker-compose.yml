@@ -52,13 +52,18 @@ services:
   clickhouse:
     # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding on
     # the startup-bench job and PR #297's fix for the compatibility
-    # harnesses, `clickhouse/clickhouse-server:25.8-alpine` stalls in the
-    # entrypoint script for 5+ min (create-user → restart sequence never
-    # completes, port 8123 never binds). The Ubuntu-base variant boots in
-    # ~10-20s on the same hosts. A future maintainer: do NOT innocently
-    # switch back to -alpine without re-validating against the musl /
-    # scheduling regression that bit #245.
-    image: clickhouse/clickhouse-server:25.8
+    # harnesses, the `-alpine` variant stalls in the entrypoint script for
+    # 5+ min (create-user → restart sequence never completes, port 8123
+    # never binds). The Ubuntu-base variant boots in ~10-20s on the same
+    # hosts. A future maintainer: do NOT innocently switch to -alpine
+    # without re-validating against the musl / scheduling regression that
+    # bit #245.
+    #
+    # Pinned to a recent ClickHouse so the demo exercises every cerberus
+    # optimization (see the cerberus service env): condition_cache needs
+    # >= 25.3 and the native ts_grid rate path needs >= 25.6 — both
+    # comfortably satisfied here.
+    image: clickhouse/clickhouse-server:26.5
     networks: [cerberus-dev]
     environment:
       CLICKHOUSE_DB: otel
@@ -193,14 +198,29 @@ services:
       # ClickHouse's server-total cap into a mid-stream 502 (k3d run
       # 27277793810).
       CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
-      # CERBERUS_EXPERIMENTAL_TS_GRID_RANGE   route rate()-over-range to
-      # ClickHouse's native timeSeriesRateToGrid aggregate (CH >= 25.6,
-      # satisfied by the 25.8 server above) instead of the per-anchor
-      # array fan-out. Default-off in prod (parity is exact to <=1 ULP,
-      # not byte-identical); enabled here so the demo dogfoods the native
-      # path against a real 25.8 server — the compose-smoke crawl is its
-      # first real-CH exercise.
-      CERBERUS_EXPERIMENTAL_TS_GRID_RANGE: "true"
+      # CERBERUS_CH_OPTIMIZATIONS   ClickHouse query-optimization selection.
+      # The demo names every optimization explicitly so it dogfoods the full
+      # suite against the real server above:
+      #   - aggregation_in_order (>= 24.8): optimize_aggregation_in_order=1
+      #     when GROUP BY is a sorting-key prefix.
+      #   - condition_cache (>= 25.3): use_query_condition_cache=1 on
+      #     predicate-stable read paths.
+      #   - ts_grid_range (>= 25.6, experimental): routes rate()-over-range
+      #     onto ClickHouse's native timeSeriesRateToGrid aggregate instead
+      #     of the per-anchor array fan-out.
+      # An explicit list (not `auto`) is used because `auto` enables stable
+      # features only — ts_grid_range is experimental, so it must be named.
+      # The default enforcing mode is fine here: the pinned server supports
+      # all three, so nothing is rejected.
+      CERBERUS_CH_OPTIMIZATIONS: "aggregation_in_order,condition_cache,ts_grid_range"
+      # CERBERUS_LOG_COMMENT_SHAPE   stamp each ClickHouse query with a
+      # compact, literal-free cerberus shape id in `log_comment`. Combined
+      # with the always-on `query_id` (derived from the cerberus trace id),
+      # this lets you correlate cerberus queries in ClickHouse's
+      # system.query_log:
+      #   SELECT query_id, log_comment, query_duration_ms, read_rows
+      #   FROM system.query_log WHERE log_comment LIKE 'cerb:%' ORDER BY event_time DESC;
+      CERBERUS_LOG_COMMENT_SHAPE: "true"
     depends_on:
       clickhouse:
         condition: service_healthy
