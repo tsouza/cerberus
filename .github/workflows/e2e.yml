@@ -332,6 +332,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ---- free runner disk BEFORE the stack boots (infra-flake fix) ----
+      # Bone-stock ubuntu-latest ships ~14 GB free on /, which the compose
+      # stack (CH + cerberus build + Grafana + Playwright/chromium) can
+      # exhaust mid-run -> kubelet/Docker DiskPressure, Evicted pods, exit
+      # 137, then the port-forward/healthcheck fails. Reclaiming ~25-30 GB
+      # of pre-baked toolchains we never use (dotnet/android/ghc/CodeQL,
+      # apt bloat) before any image pull/build gives the stack headroom.
+      # docker-images: false -> KEEP Docker's prebaked images (the stack
+      # needs them). Pinned to a commit SHA (the action only ships @main;
+      # repo CI rule: pin explicitly, no HEAD).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
       - uses: docker/setup-buildx-action@v4
 
       # Authenticated Docker Hub pulls get a far higher rate limit than
@@ -453,16 +474,25 @@ jobs:
       - name: dump compose state + logs on failure
         if: failure() || steps.playwright_smoke.outcome == 'failure'
         run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
           echo "=== compose ps ==="
-          docker compose ps
+          docker compose ps | tee /tmp/compose-state.log
           echo "=== clickhouse logs (last 200) ==="
-          docker compose logs --tail=200 clickhouse || true
+          docker compose logs --tail=200 clickhouse 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== cerberus logs (last 200) ==="
-          docker compose logs --tail=200 cerberus || true
+          docker compose logs --tail=200 cerberus 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== grafana logs (last 200) ==="
-          docker compose logs --tail=200 grafana || true
+          docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== otel-collector logs (last 200) ==="
-          docker compose logs --tail=200 otel-collector || true
+          docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
+          # Infra-flake breadcrumb: if the captured state shows a disk /
+          # eviction signal, print a loud, actionable one-liner so a
+          # reviewer knows this is an infra flake (full runner disk), not a
+          # code regression — a fresh-runner re-run is the fix.
+          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage|no space left on device' /tmp/compose-state.log; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          fi
 
       - name: teardown
         if: always()
@@ -516,6 +546,22 @@ jobs:
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v6
+
+      # ---- free runner disk BEFORE the stack boots (infra-flake fix) ----
+      # Same rationale as compose-smoke-shard: reclaim ~25-30 GB of unused
+      # pre-baked toolchains so the compose stack can't exhaust the runner
+      # disk -> DiskPressure/Evicted. KEEP Docker images (docker-images:
+      # false). Pinned to a commit SHA (action only ships @main).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
 
       - uses: docker/setup-buildx-action@v4
 
@@ -581,16 +627,21 @@ jobs:
       - name: dump compose state + logs on failure
         if: failure() || steps.playwright_smoke.outcome == 'failure'
         run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
           echo "=== compose ps ==="
-          docker compose ps
+          docker compose ps | tee /tmp/compose-state.log
           echo "=== clickhouse logs (last 200) ==="
-          docker compose logs --tail=200 clickhouse || true
+          docker compose logs --tail=200 clickhouse 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== cerberus logs (last 200) ==="
-          docker compose logs --tail=200 cerberus || true
+          docker compose logs --tail=200 cerberus 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== grafana logs (last 200) ==="
-          docker compose logs --tail=200 grafana || true
+          docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== otel-collector logs (last 200) ==="
-          docker compose logs --tail=200 otel-collector || true
+          docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
+          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage|no space left on device' /tmp/compose-state.log; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          fi
 
       - name: teardown
         if: always()
@@ -775,6 +826,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ---- free runner disk BEFORE k3d + the stack boot (infra-flake fix) ----
+      # The k3d stack (cerberus image build + CH + Grafana + otel-collector +
+      # sample-apps + Playwright/chromium) lives on the runner's single /
+      # filesystem, which kubelet watches for ephemeral-storage. Bone-stock
+      # ubuntu-latest leaves too little headroom -> kubelet DiskPressure,
+      # pods Evicted ("node was low on resource: ephemeral-storage"), exit
+      # 137, then the port-forward fails. Reclaim ~25-30 GB of unused
+      # toolchains first. KEEP Docker images (the stack needs them). Gated on
+      # RUN_SHARD so the crawl shard's push no-op stays near-instant. Pinned
+      # to a commit SHA (action only ships @main).
+      - name: Disk free (before reclaim)
+        if: env.RUN_SHARD == 'true'
+        run: df -h
+      - name: Free disk space
+        if: env.RUN_SHARD == 'true'
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        if: env.RUN_SHARD == 'true'
+        run: df -h
+
       - uses: actions/setup-go@v6
         if: env.RUN_SHARD == 'true'
         with:
@@ -954,10 +1029,14 @@ jobs:
       - name: Dump cluster state on failure
         if: failure() && env.RUN_SHARD == 'true'
         run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
           echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide || true
+          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
           echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp | tail -50 || true
+          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
+          echo "=== node conditions (DiskPressure et al.) ==="
+          kubectl describe nodes 2>&1 | tee -a /tmp/cluster-state.log | grep -iE 'DiskPressure|ephemeral-storage|Evicted' || true
           echo "=== cerberus logs ==="
           kubectl -n cerberus logs deploy/cerberus --tail 200 || true
           # Per-pod current + previous-container logs for EVERY
@@ -997,6 +1076,13 @@ jobs:
           tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
           echo "=== rolling seeder port-forward log (tail 50) ==="
           tail -50 /tmp/cerberus-e2e-seed-pf.log 2>/dev/null || true
+          # Infra-flake breadcrumb: if the captured cluster state shows a
+          # disk / eviction signal, print a loud, actionable one-liner so a
+          # reviewer knows this is an infra flake (full runner disk), not a
+          # code regression — a fresh-runner re-run is the fix.
+          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage' /tmp/cluster-state.log 2>/dev/null; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          fi
 
       - name: Tear down
         if: always() && env.RUN_SHARD == 'true'
@@ -1147,6 +1233,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ---- free runner disk BEFORE k3d + the stack boot (infra-flake fix) ----
+      # Same rationale as the dashboard-shard job: the k3d chaos stack lives
+      # on the runner's single / filesystem, which kubelet watches for
+      # ephemeral-storage. Without headroom the stack triggers DiskPressure /
+      # Evicted pods before the fault scenarios even run. Reclaim ~25-30 GB of
+      # unused toolchains first; KEEP Docker images. Pinned to a commit SHA
+      # (action only ships @main).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
@@ -1222,10 +1326,14 @@ jobs:
       - name: Dump cluster state on failure
         if: failure()
         run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
           echo "=== pods ==="
-          kubectl -n cerberus get pods -o wide || true
+          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
           echo "=== events (last 50) ==="
-          kubectl -n cerberus get events --sort-by=.lastTimestamp | tail -50 || true
+          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
+          echo "=== node conditions (DiskPressure et al.) ==="
+          kubectl describe nodes 2>&1 | tee -a /tmp/cluster-state.log | grep -iE 'DiskPressure|ephemeral-storage|Evicted' || true
           echo "=== networkpolicies ==="
           kubectl -n cerberus get networkpolicies -o wide || true
           echo "=== cerberus logs ==="
@@ -1248,6 +1356,12 @@ jobs:
           kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
           echo "=== rolling seeder log (tail 200) ==="
           tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
+          # Infra-flake breadcrumb: a disk / eviction signal in the captured
+          # cluster state means a full runner disk, not a code regression —
+          # a fresh-runner re-run is the fix.
+          if grep -qiE 'DiskPressure|Evicted|ephemeral-storage' /tmp/cluster-state.log 2>/dev/null; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction detected — this is an infra flake, safe to re-run on a fresh runner"
+          fi
 
       - name: Tear down
         if: always()

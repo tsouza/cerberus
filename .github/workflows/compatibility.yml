@@ -222,6 +222,25 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
+      # run-compatibility.sh does `docker compose up -d --build` for CH +
+      # reference Prometheus + a freshly-built cerberus. The build layers +
+      # CH data exhaust bone-stock ubuntu-latest's ~14 GB free root fs,
+      # surfacing as "no space left on device" / unhealthy-container compose
+      # aborts. Reclaim ~25-30 GB of unused pre-baked toolchains first; KEEP
+      # Docker images (the stack needs them). Pinned to a commit SHA (action
+      # only ships @main; repo CI rule: pin explicitly, no HEAD).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
@@ -406,6 +425,23 @@ jobs:
           echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
           exit 1
 
+      - name: Disk-pressure self-diagnosis on failure
+        # Infra-flake breadcrumb: the compose stack (CH + reference Prom +
+        # cerberus build) can exhaust the runner's root fs, surfacing as a
+        # "no space left on device" / unhealthy-container compose abort that
+        # looks like a code failure. The harness script tears the stack down
+        # on exit, so we self-diagnose from the runner's own disk: if root is
+        # critically full, print a loud, actionable notice that a fresh-runner
+        # re-run is the fix.
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h
+          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
+          if [ "${avail_kb:-0}" -lt 2097152 ]; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
       - name: Fail job if compatibility step failed
         # Last step in the job. Re-raises the harness step's failure
         # AFTER the summary and artifact have been emitted, so the
@@ -442,6 +478,21 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
+      # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
+      # Same compose stack + same DiskPressure risk as compatibility/prometheus.
+      # Reclaim ~25-30 GB of unused toolchains first; KEEP Docker images. Pinned
+      # to a commit SHA (action only ships @main).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
 
       - uses: actions/setup-go@v6
         with:
@@ -520,6 +571,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Disk-pressure self-diagnosis on failure
+        # Same self-diagnosis as the prometheus job: the harness tears the
+        # compose stack down on exit, so we read the runner's own disk to
+        # tell a DiskPressure infra flake apart from a real parity diff.
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h
+          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
+          if [ "${avail_kb:-0}" -lt 2097152 ]; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
       - name: Fail job if forced-route compatibility step failed
         # Re-raises the harness failure after summary + artifact upload.
         # Under FAIL_ON_DIFF=1 the harness itself exits non-zero on any
@@ -588,6 +652,22 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+
+      # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
+      # run-tempo-compatibility.sh does `docker compose up -d --build` for
+      # tempo + CH + a freshly-built cerberus — same DiskPressure risk as the
+      # prometheus job. Reclaim ~25-30 GB of unused toolchains first; KEEP
+      # Docker images. Pinned to a commit SHA (action only ships @main).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
 
       # Buildx gives the Compose build cache, multi-arch support, and a
       # consistent build backend. The harness uses local build contexts
@@ -706,6 +786,19 @@ jobs:
           echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
           exit 1
 
+      - name: Disk-pressure self-diagnosis on failure
+        # Same self-diagnosis as the prometheus job: the harness tears the
+        # compose stack down on exit, so read the runner's own disk to tell a
+        # DiskPressure infra flake apart from a real harness failure.
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h
+          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
+          if [ "${avail_kb:-0}" -lt 2097152 ]; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
       - name: Fail job if harness step failed
         if: always() && steps.harness.outcome == 'failure'
         run: |
@@ -728,6 +821,22 @@ jobs:
     # diverged or crashed, so the workflow badge correctly turns red.
     steps:
       - uses: actions/checkout@v6
+
+      # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
+      # run-loki-compatibility.sh does `docker compose up --wait` for loki +
+      # CH + a freshly-built cerberus — same DiskPressure risk as the
+      # prometheus job. Reclaim ~25-30 GB of unused toolchains first; KEEP
+      # Docker images. Pinned to a commit SHA (action only ships @main).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
 
       # The run script does `go run ./cmd/seed` + `go test -c` of the
       # vendored bench driver, so we need a Go toolchain. setup-go
@@ -845,6 +954,19 @@ jobs:
           done
           echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
           exit 1
+
+      - name: Disk-pressure self-diagnosis on failure
+        # Same self-diagnosis as the prometheus job: the harness tears the
+        # compose stack down on exit, so read the runner's own disk to tell a
+        # DiskPressure infra flake apart from a real harness failure.
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h
+          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
+          if [ "${avail_kb:-0}" -lt 2097152 ]; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
 
       - name: Fail job if harness step failed
         # Last step in the job. Re-raises the harness step's failure
