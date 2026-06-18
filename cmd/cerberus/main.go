@@ -403,6 +403,9 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	if optSet.Has(chopt.FeatureTSGridRange) {
 		l.Rate = promql.NativeRateLowerer{}
 	}
+	if optSet.Has(chopt.FeatureTSGridResample) {
+		l.Staleness = promql.NativeStalenessLowerer{}
+	}
 	return l
 }
 

@@ -1130,6 +1130,31 @@ func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnc
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 
+	// BOOT-WIRED native dispatch: substitute the ClickHouse-native
+	// timeSeriesResampleToGridWithStaleness lowering for this range-mode
+	// staleness shape when the ts_grid_resample strategy was wired at boot.
+	// The decision was made ONCE at boot and is encoded in the injected
+	// ctx.lowerers table — there is NO feature-flag / version read here. A
+	// fan-out-only boot wiring (nil strategy) returns nil and the fan-out
+	// RangeLWR below is kept. The native node produces the IDENTICAL canonical
+	// 4-column Sample row shape as RangeLWR (proven on the chDB substrate by
+	// the resample dual-emit parity test), so the surrounding plan tree is
+	// unaffected by the substitution.
+	if native := ctx.lowerers.lowerStaleness(stalenessLowerInput{
+		input:         rawSide,
+		start:         ctx.start.UTC(),
+		end:           ctx.end.UTC(),
+		step:          ctx.step,
+		lookback:      instantLookback,
+		offset:        anchor.Offset,
+		metricNameCol: s.MetricNameColumn,
+		attributesCol: s.AttributesColumn,
+		timestampCol:  s.TimestampColumn,
+		valueCol:      s.ValueColumn,
+	}); native != nil {
+		return native
+	}
+
 	return &chplan.RangeLWR{
 		Input:         rawSide,
 		Start:         ctx.start.UTC(),

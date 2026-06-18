@@ -119,6 +119,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitRangeWindowNative(v)
 	case *chplan.RangeLWR:
 		return e.emitRangeLWR(v)
+	case *chplan.RangeWindowResample:
+		return e.emitRangeWindowResample(v)
 	case *chplan.RangeBucketFanout:
 		return e.emitRangeBucketFanout(v)
 	case *chplan.AbsentOverTime:

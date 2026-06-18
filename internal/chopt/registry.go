@@ -21,6 +21,16 @@ const (
 	// explicit-only: NEVER enabled by auto, reachable only by listing it or by
 	// the legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias.
 	FeatureTSGridRange = "ts_grid_range"
+
+	// FeatureTSGridResample opts the eligible range-mode instant-vector
+	// selection / staleness shape (the query_range bare-selector LWR) onto the
+	// native timeSeriesResampleToGridWithStaleness aggregate, retiring the
+	// argMax sample-fan-out (internal/chsql.emitRangeLWR). Like ts_grid_range it
+	// is Experimental and explicit-only (NEVER enabled by auto; no legacy env
+	// alias — list it in CERBERUS_CH_OPTIMIZATIONS to enable). It shares the
+	// timeSeries*ToGrid family floor (25.6) and the same experimental
+	// allow_experimental_time_series_aggregate_functions gate.
+	FeatureTSGridResample = "ts_grid_resample"
 )
 
 // Stability classifies a registry feature. Auto enables stable features only;
@@ -76,6 +86,12 @@ var registry = []Feature{
 		MinVersion: Version{Major: 25, Minor: 6},
 		Stability:  Experimental,
 		Doc:        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental, explicit-only)",
+	},
+	{
+		ID:         FeatureTSGridResample,
+		MinVersion: Version{Major: 25, Minor: 6},
+		Stability:  Experimental,
+		Doc:        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental, explicit-only)",
 	},
 }
 

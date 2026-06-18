@@ -234,6 +234,22 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+	case *chplan.RangeWindowResample:
+		fmt.Fprintf(b, "%sRangeWindowResample step=%s lookback=%s", indent, v.Step, v.Lookback)
+		if v.Offset != 0 {
+			fmt.Fprintf(b, " offset=%s", v.Offset)
+		}
+		if v.TimestampCol != "" {
+			fmt.Fprintf(b, " ts=%s", v.TimestampCol)
+		}
+		if v.ValueCol != "" {
+			fmt.Fprintf(b, " value=%s", v.ValueCol)
+		}
+		if !v.Start.IsZero() || !v.End.IsZero() {
+			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	case *chplan.RangeBucketFanout:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {

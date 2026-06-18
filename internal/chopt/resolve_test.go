@@ -323,6 +323,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureAggregationInOrder: {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable},
 		FeatureConditionCache:     {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable},
 		FeatureTSGridRange:        {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental},
+		FeatureTSGridResample:     {ID: FeatureTSGridResample, MinVersion: v(25, 6), Stability: Experimental},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

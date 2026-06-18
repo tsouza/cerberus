@@ -83,6 +83,8 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 		return applyStageScan(node, node.Input, rangeWindowColumns(node))
 	case *chplan.RangeWindowNative:
 		return applyStageScan(node, node.Input, nativeRangeWindowColumns(node))
+	case *chplan.RangeWindowResample:
+		return applyStageScan(node, node.Input, resampleRangeWindowColumns(node))
 	default:
 		return n, false
 	}
@@ -150,6 +152,10 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 		clone.Input = newInput
 		return &clone
 	case *chplan.RangeWindowNative:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.RangeWindowResample:
 		clone := *s
 		clone.Input = newInput
 		return &clone
@@ -238,6 +244,31 @@ func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
 	collect := collectColumn(seen)
 	for _, g := range r.GroupBy {
 		walkExpr(g, collect)
+	}
+	return sortedColumnSet(seen)
+}
+
+// resampleRangeWindowColumns returns the sorted, deduped set of base columns a
+// RangeWindowResample's emit reads off the inner Scan. emitRangeWindowResample
+// (chsql/range_window_resample.go) reads EXACTLY four named columns:
+//
+//   - TimestampCol and ValueCol — fed positionally into the
+//     timeSeriesResampleToGridWithStaleness aggregate's second paren group.
+//   - MetricNameCol and AttributesCol — the inner SELECT's series keys and
+//     `GROUP BY` list (and the canonical 4-column Sample identity columns).
+//
+// Every other identifier the emit names — `grid`, `grid_ts`, `grid_val`,
+// `anchor_ts` — is SYNTHETIC (produced inside the subquery), so none is a Scan
+// read. The node carries the column names as bare strings (no Exprs), so the
+// set is strictly those four. Dropping any of them — in particular the identity
+// columns — 502s the query at runtime, so the enumeration must match the emit's
+// reads exactly (the same #860/#861 failure class the native-rate path guards).
+func resampleRangeWindowColumns(r *chplan.RangeWindowResample) []string {
+	seen := map[string]struct{}{}
+	for _, c := range []string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol} {
+		if c != "" {
+			seen[c] = struct{}{}
+		}
 	}
 	return sortedColumnSet(seen)
 }

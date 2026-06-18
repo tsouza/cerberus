@@ -22,7 +22,7 @@ cerberus config idiom (per-key viper `BindEnv`, fail-fast parse, env > file
 > default).
 
 | Env var                          | Type   | Default     | Meaning                                                                          |
-| -------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------- |
+|----------------------------------|--------|-------------|----------------------------------------------------------------------------------|
 | `CERBERUS_CH_OPTIMIZATIONS`      | string | `auto`      | `auto`, `off`, or a comma-separated list of feature ids.                         |
 | `CERBERUS_CH_OPTIMIZATIONS_MODE` | string | `enforcing` | `enforcing` or `permissive`. Governs how an unsupported requested id is handled. |
 
@@ -65,7 +65,7 @@ source of truth every consumer reads from; nothing downstream re-reads the
 raw env.
 
 | `CERBERUS_CH_OPTIMIZATIONS` | Effect                                                                                                                        |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+|-----------------------------|-------------------------------------------------------------------------------------------------------------------------------|
 | `off`                       | Empty set.                                                                                                                    |
 | `auto`                      | Every stable feature with `minVersion <= server`. Experimental features excluded.                                             |
 | explicit list               | Per id: supported -> enable; unsupported -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes). |
@@ -84,11 +84,12 @@ needs an `allow_experimental_*` setting, that setting is co-stamped by the
 on exactly the queries that use the native node), not carried as a registry
 field.
 
-| id                     | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                     |
-| ---------------------- | ---------- | ------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregation_in_order` | 24.8       | stable       | -                                                    | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent. |
-| `condition_cache`      | 25.3       | stable       | -                                                    | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                   |
-| `ts_grid_range`        | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                  |
+| id                     | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                                         |
+|------------------------|------------|--------------|------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `aggregation_in_order` | 24.8       | stable       | -                                                    | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                     |
+| `condition_cache`      | 25.3       | stable       | -                                                    | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                       |
+| `ts_grid_range`        | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                      |
+| `ts_grid_resample`     | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto). |
 
 Notes:
 
@@ -105,6 +106,16 @@ Notes:
   is reachable only by explicit listing or by the legacy alias (below). Its
   native aggregate requires the experimental setting to be co-stamped on
   exactly the queries that emit the native node.
+- **`ts_grid_resample`** is experimental: **never** enabled by `auto`, no
+  legacy alias — list it in `CERBERUS_CH_OPTIMIZATIONS` to enable. It shares
+  the `timeSeries*ToGrid` family floor (25.6) and the same experimental setting
+  as `ts_grid_range`, co-stamped on exactly the queries that emit the native
+  resample node. The two features are independent (either can be on without the
+  other): the PromQL lowering wires each as a separate boot-decided strategy.
+  The native function uses a CLOSED left-edge staleness window
+  (`[anchor - lookback, anchor]`) which matches reference Prometheus, vs the
+  fan-out's half-open `(anchor - lookback, anchor]`; they diverge only on a
+  sample landing exactly on the left boundary.
 
 ## Runtime version probe
 
@@ -210,7 +221,7 @@ guarded off there.
 ### Config flags
 
 | Env var                            | Type     | Default | Meaning                                                    |
-| ---------------------------------- | -------- | ------- | ---------------------------------------------------------- |
+|------------------------------------|----------|---------|------------------------------------------------------------|
 | `CERBERUS_CH_OPT_CORPUS_ENABLED`   | bool     | `false` | Enable the reconciler (needs `system.query_log` access).   |
 | `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | duration | `60s`   | How often to reconcile recent query_ids against query_log. |
 | `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | string   | (unset) | JSONL sink path. Empty disables the file sink.             |
@@ -389,7 +400,7 @@ const (
 Seeded `Registry()` entries (verbatim):
 
 | ID                     | MinVersion | Stability      |
-| ---------------------- | ---------- | -------------- |
+|------------------------|------------|----------------|
 | `aggregation_in_order` | `{24, 8}`  | `Stable`       |
 | `condition_cache`      | `{25, 3}`  | `Stable`       |
 | `ts_grid_range`        | `{25, 6}`  | `Experimental` |
