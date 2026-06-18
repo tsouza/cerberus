@@ -22,9 +22,9 @@
 // in v25.9 (PR #86010) and is EMPIRICALLY ABSENT on the chdb-go v1.12.0 / CH
 // 25.8 substrate. The test feature-detects via system.functions and, when the
 // function is absent, logs a NOTICE and validates ONLY the fan-out half — the
-// native==fan-out parity assertion is bypassed, deferred to a >= 25.9 server
-// (prod/e2e differential lane or a future chDB substrate bump that restores the
-// auto-proof). The forbid-skip CI gate bans the test-skip API, so this is a
+// native==fan-out parity assertion is bypassed here; it runs only on a >= 25.9
+// server (prod/e2e differential lane or a future chDB substrate bump that
+// restores the auto-proof). The forbid-skip CI gate bans the test-skip API, so this is a
 // documented runtime conditional that ALWAYS executes; coverage loss is never
 // silent.
 //
