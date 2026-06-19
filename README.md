@@ -94,7 +94,7 @@ types, and `Map` shapes — not which binary produced it. Any exporter, collecto
 pipeline, or ingestion path that writes tables in that shape works; the exporter
 binary version itself is irrelevant. If your layout deviates from the exporter
 defaults, point cerberus at it with the `CERBERUS_SCHEMA_*` overrides — see
-[`docs/configuration.md`](docs/configuration.md#schema).
+[`docs/configuration.md`](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
 
 ## Quick start
 
