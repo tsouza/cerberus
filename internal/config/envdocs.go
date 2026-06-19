@@ -324,7 +324,7 @@ type EnvDocGroup struct {
 func EnvDocGroups() []EnvDocGroup {
 	out := make([]EnvDocGroup, len(envDocGroups))
 	for i, g := range envDocGroups {
-		out[i] = EnvDocGroup{Name: g.Name, Intro: g.Intro}
+		out[i] = EnvDocGroup(g)
 	}
 	return out
 }
