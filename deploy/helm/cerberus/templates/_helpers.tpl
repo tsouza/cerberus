@@ -194,7 +194,8 @@ CERBERUS_QUERY_MAX_SAMPLES: {{ int64 .maxSamples | quote }}
 CERBERUS_QUERY_TIMEOUT: {{ . | quote }}
 {{- end }}
 {{- if not (kindIs "invalid" .chMaxMemory) }}
-CERBERUS_CH_QUERY_MAX_MEMORY: {{ int64 .chMaxMemory | quote }}
+{{- /* Quoted verbatim so a humanized size string (e.g. "2Gi") passes through unchanged; the binary accepts both a raw byte integer and a Kubernetes-style suffixed size. */}}
+CERBERUS_CH_QUERY_MAX_MEMORY: {{ .chMaxMemory | quote }}
 {{- end }}
 {{- end }}
 {{- if .Values.debug.pprof }}
