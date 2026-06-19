@@ -84,11 +84,19 @@ export function renderChangelogSection(parsed) {
   return out.join('\n')
 }
 
+// yamlDq escapes a single-line string for a YAML double-quoted scalar:
+// backslash FIRST (so we don't double-escape the escapes we add), then the
+// quote char. Complete escaping — partial schemes (e.g. quote-only) are an
+// injection vector into the rendered YAML.
+export function yamlDq(s) {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
 export function renderAhChanges(parsed) {
   const lines = []
   for (const [type, kind] of Object.entries(AH_KIND)) {
     for (const e of parsed.groups[type] || []) {
-      const text = `${e.scope ? `${e.scope}: ` : ''}${e.desc}`.replace(/"/g, "'")
+      const text = yamlDq(`${e.scope ? `${e.scope}: ` : ''}${e.desc}`)
       lines.push(`    - kind: ${kind}`)
       lines.push(`      description: "${text}"`)
     }
@@ -231,6 +239,9 @@ function selfTest() {
   const ah = renderAhChanges(p)
   assert(ah.includes('kind: added') && ah.includes('kind: fixed'), 'ah kinds')
   assert(!ah.includes('kind: chore'), 'ah excludes chore')
+  assert(yamlDq('say "hi"\\n') === 'say \\"hi\\"\\\\n', 'yamlDq escapes quote + backslash')
+  const ahQuoted = renderAhChanges(parseCommits(['feat: add "fast" path \\ here']))
+  assert(ahQuoted.includes('add \\"fast\\" path \\\\ here'), 'ah description fully escaped')
 
   const chart = [
     'version: 0.3.2',
