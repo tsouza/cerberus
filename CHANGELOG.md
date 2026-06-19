@@ -21,6 +21,10 @@ All notable changes to cerberus will be documented in this file. The format roug
 - **roadmap:** mark 5A external-table push DEFERRED — no qualifying call-site (#1010)
 - native-CH roadmap execution addendum (code-now + ambitious chase) (#1009)
 
+### Dependencies
+
+- bump `github.com/ClickHouse/ch-go` 0.71 → 0.72, which exposes the client-side query telemetry surfaced in #1007 (#1005)
+
 ## [v1.1.0] — 2026-06-19
 
 ### Added
