@@ -27,10 +27,6 @@ const (
 	defaultTailLimit    = 100
 	maxTailDelayFor     = 5 * time.Second
 
-	// tailPollInterval is how often the handler queries ClickHouse for
-	// new rows. Upstream Loki streams chunks every ~1s; we match that.
-	tailPollInterval = 1 * time.Second
-
 	// defaultTailWriteTimeout caps how long a single WebSocket write may
 	// block before we tear the connection down. Catches slow / dead clients
 	// without leaking the polling goroutine. Operators override it via
@@ -38,6 +34,11 @@ const (
 	// the fallback when the handler field is zero (bare-Handler tests).
 	defaultTailWriteTimeout = 10 * time.Second
 )
+
+// tailPollInterval is how often the handler queries ClickHouse for new rows.
+// Upstream Loki streams chunks every ~1s; we match that. A var (not const) so
+// tests can shorten it; never reassigned in production.
+var tailPollInterval = 1 * time.Second
 
 // tailWriteTimeout resolves the effective per-write deadline: the handler's
 // configured TailWriteTimeout when positive, else the package default.
@@ -251,17 +252,23 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 		// Grafana's tail client doesn't negotiate `categorize-labels` over
 		// the socket, so per-line structured metadata is not surfaced here.
 		streams := toStreamsWithTransform(samples, cfg.tx, false)
-		// Advance the cursor past the latest row we just sent so the
-		// next poll picks up only newer data. If the batch was empty we
-		// still advance to `end` to avoid re-querying the same window.
+		// Advance the cursor. The batch is ordered ascending and capped at
+		// cfg.limit, so when it comes back FULL it may be truncated — more
+		// rows can exist in (lastSent, end]. In that case advance only PAST
+		// the last row we actually sent, so the overflow is re-queried on
+		// the next poll instead of being skipped. Otherwise (a short or
+		// empty batch) the window is fully drained, so advance to `end` to
+		// avoid re-querying it. The previous code seeded nextCursor at `end`
+		// and only bumped it UP — but every row is bounded `<= end`, so the
+		// bump never fired and a truncated window silently dropped its tail.
 		nextCursor := end
-		for _, s := range samples {
-			if s.Timestamp.After(nextCursor) {
-				nextCursor = s.Timestamp
-			}
+		if len(samples) > 0 && len(samples) == cfg.limit {
+			nextCursor = samples[len(samples)-1].Timestamp // latest sent (ASC order)
 		}
 		// Tick forward by 1ns so the inclusive `>=` lower bound doesn't
-		// duplicate the just-sent latest row on the next poll.
+		// re-send the boundary row next poll. (A rare exact-nanosecond tie
+		// straddling a truncation boundary is dropped — acceptable for a
+		// best-effort live tail; distinct-timestamp overflow is preserved.)
 		cursor = nextCursor.Add(time.Nanosecond)
 
 		// Skip the wire write on empty chunks — both upstream Loki and
