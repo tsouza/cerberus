@@ -246,7 +246,7 @@ active-series cardinality. To bound it, set `CERBERUS_PROM_RESOURCE_LABELS` to a
 comma-separated allowlist of resource keys in their **original dotted** form —
 opt-IN narrowing, empty/unset promotes every key. List only the resource keys
 you actually query on at scale. See
-[`configuration.md`](configuration.md#prometheus-resource-attribute-labels).
+[`configuration.md`](configuration.md#schema-overrides-and-prometheus-resource-labels).
 
 **Memory.** Promoting resource attributes is not free: the merge
 (`mapUpdate(sanitize(ResourceAttributes), sanitize(Attributes))`) runs
@@ -776,7 +776,7 @@ many concurrent queries a single trace fans out (a Grafana dashboard loading
 panels, a vector-join / fan-out PromQL) never collide on the same `query_id`
 (which ClickHouse would reject with code 216, "Query with id = X is already
 running"). With the optional DARK flags from
-[`configuration.md`](configuration.md#per-query-instrumentation), operators also
+[`configuration.md`](configuration.md#clickhouse-optimizations), operators also
 get the join keys to cluster and rank cerberus's SQL by cost. The async
 performance-corpus reconciler (`CERBERUS_CH_OPT_CORPUS_ENABLED`) automates
 exactly this join — it records the same per-dispatch `query_id` cerberus stamps
