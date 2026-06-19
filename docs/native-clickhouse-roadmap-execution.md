@@ -2,6 +2,9 @@
 
 *Addendum to `docs/native-clickhouse-roadmap.md`. Synthesized from 5 adversarially-verified design specs (increase, reduce_over_time moments, holt_winters, histogram_quantile, xrate/xincrease). Seam citations re-checked against `origin/main` on 2026-06-19.*
 
+> **Scheduling decision (2026-06-19): defer everything in this dossier that depends on upstream ClickHouse work.**
+> Since every one of the five `timeSeries*ToGrid` candidates requires a native ClickHouse aggregate that does not yet exist upstream, the entire code-now + ambitious aggregate chase is **parked pending those upstream PRs** — and that explicitly includes the *dormant* cerberus lowerings (PR-A / PR-B below), whose only value is banking work against an upstream we are deferring. Nothing in §3's "can land next release" actually ships next release under this decision. This document remains the verified plan to execute *once* the upstream functions land. The only native-perf track that needs **no** upstream ClickHouse change — and is therefore the live option if we want to keep chasing native performance now — is the parent roadmap's **5A (native columnar result decode + external-table push)**, which is out of scope here.
+
 ---
 
 ## 1. Executive summary
