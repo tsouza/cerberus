@@ -4,6 +4,56 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.1.0] — 2026-06-19
+
+### Added
+
+- **Native ClickHouse 25.9 grid aggregates for `changes()` / `resets()`.**
+  `ts_grid_changes` / `ts_grid_resets` lower eligible `changes(<v>[range])` /
+  `resets(<counter>[range])` query_range shapes onto `timeSeriesChangesToGrid` /
+  `timeSeriesResetsToGrid`, retiring the `arrayPopBack`/`arrayPopFront` fan-out
+  (experimental, explicit-only). (#990)
+- **`ts_grid_resample`** — native instant-vector staleness via
+  `timeSeriesResampleToGridWithStaleness`, retiring the argMax fan-out
+  (experimental, explicit-only).
+- **`columnar_result_decode`** — client-side `query_range` matrix decode via the
+  ch-go columnar path (label map built once per run, not per row); no server
+  setting, no version floor; explicit-only. (#983)
+- **Generated, drift-gated docs.** `docs/configuration.md` is generated from the
+  viper config and the `docs/clickhouse-optimizations.md` feature table from the
+  chopt registry, each with a CI gate that fails on drift. (#998, #1000)
+- **CI documentation gates** keeping prose in lock-step with code: internal
+  link + anchor checks, doc-to-code reference checks, and assert-from-source
+  doc-count checks. (#997, #999)
+- **Central `versions.yaml`** as the single source of truth for the supported
+  ClickHouse version, with a version-sync gate across the quickstart,
+  compatibility images, preflight floor, and per-optimization floors. (#995)
+
+### Changed
+
+- **Every version/feature-gated optimization is boot-wired.** Each optimization
+  resolves once at startup into an immutable enabled-set and a concrete
+  pure-polymorphic strategy — no per-query flag, version branch, or nil-check on
+  any data-plane path. PromQL range-lowering and native-grid dispatch were
+  migrated to this model; columnar decode became a `CH_OPTIMIZATIONS` feature. (#986)
+
+### Performance
+
+- **Copy-on-write plan slicing.** The slicer shares immutable off-spine subtrees
+  instead of deep-cloning them — ~2-2.5x fewer allocations on representative
+  slices, up to ~37x on wide off-spine plans. (#988)
+
+### Fixed
+
+- Serialize chDB engine access to stop a process-global SIGABRT in
+  `result.Free` under parallel tests. (#984)
+- E2E stability: kill the unless-panel seed-race, the false-positive
+  DiskPressure breadcrumb mislabelling (#992), and DiskPressure evictions by
+  freeing runner disk before the stack (#981).
+- Cache Playwright chromium across e2e shards. (#994)
+
+## [v1.0.2] — 2026-06-18
+
 ### Added
 
 - **ClickHouse-optimization suite + auto-picker.** A cohesive optimization
@@ -43,6 +93,28 @@ All notable changes to cerberus will be documented in this file. The format roug
   `CERBERUS_CH_OPTIMIZATIONS` choice — a list **or** the `off` kill-switch —
   overrides the legacy flag, so `off` stays absolute) — and emits a one-time
   startup deprecation warning.
+
+### Changed
+
+- **Per-query instrumentation** (query_id / `log_comment` shape id) and a
+  ClickHouse settings map, plus the `aggregation_in_order` optimization. (#978)
+- `histogram_quantile` phi-domain handling (+/-Inf out of range) and
+  `vector(scalar)` vector-typing fixes. (#974)
+
+## [v1.0.1] — 2026-06-18
+
+### Added
+
+- **Publishable cerberus Helm chart + OCI release pipeline**, exposing the full
+  `CERBERUS_*` config surface, prod-HA typed values with ClickHouse co-location,
+  and a chart-validate / kubeconform / helm-docs drift gate. (#962, #968)
+
+### Fixed
+
+- Restore integer per-head admission caps with bool aliases. (#973)
+- `on()`/`ignoring()` one-to-one binop leaking non-matching labels; vector-join
+  dropping operand `MetricName`/`TimeUnix` (code-47). (#971)
+- Uniform boolean parsing (1/0/true/false) across all `CERBERUS_*` env vars.
 
 ## [v1.0.0] — 2026-06-17
 

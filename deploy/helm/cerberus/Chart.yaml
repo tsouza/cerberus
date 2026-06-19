@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.3.2
+version: 0.4.0
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.0.2"
+appVersion: "1.1.0"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,11 +45,13 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.0.2
+      image: ghcr.io/tsouza/cerberus:v1.1.0
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
+    - kind: added
+      description: "appVersion -> 1.1.0: native ClickHouse 25.9 grid aggregates (ts_grid_changes/resets/resample), columnar query_range decode, and a boot-wired pure-polymorphic optimization model (no per-query branch)"
+    - kind: added
+      description: "central versions.yaml source-of-truth plus generated, drift-gated configuration and optimization-feature docs"
     - kind: changed
-      description: "appVersion -> 1.0.2: histogram_quantile phi-domain (+/-Inf out of range) + vector(scalar) vector-typing fixes, plus dependency updates"
-    - kind: changed
-      description: "admit.{prom,loki,tempo} documented as integer per-head concurrency caps with true/false aliases (matches the binary's restored integer admission caps)"
+      description: "copy-on-write plan slicing: ~2-2.5x fewer allocations on representative slices"
