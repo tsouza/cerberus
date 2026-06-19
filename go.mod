@@ -3,7 +3,7 @@ module github.com/tsouza/cerberus
 go 1.26.2
 
 require (
-	github.com/ClickHouse/ch-go v0.71.0
+	github.com/ClickHouse/ch-go v0.72.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/axiomhq/hyperloglog v0.2.6
 	github.com/chdb-io/chdb-go v1.12.0
