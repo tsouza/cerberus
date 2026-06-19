@@ -25,9 +25,13 @@ import { test, expect } from '@playwright/test';
  *
  * No `ws` npm dep is available in this suite (see package.json), so the
  * WebSocket is opened with the browser-native `WebSocket` via
- * `page.evaluate` rather than a Node ws client. The compose stack's
- * tail upgrader permits every origin (CheckOrigin returns true), so the
- * about:blank page context can connect cross-origin to ws://cerberus.
+ * `page.evaluate` rather than a Node ws client. The page first navigates
+ * to a real cerberus HTTP page (`/loki/api/v1/labels`) so the document has
+ * a concrete `http://localhost:8080` origin and the tail connection is
+ * SAME-origin: an `about:blank` opaque-origin document (`origin === 'null'`)
+ * makes Chromium reject the insecure `ws://localhost` upgrade with a 1006
+ * abort, regardless of cerberus's CheckOrigin (see the `page.goto` note
+ * below). Do NOT "simplify" this back to about:blank.
  *
  * Burst shape mirrors test/e2e/seed/cmd/seed/main.go's `insertLogsSQL`
  * column set EXACTLY — (Timestamp, TraceId, SpanId, SeverityText,
