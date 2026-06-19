@@ -38,7 +38,7 @@ The clean, recommended next-release landing. Mirrors the shipped changes/resets 
 - `internal/chsql/range_window_native.go` — add `"increase": "timeSeriesIncreaseToGrid"` to `nativeTSGridFn` (currently lines ~51-54, rate/changes/resets); add `increase` to the `ErrUnsupported` hint string at `:122` (`supported: rate, changes, resets` → `…, increase`).
 - `internal/promql/lower.go` — add `case "increase": node = ctx.lowerers.Increase.LowerIncrease(rw, s)` to the `switch c.Func.Name` (the changes/resets/default block verified at `:1932-1939`); update the two stale "no `timeSeriesIncreaseToGrid` aggregate yet" comments. Reuse the **func-agnostic** `nativeTSGridMatrixNode` (`:2039`, `if rw.Func != wantFunc → nil`) — it admits ONLY the eligible shape (Step>0, Start/End pinned, `!Identity`, plain Scan/Filter input), so an ineligible query falls through to fan-out. **No false-lowering risk.**
 - `internal/promql/lower_strategy.go` — `NativeIncreaseLowerer` / `FanoutIncreaseLowerer` mirroring `NativeChangesLowerer`/`FanoutChangesLowerer`, with `withDefaults` boot-wiring.
-- `cmd/.../main.go` — boot-wire the Increase strategy (the `main.go:412-435` DI block).
+- `cmd/cerberus/main.go` — boot-wire the Increase strategy (the `cmd/cerberus/main.go` DI block).
 - `internal/chopt/registry.go` — `FeatureTSGridIncrease`, `Experimental`, `MinVersion` = **placeholder future floor** (e.g. `{26,99}`), explicitly commented as unreachable-until-upstream-merge.
 
 **Golden specs added:**
