@@ -675,12 +675,13 @@ func FromEnv() (Config, error) {
 	if maxSamples < 0 {
 		return Config{}, fmt.Errorf("%s: must be >= 0, got %d", envQueryMaxSamples, maxSamples)
 	}
-	maxMemory, err := getInt64(v, envCHQueryMaxMemory)
+	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
+	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
+	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
+	// a negative value, so no extra >= 0 guard is needed here.
+	maxMemory, err := getByteSize(v, envCHQueryMaxMemory)
 	if err != nil {
 		return Config{}, err
-	}
-	if maxMemory < 0 {
-		return Config{}, fmt.Errorf("%s: must be >= 0, got %d", envCHQueryMaxMemory, maxMemory)
 	}
 	queryTimeout, err := getDuration(v, envQueryTimeout)
 	if err != nil {

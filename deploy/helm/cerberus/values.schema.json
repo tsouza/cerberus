@@ -120,7 +120,7 @@
       "properties": {
         "maxSamples": { "type": ["integer", "null"], "minimum": 0 },
         "timeout": { "type": "string" },
-        "chMaxMemory": { "type": ["integer", "null"], "minimum": 0 }
+        "chMaxMemory": { "type": ["integer", "string", "null"], "minimum": 0 }
       }
     },
     "debug": {

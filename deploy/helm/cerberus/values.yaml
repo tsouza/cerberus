@@ -197,8 +197,11 @@ query:
   # 2m. Also derives the ClickHouse socket read timeout when CH_READ_TIMEOUT is
   # unset.
   timeout: ""
-  # -- Per-query ClickHouse server-side memory ceiling in bytes
-  # (CERBERUS_CH_QUERY_MAX_MEMORY). Binary default: 1073741824 (1 GiB).
+  # -- Per-query ClickHouse server-side memory ceiling
+  # (CERBERUS_CH_QUERY_MAX_MEMORY). Accepts a raw byte integer (e.g. 1073741824)
+  # or a humanized Kubernetes-style size string (e.g. "2Gi", "512Mi", "1G"); the
+  # raw-integer form is unchanged for backward compatibility. Binary default:
+  # 1073741824 (1 GiB).
   chMaxMemory: null
 
 # -- Debug / profiling toggles.

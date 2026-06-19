@@ -202,7 +202,7 @@ var envDocs = []EnvDoc{
 	{envHTTPReadHdrTimeout, "duration", "HTTP server", "Request-header read deadline. Must be `<=` `CERBERUS_HTTP_READ_TIMEOUT` when that is `> 0`."},
 	{envHTTPWriteTimeout, "duration", "HTTP server", "Response write deadline. `0` = unlimited - required so `/tail` + long matrices stream uninterrupted."},
 	{envHTTPIdleTimeout, "duration", "HTTP server", "Idle keep-alive connection lifetime."},
-	{envHTTPMaxHeaderBytes, "int", "HTTP server", "Max request header size. `0` leaves Go's 1 MiB default."},
+	{envHTTPMaxHeaderBytes, "size", "HTTP server", "Max request header size in bytes. Accepts a raw byte integer (e.g. `1048576`) **or** a humanized size (`1Mi`, `512Ki`, `1M`); the raw-integer form is unchanged for backward compatibility. `0` leaves Go's 1 MiB default."},
 	{envDebugPProf, "bool", "HTTP server", "Mount the `net/http/pprof` debug endpoints (`/debug/pprof/*`) on the HTTP listener. **Off by default** - opt-in only, so the profiling surface never ships open in production."},
 
 	// --- ClickHouse connection ---
@@ -217,7 +217,7 @@ var envDocs = []EnvDoc{
 	{envCHCompression, "enum", "ClickHouse connection", "Wire compression: `none`, `lz4`, or `zstd`."},
 	{envCHCompressionLevel, "int", "ClickHouse connection", "Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`."},
 	{envCHBlockBufferSize, "int", "ClickHouse connection", "Per-connection block buffer count (`0` -> driver default 2; valid `1..255`)."},
-	{envCHMaxComprBuffer, "int", "ClickHouse connection", "Compression buffer cap in bytes (`0` -> driver default 10 MiB; otherwise `> 0`)."},
+	{envCHMaxComprBuffer, "size", "ClickHouse connection", "Compression buffer cap in bytes. Accepts a raw byte integer **or** a humanized size (`16Mi`, `10M`); the raw-integer form is unchanged for backward compatibility. `0` -> driver default 10 MiB; otherwise `> 0`."},
 	{envCHFreeBufOnRelease, "bool", "ClickHouse connection", "Drop the preserved memory buffer after each query (lower steady-state memory, less buffer reuse)."},
 	{envCHDebug, "bool", "ClickHouse connection", "clickhouse-go legacy stdout debug logging. Noisy; local diagnosis only."},
 
@@ -245,7 +245,7 @@ var envDocs = []EnvDoc{
 	{envCHKeepAliveCount, "int", "Connection pool", "Unanswered keepalive probes before the socket is declared dead. Must be > 0 when keepalive is enabled."},
 
 	// --- Query limits and memory ---
-	{envCHQueryMaxMemory, "int64", "Query limits and memory", "Per-query ClickHouse memory cap in bytes (`max_memory_usage` on every data-plane query; DDL exempt). 1 GiB default. `0` leaves it unset. A query over the cap gets a breaker-neutral resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422)."},
+	{envCHQueryMaxMemory, "size", "Query limits and memory", "Per-query ClickHouse memory cap (`max_memory_usage` on every data-plane query; DDL exempt). Accepts a raw byte integer (e.g. `1073741824`) **or** a humanized size (`2Gi`, `512Mi`, `1G`); the raw-integer form is unchanged for backward compatibility. 1 GiB default. `0` leaves it unset. A query over the cap gets a breaker-neutral resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422)."},
 	{envQueryMaxSamples, "int64", "Query limits and memory", "Per-query sample budget, mirroring Prometheus `--query.max-samples`. Bounds cerberus-process memory by aborting a result-set drain that crosses the budget. `0` disables."},
 	{envQueryTimeout, "duration", "Query limits and memory", "Per-query wall-clock cap, stamped as ClickHouse `max_execution_time` (with `timeout_overflow_mode=throw`) on every data-plane query; DDL exempt. Mirrors Prometheus `--query.timeout`. The `?timeout=` query param min's against this per request. Also derives the driver-level socket `ReadTimeout`. `0` disables both."},
 
