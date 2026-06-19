@@ -126,12 +126,13 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     workflow. Bumps the chart `version:` + `appVersion:`, the image tag, and the
     Artifact Hub `changes` annotation, and rewrites the CHANGELOG `[Unreleased]`
     section into a dated `## [vX.Y.Z]` one — deriving the change summary and the
-    PR body from the conventional commits since the last `v*` tag. Hand-curated
-    `[Unreleased]` entries are preserved as-is; the commit-derived section is the
-    fallback only when `[Unreleased]` is empty. Pure exported helpers
-    (`bumpSemver`, `parseCommits`, `renderChangelogSection`, `renderAhChanges`,
-    `editChart`, `editChangelog`) + a `--self-test` flag the workflow runs before
-    it edits anything.
+    PR body from the conventional commits since the last `v*` tag. The commit
+    history is the single source of truth: the generated section is always what
+    lands and any stale `[Unreleased]` content is discarded (maintainers enrich
+    the prose by editing the opened PR, not by hand-staging `[Unreleased]`). Pure
+    exported helpers (`bumpSemver`, `parseCommits`, `renderChangelogSection`,
+    `renderAhChanges`, `editChart`, `editChangelog`) + a `--self-test` flag the
+    workflow runs before it edits anything.
   - Env: `VERSION` (explicit target appVersion; overrides `BUMP`), `BUMP`
     (`patch`|`minor`|`major`, or the workflow's `none` placeholder),
     `CHART_BUMP` (default `patch`), `PR_BODY_FILE` (default `release-pr-body.md`),

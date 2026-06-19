@@ -139,17 +139,15 @@ export function editChangelog(text, { version, date, section }) {
   const i = text.indexOf(marker)
   if (i === -1) throw new Error(`no "${marker}" section in ${CHANGELOG}`)
   const after = i + marker.length
-  // Capture any hand-written entries currently under [Unreleased] up to the
-  // next "## [" heading; fold them into the release section above the
-  // generated one, then leave a fresh empty [Unreleased].
+  // Always-generated policy: the commit-derived section is the source of truth.
+  // Whatever currently sits under [Unreleased] (up to the next "## [" heading)
+  // is discarded; we leave a fresh empty [Unreleased] and the generated release
+  // section. Maintainers enrich the prose by editing the opened PR, not by
+  // hand-staging [Unreleased].
   const rest = text.slice(after)
   const next = rest.search(/\n## \[/)
-  const carried = (next === -1 ? rest : rest.slice(0, next)).trim()
   const tail = next === -1 ? '' : rest.slice(next)
-  // Prefer hand-curated [Unreleased] entries (Keep a Changelog flow); fall back
-  // to the commit-derived section only when [Unreleased] was left empty.
-  const body = carried || section
-  return `${text.slice(0, after)}\n\n## [v${version}] — ${date}\n\n${body}\n${tail}`
+  return `${text.slice(0, after)}\n\n## [v${version}] — ${date}\n\n${section}\n${tail}`
 }
 
 // --- driver -----------------------------------------------------------------
@@ -271,13 +269,15 @@ function selfTest() {
     === 'image: ghcr.io/tsouza/cerberus:v1.1.0\n', 'replaceImageTag swaps tag, no dynamic regex')
   assert(edited.includes('kind: added') && !edited.includes('"old"'), 'ah block replaced')
 
-  const cl = '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- carried entry\n\n## [v1.0.0] — 2026-06-17\n\nfirst\n'
+  const cl = '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- stale staging entry\n\n## [v1.0.0] — 2026-06-17\n\nfirst\n'
   const ecl = editChangelog(cl, { version: '1.1.0', date: '2026-06-19', section: sec })
   assert(ecl.indexOf('## [Unreleased]') < ecl.indexOf('## [v1.1.0]'), 'fresh unreleased on top')
-  assert(ecl.includes('carried entry'), 'carried entries preserved')
-  assert(!ecl.includes('### BREAKING'), 'generated section not duplicated when curated entries exist')
+  assert(!ecl.includes('stale staging entry'), 'always-generated: [Unreleased] content discarded')
+  assert(ecl.includes('### Added') && ecl.includes('native grid'), 'generated section is the body')
   assert(ecl.indexOf('## [v1.1.0]') < ecl.indexOf('## [v1.0.0]'), 'new release above old')
   assert((ecl.match(/## \[v1\.1\.0\]/g) || []).length === 1, 'single v1.1.0 header')
+  // [Unreleased] is left empty (header immediately followed by the release).
+  assert(/## \[Unreleased\]\n\n## \[v1\.1\.0\]/.test(ecl), 'empty [Unreleased] header retained')
 
   console.log('::notice::prepare-release --self-test: all assertions passed')
 }
