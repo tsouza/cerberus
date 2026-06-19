@@ -1,55 +1,185 @@
-// release-preflight.mjs — refuse to publish a release unless EVERY CI check
-// on the tagged commit is green.
+// release-preflight.mjs — refuse to publish a release unless the tagged commit
+// IS main's HEAD and EVERY check on that commit is FULLY SETTLED GREEN.
 //
-// Why: RC / GA tags are cut from `main` HEAD, so the tagged commit is a main
-// commit whose push-triggered workflows (ci, compatibility, chdb, coverage,
-// e2e dashboard+chaos, mutation, perf-profile, property, CodeQL, …) have
-// already run. Branch protection only gates a SUBSET of those (the required
-// checks) at PR time; this guard raises the bar for a release specifically:
-// the whole of main must be green on the exact commit being tagged, including
-// the informational lanes. If ANY check on the commit concluded non-green —
-// or is still pending — the release aborts before goreleaser publishes.
+// The rule, with no softening:
+//   1. The tagged commit MUST equal the current HEAD of the default branch
+//      (main). You release the tip of main, never an older/side commit.
+//   2. EVERY check-run + legacy status on that commit must be COMPLETED
+//      (nothing still running / queued) AND green (success / skipped / neutral).
+//      One running check, one failure, one cancelled/timed-out lane -> the
+//      release ABORTS. No flaky-lane exclusions, no scheduled-event heuristics,
+//      no "informational" passes. Main CI is fully complete + green, period.
 //
-// Only `release.yml` triggers on tags (verified: no other workflow has a
-// `tags:` trigger), so the tagged commit's check-runs are exactly the
-// push-to-main runs plus this release run's own jobs. The latter are excluded
-// by name (RELEASE_SELF_JOBS) to avoid a self-deadlock.
+// The ONLY exclusion is THIS release run's own jobs (preflight / goreleaser /
+// chart-release). They are necessarily in-progress while preflight runs, so
+// gating on them would deadlock — excluding them is structural, not a flakiness
+// heuristic. They are identified by name via RELEASE_SELF_JOBS.
+//
+// `skipped` counts as green: a job a path-filter / `if:` guard deliberately did
+// not run is a settled non-failure (e.g. the `changes` / `gate` no-ops), not a
+// red and not "still running". Treating it as a failure would make the gate
+// impossible to satisfy.
+//
+// Re-runs leave several check-runs with the same name; the latest (highest id)
+// is the current state of that check, so a green re-run supersedes an earlier
+// red. That is the check's present truth, not a flakiness exclusion.
 //
 // Env:
-//   GITHUB_TOKEN       token with checks:read + statuses:read (the default
-//                      workflow token has this).
+//   GITHUB_TOKEN       token with checks:read + statuses:read + contents:read.
 //   GITHUB_REPOSITORY  "owner/name".
-//   GITHUB_SHA         the tagged commit SHA (== the main commit).
+//   GITHUB_SHA         the tagged commit SHA.
 //   GITHUB_API_URL     API base (default https://api.github.com).
 //   RELEASE_SELF_JOBS  comma-separated check-run names belonging to THIS
 //                      release workflow, excluded from the gate
-//                      (default "preflight,goreleaser").
+//                      (default "preflight,goreleaser,chart-release").
 //
-// Flaky-UI-lane exclusions (FLAKY_UI_LANE_RE): the e2e UI COVERAGE lanes — the
-// BFS `crawl` shards (compose-smoke-shard-info (shard-crawl) + the k3d
-// dashboard-shard (shard-crawl)) and the whole `dashboard` k3d lane
-// (dashboard / dashboard-setup / dashboard-shard) — are slow + flaky by nature
-// (exploretraces "Failed to fetch", the app-init-race 400 = #115/#934) and are
-// COVERAGE, not correctness gates. They are de-gated from the required
-// `compose-smoke` PR check and the dashboard lane is informational-only, so a
-// coverage flake must not block a RELEASE either. We drop check-runs whose name
-// matches FLAKY_UI_LANE_RE from the gate. Everything else still gates: the
-// required status checks + the stable substantive lanes (ci/check, lint, compat
-// ×3, compose-smoke [now crawl-independent], probe, roundtrip ×3, chdb,
-// mutation/gremlins, property, perf-profile, coverage, CodeQL). Fail SAFE: only
-// names that clearly match these lanes are dropped; anything ambiguous is KEPT.
-//
-// Exit 0 when every non-self, non-flaky-UI check on the commit is
-// success/skipped/neutral; exit 1 (with ::error:: annotations) otherwise.
+// argv `--self-test` runs the in-process assertion suite and exits.
 
 import { error, notice, log } from './lib/gh.mjs';
+
+// A check-run is green when it completed with an accepting conclusion.
+export const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
+
+// evaluate is the pure gate: given main's HEAD sha, the tagged sha, the raw
+// check-runs, the legacy statuses, and the self-job name set, it returns the
+// list of blocking problems (empty == release may proceed) and the count of
+// gated checks. No network, no exclusions beyond self-jobs — exported so the
+// self-test pins the exact pass/fail boundary.
+export function evaluate({ mainHead, taggedSha, checkRuns, statuses, selfJobs }) {
+  const problems = [];
+  if (!mainHead) {
+    problems.push('could not resolve the default-branch (main) HEAD commit');
+    return { problems, gated: 0 };
+  }
+  if (taggedSha !== mainHead) {
+    problems.push(
+      `tagged commit ${taggedSha.slice(0, 8)} is NOT main HEAD ${mainHead.slice(0, 8)} — ` +
+        `a release may only be cut from the tip of main`,
+    );
+    return { problems, gated: 0 };
+  }
+
+  // Latest-per-name: the most recent run is the check's current state.
+  const latest = new Map();
+  for (const cr of checkRuns) {
+    const prev = latest.get(cr.name);
+    if (!prev || cr.id > prev.id) latest.set(cr.name, cr);
+  }
+
+  let gated = 0;
+  for (const cr of latest.values()) {
+    if (selfJobs.has(cr.name)) continue; // this release run's own jobs (structural)
+    gated += 1;
+    if (cr.status !== 'completed') {
+      problems.push(`${cr.name}: still ${cr.status} (not completed)`);
+    } else if (!GREEN_CONCLUSIONS.has(cr.conclusion)) {
+      problems.push(`${cr.name}: ${cr.conclusion}`);
+    }
+  }
+
+  // Legacy combined statuses (e.g. GitGuardian) — each context must be success.
+  for (const st of statuses ?? []) {
+    if (selfJobs.has(st.context)) continue;
+    gated += 1;
+    if (st.state !== 'success') {
+      problems.push(`${st.context}: status ${st.state}`);
+    }
+  }
+
+  return { problems, gated };
+}
+
+// ---------------------------------------------------------------------------
+// self-test
+// ---------------------------------------------------------------------------
+
+function selfTest() {
+  const assert = (c, m) => {
+    if (!c) throw new Error('self-test: ' + m);
+  };
+  const self = new Set(['preflight', 'goreleaser', 'chart-release']);
+  const cr = (name, status, conclusion, id = 1) => ({ name, status, conclusion, id });
+
+  // Happy path: tag == HEAD, all green, self-jobs in-progress are ignored.
+  let r = evaluate({
+    mainHead: 'abc', taggedSha: 'abc', selfJobs: self,
+    checkRuns: [
+      cr('check', 'completed', 'success'),
+      cr('lint', 'completed', 'success'),
+      cr('compose-smoke-shard-info (shard-crawl, …)', 'completed', 'success'),
+      cr('dashboard', 'completed', 'success'),
+      cr('changes', 'completed', 'skipped'),
+      cr('preflight', 'in_progress', null),
+      cr('goreleaser', 'in_progress', null),
+    ],
+    statuses: [{ context: 'GitGuardian Security Checks', state: 'success' }],
+  });
+  assert(r.problems.length === 0, 'all-green tip should pass: ' + r.problems.join('; '));
+  // 5 non-self check-runs (check, lint, crawl, dashboard, changes) + 1 status.
+  assert(r.gated === 6, `expected 6 gated (self-jobs excluded), got ${r.gated}`);
+
+  // Tag is NOT main HEAD -> reject (this is exactly the v1.1.0 mistake).
+  r = evaluate({ mainHead: 'def', taggedSha: 'abc', selfJobs: self, checkRuns: [], statuses: [] });
+  assert(r.problems.length === 1 && /NOT main HEAD/.test(r.problems[0]), 'non-tip tag must fail');
+
+  // A still-running NON-self check -> reject (no "running" allowed).
+  r = evaluate({
+    mainHead: 'abc', taggedSha: 'abc', selfJobs: self,
+    checkRuns: [cr('coverage', 'in_progress', null)], statuses: [],
+  });
+  assert(r.problems.some((p) => /coverage: still in_progress/.test(p)), 'running lane must block');
+
+  // A failure / cancellation -> reject. NO flaky exclusion for crawl/dashboard.
+  r = evaluate({
+    mainHead: 'abc', taggedSha: 'abc', selfJobs: self,
+    checkRuns: [
+      cr('compose-smoke-shard-info (shard-crawl, …)', 'completed', 'failure'),
+      cr('dashboard', 'completed', 'cancelled'),
+    ],
+    statuses: [],
+  });
+  assert(r.problems.length === 2, 'crawl + dashboard reds must BOTH block (no exclusion)');
+
+  // Re-run: an earlier failure superseded by a later success -> green.
+  r = evaluate({
+    mainHead: 'abc', taggedSha: 'abc', selfJobs: self,
+    checkRuns: [
+      cr('chaos', 'completed', 'failure', 1),
+      cr('chaos', 'completed', 'success', 2),
+    ],
+    statuses: [],
+  });
+  assert(r.problems.length === 0, 'green re-run should supersede earlier fail');
+
+  // Legacy status failure -> reject.
+  r = evaluate({
+    mainHead: 'abc', taggedSha: 'abc', selfJobs: self,
+    checkRuns: [], statuses: [{ context: 'sec-scan', state: 'failure' }],
+  });
+  assert(r.problems.some((p) => /sec-scan: status failure/.test(p)), 'legacy status fail must block');
+
+  // Unresolved main HEAD -> reject (fail safe).
+  r = evaluate({ mainHead: null, taggedSha: 'abc', selfJobs: self, checkRuns: [], statuses: [] });
+  assert(r.problems.length === 1 && /resolve/.test(r.problems[0]), 'missing main HEAD must fail');
+
+  notice('release-preflight --self-test: all assertions passed');
+}
+
+if (process.argv.includes('--self-test')) {
+  selfTest();
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// driver
+// ---------------------------------------------------------------------------
 
 const repo = process.env.GITHUB_REPOSITORY;
 const sha = process.env.GITHUB_SHA;
 const token = process.env.GITHUB_TOKEN;
 const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
 const selfJobs = new Set(
-  (process.env.RELEASE_SELF_JOBS ?? 'preflight,goreleaser')
+  (process.env.RELEASE_SELF_JOBS ?? 'preflight,goreleaser,chart-release')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
@@ -75,8 +205,14 @@ async function getJSON(url) {
   return res.json();
 }
 
-// All check-runs for the commit (GitHub Actions jobs, CodeQL, app checks),
-// following pagination until a short page.
+// HEAD commit of the repo's default branch (main).
+async function mainHeadSha() {
+  const repoInfo = await getJSON(`${apiBase}/repos/${repo}`);
+  const branch = repoInfo.default_branch || 'main';
+  const b = await getJSON(`${apiBase}/repos/${repo}/branches/${branch}`);
+  return b.commit?.sha ?? null;
+}
+
 async function allCheckRuns() {
   const out = [];
   let page = 1;
@@ -92,131 +228,36 @@ async function allCheckRuns() {
   return out;
 }
 
-// Legacy combined commit status (some security apps post here, not as a
-// check-run). `state` is the rolled-up success/failure/pending.
 async function combinedStatus() {
   return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=100`);
 }
 
-// The release gate cares about the MERGE-TIME signal (push / pull_request /
-// manual dispatch), NOT scheduled nightly re-runs. The nightly e2e re-runs the
-// deep, slow lanes on whatever commit is main HEAD — notably the BFS `crawl`
-// shard, which is a ~50-min long pole that routinely hits its timeout and ends
-// `cancelled`/`failure`. Because those nightly check-runs share the SAME name
-// as the push ones and carry a higher id, a naive latest-per-name pick lets a
-// hung nightly supersede the green push result and block a release forever.
-// So resolve each check-run's triggering workflow event and drop the scheduled
-// ones; the push/PR/dispatch results are the merge-time truth the gate wants.
-// Flaky UI COVERAGE lanes dropped from the release gate. Anchored, specific
-// patterns — fail SAFE by matching only these lanes, never a broad substring
-// that could swallow a substantive lane:
-//   - any `shard-crawl` matrix child — the BFS crawl coverage lane. GitHub
-//     builds a multi-dimension matrix child's check name from ALL include
-//     fields joined by ", ", e.g.
-//       `compose-smoke-shard-info (shard-crawl, crawl/crawl.spec.ts …)`
-//       `dashboard-shard (shard-crawl, crawl/crawl.spec.ts …)`
-//     so we match `(shard-crawl` followed by `,` or `)` (NOT `(shard-crawl-…`).
-//     This is a genuinely non-deterministic ~50-min BFS sweep that routinely
-//     hits its timeout and ends `cancelled`/`failure`; it stays de-gated.
-//   - the k3d `dashboard` AGGREGATE + `dashboard-setup` only. The aggregate
-//     rolls up every shard (including the de-gated `shard-crawl`), so it can
-//     never be greener than its weakest shard — gating it would re-import the
-//     crawl flake. The deterministic `dashboard-shard (shard-smoke-*)` children
-//     are NO LONGER dropped: they GATE again now that the two flakes that
-//     justified dropping them are fixed at source — the drilldown-apps
-//     init/teardown races (#950) and the otel-collector-gateway boot-order
-//     CrashLoopBackOff (#82, gateway initContainer waits for ClickHouse to be
-//     query-ready). The required `compose-smoke` lane is unaffected (no
-//     `dashboard` token; its shards are `(shard-kiosk …)` / `(shard-smoke …)`,
-//     never `shard-crawl`).
-const FLAKY_UI_LANE_RE = /(\(shard-crawl[,)]|^dashboard($|-setup$))/;
-const isFlakyUILane = (name) => FLAKY_UI_LANE_RE.test(name);
+const [mainHead, checkRuns, status] = await Promise.all([
+  mainHeadSha(),
+  allCheckRuns(),
+  combinedStatus(),
+]);
 
-const SCHEDULED_EVENT = 'schedule';
-const runEventCache = new Map();
-async function checkRunEvent(cr) {
-  const m = /\/actions\/runs\/(\d+)/.exec(cr.details_url || '');
-  if (!m) return null; // non-Actions check (CodeQL / security app) — keep it
-  const runId = m[1];
-  if (runEventCache.has(runId)) return runEventCache.get(runId);
-  let ev = null;
-  try {
-    const run = await getJSON(`${apiBase}/repos/${repo}/actions/runs/${runId}`);
-    ev = run.event ?? null;
-  } catch {
-    ev = null; // on any resolution error, fail SAFE: keep the check (don't hide a red)
-  }
-  runEventCache.set(runId, ev);
-  return ev;
-}
-
-// A check-run is green when it completed with an accepting conclusion. A job
-// that is genuinely not applicable to this commit reports `skipped` (path
-// filters, `if:` guards) and counts as green — that is a deliberate pass, not
-// a failure.
-const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
-
-const [allRuns, status] = await Promise.all([allCheckRuns(), combinedStatus()]);
-
-// Drop scheduled (nightly) check-runs; keep push / PR / dispatch ones.
-const checkRuns = [];
-for (const cr of allRuns) {
-  if ((await checkRunEvent(cr)) === SCHEDULED_EVENT) continue;
-  checkRuns.push(cr);
-}
-
-// Re-runs leave multiple check-runs with the same name; keep only the most
-// recent per name (highest id) so a green re-run supersedes an earlier fail.
-const latestByName = new Map();
-for (const cr of checkRuns) {
-  const prev = latestByName.get(cr.name);
-  if (!prev || cr.id > prev.id) latestByName.set(cr.name, cr);
-}
-
-const problems = [];
-let gated = 0;
-
-let skippedFlakyUI = 0;
-for (const cr of latestByName.values()) {
-  if (selfJobs.has(cr.name)) continue; // never gate on this release run itself
-  if (isFlakyUILane(cr.name)) {
-    // De-gated flaky UI COVERAGE lane (crawl shard / dashboard lane). It still
-    // ran + reported its own check; it just doesn't block the release.
-    skippedFlakyUI += 1;
-    continue;
-  }
-  gated += 1;
-  if (cr.status !== 'completed') {
-    problems.push(`${cr.name}: still ${cr.status} (not completed)`);
-  } else if (!GREEN_CONCLUSIONS.has(cr.conclusion)) {
-    problems.push(`${cr.name}: ${cr.conclusion}`);
-  }
-}
-
-// Legacy statuses: each individual context must be success.
-for (const st of status.statuses ?? []) {
-  if (isFlakyUILane(st.context)) {
-    skippedFlakyUI += 1;
-    continue;
-  }
-  gated += 1;
-  if (st.state !== 'success') {
-    problems.push(`${st.context}: status ${st.state}`);
-  }
-}
+const { problems, gated } = evaluate({
+  mainHead,
+  taggedSha: sha,
+  checkRuns,
+  statuses: status.statuses ?? [],
+  selfJobs,
+});
 
 if (problems.length > 0) {
   error(
-    `release-preflight: commit ${sha.slice(0, 8)} (main) is NOT all-green — refusing to publish the release. ` +
-      `Fix every CI lane on main, then re-tag.`,
+    `release-preflight: refusing to publish — main is NOT fully complete + green on the ` +
+      `tagged commit ${sha.slice(0, 8)}. Every CI lane on main must be settled green; then re-tag the tip.`,
   );
   for (const p of problems.sort()) error(`  - ${p}`);
   process.exit(1);
 }
 
 notice(
-  `release-preflight: all ${gated} CI checks on commit ${sha.slice(0, 8)} are green ` +
-    `(${skippedFlakyUI} flaky UI coverage lane(s) excluded from the gate) — proceeding with the release.`,
+  `release-preflight: tagged commit ${sha.slice(0, 8)} is main HEAD and all ${gated} CI checks ` +
+    `are settled green — proceeding with the release.`,
 );
-log(`release-preflight: ${gated} checks verified green on ${sha}; ${skippedFlakyUI} flaky UI lane(s) excluded`);
+log(`release-preflight: ${gated} checks verified settled-green on main HEAD ${sha}`);
 process.exit(0);
