@@ -92,6 +92,11 @@ jobs:
       # Chart.yaml `version:`. (No `ct install` / kind step: cerberus needs a
       # live ClickHouse to pass readiness, which a bare kind cluster lacks —
       # helm template + kubeconform already validate rendering.)
+      # Compare against the PR's BASE branch (github.base_ref), not always the
+      # default branch: a backport PR onto a `release/X.Y.x` line legitimately
+      # carries a LOWER chart version than main (e.g. 0.4.2 < main's 0.5.x), and
+      # ct's bump check would otherwise read that as a downgrade. Falls back to
+      # the default branch for push events (base_ref is empty there).
       - name: ct lint — enforce the version bump on real chart changes
         if: steps.changes.outputs.chart == 'true'
-        run: ct lint --chart-dirs deploy/helm --target-branch "${{ github.event.repository.default_branch }}" --validate-maintainers=false
+        run: ct lint --chart-dirs deploy/helm --target-branch "${{ github.base_ref || github.event.repository.default_branch }}" --validate-maintainers=false
