@@ -113,6 +113,7 @@ const SHARDS = [
       'iterate-all-dashboards.spec.ts', //      20.6s
       'crawl/dsquery.spec.ts', //               20.5s
       'loki_explore_columns.spec.ts', //         1.6s — lightest companion, lands on the lean shard
+      'loki_tail.spec.ts', //                   ~5s — direct-WS tail no-loss/no-dup (#1011 oracle)
     ],
   },
   {
