@@ -4,51 +4,46 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.1.0] — 2026-06-19
+
 ### Added
 
-- **Native ClickHouse 25.9 grid aggregates for `changes()` / `resets()`.**
-  `ts_grid_changes` / `ts_grid_resets` lower eligible `changes(<v>[range])` /
-  `resets(<counter>[range])` query_range shapes onto `timeSeriesChangesToGrid` /
-  `timeSeriesResetsToGrid`, retiring the `arrayPopBack`/`arrayPopFront` fan-out
-  (experimental, explicit-only). (#990)
-- **`ts_grid_resample`** — native instant-vector staleness via
-  `timeSeriesResampleToGridWithStaleness`, retiring the argMax fan-out
-  (experimental, explicit-only).
-- **`columnar_result_decode`** — client-side `query_range` matrix decode via the
-  ch-go columnar path (label map built once per run, not per row); no server
-  setting, no version floor; explicit-only. (#983)
-- **Generated, drift-gated docs.** `docs/configuration.md` is generated from the
-  viper config and the `docs/clickhouse-optimizations.md` feature table from the
-  chopt registry, each with a CI gate that fails on drift. (#998, #1000)
-- **CI documentation gates** keeping prose in lock-step with code: internal
-  link + anchor checks, doc-to-code reference checks, and assert-from-source
-  doc-count checks. (#997, #999)
-- **Central `versions.yaml`** as the single source of truth for the supported
-  ClickHouse version, with a version-sync gate across the quickstart,
-  compatibility images, preflight floor, and per-optimization floors. (#995)
-
-### Changed
-
-- **Every version/feature-gated optimization is boot-wired.** Each optimization
-  resolves once at startup into an immutable enabled-set and a concrete
-  pure-polymorphic strategy — no per-query flag, version branch, or nil-check on
-  any data-plane path. PromQL range-lowering and native-grid dispatch were
-  migrated to this model; columnar decode became a `CH_OPTIMIZATIONS` feature. (#986)
-
-### Performance
-
-- **Copy-on-write plan slicing.** The slicer shares immutable off-spine subtrees
-  instead of deep-cloning them — ~2-2.5x fewer allocations on representative
-  slices, up to ~37x on wide off-spine plans. (#988)
+- **ci:** manual prepare-release workflow + generator (#1003)
+- **chopt:** generate opt feature table from registry + drift gate (#998)
+- **config:** generate docs/configuration.md from viper config + CI drift gate (#1000)
+- **promql:** adopt native timeSeriesChangesToGrid/ResetsToGrid (25.9) (#990)
+- **chclient:** columnar query_range matrix decode via ch-go (flag-gated) (#983)
 
 ### Fixed
 
-- Serialize chDB engine access to stop a process-global SIGABRT in
-  `result.Free` under parallel tests. (#984)
-- E2E stability: kill the unless-panel seed-race, the false-positive
-  DiskPressure breadcrumb mislabelling (#992), and DiskPressure evictions by
-  freeing runner disk before the stack (#981).
-- Cache Playwright chromium across e2e shards. (#994)
+- **e2e:** gate showcase probes on seed-fixture signal to kill unless-panel flake (#993)
+- **e2e:** stop the false-positive DiskPressure breadcrumb mislabelling (#992)
+- **test:** serialize chDB engine access to stop SIGABRT in result.Free (#984)
+
+### Performance
+
+- **solver:** share immutable off-spine in plan slicing (copy-on-write) (#988)
+
+### Changed
+
+- **chopt:** adopt columnar decode as a CH_OPTIMIZATIONS feature, drop standalone env (#989)
+- **promql:** pure polymorphic range-lowering dispatch (no nil-check) (#986)
+
+### CI
+
+- **forbid-skip:** assert-from-source doc-count gate; fix forbid-skip 6->5 + layer 12->13 drift (#997)
+- add internal/external link + doc-to-code reference gates (#999)
+- **clickhouse:** central versions.yaml SoT + version-sync gate (#995)
+- **e2e:** cache Playwright chromium across e2e shards (#994)
+- **forbid-skip:** drop the wording-tests vocabulary scan, keep the five behavioural checks (#991)
+- **e2e:** free runner disk before the stack to stop DiskPressure evictions (#981)
+
+### Documentation
+
+- **changelog:** restructure pre-1.1.0 — backfill v1.0.1/v1.0.2, stage [Unreleased] (#1004)
+- fix configuration.md anchor links broken by generator (#1000) (#1001)
+- sync docs to code ahead of v1.1.0 (feature table, COW, dead links, counts) (#996)
+- native-ClickHouse roadmap + staged timeSeriesIncreaseToGrid contribution (#982)
 
 ## [v1.0.2] — 2026-06-18
 
