@@ -4,6 +4,16 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.2.1] — 2026-06-19
+
+### Fixed
+
+- **telemetry:** apply CERBERUS_LOG_LEVEL to the OTLP slog bridge (stop debug leaking to otel_logs) (#1018)
+
+### CI
+
+- **release:** make release tooling backport-aware (maintenance lines + :latest guard) (#1019)
+
 ## [v1.2.0] — 2026-06-19
 
 ### Added
