@@ -45,16 +45,16 @@ export const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
 // list of blocking problems (empty == release may proceed) and the count of
 // gated checks. No network, no exclusions beyond self-jobs — exported so the
 // self-test pins the exact pass/fail boundary.
-export function evaluate({ mainHead, taggedSha, checkRuns, statuses, selfJobs }) {
+export function evaluate({ mainHead, taggedSha, checkRuns, statuses, selfJobs, baseLabel = 'main' }) {
   const problems = [];
   if (!mainHead) {
-    problems.push('could not resolve the default-branch (main) HEAD commit');
+    problems.push(`could not resolve the ${baseLabel} HEAD commit`);
     return { problems, gated: 0 };
   }
   if (taggedSha !== mainHead) {
     problems.push(
-      `tagged commit ${taggedSha.slice(0, 8)} is NOT main HEAD ${mainHead.slice(0, 8)} — ` +
-        `a release may only be cut from the tip of main`,
+      `tagged commit ${taggedSha.slice(0, 8)} is NOT ${baseLabel} HEAD ${mainHead.slice(0, 8)} — ` +
+        `a release may only be cut from the tip of its release line (${baseLabel})`,
     );
     return { problems, gated: 0 };
   }
@@ -205,12 +205,27 @@ async function getJSON(url) {
   return res.json();
 }
 
-// HEAD commit of the repo's default branch (main).
-async function mainHeadSha() {
+// HEAD of the release line this tag belongs to: the `release/X.Y.x`
+// maintenance branch when one exists (a backport / hotfix cut off an older
+// minor), else the repo's default branch (a normal tip-of-main release). The
+// gate stays equally strict either way — the tag must be the TIP of whichever
+// line it is cut from. X.Y come from the tag name (GITHUB_REF_NAME), stripping
+// an optional `chart-` prefix and the leading `v`.
+async function expectedHead() {
+  const tag = (process.env.GITHUB_REF_NAME ?? '').replace(/^chart-/, '').replace(/^v/, '');
+  const m = tag.match(/^(\d+)\.(\d+)\./);
+  if (m) {
+    const series = `release/${m[1]}.${m[2]}.x`;
+    const res = await fetch(`${apiBase}/repos/${repo}/branches/${series}`, { headers });
+    if (res.ok) {
+      const b = await res.json();
+      return { sha: b.commit?.sha ?? null, label: series };
+    }
+  }
   const repoInfo = await getJSON(`${apiBase}/repos/${repo}`);
   const branch = repoInfo.default_branch || 'main';
   const b = await getJSON(`${apiBase}/repos/${repo}/branches/${branch}`);
-  return b.commit?.sha ?? null;
+  return { sha: b.commit?.sha ?? null, label: branch };
 }
 
 async function allCheckRuns() {
@@ -232,14 +247,15 @@ async function combinedStatus() {
   return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=100`);
 }
 
-const [mainHead, checkRuns, status] = await Promise.all([
-  mainHeadSha(),
+const [base, checkRuns, status] = await Promise.all([
+  expectedHead(),
   allCheckRuns(),
   combinedStatus(),
 ]);
 
 const { problems, gated } = evaluate({
-  mainHead,
+  mainHead: base.sha,
+  baseLabel: base.label,
   taggedSha: sha,
   checkRuns,
   statuses: status.statuses ?? [],
@@ -248,16 +264,16 @@ const { problems, gated } = evaluate({
 
 if (problems.length > 0) {
   error(
-    `release-preflight: refusing to publish — main is NOT fully complete + green on the ` +
-      `tagged commit ${sha.slice(0, 8)}. Every CI lane on main must be settled green; then re-tag the tip.`,
+    `release-preflight: refusing to publish — ${base.label} is NOT fully complete + green on the ` +
+      `tagged commit ${sha.slice(0, 8)}. Every CI lane must be settled green; then re-tag the tip of ${base.label}.`,
   );
   for (const p of problems.sort()) error(`  - ${p}`);
   process.exit(1);
 }
 
 notice(
-  `release-preflight: tagged commit ${sha.slice(0, 8)} is main HEAD and all ${gated} CI checks ` +
+  `release-preflight: tagged commit ${sha.slice(0, 8)} is ${base.label} HEAD and all ${gated} CI checks ` +
     `are settled green — proceeding with the release.`,
 );
-log(`release-preflight: ${gated} checks verified settled-green on main HEAD ${sha}`);
+log(`release-preflight: ${gated} checks verified settled-green on ${base.label} HEAD ${sha}`);
 process.exit(0);

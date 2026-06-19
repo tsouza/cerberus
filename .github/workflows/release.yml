@@ -75,6 +75,22 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Whether THIS tag is the highest stable release (so it may move the
+      # rolling `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after
+      # v1.3.0) is NOT the highest -> `:latest` stays on v1.3.0. goreleaser
+      # reads this via `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push.
+      # Needs fetch-depth: 0 above so all tags are present.
+      - name: Determine if this tag is the latest stable release
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          highest=$(git tag -l 'v*.*.*' | awk '!/-/' | sed 's/^v//' | sort -V | tail -1)
+          if [ "$tag" = "$highest" ]; then
+            echo "RELEASE_IS_LATEST=true" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_IS_LATEST=false" >> "$GITHUB_ENV"
+          fi
+          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST set accordingly"
+
       - id: goreleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -83,6 +99,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_IS_LATEST: ${{ env.RELEASE_IS_LATEST }}
 
       # SLSA build provenance for the release binaries. Lets downstream
       # consumers verify each artifact was built from this repo at this
