@@ -28,17 +28,20 @@ permissions:
   statuses: read
 
 jobs:
-  # Refuse to publish unless the WHOLE of main is green on the exact commit
-  # being tagged — not just the PR-required subset, but every push-triggered
-  # lane (ci, compatibility, chdb, coverage, e2e dashboard+chaos, mutation,
-  # perf-profile, property, CodeQL, …). A tag cut from a commit with any red
-  # or still-pending lane aborts here, before goreleaser publishes anything.
+  # Refuse to publish unless the tagged commit IS main's HEAD and EVERY check
+  # on it is FULLY SETTLED GREEN — nothing still running, nothing red/cancelled,
+  # on ANY lane. No flaky-lane exclusions, no scheduled-event heuristics: the
+  # whole of main, complete and green, or the release aborts before goreleaser
+  # publishes anything. The only checks excluded are this release run's own
+  # jobs (they are necessarily in-progress here). See release-preflight.mjs.
   preflight:
     name: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Verify all CI on the tagged commit is green
+      - name: Pin the gate logic
+        run: node .github/scripts/release-preflight.mjs --self-test
+      - name: Verify main HEAD is fully complete + green on the tagged commit
         run: node .github/scripts/release-preflight.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

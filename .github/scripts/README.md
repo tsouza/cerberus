@@ -100,28 +100,27 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
-  GATE that refuses to publish a release unless the substantive lanes of
-  `main` are green on the exact commit being tagged — every stable
-  push-triggered lane (ci/check, lint, compatibility ×3, chdb, coverage,
-  mutation/gremlins, perf-profile, property, probe, roundtrip ×3,
-  compose-smoke, CodeQL, …), not just the PR-required subset. Reads the
-  check-runs + commit statuses on `GITHUB_SHA` and fails on any
-  non-`success`/`skipped`/`neutral` or still-pending lane. Re-runs are
-  deduped by name (latest wins); the release run's own jobs are excluded;
-  scheduled (nightly) re-runs are excluded (the merge-time push result is
-  the truth). **Flaky UI COVERAGE lanes are also excluded** (`FLAKY_UI_LANE_RE`):
-  the BFS `crawl` shards (`compose-smoke-shard-info (shard-crawl)`, the k3d
-  `dashboard-shard (shard-crawl)`) and the whole informational `dashboard`
-  k3d lane (`dashboard` / `dashboard-setup` / `dashboard-shard (…)`). These
-  are coverage, not correctness gates (exploretraces "Failed to fetch",
-  the app-init-race 400 = #115/#934), so a coverage flake must not block a
-  release; the regex is anchored/specific (fail SAFE — only these lanes are
-  dropped, the required `compose-smoke` still gates).
-  - Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_SHA`; optional
-    `GITHUB_API_URL` (default `https://api.github.com`) and
-    `RELEASE_SELF_JOBS` (default `preflight,goreleaser`).
-  - Exit: `0` when every non-self, non-scheduled, non-flaky-UI check on the
-    commit is green, `1` otherwise (with one `::error::` per red/pending lane).
+  GATE that refuses to publish a release unless the tagged commit **IS main's
+  HEAD** and **every** check on it is **fully settled green**: nothing still
+  running, nothing red/cancelled/timed-out, on ANY lane. No flaky-lane
+  exclusions, no scheduled-event heuristics — the whole of main, complete and
+  green, or the release aborts before goreleaser publishes. Resolves the
+  default branch's HEAD and asserts it equals `GITHUB_SHA` (you release the tip
+  of main, never an older/side commit), then reads the check-runs + legacy
+  commit statuses on that commit. `skipped`/`neutral` count as green (settled
+  non-failures, e.g. the `changes`/`gate` no-ops); re-runs are deduped by name
+  (latest id = the check's current state, so a green re-run supersedes an
+  earlier red). The ONLY exclusion is this release run's own jobs
+  (`RELEASE_SELF_JOBS`) — they are necessarily in-progress while preflight runs,
+  so excluding them avoids a deadlock; it is structural, not a flakiness
+  heuristic. Core logic is the pure exported `evaluate(...)` + a `--self-test`
+  the workflow runs before the gate.
+  - Env: `GITHUB_TOKEN` (checks:read + statuses:read + contents:read),
+    `GITHUB_REPOSITORY`, `GITHUB_SHA`; optional `GITHUB_API_URL` (default
+    `https://api.github.com`) and `RELEASE_SELF_JOBS` (default
+    `preflight,goreleaser,chart-release`).
+  - Exit: `0` when the tag is main HEAD and every non-self check is settled
+    green, `1` otherwise (with one `::error::` per running/red lane).
 - **`prepare-release.mjs`** — `prepare-release.yml`, the manual release-staging
     workflow. Bumps the chart `version:` + `appVersion:`, the image tag, and the
     Artifact Hub `changes` annotation, and rewrites the CHANGELOG `[Unreleased]`
