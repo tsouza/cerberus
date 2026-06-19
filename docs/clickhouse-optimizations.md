@@ -78,21 +78,46 @@ against, and any skips or the deprecation notice (below).
 Each feature is a registry entry: a stable id, a minimum `major.minor`
 version, a stability class (`stable` or `experimental`), and an `apply`
 behaviour that acts on the per-query path when the feature is in the resolved
-set. The "experimental setting" column below is informational: where a feature
-needs an `allow_experimental_*` setting, that setting is co-stamped by the
-**engine plan path** (it inspects the post-optimize plan and stamps the setting
-on exactly the queries that use the native node), not carried as a registry
-field.
+set.
 
-| id                       | minVersion | stability    | experimental setting                                 | effect                                                                                                                                                                                        |
-| ------------------------ | ---------- | ------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregation_in_order`   | 24.8       | stable       | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                    |
-| `condition_cache`        | 25.3       | stable       | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                      |
-| `ts_grid_range`          | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                                     |
-| `ts_grid_resample`       | 25.6       | experimental | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto).                |
-| `ts_grid_changes`        | 25.9       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<counter>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate. Explicit-only (never auto).                                               |
-| `ts_grid_resets`         | 25.9       | experimental | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate. Explicit-only (never auto).                                                 |
-| `columnar_result_decode` | none       | opt-in       | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Explicit-only (never auto). |
+The structural columns below (`id` / `minVersion` / `stability`) are
+**generated** from `internal/chopt/registry.go` -- the single source of truth --
+and live inside the `BEGIN/END GENERATED` markers. Do not hand-edit them: run
+`just gen-opt-docs` (it calls `chopt.Registry()` and rewrites the block), and CI
+fails any PR whose block drifts from the registry. Adding a feature to the
+registry therefore lands here automatically; it can never go missing from the
+table.
+
+<!-- BEGIN GENERATED: chopt-feature-table (do not edit; regenerate with `just gen-opt-docs`) -->
+| id                       | minVersion | stability    |
+| ------------------------ | ---------- | ------------ |
+| `aggregation_in_order`   | 24.8       | stable       |
+| `condition_cache`        | 25.3       | stable       |
+| `ts_grid_range`          | 25.6       | experimental |
+| `ts_grid_resample`       | 25.6       | experimental |
+| `columnar_result_decode` | none       | experimental |
+| `ts_grid_changes`        | 25.9       | experimental |
+| `ts_grid_resets`         | 25.9       | experimental |
+<!-- END GENERATED: chopt-feature-table -->
+
+The rich, hand-authored columns below stay OUTSIDE the generated block: they
+carry operator judgement the registry cannot derive. The "experimental setting"
+column is informational -- where a feature needs an `allow_experimental_*`
+setting, that setting is co-stamped by the **engine plan path** (it inspects the
+post-optimize plan and stamps the setting on exactly the queries that use the
+native node), not carried as a registry field. `columnar_result_decode` is the
+`experimental`-class opt-in feature whose perf-tradeoff framing is described as
+"opt-in" in the effect prose.
+
+| id                       | experimental setting                                 | effect                                                                                                                                                                                             |
+| ------------------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                         |
+| `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                           |
+| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                                          |
+| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto).                     |
+| `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Explicit-only (never auto).      |
+| `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Explicit-only (never auto).     |
+| `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Explicit-only (never auto). |
 
 Notes:
 
@@ -119,18 +144,6 @@ Notes:
   (`[anchor - lookback, anchor]`) which matches reference Prometheus, vs the
   fan-out's half-open `(anchor - lookback, anchor]`; they diverge only on a
   sample landing exactly on the left boundary.
-- **`ts_grid_changes`** / **`ts_grid_resets`** are the `changes()` / `resets()`
-  siblings of the `timeSeries*ToGrid` family: both are experimental and
-  **never** enabled by `auto`, reachable only by explicit listing in
-  `CERBERUS_CH_OPTIMIZATIONS`. Their floor is **25.9, NOT 25.6** -- the
-  `timeSeriesChangesToGrid` / `timeSeriesResetsToGrid` aggregates shipped a
-  quarter after the 25.6 rate/resample set, in ClickHouse PR #86010 (CH 25.9);
-  a 25.6 floor would mis-advertise support on 25.6-25.8 and fail with
-  `UNKNOWN_AGGREGATE_FUNCTION`. They share the same family experimental setting
-  (`allow_experimental_time_series_aggregate_functions`), co-stamped by the
-  engine on exactly the queries that emit the native node. Each wires as an
-  independent boot-decided PromQL lowering strategy (either can be on without
-  the other, and independently of `ts_grid_range` / `ts_grid_resample`).
 - **`columnar_result_decode`** is a **client-side** decode optimization with
   **no version floor** (`minVersion` is the always-available zero floor): it
   changes how cerberus reads the result blocks, not what it asks the server to
@@ -141,6 +154,18 @@ Notes:
   (`CERBERUS_CH_OPTIMIZATIONS=columnar_result_decode`) to engage it. The decode
   is byte-parity-verified against the row path (`TestColumnarMatrixParity_E2E`).
   It is the registry's example of a non-version-gated opt-in feature.
+- **`ts_grid_changes`** is experimental and explicit-only (**never** `auto`,
+  no legacy alias). Its floor is **25.9**, NOT the 25.6 of rate/resample:
+  `timeSeriesChangesToGrid`/`timeSeriesResetsToGrid` shipped a full quarter
+  later (ClickHouse 25.9). A 25.6 floor would mis-advertise support on
+  25.6-25.8 servers and 502 with `UNKNOWN_AGGREGATE_FUNCTION`. It shares the
+  family's experimental setting, co-stamped on exactly the queries that emit
+  the native changes node.
+- **`ts_grid_resets`** is the sibling of `ts_grid_changes` (same PR upstream):
+  experimental, explicit-only, same **25.9** floor, same experimental setting.
+  It opts eligible `resets(<counter>[<range>])` shapes onto the native
+  `timeSeriesResetsToGrid` aggregate, retiring the per-window counter-reset
+  fan-out.
 
 ## Runtime version probe
 
@@ -317,8 +342,8 @@ Nothing in this suite can break ClickHouse 24.8:
 - `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.6` and are
   experimental (explicit-only).
 - `ts_grid_changes` and `ts_grid_resets` activate only on `>= 25.9` and are
-  experimental (explicit-only); their native aggregates shipped a quarter after
-  the 25.6 family (CH PR #86010).
+  experimental (explicit-only); below 25.9 they are absent from the resolved
+  set.
 - `columnar_result_decode` is client-side and version-agnostic (no server
   setting); it is explicit-only, so `auto` never engages it.
 - Under `auto`, an unsupported feature is simply not enabled.
@@ -327,14 +352,8 @@ Nothing in this suite can break ClickHouse 24.8:
 
 ## Build contract
 
-This section is the **illustrative** API / config / wiring sketch the suite was
-built from. The feature list below is illustrative, not a verbatim mirror of the
-registry: the live source of truth for the feature ids, floors, and stability
-classes is the [Feature registry](#feature-registry) table above (and
-`internal/chopt/registry.go`), which now seeds seven features
-(`aggregation_in_order`, `condition_cache`, `ts_grid_range`, `ts_grid_resample`,
-`ts_grid_changes`, `ts_grid_resets`, `columnar_result_decode`). Treat the code
-blocks here as the shape, not the current count. It is derived from the
+This section pins the exact public API, config names, consumption points,
+and wiring the builders must implement verbatim. It is derived from the
 `feat/chclient-query-instrumentation` foundation
 (`internal/chclient/query_settings.go`, `internal/engine/plan_shape_id.go`,
 `internal/engine/query_settings_rules.go`, `internal/config/config.go`,
@@ -411,8 +430,7 @@ func (s EnabledSet) Has(id string) bool
 func (s EnabledSet) IDs() []string // sorted, for boot logging
 
 // Registry returns the seeded feature registry (aggregation_in_order,
-// condition_cache, ts_grid_range, ts_grid_resample, ts_grid_changes,
-// ts_grid_resets, columnar_result_decode). Exposed so tests can enumerate it.
+// condition_cache, ts_grid_range). Exposed so tests can enumerate it.
 func Registry() []Feature
 
 // Resolve runs ONCE at startup, after the version probe. It returns the
@@ -428,28 +446,19 @@ stringly-typed drift):
 
 ```go
 const (
-  FeatureAggregationInOrder   = "aggregation_in_order"
-  FeatureConditionCache       = "condition_cache"
-  FeatureTSGridRange          = "ts_grid_range"
-  FeatureTSGridResample       = "ts_grid_resample"
-  FeatureTSGridChanges        = "ts_grid_changes"
-  FeatureTSGridResets         = "ts_grid_resets"
-  FeatureColumnarResultDecode = "columnar_result_decode"
+  FeatureAggregationInOrder = "aggregation_in_order"
+  FeatureConditionCache     = "condition_cache"
+  FeatureTSGridRange        = "ts_grid_range"
 )
 ```
 
-Seeded `Registry()` entries (illustrative -- the registry in
-`internal/chopt/registry.go` is the source of truth):
+Seeded `Registry()` entries (verbatim):
 
-| ID                       | MinVersion          | Stability        |
-| ------------------------ | ------------------- | ---------------- |
-| `aggregation_in_order`   | `{24, 8}`           | `Stable`         |
-| `condition_cache`        | `{25, 3}`           | `Stable`         |
-| `ts_grid_range`          | `{25, 6}`           | `Experimental`   |
-| `ts_grid_resample`       | `{25, 6}`           | `Experimental`   |
-| `ts_grid_changes`        | `{25, 9}`           | `Experimental`   |
-| `ts_grid_resets`         | `{25, 9}`           | `Experimental`   |
-| `columnar_result_decode` | `AlwaysAvailable`   | `Experimental`   |
+| ID                       | MinVersion   | Stability        |
+| ------------------------ | ------------ | ---------------- |
+| `aggregation_in_order`   | `{24, 8}`    | `Stable`         |
+| `condition_cache`        | `{25, 3}`    | `Stable`         |
+| `ts_grid_range`          | `{25, 6}`    | `Experimental`   |
 
 ### New config field names + env consts (`internal/config`)
 
