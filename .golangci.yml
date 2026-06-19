@@ -160,6 +160,12 @@ linters:
         linters:
           - revive
           - errcheck
+      # envdocs.go is the live source-of-truth for docs/configuration.md: each
+      # entry's description is the verbatim doc prose, so some lines legitimately
+      # exceed 280 chars (same rationale as the long CH SQL strings above).
+      - path: internal/config/envdocs\.go
+        linters:
+          - lll
       # forbidigo fires ONLY inside internal/** — invert via `path-except`
       # so every other path (cmd/, test/, compatibility/, scripts/, …) is
       # excluded. Previously the scope was just `internal/(traceql|api/tempo)/`;
