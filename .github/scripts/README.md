@@ -122,6 +122,22 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `RELEASE_SELF_JOBS` (default `preflight,goreleaser`).
   - Exit: `0` when every non-self, non-scheduled, non-flaky-UI check on the
     commit is green, `1` otherwise (with one `::error::` per red/pending lane).
+- **`prepare-release.mjs`** — `prepare-release.yml`, the manual release-staging
+    workflow. Bumps the chart `version:` + `appVersion:`, the image tag, and the
+    Artifact Hub `changes` annotation, and rewrites the CHANGELOG `[Unreleased]`
+    section into a dated `## [vX.Y.Z]` one — deriving the change summary and the
+    PR body from the conventional commits since the last `v*` tag. Hand-curated
+    `[Unreleased]` entries are preserved as-is; the commit-derived section is the
+    fallback only when `[Unreleased]` is empty. Pure exported helpers
+    (`bumpSemver`, `parseCommits`, `renderChangelogSection`, `renderAhChanges`,
+    `editChart`, `editChangelog`) + a `--self-test` flag the workflow runs before
+    it edits anything.
+  - Env: `VERSION` (explicit target appVersion; overrides `BUMP`), `BUMP`
+    (`patch`|`minor`|`major`, or the workflow's `none` placeholder),
+    `CHART_BUMP` (default `patch`), `PR_BODY_FILE` (default `release-pr-body.md`),
+    `GITHUB_OUTPUT` (runner-provided; sets `new_version` / `chart_version`).
+  - Exit: `0` after staging the files (or a green self-test), `1` on a bad /
+    missing version input or a malformed Chart.yaml / CHANGELOG.
 - **`chart-publish.mjs`** — `release.yml`, the `chart-release` job. Three
   subcommands (argv[2]): `version-gate` compares the local Chart.yaml
   `version:` against the latest chart tag in the OCI registry and sets the
