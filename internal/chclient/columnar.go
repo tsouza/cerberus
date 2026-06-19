@@ -108,6 +108,13 @@ func chPoolOptions(cfg Config) chpool.Options {
 		User:     cfg.Username,
 		Password: cfg.Password,
 		TLS:      cfg.TLS,
+		// Route ch-go's own client instrumentation (per-query spans carrying
+		// Rows/Bytes/Blocks, and its meter) through cerberus's telemetry: ch-go
+		// defaults TracerProvider/MeterProvider to the OTel globals, which
+		// cerberus configures for OTLP export. When no exporter is configured
+		// the globals are no-ops, so this stays free. ch-go's query span nests
+		// under cerberus's execute span as added transport-level detail.
+		OpenTelemetryInstrumentation: true,
 	}
 	if cfg.DialTimeout > 0 {
 		opts.DialTimeout = cfg.DialTimeout
@@ -167,12 +174,14 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	}
 	rec := recorderFromContext(ctx)
 
+	pe := &profileEventAccumulator{}
 	q := ch.Query{
-		Body:     body,
-		QueryID:  queryID,
-		Result:   dec.results.Auto(),
-		Settings: chSettings(c.querySettings(ctx)),
-		OnResult: dec.onResult,
+		Body:            body,
+		QueryID:         queryID,
+		Result:          dec.results.Auto(),
+		Settings:        chSettings(c.querySettings(ctx)),
+		OnResult:        dec.onResult,
+		OnProfileEvents: pe.observe,
 	}
 	if rec != nil {
 		q.OnProgress = progressBridge(rec)
@@ -186,6 +195,10 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		span.End()
 		return nil, false, nil
 	}
+	// Surface the accumulated ProfileEvents inline on the execute span (both the
+	// error and success paths below keep the span). A shape-mismatch returns
+	// above before this, since it carried no real result.
+	pe.stamp(span)
 	breakerErr := runErr
 	if isBudgetErr(runErr) {
 		breakerErr = nil // budget rejection is the caller asking for too much, not an outage

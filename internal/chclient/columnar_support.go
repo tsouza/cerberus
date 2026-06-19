@@ -9,6 +9,8 @@ import (
 	"github.com/ClickHouse/ch-go"
 	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // columnar_support.go — the conn-agnostic glue the ch-go matrix path needs:
@@ -65,6 +67,62 @@ func progressBridge(rec *progressRecorder) func(context.Context, chproto.Progres
 		rec.onProgress(&clickhouse.Progress{Rows: rows, Bytes: bytes})
 		return nil
 	}
+}
+
+// chProfileEventAttrPrefix namespaces the per-query ClickHouse ProfileEvent
+// counters stamped onto the execute span.
+const chProfileEventAttrPrefix = "ch.profile_event."
+
+// profileEventAccumulator collects ch-go's per-block ProfileEvents — the SAME
+// server-side counters (SelectedRows, RowsReadByPrewhereReaders,
+// QueryConditionCacheHits, …) that later land in `system.query_log`. ch-go
+// streams them in batches, so we sum by name and, at query end, stamp the
+// non-zero totals onto the execute span. This surfaces the cost data the
+// optcorpus reconciler scrapes asynchronously from `system.query_log` INLINE on
+// the trace, with no reconcile latency and no second server round-trip — for
+// columnar-matrix queries (the only path that runs through ch-go).
+type profileEventAccumulator struct {
+	totals map[string]int64
+}
+
+// observe is the ch-go OnProfileEvents handler: it sums each event batch's
+// values by name. ch-go calls it once per event batch over the query's life.
+func (a *profileEventAccumulator) observe(_ context.Context, events []chproto.ProfileEvent) error {
+	if a.totals == nil {
+		a.totals = make(map[string]int64, len(events))
+	}
+	for i := range events {
+		a.totals[events[i].Name] += events[i].Value
+	}
+	return nil
+}
+
+// stamp writes each accumulated non-zero ProfileEvent onto span as a
+// `ch.profile_event.<Name>` integer attribute. No-op when nothing was observed
+// or the span is not recording. ponytail: OTel's default 128-attribute span cap
+// silently drops the tail if a query emits an unusually large event set; raise
+// the span attribute limit in the tracer config if that ever bites.
+func (a *profileEventAccumulator) stamp(span trace.Span) {
+	if len(a.totals) == 0 || span == nil || !span.IsRecording() {
+		return
+	}
+	if attrs := a.attrs(); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+}
+
+// attrs renders the accumulated non-zero totals as `ch.profile_event.<Name>`
+// integer attributes. Split out from stamp so the name/value/non-zero handling
+// is unit-testable without an OTel span.
+func (a *profileEventAccumulator) attrs() []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, len(a.totals))
+	for name, v := range a.totals {
+		if v == 0 {
+			continue
+		}
+		attrs = append(attrs, attribute.Int64(chProfileEventAttrPrefix+name, v))
+	}
+	return attrs
 }
 
 // bindArgs splices the positional `?` arguments into sql to produce the raw
