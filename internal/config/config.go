@@ -1406,7 +1406,7 @@ func NewTelemetryLogger(w io.Writer, cfg LogConfig, provider any) *slog.Logger {
 		// caller's import wiring is broken; fall back to stderr.
 		return slog.New(local)
 	}
-	return slog.New(telemetry.NewSlogHandler(local, lp))
+	return slog.New(telemetry.NewSlogHandler(local, cfg.Level, lp))
 }
 
 func newLocalHandler(w io.Writer, cfg LogConfig) slog.Handler {

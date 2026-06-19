@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/log/logtest"
 )
 
 // TestFromEnv_Log_Defaults confirms the slog format/level defaults match
@@ -148,6 +150,53 @@ func TestNewLogger_LevelFilter(t *testing.T) {
 	}
 	if !strings.Contains(out, "kept") {
 		t.Errorf("warn record missing under warn level: %q", out)
+	}
+}
+
+// TestNewTelemetryLogger_LevelGatesBothSinks is the integration guard at
+// the production seam (the same NewTelemetryLogger cmd/cerberus installs):
+// CERBERUS_LOG_LEVEL must filter the OTLP-log bridge symmetrically with
+// stderr, so a sub-level record is exported to NEITHER. Regression for
+// the debug-leak bug, where the level was never threaded into the bridge
+// and Debug records leaked into otel_logs/Loki at info.
+//
+// It drives the real construction path with a logtest.Recorder standing
+// in for the SDK LoggerProvider, so it exercises the actual config ->
+// telemetry wiring (NewTelemetryLogger -> NewSlogHandler -> leveled
+// bridge), not a hand-rolled fanout.
+func TestNewTelemetryLogger_LevelGatesBothSinks(t *testing.T) {
+	cases := []struct {
+		name     string
+		level    slog.Level
+		emit     func(*slog.Logger)
+		wantBoth bool // true: kept by stderr AND OTLP; false: dropped by both
+	}{
+		{name: "info/debug-dropped", level: slog.LevelInfo, emit: func(l *slog.Logger) { l.Debug("ev") }, wantBoth: false},
+		{name: "info/info-kept", level: slog.LevelInfo, emit: func(l *slog.Logger) { l.Info("ev") }, wantBoth: true},
+		{name: "debug/debug-kept", level: slog.LevelDebug, emit: func(l *slog.Logger) { l.Debug("ev") }, wantBoth: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			recorder := logtest.NewRecorder()
+			logger := NewTelemetryLogger(&buf, LogConfig{Format: "text", Level: tc.level}, recorder)
+
+			tc.emit(logger)
+
+			gotLocal := strings.Contains(buf.String(), "ev")
+			var otlpCount int
+			for _, scoped := range recorder.Result() {
+				otlpCount += len(scoped)
+			}
+			gotOTLP := otlpCount > 0
+
+			if gotLocal != tc.wantBoth {
+				t.Errorf("stderr sink kept=%v, want %v (buf=%q)", gotLocal, tc.wantBoth, buf.String())
+			}
+			if gotOTLP != tc.wantBoth {
+				t.Errorf("OTLP sink kept=%v (count=%d), want %v", gotOTLP, otlpCount, tc.wantBoth)
+			}
+		})
 	}
 }
 
