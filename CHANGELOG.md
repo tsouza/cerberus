@@ -4,6 +4,23 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.2.0] — 2026-06-19
+
+### Added
+
+- **chclient:** surface ch-go telemetry on cerberus's own telemetry (#1007)
+
+### Fixed
+
+- **loki:** tail drops overflow rows when a poll window exceeds the limit (#1011)
+- **release:** gate strictly on main HEAD fully settled green (#1008)
+
+### Documentation
+
+- collapse native-upstream roadmap into a single note (uses-today + positioning) (#1014)
+- **roadmap:** mark 5A external-table push DEFERRED — no qualifying call-site (#1010)
+- native-CH roadmap execution addendum (code-now + ambitious chase) (#1009)
+
 ## [v1.1.0] — 2026-06-19
 
 ### Added

@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.4.0
+version: 0.4.1
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.1.0"
+appVersion: "1.2.0"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,27 +45,13 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.1.0
+      image: ghcr.io/tsouza/cerberus:v1.2.0
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: added
-      description: "ci: manual prepare-release workflow + generator (#1003)"
-    - kind: added
-      description: "chopt: generate opt feature table from registry + drift gate (#998)"
-    - kind: added
-      description: "config: generate docs/configuration.md from viper config + CI drift gate (#1000)"
-    - kind: added
-      description: "promql: adopt native timeSeriesChangesToGrid/ResetsToGrid (25.9) (#990)"
-    - kind: added
-      description: "chclient: columnar query_range matrix decode via ch-go (flag-gated) (#983)"
+      description: "chclient: surface ch-go telemetry on cerberus's own telemetry (#1007)"
     - kind: fixed
-      description: "e2e: gate showcase probes on seed-fixture signal to kill unless-panel flake (#993)"
+      description: "loki: tail drops overflow rows when a poll window exceeds the limit (#1011)"
     - kind: fixed
-      description: "e2e: stop the false-positive DiskPressure breadcrumb mislabelling (#992)"
-    - kind: fixed
-      description: "test: serialize chDB engine access to stop SIGABRT in result.Free (#984)"
-    - kind: changed
-      description: "solver: share immutable off-spine in plan slicing (copy-on-write) (#988)"
-    - kind: changed
-      description: "chopt: adopt columnar decode as a CH_OPTIMIZATIONS feature, drop standalone env (#989)"
+      description: "release: gate strictly on main HEAD fully settled green (#1008)"
