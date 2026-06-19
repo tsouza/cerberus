@@ -95,6 +95,18 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: none (paths are repo-relative to the script).
   - Exit: `0` when every doc count matches source (or every self-test
     meta-assertion passes), `1` on any drift / undetected mutation.
+- **`pr-body-check.mjs`** — `pr-hygiene.yml`, the `pr-body` job. Rejects a
+  pull request with an empty or stub description (the `gh pr create … --body
+  'cat'` incident, where a malformed heredoc shipped a PR whose entire body was
+  the word `cat`). Strips boilerplate that carries no description (the AI footer,
+  `Co-authored-by:` trailers, HTML/template comments, image-only lines), then
+  requires the remainder to be substantive: at least `MIN_CHARS` (20) of
+  meaningful text and not a lone placeholder token (`cat`/`wip`/`todo`/…). Runs
+  on `pull_request` (incl. `edited`, so fixing the body re-runs the gate). The
+  body is read from the `PR_BODY` env var — never interpolated into a shell line.
+  - Env: `PR_BODY` (the pull request body); argv `--self-test`.
+  - Exit: `0` when the description is substantive (or self-test passes), `1` on
+    an empty / stub body (with one `::error::` explaining what to write).
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).

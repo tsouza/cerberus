@@ -1,0 +1,31 @@
+name: pr-hygiene
+
+# Cheap, fast PR-metadata gates that the heavy ci.yml jobs don't cover.
+# Runs only on pull_request (the body lives in the event payload, not the
+# tree). `edited` is included so fixing the description re-runs the gate and
+# clears it without a new commit.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-body:
+    name: pr-body
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pin the gate logic
+        run: node .github/scripts/pr-body-check.mjs --self-test
+
+      # Reject an empty / stub PR description (the `--body 'cat'` incident).
+      # PR_BODY is attacker-controlled, so it is passed via env and read by the
+      # script — never interpolated into a shell `run:` line.
+      - name: Reject empty / stub PR descriptions
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node .github/scripts/pr-body-check.mjs
