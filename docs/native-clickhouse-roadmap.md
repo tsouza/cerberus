@@ -132,6 +132,32 @@ verdict per option:
 | 5C       | Embed chDB (in-process ClickHouse) for client-side post-processing           | **PROTOTYPE**   | chDB lets cerberus run ClickHouse SQL in-process over result blocks — useful for the differential harness (`range_window_native_chdb_test.go` already exists) and for fusing small client-side steps. Prototype-only: not a production query path.   |
 | 5D       | Lower cerberus's `chplan` IR straight to a ClickHouse `QueryPlan` packet     | **FANTASY**     | The `QueryPlan` packet (`process_query_plan_packet`) exists but is an internal, version-coupled C++ ABI with no stable wire contract. Coupling cerberus to it is a perpetual version-skew chase. Park it.                                            |
 
+### 5A status (2026-06-19)
+
+The **decode** half of 5A is **landed** — `FeatureColumnarResultDecode`
+(`internal/chopt/registry.go`) + the ch-go columnar matrix path
+(`internal/chclient/columnar.go`).
+
+The **push** half (client-computed set -> native external table, JOINed
+server-side in one round-trip) is **deferred — no qualifying call-site today**.
+A multi-agent sweep walked every `IN (...)` built from a Go slice and found none
+that is simultaneously (a) large, (b) purely client-computed, and (c) on the
+data plane: the prom metadata fan-in `MetricName IN (...)` is a hard-bounded
+(2^6) PREWHERE granule-prune predicate (pushing it as a JOIN would *defeat* the
+prune); the tempo root-lookup `TraceId IN (...)` is pre-truncated to the search
+limit (<=200, ~7KB); the solver shards by time-range re-anchoring and builds no
+IN-set; `vector_join`'s `IN (...)` are the query's own `on()`/`ignoring()`
+label-name constants (already one round-trip server-side). The only large purely
+client-computed set is the optcorpus reconciler ring (`query_id IN (?)`, <=4096),
+but it is an off-data-plane background filter under throttled settings with no
+chopt wiring. Shipping push now would be unused plumbing.
+
+**Trigger to revisit (flip to GO):** a *data-plane* query that must filter/JOIN
+against an *unbounded or large prior-result client set* — e.g. cross-signal
+correlation (a TraceQL result's trace-ids feeding a logs/metrics filter), a
+genuine compute-then-query two-round-trip on the hot path, or the optcorpus ring
+growing past `max_query_size` once it consults chopt.
+
 ## Adversarial honesty
 
 - **"60x" is a scan-row figure, not a wall-clock promise.** The native pass
