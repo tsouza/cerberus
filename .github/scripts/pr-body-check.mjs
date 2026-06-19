@@ -23,18 +23,51 @@ export const MIN_CHARS = 20;
 // against the whole stripped body (case-insensitive), not substrings.
 const PLACEHOLDER = /^(cat|dog|todo|to-?do|wip|test|tests?|placeholder|tbd|t\.?b\.?d\.?|n\/?a|none|asdf|\.+|x+|foo|bar|stub|wip+|change|changes|update|updates|fix|fixes)$/i;
 
+// stripHtmlComments removes every `<!-- ... -->` HTML/template comment with a
+// linear `indexOf` scan, repeated to a FIXPOINT. The fixpoint matters for
+// security: a single pass can re-expose a `<!--` on crafted nested markers
+// (e.g. `<!<!-- -->-- x -->`), which CodeQL flags as
+// js/incomplete-multi-character-sanitization. Looping until the string stops
+// changing guarantees the output cannot contain `<!--` followed by a `-->`.
+//
+// This uses indexOf rather than a regex on purpose: the lazy regex
+// `/<!--[\s\S]*?-->/` is O(n^2) on an unterminated run of `<!--` (it rescans to
+// end-of-string from every open marker), which is a ReDoS on the
+// attacker-controlled PR body. The indexOf scan is strictly linear, and the
+// fixpoint loop stays linear overall because every pass that changes the string
+// removes at least one full comment, so the string strictly shrinks.
+function stripHtmlComments(input) {
+  let s = String(input ?? '');
+  for (let prev; prev !== s; ) {
+    prev = s;
+    let out = '';
+    let i = 0;
+    for (;;) {
+      const open = s.indexOf('<!--', i);
+      if (open === -1) {
+        out += s.slice(i);
+        break;
+      }
+      const close = s.indexOf('-->', open + 4);
+      if (close === -1) {
+        // Unterminated comment: leave the remainder untouched (it carries no
+        // closing marker, so it cannot reintroduce a complete comment).
+        out += s.slice(i);
+        break;
+      }
+      out += s.slice(i, open);
+      i = close + 3;
+    }
+    s = out;
+  }
+  return s;
+}
+
 // meaningfulBody strips the parts of a body that are boilerplate / not a
 // description: the Claude footer, Co-authored-by trailers, HTML comments, and
 // markdown image-only lines, then collapses whitespace.
 export function meaningfulBody(raw) {
-  // Strip HTML / template comments to a FIXPOINT: a single non-greedy pass can
-  // leave a residual `<!--` on crafted nested markers, so repeat until stable.
-  let s = String(raw ?? '');
-  for (let prev; prev !== s; ) {
-    prev = s;
-    s = s.replace(/<!--[\s\S]*?-->/g, '');
-  }
-  return s
+  return stripHtmlComments(raw)
     .replace(/^.*🤖.*$/gm, '') // the AI-generated footer line
     .replace(/^\s*Generated with \[?Claude Code.*$/gim, '')
     .replace(/^\s*Co-authored-by:.*$/gim, '')
@@ -73,6 +106,8 @@ function selfTest() {
   stub('update', 'one-word filler');
   stub('🤖 Generated with [Claude Code](https://claude.com/claude-code)', 'footer-only');
   stub('<!-- describe your change -->', 'comment-only template');
+  stub('<!<!-- -->-- evil -->', 'nested markers must not re-expose a comment'); // CodeQL: incomplete-multi-character-sanitization
+  assert(!meaningfulBody('<!<!-- -->-- evil -->').includes('<!--'), 'stripped body must not contain a residual <!-- marker');
   stub('Fixes it.', 'too short (< 20 meaningful chars)');
   ok('Fixes the Loki tail overflow by advancing the cursor past the last sent row.', 'real one-liner');
   ok('Adds a guardrail.\n\nDetails: rejects empty PR bodies.\n\n🤖 Generated with [Claude Code](x)', 'real body + footer');
