@@ -38,6 +38,33 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Args: `--self-test` pins the parse / compare / drift-detection logic
     (run as a CI step before the gate); no args runs the gate over the tree.
   - Exit: `0` consistent (or self-test green), `1` on any drift.
+- **`doc-refs.mjs`** — `ci.yml`, the `doc-to-code reference check` step in
+  the `lint` job. The GATE that keeps prose docs honest about the code they
+  cite: greps `docs/**/*.md` for inline `(internal|cmd|test|deploy)/<path>.go`
+  references (with an optional leading module prefix, so
+  `compatibility/prometheus/cmd/seed/prom_remote.go` is captured WHOLE) and
+  HARD-FAILS when the path no longer exists (`git ls-files`). A `:line` /
+  `:start-end` pin is BOUNDS-checked only — fail iff the (high) line exceeds
+  the file's length; docs pin approximate / tilde line numbers that drift by
+  a line as code moves, so the cited line is NOT required to contain anything
+  specific, only to be in range. A trailing-slash / no-`.go` token is a
+  directory-existence check. `./`/`../`-prefixed tokens are accepted under
+  EITHER the repo-root or doc-relative interpretation (a `go test ./test/...`
+  snippet vs a `[..](../test/..)` markdown link), so only a path dead under
+  every interpretation is a violation. Vendored snapshots
+  (`compatibility/*/upstream/**`) are excluded, mirroring the markdownlint /
+  forbid-skip exclude set. Structure mirrors `forbid-skip.mjs`: pure exported
+  helpers + a `--self-test` flag; `doc-refs.test.mjs` is the `node --test`
+  guard (cheap lint lane) that pins the extraction regex + verdict logic and
+  proves each detector fires. The companion lychee gates are the OFFLINE
+  internal `link-check` job (ci.yml) and the schedule-only
+  `link-check-external.yml` — link existence/anchors vs doc-to-code path
+  existence are complementary, non-overlapping concerns.
+  - Env: `DOCS_GLOBS` (optional; default `:(glob)docs/**/*.md`); argv
+    `--self-test` runs the in-process assertion suite.
+  - Exit: `0` when every cited path exists + pins are in range (or self-test
+    passes), `1` on any dead reference / out-of-range pin (or a failed
+    self-test).
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
