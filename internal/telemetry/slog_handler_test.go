@@ -22,7 +22,7 @@ func TestNewSlogHandler_NilProvider(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	local := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	h := NewSlogHandler(local, nil)
+	h := NewSlogHandler(local, slog.LevelInfo, nil)
 	if h != local {
 		t.Errorf("nil provider should return local handler unchanged; got %T", h)
 	}
@@ -39,7 +39,7 @@ func TestNewSlogHandler_FansOutToBoth(t *testing.T) {
 	localHandler := slog.NewTextHandler(&localBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
 
 	recorder := logtest.NewRecorder()
-	handler := NewSlogHandler(localHandler, recorder)
+	handler := NewSlogHandler(localHandler, slog.LevelInfo, recorder)
 	logger := slog.New(handler)
 	logger.Info(
 		"test event",
@@ -83,7 +83,7 @@ func TestNewSlogHandler_NoopProviderIsStderrOnly(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	local := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	h := NewSlogHandler(local, lognoop.NewLoggerProvider())
+	h := NewSlogHandler(local, slog.LevelInfo, lognoop.NewLoggerProvider())
 	slog.New(h).Info("hello noop")
 	if !strings.Contains(buf.String(), "hello noop") {
 		t.Errorf("noop provider should still write stderr; got %q", buf.String())
@@ -99,7 +99,7 @@ func TestNewSlogHandler_PreservesAttrs(t *testing.T) {
 	local := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	recorder := logtest.NewRecorder()
 
-	handler := NewSlogHandler(local, recorder)
+	handler := NewSlogHandler(local, slog.LevelInfo, recorder)
 	logger := slog.New(handler).With("api", "loki")
 	logger.Info("dispatched", "sql", "SELECT 1")
 
@@ -117,6 +117,90 @@ func TestNewSlogHandler_PreservesAttrs(t *testing.T) {
 	}
 	if got["sql"] != "SELECT 1" {
 		t.Errorf("bridge: sql attr lost; got %+v", got)
+	}
+}
+
+// TestNewSlogHandler_LevelGatesOTLPBridge is the regression for the
+// debug-leak bug: at level=info a Debug record must reach NEITHER the
+// local sink NOR the OTLP bridge, and at level=debug it must reach BOTH.
+// Before the fix the bridge delegated Enabled to the SDK provider, which
+// accepts every severity, so Debug leaked into otel_logs/Loki at info.
+//
+// The test drives the real public construction path (NewSlogHandler, the
+// same seam config.NewTelemetryLogger uses) with a logtest.Recorder as
+// the OTLP sink, so it exercises the actual wiring, not a hand-rolled
+// fanout.
+func TestNewSlogHandler_LevelGatesOTLPBridge(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		level     slog.Level
+		logDebug  bool
+		wantLocal bool
+		wantOTLP  bool
+	}{
+		{name: "info/debug-dropped-both", level: slog.LevelInfo, logDebug: true, wantLocal: false, wantOTLP: false},
+		{name: "info/info-kept-both", level: slog.LevelInfo, logDebug: false, wantLocal: true, wantOTLP: true},
+		{name: "debug/debug-kept-both", level: slog.LevelDebug, logDebug: true, wantLocal: true, wantOTLP: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var localBuf bytes.Buffer
+			local := slog.NewTextHandler(&localBuf, &slog.HandlerOptions{Level: tc.level})
+			recorder := logtest.NewRecorder()
+
+			logger := slog.New(NewSlogHandler(local, tc.level, recorder))
+			if tc.logDebug {
+				logger.Debug("debug event")
+			} else {
+				logger.Info("info event")
+			}
+
+			localCount := strings.Count(localBuf.String(), "event")
+			otlpCount := len(flattenRecorder(recorder))
+
+			wantLocalCount := 0
+			if tc.wantLocal {
+				wantLocalCount = 1
+			}
+			wantOTLPCount := 0
+			if tc.wantOTLP {
+				wantOTLPCount = 1
+			}
+			if localCount != wantLocalCount {
+				t.Errorf("local sink: got %d records, want %d (buf=%q)", localCount, wantLocalCount, localBuf.String())
+			}
+			if otlpCount != wantOTLPCount {
+				t.Errorf("OTLP sink: got %d records, want %d", otlpCount, wantOTLPCount)
+			}
+		})
+	}
+}
+
+// TestNewSlogHandler_LevelGateSurvivesWithAttrs confirms the leveled
+// gate on the OTLP bridge is NOT lost after slog rebuilds the handler
+// chain via With(...). A bare embed of slog.Handler would have WithAttrs
+// return the unwrapped bridge, re-opening the debug leak after the first
+// structured-logger derivation.
+func TestNewSlogHandler_LevelGateSurvivesWithAttrs(t *testing.T) {
+	t.Parallel()
+
+	var localBuf bytes.Buffer
+	local := slog.NewTextHandler(&localBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	recorder := logtest.NewRecorder()
+
+	logger := slog.New(NewSlogHandler(local, slog.LevelInfo, recorder)).With("api", "loki")
+	logger.Debug("debug after with")
+
+	if got := len(flattenRecorder(recorder)); got != 0 {
+		t.Errorf("OTLP sink: debug leaked through WithAttrs; got %d records, want 0", got)
+	}
+	if strings.Contains(localBuf.String(), "debug after with") {
+		t.Errorf("local sink: debug leaked through WithAttrs; got %q", localBuf.String())
 	}
 }
 

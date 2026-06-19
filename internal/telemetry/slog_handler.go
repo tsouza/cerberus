@@ -9,7 +9,10 @@
 //  2. An OTel slog bridge backed by the provided LoggerProvider —
 //     ships the same record via OTLP gRPC to the collector, which
 //     writes it to ClickHouse `otel_logs` alongside the metrics and
-//     traces this binary emits.
+//     traces this binary emits. The bridge is gated on the SAME
+//     `LogConfig.Level` as the local sink (via leveledHandler), so the
+//     level filter is symmetric: a record dropped at stderr is never
+//     exported to `otel_logs`/Loki either.
 //
 // Without (2), cerberus would rely on the k8s container-log path
 // (stderr → kubelet → filelog receiver → OTLP → CH) which requires a
@@ -38,17 +41,26 @@ const slogScope = "github.com/tsouza/cerberus/internal/telemetry"
 
 // NewSlogHandler returns the slog.Handler cerberus installs as the
 // process default. `local` is the handler that writes to stderr (text
-// or JSON, level-filtered per LogConfig). `provider` is the OTel
-// LoggerProvider built by telemetry.New — pass the no-op provider if
-// you only want the local handler.
+// or JSON, level-filtered per LogConfig). `level` is the minimum level
+// (`LogConfig.Level`) the OTLP bridge is gated on, applied symmetrically
+// with the local sink. `provider` is the OTel LoggerProvider built by
+// telemetry.New — pass the no-op provider if you only want the local
+// handler.
 //
-// The returned handler runs both sinks unconditionally; level filter
-// happens inside each sink, so a record that the local handler drops
-// (e.g. below `info`) still reaches the OTLP bridge if it accepts the
-// level. Callers who want symmetric filtering should set the same
-// level on both sinks — config.NewLogger already does this via
-// `LogConfig.Level`.
-func NewSlogHandler(local slog.Handler, provider otellog.LoggerProvider) slog.Handler {
+// The level filter is applied to BOTH sinks: the local handler enforces
+// it via slog.HandlerOptions.Level, and the OTLP bridge is wrapped in a
+// leveledHandler that gates on the same `level`. Without this wrapper the
+// raw otelslog bridge delegates Enabled to the SDK LoggerProvider, which
+// accepts EVERY severity — so a record the local handler drops (e.g.
+// Debug below `info`) would still be exported to `otel_logs`/Loki. With
+// it, at `info` both sinks reject Debug (the fanout never even creates
+// the record); at `debug` both accept and the record reaches stderr AND
+// the bridge.
+//
+// `level` is a slog.Leveler (LogConfig.Level is a slog.Level, which
+// satisfies it). A nil level defaults to slog.LevelInfo so the bridge is
+// never accidentally left ungated.
+func NewSlogHandler(local slog.Handler, level slog.Leveler, provider otellog.LoggerProvider) slog.Handler {
 	if local == nil {
 		// Defensive: a nil local handler would crash slog.New; install
 		// a discard fallback so callers can pass `nil` to mean
@@ -58,8 +70,39 @@ func NewSlogHandler(local slog.Handler, provider otellog.LoggerProvider) slog.Ha
 	if provider == nil {
 		return local
 	}
+	if level == nil {
+		level = slog.LevelInfo
+	}
 	bridge := otelslog.NewHandler(slogScope, otelslog.WithLoggerProvider(provider))
-	return fanoutHandler{handlers: []slog.Handler{local, bridge}}
+	return fanoutHandler{handlers: []slog.Handler{local, leveledHandler{Handler: bridge, level: level}}}
+}
+
+// leveledHandler gates an inner slog.Handler on a minimum level. The
+// otelslog bridge has no built-in min-severity option (otelslog v0.19.0)
+// — its Enabled delegates to the SDK LoggerProvider, which accepts every
+// severity. Wrapping it here threads `LogConfig.Level` into the OTLP path
+// so the bridge filters symmetrically with the stderr sink.
+//
+// The embedded slog.Handler forwards Handle and (via the explicit
+// WithAttrs/WithGroup below) keeps the leveled gate across slog's
+// handler-chain rebuilds: a bare embed would have those methods return
+// the UNWRAPPED inner handler, silently losing the level gate after the
+// first `logger.With(...)`.
+type leveledHandler struct {
+	slog.Handler
+	level slog.Leveler
+}
+
+func (h leveledHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return l >= h.level.Level() && h.Handler.Enabled(ctx, l)
+}
+
+func (h leveledHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return leveledHandler{Handler: h.Handler.WithAttrs(attrs), level: h.level}
+}
+
+func (h leveledHandler) WithGroup(name string) slog.Handler {
+	return leveledHandler{Handler: h.Handler.WithGroup(name), level: h.level}
 }
 
 // fanoutHandler dispatches every record to each wrapped handler in
