@@ -1,0 +1,80 @@
+name: prepare-release
+
+# Manually-triggered release staging. Bumps the chart `version` + `appVersion`,
+# refreshes the Artifact Hub `changes` annotation and the CHANGELOG, regenerates
+# the chart README, and opens a PR — all derived from the conventional commits
+# since the last `v*` tag. Merging that PR is the human gate; the `v<version>`
+# tag (cut separately) is what triggers `release.yml` to build the image and
+# publish the chart. The logic lives in `.github/scripts/prepare-release.mjs`
+# (Node ESM, no deps) so it is unit-testable; this file is just wiring.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Explicit target appVersion, e.g. 1.2.0 (overrides bump)'
+        type: string
+        required: false
+      bump:
+        description: 'Semver level to bump appVersion (used when version is empty)'
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
+      chart_bump:
+        description: 'Semver level to bump the chart version'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # need full history + tags for the commit summary
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      # Pin the deriver's own logic before it edits anything.
+      - name: prepare-release self-test
+        run: node .github/scripts/prepare-release.mjs --self-test
+
+      - name: stage release files
+        id: prep
+        env:
+          VERSION: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
+          CHART_BUMP: ${{ inputs.chart_bump }}
+          PR_BODY_FILE: release-pr-body.md
+        run: node .github/scripts/prepare-release.mjs
+
+      # Regenerate the chart README with the SAME helm-docs the chart-validate
+      # drift gate uses (jnorwood/helm-docs:v1.14.2), so the opened PR is green.
+      - name: regenerate chart README
+        uses: docker://jnorwood/helm-docs:v1.14.2
+        with:
+          args: --chart-search-root=deploy/helm --template-files=README.md.gotmpl
+
+      - name: create release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prep.outputs.new_version }}
+          CHART_VERSION: ${{ steps.prep.outputs.chart_version }}
+        run: |
+          branch="release/v${VERSION}-chart-${CHART_VERSION}"
+          title="chore(release): cerberus v${VERSION} / chart ${CHART_VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
+          git commit -m "$title"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" --title "$title" --body-file release-pr-body.md
