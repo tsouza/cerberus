@@ -107,14 +107,24 @@ export function renderAhChanges(parsed) {
 
 // --- Chart.yaml + CHANGELOG edits -------------------------------------------
 
+// Swap the tag on the `${IMAGE}:<tag>` reference without building a RegExp from
+// IMAGE (dynamic-regex construction is an injection smell and never fully
+// escapes its input). IMAGE is a fixed prefix; find it and replace the
+// non-whitespace tag run that follows.
+export function replaceImageTag(text, appVersion) {
+  const needle = `${IMAGE}:`
+  const i = text.indexOf(needle)
+  if (i === -1) return text
+  const start = i + needle.length
+  const tag = /^\S+/.exec(text.slice(start))
+  return text.slice(0, start) + `v${appVersion}` + text.slice(start + (tag ? tag[0].length : 0))
+}
+
 export function editChart(text, { chartVersion, appVersion, ahChanges }) {
   let out = text
   out = out.replace(/^version:\s.*$/m, `version: ${chartVersion}`)
   out = out.replace(/^appVersion:\s.*$/m, `appVersion: "${appVersion}"`)
-  out = out.replace(
-    new RegExp(`(image:\\s*${IMAGE.replace(/[.]/g, '\\.')}:)v[\\w.\\-]+`),
-    `$1v${appVersion}`,
-  )
+  out = replaceImageTag(out, appVersion)
   // Replace the whole `artifacthub.io/changes: |` block scalar (it is the last
   // key in the file, so it runs to EOF).
   out = out.replace(
@@ -257,6 +267,8 @@ function selfTest() {
   assert(/^version: 0\.4\.0$/m.test(edited), 'chart version bumped')
   assert(/^appVersion: "1\.1\.0"$/m.test(edited), 'appVersion bumped')
   assert(edited.includes('cerberus:v1.1.0'), 'image tag bumped')
+  assert(replaceImageTag('image: ghcr.io/tsouza/cerberus:v9.9.9\n', '1.1.0')
+    === 'image: ghcr.io/tsouza/cerberus:v1.1.0\n', 'replaceImageTag swaps tag, no dynamic regex')
   assert(edited.includes('kind: added') && !edited.includes('"old"'), 'ah block replaced')
 
   const cl = '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- carried entry\n\n## [v1.0.0] — 2026-06-17\n\nfirst\n'
