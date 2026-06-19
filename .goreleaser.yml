@@ -87,13 +87,14 @@ dockers:
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
-  # `latest-*` tags published ONLY for stable (non-prerelease) tags.
-  # Otherwise an RC / alpha / beta tag would advance `:latest` and
-  # silently break consumers that pin to the tag.
+  # `latest-*` tags published ONLY for the HIGHEST stable release
+  # (RELEASE_IS_LATEST, computed in release.yml: tag == highest stable
+  # semver). A prerelease never advances `:latest`, AND a stable BACKPORT
+  # (e.g. v1.2.1 cut after v1.3.0) must not drag `:latest` backwards either.
   - id: cerberus-amd64-latest
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-amd64"
-    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
     use: buildx
     goos: linux
     goarch: amd64
@@ -110,7 +111,7 @@ dockers:
   - id: cerberus-arm64-latest
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-arm64"
-    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
     use: buildx
     goos: linux
     goarch: arm64
@@ -134,10 +135,10 @@ docker_manifests:
     image_templates:
       - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
       - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
-  # `:latest` manifest — only for stable tags, so RC / alpha / beta
-  # never advance the rolling `:latest`.
+  # `:latest` manifest — only the HIGHEST stable release (RELEASE_IS_LATEST):
+  # neither a prerelease nor a stable backport advances the rolling `:latest`.
   - name_template: "ghcr.io/tsouza/cerberus:latest"
-    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-amd64"
       - "ghcr.io/tsouza/cerberus:latest-arm64"
