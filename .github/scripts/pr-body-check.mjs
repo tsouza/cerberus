@@ -27,8 +27,14 @@ const PLACEHOLDER = /^(cat|dog|todo|to-?do|wip|test|tests?|placeholder|tbd|t\.?b
 // description: the Claude footer, Co-authored-by trailers, HTML comments, and
 // markdown image-only lines, then collapses whitespace.
 export function meaningfulBody(raw) {
-  return String(raw ?? '')
-    .replace(/<!--[\s\S]*?-->/g, '') // HTML / template comments
+  // Strip HTML / template comments to a FIXPOINT: a single non-greedy pass can
+  // leave a residual `<!--` on crafted nested markers, so repeat until stable.
+  let s = String(raw ?? '');
+  for (let prev; prev !== s; ) {
+    prev = s;
+    s = s.replace(/<!--[\s\S]*?-->/g, '');
+  }
+  return s
     .replace(/^.*🤖.*$/gm, '') // the AI-generated footer line
     .replace(/^\s*Generated with \[?Claude Code.*$/gim, '')
     .replace(/^\s*Co-authored-by:.*$/gim, '')
