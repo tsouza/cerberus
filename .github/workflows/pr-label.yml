@@ -1,0 +1,86 @@
+name: pr-label
+
+# Applies exactly one Conventional-Commit type label to every PR, derived
+# from the PR TITLE's commitlint prefix (the title IS the squash-merge
+# subject, so it always carries the type). This keeps the label scheme
+# (see CONTRIBUTING.md "PR labels") self-maintaining instead of relying on
+# a human to remember.
+#
+# Mapping (type -> label):
+#   feat -> enhancement   fix -> bug          docs -> documentation
+#   ci -> ci              test -> test        refactor -> refactor
+#   perf -> performance   chore -> chore      build -> build
+#   revert -> revert      style -> (none; cosmetic, no label)
+# Scope overrides:
+#   chore(deps) / build(deps) / *(deps) -> dependencies
+#   chore(release)                      -> release (+ chore)
+#
+# SECURITY: trigger is `pull_request_target`, which runs with a write token
+# on the BASE ref. This workflow NEVER checks out or executes PR head code —
+# it only reads the PR title from the event payload and calls the labels
+# API. Permissions are least-privilege (pull-requests: write only).
+on:
+  pull_request_target:
+    types: [opened, edited, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+concurrency:
+  group: pr-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: label
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || '';
+            // Conventional-Commit header: type(scope)!: subject
+            const m = title.match(/^([a-z]+)(?:\(([^)]*)\))?!?:/i);
+            if (!m) {
+              core.notice(`PR title "${title}" has no Conventional-Commit prefix; no label applied.`);
+              return;
+            }
+            const type = m[1].toLowerCase();
+            const scope = (m[2] || '').toLowerCase();
+
+            const typeToLabel = {
+              feat: 'enhancement',
+              fix: 'bug',
+              docs: 'documentation',
+              ci: 'ci',
+              test: 'test',
+              refactor: 'refactor',
+              perf: 'performance',
+              chore: 'chore',
+              build: 'build',
+              revert: 'revert',
+              // style is cosmetic-only; intentionally unmapped.
+            };
+
+            const labels = [];
+            if (scope === 'deps') {
+              labels.push('dependencies');
+            } else if (type === 'chore' && scope === 'release') {
+              labels.push('release', 'chore');
+            } else if (typeToLabel[type]) {
+              labels.push(typeToLabel[type]);
+            }
+
+            if (labels.length === 0) {
+              core.notice(`No label maps to type "${type}" (scope "${scope}").`);
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels,
+            });
+            core.notice(`Applied label(s): ${labels.join(', ')}`);
