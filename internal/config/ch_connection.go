@@ -252,13 +252,14 @@ func chExtraFromEnv(v *viper.Viper) (chExtra, error) {
 
 	// Max compression buffer (bytes; 0 = unset/driver default; positive only).
 	// Accepts BOTH the historical raw-integer-of-bytes form (exact BWC) AND a
-	// humanized Kubernetes-style size like 16Mi. getByteSize already rejects a
-	// negative value; the driver field is an int, so narrow here.
-	mcb64, err := getByteSize(v, envCHMaxComprBuffer)
+	// humanized Kubernetes-style size like 16Mi. getByteSizeInt rejects a
+	// negative value and a value above the platform int max (the driver field
+	// is an int), so the narrowing is bounded and safe.
+	mcb, err := getByteSizeInt(v, envCHMaxComprBuffer)
 	if err != nil {
 		return chExtra{}, err
 	}
-	out.MaxCompressionBuffer = int(mcb64)
+	out.MaxCompressionBuffer = mcb
 
 	freeBuf, err := getBool(v, envCHFreeBufOnRelease)
 	if err != nil {
@@ -565,13 +566,13 @@ func httpServerFromEnv(v *viper.Viper) (HTTPServerConfig, error) {
 	}
 	// CERBERUS_HTTP_MAX_HEADER_BYTES is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
-	// Kubernetes-style size like 1Mi / 512Ki. getByteSize already rejects a
-	// negative value. http.Server.MaxHeaderBytes is an int, so narrow here.
-	maxHdr64, err := getByteSize(v, envHTTPMaxHeaderBytes)
+	// Kubernetes-style size like 1Mi / 512Ki. getByteSizeInt rejects a negative
+	// value and a value above the platform int max (http.Server.MaxHeaderBytes
+	// is an int), so the narrowing is bounded and safe.
+	maxHdr, err := getByteSizeInt(v, envHTTPMaxHeaderBytes)
 	if err != nil {
 		return HTTPServerConfig{}, err
 	}
-	maxHdr := int(maxHdr64)
 
 	// Cross-setting: a header read deadline longer than the whole-request read
 	// deadline can never fire — reject the incoherent pair.

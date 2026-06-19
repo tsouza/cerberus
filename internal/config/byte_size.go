@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -81,4 +82,22 @@ func parseByteSize(key, raw string) (int64, error) {
 // SetDefault), and a malformed value fails fast with an error naming the key.
 func getByteSize(v *viper.Viper, key string) (int64, error) {
 	return parseByteSize(key, getString(v, key))
+}
+
+// getByteSizeInt resolves key as a byte size and narrows it to a platform int,
+// for the byte-size knobs whose downstream field is an int (not an int64) — the
+// ClickHouse driver's MaxCompressionBuffer and http.Server.MaxHeaderBytes. It
+// rejects a value above math.MaxInt with an error naming the key rather than
+// silently wrapping on a 32-bit build; the explicit constant upper-bound check
+// is also what makes the int64->int narrowing provably safe (CWE-190 /
+// CWE-681). getByteSize already rejects negatives, so the lower bound is 0.
+func getByteSizeInt(v *viper.Viper, key string) (int, error) {
+	n, err := getByteSize(v, key)
+	if err != nil {
+		return 0, err
+	}
+	if n > math.MaxInt {
+		return 0, fmt.Errorf("%s: byte size %d exceeds the maximum %d on this platform", key, n, math.MaxInt)
+	}
+	return int(n), nil
 }
