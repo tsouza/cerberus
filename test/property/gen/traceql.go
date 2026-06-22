@@ -325,9 +325,11 @@ func deterministicSpanID(seed, salt int) string {
 // draws across the pool uniformly, and the dataset's spans cover only
 // a subset of TraceQLServicePool on any iteration.
 //
-// EvalTs is irrelevant for TraceQL search (no time range threading)
-// so it's stamped at TraceQLAnchorTime() + 1h purely for log
-// completeness.
+// EvalTs is stamped at TraceQLAnchorTime() + 1h for log completeness.
+// /api/search DOES thread a time range now (the harness sends an explicit
+// window bracketing the anchor — see runCerberusTraceQL — so the
+// DefaultSearchLookback clamp doesn't filter this historically-anchored
+// dataset out), but the query value itself doesn't carry it.
 func TraceQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 	return rapid.Custom(func(t *rapid.T) property.Query {
 		// Draw service value — always from the global pool so half the
