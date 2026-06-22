@@ -1,0 +1,48 @@
+# ct / helm-template fixture: split topology — three isolated per-head
+# Deployments + three bare-named ClusterIP Services (prometheus / loki / tempo),
+# each process pinned to one head via CERBERUS_ENABLED_HEADS. Exercises the
+# per-head resources / replicaCount / maxSamples overrides: Tempo gets fat
+# memory + a tight /api/search sample cap while Prom and Loki stay lean. This is
+# the blast-radius-isolation topology — one head OOMing no longer severs the
+# others, since they no longer share a process/cgroup.
+mode: split
+
+clickhouse:
+  addr:
+    - clickhouse:9000
+  database: otel
+  username: default
+
+autoCreate:
+  schema: false
+  database: false
+
+otlp:
+  endpoint: ""
+
+split:
+  prometheus:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 1Gi
+  loki:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 1Gi
+  tempo:
+    replicaCount: 1
+    maxSamples: 2000000
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 4Gi

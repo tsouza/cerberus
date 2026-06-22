@@ -1,4 +1,7 @@
-{{- if .Values.autoscaling.enabled }}
+{{- /* HPA is monolith-only: in split mode each head's replica count is fixed
+       by split.<head>.replicaCount so a head can be deterministically scaled to
+       zero for blast-radius isolation without an HPA fighting the change. */ -}}
+{{- if and .Values.autoscaling.enabled (ne .Values.mode "split") }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

@@ -23,9 +23,73 @@ fullnameOverride: ""
 # selectors (those are immutable).
 commonLabels: {}
 
+# -- Deployment topology: `monolith` or `split`.
+# `monolith` (default) renders exactly one Deployment + one Service (`cerberus`)
+# whose single process serves all three heads — byte-for-byte the prior chart
+# behaviour. `split` renders THREE per-head Deployments + THREE bare-named
+# ClusterIP Services (`prometheus`, `loki`, `tempo`), each process serving ONE
+# head via CERBERUS_ENABLED_HEADS. Splitting isolates the blast radius: one head
+# OOMing no longer severs the others, since they no longer share a
+# process/cgroup. Per-head `resources` / `query.maxSamples` / `replicaCount`
+# live under `split.<head>` below; the aggregate `cerberus` Service does NOT
+# exist in split mode.
+mode: monolith
+
 # -- Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA
-# owns the replica count then).
+# owns the replica count then). In `split` mode this is the per-head default,
+# overridable per head under `split.<head>.replicaCount`.
 replicaCount: 2
+
+# -- Per-head overrides applied ONLY when `mode: split`. Each head (prometheus /
+# loki / tempo) gets its own Deployment + bare-named ClusterIP Service and may
+# override `enabled` (default true — a disabled head renders no workload),
+# `replicaCount`, `resources`, and `query.maxSamples`. Anything left null
+# inherits the top-level value, so the typical split install only sets the few
+# knobs that genuinely differ per head — e.g. Tempo gets fat memory + a tight
+# /api/search maxSamples while Prom and Loki stay lean. Every head still reads
+# the SAME shared env ConfigMap (ClickHouse connection, schema, etc.); only the
+# CERBERUS_ENABLED_HEADS pin, the per-head maxSamples, and resources differ.
+split:
+  prometheus:
+    # -- Render the Prometheus head Deployment + Service in split mode.
+    enabled: true
+    # -- Replicas for the Prometheus head (inherits top-level `replicaCount`
+    # when null). Ignored when `autoscaling.enabled` is true.
+    replicaCount: null
+    # -- Resource requests/limits for the Prometheus head (inherits top-level
+    # `resources` when null).
+    resources: null
+    # -- Max samples a single Prometheus-head query may materialise
+    # (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when
+    # null.
+    maxSamples: null
+  loki:
+    # -- Render the Loki head Deployment + Service in split mode.
+    enabled: true
+    # -- Replicas for the Loki head (inherits top-level `replicaCount` when
+    # null). Ignored when `autoscaling.enabled` is true.
+    replicaCount: null
+    # -- Resource requests/limits for the Loki head (inherits top-level
+    # `resources` when null).
+    resources: null
+    # -- Max samples a single Loki-head query may materialise
+    # (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when
+    # null.
+    maxSamples: null
+  tempo:
+    # -- Render the Tempo head Deployment + Service in split mode.
+    enabled: true
+    # -- Replicas for the Tempo head (inherits top-level `replicaCount` when
+    # null). Ignored when `autoscaling.enabled` is true.
+    replicaCount: null
+    # -- Resource requests/limits for the Tempo head (inherits top-level
+    # `resources` when null). Tempo's /api/search drain is the memory-heavy
+    # head — give it the fat limit here.
+    resources: null
+    # -- Max samples a single Tempo-head query may materialise
+    # (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when
+    # null. Tempo /api/search benefits from a tighter cap.
+    maxSamples: null
 
 image:
   # -- cerberus container image repository.

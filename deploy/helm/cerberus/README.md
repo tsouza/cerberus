@@ -5,7 +5,7 @@
      pipe-aligned, and the version footer adds a trailing blank — both are
      owned by helm-docs; realigning would fight the chart-ci drift check. -->
 
-![Version: 0.5.2](https://img.shields.io/badge/Version-0.5.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.3.0](https://img.shields.io/badge/AppVersion-1.3.0-informational?style=flat-square)
+![Version: 0.6.0](https://img.shields.io/badge/Version-0.6.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.3.0](https://img.shields.io/badge/AppVersion-1.3.0-informational?style=flat-square)
 
 Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
 
@@ -72,6 +72,45 @@ config:
   CERBERUS_CH_BREAKER_THRESHOLD: "0.5"   # CH circuit-breaker tuning
   CERBERUS_SCHEMA_METRICS_GAUGE_TABLE: "otel_metrics_gauge"
 ```
+
+## Deployment topology — `monolith` vs `split`
+
+`mode` selects how the gateway is laid out across Kubernetes:
+
+- **`monolith` (default)** — one Deployment + one Service (`<release>-cerberus`).
+  A single process serves all three heads (Prometheus, Loki, Tempo). This is
+  byte-for-byte the prior chart behaviour; point all three Grafana datasources
+  at the one Service.
+- **`split`** — three per-head Deployments + three **bare-named** ClusterIP
+  Services: `prometheus`, `loki`, `tempo`. Each process is pinned to one head
+  via `CERBERUS_ENABLED_HEADS`, so it builds and serves only that head — none of
+  the other heads' memory lives in its cgroup. The aggregate `cerberus` Service
+  does **not** exist in split mode.
+
+**Why split?** In monolith mode all three heads share one process/cgroup, so a
+single head OOMing (typically Tempo's `/api/search` drain) takes the whole pod
+down and severs Prometheus and Loki with it. Split mode contains the blast
+radius: each head has its own pod, its own memory limit, and its own
+`query.maxSamples`, so one head crash-looping leaves the other two serving.
+
+Set the per-head differences under `split.<head>` — typically Tempo gets fat
+memory + a tight `/api/search` sample cap while Prom and Loki stay lean:
+
+```yaml
+mode: split
+split:
+  prometheus:
+    resources: { limits: { memory: 1Gi } }
+  loki:
+    resources: { limits: { memory: 1Gi } }
+  tempo:
+    maxSamples: 2000000
+    resources: { limits: { memory: 4Gi } }
+```
+
+In split mode, Grafana datasources point at the per-head Services by their bare
+names — e.g. `http://prometheus.<namespace>:8080`, `http://loki.<namespace>:8080`,
+`http://tempo.<namespace>:8080`.
 
 ## Observability
 
@@ -240,6 +279,7 @@ Kubernetes: `>=1.23.0-0`
 | livenessProbe | object | `{"failureThreshold":6,"httpGet":{"path":"/healthz","port":"http"},"initialDelaySeconds":10,"periodSeconds":10,"timeoutSeconds":5}` | Liveness probe. Dependency-free `/healthz`; a failure restarts the pod. Budgets are sized for a saturated node (5s timeout, 6 failures ≈ 60s). |
 | logFormat | string | `"json"` | Log format: json or text (CERBERUS_LOG_FORMAT). |
 | logLevel | string | `"info"` | Log level: one of debug, info, warn, error (CERBERUS_LOG_LEVEL). |
+| mode | string | `"monolith"` | Deployment topology: `monolith` or `split`. `monolith` (default) renders exactly one Deployment + one Service (`cerberus`) whose single process serves all three heads — byte-for-byte the prior chart behaviour. `split` renders THREE per-head Deployments + THREE bare-named ClusterIP Services (`prometheus`, `loki`, `tempo`), each process serving ONE head via CERBERUS_ENABLED_HEADS. Splitting isolates the blast radius: one head OOMing no longer severs the others, since they no longer share a process/cgroup. Per-head `resources` / `query.maxSamples` / `replicaCount` live under `split.<head>` below; the aggregate `cerberus` Service does NOT exist in split mode. |
 | nameOverride | string | `""` | Override the chart name (defaults to the chart's own name, `cerberus`). |
 | networkPolicy.egress | list | `[]` | Extra egress rules appended to the auto-derived ClickHouse/DNS/OTLP set. |
 | networkPolicy.enabled | bool | `false` | Create a NetworkPolicy. Egress auto-allows the ClickHouse port(s) (parsed from `clickhouse.addr`), DNS, and the OTLP endpoint port (parsed from `otlp.endpoint`). |
@@ -264,7 +304,7 @@ Kubernetes: `>=1.23.0-0`
 | query.maxSamples | int | `5000000` | Max samples a single query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Default-on at 5000000 — the backstop for the runaway-drain OOM class, sized to bound a ~2Gi heap without rejecting realistic Grafana queries (matches the binary default). Raise it for larger pods, or set 0 to disable the budget entirely. |
 | query.timeout | string | `""` | Per-query wall-clock timeout (CERBERUS_QUERY_TIMEOUT). Binary default: 2m. Also derives the ClickHouse socket read timeout when CH_READ_TIMEOUT is unset. |
 | readinessProbe | object | `{"failureThreshold":5,"httpGet":{"path":"/readyz","port":"http"},"initialDelaySeconds":2,"periodSeconds":3,"timeoutSeconds":5}` | Readiness probe. `/readyz` pings ClickHouse (with a small TTL cache); a failure removes the pod from the Service endpoints (backpressure, no restart). |
-| replicaCount | int | `2` | Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA owns the replica count then). |
+| replicaCount | int | `2` | Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA owns the replica count then). In `split` mode this is the per-head default, overridable per head under `split.<head>.replicaCount`. |
 | requirementsCheck | bool | `false` | Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify the ClickHouse connection + schema are usable at boot. Non-fatal — logs and retries rather than crash-looping. Emitted into env only when true. |
 | resources | object | `{"limits":{"memory":"1536Mi"},"requests":{"cpu":"250m","memory":"128Mi"}}` | Pod resource requests/limits. Mirrors the reference k3s manifest: a small request, a generous memory limit, no CPU limit (bursting is fine; probe kills under CPU starvation are the real risk). If you change limits.memory, set GOMEMLIMIT (~80%) via extraEnv. |
 | schema | object | `{"replicated":{"enabled":false,"zookeeperPath":""},"ttl":""}` | Schema / DDL configuration (lowered to CERBERUS_SCHEMA_* env). The typed keys (`ttl`, `replicated`) take precedence; any OTHER key is passed through verbatim as CERBERUS_SCHEMA_<KEY> (the long tail — see docs/configuration.md), e.g. `schema: { CLUSTER: "main" }` → CERBERUS_SCHEMA_CLUSTER. |
@@ -284,6 +324,19 @@ Kubernetes: `>=1.23.0-0`
 | serviceAccount.automountServiceAccountToken | bool | `false` | Mount the SA token into the SA itself. cerberus calls no k8s API → false. |
 | serviceAccount.create | bool | `true` | Create a dedicated ServiceAccount. |
 | serviceAccount.name | string | `""` | Name of the ServiceAccount to use/create. Generated from the fullname when empty. |
+| split | object | `{"loki":{"enabled":true,"maxSamples":null,"replicaCount":null,"resources":null},"prometheus":{"enabled":true,"maxSamples":null,"replicaCount":null,"resources":null},"tempo":{"enabled":true,"maxSamples":null,"replicaCount":null,"resources":null}}` | Per-head overrides applied ONLY when `mode: split`. Each head (prometheus / loki / tempo) gets its own Deployment + bare-named ClusterIP Service and may override `enabled` (default true — a disabled head renders no workload), `replicaCount`, `resources`, and `query.maxSamples`. Anything left null inherits the top-level value, so the typical split install only sets the few knobs that genuinely differ per head — e.g. Tempo gets fat memory + a tight /api/search maxSamples while Prom and Loki stay lean. Every head still reads the SAME shared env ConfigMap (ClickHouse connection, schema, etc.); only the CERBERUS_ENABLED_HEADS pin, the per-head maxSamples, and resources differ. |
+| split.loki.enabled | bool | `true` | Render the Loki head Deployment + Service in split mode. |
+| split.loki.maxSamples | string | `nil` | Max samples a single Loki-head query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when null. |
+| split.loki.replicaCount | string | `nil` | Replicas for the Loki head (inherits top-level `replicaCount` when null). Ignored when `autoscaling.enabled` is true. |
+| split.loki.resources | string | `nil` | Resource requests/limits for the Loki head (inherits top-level `resources` when null). |
+| split.prometheus.enabled | bool | `true` | Render the Prometheus head Deployment + Service in split mode. |
+| split.prometheus.maxSamples | string | `nil` | Max samples a single Prometheus-head query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when null. |
+| split.prometheus.replicaCount | string | `nil` | Replicas for the Prometheus head (inherits top-level `replicaCount` when null). Ignored when `autoscaling.enabled` is true. |
+| split.prometheus.resources | string | `nil` | Resource requests/limits for the Prometheus head (inherits top-level `resources` when null). |
+| split.tempo.enabled | bool | `true` | Render the Tempo head Deployment + Service in split mode. |
+| split.tempo.maxSamples | string | `nil` | Max samples a single Tempo-head query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when null. Tempo /api/search benefits from a tighter cap. |
+| split.tempo.replicaCount | string | `nil` | Replicas for the Tempo head (inherits top-level `replicaCount` when null). Ignored when `autoscaling.enabled` is true. |
+| split.tempo.resources | string | `nil` | Resource requests/limits for the Tempo head (inherits top-level `resources` when null). Tempo's /api/search drain is the memory-heavy head — give it the fat limit here. |
 | startupProbe | object | `{}` | Startup probe (off by default). |
 | terminationGracePeriodSeconds | int | `30` | Termination grace period (seconds). |
 | tolerations | list | `[]` | Tolerations. |

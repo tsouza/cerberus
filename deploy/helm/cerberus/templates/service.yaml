@@ -1,3 +1,4 @@
+{{- if ne .Values.mode "split" }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -27,3 +28,4 @@ spec:
       {{- end }}
   selector:
     {{- include "cerberus.selectorLabels" . | nindent 4 }}
+{{- end }}

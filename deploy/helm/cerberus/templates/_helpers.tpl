@@ -60,6 +60,89 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+cerberus.heads — the ordered split-mode head table. Each row binds the bare
+Service name operators reach (prometheus / loki / tempo) to the
+CERBERUS_ENABLED_HEADS token the binary parses (prom / loki / tempo). The two
+diverge only for Prometheus ("prometheus" Service, "prom" token); keeping the
+mapping explicit in ONE place is what lets the per-head partials and the
+datasource NOTES iterate without re-deriving it. Returns a YAML list of
+{svc, token} dicts (consume with `fromYamlArray`).
+*/}}
+{{- define "cerberus.heads" -}}
+- svc: prometheus
+  token: prom
+- svc: loki
+  token: loki
+- svc: tempo
+  token: tempo
+{{- end }}
+
+{{/*
+cerberus.headValues — the resolved per-head `split.<svc>` block, normalised so a
+null/absent field falls back to the top-level default. Input is the head's bare
+Service name (e.g. "prometheus"); reads .Values.split.<svc> off the ROOT context
+via $. Returns a YAML dict {enabled, replicaCount, resources, maxSamples} with
+every field populated. Used by the per-head Deployment + Service partials.
+*/}}
+{{- define "cerberus.headValues" -}}
+{{- $ctx := .ctx -}}
+{{- $svc := .svc -}}
+{{- $split := default (dict) $ctx.Values.split -}}
+{{- $head := default (dict) (get $split $svc) -}}
+enabled: {{ if hasKey $head "enabled" }}{{ $head.enabled }}{{ else }}true{{ end }}
+replicaCount: {{ default $ctx.Values.replicaCount $head.replicaCount }}
+{{- $res := default $ctx.Values.resources $head.resources }}
+{{- if $res }}
+resources:
+{{ toYaml $res | indent 2 }}
+{{- end }}
+{{- /* maxSamples: per-head override else top-level query.maxSamples (may be unset) */ -}}
+{{- $ms := $head.maxSamples }}
+{{- if kindIs "invalid" $ms }}{{ $ms = $ctx.Values.query.maxSamples }}{{ end }}
+{{- if not (kindIs "invalid" $ms) }}
+maxSamples: {{ int64 $ms }}
+{{- end }}
+{{- end }}
+
+{{/*
+cerberus.headFullname — <release-fullname>-<svc>, e.g. my-cerberus-prometheus.
+Used for the per-head Deployment / ServiceAccount-less workload object name in
+split mode. The Service itself is bare-named (see cerberus.headService).
+*/}}
+{{- define "cerberus.headFullname" -}}
+{{- printf "%s-%s" (include "cerberus.fullname" .ctx) .svc | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+cerberus.headSelectorLabels — IMMUTABLE per-head selector. The base selector
+plus an app.kubernetes.io/component=<svc> discriminator so the three
+Deployments and three Services never cross-select each other's pods. Never add
+version / commonLabels here.
+*/}}
+{{- define "cerberus.headSelectorLabels" -}}
+{{ include "cerberus.selectorLabels" .ctx }}
+app.kubernetes.io/component: {{ .svc }}
+{{- end }}
+
+{{/*
+cerberus.headLabels — full label set for a per-head object: the common labels
+with the gateway-wide component label replaced by the per-head one (so each
+head is independently selectable). commonLabels still merge in last.
+*/}}
+{{- define "cerberus.headLabels" -}}
+helm.sh/chart: {{ include "cerberus.chart" .ctx }}
+{{ include "cerberus.headSelectorLabels" . }}
+{{- if .ctx.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .ctx.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
+app.kubernetes.io/part-of: cerberus
+{{- with .ctx.Values.commonLabels }}
+{{ tpl (toYaml .) .ctx }}
+{{- end }}
+{{- end }}
+
+{{/*
 The name of the service account to use.
 */}}
 {{- define "cerberus.serviceAccountName" -}}
