@@ -1,0 +1,33 @@
+# Split-mode-only e2e harness Service. Applied by `just e2e-up` when
+# E2E_MODE=split.
+#
+# k3d maps host:8080 -> nodePort 30080 (see `just e2e-up`). In monolith mode the
+# chart's NodePort `cerberus` Service answers there; in split mode the chart
+# renders only bare-named ClusterIP head Services (prometheus / loki / tempo)
+# and NO aggregate `cerberus` Service (by design). The Playwright smoke's few
+# DIRECT-to-cerberus probes (e.g. smoke.spec.ts hitting CERBERUS_URL/healthz)
+# still need an endpoint on host:8080, so this NodePort alias points at the
+# Prometheus head's pods — /healthz + /readyz are served by every head
+# regardless of CERBERUS_ENABLED_HEADS. This is an e2e-harness artifact, NOT
+# part of the chart: split mode in production exposes the three bare Services
+# and Grafana talks to each by name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cerberus
+  namespace: cerberus
+  labels:
+    app: cerberus
+    e2e.cerberus.io/role: nodeport-alias
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30080
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: cerberus
+    app.kubernetes.io/instance: cerberus
+    app.kubernetes.io/component: prometheus

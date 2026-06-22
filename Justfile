@@ -408,6 +408,14 @@ chdb-install:
 K3D_CLUSTER := "cerberus-e2e"
 CERBERUS_IMAGE := "cerberus:e2e"
 
+# Chart deployment topology the e2e stack installs: `monolith` (default — one
+# Deployment/Service serving all three heads) or `split` (three per-head
+# Deployments + bare-named Services, each pinned via CERBERUS_ENABLED_HEADS).
+# The dashboard e2e lane runs the SAME Grafana/Playwright smoke against both,
+# driven by a CI matrix axis (E2E_MODE); the split-only isolation spec then
+# proves one head can die without severing the others.
+E2E_MODE := env_var_or_default("E2E_MODE", "monolith")
+
 # Extra Go `-tags` baked into the cerberus image built by `e2e-up`. Empty
 # by default, so the dashboard e2e lane and any local `just e2e-up` build a
 # stock binary. ONLY the chaos lane sets CERBERUS_BUILD_TAGS=chaos_sleep
@@ -508,27 +516,55 @@ e2e-up: e2e-down
     done
     @echo "==> applying fixture manifests (CH, Grafana, collector, sample apps)"
     kubectl apply -k test/e2e/k3s/
+    @# In split mode the chart-managed datasource hostnames change (each head
+    @# gets its own bare-named Service), so rewrite the Grafana datasource
+    @# ConfigMap to point each datasource type at its head Service BEFORE
+    @# Grafana provisions. In monolith mode the kustomize-applied ConfigMap
+    @# (url: http://cerberus:8080) is already correct.
+    @if [ "{{E2E_MODE}}" = "split" ]; then \
+        echo "==> [split] rewriting Grafana datasource URLs to per-head Services"; \
+        kubectl -n cerberus get configmap grafana-datasources -o jsonpath='{.data.datasources\.yaml}' \
+            | awk '/type: prometheus/{t="prometheus"} /type: loki/{t="loki"} /type: tempo/{t="tempo"} \
+                   /url: http:\/\/cerberus:8080/{sub(/cerberus/, t)} {print}' > /tmp/cerberus-e2e-ds-split.yaml; \
+        kubectl -n cerberus create configmap grafana-datasources \
+            --from-file=datasources.yaml=/tmp/cerberus-e2e-ds-split.yaml \
+            --dry-run=client -o yaml | kubectl apply -f -; \
+    fi
     @# cerberus is deployed via its OWN Helm chart so the e2e cluster dogfoods
     @# the published chart (deploy/helm/cerberus) — a chart bug now fails the
     @# dashboard/chaos lanes, not just `chart-validate`'s static lint. The
-    @# kustomize apply above already created the `cerberus` namespace; --wait
-    @# blocks until the Deployment is Available (the per-pod wait below is then
-    @# a no-op, kept for symmetry with the other components).
-    @echo "==> installing cerberus via Helm chart (deploy/helm/cerberus)"
-    helm upgrade --install cerberus deploy/helm/cerberus \
-        --namespace cerberus \
-        --values test/e2e/k3s/cerberus-values.yaml \
-        --wait --timeout 180s
+    @# kustomize apply above already created the `cerberus` namespace.
+    @echo "==> installing cerberus via Helm chart (deploy/helm/cerberus, mode={{E2E_MODE}})"
+    @if [ "{{E2E_MODE}}" = "split" ]; then \
+        helm upgrade --install cerberus deploy/helm/cerberus \
+            --namespace cerberus \
+            --values test/e2e/k3s/cerberus-values.yaml \
+            --values test/e2e/k3s/cerberus-values-split.yaml \
+            --wait --timeout 180s; \
+        echo "==> [split] exposing the prometheus head as the host:8080 NodePort alias"; \
+        kubectl -n cerberus apply -f test/e2e/k3s/cerberus-split-nodeport.yaml; \
+    else \
+        helm upgrade --install cerberus deploy/helm/cerberus \
+            --namespace cerberus \
+            --values test/e2e/k3s/cerberus-values.yaml \
+            --wait --timeout 180s; \
+    fi
     @echo "==> waiting for pods (up to 3 min)"
     kubectl -n cerberus wait --for=condition=Available deployment/clickhouse              --timeout=180s
-    kubectl -n cerberus wait --for=condition=Available deployment/cerberus                --timeout=180s
+    @if [ "{{E2E_MODE}}" = "split" ]; then \
+        kubectl -n cerberus wait --for=condition=Available deployment/cerberus-prometheus --timeout=180s; \
+        kubectl -n cerberus wait --for=condition=Available deployment/cerberus-loki       --timeout=180s; \
+        kubectl -n cerberus wait --for=condition=Available deployment/cerberus-tempo      --timeout=180s; \
+    else \
+        kubectl -n cerberus wait --for=condition=Available deployment/cerberus            --timeout=180s; \
+    fi
     kubectl -n cerberus wait --for=condition=Available deployment/grafana                 --timeout=180s
     kubectl -n cerberus wait --for=condition=Available deployment/otel-collector-gateway  --timeout=180s
     kubectl -n cerberus wait --for=condition=Available deployment/sample-app-traces       --timeout=180s
     kubectl -n cerberus wait --for=condition=Available deployment/sample-app-metrics      --timeout=180s
     kubectl -n cerberus wait --for=condition=Available deployment/sample-app-logs         --timeout=180s
     kubectl -n cerberus rollout status daemonset/otel-collector-agent                     --timeout=180s
-    @echo "==> e2e-up done"
+    @echo "==> e2e-up done (mode={{E2E_MODE}})"
     @echo "    grafana:    http://localhost:3000 (admin/admin)"
     @echo "    cerberus:   http://localhost:8080/healthz"
 

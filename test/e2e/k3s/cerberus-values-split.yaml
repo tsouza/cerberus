@@ -1,0 +1,44 @@
+# Split-mode Helm overlay for the k3d e2e stack. Layered ON TOP of
+# cerberus-values.yaml by `just e2e-up` when E2E_MODE=split, so the dashboard
+# lane dogfoods `mode: split` of the published chart (three isolated per-head
+# Deployments + bare-named ClusterIP Services) with the SAME Grafana/Playwright
+# smoke as monolith.
+#
+# The base file's autoscaling / podDisruptionBudget blocks are chart-skipped in
+# split mode (HPA/PDB target the single aggregate Deployment, which doesn't
+# exist here), so they need no override. We DO give each head the same memory
+# budget the monolith pod gets (the Playwright sweep buffers full query_range
+# matrices per request — see cerberus-values.yaml's resources rationale) and pin
+# Tempo a tighter /api/search sample cap, matching the per-head differentiation
+# the split topology exists to express.
+mode: split
+
+split:
+  prometheus:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 2560Mi
+  loki:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 2560Mi
+  tempo:
+    replicaCount: 1
+    # Tighter per-query sample cap on the trace head; the rest of the safety
+    # limits (CH max-memory, GOMEMLIMIT) still come from the base file's shared
+    # config + extraEnv, which every head reads through the common ConfigMap.
+    maxSamples: 2000000
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2560Mi

@@ -880,6 +880,12 @@ jobs:
 
       - name: Bring up k3d stack
         if: env.RUN_SHARD == 'true'
+        # E2E_MODE drives the chart deployment topology `just e2e-up` installs:
+        # `monolith` (one Deployment/Service) or `split` (three per-head
+        # Deployments + bare-named Services). The matrix fans every smoke shard
+        # across both modes so the SAME smoke runs against each topology.
+        env:
+          E2E_MODE: ${{ matrix.mode }}
         run: just e2e-up
 
       - name: Seed OTel data (deterministic synthetic rows; rolling)
@@ -928,6 +934,12 @@ jobs:
         env:
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
+          # split_isolation.spec.ts reads CERBERUS_MODE (and CERBERUS_NAMESPACE)
+          # to know it may scale a head down; it is in the spec list ONLY on the
+          # split leg (see dashboard-matrix.mjs), so these are harmless on the
+          # monolith legs where the spec never runs.
+          CERBERUS_MODE: ${{ matrix.mode }}
+          CERBERUS_NAMESPACE: cerberus
           # iterate-all-dashboards reads dashboard JSON from disk; point it at
           # the k3d stack's provisioning dir (the spec default is the compose
           # stack's). The host / otelcol dashboards are fed by receivers the

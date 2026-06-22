@@ -16,7 +16,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { discover, collectViolations, SHARDS } from './dashboard-matrix.mjs';
+import {
+  discover,
+  collectViolations,
+  SHARDS,
+  buildMatrix,
+  SMOKE_MODES,
+  MODE_MONOLITH,
+  MODE_SPLIT,
+  SPLIT_ONLY_SPECS,
+  CRAWL_STACK_K3D,
+} from './dashboard-matrix.mjs';
 
 test('live tree: SHARDS ∪ EXCLUDED is a total, disjoint cover (no violations)', () => {
   const violations = collectViolations(discover());
@@ -48,4 +58,78 @@ test('exactly one shard runs the Go e2e suite', () => {
     1,
     `expected exactly one runGoE2E shard; got ${goE2E.length}: ${goE2E.map((s) => s.name).join(', ')}`,
   );
+});
+
+// ---- emit-time cross-product (buildMatrix) -------------------------------
+
+const SMOKE_SHARDS = SHARDS.filter((s) => s.crawlStack !== CRAWL_STACK_K3D);
+const specsOf = (entry) => entry.specs.split(' ').filter(Boolean);
+const hasSplitOnly = (entry) => specsOf(entry).some((spec) => SPLIT_ONLY_SPECS.has(spec));
+
+test('buildMatrix: every smoke shard yields both a monolith and a split entry', () => {
+  const include = buildMatrix(false); // PR/push: no crawl
+  for (const s of SMOKE_SHARDS) {
+    for (const mode of SMOKE_MODES) {
+      const name = `${s.name}-${mode}`;
+      assert.ok(
+        include.some((e) => e.name === name && e.mode === mode),
+        `expected a matrix entry ${name} (mode=${mode}); got ${include.map((e) => e.name).join(', ')}`,
+      );
+    }
+  }
+});
+
+test('buildMatrix: split-only specs run on split legs and NEVER on monolith legs', () => {
+  const include = buildMatrix(true); // include crawl too — must not change this
+  const splitOnlyOnSplit = include.filter((e) => e.mode === MODE_SPLIT && hasSplitOnly(e));
+  const splitOnlyOnMono = include.filter((e) => e.mode === MODE_MONOLITH && hasSplitOnly(e));
+  assert.ok(
+    splitOnlyOnSplit.length >= 1,
+    `expected at least one split-mode entry carrying a split-only spec; got none. ` +
+      `split entries: ${include.filter((e) => e.mode === MODE_SPLIT).map((e) => e.name).join(', ')}`,
+  );
+  assert.equal(
+    splitOnlyOnMono.length,
+    0,
+    `split-only specs leaked into monolith entries: ${splitOnlyOnMono.map((e) => e.name).join(', ')}`,
+  );
+});
+
+test('buildMatrix: exactly one emitted entry runs the Go e2e suite (monolith leg)', () => {
+  for (const includeCrawl of [false, true]) {
+    const include = buildMatrix(includeCrawl);
+    const goE2E = include.filter((e) => e.runGoE2E);
+    assert.equal(
+      goE2E.length,
+      1,
+      `includeCrawl=${includeCrawl}: expected exactly one runGoE2E entry; got ${goE2E.length}: ` +
+        goE2E.map((e) => e.name).join(', '),
+    );
+    assert.equal(
+      goE2E[0].mode,
+      MODE_MONOLITH,
+      `the runGoE2E entry must be the monolith leg; got ${goE2E[0].name} (mode=${goE2E[0].mode})`,
+    );
+  }
+});
+
+test('buildMatrix: the crawl shard runs once, monolith-only, and only when crawl is included', () => {
+  const noCrawl = buildMatrix(false);
+  assert.equal(
+    noCrawl.filter((e) => e.crawlStack === CRAWL_STACK_K3D).length,
+    0,
+    'crawl must not be dispatched on PR/push (includeCrawl=false)',
+  );
+  const withCrawl = buildMatrix(true);
+  const crawlEntries = withCrawl.filter((e) => e.crawlStack === CRAWL_STACK_K3D);
+  assert.equal(crawlEntries.length, 1, 'crawl must be dispatched exactly once when included');
+  assert.equal(crawlEntries[0].mode, MODE_MONOLITH, 'the crawl shard is monolith-only');
+});
+
+test('buildMatrix: every emitted entry has a non-empty spec list and a filename-safe name', () => {
+  const include = buildMatrix(true);
+  for (const e of include) {
+    assert.ok(specsOf(e).length > 0, `entry ${e.name} would boot a cluster to run nothing`);
+    assert.match(e.name, /^[a-z0-9-]+$/, `entry name not filename-safe: ${e.name}`);
+  }
 });
