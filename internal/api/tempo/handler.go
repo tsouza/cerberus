@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
@@ -233,6 +234,12 @@ const (
 	DefaultSpansPerSpanSet = 3
 )
 
+// DefaultSearchLookback bounds a windowless /api/search (no start/end
+// params) to the most recent hour, so the trace-limit pushdown's inner
+// GROUP BY TraceId scans a window instead of the whole table. Matches
+// reference Tempo's "recent data" default for a search with no range.
+const DefaultSearchLookback = time.Hour
+
 // positiveIntParam parses an integer query param, returning def when the
 // param is absent, malformed, or non-positive — mirroring reference
 // Tempo's lenient ParseSearchRequest handling (a bad `limit` falls back
@@ -304,6 +311,16 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
+	}
+	// Bound a windowless search (hand-rolled q={} with no time range) so the
+	// trace-limit pushdown's inner GROUP BY TraceId never aggregates over the
+	// whole table server-side. Grafana's Traces Drilldown always sends both
+	// bounds, so this only tightens the degenerate path. Mirrors reference
+	// Tempo, which restricts a windowless search to recent data. A one-sided
+	// window is a deliberate open-ended bound and is left as-is.
+	if start.IsZero() && end.IsZero() {
+		end = time.Now().UTC()
+		start = end.Add(-DefaultSearchLookback)
 	}
 
 	ctx := r.Context()

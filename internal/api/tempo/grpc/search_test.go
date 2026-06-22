@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,6 +45,15 @@ type stubCursorQuerier struct {
 	// Tests assert against it to prove that cancellation reached the
 	// streaming cursor.
 	closed atomic.Int32
+	// lastSQL captures the SQL the engine handed the cursor open call,
+	// so window-threading tests can assert the emitted scan is windowed
+	// (the gRPC mirror of the HTTP stubQuerier.lastSQL convention).
+	lastSQL string
+	// lastArgs captures the bound parameters alongside lastSQL — the
+	// windowed Timestamp bounds ride here as int64 nanos (the SQL
+	// carries `fromUnixTimestamp64Nano(?)` placeholders), so explicit-
+	// window tests assert the supplied bounds reached the query verbatim.
+	lastArgs []any
 }
 
 func (s *stubCursorQuerier) Query(_ context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
@@ -54,7 +64,9 @@ func (s *stubCursorQuerier) QueryStrings(_ context.Context, _ string, _ ...any) 
 	return nil, nil
 }
 
-func (s *stubCursorQuerier) QueryCursor(ctx context.Context, _ string, _ ...any) (chclient.Cursor, error) {
+func (s *stubCursorQuerier) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
 	return &stubCursor{rows: s.rows, ctx: ctx, closed: &s.closed}, nil
 }
 
@@ -424,6 +436,116 @@ func TestSearch_CancellationPropagatesToCursor(t *testing.T) {
 
 	if !waitForClose(&q.closed, time.Second) {
 		t.Errorf("cursor.Close was not invoked after cancellation")
+	}
+}
+
+// TestSearch_WindowlessDefaultsLookback_SQLShape proves the gRPC
+// streaming /search RPC closes the L2 whole-table hazard the HTTP
+// /api/search handler closes: a windowless request (Start==End==0) is
+// clamped to a recent lookback before lowering, so the trace-limit
+// pushdown's inner GROUP BY TraceId scans a window instead of the whole
+// table. Without the WithSearchWindow threading + clamp in Search, the
+// emitted SQL carries no `Timestamp` bound and the inner aggregation
+// runs over every row server-side — the same defect the HTTP path had.
+//
+// The stub captures the SQL the engine handed the cursor; we assert the
+// windowed bound appears on BOTH scans (the inner ranking subquery and
+// the outer drain) — count==2 each, the same shape the HTTP SQL test
+// pins.
+func TestSearch_WindowlessDefaultsLookback_SQLShape(t *testing.T) {
+	t.Parallel()
+	q := &stubCursorQuerier{rows: nil}
+	client, cleanup := dialServer(t, q)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	// No Start / End on the request — the windowless degenerate path.
+	stream, err := client.Search(ctx, &tempopb.SearchRequest{Query: "{}"})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	if _, err := drainSearch(t, stream); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if q.lastSQL == "" {
+		t.Fatalf("no SQL captured")
+	}
+	// The default lookback folds a lower Timestamp bound into BOTH the
+	// inner ranking subquery and the outer drain — proving the inner
+	// GROUP BY TraceId is windowed, not whole-table. The bound rides as a
+	// `fromUnixTimestamp64Nano(?)` placeholder (the value is in lastArgs).
+	const wantBound = "`Timestamp` >= fromUnixTimestamp64Nano(?)"
+	if got := strings.Count(q.lastSQL, wantBound); got != 2 {
+		t.Errorf("windowless gRPC search: want %q on both scans (count 2), got %d:\n%s",
+			wantBound, got, q.lastSQL)
+	}
+	// And the GROUP BY TraceId aggregation must still be present (the
+	// trace-limit pushdown), now over the windowed input.
+	if !strings.Contains(q.lastSQL, "GROUP BY `TraceId`") {
+		t.Errorf("windowless gRPC search SQL missing GROUP BY TraceId:\n%s", q.lastSQL)
+	}
+}
+
+// TestSearch_ExplicitWindow_Honored proves the clamp fires ONLY on the
+// both-absent path: an explicit Start / End on the SearchRequest reaches
+// the emitted SQL verbatim (the default does not override a supplied
+// window). SearchRequest.Start / End are uint32 Unix seconds; we send
+// 1_700_000_000s / 1_700_003_600s and assert the exact nanosecond bounds
+// (seconds * 1e9) appear in the SQL.
+func TestSearch_ExplicitWindow_Honored(t *testing.T) {
+	t.Parallel()
+	q := &stubCursorQuerier{rows: nil}
+	client, cleanup := dialServer(t, q)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	const (
+		startSec = uint32(1_700_000_000)
+		endSec   = uint32(1_700_003_600)
+	)
+	stream, err := client.Search(ctx, &tempopb.SearchRequest{
+		Query: "{}",
+		Start: startSec,
+		End:   endSec,
+	})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	if _, err := drainSearch(t, stream); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if q.lastSQL == "" {
+		t.Fatalf("no SQL captured")
+	}
+	// The bound folds on both scans as a placeholder; the explicit nanos
+	// (seconds * 1e9) must be the bound args, proving the supplied window
+	// — not a now()-relative lookback — reached the query.
+	const ge = "`Timestamp` >= fromUnixTimestamp64Nano(?)"
+	const le = "`Timestamp` <= fromUnixTimestamp64Nano(?)"
+	if got := strings.Count(q.lastSQL, ge); got != 2 {
+		t.Errorf("explicit window must fold on both scans (2x %q), got %d:\n%s", ge, got, q.lastSQL)
+	}
+	if got := strings.Count(q.lastSQL, le); got != 2 {
+		t.Errorf("explicit window must fold on both scans (2x %q), got %d:\n%s", le, got, q.lastSQL)
+	}
+	startNanos := int64(startSec) * 1_000_000_000
+	endNanos := int64(endSec) * 1_000_000_000
+	var sawStart, sawEnd bool
+	for _, a := range q.lastArgs {
+		if v, ok := a.(int64); ok {
+			if v == startNanos {
+				sawStart = true
+			}
+			if v == endNanos {
+				sawEnd = true
+			}
+		}
+	}
+	if !sawStart || !sawEnd {
+		t.Errorf("explicit window args not honored verbatim: sawStart=%v sawEnd=%v args=%v",
+			sawStart, sawEnd, q.lastArgs)
 	}
 }
 

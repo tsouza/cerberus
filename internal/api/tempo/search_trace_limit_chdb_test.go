@@ -28,9 +28,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chclienttest"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -44,6 +46,16 @@ const (
 	spansPerTrace  = 3
 	searchLimit    = 3
 )
+
+// seedWindow is the explicit start/end query fragment every search in
+// this file appends. All seeds land on 2026-05-01 (Unix seconds
+// 1777593600..1777680000); /api/search now clamps a windowless request
+// to a now-relative DefaultSearchLookback (the L2 fix), so a bare `q={}`
+// would scan only the most recent hour and miss these historical seeds.
+// Supplying an explicit window covering the seed mirrors how real callers
+// (Grafana's Traces Drilldown always sends start/end) drive the path and
+// keeps these pushdown assertions exercising the windowed scan.
+const seedWindow = "&start=1777593600&end=1777680000"
 
 // manyTracesSeed builds seedTraceCount traces, each with a root span and
 // two children. Trace i's root starts at 10:0i:00; the children follow a
@@ -122,7 +134,7 @@ func doSearch(t *testing.T, srv *httptest.Server, path string) tempo.SearchRespo
 func TestSearch_TraceLimitPushdown_BoundsDrain_ChDB(t *testing.T) {
 	srv := newManyTracesChDBServer(t, manyTracesSeed())
 
-	sr := doSearch(t, srv, fmt.Sprintf("/api/search?q=%%7B%%7D&limit=%d&spss=20", searchLimit))
+	sr := doSearch(t, srv, fmt.Sprintf("/api/search?q=%%7B%%7D&limit=%d&spss=20%s", searchLimit, seedWindow))
 
 	// Exactly `searchLimit` traces returned.
 	if len(sr.Traces) != searchLimit {
@@ -217,7 +229,7 @@ const rankingParitySeed = `INSERT INTO otel_traces VALUES
 func TestSearch_TraceLimitPushdown_MinRanking_ChDB(t *testing.T) {
 	srv := newManyTracesChDBServer(t, rankingParitySeed)
 
-	sr := doSearch(t, srv, "/api/search?q=%7B%7D&limit=1&spss=20")
+	sr := doSearch(t, srv, "/api/search?q=%7B%7D&limit=1&spss=20"+seedWindow)
 
 	if len(sr.Traces) != 1 {
 		t.Fatalf("got %d traces, want 1", len(sr.Traces))
@@ -227,5 +239,102 @@ func TestSearch_TraceLimitPushdown_MinRanking_ChDB(t *testing.T) {
 	}
 	if sr.Traces[0].TraceID != highTraceID {
 		t.Fatalf("kept %q, want HIGH %q (min(Timestamp) DESC over matched spans)", sr.Traces[0].TraceID, highTraceID)
+	}
+}
+
+// fatTraceMatchedSpans is the number of matched spans seeded onto ONE
+// trace for the L1 fat-trace test: well above both the spss cap the
+// request sends (3) and DefaultSpansPerSpanSet, so the spans-truncated /
+// Matched-uncapped contract is observable.
+const fatTraceMatchedSpans = 12
+
+// fatTraceSeed seeds a SINGLE trace carrying fatTraceMatchedSpans spans
+// (one root + the rest children), all matching a plain `{}` search. The
+// trace-count bound keeps this one trace; the L1 contract is that every
+// matched span still flows into Matched while the SpanSet's span LIST is
+// truncated to the request's spss.
+func fatTraceSeed() string {
+	const traceID = "f00000000000000000000000000000aa"
+	rows := make([]string, 0, fatTraceMatchedSpans)
+	for i := 0; i < fatTraceMatchedSpans; i++ {
+		spanID := fmt.Sprintf("%016x", i+1)
+		parent := ""
+		if i > 0 {
+			// Children point at the root (span 1) so exactly one span is
+			// the root; all share the trace so all match `{}`.
+			parent = fmt.Sprintf("%016x", 1)
+		}
+		ts := fmt.Sprintf("2026-05-01 12:00:00.%09d", i+1)
+		rows = append(rows, fmt.Sprintf(
+			"('%s', '%s', '%s', 'span-%d', 'Internal', 1000, toDateTime64('%s', 9), 'Unset', '', '', '', map(), map('service.name', 'fat'))",
+			traceID, spanID, parent, i, ts,
+		))
+	}
+	return "INSERT INTO otel_traces VALUES\n    " + strings.Join(rows, ",\n    ") + ";"
+}
+
+// TestSearch_FatTrace_MatchedUncapped_BudgetBackstop pins the L1 verdict:
+// the spans-per-trace fan-out is intentionally uncapped (the Matched
+// parity contract the tempo differ enforces), and a pathological fat
+// trace is bounded not by an SQL span cap but by the sample-budget
+// backstop that aborts the drain with a 422.
+//
+//   - Parity arm (chDB): one trace, fatTraceMatchedSpans matched spans,
+//     spss=3. The SpanSet's span LIST is truncated to 3, but Matched
+//     reports the full fatTraceMatchedSpans — the exact "spans truncated,
+//     Matched uncapped" property the differ requires. An SQL `LIMIT k BY
+//     TraceId` would cap Matched here and break parity.
+//   - Backstop arm: the same fat-trace search driven through a querier
+//     that returns the sample-budget error (MaxQuerySamples crossed mid
+//     drain). The handler must map it to 422 — proving the drain aborts
+//     with a rejection rather than growing the heap without bound.
+func TestSearch_FatTrace_MatchedUncapped_BudgetBackstop(t *testing.T) {
+	// --- Parity arm: spans truncated to spss, Matched uncapped. ---
+	srv := newManyTracesChDBServer(t, fatTraceSeed())
+	sr := doSearch(t, srv, "/api/search?q=%7B%7D&spss=3"+seedWindow)
+
+	if len(sr.Traces) != 1 {
+		t.Fatalf("parity arm: got %d traces, want 1 (single fat trace)", len(sr.Traces))
+	}
+	tr := sr.Traces[0]
+	if len(tr.SpanSets) != 1 {
+		t.Fatalf("parity arm: got %d spanSets, want 1 (%+v)", len(tr.SpanSets), tr)
+	}
+	set := tr.SpanSets[0]
+	// The span LIST is truncated to the requested spss …
+	if len(set.Spans) != 3 {
+		t.Errorf("parity arm: len(Spans) = %d, want 3 (truncated to spss)", len(set.Spans))
+	}
+	// … but Matched reports the UNCAPPED total — the parity contract.
+	if set.Matched != fatTraceMatchedSpans {
+		t.Errorf("parity arm: Matched = %d, want %d (uncapped total — an SQL span cap would break tempo Matched parity)",
+			set.Matched, fatTraceMatchedSpans)
+	}
+	// Guard against a degenerate fixture: the truncation must be real.
+	if fatTraceMatchedSpans <= 3 || fatTraceMatchedSpans <= tempo.DefaultSpansPerSpanSet {
+		t.Fatalf("seed misconfigured: fatTraceMatchedSpans %d must exceed both spss=3 and DefaultSpansPerSpanSet=%d",
+			fatTraceMatchedSpans, tempo.DefaultSpansPerSpanSet)
+	}
+
+	// --- Backstop arm: a fat drain that crosses the sample budget is a
+	// 422, not an unbounded heap. The chDB test double drains rows itself
+	// and does not enforce MaxQuerySamples (that lives in the production
+	// cursor, unit-tested in internal/chclient), so drive the budget
+	// crossing through a querier that surfaces the same *TooManySamplesError
+	// the production cursor raises and assert the /api/search handler maps
+	// it to 422 via classifySearchErr. ---
+	budgetQ := &stubQuerier{err: &chclient.TooManySamplesError{Limit: fatTraceMatchedSpans - 1}}
+	budgetSrv := newServer(budgetQ, "v-test")
+	t.Cleanup(budgetSrv.Close)
+	resp, err := http.Get(budgetSrv.URL + "/api/search?q=%7B%7D&spss=3")
+	if err != nil {
+		t.Fatalf("backstop arm GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("backstop arm: status = %d (body %q), want 422 (sample-budget abort, not an unbounded drain)", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "sample budget exceeded") {
+		t.Errorf("backstop arm: body %q does not carry the budget message", body)
 	}
 }

@@ -167,16 +167,18 @@ func searchWindowFromCtx(ctx context.Context) (time.Time, time.Time) {
 // scan predicate at the same time, so a windowed inner top-N ranking and
 // the outer drain both scan only the window — never the whole table.
 //
-// ponytail: when the request carries no window (both start/end zero — e.g. a
-// hand-rolled `q={}` with no time range), andWindow contributes no predicate
-// and the inner `GROUP BY TraceId` aggregates over the whole table
-// server-side. The Go-side drain is still bounded to N traces (no process
-// OOM), but ClickHouse builds an aggregation table keyed by every distinct
-// trace_id; on a large table this leans on the CH `max_memory` backstop
-// (code 241 → classifySearchErr maps it to 422, a rejection, not a crash).
-// Grafana's Traces Drilldown always sends start/end, so this is the
-// degenerate hand-rolled path only; tighten to a required window if it ever
-// bites in practice.
+// Both search entry points — the HTTP /api/search handler and the gRPC
+// streaming /search RPC — now clamp a windowless request (both start/end
+// zero — e.g. a hand-rolled `q={}` with no time range) to a recent-lookback
+// window before threading it here (see internal/api/tempo/handler.go
+// handleSearch and internal/api/tempo/grpc/search.go Search, both using
+// DefaultSearchLookback), so on every search path andWindow always folds a
+// `Timestamp` bound and the inner `GROUP BY TraceId` is always windowed — the
+// whole-table aggregation is unreachable from the search path. The lowering
+// still tolerates a zero window for non-search callers (the metrics pipelines,
+// the spec/property harnesses, /traces/{id}): they pass no limit, so
+// stampSearchTraceLimit is a no-op for them and the absent window never reaches
+// andWindow.
 //
 // limit <= 0 (no /api/search limit on the context — metrics, tests, the
 // property harness, /traces/{id}) is a no-op: the plan is returned unchanged.
