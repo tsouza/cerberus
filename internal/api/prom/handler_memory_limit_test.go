@@ -65,6 +65,7 @@ func (c *memLimitCursor) Next() bool {
 func (c *memLimitCursor) Sample() chclient.Sample { return c.cur }
 func (c *memLimitCursor) Err() error              { return c.err }
 func (c *memLimitCursor) Close() error            { return nil }
+func (c *memLimitCursor) Inspected() int64        { return int64(c.idx) }
 
 // memLimitQuerier reuses stubQuerier for every endpoint except
 // QueryCursor, which fails the drain mid-stream with the

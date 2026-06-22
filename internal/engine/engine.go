@@ -347,6 +347,17 @@ type Result struct {
 	// Parse (or that QueryPlan was called with), threaded through
 	// so the handler-side response pivot can switch on it.
 	Meta Meta
+	// Inspected is the number of rows the engine pulled from ClickHouse
+	// for this request — the size of the buffer a result-buffering
+	// handler accumulates before it truncates / reshapes in Go. On the
+	// eager path it equals len(Samples) (Client.Query drains the whole
+	// result into the slice), the same quantity Tempo already reports as
+	// SearchMetrics.InspectedTraces. It is the uniform per-response drain
+	// counter the boundsdrain harness asserts stays O(output) as the
+	// input axis scales; the streaming sibling lives on the cursor as
+	// chclient.Cursor.Inspected (CursorResult carries the cursor, so the
+	// caller reads the count off it after the drain).
+	Inspected int64
 }
 
 // Query runs the full pipeline for an upstream query string: it asks
@@ -455,6 +466,9 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		PlanNodeCount: nodes,
 		Headers:       headers,
 		Meta:          meta,
+		// Eager path: Client.Query drained the whole result into samples,
+		// so the slice length IS the rows-from-CH drain count.
+		Inspected: int64(len(samples)),
 	}, nil
 }
 
@@ -536,6 +550,10 @@ func (e *Engine) executeRouted(
 		PlanNodeCount: nodes,
 		Headers:       headers,
 		Meta:          meta,
+		// Routed eager path drained the composed shard cursor into samples,
+		// so the slice length is the rows-from-CH drain count (equal to the
+		// cursor's Inspected/emitted).
+		Inspected: int64(len(samples)),
 	}, nil
 }
 

@@ -104,6 +104,7 @@ func (c *stubCursor) Close() error {
 	c.closed.Store(1)
 	return nil
 }
+func (c *stubCursor) Inspected() int64 { return int64(c.i) }
 
 // makeSearchRow returns one synthetic chclient.Sample shaped like the
 // canonical wrap-projection output: MetricName carries SpanName, the

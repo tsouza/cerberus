@@ -56,11 +56,24 @@ func (e *TooManySamplesError) Unwrap() error { return ErrTooManySamples }
 // transport error rather than end-of-stream. Close() releases the
 // underlying CH resources and MUST be called exactly once, typically via
 // `defer cursor.Close()` immediately after a successful QueryCursor.
+//
+// Inspected reports the number of rows the consumer has pulled off the
+// cursor so far (the count of Next() calls that returned true). This is
+// the size of the buffer a result-buffering handler accumulates as it
+// drains — the quantity that OOMed the gateway twice (Tempo /api/search
+// and PromQL /api/v1/query_range). A handler whose memory must be O(output)
+// rather than O(input) proves it by asserting Inspected stays bounded by
+// the output limit as the input axis (dataset / window / cardinality)
+// scales; see test/chdb/boundsdrain. It mirrors the eager path's
+// len(Result.Samples) semantics — the rows that crossed from ClickHouse
+// into the process — so a streaming handler can report a drain count the
+// same way Tempo's SearchMetrics.InspectedTraces does on the eager path.
 type Cursor interface {
 	Next() bool
 	Sample() Sample
 	Err() error
 	Close() error
+	Inspected() int64
 }
 
 // rowsCursor wraps a driver.Rows and decodes each row positionally into a
@@ -316,6 +329,18 @@ func (c *rowsCursor) Sample() Sample { return c.cur }
 // Err returns any non-EOF error that terminated iteration. It is safe to
 // call after Close.
 func (c *rowsCursor) Err() error { return c.err }
+
+// Inspected returns the number of rows decoded off the wire so far: seen is
+// incremented once per row scanned, before the per-request budget / per-cursor
+// maxSamples check. On a clean drain that equals the count of Next() calls that
+// returned true — the per-request drain count a streaming handler buffers (the
+// matrix the prom /query_range pivot accumulates), the streaming-path analogue
+// of the eager path's len(Result.Samples). On a budget / maxSamples trip the
+// tripping row is included though its Next() returned false, so Inspected is
+// one higher than the buffered count; that case always sets Err(), and every
+// reader (matrixFromCursor, Client.Query) reports Inspected only after a
+// nil-error full drain, so the off-by-one is never observed.
+func (c *rowsCursor) Inspected() int64 { return c.seen }
 
 // Close releases the underlying driver.Rows. Safe to call multiple
 // times AND from multiple goroutines concurrently; the underlying

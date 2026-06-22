@@ -137,6 +137,7 @@ func (c *timeoutCursor) Next() bool {
 func (c *timeoutCursor) Sample() chclient.Sample { return c.cur }
 func (c *timeoutCursor) Err() error              { return c.err }
 func (c *timeoutCursor) Close() error            { return nil }
+func (c *timeoutCursor) Inspected() int64        { return int64(c.idx) }
 
 type timeoutCursorQuerier struct {
 	stubQuerier

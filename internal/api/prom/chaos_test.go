@@ -164,6 +164,7 @@ func (c *chaosCursor) Next() bool {
 func (c *chaosCursor) Sample() chclient.Sample { return c.cur }
 func (c *chaosCursor) Err() error              { return c.err }
 func (c *chaosCursor) Close() error            { c.closed = true; return nil }
+func (c *chaosCursor) Inspected() int64        { return int64(c.idx) }
 
 // TestCH_UpstreamError_Returns502 — an upstream CH error must map to
 // a 502 Bad Gateway with the Prom error envelope.

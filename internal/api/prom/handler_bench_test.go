@@ -68,6 +68,7 @@ func (c *fakeCountingCursor) Close() error {
 	c.closed = true
 	return nil
 }
+func (c *fakeCountingCursor) Inspected() int64 { return int64(c.emitted) }
 
 // cursorQuerier returns a fresh counting cursor on each QueryCursor.
 // stubQuerier (in handler_test.go) returns a sliceCursor over its

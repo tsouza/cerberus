@@ -97,6 +97,12 @@ func (c *goleakSliceCursor) Next() bool {
 func (c *goleakSliceCursor) Sample() chclient.Sample { return c.cur }
 func (c *goleakSliceCursor) Err() error              { return nil }
 func (c *goleakSliceCursor) Close() error            { return nil }
+func (c *goleakSliceCursor) Inspected() int64 {
+	if c.idx > len(c.samples) {
+		return int64(len(c.samples))
+	}
+	return int64(c.idx)
+}
 
 func TestNoGoroutineLeak_PromQuery(t *testing.T) {
 	defer goleak.VerifyNone(t, goleakOpts()...)

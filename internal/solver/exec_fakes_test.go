@@ -163,6 +163,7 @@ func (c *fakeCursor) Next() bool {
 
 func (c *fakeCursor) Sample() chclient.Sample { return c.cur }
 func (c *fakeCursor) Err() error              { return c.err }
+func (c *fakeCursor) Inspected() int64        { return int64(c.i) }
 
 func (c *fakeCursor) Close() error {
 	c.closeOnce.Do(func() {

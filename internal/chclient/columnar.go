@@ -439,6 +439,12 @@ func (d *columnarCursor) Sample() Sample {
 // surfaced from QueryCursor's open call, not here, matching the row path.
 func (d *columnarCursor) Err() error { return d.err }
 
+// Inspected returns the number of rows the consumer has pulled — the count of
+// Next() calls that returned true, which is d.idx (advanced once per consumed
+// row). It matches the row path's seen-based count: the per-request drain
+// count a streaming handler buffers.
+func (d *columnarCursor) Inspected() int64 { return int64(d.idx) }
+
 // Close ends the execute span exactly once. The ch-go pool itself is owned by
 // the Client (closed on Client.Close), not the cursor — the per-query
 // connection was already released when pool.Do returned.
