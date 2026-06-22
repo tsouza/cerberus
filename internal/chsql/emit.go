@@ -105,30 +105,6 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitProject(v)
 	case *chplan.Aggregate:
 		return e.emitAggregate(v)
-	case *chplan.MetricsAggregate:
-		return e.emitMetricsAggregate(v)
-	case *chplan.MetricsSecondStage:
-		return e.emitMetricsSecondStage(v)
-	case *chplan.MetricsHistogramOverTime:
-		return e.emitMetricsHistogramOverTime(v)
-	case *chplan.MetricsCompare:
-		return e.emitMetricsCompare(v)
-	case *chplan.RangeWindow:
-		return e.emitRangeWindow(v)
-	case *chplan.RangeWindowNative:
-		return e.emitRangeWindowNative(v)
-	case *chplan.RangeLWR:
-		return e.emitRangeLWR(v)
-	case *chplan.RangeWindowResample:
-		return e.emitRangeWindowResample(v)
-	case *chplan.RangeBucketFanout:
-		return e.emitRangeBucketFanout(v)
-	case *chplan.AbsentOverTime:
-		return e.emitAbsentOverTime(v)
-	case *chplan.HistogramQuantile:
-		return e.emitHistogramQuantile(v)
-	case *chplan.HistogramQuantileNative:
-		return e.emitHistogramQuantileNative(v)
 	case *chplan.Limit:
 		return e.emitLimit(v)
 	case *chplan.OrderBy:
@@ -156,8 +132,46 @@ func (e *emitter) emitNode(n chplan.Node) error {
 	case *chplan.UnionAll:
 		return e.emitUnionAll(v)
 	default:
+		if handled, err := e.emitMetricNode(n); handled {
+			return err
+		}
 		return fmt.Errorf("%w: node %T", ErrUnsupported, n)
 	}
+}
+
+// emitMetricNode dispatches the metric / range-window / histogram node
+// family — the analytical nodes the PromQL & TraceQL metrics pipelines
+// produce. Split out of emitNode so that switch stays under the cyclop
+// complexity budget as new relational nodes are added; returns handled=false
+// for any node it doesn't own so emitNode falls through to ErrUnsupported.
+func (e *emitter) emitMetricNode(n chplan.Node) (bool, error) {
+	switch v := n.(type) {
+	case *chplan.MetricsAggregate:
+		return true, e.emitMetricsAggregate(v)
+	case *chplan.MetricsSecondStage:
+		return true, e.emitMetricsSecondStage(v)
+	case *chplan.MetricsHistogramOverTime:
+		return true, e.emitMetricsHistogramOverTime(v)
+	case *chplan.MetricsCompare:
+		return true, e.emitMetricsCompare(v)
+	case *chplan.RangeWindow:
+		return true, e.emitRangeWindow(v)
+	case *chplan.RangeWindowNative:
+		return true, e.emitRangeWindowNative(v)
+	case *chplan.RangeLWR:
+		return true, e.emitRangeLWR(v)
+	case *chplan.RangeWindowResample:
+		return true, e.emitRangeWindowResample(v)
+	case *chplan.RangeBucketFanout:
+		return true, e.emitRangeBucketFanout(v)
+	case *chplan.AbsentOverTime:
+		return true, e.emitAbsentOverTime(v)
+	case *chplan.HistogramQuantile:
+		return true, e.emitHistogramQuantile(v)
+	case *chplan.HistogramQuantileNative:
+		return true, e.emitHistogramQuantileNative(v)
+	}
+	return false, nil
 }
 
 // emitSubquery wraps emitNode(n) in parentheses, used wherever a node feeds
