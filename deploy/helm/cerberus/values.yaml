@@ -191,8 +191,11 @@ chOptimizations: auto
 # single expensive query.
 query:
   # -- Max samples a single query may materialise (CERBERUS_QUERY_MAX_SAMPLES).
-  # Binary default: 50000000.
-  maxSamples: null
+  # Default-on at 5000000 — the backstop for the runaway-drain OOM class,
+  # sized to bound a ~2Gi heap without rejecting realistic Grafana queries
+  # (matches the binary default). Raise it for larger pods, or set 0 to
+  # disable the budget entirely.
+  maxSamples: 5000000
   # -- Per-query wall-clock timeout (CERBERUS_QUERY_TIMEOUT). Binary default:
   # 2m. Also derives the ClickHouse socket read timeout when CH_READ_TIMEOUT is
   # unset.
