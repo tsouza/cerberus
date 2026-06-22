@@ -15,7 +15,9 @@ otlp:
   insecure: true
 
 config:
-  CERBERUS_QUERY_MAX_SAMPLES: "5000000"
+  # CERBERUS_QUERY_MAX_SAMPLES is now emitted by the typed query.maxSamples
+  # default (5000000), so setting it here too would duplicate the key in the
+  # env ConfigMap. CH_QUERY_MAX_MEMORY still exercises the config escape hatch.
   CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
 
 extraEnv:
