@@ -60,8 +60,8 @@ func TestFromEnv_ViperDefaults_NoEnv(t *testing.T) {
 	if cfg.ClickHouse.KeepAliveProbes != 3 {
 		t.Errorf("KeepAliveProbes = %d; want 3", cfg.ClickHouse.KeepAliveProbes)
 	}
-	if cfg.ClickHouse.MaxQuerySamples != 50_000_000 {
-		t.Errorf("MaxQuerySamples = %d; want 50000000", cfg.ClickHouse.MaxQuerySamples)
+	if cfg.ClickHouse.MaxQuerySamples != 5_000_000 {
+		t.Errorf("MaxQuerySamples = %d; want 5000000", cfg.ClickHouse.MaxQuerySamples)
 	}
 	if cfg.ClickHouse.MaxQueryMemoryBytes != 1_073_741_824 {
 		t.Errorf("MaxQueryMemoryBytes = %d; want 1073741824", cfg.ClickHouse.MaxQueryMemoryBytes)

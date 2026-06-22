@@ -503,7 +503,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_KEEPALIVE_IDLE     default "10s"  (idle before the first keepalive probe)
 //	CERBERUS_CH_KEEPALIVE_INTERVAL default "5s"   (gap between keepalive probes)
 //	CERBERUS_CH_KEEPALIVE_COUNT    default 3      (unanswered probes before the socket is declared dead)
-//	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
+//	CERBERUS_QUERY_MAX_SAMPLES     default 5000000 (0 disables the budget)
 //	CERBERUS_QUERY_TIMEOUT         default "2m" — per-query wall-clock cap stamped
 //	    as ClickHouse max_execution_time (timeout_overflow_mode=throw); the
 //	    standard Prometheus ?timeout= param min's with it per request; 0 disables
@@ -1130,17 +1130,24 @@ const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
 // interval) while staying fresh enough to capture a recent shape's cost.
 const defaultCHOptCorpusInterval time.Duration = 60 * time.Second
 
-// defaultQueryMaxSamples is the default per-query sample budget,
-// mirroring upstream Prometheus's --query.max-samples default
-// (50,000,000). A query whose result-set drain crosses the budget is
-// aborted (Prom head: 422 errorType=execution with Prometheus's exact
-// wire message) instead of materialising an unbounded matrix in
-// process memory. Note Prometheus sizes its default around ~16-byte
-// in-memory samples; cerberus rows carry label maps (interned
-// per-series, but still heavier), so memory-constrained deploys
-// should set CERBERUS_QUERY_MAX_SAMPLES well below the default — the
-// k3d e2e stack runs at 5,000,000.
-const defaultQueryMaxSamples int64 = 50_000_000
+// defaultQueryMaxSamples is the default-on per-query sample budget. A
+// query whose result-set drain crosses the budget is aborted (all
+// three heads map it to HTTP 422 — Prom: errorType=execution with
+// Prometheus's exact --query.max-samples wire message) instead of
+// materialising an unbounded matrix in process memory. This is the
+// backstop for the matrixFromCursor OOM class: prod hit it with the
+// budget effectively unset (the old default was Prometheus's
+// 50,000,000, which on cerberus's heavier label-carrying rows is no
+// real cap on a ~2Gi pod). 5,000,000 is the top of the
+// empirically-safe range for a 2Gi heap — it is what the k3d e2e stack
+// runs, and is high enough that realistic Grafana query_range fan-outs
+// over OTel data stay well under it — while bounding the blast radius
+// of a runaway drain. Cerberus DELIBERATELY departs from upstream
+// Prometheus's 50M default here: parity on the rejection *contract*
+// (the 422 + exact message) is what matters; parity on a default sized
+// for 16-byte in-memory samples does not. Set CERBERUS_QUERY_MAX_SAMPLES
+// to raise it for big deployments, or 0 to disable the budget entirely.
+const defaultQueryMaxSamples int64 = 5_000_000
 
 // defaultQueryTimeout is the default per-query wall-clock execution cap:
 // 2 minutes, mirroring upstream Prometheus's `--query.timeout` default
