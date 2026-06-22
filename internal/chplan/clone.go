@@ -34,6 +34,10 @@ func CloneNode(n Node) Node {
 		return &c
 	case *Filter:
 		return &Filter{Input: CloneNode(v.Input), Predicate: cloneExpr(v.Predicate)}
+	case *SearchTraceLimit:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		return &c
 	case *Project:
 		return &Project{Input: CloneNode(v.Input), Projections: cloneProjections(v.Projections)}
 	case *Aggregate:
