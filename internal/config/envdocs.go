@@ -204,6 +204,7 @@ var envDocs = []EnvDoc{
 	{envHTTPIdleTimeout, "duration", "HTTP server", "Idle keep-alive connection lifetime."},
 	{envHTTPMaxHeaderBytes, "size", "HTTP server", "Max request header size in bytes. Accepts a raw byte integer (e.g. `1048576`) **or** a humanized size (`1Mi`, `512Ki`, `1M`); the raw-integer form is unchanged for backward compatibility. `0` leaves Go's 1 MiB default."},
 	{envDebugPProf, "bool", "HTTP server", "Mount the `net/http/pprof` debug endpoints (`/debug/pprof/*`) on the HTTP listener. **Off by default** - opt-in only, so the profiling surface never ships open in production."},
+	{envEnabledHeads, "string", "HTTP server", "Comma-separated subset of query heads this process serves: `prom`, `loki`, `tempo` (case-insensitive). Default (all three) preserves full backward compatibility. A subset skips building **and** mounting the disabled heads' handler/client/limiter (and the Tempo gRPC service) so one head can run isolated in its own process/cgroup; `/healthz` + `/readyz` stay served in every mode. An unknown head or an empty list fails startup."},
 
 	// --- ClickHouse connection ---
 	{envCHAddr, "string", "ClickHouse connection", "ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required)."},

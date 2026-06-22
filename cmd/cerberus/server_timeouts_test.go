@@ -22,7 +22,7 @@ func TestBuildDualStackServer_CarriesConfiguredTimeouts(t *testing.T) {
 		MaxHeaderBytes:    1 << 20,
 	}
 	mux := http.NewServeMux()
-	srv := buildDualStackServer(":0", hs, mux, http.NewServeMux())
+	srv := buildDualStackServer(":0", hs, mux, nil)
 
 	if srv.ReadTimeout != hs.ReadTimeout {
 		t.Errorf("ReadTimeout = %v; want %v", srv.ReadTimeout, hs.ReadTimeout)
@@ -46,7 +46,7 @@ func TestBuildDualStackServer_CarriesConfiguredTimeouts(t *testing.T) {
 func TestBuildDualStackServer_StreamingSafeDefaults(t *testing.T) {
 	t.Parallel()
 	hs := config.HTTPServerConfig{ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
-	srv := buildDualStackServer(":0", hs, http.NewServeMux(), http.NewServeMux())
+	srv := buildDualStackServer(":0", hs, http.NewServeMux(), nil)
 	if srv.ReadTimeout != 0 || srv.WriteTimeout != 0 {
 		t.Fatalf("read/write timeouts = (%v,%v); want both 0 (streaming-safe)", srv.ReadTimeout, srv.WriteTimeout)
 	}

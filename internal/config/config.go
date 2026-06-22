@@ -186,6 +186,92 @@ type Config struct {
 	// stays out of overload. A falsy per-head toggle leaves that head
 	// unlimited.
 	Admit AdmitConfig
+
+	// EnabledHeads is the set of query heads (prom / loki / tempo) this
+	// process serves, parsed from the comma-separated CERBERUS_ENABLED_HEADS.
+	// Default is all three (full backward compatibility — an unset value
+	// behaves exactly as a process that serves every head). A subset lets a
+	// deployment run a single head in its own process/cgroup so one head
+	// OOMing can no longer sever the others (the feasibility gate for
+	// splitting cerberus into per-head Kubernetes deployments). The /healthz
+	// + /readyz probes are unconditional regardless of this set. Consult it
+	// through HeadEnabled, never by reaching into the map directly.
+	EnabledHeads EnabledHeads
+}
+
+// Head identifies one of cerberus's three query heads. The string values
+// are the tokens CERBERUS_ENABLED_HEADS accepts (case-insensitive) and the
+// labels other config / log surfaces already use for these heads.
+type Head string
+
+const (
+	HeadProm  Head = "prom"
+	HeadLoki  Head = "loki"
+	HeadTempo Head = "tempo"
+)
+
+// defaultEnabledHeads is the CERBERUS_ENABLED_HEADS default: all three heads.
+// An unset value therefore serves prom + loki + tempo exactly as cerberus
+// always has.
+const defaultEnabledHeads = "prom,loki,tempo"
+
+// EnabledHeads is the resolved set of heads a process serves. The zero value
+// is an empty set (no heads) — FromEnv always populates it, defaulting to all
+// three, so an empty set only ever arises from an explicit, validated
+// CERBERUS_ENABLED_HEADS that listed nothing, which FromEnv rejects.
+type EnabledHeads map[Head]struct{}
+
+// HeadEnabled reports whether this process serves head. cmd/cerberus gates
+// each head's handler/client/limiter build + route Mount (and the Tempo gRPC
+// service) on it; the health probes never consult it.
+func (c Config) HeadEnabled(head Head) bool {
+	_, ok := c.EnabledHeads[head]
+	return ok
+}
+
+// headFromToken maps a single CERBERUS_ENABLED_HEADS token to its Head,
+// case-insensitively and whitespace-trimmed. An unknown token is rejected so
+// a typo (e.g. "promql", "traces") fails startup loudly instead of silently
+// disabling a head.
+func headFromToken(tok string) (Head, bool) {
+	switch Head(strings.ToLower(strings.TrimSpace(tok))) {
+	case HeadProm:
+		return HeadProm, true
+	case HeadLoki:
+		return HeadLoki, true
+	case HeadTempo:
+		return HeadTempo, true
+	default:
+		return "", false
+	}
+}
+
+// enabledHeadsFromEnv parses the comma-separated CERBERUS_ENABLED_HEADS into
+// a validated set. The default (all three heads) preserves full backward
+// compatibility. Each token must name a known head (prom / loki / tempo,
+// case-insensitive); an unknown token or an effectively-empty list (after
+// trimming) is rejected fail-fast so a misconfiguration trips startup rather
+// than silently serving no heads.
+func enabledHeadsFromEnv(v *viper.Viper) (EnabledHeads, error) {
+	raw := getString(v, envEnabledHeads)
+	if raw == "" {
+		raw = defaultEnabledHeads
+	}
+	set := EnabledHeads{}
+	for _, tok := range strings.Split(raw, ",") {
+		if strings.TrimSpace(tok) == "" {
+			continue
+		}
+		head, ok := headFromToken(tok)
+		if !ok {
+			return nil, fmt.Errorf("%s: unknown head %q: want a comma-separated subset of prom,loki,tempo", envEnabledHeads, strings.TrimSpace(tok))
+		}
+		set[head] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil, fmt.Errorf("%s: no heads enabled: want a comma-separated subset of prom,loki,tempo", envEnabledHeads)
+	}
+	return set, nil
 }
 
 // CHOptCorpusConfig configures the async system.query_log performance-corpus
@@ -477,6 +563,7 @@ const (
 	envAdmitProm           = "CERBERUS_ADMIT_PROM"
 	envAdmitLoki           = "CERBERUS_ADMIT_LOKI"
 	envAdmitTempo          = "CERBERUS_ADMIT_TEMPO"
+	envEnabledHeads        = "CERBERUS_ENABLED_HEADS"
 )
 
 // configFileBaseName is the base name (without extension) viper looks
@@ -587,6 +674,12 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_ADMIT_PROM            default "64"  (Prom cap; int N, or true/false)
 //	CERBERUS_ADMIT_LOKI            default "64"  (Loki cap; int N, or true/false)
 //	CERBERUS_ADMIT_TEMPO           default "32"  (Tempo cap; int N, or true/false)
+//	CERBERUS_ENABLED_HEADS         default "prom,loki,tempo" — comma-separated
+//	    subset of query heads this process serves. Unset = all three (full
+//	    backward compatibility). A subset (e.g. "prom") skips building AND
+//	    mounting the other heads' handler/client/limiter so one head's process
+//	    can be isolated per-deployment; /healthz + /readyz stay served in every
+//	    mode. An unknown head or an empty list fails startup.
 //
 // Standard OTEL_EXPORTER_OTLP_* env vars are also honored by the OTel
 // Go SDK and complement these — see docs/observability.md.
@@ -706,6 +799,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	enabledHeads, err := enabledHeadsFromEnv(v)
+	if err != nil {
+		return Config{}, err
+	}
 	// Full-surface ClickHouse connection knobs (protocol, multi-host, TLS,
 	// compression, buffers, HTTP-only) + the HTTP server timeouts + the Loki
 	// tail write timeout, all parsed and cross-validated in one helper so
@@ -767,6 +864,7 @@ func FromEnv() (Config, error) {
 		Log:                  logCfg,
 		OTLP:                 otlp,
 		Admit:                admit,
+		EnabledHeads:         enabledHeads,
 	}, nil
 }
 
@@ -852,6 +950,7 @@ var allEnvKeys = []string{
 	envAdmitProm,
 	envAdmitLoki,
 	envAdmitTempo,
+	envEnabledHeads,
 }
 
 // newLoader builds the per-call viper instance: a fresh viper.New()
@@ -954,6 +1053,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envAdmitProm, DefaultAdmitProm)
 	v.SetDefault(envAdmitLoki, DefaultAdmitLoki)
 	v.SetDefault(envAdmitTempo, DefaultAdmitTempo)
+	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
 
 	// Optional config file: cerberus.yaml in the working directory or
 	// /etc/cerberus. Env vars always win (viper precedence: explicit
