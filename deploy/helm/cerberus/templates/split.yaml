@@ -1,0 +1,252 @@
+{{- /*
+Split-mode workloads. Rendered ONLY when `mode: split`. For each enabled head
+(prometheus / loki / tempo) this emits an isolated Deployment + a bare-named
+ClusterIP Service. Each Deployment runs the SAME image with
+CERBERUS_ENABLED_HEADS pinned to that head's token, so the process builds and
+serves only its one head — none of the other heads' memory lives in its cgroup.
+One head OOMing therefore cannot sever the others (the whole point of split).
+
+All three heads share the chart's single env ConfigMap (ClickHouse connection,
+schema, admit, etc.); only the CERBERUS_ENABLED_HEADS pin, the optional per-head
+CERBERUS_QUERY_MAX_SAMPLES override, the replica count, and the resources differ
+— and those few differences are injected as container `env` / template fields
+that win over the shared ConfigMap.
+*/ -}}
+{{- if eq .Values.mode "split" }}
+{{- $root := . }}
+{{- range (include "cerberus.heads" . | fromYamlArray) }}
+{{- $svc := .svc }}
+{{- $token := .token }}
+{{- $hv := include "cerberus.headValues" (dict "ctx" $root "svc" $svc) | fromYaml }}
+{{- if $hv.enabled }}
+{{- $args := dict "ctx" $root "svc" $svc "token" $token "hv" $hv }}
+---
+{{ include "cerberus.split.deployment" $args }}
+---
+{{ include "cerberus.split.service" $args }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- /* Per-head Deployment. Mirrors the monolith Deployment body but scoped to a
+       single head via head-name + per-head replicas/resources, and with the
+       CERBERUS_ENABLED_HEADS pin (+ optional maxSamples) injected as env. */ -}}
+{{- define "cerberus.split.deployment" -}}
+{{- $ctx := .ctx }}
+{{- $svc := .svc }}
+{{- $token := .token }}
+{{- $hv := .hv }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cerberus.headFullname" (dict "ctx" $ctx "svc" $svc) }}
+  namespace: {{ $ctx.Release.Namespace }}
+  labels:
+    {{- include "cerberus.headLabels" (dict "ctx" $ctx "svc" $svc) | nindent 4 }}
+  {{- with $ctx.Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Split mode pins each head's replica count (no HPA in split — see hpa.yaml),
+  # so a head can be scaled deterministically (including to zero) for isolation.
+  replicas: {{ $hv.replicaCount }}
+  {{- with $ctx.Values.updateStrategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cerberus.headSelectorLabels" (dict "ctx" $ctx "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll pods when the rendered env / password change so config edits
+        # take effect without a manual restart.
+        checksum/config: {{ include "cerberus.nonSecretEnv" $ctx | sha256sum }}
+        {{- if eq (include "cerberus.createSecret" $ctx) "true" }}
+        checksum/secret: {{ include (print $ctx.Template.BasePath "/secret.yaml") $ctx | sha256sum }}
+        {{- end }}
+        {{- with $ctx.Values.podAnnotations }}
+        {{- tpl (toYaml .) $ctx | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "cerberus.headSelectorLabels" (dict "ctx" $ctx "svc" $svc) | nindent 8 }}
+        {{- with $ctx.Values.podLabels }}
+        {{- tpl (toYaml .) $ctx | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with $ctx.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cerberus.serviceAccountName" $ctx }}
+      automountServiceAccountToken: {{ $ctx.Values.automountServiceAccountToken }}
+      {{- with $ctx.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $ctx.Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $ctx.Values.terminationGracePeriodSeconds }}
+      {{- if $ctx.Values.hostNetwork }}
+      hostNetwork: true
+      {{- end }}
+      {{- with $ctx.Values.dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
+      {{- with $ctx.Values.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $ctx.Values.initContainers }}
+      initContainers:
+        {{- tpl (toYaml .) $ctx | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cerberus
+          image: "{{ $ctx.Values.image.repository }}:{{ $ctx.Values.image.tag | default $ctx.Chart.AppVersion }}{{ with $ctx.Values.image.digest }}@{{ . }}{{ end }}"
+          imagePullPolicy: {{ $ctx.Values.image.pullPolicy }}
+          {{- with $ctx.Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $ctx.Values.args }}
+          args:
+            {{- toYaml $ctx.Values.args | nindent 12 }}
+          {{- else if $ctx.Values.extraArgs }}
+          args:
+            {{- toYaml $ctx.Values.extraArgs | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $ctx.Values.service.targetPort }}
+              protocol: TCP
+          env:
+            # CERBERUS_ENABLED_HEADS pins this process to its single head; the
+            # binary then skips building the other heads entirely. This env
+            # entry wins over the shared ConfigMap (container env > envFrom).
+            - name: CERBERUS_ENABLED_HEADS
+              value: {{ $token | quote }}
+            {{- if not (kindIs "invalid" $hv.maxSamples) }}
+            - name: CERBERUS_QUERY_MAX_SAMPLES
+              {{- /* int64 first: fromYaml re-parses the integer as a float, and
+                     quoting a float renders scientific notation (5e+06), which
+                     the binary's integer parser rejects. */}}
+              value: {{ $hv.maxSamples | int64 | quote }}
+            {{- end }}
+            {{- $env := include "cerberus.env" $ctx | trim }}
+            {{- with $env }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          {{- $hasEnvCM := include "cerberus.nonSecretEnv" $ctx | trim }}
+          {{- if or $hasEnvCM $ctx.Values.extraEnvFrom }}
+          envFrom:
+            {{- if $hasEnvCM }}
+            - configMapRef:
+                name: {{ include "cerberus.envConfigMapName" $ctx }}
+            {{- end }}
+            {{- with $ctx.Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with $ctx.Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $ctx.Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $ctx.Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $ctx.Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hv.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $ctx.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $tlsMount := eq (include "cerberus.tlsMount" $ctx) "true" }}
+          {{- if or $tlsMount $ctx.Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- if $tlsMount }}
+            - name: clickhouse-tls
+              mountPath: /etc/cerberus/tls
+              readOnly: true
+            {{- end }}
+            {{- with $ctx.Values.extraVolumeMounts }}
+            {{- tpl (toYaml .) $ctx | nindent 12 }}
+            {{- end }}
+          {{- end }}
+        {{- with $ctx.Values.extraContainers }}
+        {{- tpl (toYaml .) $ctx | nindent 8 }}
+        {{- end }}
+      {{- $tlsMount := eq (include "cerberus.tlsMount" $ctx) "true" }}
+      {{- if or $tlsMount $ctx.Values.extraVolumes }}
+      volumes:
+        {{- if $tlsMount }}
+        - name: clickhouse-tls
+          secret:
+            secretName: {{ $ctx.Values.clickhouse.tls.existingSecret }}
+        {{- end }}
+        {{- with $ctx.Values.extraVolumes }}
+        {{- tpl (toYaml .) $ctx | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with $ctx.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (include "cerberus.affinity" $ctx | trim) }}
+      affinity:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with $ctx.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $ctx.Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+
+{{- /* Per-head Service. BARE-named (prometheus / loki / tempo) so Grafana
+       datasource URLs are `http://<svc>.<namespace>:<port>` — not
+       `<release>-<svc>`. ClusterIP, selecting only this head's pods. */ -}}
+{{- define "cerberus.split.service" -}}
+{{- $ctx := .ctx }}
+{{- $svc := .svc }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: {{ $ctx.Release.Namespace }}
+  labels:
+    {{- include "cerberus.headLabels" (dict "ctx" $ctx "svc" $svc) | nindent 4 }}
+  {{- with $ctx.Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $ctx.Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      {{- with $ctx.Values.service.appProtocol }}
+      appProtocol: {{ . }}
+      {{- end }}
+  selector:
+    {{- include "cerberus.headSelectorLabels" (dict "ctx" $ctx "svc" $svc) | nindent 4 }}
+{{- end }}

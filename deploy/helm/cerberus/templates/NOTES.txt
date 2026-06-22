@@ -1,6 +1,18 @@
 cerberus has been deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
 
 cerberus is a drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse.
+{{- if eq .Values.mode "split" }}
+Deployed in SPLIT mode: one isolated Deployment + bare-named ClusterIP Service
+per head, so one head OOMing cannot sever the others.
+
+1. Grafana datasources — point each head's datasource at its OWN Service:
+{{- range (include "cerberus.heads" . | fromYamlArray) }}
+{{- $hv := include "cerberus.headValues" (dict "ctx" $ "svc" .svc) | fromYaml }}
+{{- if $hv.enabled }}
+   {{ printf "%-11s" (printf "%s:" .svc) }} http://{{ .svc }}.{{ $.Release.Namespace }}:{{ $.Values.service.port }}
+{{- end }}
+{{- end }}
+{{- else }}
 Point three Grafana datasources (Prometheus, Loki, Tempo) at the single
 cerberus endpoint below — it speaks all three wire formats on one port.
 
@@ -28,6 +40,7 @@ cerberus endpoint below — it speaks all three wire formats on one port.
 
   In-cluster DNS:
     {{ include "cerberus.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+{{- end }}
 
 2. Health:
    Liveness  : GET /healthz  (dependency-free; restarts a wedged process)

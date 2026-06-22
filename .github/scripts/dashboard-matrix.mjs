@@ -83,6 +83,24 @@ const PW_DIR = process.env.PLAYWRIGHT_DIR || 'test/e2e/playwright';
 const CRAWL_STACK_K3D = 'k3d';
 const CRAWL_STACK_NONE = '';
 
+// Chart deployment topologies the smoke lane exercises (E2E_MODE in `just
+// e2e-up`). The SAME Grafana/Playwright smoke runs against both: `monolith`
+// (one process serving all three heads) and `split` (three isolated per-head
+// Deployments + bare-named Services). Each smoke shard fans out into one
+// matrix entry per mode; the crawl shard runs monolith-only (it is the ~50min
+// long pole and is mode-agnostic COVERAGE, not a topology assertion).
+const MODE_MONOLITH = 'monolith';
+const MODE_SPLIT = 'split';
+const SMOKE_MODES = [MODE_MONOLITH, MODE_SPLIT];
+
+// Specs that are MEANINGFUL ONLY in split mode and must be filtered OUT of the
+// monolith matrix entries. They stay ASSIGNED to a shard in SHARDS (so the
+// coverage gate counts them), but the emit-time cross-product drops them from
+// every monolith entry. split_isolation.spec.ts scales one head to zero and
+// asserts the other two keep serving — a monolith (one process) cannot pass
+// it, and the spec hard-fails if run with CERBERUS_MODE != split.
+const SPLIT_ONLY_SPECS = new Set(['split_isolation.spec.ts']);
+
 // Per-shard wall-clock ceilings (timeout-minutes on the dashboard-shard job,
 // interpolated as `matrix.timeoutMinutes`).
 //
@@ -159,6 +177,11 @@ const SHARDS = [
       'helpers.spec.ts',
       'helpers-validity.spec.ts',
       'helpers-variables.spec.ts',
+      // split-only: runs ONLY on the split leg (filtered out of monolith
+      // entries at emit time — see SPLIT_ONLY_SPECS / buildMatrix). It is
+      // assigned HERE so the coverage gate counts it as covered; the spec
+      // itself hard-fails if run outside split mode (CERBERUS_MODE != split).
+      'split_isolation.spec.ts',
     ],
   },
   {
@@ -312,6 +335,65 @@ function verify() {
   process.exit(0);
 }
 
+// buildMatrix() — the emit-time cross-product of shards × deployment modes.
+// Pure (no I/O, no process.exit) so the unit guard can call it directly.
+//
+// - SMOKE shards (CRAWL_STACK unset) fan out into one entry per SMOKE_MODES
+//   value (monolith + split): the SAME smoke runs against both topologies.
+//   SPLIT_ONLY_SPECS are stripped from the monolith entries (they stay assigned
+//   in SHARDS for the coverage gate; here they only actually RUN on split).
+//   A monolith entry that ends up with zero specs after the filter is dropped
+//   (it would boot a cluster to run nothing) — today no smoke shard is all
+//   split-only, so every smoke shard yields both legs.
+// - The CRAWL shard runs ONCE, monolith only: it is the ~50min long pole and is
+//   mode-agnostic coverage, not a topology assertion. It is included only when
+//   includeCrawl is true (schedule + manual dispatch), matching the prior
+//   smoke-only-on-PR/push behaviour.
+// - runGoE2E is carried only on the MONOLITH leg of the shard that declares it
+//   in SHARDS, so exactly one emitted entry runs the Go e2e suite.
+//
+// Each entry's `name` encodes the mode (e.g. shard-smoke-a-monolith) so the
+// matrix keys, concurrency group, and artifact names stay unique.
+export function buildMatrix(includeCrawl, includeSplit) {
+  const include = [];
+  // Split mode doubles the k3d boot count (the setup-bound long pole) for one
+  // unique spec (split_isolation), so per-PR it's cost + flake with little
+  // extra signal. PR/push run monolith only; the split cross-product runs on
+  // schedule + dispatch (includeSplit), where both modes are exercised.
+  const smokeModes = includeSplit ? SMOKE_MODES : [MODE_MONOLITH];
+  for (const s of SHARDS) {
+    if (s.crawlStack === CRAWL_STACK_K3D) {
+      // Crawl: monolith-only, dispatched only when crawl is included.
+      if (!includeCrawl) continue;
+      include.push({
+        name: `${s.name}-${MODE_MONOLITH}`,
+        mode: MODE_MONOLITH,
+        specs: s.specs.join(' '),
+        crawlStack: s.crawlStack,
+        runGoE2E: s.runGoE2E,
+        timeoutMinutes: shardTimeoutMinutes(s),
+      });
+      continue;
+    }
+    // Smoke shard: one entry per enabled mode.
+    for (const mode of smokeModes) {
+      const specs =
+        mode === MODE_SPLIT ? s.specs : s.specs.filter((spec) => !SPLIT_ONLY_SPECS.has(spec));
+      if (specs.length === 0) continue; // nothing to run in this mode → no cluster
+      include.push({
+        name: `${s.name}-${mode}`,
+        mode,
+        specs: specs.join(' '),
+        crawlStack: s.crawlStack,
+        // Go e2e runs once: only on the monolith leg of the runGoE2E shard.
+        runGoE2E: s.runGoE2E && mode === MODE_MONOLITH,
+        timeoutMinutes: shardTimeoutMinutes(s),
+      });
+    }
+  }
+  return include;
+}
+
 function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
@@ -322,30 +404,24 @@ function emit() {
   // unaffected — every spec is still ASSIGNED to a shard (asserted above); the
   // crawl shard is simply not dispatched on those events.
   const includeCrawl = process.env.INCLUDE_CRAWL === 'true';
-  const shards = includeCrawl ? SHARDS : SHARDS.filter((s) => s.crawlStack !== CRAWL_STACK_K3D);
-  const include = shards.map((s) => ({
-    name: s.name,
-    specs: s.specs.join(' '),
-    crawlStack: s.crawlStack,
-    runGoE2E: s.runGoE2E,
-    timeoutMinutes: shardTimeoutMinutes(s),
-  }));
+  const includeSplit = process.env.INCLUDE_SPLIT === 'true';
+  const include = buildMatrix(includeCrawl, includeSplit);
   setOutput('matrix', JSON.stringify({ include }));
-  setOutput('shard_names', JSON.stringify(shards.map((s) => s.name)));
+  setOutput('shard_names', JSON.stringify(include.map((e) => e.name)));
   appendStepSummary(
     [
       '### dashboard (k3d) shard matrix',
       '',
-      '| shard | specs | CRAWL_STACK | Go e2e | timeout (min) |',
-      '| --- | --- | --- | --- | --- |',
-      ...shards.map(
-        (s) =>
-          `| \`${s.name}\` | ${s.specs.length} | ${s.crawlStack || '(none)'} | ${s.runGoE2E ? 'yes' : 'no'} | ${shardTimeoutMinutes(s)} |`,
+      '| shard | mode | specs | CRAWL_STACK | Go e2e | timeout (min) |',
+      '| --- | --- | --- | --- | --- | --- |',
+      ...include.map(
+        (e) =>
+          `| \`${e.name}\` | ${e.mode} | ${e.specs.split(' ').filter(Boolean).length} | ${e.crawlStack || '(none)'} | ${e.runGoE2E ? 'yes' : 'no'} | ${e.timeoutMinutes} |`,
       ),
     ].join('\n'),
   );
   log(
-    `dashboard-matrix: emitted ${include.length}-shard matrix` +
+    `dashboard-matrix: emitted ${include.length}-entry matrix` +
       (includeCrawl ? '.' : ' (smoke-only; crawl shard runs on schedule/dispatch).'),
   );
   process.exit(0);
@@ -365,4 +441,15 @@ if (invokedDirectly) {
 }
 
 // Exported for the unit guard (.github/scripts/dashboard-matrix.test.mjs).
-export { SHARDS, EXCLUDED, SHARD_NAME_RE, CRAWL_SHARD_TIMEOUT_MIN, SMOKE_SHARD_TIMEOUT_MIN, CRAWL_STACK_K3D };
+export {
+  SHARDS,
+  EXCLUDED,
+  SHARD_NAME_RE,
+  CRAWL_SHARD_TIMEOUT_MIN,
+  SMOKE_SHARD_TIMEOUT_MIN,
+  CRAWL_STACK_K3D,
+  MODE_MONOLITH,
+  MODE_SPLIT,
+  SMOKE_MODES,
+  SPLIT_ONLY_SPECS,
+};

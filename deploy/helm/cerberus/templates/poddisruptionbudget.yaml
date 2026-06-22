@@ -1,4 +1,6 @@
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- /* PDB is monolith-only: it selects the single aggregate Deployment's pods,
+       which don't exist in split mode (each head is its own Deployment). */ -}}
+{{- if and .Values.podDisruptionBudget.enabled (ne .Values.mode "split") }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

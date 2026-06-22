@@ -7,7 +7,17 @@
     "nameOverride": { "type": "string" },
     "fullnameOverride": { "type": "string" },
     "commonLabels": { "type": "object" },
+    "mode": { "type": "string", "enum": ["monolith", "split"] },
     "replicaCount": { "type": "integer", "minimum": 0 },
+    "split": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prometheus": { "$ref": "#/definitions/splitHead" },
+        "loki": { "$ref": "#/definitions/splitHead" },
+        "tempo": { "$ref": "#/definitions/splitHead" }
+      }
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,
@@ -246,5 +256,17 @@
     "hostNetwork": { "type": "boolean" },
     "dnsPolicy": { "type": "string" },
     "dnsConfig": { "type": "object" }
+  },
+  "definitions": {
+    "splitHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": ["integer", "null"], "minimum": 0 },
+        "resources": { "type": ["object", "null"] },
+        "maxSamples": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
   }
 }

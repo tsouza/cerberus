@@ -75,6 +75,45 @@ config:
   CERBERUS_SCHEMA_METRICS_GAUGE_TABLE: "otel_metrics_gauge"
 ```
 
+## Deployment topology — `monolith` vs `split`
+
+`mode` selects how the gateway is laid out across Kubernetes:
+
+- **`monolith` (default)** — one Deployment + one Service (`<release>-cerberus`).
+  A single process serves all three heads (Prometheus, Loki, Tempo). This is
+  byte-for-byte the prior chart behaviour; point all three Grafana datasources
+  at the one Service.
+- **`split`** — three per-head Deployments + three **bare-named** ClusterIP
+  Services: `prometheus`, `loki`, `tempo`. Each process is pinned to one head
+  via `CERBERUS_ENABLED_HEADS`, so it builds and serves only that head — none of
+  the other heads' memory lives in its cgroup. The aggregate `cerberus` Service
+  does **not** exist in split mode.
+
+**Why split?** In monolith mode all three heads share one process/cgroup, so a
+single head OOMing (typically Tempo's `/api/search` drain) takes the whole pod
+down and severs Prometheus and Loki with it. Split mode contains the blast
+radius: each head has its own pod, its own memory limit, and its own
+`query.maxSamples`, so one head crash-looping leaves the other two serving.
+
+Set the per-head differences under `split.<head>` — typically Tempo gets fat
+memory + a tight `/api/search` sample cap while Prom and Loki stay lean:
+
+```yaml
+mode: split
+split:
+  prometheus:
+    resources: { limits: { memory: 1Gi } }
+  loki:
+    resources: { limits: { memory: 1Gi } }
+  tempo:
+    maxSamples: 2000000
+    resources: { limits: { memory: 4Gi } }
+```
+
+In split mode, Grafana datasources point at the per-head Services by their bare
+names — e.g. `http://prometheus.<namespace>:8080`, `http://loki.<namespace>:8080`,
+`http://tempo.<namespace>:8080`.
+
 ## Observability
 
 cerberus exposes **no Prometheus `/metrics` endpoint** — self-telemetry is
