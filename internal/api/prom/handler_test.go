@@ -676,6 +676,16 @@ func (c *sliceCursor) Close() error {
 	return nil
 }
 
+// Inspected returns the count of Next() calls that returned true (idx
+// clamped to the slice length, since idx overshoots by one once Next
+// returns false). Mirrors the production cursor's drain count.
+func (c *sliceCursor) Inspected() int64 {
+	if c.idx > len(c.samples) {
+		return int64(len(c.samples))
+	}
+	return int64(c.idx)
+}
+
 func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	defer resp.Body.Close()

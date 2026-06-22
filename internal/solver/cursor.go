@@ -210,6 +210,12 @@ func (sc *shardCursor) reintern(labels map[string]string) (map[string]string, ui
 // Sample returns the row the most recent successful Next landed on.
 func (sc *shardCursor) Sample() chclient.Sample { return sc.cur }
 
+// Inspected returns the number of composed rows handed out via Next — the
+// emitted counter the output-row cap is enforced against. It is the routed
+// path's drain count, the same per-request quantity the single-cursor row
+// path reports via seen.
+func (sc *shardCursor) Inspected() int64 { return sc.emitted }
+
 // Err returns the terminal error that stopped iteration, or nil at a clean
 // end-of-stream. First-error-wins, cause-threaded: a sibling's induced
 // cancel never masks the deterministic shard error.

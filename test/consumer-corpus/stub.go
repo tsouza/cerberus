@@ -92,6 +92,7 @@ func (c *sliceCursor) Next() bool {
 func (c *sliceCursor) Sample() chclient.Sample { return c.samples[c.i-1] }
 func (c *sliceCursor) Err() error              { return nil }
 func (c *sliceCursor) Close() error            { return nil }
+func (c *sliceCursor) Inspected() int64        { return int64(c.i) }
 
 // Stub-lane time anchors. Every canned fixture timestamps its rows
 // against these, and StubTokens derives the request windows from the

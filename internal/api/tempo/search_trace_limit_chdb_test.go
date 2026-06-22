@@ -178,6 +178,31 @@ func TestSearch_TraceLimitPushdown_BoundsDrain_ChDB(t *testing.T) {
 	}
 }
 
+// TestBoundsDrain_TempoSearch_ChDB folds the trace-limit pushdown (OOM #1)
+// into the shared bounds-drain harness as the proven reference row: the same
+// seed-many / request-few / assert-O(output) shape as the PromQL range
+// regression (OOM #2), expressed once through chclienttest.RunBoundsDrain.
+// The drain count is Tempo's SearchMetrics.InspectedTraces (== len(samples)
+// the handler buffered); the output bound is searchLimit traces × spansPerTrace
+// spans; the full seed is the whole table an unbounded /api/search would drain.
+//
+// This rides alongside TestSearch_TraceLimitPushdown_BoundsDrain_ChDB above:
+// that test pins the Tempo-specific ranking/ordering invariants, this one
+// pins the drain bound via the same predicate the PromQL row uses, so both
+// OOMs are guarded by one shared, falsifiable rule.
+func TestBoundsDrain_TempoSearch_ChDB(t *testing.T) {
+	chclienttest.RunBoundsDrain(t, []chclienttest.BoundsDrainCase{{
+		Name:        "tempo/api_search/trace_limit_pushdown",
+		OutputBound: int64(searchLimit * spansPerTrace),
+		Run: func(t *testing.T) (drain, fullSeed int64) {
+			srv := newManyTracesChDBServer(t, manyTracesSeed())
+			sr := doSearch(t, srv,
+				fmt.Sprintf("/api/search?q=%%7B%%7D&limit=%d&spss=20%s", searchLimit, seedWindow))
+			return int64(sr.Metrics.InspectedTraces), int64(seedTraceCount * spansPerTrace)
+		},
+	}})
+}
+
 // rankingParitySeed builds two traces where:
 //
 //   - trace LOW has an out-of-order child whose timestamp is EARLIER than

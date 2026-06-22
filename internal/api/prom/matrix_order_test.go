@@ -98,3 +98,9 @@ func (c *orderTestCursor) Next() bool {
 func (c *orderTestCursor) Sample() chclient.Sample { return c.samples[c.idx] }
 func (c *orderTestCursor) Err() error              { return nil }
 func (c *orderTestCursor) Close() error            { return nil }
+func (c *orderTestCursor) Inspected() int64 {
+	if c.idx > len(c.samples) {
+		return int64(len(c.samples))
+	}
+	return int64(c.idx)
+}

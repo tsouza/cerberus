@@ -49,8 +49,9 @@ func (c *seriesIDCursor) Sample() chclient.Sample {
 	return s
 }
 
-func (c *seriesIDCursor) Err() error   { return nil }
-func (c *seriesIDCursor) Close() error { return nil }
+func (c *seriesIDCursor) Err() error       { return nil }
+func (c *seriesIDCursor) Close() error     { return nil }
+func (c *seriesIDCursor) Inspected() int64 { return int64(c.idx) }
 
 // TestMatrixFromCursor_MemoPreservesBucketing pins that matrixFromCursor with
 // the label memo produces exactly the matrix the un-memoised

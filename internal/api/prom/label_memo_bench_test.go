@@ -69,6 +69,12 @@ func (c *benchSliceCursor) Sample() chclient.Sample {
 }
 func (c *benchSliceCursor) Err() error   { return nil }
 func (c *benchSliceCursor) Close() error { return nil }
+func (c *benchSliceCursor) Inspected() int64 {
+	if c.idx > len(c.samples) {
+		return int64(len(c.samples))
+	}
+	return int64(c.idx)
+}
 
 func BenchmarkMatrixFromCursor_Memoised(b *testing.B) {
 	samples := benchInternedMatrixSamples(50, 60)

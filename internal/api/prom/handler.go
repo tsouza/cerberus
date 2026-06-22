@@ -109,6 +109,17 @@ type Handler struct {
 	// identity. The invariant is pinned by
 	// TestHandlerLang_ParserOptionsAligned.
 	parser promparser.Parser
+
+	// onRangeDrain, when non-nil, is invoked once per /api/v1/query_range
+	// request with the number of rows the handler pulled off the streaming
+	// cursor (cursor.Inspected() after matrixFromCursor drains it) — the
+	// streaming-path drain count, the buffer that OOMed the gateway. It is
+	// the test-observable hook the boundsdrain harness reads to assert the
+	// range matrix pivot stays O(output) = O(series × step) rather than
+	// O(rows scanned) as the dataset / window / cardinality axis grows.
+	// Production leaves it nil (the range handler skips the call), so the
+	// hot path is byte-unchanged; only tests install it.
+	onRangeDrain func(int64)
 }
 
 // New constructs a Handler with the seed optimizer wired in plus a
@@ -488,6 +499,13 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.respondError(w, classifyDrainError(err))
 		return
+	}
+	// Surface the streaming-path drain count (rows pulled off the cursor =
+	// the buffer matrixFromCursor accumulated) to the test-observable hook
+	// when one is installed. Mirrors the eager path's Result.Inspected /
+	// Tempo's SearchMetrics.InspectedTraces; nil in production.
+	if h.onRangeDrain != nil {
+		h.onRangeDrain(cursor.Inspected())
 	}
 	writeEngineHeaders(w, hdr)
 	writeJSON(w, http.StatusOK, Response{

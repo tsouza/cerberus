@@ -45,6 +45,7 @@ func (c *budgetCursor) Next() bool {
 func (c *budgetCursor) Sample() chclient.Sample { return c.cur }
 func (c *budgetCursor) Err() error              { return c.err }
 func (c *budgetCursor) Close() error            { return nil }
+func (c *budgetCursor) Inspected() int64        { return int64(c.idx) }
 
 // budgetQuerier reuses stubQuerier for every endpoint except
 // QueryCursor, which returns a cursor that fails the drain with the
