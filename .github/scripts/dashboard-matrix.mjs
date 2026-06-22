@@ -354,8 +354,13 @@ function verify() {
 //
 // Each entry's `name` encodes the mode (e.g. shard-smoke-a-monolith) so the
 // matrix keys, concurrency group, and artifact names stay unique.
-export function buildMatrix(includeCrawl) {
+export function buildMatrix(includeCrawl, includeSplit) {
   const include = [];
+  // Split mode doubles the k3d boot count (the setup-bound long pole) for one
+  // unique spec (split_isolation), so per-PR it's cost + flake with little
+  // extra signal. PR/push run monolith only; the split cross-product runs on
+  // schedule + dispatch (includeSplit), where both modes are exercised.
+  const smokeModes = includeSplit ? SMOKE_MODES : [MODE_MONOLITH];
   for (const s of SHARDS) {
     if (s.crawlStack === CRAWL_STACK_K3D) {
       // Crawl: monolith-only, dispatched only when crawl is included.
@@ -370,8 +375,8 @@ export function buildMatrix(includeCrawl) {
       });
       continue;
     }
-    // Smoke shard: one entry per mode.
-    for (const mode of SMOKE_MODES) {
+    // Smoke shard: one entry per enabled mode.
+    for (const mode of smokeModes) {
       const specs =
         mode === MODE_SPLIT ? s.specs : s.specs.filter((spec) => !SPLIT_ONLY_SPECS.has(spec));
       if (specs.length === 0) continue; // nothing to run in this mode → no cluster
@@ -399,7 +404,8 @@ function emit() {
   // unaffected — every spec is still ASSIGNED to a shard (asserted above); the
   // crawl shard is simply not dispatched on those events.
   const includeCrawl = process.env.INCLUDE_CRAWL === 'true';
-  const include = buildMatrix(includeCrawl);
+  const includeSplit = process.env.INCLUDE_SPLIT === 'true';
+  const include = buildMatrix(includeCrawl, includeSplit);
   setOutput('matrix', JSON.stringify({ include }));
   setOutput('shard_names', JSON.stringify(include.map((e) => e.name)));
   appendStepSummary(

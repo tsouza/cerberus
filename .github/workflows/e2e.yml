@@ -780,6 +780,10 @@ jobs:
           # pull_request + push get a smoke-only matrix (fast, testable, no
           # all-skipped crawl leg).
           INCLUDE_CRAWL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          # Split mode doubles the k3d boot count (the setup-bound long pole)
+          # for one unique spec, so it runs on schedule + dispatch only; PR/push
+          # exercise monolith. Both modes are still covered (split nightly).
+          INCLUDE_SPLIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
   dashboard-shard:
     name: dashboard-shard

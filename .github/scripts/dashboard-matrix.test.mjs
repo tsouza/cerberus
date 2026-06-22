@@ -66,8 +66,8 @@ const SMOKE_SHARDS = SHARDS.filter((s) => s.crawlStack !== CRAWL_STACK_K3D);
 const specsOf = (entry) => entry.specs.split(' ').filter(Boolean);
 const hasSplitOnly = (entry) => specsOf(entry).some((spec) => SPLIT_ONLY_SPECS.has(spec));
 
-test('buildMatrix: every smoke shard yields both a monolith and a split entry', () => {
-  const include = buildMatrix(false); // PR/push: no crawl
+test('buildMatrix: with includeSplit, every smoke shard yields both a monolith and a split entry', () => {
+  const include = buildMatrix(false, true); // schedule/dispatch: both modes
   for (const s of SMOKE_SHARDS) {
     for (const mode of SMOKE_MODES) {
       const name = `${s.name}-${mode}`;
@@ -79,8 +79,24 @@ test('buildMatrix: every smoke shard yields both a monolith and a split entry', 
   }
 });
 
+test('buildMatrix: without includeSplit (PR/push), smoke shards are monolith-only — no split legs', () => {
+  const include = buildMatrix(false, false); // PR/push cadence
+  assert.equal(
+    include.filter((e) => e.mode === MODE_SPLIT).length,
+    0,
+    `PR/push must emit no split legs; got ${include.filter((e) => e.mode === MODE_SPLIT).map((e) => e.name).join(', ')}`,
+  );
+  for (const s of SMOKE_SHARDS) {
+    const name = `${s.name}-${MODE_MONOLITH}`;
+    assert.ok(
+      include.some((e) => e.name === name && e.mode === MODE_MONOLITH),
+      `expected monolith entry ${name}; got ${include.map((e) => e.name).join(', ')}`,
+    );
+  }
+});
+
 test('buildMatrix: split-only specs run on split legs and NEVER on monolith legs', () => {
-  const include = buildMatrix(true); // include crawl too — must not change this
+  const include = buildMatrix(true, true); // crawl + split: split legs must exist to assert against
   const splitOnlyOnSplit = include.filter((e) => e.mode === MODE_SPLIT && hasSplitOnly(e));
   const splitOnlyOnMono = include.filter((e) => e.mode === MODE_MONOLITH && hasSplitOnly(e));
   assert.ok(
@@ -127,7 +143,7 @@ test('buildMatrix: the crawl shard runs once, monolith-only, and only when crawl
 });
 
 test('buildMatrix: every emitted entry has a non-empty spec list and a filename-safe name', () => {
-  const include = buildMatrix(true);
+  const include = buildMatrix(true, true); // widest matrix (crawl + both modes)
   for (const e of include) {
     assert.ok(specsOf(e).length > 0, `entry ${e.name} would boot a cluster to run nothing`);
     assert.match(e.name, /^[a-z0-9-]+$/, `entry name not filename-safe: ${e.name}`);
