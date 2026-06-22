@@ -5,7 +5,7 @@
      pipe-aligned, and the version footer adds a trailing blank — both are
      owned by helm-docs; realigning would fight the chart-ci drift check. -->
 
-![Version: 0.5.1](https://img.shields.io/badge/Version-0.5.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.3.0](https://img.shields.io/badge/AppVersion-1.3.0-informational?style=flat-square)
+![Version: 0.5.2](https://img.shields.io/badge/Version-0.5.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.3.0](https://img.shields.io/badge/AppVersion-1.3.0-informational?style=flat-square)
 
 Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse — a single stateless gateway that speaks three upstream query wire formats and lowers each to parameterised ClickHouse SQL.
 
@@ -259,9 +259,9 @@ Kubernetes: `>=1.23.0-0`
 | priorityClassName | string | `""` | PriorityClass name. |
 | prom | object | `{"resourceLabels":[]}` | Prometheus head configuration. |
 | prom.resourceLabels | list | `[]` | OTel resource attributes to project as Prometheus labels (joined to CERBERUS_PROM_RESOURCE_LABELS). This is a BOUNDED ALLOWLIST: leave it empty and cerberus promotes EVERY resource attribute → unbounded label cardinality. List only the keys you actually query / group on. |
-| query | object | `{"chMaxMemory":null,"maxSamples":null,"timeout":""}` | Query safety limits. Each key is emitted to env only when set; leave a key null/empty to keep the binary's own default. These cap the blast radius of a single expensive query. |
+| query | object | `{"chMaxMemory":null,"maxSamples":5000000,"timeout":""}` | Query safety limits. Each key is emitted to env only when set; leave a key null/empty to keep the binary's own default. These cap the blast radius of a single expensive query. |
 | query.chMaxMemory | string | `nil` | Per-query ClickHouse server-side memory ceiling (CERBERUS_CH_QUERY_MAX_MEMORY). Accepts a raw byte integer (e.g. 1073741824) or a humanized Kubernetes-style size string (e.g. "2Gi", "512Mi", "1G"); the raw-integer form is unchanged for backward compatibility. Binary default: 1073741824 (1 GiB). |
-| query.maxSamples | string | `nil` | Max samples a single query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Binary default: 50000000. |
+| query.maxSamples | int | `5000000` | Max samples a single query may materialise (CERBERUS_QUERY_MAX_SAMPLES). Default-on at 5000000 — the backstop for the runaway-drain OOM class, sized to bound a ~2Gi heap without rejecting realistic Grafana queries (matches the binary default). Raise it for larger pods, or set 0 to disable the budget entirely. |
 | query.timeout | string | `""` | Per-query wall-clock timeout (CERBERUS_QUERY_TIMEOUT). Binary default: 2m. Also derives the ClickHouse socket read timeout when CH_READ_TIMEOUT is unset. |
 | readinessProbe | object | `{"failureThreshold":5,"httpGet":{"path":"/readyz","port":"http"},"initialDelaySeconds":2,"periodSeconds":3,"timeoutSeconds":5}` | Readiness probe. `/readyz` pings ClickHouse (with a small TTL cache); a failure removes the pod from the Service endpoints (backpressure, no restart). |
 | replicaCount | int | `2` | Number of replicas. Ignored when `autoscaling.enabled` is true (the HPA owns the replica count then). |
