@@ -75,6 +75,15 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Docker Hub mirror — goreleaser pushes the same per-arch images and
+      # manifests to docker.io/tsouza/cerberus in the same build. A login
+      # failure here aborts the whole release (atomic dual-registry push).
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
       # Whether THIS tag is the highest stable release (so it may move the
       # rolling `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after
       # v1.3.0) is NOT the highest -> `:latest` stays on v1.3.0. goreleaser
@@ -122,6 +131,17 @@ jobs:
         run: gh release edit "${{ github.ref_name }}" --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
+      # overview page must never turn an otherwise-published release red.
+      - name: Sync Docker Hub overview
+        uses: peter-evans/dockerhub-description@v4
+        continue-on-error: true
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+          repository: tsouza/cerberus
+          readme-filepath: ./README.md
 
   # Publish the Helm chart to GHCR as an OCI artifact, cosign-sign it keyless,
   # attest provenance, and (idempotently) push the Artifact Hub metadata. Gated

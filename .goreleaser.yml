@@ -55,6 +55,8 @@ dockers:
     image_templates:
       - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
       - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
+      - "docker.io/tsouza/cerberus:{{ .Version }}-amd64"
+      - "docker.io/tsouza/cerberus:v{{ .Version }}-amd64"
     use: buildx
     goos: linux
     goarch: amd64
@@ -73,6 +75,8 @@ dockers:
     image_templates:
       - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
       - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
+      - "docker.io/tsouza/cerberus:{{ .Version }}-arm64"
+      - "docker.io/tsouza/cerberus:v{{ .Version }}-arm64"
     use: buildx
     goos: linux
     goarch: arm64
@@ -94,6 +98,7 @@ dockers:
   - id: cerberus-amd64-latest
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-amd64"
+      - "docker.io/tsouza/cerberus:latest-amd64"
     skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
     use: buildx
     goos: linux
@@ -111,6 +116,7 @@ dockers:
   - id: cerberus-arm64-latest
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-arm64"
+      - "docker.io/tsouza/cerberus:latest-arm64"
     skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
     use: buildx
     goos: linux
@@ -142,6 +148,21 @@ docker_manifests:
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-amd64"
       - "ghcr.io/tsouza/cerberus:latest-arm64"
+  # Docker Hub mirrors of the same manifests (same per-arch images, pushed to
+  # both registries in one build) — identical tag set and `:latest` gating.
+  - name_template: "docker.io/tsouza/cerberus:{{ .Version }}"
+    image_templates:
+      - "docker.io/tsouza/cerberus:{{ .Version }}-amd64"
+      - "docker.io/tsouza/cerberus:{{ .Version }}-arm64"
+  - name_template: "docker.io/tsouza/cerberus:v{{ .Version }}"
+    image_templates:
+      - "docker.io/tsouza/cerberus:v{{ .Version }}-amd64"
+      - "docker.io/tsouza/cerberus:v{{ .Version }}-arm64"
+  - name_template: "docker.io/tsouza/cerberus:latest"
+    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
+    image_templates:
+      - "docker.io/tsouza/cerberus:latest-amd64"
+      - "docker.io/tsouza/cerberus:latest-arm64"
 
 release:
   # draft:true so goreleaser creates the GitHub release as a DRAFT (mutable)
