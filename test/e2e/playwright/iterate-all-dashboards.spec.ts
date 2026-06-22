@@ -75,6 +75,21 @@ import {
 // before we sweep them. Same value the other phase specs use.
 const SEED_TRAFFIC_SECONDS = 30;
 
+// beforeAll budget. The warmup runs SEED_TRAFFIC_SECONDS of traffic and
+// then THREE bounded, loud-deadline data waits — awaitSelfTelemetryRangeSignal
+// probes 2 exprs sequentially + awaitSeedFixtureSignal — each capped at
+// WARMUP_SIGNAL_DEADLINE_SECONDS in sweep.ts. That chain can legitimately
+// run minutes on a cold otel->ClickHouse pipeline, far past Playwright's
+// 60s global hook timeout — which made the hook abort BEFORE any wait's own
+// deadline could fire, surfacing as an opaque flaky "beforeAll timeout"
+// instead of a real "signal not seen" error (CI failOnFlakyTests then fails
+// the run). Size the hook above the whole chain so each wait owns its
+// deadline; the happy path still returns in ~35s.
+const WARMUP_SIGNAL_DEADLINE_SECONDS = 120; // mirrors sweep.ts awaitSelf*/awaitSeed* defaults
+const WARMUP_BOUNDED_WAITS = 3; // awaitSelfTelemetryRangeSignal's 2 exprs + awaitSeedFixtureSignal
+const WARMUP_BEFOREALL_TIMEOUT_MS =
+  (SEED_TRAFFIC_SECONDS + WARMUP_BOUNDED_WAITS * WARMUP_SIGNAL_DEADLINE_SECONDS) * 1000;
+
 // /api/v1/query_range / /loki/api/v1/query_range query window. 5min
 // covers the warmup plus the rate(...[5m]) windows the dashboards use.
 const QUERY_WINDOW_SECONDS = 5 * 60;
@@ -518,6 +533,11 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
   });
 
   test.beforeAll(async ({ request }) => {
+    // The warmup + bounded data-waits below can run minutes on a cold
+    // pipeline; lift the hook off Playwright's 60s global so a missing
+    // signal surfaces as the wait's own loud deadline, not a flaky
+    // beforeAll timeout (see WARMUP_BEFOREALL_TIMEOUT_MS).
+    test.setTimeout(WARMUP_BEFOREALL_TIMEOUT_MS);
     // Single warmup for the whole describe block — the per-dashboard
     // tests inherit the populated counters.
     await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
