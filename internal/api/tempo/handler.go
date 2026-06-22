@@ -296,6 +296,15 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// (observed live: 4937 summaries / ~755KB body for limit=200).
 	limit := positiveIntParam(r, "limit", DefaultSearchLimit)
 	spss := positiveIntParam(r, "spss", DefaultSpansPerSpanSet)
+	// The request time window bounds the plain-search scan so /api/search
+	// drains only the matching traces in [start, end] rather than the whole
+	// table (the summaries-drain OOM). An invalid bound is a 400, matching
+	// Tempo's own rejection of malformed start/end.
+	start, end, err := parseTempoStartEnd(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "", "", err)
+		return
+	}
 
 	ctx := r.Context()
 	// Thread the response trace limit into lowering so the nested-set
@@ -304,6 +313,9 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// every matched trace and peaks past the per-query memory cap (#103).
 	// No-op for queries that don't carry a nested-set select.
 	ctx = traceql_lower.WithSearchTraceLimit(ctx, limit)
+	// Thread the request window so stampSearchTraceLimit folds it into the
+	// bounded plain-search scan. No-op when both bounds are absent.
+	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	// Engine.Query runs parse → lower → wrap-projection → optimize →
 	// emit → execute. The TraceQL adapter (h.lang) owns the parser
 	// dispatch + wrap-projection so the post-engine response pivot

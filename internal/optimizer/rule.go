@@ -342,6 +342,12 @@ func rewriteUnaryNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (
 			cp.Input = in
 			return &cp
 		})
+	case *chplan.SearchTraceLimit:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.Aggregate:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v

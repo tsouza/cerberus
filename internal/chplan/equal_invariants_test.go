@@ -2238,3 +2238,73 @@ func TestHistogramQuantileNative_Equal_Negative_PhiExpr(t *testing.T) {
 		t.Errorf("PhiExpr nil vs non-nil should not be Equal")
 	}
 }
+
+// -----------------------------------------------------------------------
+// SearchTraceLimit Equal tests — one positive + one negative per
+// load-bearing field. The comparator backs the IR-equality checks the
+// optimizer-rule rewrite tests and Walk invariants rely on, so every
+// field that changes the emitted top-N subquery must split Equal apart.
+// -----------------------------------------------------------------------
+
+func TestSearchTraceLimit_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	build := func() *chplan.SearchTraceLimit {
+		return &chplan.SearchTraceLimit{
+			Input:           &chplan.Scan{Table: "otel_traces"},
+			TraceIDColumn:   "TraceId",
+			TimestampColumn: "Timestamp",
+			TraceLimit:      20,
+		}
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("identical SearchTraceLimit trees should be Equal")
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("Equal must be symmetric")
+	}
+}
+
+func TestSearchTraceLimit_Equal_Negative_TraceLimit(t *testing.T) {
+	t.Parallel()
+	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceLimit: 20}
+	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceLimit: 200}
+	if a.Equal(b) {
+		t.Errorf("different TraceLimit should not be Equal")
+	}
+}
+
+func TestSearchTraceLimit_Equal_Negative_TraceIDColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceIDColumn: "TraceId", TraceLimit: 5}
+	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceIDColumn: "Trace_Id", TraceLimit: 5}
+	if a.Equal(b) {
+		t.Errorf("different TraceIDColumn should not be Equal")
+	}
+}
+
+func TestSearchTraceLimit_Equal_Negative_TimestampColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TimestampColumn: "Timestamp", TraceLimit: 5}
+	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TimestampColumn: "TimeUnix", TraceLimit: 5}
+	if a.Equal(b) {
+		t.Errorf("different TimestampColumn should not be Equal")
+	}
+}
+
+func TestSearchTraceLimit_Equal_Negative_Input(t *testing.T) {
+	t.Parallel()
+	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "a"}, TraceLimit: 5}
+	b := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "b"}, TraceLimit: 5}
+	if a.Equal(b) {
+		t.Errorf("different Input should not be Equal")
+	}
+}
+
+func TestSearchTraceLimit_Equal_Negative_OtherType(t *testing.T) {
+	t.Parallel()
+	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceLimit: 5}
+	b := &chplan.Scan{Table: "t"}
+	if a.Equal(b) {
+		t.Errorf("SearchTraceLimit should not Equal a bare Scan")
+	}
+}
