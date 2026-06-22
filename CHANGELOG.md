@@ -4,6 +4,14 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.3.2] — 2026-06-22
+
+### Fixed
+
+- **test:** thread a time window into the TraceQL property harness (#1032)
+- **config:** default-on per-query sample budget at 5M (#1028)
+- **tempo:** bound /api/search drain with SQL trace-limit + window pushdown (#1027)
+
 ## [v1.3.0] — 2026-06-19
 
 ### Added
