@@ -151,8 +151,24 @@ func TestTraceQL_Property(t *testing.T) {
 // (SpanName, Timestamp) — the generator already avoids that collapse
 // by stamping unique suffixes, but reading from InspectedTraces makes
 // the comparator robust against a future generator widening.
+// propertyWindowMarginSec brackets the dataset anchor by ~a year on each
+// side — wide enough that the /api/search window can never clip a generated
+// span, while still being a real (non-windowless) request that skips the
+// DefaultSearchLookback clamp.
+const propertyWindowMarginSec int64 = 366 * 24 * 60 * 60
+
 func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) property.Outcome {
-	u := fmt.Sprintf("%s/api/search?q=%s", baseURL, urlEscape(q.String))
+	// Thread an explicit time window bracketing the dataset anchor. A
+	// windowless /api/search clamps to [now-1h, now] (DefaultSearchLookback,
+	// added with the trace-limit/window pushdown); this dataset is stamped at
+	// a fixed historical anchor (gen.TraceQLAnchorTime), so a windowless
+	// request would filter every span out and drift from the window-less
+	// oracle. Both bounds present skips the clamp; the wide margin can't clip
+	// any generated span (the oracle has no window concept, so over-wide is
+	// safe). Tests what Grafana's Traces Drilldown actually sends — a window.
+	anchorSec := gen.TraceQLAnchorTime().Unix()
+	startSec, endSec := anchorSec-propertyWindowMarginSec, anchorSec+propertyWindowMarginSec
+	u := fmt.Sprintf("%s/api/search?q=%s&start=%d&end=%d", baseURL, urlEscape(q.String), startSec, endSec)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return property.Outcome{Err: fmt.Errorf("property: build request: %w", err)}
