@@ -18,6 +18,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
@@ -80,6 +81,102 @@ func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *
 		"tempo", tempoCap,
 	)
 	return admit.New("prom", promCap), admit.New("loki", lokiCap), admit.New("tempo", tempoCap)
+}
+
+// apiHeads carries what run() needs back from mountAPIHeads: the Tempo gRPC
+// server (nil when the tempo head is disabled, so the dual-stack dispatcher
+// skips the gRPC branch and shutdown skips GracefulStop).
+type apiHeads struct {
+	grpcServer *grpc.Server
+}
+
+// mountAPIHeads builds and mounts ONLY the query heads enabled by
+// CERBERUS_ENABLED_HEADS (default: all three) onto traceMux. A disabled head's
+// handler, per-head Client view, engine, and admit limiter are NEVER built and
+// its routes are NEVER mounted — so a single-head process carries none of the
+// other heads' memory, the property that lets one head be isolated in its own
+// deployment/cgroup (today all three share one process, so one head's OOM kills
+// the others). The Tempo gRPC StreamingQuerier server is built (and wired to
+// the tempo handler) only when tempo is enabled. The async query_log corpus
+// reconciler is registered against exactly the engines that were built. The
+// /healthz + /readyz probes are mounted by the caller, unconditionally, in
+// every mode.
+//
+// At least one head is always enabled (config.enabledHeadsFromEnv rejects an
+// empty set), so traceMux always gets at least one head's routes.
+func mountAPIHeads(
+	ctx context.Context,
+	traceMux *http.ServeMux,
+	client *chclient.Client,
+	cfg config.Config,
+	optSet chopt.EnabledSet,
+	promLimiter, lokiLimiter, tempoLimiter *admit.Limiter,
+	logger *slog.Logger,
+) (apiHeads, error) {
+	// engines accumulates the engines actually built so the corpus reconciler
+	// observes only live heads (a disabled head has no engine to observe).
+	var engines []*engine.Engine
+
+	if cfg.HeadEnabled(config.HeadProm) {
+		// Per-head Client VIEW (#94): own breaker over the shared pool. Built
+		// only for the prom head — and the prom-only sharded-pushdown solver is
+		// built from it, so when prom is disabled neither the view nor the
+		// solver exists.
+		promClient := client.ForHead(chclient.HeadProm)
+		evalSolver, err := buildSolver(logger, cfg.ClickHouse, promClient, promLimiter)
+		if err != nil {
+			return apiHeads{}, fmt.Errorf("configure solver: %w", err)
+		}
+		promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
+		promHandler.Mount(traceMux)
+		engines = append(engines, promHandler.Engine)
+	}
+
+	if cfg.HeadEnabled(config.HeadLoki) {
+		lokiClient := client.ForHead(chclient.HeadLoki)
+		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, lokiLimiter, logger)
+		lokiHandler.Mount(traceMux)
+		engines = append(engines, lokiHandler.Engine)
+	}
+
+	var grpcServer *grpc.Server
+	if cfg.HeadEnabled(config.HeadTempo) {
+		tempoClient := client.ForHead(chclient.HeadTempo)
+		tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
+		tempoHandler.Limiter = tempoLimiter
+		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
+		tempoHandler.Mount(traceMux)
+		engines = append(engines, tempoHandler.Engine)
+
+		// Tempo gRPC StreamingQuerier — shares the Tempo HTTP handler's Engine
+		// + schema + admit limiter so the streaming RPC bodies and the HTTP
+		// handlers run the same parse + lower + emit pipeline. Built only when
+		// tempo is enabled; nil otherwise.
+		tempoGRPCService := tempogrpc.NewService(tempoHandler, tempoLimiter, logger.With("api", "tempo-grpc"))
+		grpcServer = tempogrpc.NewServer(tempoGRPCService)
+	}
+
+	logger.Info("query heads enabled", "heads", strings.Join(enabledHeadNames(cfg), ","))
+
+	// Async query_log performance-corpus reconciler (off by default). When
+	// enabled it registers itself as each BUILT head engine's QueryObserver. A
+	// no-op when disabled, leaving the engines' observer nil (byte-unchanged
+	// hot path).
+	startOptCorpus(ctx, logger, client, cfg, engines...)
+
+	return apiHeads{grpcServer: grpcServer}, nil
+}
+
+// enabledHeadNames returns the enabled heads in the canonical prom,loki,tempo
+// order for a stable log line (the EnabledHeads set is unordered).
+func enabledHeadNames(cfg config.Config) []string {
+	var names []string
+	for _, h := range []config.Head{config.HeadProm, config.HeadLoki, config.HeadTempo} {
+		if cfg.HeadEnabled(h) {
+			names = append(names, string(h))
+		}
+	}
+	return names
 }
 
 func main() {
@@ -251,36 +348,19 @@ func run() error {
 	// storm that trips one head's breaker (503s that head's queries) can
 	// never cascade to the other two — and the readiness probe gets its own
 	// HeadProbe breaker below so it stays green throughout.
-	promClient := client.ForHead(chclient.HeadProm)
-	lokiClient := client.ForHead(chclient.HeadLoki)
-	tempoClient := client.ForHead(chclient.HeadTempo)
-
-	evalSolver, err := buildSolver(logger, cfg.ClickHouse, promClient, promLimiter)
+	// Build + mount only the ENABLED heads (CERBERUS_ENABLED_HEADS; default
+	// all three). A disabled head's handler/client/limiter is never built and
+	// its routes are never mounted, so a single-head process holds no engine,
+	// no per-head Client view, and no admit limiter for the other two — the
+	// memory win that motivates splitting cerberus into per-head deployments
+	// (one process = one OOM kills all heads today). The Tempo gRPC server is
+	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
+	// unconditionally, in every mode.
+	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, promLimiter, lokiLimiter, tempoLimiter, logger)
 	if err != nil {
-		return fmt.Errorf("configure solver: %w", err)
+		return err
 	}
-
-	// All three heads run on the shared engine.Engine pipeline; each
-	// engine is constructed below from a per-head Client VIEW + a seed
-	// optimizer and assigned onto the per-head handler.
-	promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
-	promHandler.Mount(traceMux)
-
-	lokiHandler := newLokiHandler(lokiClient, cfg, optSet, lokiLimiter, logger)
-	lokiHandler.Mount(traceMux)
-
-	tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
-	tempoHandler.Limiter = tempoLimiter
-	tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
-	tempoHandler.Mount(traceMux)
-
-	// Async query_log performance-corpus reconciler (off by default). When
-	// enabled it starts a background goroutine and registers itself as every
-	// head engine's QueryObserver so each dispatched query's (query_id,
-	// shape-id, opts, language) is ring-buffered and later joined back to
-	// system.query_log. A no-op when disabled, leaving the engines' observer
-	// nil (byte-unchanged hot path).
-	startOptCorpus(ctx, logger, client, cfg, promHandler.Engine, lokiHandler.Engine, tempoHandler.Engine)
+	grpcServer := heads.grpcServer
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -308,17 +388,10 @@ func run() error {
 	maybeMountPProf(rootMux, cfg.DebugPProf, logger)
 	rootMux.Handle("/", tracedAPI)
 
-	// Tempo gRPC StreamingQuerier — PR 1 (scaffold) of the Tempo gRPC
-	// rollout. The service shares the Tempo HTTP handler's Engine +
-	// schema + admit limiter so the eventual streaming RPC bodies (PRs
-	// 2-4) and the existing HTTP handlers run the same parse + lower +
-	// emit pipeline against the same backend. Today every RPC returns
-	// codes.Unimplemented via the embedded
-	// UnimplementedStreamingQuerierServer; PRs 2-4 fill in real bodies
-	// one RPC group at a time.
-	tempoGRPCService := tempogrpc.NewService(tempoHandler, tempoLimiter, logger.With("api", "tempo-grpc"))
-	grpcServer := tempogrpc.NewServer(tempoGRPCService)
-
+	// The Tempo gRPC StreamingQuerier server was built (and wired to the
+	// Tempo handler) inside mountAPIHeads when the tempo head is enabled; it
+	// is nil when tempo is disabled, in which case buildDualStackServer skips
+	// the gRPC dispatch branch entirely.
 	srv := buildDualStackServer(cfg.HTTPAddr, cfg.HTTPServer, rootMux, grpcServer)
 
 	serverErr := make(chan error, 1)
@@ -345,8 +418,11 @@ func run() error {
 	// GracefulStop blocks until every active RPC returns or its
 	// stream is closed by the HTTP/2 transport (which srv.Shutdown
 	// has already done). With no in-flight streams it returns
-	// immediately, so this is a no-op on the happy path.
-	grpcServer.GracefulStop()
+	// immediately, so this is a no-op on the happy path. nil when the
+	// tempo head is disabled (no gRPC server was built).
+	if grpcServer != nil {
+		grpcServer.GracefulStop()
+	}
 	// Flush any pending OTLP batches before the process exits. Noop
 	// when telemetry was disabled (Endpoint == "").
 	if err := providers.Shutdown(shutdownCtx); err != nil {
@@ -1099,9 +1175,15 @@ func maybeMountPProf(mux *http.ServeMux, enabled bool, logger *slog.Logger) {
 // Cloud Run) the proxy negotiates h2 with the client and forwards
 // h2c upstream — the standard pattern. See
 // docs/operations.md#port-binding.
-func buildDualStackServer(addr string, httpCfg config.HTTPServerConfig, rootMux, grpcServer http.Handler) *http.Server {
+// A nil grpcServer (the tempo head disabled via CERBERUS_ENABLED_HEADS)
+// disables the gRPC dispatch branch entirely: every request, including an
+// HTTP/2 application/grpc one, flows to rootMux, which answers 404 for the
+// unmounted Tempo routes. The concrete *grpc.Server type (rather than
+// http.Handler) is taken on purpose so this nil check is a plain typed-nil
+// compare, not the non-nil-interface-wrapping-nil trap.
+func buildDualStackServer(addr string, httpCfg config.HTTPServerConfig, rootMux http.Handler, grpcServer *grpc.Server) *http.Server {
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+		if grpcServer != nil && r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			grpcServer.ServeHTTP(w, r)
 			return
 		}
