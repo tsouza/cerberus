@@ -950,3 +950,81 @@ compat-traceql-down:
 # Exit semantics: fails fast on the first non-zero recipe; the report
 # files for each head land under compatibility/*/reports/ regardless.
 compat-all: compat-promql compat-logql compat-traceql
+
+# === Release (controlled local cut) ===
+#
+# These mirror prepare-release.yml for when the workflow_dispatch isn't
+# available, and — critically — ENFORCE the canonical release-branch names
+# so nobody hand-rolls an inconsistent one:
+#   - tip-of-main release PR : release/v<version>-chart-<chartVersion>
+#   - maintenance backport   : release/<major>.<minor>.x   (the name
+#     release-preflight.mjs looks up to verify a backport tag is cut from
+#     the tip of its line — a wrong name makes the tag get REJECTED)
+# Both wrap the same .github/scripts/prepare-release.mjs + helm-docs the CI
+# uses, so the opened PR is drift-clean.
+
+# Stage a tip-of-main release and open its PR on the canonical branch.
+# Usage: just release-prep 1.4.0            (chart bump defaults to patch)
+#        just release-prep 1.5.0 minor
+release-prep version chart_bump="patch":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git fetch origin main
+    git switch -c "release/v{{version}}-staging" origin/main
+    VERSION="{{version}}" CHART_BUMP="{{chart_bump}}" PR_BODY_FILE=release-pr-body.md \
+        node .github/scripts/prepare-release.mjs
+    chart="$(awk '/^version:/{print $2; exit}' deploy/helm/cerberus/Chart.yaml)"
+    docker run --rm -v "$PWD/deploy/helm:/helm-docs" -u "$(id -u)" \
+        jnorwood/helm-docs:v1.14.2 --chart-search-root=/helm-docs --template-files=README.md.gotmpl
+    branch="release/v{{version}}-chart-${chart}"
+    git branch -m "$branch"
+    git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
+    git commit -m "chore(release): cerberus v{{version}} / chart ${chart}"
+    git push -u origin "$branch"
+    gh pr create --base main --head "$branch" \
+        --title "chore(release): cerberus v{{version}} / chart ${chart}" \
+        --body-file release-pr-body.md
+    echo "Opened release PR on $branch. After it merges + main is green: just release-tag {{version}}"
+
+# Create/switch to the release/<major>.<minor>.x maintenance line off the
+# latest matching tag, ready for cherry-picking fix: commits to backport.
+# Usage: just backport-line 1.3   then  git cherry-pick <sha>...  then
+#        just release-prep-backport 1.3.2
+backport-line minor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git fetch origin --tags --quiet
+    base="$(git tag --list 'v{{minor}}.*' --sort=-v:refname | head -1)"
+    test -n "$base" || { echo "no v{{minor}}.* tag to branch from"; exit 1; }
+    git switch "release/{{minor}}.x" 2>/dev/null || git switch -c "release/{{minor}}.x" "$base"
+    echo "On release/{{minor}}.x (off $base). Cherry-pick the fix commits, then: just release-prep-backport <{{minor}}.Z>"
+
+# Stage a backport release on the current release/X.Y.x branch (after the
+# fix: commits are cherry-picked) and push the branch. Tag afterward with
+# `just release-tag`. No PR — the maintenance line is pushed + tagged.
+# Usage: just release-prep-backport 1.3.2
+release-prep-backport version chart_bump="patch":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(git rev-parse --abbrev-ref HEAD)" in release/*.x) ;; *) echo "not on a release/X.Y.x maintenance branch"; exit 1;; esac
+    VERSION="{{version}}" CHART_BUMP="{{chart_bump}}" PR_BODY_FILE=release-pr-body.md \
+        node .github/scripts/prepare-release.mjs
+    chart="$(awk '/^version:/{print $2; exit}' deploy/helm/cerberus/Chart.yaml)"
+    docker run --rm -v "$PWD/deploy/helm:/helm-docs" -u "$(id -u)" \
+        jnorwood/helm-docs:v1.14.2 --chart-search-root=/helm-docs --template-files=README.md.gotmpl
+    git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
+    git commit -m "chore(release): cerberus v{{version}} / chart ${chart}"
+    git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
+    echo "Staged v{{version}} on $(git rev-parse --abbrev-ref HEAD). After main is green: just release-tag {{version}}"
+
+# Tag the current HEAD as v<version> and push it (triggers release.yml).
+# Guards that HEAD's chart appVersion matches, so a tag can't drift from
+# the staged release commit. Usage: just release-tag 1.4.0
+release-tag version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app="$(awk -F'"' '/^appVersion:/{print $2; exit}' deploy/helm/cerberus/Chart.yaml)"
+    test "$app" = "{{version}}" || { echo "HEAD appVersion=$app != {{version}} — run release-prep first"; exit 1; }
+    git tag "v{{version}}"
+    git push origin "v{{version}}"
+    echo "Pushed tag v{{version}} — release.yml will build + publish."
