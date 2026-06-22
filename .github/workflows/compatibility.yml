@@ -11,7 +11,7 @@ name: compatibility
 #
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
-#   * actions/checkout@v6           — stdlib.
+#   * actions/checkout@v7           — stdlib.
 #   * actions/setup-go@v6           — `go run ./cmd/seed` + driver builds.
 #   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
 #   * docker/login-action@v4        — authed Docker Hub pulls (rate limits).
@@ -91,7 +91,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
 
       - id: filter
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # The discipline scans diff against origin/main, so we need
           # both refs reachable (mirrors ci.yml's forbid-skip checkout).
@@ -213,7 +213,7 @@ jobs:
     # crashed, so the workflow badge / GH Project status correctly
     # turns red.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -470,7 +470,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -619,7 +619,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # See the prometheus job: authed Docker Hub pulls dodge the anonymous
       # rate limit shared across runner IPs; skips silently on forks.
@@ -647,7 +647,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
       # run-tempo-compatibility.sh does `docker compose up -d --build` for
@@ -816,7 +816,7 @@ jobs:
     # the end re-raises a non-zero exit when the harness step
     # diverged or crashed, so the workflow badge correctly turns red.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
       # run-loki-compatibility.sh does `docker compose up --wait` for loki +

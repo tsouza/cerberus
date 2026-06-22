@@ -52,7 +52,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
 
       - id: filter
@@ -94,7 +94,7 @@ jobs:
     # starts a container per test, including a Keeper-backed Replicated case.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:

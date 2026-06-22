@@ -37,7 +37,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
 
       - id: filter
@@ -95,7 +95,7 @@ jobs:
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -119,7 +119,7 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # commitlint needs full history
 
@@ -270,7 +270,7 @@ jobs:
     name: forbid-skip
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # The new-should_skip-additions guard diffs against
           # origin/main, so we need both refs reachable.
@@ -411,7 +411,7 @@ jobs:
     name: link-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # OFFLINE link + fragment check. `--root-dir` anchors absolute-style
       # `/foo` links at the repo root; `--include-fragments` turns on the
