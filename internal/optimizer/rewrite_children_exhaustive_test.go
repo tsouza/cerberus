@@ -87,9 +87,11 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"Filter", &chplan.Filter{Input: sentinelChild(), Predicate: &chplan.LitBool{V: true}}, false},
 		{"Project", &chplan.Project{Input: sentinelChild()}, false},
 		{"NestedSetAnnotate", &chplan.NestedSetAnnotate{Input: sentinelChild()}, false},
+		{"SearchTraceLimit", &chplan.SearchTraceLimit{Input: sentinelChild(), TraceLimit: 20}, false},
 		{"Aggregate", &chplan.Aggregate{Input: sentinelChild()}, false},
 		{"RangeWindow", &chplan.RangeWindow{Input: sentinelChild(), Func: "rate"}, false},
 		{"RangeWindowNative", &chplan.RangeWindowNative{Input: sentinelChild(), Func: "rate"}, false},
+		{"RangeWindowResample", &chplan.RangeWindowResample{Input: sentinelChild()}, false},
 		{"AbsentOverTime", &chplan.AbsentOverTime{Input: sentinelChild()}, false},
 		{"Limit", &chplan.Limit{Input: sentinelChild(), Count: 1}, false},
 		{"OrderBy", &chplan.OrderBy{Input: sentinelChild()}, false},
@@ -130,7 +132,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 // implementations. Cross-checked against
 // `grep -rn 'planNode()' internal/chplan/*.go`. Bump this (and add a table
 // row + a rewriteChildren arm) when a new Node type lands.
-const expectedNodeTypeCount = 29
+const expectedNodeTypeCount = 31
 
 // TestRewriteChildren_TableCoversEveryNodeType is the count guard. If a new
 // chplan.Node type is added without a corresponding allNodeCases() row, the

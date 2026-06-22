@@ -3,6 +3,7 @@ package grpc
 import (
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/grafana/tempo/pkg/tempopb"
 	"google.golang.org/grpc/codes"
@@ -81,6 +82,21 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		limit = tempo.DefaultSearchLimit
 	}
 	ctx = traceql.WithSearchTraceLimit(ctx, limit)
+
+	// Thread the request time window so stampSearchTraceLimit folds it
+	// into the bounded plain-search scan — the gRPC mirror of HTTP
+	// /api/search's WithSearchWindow. SearchRequest.Start / End arrive as
+	// uint32 Unix seconds (proto fields 5/6); a windowless request (both
+	// zero — e.g. a hand-rolled `q={}`) is clamped to the same recent
+	// lookback the HTTP handler applies, so the trace-limit pushdown's
+	// inner GROUP BY TraceId scans a window instead of the whole table.
+	// A one-sided window is a deliberate open-ended bound, left as-is.
+	start, end := secondsToTime(req.Start), secondsToTime(req.End)
+	if start.IsZero() && end.IsZero() {
+		end = time.Now().UTC()
+		start = end.Add(-tempo.DefaultSearchLookback)
+	}
+	ctx = traceql.WithSearchWindow(ctx, start, end)
 
 	// Open the streaming cursor against the lowered TraceQL plan.
 	// cursor.Close is deferred so a client cancellation (ctx.Done()
@@ -193,6 +209,20 @@ func mapStreamError(err error) error {
 		return err
 	}
 	return status.Errorf(codes.Internal, "stream send: %v", err)
+}
+
+// secondsToTime converts a SearchRequest Start / End bound into a
+// time.Time. The streaming /search proto carries the window as uint32
+// Unix seconds (tempopb.SearchRequest fields 5/6 are named start/end,
+// distinct from MetricsQueryRange's nanosecond Start/End — hence a
+// dedicated helper rather than reusing nanosToTime). A zero value means
+// "bound omitted" and round-trips to the zero time.Time, which
+// WithSearchWindow treats as no predicate.
+func secondsToTime(sec uint32) time.Time {
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(sec), 0).UTC()
 }
 
 // toTempopbTraceMetadata pivots cerberus's local tempo.TraceSummary

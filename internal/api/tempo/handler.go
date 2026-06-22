@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
@@ -233,6 +234,12 @@ const (
 	DefaultSpansPerSpanSet = 3
 )
 
+// DefaultSearchLookback bounds a windowless /api/search (no start/end
+// params) to the most recent hour, so the trace-limit pushdown's inner
+// GROUP BY TraceId scans a window instead of the whole table. Matches
+// reference Tempo's "recent data" default for a search with no range.
+const DefaultSearchLookback = time.Hour
+
 // positiveIntParam parses an integer query param, returning def when the
 // param is absent, malformed, or non-positive — mirroring reference
 // Tempo's lenient ParseSearchRequest handling (a bad `limit` falls back
@@ -296,6 +303,25 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// (observed live: 4937 summaries / ~755KB body for limit=200).
 	limit := positiveIntParam(r, "limit", DefaultSearchLimit)
 	spss := positiveIntParam(r, "spss", DefaultSpansPerSpanSet)
+	// The request time window bounds the plain-search scan so /api/search
+	// drains only the matching traces in [start, end] rather than the whole
+	// table (the summaries-drain OOM). An invalid bound is a 400, matching
+	// Tempo's own rejection of malformed start/end.
+	start, end, err := parseTempoStartEnd(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "", "", err)
+		return
+	}
+	// Bound a windowless search (hand-rolled q={} with no time range) so the
+	// trace-limit pushdown's inner GROUP BY TraceId never aggregates over the
+	// whole table server-side. Grafana's Traces Drilldown always sends both
+	// bounds, so this only tightens the degenerate path. Mirrors reference
+	// Tempo, which restricts a windowless search to recent data. A one-sided
+	// window is a deliberate open-ended bound and is left as-is.
+	if start.IsZero() && end.IsZero() {
+		end = time.Now().UTC()
+		start = end.Add(-DefaultSearchLookback)
+	}
 
 	ctx := r.Context()
 	// Thread the response trace limit into lowering so the nested-set
@@ -304,6 +330,9 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// every matched trace and peaks past the per-query memory cap (#103).
 	// No-op for queries that don't carry a nested-set select.
 	ctx = traceql_lower.WithSearchTraceLimit(ctx, limit)
+	// Thread the request window so stampSearchTraceLimit folds it into the
+	// bounded plain-search scan. No-op when both bounds are absent.
+	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	// Engine.Query runs parse → lower → wrap-projection → optimize →
 	// emit → execute. The TraceQL adapter (h.lang) owns the parser
 	// dispatch + wrap-projection so the post-engine response pivot
