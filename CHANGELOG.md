@@ -4,6 +4,20 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.4.0] — 2026-06-22
+
+### Added
+
+- **chart:** split mode — isolated per-head deployments (no proxy) (#1031)
+- **api:** O(output) drain counter + falsifiable bounds-drain regression harness (#1030)
+- **config:** add CERBERUS_ENABLED_HEADS per-head toggle (#1029)
+
+### Fixed
+
+- **test:** thread a time window into the TraceQL property harness (#1032)
+- **config:** default-on per-query sample budget at 5M (#1028)
+- **tempo:** bound /api/search drain with SQL trace-limit + window pushdown (#1027)
+
 ## [v1.3.0] — 2026-06-19
 
 ### Added
