@@ -28,12 +28,12 @@ jobs:
     name: external-links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Persist lychee's response cache across runs so a known-good link is
       # not re-fetched every week (and a known-bad one is not hammered).
       - name: Restore lychee cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .lycheecache
           key: lychee-${{ github.run_id }}
@@ -69,7 +69,7 @@ jobs:
       # spamming new ones. Never fails the job.
       - name: Open/update link-rot tracking issue
         if: steps.lychee.outputs.exit_code != 0
-        uses: peter-evans/create-issue-from-file@v5
+        uses: peter-evans/create-issue-from-file@v6
         with:
           title: Weekly external link check found dead links
           content-filepath: ./lychee-report.md
