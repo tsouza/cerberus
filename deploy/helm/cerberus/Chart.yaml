@@ -8,7 +8,7 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.6.3
+version: 0.6.4
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
@@ -49,6 +49,8 @@ annotations:
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
+    - kind: fixed
+      description: "chart: per-head NetworkPolicy in split mode; monolith policy unchanged (#1046)"
     - kind: added
       description: "chart: per-head PodDisruptionBudget in split mode (#1040)"
     - kind: added
