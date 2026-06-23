@@ -51,6 +51,25 @@ type Decision struct {
 	// Slices is the anchor-grid decomposition, populated only on a true
 	// route (oldest-first). Empty when not routed.
 	Slices []Slice
+
+	// Cost grid — the RAW classifier scalars Planner.Plan already computed,
+	// surfaced for the route A/B calibration corpus (stage 0). These are
+	// populated for BOTH routed AND not-routed decisions: a route-A
+	// (below-threshold) query must record its N/F/D too, because the
+	// counterfactual overlap analysis compares route-A and route-B cost
+	// distributions at equal (N, F, D). They are a purely additive readout
+	// of values already derived in the eligibility pass — recording them
+	// changes no routing behavior.
+	//
+	// The corpus buckets on these RAW scalars, never on Reason: ReasonHighD
+	// folds into ReasonBelowThreshold on the not-routed shadow header, so the
+	// Reason string alone hides the high-D class. NAnchors / Fanout /
+	// CumulativeD / OuterRange / Step carry the unfolded signal.
+	NAnchors    int           // N = OuterRange/Step + 1 (outermost spine)
+	Fanout      int64         // F = max(Range/Step or Lookback/Step) over windows
+	CumulativeD time.Duration // D = Σ spine lookback (Range / Lookback)
+	OuterRange  time.Duration // OuterRange of the outermost spine
+	Step        time.Duration // the request grid step
 }
 
 // StrategyShardedTimeslice is the only decomposition strategy phase 1 emits:

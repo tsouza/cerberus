@@ -75,15 +75,43 @@ func newEngine(q *fakeQuerier) *engine.Engine {
 	}
 }
 
-// recordingObserver captures the query_id the engine hands the corpus
-// reconciler at the dispatch seam, so a test can assert it equals the id the
-// chclient query path observes on the same dispatch ctx.
+// recordingObserver captures the query_id and routing read-out the engine
+// hands the corpus reconciler at the dispatch seam, so a test can assert the id
+// equals the one the chclient query path observes on the same dispatch ctx and
+// that the routing features ride along.
 type recordingObserver struct {
-	queryIDs []string
+	queryIDs     []string
+	routePresent []bool
+	routes       []string
+	decisionRsns []string
+	lastNAnchors uint32
+	lastFanout   uint32
+	lastCumD     uint32
+	lastOuterRng uint32
+	lastStep     uint32
+	lastKShards  uint8
 }
 
-func (o *recordingObserver) ObserveQuery(queryID, _ string, _ []string, _ string) {
+func (o *recordingObserver) ObserveQuery(
+	queryID, _ string,
+	_ []string,
+	_ string,
+	routePresent bool,
+	route string,
+	nAnchors, fanout, cumulativeD, outerRange, step uint32,
+	kShards uint8,
+	decisionReason string,
+) {
 	o.queryIDs = append(o.queryIDs, queryID)
+	o.routePresent = append(o.routePresent, routePresent)
+	o.routes = append(o.routes, route)
+	o.decisionRsns = append(o.decisionRsns, decisionReason)
+	o.lastNAnchors = nAnchors
+	o.lastFanout = fanout
+	o.lastCumD = cumulativeD
+	o.lastOuterRng = outerRange
+	o.lastStep = step
+	o.lastKShards = kShards
 }
 
 // TestEngine_QueryID_ObserverAndDispatchAgree proves the single-source-of-truth

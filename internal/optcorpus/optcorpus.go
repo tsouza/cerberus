@@ -29,6 +29,78 @@ import (
 	"time"
 )
 
+// RouteFeatures is the routing classifier's read-out captured at dispatch:
+// the route the pure classifier (internal/solver Planner.Plan) chose plus the
+// RAW cost-grid scalars it computed (N anchors, fan-out, cumulative spine
+// lookback D, outer range, step) and the decision reason. It is the
+// dispatch-side half of the route A/B calibration corpus (stage 0): the
+// reconciler joins it to the OBSERVED server-side cost so an operator can
+// replay the classifier offline (counterfactual threshold testing) and
+// measure the wrong-route overlap.
+//
+// Recording these features is a pure additive readout — it changes no routing
+// behavior. The features are present for BOTH route A (not-routed,
+// below-threshold) and route B (routed) decisions, because the overlap
+// analysis compares the cost distributions of the two routes at equal
+// (N, F, D). Buckets are keyed on the RAW scalars, never on Reason: the
+// not-routed shadow header folds the high-D class into below-threshold, so the
+// reason string alone hides it.
+type RouteFeatures struct {
+	// Route is "A" (single CH query) or "B" (time-slice sharded). It is the
+	// route the classifier actually chose for this dispatch.
+	Route string
+	// NAnchors is N = OuterRange/Step + 1 on the outermost spine.
+	NAnchors uint32
+	// Fanout is F = max(Range/Step or Lookback/Step) over the windowed nodes.
+	Fanout uint32
+	// CumulativeD is D = Σ spine lookback, in seconds (the corpus stores
+	// durations as whole seconds, matching the UInt32 columns).
+	CumulativeD uint32
+	// OuterRange is the outermost spine OuterRange, in seconds.
+	OuterRange uint32
+	// Step is the request grid step, in seconds.
+	Step uint32
+	// KShards is the shard count on route B, 0 on route A.
+	KShards uint8
+	// DecisionReason is the classifier's Reason* vocabulary value.
+	DecisionReason string
+	// Present reports whether routing features were captured for this
+	// dispatch. It is false when the Solver is off or the head is not the
+	// classified head, so the reconciler can leave the routing columns at
+	// their zero defaults rather than record a fictitious route-A row.
+	Present bool
+}
+
+// ExitStatus is how a dispatched query terminated, derived from the
+// system.query_log row type plus its exception. It is the corpus's
+// cost-distribution discriminator: an OOM or timeout exit is the very signal
+// route B (time-slice sharding) exists to avoid, so the go/no-go analysis
+// reads it directly.
+type ExitStatus uint8
+
+const (
+	// ExitOK is a clean QueryFinish.
+	ExitOK ExitStatus = iota
+	// ExitOOM is a QueryExceptionWhileProcessing whose exception is a
+	// ClickHouse memory-limit / OOM code.
+	ExitOOM
+	// ExitTimeout is a QueryExceptionWhileProcessing whose exception is a
+	// ClickHouse timeout / exceeded-execution-time code.
+	ExitTimeout
+)
+
+// String renders the ExitStatus as the corpus enum token.
+func (e ExitStatus) String() string {
+	switch e {
+	case ExitOOM:
+		return "oom"
+	case ExitTimeout:
+		return "timeout"
+	default:
+		return "ok"
+	}
+}
+
 // Record is one dispatched query's identity, registered (via Observe) when
 // cerberus sends the query. The QueryID is the join key into system.query_log;
 // the rest is the metadata the reconciler joins onto each finished row.
@@ -45,6 +117,11 @@ type Record struct {
 	Opts []string
 	// Language is the query language: "promql" | "logql" | "traceql".
 	Language string
+	// Route is the routing classifier read-out captured at dispatch. It is the
+	// dispatch-side half of the route A/B calibration corpus; the reconciler
+	// joins it to the observed cost. Route.Present is false when no routing
+	// classification ran (Solver off / unclassified head).
+	Route RouteFeatures
 }
 
 // Row is the durable corpus tuple written to the sink. The field shape is
@@ -61,6 +138,25 @@ type Row struct {
 	QueryDurationMS     uint64           `json:"query_duration_ms"`
 	MemoryUsage         uint64           `json:"memory_usage"`
 	ProfileEvents       map[string]int64 `json:"profile_events,omitempty"`
+
+	// Routing features (stage 0 route A/B calibration). These join each
+	// routing DECISION to its OBSERVED cost so the pure classifier can be
+	// replayed offline. They are zero-valued when the dispatch carried no
+	// routing classification (Solver off / unclassified head) — Route is then
+	// "" and the scalar columns are 0. The field shape stays column-for-column
+	// aligned with the cerberus_router_corpus MergeTree (see chtable.go) so the
+	// JSONL and CH-table sinks write the same Row.
+	NAnchors       uint32 `json:"n_anchors"`
+	Fanout         uint32 `json:"fanout"`
+	CumulativeD    uint32 `json:"cumulative_d"`
+	OuterRange     uint32 `json:"outer_range"`
+	Step           uint32 `json:"step"`
+	Route          string `json:"route"`
+	KShards        uint8  `json:"k_shards"`
+	DecisionReason string `json:"decision_reason"`
+	// ExitStatus is "ok" | "oom" | "timeout", derived by the reconciler from
+	// the system.query_log row type + exception.
+	ExitStatus string `json:"exit_status"`
 }
 
 // Sink is the durable write target for reconciled rows. JSONLSink is the v1
@@ -77,16 +173,19 @@ type Sink interface {
 // (ShapeID/Opts/Language) — the reconciler joins those back from its ring by
 // matching on query_id, so the source returns the query_id alongside each row.
 type QueryLogSource interface {
-	// FinishedByQueryID returns the finished (type='QueryFinish') query_log
-	// rows for the supplied query_ids. Each returned SourceRow carries the
-	// query_id it belongs to so the reconciler can join it back to the
-	// observed Record. ids is never empty when called.
+	// FinishedByQueryID returns the terminal query_log rows for the supplied
+	// query_ids: clean finishes (type='QueryFinish') AND exception exits
+	// (type='QueryExceptionWhileProcessing'), so the corpus can record how a
+	// query terminated. Each returned SourceRow carries the query_id it belongs
+	// to so the reconciler can join it back to the observed Record. ids is
+	// never empty when called.
 	FinishedByQueryID(ctx context.Context, ids []string) ([]SourceRow, error)
 }
 
-// SourceRow is one finished system.query_log row as returned by a
+// SourceRow is one terminal system.query_log row as returned by a
 // QueryLogSource, before the reconciler joins the shape metadata onto it. It
-// carries the query_id (the join key) plus the raw cost columns.
+// carries the query_id (the join key), the raw cost columns, and the derived
+// exit status (clean / oom / timeout).
 type SourceRow struct {
 	QueryID             string
 	NormalizedQueryHash uint64
@@ -95,6 +194,9 @@ type SourceRow struct {
 	QueryDurationMS     uint64
 	MemoryUsage         uint64
 	ProfileEvents       map[string]int64
+	// ExitStatus is how the query terminated, derived by the source from the
+	// query_log row type + exception code (ExitOK on a QueryFinish).
+	ExitStatus ExitStatus
 }
 
 // defaultRingCapacity is the fallback ring capacity when Options.RingCapacity
@@ -253,7 +355,25 @@ func (r *Reconciler) Observe(rec Record) {
 // full the Record is DROPPED (the corpus is a best-effort sample, not a system
 // of record) and counted for a rate-limited diagnostic; the drop is strictly
 // preferable to blocking a data-plane dispatch on the corpus.
-func (r *Reconciler) ObserveQuery(queryID, shapeID string, opts []string, language string) {
+//
+// The trailing route* parameters carry the routing classifier read-out for
+// this dispatch (stage 0 route A/B calibration). They are passed as primitive
+// scalars — not a shared struct — so neither package imports the other's types
+// (the engine declares the QueryObserver interface; optcorpus supplies the
+// concrete *Reconciler, and a shared struct would couple them and risk the
+// nil-interface trap the engine guards against). routePresent is false when
+// the dispatch carried no routing classification (Solver off / unclassified
+// head); the reconciler then leaves the routing columns at zero.
+func (r *Reconciler) ObserveQuery(
+	queryID, shapeID string,
+	opts []string,
+	language string,
+	routePresent bool,
+	route string,
+	nAnchors, fanout, cumulativeD, outerRange, step uint32,
+	kShards uint8,
+	decisionReason string,
+) {
 	if queryID == "" {
 		return
 	}
@@ -262,6 +382,17 @@ func (r *Reconciler) ObserveQuery(queryID, shapeID string, opts []string, langua
 		ShapeID:  shapeID,
 		Opts:     opts,
 		Language: language,
+		Route: RouteFeatures{
+			Present:        routePresent,
+			Route:          route,
+			NAnchors:       nAnchors,
+			Fanout:         fanout,
+			CumulativeD:    cumulativeD,
+			OuterRange:     outerRange,
+			Step:           step,
+			KShards:        kShards,
+			DecisionReason: decisionReason,
+		},
 	}
 	select {
 	case r.ingest <- rec:
@@ -421,7 +552,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 			// Evicted between snapshot and read, or a stray id — skip.
 			continue
 		}
-		rows = append(rows, Row{
+		row := Row{
 			ShapeID:             rec.ShapeID,
 			Opts:                rec.Opts,
 			Language:            rec.Language,
@@ -431,7 +562,23 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 			QueryDurationMS:     sr.QueryDurationMS,
 			MemoryUsage:         sr.MemoryUsage,
 			ProfileEvents:       sr.ProfileEvents,
-		})
+			// exit_status is the observed-cost discriminator the go/no-go
+			// analysis reads (oom / timeout = the cost route B avoids).
+			ExitStatus: sr.ExitStatus.String(),
+		}
+		// Join the dispatch-side routing read-out onto the row. Left at zero
+		// when no classification ran for this dispatch (route stays "").
+		if rec.Route.Present {
+			row.Route = rec.Route.Route
+			row.NAnchors = rec.Route.NAnchors
+			row.Fanout = rec.Route.Fanout
+			row.CumulativeD = rec.Route.CumulativeD
+			row.OuterRange = rec.Route.OuterRange
+			row.Step = rec.Route.Step
+			row.KShards = rec.Route.KShards
+			row.DecisionReason = rec.Route.DecisionReason
+		}
+		rows = append(rows, row)
 		reconciled = append(reconciled, sr.QueryID)
 	}
 	if len(rows) == 0 {

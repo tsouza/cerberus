@@ -146,7 +146,7 @@ func strategyFor(meta Meta) string {
 // so the default ctx is byte-identical to before these rules existed. Every
 // rule writes through chclient.WithQuerySetting, so a plan that triggers more
 // than one rule carries all of them on the one per-request settings map.
-func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string) context.Context {
+func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) context.Context {
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
@@ -158,22 +158,65 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// dispatch, avoiding ClickHouse code 216), so it MUST be generated once and
 	// shared rather than recomputed by each consumer.
 	queryID, ctx := chclient.EnsureQueryID(ctx)
-	e.observeQuery(queryID, plan, language)
+	e.observeQuery(queryID, plan, language, decision)
 	return ctx
 }
 
 // observeQuery feeds the corpus reconciler (when registered) the dispatch-seam
 // tuple for plan: the per-dispatch CH query_id (fixed once in execContext via
 // chclient.EnsureQueryID, the SAME id the chclient query path stamps via
-// WithQueryID), the literal-free plan shape-id, the resolved enabled-opts, and
-// the query language. It is a no-op when no observer is registered (the
-// default) or when there is no valid trace id to join on, so the hot path is
-// byte-unchanged unless the corpus is enabled.
-func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string) {
+// WithQueryID), the literal-free plan shape-id, the resolved enabled-opts, the
+// query language, and the routing classifier read-out (decision). It is a no-op
+// when no observer is registered (the default) or when there is no valid trace
+// id to join on, so the hot path is byte-unchanged unless the corpus is
+// enabled.
+//
+// decision is the route A/B classifier's output for this dispatch (always
+// non-nil on the classified head, nil otherwise — see classify). Its RAW
+// cost-grid scalars are passed through verbatim so the corpus can join each
+// routing DECISION to its OBSERVED cost and replay the classifier offline. A
+// nil decision means no classification ran (Solver off / unclassified head):
+// routePresent is then false and the routing columns stay zero.
+func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string, decision *solver.Decision) {
 	if e.QueryObserver == nil || queryID == "" {
 		return
 	}
-	e.QueryObserver.ObserveQuery(queryID, planShapeID(plan), e.Settings.enabledOpts(), language)
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	e.QueryObserver.ObserveQuery(
+		queryID, planShapeID(plan), e.Settings.enabledOpts(), language,
+		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
+	)
+}
+
+// routeSecond is the divisor that converts a time.Duration's nanoseconds to
+// the whole seconds the corpus stores its grid columns in.
+const routeSecond = int64(time.Second)
+
+// routeFeatures unpacks a solver Decision into the primitive routing-feature
+// scalars the QueryObserver seam takes. A nil decision (no classification ran)
+// returns present=false with zero scalars so the corpus leaves the routing
+// columns empty. Durations (D / OuterRange / Step) are reported in whole
+// seconds to match the UInt32 corpus columns. The Route enum is "B" on a true
+// route (Strategy set), "A" otherwise — read from the recorded Strategy, never
+// the Reason string, so the high-D / below-threshold fold cannot misclassify
+// the route.
+func routeFeatures(d *solver.Decision) (present bool, route string, nAnchors, fanout, cumulativeD, outerRange, step uint32, kShards uint8, reason string) {
+	if d == nil {
+		return false, "", 0, 0, 0, 0, 0, 0, ""
+	}
+	route = "A"
+	if d.Strategy != "" {
+		route = "B"
+	}
+	return true,
+		route,
+		uint32(d.NAnchors),
+		uint32(d.Fanout),
+		uint32(int64(d.CumulativeD) / routeSecond),
+		uint32(int64(d.OuterRange) / routeSecond),
+		uint32(int64(d.Step) / routeSecond),
+		uint8(d.K),
+		d.Reason
 }
 
 // planHasTSGridNative reports whether plan contains a node from the
@@ -261,10 +304,30 @@ type Engine struct {
 // QueryObserver is the narrow seam the corpus reconciler registers on the
 // Engine. ObserveQuery is called once per dispatched query with the CH
 // query_id (the join key into system.query_log), the literal-free plan
-// shape-id, the resolved enabled-opts that rode the query, and the query
-// language. It must be non-blocking and cheap (the reconciler ring-buffers).
+// shape-id, the resolved enabled-opts that rode the query, the query
+// language, and the routing classifier read-out for the dispatch. It must be
+// non-blocking and cheap (the reconciler ring-buffers).
+//
+// The routing read-out is passed as primitive scalars rather than a shared
+// struct so the engine does not import the corpus package (the concrete
+// observer is *optcorpus.Reconciler; an engine→optcorpus import would couple
+// the two and invite the nil-interface trap the QueryObserver==nil guard
+// guards against). routePresent is false when no routing classification ran
+// for the dispatch (Solver off / unclassified head), in which case route is ""
+// and the scalar features are 0. This is a pure additive read-out: it joins
+// each routing DECISION to its OBSERVED cost for the route A/B calibration
+// corpus (stage 0) and changes no routing behavior.
 type QueryObserver interface {
-	ObserveQuery(queryID, shapeID string, opts []string, language string)
+	ObserveQuery(
+		queryID, shapeID string,
+		opts []string,
+		language string,
+		routePresent bool,
+		route string,
+		nAnchors, fanout, cumulativeD, outerRange, step uint32,
+		kShards uint8,
+		decisionReason string,
+	)
 }
 
 // Lang adapts a query-language head (PromQL / LogQL / TraceQL) to
@@ -440,7 +503,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
 	start := time.Now()
-	samples, err := e.Client.Query(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name()), sql, args...)
+	samples, err := e.Client.Query(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision), sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
@@ -653,7 +716,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	cursor, err := cq.QueryCursor(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name()), sql, args...)
+	cursor, err := cq.QueryCursor(e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision), sql, args...)
 	execT.Done(ctx)
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)

@@ -296,6 +296,12 @@ type CHOptCorpusConfig struct {
 	// ring drops the oldest id when full. A non-positive value falls back to the
 	// optcorpus default.
 	RingCapacity int
+	// SinkMode selects the durable sink (CERBERUS_CH_OPT_CORPUS_SINK_MODE):
+	// "jsonl" (default) appends rows to the SinkPath file; "chtable" writes them
+	// to the cerberus_router_corpus MergeTree the operator queries with the
+	// go/no-go analysis SQL. The CH-table sink needs no SinkPath. Any
+	// unrecognised value falls back to the JSONL sink.
+	SinkMode string
 }
 
 // SchemaProvisioning carries the DDL-shaping knobs the auto-create hook
@@ -552,6 +558,7 @@ const (
 	envCHOptCorpusInterval = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
 	envCHOptCorpusSinkPath = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
 	envCHOptCorpusRing     = "CERBERUS_CH_OPT_CORPUS_RING"
+	envCHOptCorpusSinkMode = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
 	envLogFormat           = "CERBERUS_LOG_FORMAT"
 	envLogLevel            = "CERBERUS_LOG_LEVEL"
 	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
@@ -939,6 +946,7 @@ var allEnvKeys = []string{
 	envCHOptCorpusInterval,
 	envCHOptCorpusSinkPath,
 	envCHOptCorpusRing,
+	envCHOptCorpusSinkMode,
 	envLogFormat,
 	envLogLevel,
 	envOTLPEndpoint,
@@ -1085,6 +1093,7 @@ func setCHOptDefaults(v *viper.Viper) {
 	v.SetDefault(envCHOptCorpusInterval, defaultCHOptCorpusInterval.String())
 	v.SetDefault(envCHOptCorpusSinkPath, defaultCHOptCorpusSinkPath)
 	v.SetDefault(envCHOptCorpusRing, defaultCHOptCorpusRing)
+	v.SetDefault(envCHOptCorpusSinkMode, defaultCHOptCorpusSinkMode)
 }
 
 // Built-in defaults, kept as named constants so newLoader's SetDefault
@@ -1121,6 +1130,9 @@ const (
 	// defaultCHOptCorpusSinkPath is empty: no JSONL sink unless an operator
 	// supplies a path.
 	defaultCHOptCorpusSinkPath = ""
+	// defaultCHOptCorpusSinkMode is the JSONL file sink; "chtable" selects the
+	// cerberus_router_corpus MergeTree instead.
+	defaultCHOptCorpusSinkMode = "jsonl"
 	// defaultCHOptCorpusRing is the reconciler ring capacity when the operator
 	// does not override it. It mirrors optcorpus's own internal default; the
 	// reconciler clamps a non-positive value to the same floor.
@@ -1860,6 +1872,7 @@ func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
 		Interval:     interval,
 		SinkPath:     getString(v, envCHOptCorpusSinkPath),
 		RingCapacity: ring,
+		SinkMode:     getString(v, envCHOptCorpusSinkMode),
 	}, nil
 }
 

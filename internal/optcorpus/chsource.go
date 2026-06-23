@@ -103,13 +103,33 @@ func corpusSettings() clickhouse.Settings {
 	}
 }
 
-// queryLogSQL selects the finished (QueryFinish) rows for a set of query_ids,
-// reading the cost columns, the normalized_query_hash, and the two ProfileEvents
-// of interest (QueryConditionCacheHits, RowsReadByPrewhereReaders) projected
-// out of the ProfileEvents map by name so the row decode is a fixed,
-// strongly-typed shape. The query is bounded to a recent window so a large
-// query_log does not get scanned in full each interval, and grouped to one row
-// per query_id (a distributed query_log can carry initial + remote rows). The
+// ClickHouse server error codes the corpus maps to a non-OK exit_status. They
+// are the two terminal-cost outcomes route B (time-slice sharding) exists to
+// avoid, so the go/no-go analysis reads exit_status directly. Sourced from
+// ClickHouse's ErrorCodes.cpp; named here so the mapping carries its own
+// explanation (no magic numbers in the derive switch).
+const (
+	// chErrMemoryLimitExceeded is MEMORY_LIMIT_EXCEEDED — the OOM signal.
+	chErrMemoryLimitExceeded = 241
+	// chErrTimeoutExceeded is TIMEOUT_EXCEEDED.
+	chErrTimeoutExceeded = 159
+	// chErrTooSlow is TOO_SLOW — max_execution_time / result-row caps tripped;
+	// the corpus folds it into the timeout class (a deadline-style abort).
+	chErrTooSlow = 160
+)
+
+// queryLogSQL selects the TERMINAL rows for a set of query_ids — clean finishes
+// (QueryFinish) and exception exits (QueryExceptionWhileProcessing) — reading
+// the cost columns, the normalized_query_hash, the two ProfileEvents of
+// interest (QueryConditionCacheHits, RowsReadByPrewhereReaders) projected out
+// of the ProfileEvents map by name, plus the terminal type and exception_code
+// so the reconciler can derive exit_status (ok / oom / timeout). The query is
+// bounded to a recent window so a large query_log does not get scanned in full
+// each interval, and grouped to one row per query_id (a distributed query_log
+// can carry initial + remote rows). On the grouped row the exception code is
+// taken with max() so a non-zero code on any constituent row wins over the 0 a
+// QueryFinish carries; type is likewise reduced with max() (the exception
+// string sorts after 'QueryFinish', so an exception exit dominates). The
 // lookback window is bound at call time (derived from the reconcile interval via
 // QueryLogWindow) rather than hardcoded, so a longer interval still covers more
 // than one scan worth of dispatched queries.
@@ -122,9 +142,11 @@ SELECT
   max(query_duration_ms)                             AS query_duration_ms,
   max(memory_usage)                                  AS memory_usage,
   sum(ProfileEvents['QueryConditionCacheHits'])      AS condition_cache_hits,
-  sum(ProfileEvents['RowsReadByPrewhereReaders'])    AS prewhere_rows
+  sum(ProfileEvents['RowsReadByPrewhereReaders'])    AS prewhere_rows,
+  max(toString(type))                                AS terminal_type,
+  max(exception_code)                                AS exception_code
 FROM system.query_log
-WHERE type = 'QueryFinish'
+WHERE type IN ('QueryFinish', 'QueryExceptionWhileProcessing')
   AND event_time > now() - INTERVAL ? SECOND
   AND query_id IN (?)
 GROUP BY query_id`
@@ -160,6 +182,8 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 			memoryUsage        uint64
 			conditionCacheHits uint64
 			prewhereRows       uint64
+			terminalType       string
+			exceptionCode      int32
 		)
 		if err := rows.Scan(
 			&queryID,
@@ -170,6 +194,8 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 			&memoryUsage,
 			&conditionCacheHits,
 			&prewhereRows,
+			&terminalType,
+			&exceptionCode,
 		); err != nil {
 			return nil, fmt.Errorf("optcorpus: scan query_log row: %w", err)
 		}
@@ -184,10 +210,31 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 				"QueryConditionCacheHits":   int64(conditionCacheHits),
 				"RowsReadByPrewhereReaders": int64(prewhereRows),
 			},
+			ExitStatus: exitStatusFor(terminalType, exceptionCode),
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("optcorpus: query_log rows: %w", err)
 	}
 	return out, nil
+}
+
+// exitStatusFor maps a terminal query_log (type, exception_code) pair to the
+// corpus ExitStatus. A QueryFinish is ExitOK regardless of code; an exception
+// exit is classified by its ClickHouse error code (memory-limit → oom,
+// timeout / too-slow → timeout) and falls back to ExitOK for any other code so
+// an unrecognised exception never masquerades as the OOM signal the go/no-go
+// analysis keys on.
+func exitStatusFor(terminalType string, exceptionCode int32) ExitStatus {
+	if terminalType == "QueryFinish" {
+		return ExitOK
+	}
+	switch exceptionCode {
+	case chErrMemoryLimitExceeded:
+		return ExitOOM
+	case chErrTimeoutExceeded, chErrTooSlow:
+		return ExitTimeout
+	default:
+		return ExitOK
+	}
 }

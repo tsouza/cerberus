@@ -273,3 +273,57 @@ exactly once each. A late-registered child cursor that races teardown is closed
 immediately so no connection leaks. A client disconnect propagates through the
 request ctx to the group ctx to every shard. Every handler entrypoint is
 goleak-gated with routed queries.
+
+## Routing-decision calibration corpus (stage 0, measurement-only)
+
+The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single
+CH query) or B (time-slice sharded) by fixed thresholds over the cost grid it
+derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Stage 0
+asks, **without changing any threshold or routing behavior**, whether that
+heuristic is good enough or whether a calibrated/learned router would pay off.
+
+To answer it the engine closes the loop the optimization corpus
+(`internal/optcorpus`) already half-built:
+
+- **Decision read-out.** Every `solver.Decision` now carries the RAW classifier
+  scalars (`NAnchors` / `Fanout` / `CumulativeD` / `OuterRange` / `Step`)
+  alongside `Strategy` / `K` / `Reason`, populated for **both** routed and
+  not-routed decisions. The overlap analysis compares route-A and route-B cost
+  at equal `(N, F, D)`, so route A must record its grid too. Buckets key on the
+  raw scalars, never on `Reason` — the not-routed shadow header folds the
+  high-`D` class into `below-threshold`, so the reason string alone hides it.
+- **Join to observed cost.** At the dispatch seam the engine hands the corpus
+  reconciler the decision read-out next to the CH `query_id`. The reconciler
+  joins `query_id` → `system.query_log` (the cost columns plus a derived
+  `exit_status` of `ok` / `oom` / `timeout` from the row type + exception code)
+  and writes one corpus row per dispatch. All optcorpus invariants hold: it is
+  flag-gated, production-only, failure-open, and the observe call is a
+  non-blocking channel send — the hot path is byte-unchanged when the corpus is
+  off.
+- **Sink.** With `CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable` the corpus lands in
+  the `cerberus_router_corpus` MergeTree (DDL built with the typed `chsql` DDL
+  builder, 30-day TTL); the default `jsonl` mode appends the same rows to the
+  sink-path file (load them into the same table shape for analysis).
+
+This is a pure additive read-out: it records values the classifier already
+computed and **changes no routing behavior**. The captured features suffice to
+**replay the classifier offline** — feed a corpus row's `(N, F, D, OuterRange,
+Step)` back through `Planner.Plan` and it reproduces the recorded route, so an
+operator can sweep counterfactual thresholds against history without touching
+production (proven by `TestPlan_OfflineReplay_ReproducesRoute`).
+
+### Reading the go/no-go analysis
+
+Run [`router-calibration.sql`](router-calibration.sql) against the corpus table:
+
+- **Heuristic is fine (YAGNI — stop).** Route A's cost percentiles sit well
+  below route B's with little overlap, few route-A queries land in route B's
+  cost territory at the same `(N, F)`, and essentially no route-A query
+  OOMs/times out. The fixed thresholds separate the two populations cleanly;
+  calibration would add machinery for no measurable win.
+- **Calibration is justified.** A large share of route-A queries exceed route
+  B's median cost (query 2's `pct_a_misrouted_by_mem`), buckets show route A as
+  expensive as route B at the same `(N, F)` (query 3), or — the decisive signal
+  — route-A queries OOM/timeout (query 4). Any non-trivial route-A failure
+  count is a standalone go signal: the query died on the single path the
+  heuristic chose for it.
