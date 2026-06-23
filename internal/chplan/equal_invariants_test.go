@@ -246,6 +246,23 @@ func TestAggregate_Equal_Negative_GroupByLen(t *testing.T) {
 	}
 }
 
+func TestAggregate_Equal_Negative_GroupByAliases(t *testing.T) {
+	t.Parallel()
+	a := &chplan.Aggregate{
+		Input:          &chplan.Scan{Table: "t"},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Job"}},
+		GroupByAliases: []string{"a"},
+	}
+	b := &chplan.Aggregate{
+		Input:          &chplan.Scan{Table: "t"},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Job"}},
+		GroupByAliases: []string{"b"},
+	}
+	if a.Equal(b) {
+		t.Errorf("different GroupByAliases should not be Equal")
+	}
+}
+
 func TestAggregate_Equal_Negative_GroupByExpr(t *testing.T) {
 	t.Parallel()
 	a := &chplan.Aggregate{

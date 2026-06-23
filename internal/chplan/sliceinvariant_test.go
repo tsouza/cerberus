@@ -63,7 +63,7 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 		}
 	}
 
-	// 29 total node kinds, 9 registered → 20 must be default-denied. If this
+	// 31 total node kinds, 9 registered → 22 must be default-denied. If this
 	// drifts, a node kind was added: decide explicitly whether it is
 	// slice-invariant (extend sliceInvariantKinds + the registered set here)
 	// or not (it falls into the default-deny count).
@@ -75,8 +75,10 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	// the solver (ReanchorRange does not re-grid it), so it fails closed to
 	// route A — exactly the safe default for an opt-in node. InfoJoin is a
 	// join-family node (like VectorJoin) and is default-denied for the same
-	// reason: its two arms aren't a simple sliced row stream.
-	const wantUnregistered = 29 - 9
+	// reason: its two arms aren't a simple sliced row stream. RangeWindowResample
+	// (a re-gridding range node) and SearchTraceLimit (a per-trace cap) are
+	// likewise default-denied — neither is a simple sliced row stream.
+	const wantUnregistered = 31 - 9
 	if unregisteredSeen != wantUnregistered {
 		t.Fatalf("expected %d default-denied node kinds, saw %d — a node kind was added; "+
 			"make an explicit slice-invariance decision", wantUnregistered, unregisteredSeen)

@@ -103,7 +103,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	fanout.Select(Col(r.AttributesCol))
 	fanout.Select(Col(r.TimestampCol))
 	fanout.Select(Col(r.ValueCol))
-	fanout.Select(rawAs(
+	fanout.Select(RawAs(
 		lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors),
 		"anchor_ts",
 	))
@@ -134,7 +134,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	collapse.Select(Col(r.MetricNameCol))
 	collapse.Select(Col(r.AttributesCol))
 	collapse.Select(Col("anchor_ts"))
-	collapse.Select(rawAs(
+	collapse.Select(RawAs(
 		aggFuncFrag(chplan.AggFunc{
 			Name: "argMax",
 			Args: []chplan.Expr{

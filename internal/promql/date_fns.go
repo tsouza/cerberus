@@ -171,7 +171,7 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 		return &chplan.Binary{
 			Op:    chplan.OpDiv,
 			Left:  &chplan.FuncCall{Name: "toUnixTimestamp64Nano", Args: []chplan.Expr{tsRef}},
-			Right: &chplan.LitFloat{V: 1e9},
+			Right: &chplan.LitFloat{V: float64(chplan.NanoToSecondDivisor)},
 		}
 	}
 	return nil

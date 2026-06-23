@@ -899,31 +899,25 @@ func rewriteMetricName(matchers []*labels.Matcher, bareName string) []*labels.Ma
 // '<regex>')` table function call (see `chsql.scanTableFrag`). The
 // multi-element path supports the OTel-emitter case where a bare
 // (unsuffixed) metric name could be either a Gauge or a cumulative
-// Sum — the suffix heuristic alone can't disambiguate. The empty
-// slice is treated as a Gauge-only fallback (the caller's default
-// when the matcher carries no `__name__`).
+// Sum — the suffix heuristic alone can't disambiguate. The caller
+// always passes at least one candidate (schema.Metrics.TablesFor /
+// TablesForUnknownName never return an empty slice), so a zero-length
+// slice is a programmer error and fails fast rather than emitting an
+// invalid empty Scan.
 func scanFromTables(tables []string) *chplan.Scan {
-	switch len(tables) {
-	case 0:
-		// Unreachable from the production caller (which always passes
-		// at least one candidate from schema.Metrics.TablesFor /
-		// GaugeTable) — but the defensive zero-element case keeps the
-		// helper total without panicking. Returning an empty Scan
-		// would surface a downstream emit-time validation error
-		// ("Scan has neither Table nor UnionTables set"), which is the
-		// correct failure mode if a future caller passes nil/empty.
-		return &chplan.Scan{}
-	case 1:
-		return &chplan.Scan{Table: tables[0]}
-	default:
-		// Defensive copy: the caller's slice may be a return from
-		// schema.Metrics.TablesFor whose backing array is shared with
-		// the schema. A downstream optimizer pass that wanted to
-		// in-place mutate UnionTables would corrupt the schema; the
-		// copy keeps the plan-tree slice independent.
-		owned := append([]string(nil), tables...)
-		return &chplan.Scan{UnionTables: owned}
+	if len(tables) == 0 {
+		panic("promql: scanFromTables called with no candidate tables")
 	}
+	if len(tables) == 1 {
+		return &chplan.Scan{Table: tables[0]}
+	}
+	// Defensive copy: the caller's slice may be a return from
+	// schema.Metrics.TablesFor whose backing array is shared with
+	// the schema. A downstream optimizer pass that wanted to
+	// in-place mutate UnionTables would corrupt the schema; the
+	// copy keeps the plan-tree slice independent.
+	owned := append([]string(nil), tables...)
+	return &chplan.Scan{UnionTables: owned}
 }
 
 // wrapInstantLatestPerSeries adds the LWR + staleness predicates on
@@ -1393,15 +1387,15 @@ func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.
 //     dedicated column is unpopulated. Mirrors the LogQL fix from
 //     PR #669 / task #217 in [internal/logql.matcherToExpr].
 //
-//  4. A non-service, non-`__name__` label when the schema names a
+//  3. A non-service, non-`__name__` label when the schema names a
 //     ResourceAttributes column (and the label is allowlisted, if an
 //     allowlist is configured) — resolves against BOTH the metric
 //     Attributes map AND the ResourceAttributes map, Attributes winning
-//     on collision. See [resourceMatcherFallback] / the branch-4 comment
+//     on collision. See [resourceMatcherFallback] / the branch-3 comment
 //     below for the coalesce-over-nullIf precedence + negative-matcher
 //     emptiness floor.
 //
-//  3. Anything else — falls through to the Attributes-map lookup
+//  4. Anything else — falls through to the Attributes-map lookup
 //     (with the dot/underscore candidate expansion documented on
 //     [attributeLookup]).
 func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
@@ -1425,7 +1419,7 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 			},
 		}
 	} else if resArm := resourceMatcherFallback(s, m.Name); resArm != nil {
-		// BRANCH 4 — Attributes ∪ ResourceAttributes, Attributes-win.
+		// BRANCH 3 — Attributes ∪ ResourceAttributes, Attributes-win.
 		//
 		//   coalesce(nullIf(Attributes[cands], ''),
 		//            nullIf(ResourceAttributes[cands], ''),
@@ -1685,9 +1679,10 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 	case labels.MatchNotRegexp:
 		return chplan.OpNotMatch
 	}
-	// Any new labels.MatchType added upstream would land here as Equal —
-	// safer than panicking, and we'd notice via the spec tests.
-	return chplan.OpEq
+	// The switch covers all four labels.MatchType values; a new one added
+	// upstream surfaces here as a parser divergence rather than silently
+	// degrading to Equal.
+	panic(fmt.Sprintf("promql: unexpected match type %v", t))
 }
 
 // lowerCall dispatches PromQL function calls. The arg shape decides the

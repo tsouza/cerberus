@@ -401,8 +401,8 @@ ingress:
 
 # -- Pod resource requests/limits. Mirrors the reference k3s manifest: a small
 # request, a generous memory limit, no CPU limit (bursting is fine; probe kills
-# under CPU starvation are the real risk). If you change limits.memory, set
-# GOMEMLIMIT (~80%) via extraEnv.
+# under CPU starvation are the real risk). The chart auto-derives GOMEMLIMIT at
+# ~80% of limits.memory; override it via extraEnv if you need a different value.
 resources:
   requests:
     cpu: 250m

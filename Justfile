@@ -997,9 +997,10 @@ compat-all: compat-promql compat-logql compat-traceql
 # available, and — critically — ENFORCE the canonical release-branch names
 # so nobody hand-rolls an inconsistent one:
 #   - tip-of-main release PR : release/v<version>-chart-<chartVersion>
-#   - maintenance backport   : release/<major>.<minor>.x   (the name
-#     release-preflight.mjs looks up to verify a backport tag is cut from
-#     the tip of its line — a wrong name makes the tag get REJECTED)
+#   - maintenance backport   : release/<major>.<minor>.x   (publishing is
+#     gated on merge of a validated release PR — resolve-release-trigger.mjs
+#     + release-version-gate.mjs key off this branch name, so a wrong one
+#     makes the publish step REJECT the run)
 # Both wrap the same .github/scripts/prepare-release.mjs + helm-docs the CI
 # uses, so the opened PR is drift-clean.
 

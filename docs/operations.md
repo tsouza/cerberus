@@ -115,7 +115,7 @@ under *real* faults by the **live-stack chaos lane** (the `chaos` job in
 locally `just e2e-chaos`). It is informational (push-to-main + nightly +
 manual only, never a PR gate) and sits above the deterministic
 stubbed-querier unit chaos in the required `check` lane. See
-[`docs/test-strategy.md`](test-strategy.md) Layer 13 for the full
+[`test-strategy.md`](test-strategy.md) Layer 13 for the full
 scenario + contract map.
 
 ### Sharded-pushdown solver

@@ -62,9 +62,14 @@ func (a *Aggregate) Children() []Node { return []Node{a.Input} }
 
 func (a *Aggregate) Equal(other Node) bool {
 	o, ok := other.(*Aggregate)
-	if !ok || len(a.GroupBy) != len(o.GroupBy) || len(a.AggFuncs) != len(o.AggFuncs) ||
-		a.DropEmptyOnNoGroup != o.DropEmptyOnNoGroup {
+	if !ok || len(a.GroupBy) != len(o.GroupBy) || len(a.GroupByAliases) != len(o.GroupByAliases) ||
+		len(a.AggFuncs) != len(o.AggFuncs) || a.DropEmptyOnNoGroup != o.DropEmptyOnNoGroup {
 		return false
+	}
+	for i := range a.GroupByAliases {
+		if a.GroupByAliases[i] != o.GroupByAliases[i] {
+			return false
+		}
 	}
 	for i := range a.GroupBy {
 		if !a.GroupBy[i].Equal(o.GroupBy[i]) {

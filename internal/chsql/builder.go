@@ -1149,6 +1149,25 @@ func As(expr Frag, alias string) Frag {
 	}
 }
 
+// RawAs wraps expr in "<expr> AS <bareAlias>" with the alias emitted
+// VERBATIM (no backticks). It is the un-quoted sibling of As, for the
+// windowed-array idiom's internal aliases (`series_array`,
+// `window_pairs`, `anchor_ts`, …) that are emitter-chosen, never
+// user-supplied, and must stay un-backticked to keep the byte-level
+// golden fixtures stable. The alias flows through verbatim, which is
+// what keeps the AS keyword + alias inside builder.go's closed token
+// surface rather than a raw sb.Write at the call site. Empty bareAlias
+// renders the expression bare (no AS clause).
+func RawAs(expr Frag, bareAlias string) Frag {
+	if bareAlias == "" {
+		return expr
+	}
+	return func(b *Builder) {
+		expr(b)
+		verbatim(" AS " + bareAlias)(b)
+	}
+}
+
 // binOp returns a Frag that renders "<l> <op> <r>" with single spaces
 // around op. Shared shape for the comparison + arithmetic operator
 // constructors below — each typed wrapper just supplies its op token.
