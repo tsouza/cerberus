@@ -1,14 +1,17 @@
 name: mutation
 
-# Mutation testing runs on push-to-main + nightly + manual dispatch, and now
-# ALSO on pull_request as a parity lane for the publish-on-merge release flow:
-# every matrix entry runs on EVERY PR so it can be a required status check, but
-# short-circuits to a green no-op on a non-release PR (RUN_HEAVY below) and runs
-# the real gremlins kill-zone only on a `release/*` PR (so a release PR's green
-# status includes mutation). On ordinary PRs the lane stays the informational
-# push/nightly tool it always was (test-quality regressions, not prod-blocking
-# bugs) — the no-op keeps the high matrix cost off non-release PRs. Mirrors
-# chart-ci.yml's no-op pattern, keyed on the release branch.
+# Mutation testing runs on push-to-main + nightly + manual dispatch, and on
+# pull_request as a parity lane for the publish-on-merge release flow. The
+# `mutate` matrix is SKIPPED entirely on an ordinary (non-release) PR — zero
+# gremlins jobs queued — and runs the real gremlins kill-zone only on push /
+# schedule / dispatch and on a `release/*` PR (so a release PR's green status
+# includes mutation). The single `mutation` aggregator job is the required
+# status check: it treats a skipped matrix as a green pass-through, so an
+# ordinary PR still REPORTS the required context green without spinning up ~11
+# matrix legs. On ordinary PRs the lane stays the informational push/nightly
+# tool it always was (test-quality regressions, not prod-blocking bugs); the
+# job-level skip keeps the high matrix cost — and the runner-capacity drain of
+# queuing legs just to no-op — off non-release PRs.
 
 on:
   pull_request:
@@ -39,12 +42,14 @@ jobs:
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
-    # a release PR (head branch release/*). On a regular PR every heavy step is
-    # skipped and each matrix entry reports green without work — so the per-phase
-    # gremlins checks can gate release PRs but never block ordinary PRs.
-    env:
-      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
+    # Heavy mutation work runs on push / schedule / dispatch, and on a release
+    # PR (head branch release/*). On an ordinary (non-release) pull_request the
+    # ENTIRE matrix is SKIPPED — zero gremlins jobs queued — so the high matrix
+    # cost never lands on routine PRs. The `mutation` aggregator below treats a
+    # skipped matrix as a green pass-through so the required check still reports.
+    # Previously the matrix queued ~11 no-op legs per non-release PR (RUN_HEAVY
+    # short-circuit); skipping the job at the source keeps runner capacity free.
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     strategy:
       fail-fast: false
       matrix:
@@ -206,11 +211,7 @@ jobs:
             workers: 0
     steps:
       - uses: actions/checkout@v7
-      - name: No-op (non-release PR)
-        if: env.RUN_HEAVY != 'true'
-        run: echo "mutation is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
-      - if: env.RUN_HEAVY == 'true'
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -228,13 +229,11 @@ jobs:
       # used to falsely deflate test_efficacy. Upstream PR:
       # https://github.com/go-gremlins/gremlins/pull/283
       - name: install gremlins
-        if: env.RUN_HEAVY == 'true'
         run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
       - name: gremlins unleash
-        if: env.RUN_HEAVY == 'true'
         run: |
           args=(unleash --output gremlins.json --on-shutdown-status=not-run)
           if [ "${{ matrix.workers }}" != "0" ]; then
@@ -249,13 +248,12 @@ jobs:
       # violated, so the gate is done in gremlins-threshold.mjs against
       # the parsed report JSON (measured < threshold -> fail).
       - name: enforce efficacy threshold
-        if: env.RUN_HEAVY == 'true'
         run: node .github/scripts/gremlins-threshold.mjs
         env:
           REPORT: gremlins.json
           THRESHOLD: ${{ matrix.efficacy }}
       - name: upload gremlins report
-        if: always() && env.RUN_HEAVY == 'true'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: gremlins-${{ matrix.phase }}
@@ -264,10 +262,13 @@ jobs:
 
   # Single rolled-up required-check context (mirrors compose-smoke). The matrix
   # above exposes ONE .result to dependents: `success` only if EVERY phase
-  # succeeded, `failure`/`cancelled` if any did. On a non-release PR every phase
-  # is a green no-op, so this reports green without work; on a release/* PR or a
-  # push it reflects the real efficacy gate. Add `mutation` (not the per-phase
-  # `gremlins …` names) as the required status check.
+  # succeeded, `failure`/`cancelled` if any did, `skipped` when the whole job is
+  # skipped at the source (non-release PR). On a non-release PR the matrix is
+  # SKIPPED, so this passes the required check through green WITHOUT queuing any
+  # gremlins legs; on a release/* PR or a push it reflects the real efficacy
+  # gate. `if: always()` guarantees the context always REPORTS (never resolves
+  # to "Expected" / never-reports, which would deadlock branch protection). Add
+  # `mutation` (not the per-phase `gremlins …` names) as the required check.
   mutation:
     name: mutation
     needs: [mutate]
@@ -278,9 +279,17 @@ jobs:
       - name: gate on every mutation phase
         run: |
           echo "mutate = ${{ needs.mutate.result }}"
-          # Strict != 'success' catches failure AND cancelled (a contains-failure
-          # check would miss a cancelled phase). fail-fast:false keeps a real
-          # efficacy failure a clean `failure`, not an ambiguous `cancelled`.
+          # Non-release PR → the `mutate` matrix is skipped at the job-level `if`.
+          # The required check must report green without work, mirroring the
+          # compose-smoke aggregator's docs-only skip pass-through.
+          if [ "${{ needs.mutate.result }}" = "skipped" ]; then
+            echo "mutation matrix skipped on non-release PR — required check passes through."
+            exit 0
+          fi
+          # Heavy case (push / schedule / dispatch / release-PR): strict
+          # != 'success' catches failure AND cancelled (a contains-failure check
+          # would miss a cancelled phase). fail-fast:false keeps a real efficacy
+          # failure a clean `failure`, not an ambiguous `cancelled`.
           if [ "${{ needs.mutate.result }}" != "success" ]; then
             echo "::error::one or more mutation phases failed/cancelled (rolled-up: ${{ needs.mutate.result }})."
             exit 1
