@@ -133,8 +133,27 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `preflight,goreleaser,chart-release`).
   - Exit: `0` when the tag is main HEAD and every non-self check is settled
     green, `1` otherwise (with one `::error::` per running/red lane).
-- **`prepare-release.mjs`** — `prepare-release.yml`, the manual release-staging
-    workflow. Bumps the chart `version:` + `appVersion:`, the image tag, and the
+- **`resolve-release-trigger.mjs`** — `prepare-release.yml`, the `resolve
+    trigger` step. Normalises the workflow's two entrypoints — a manual
+    `workflow_dispatch` and an `issues: labeled` event — into the
+    `version`/`bump`/`chart_bump` outputs the `stage release files` step
+    (`prepare-release.mjs`) consumes. On dispatch it passes the three inputs
+    through verbatim; on a label it parses `github.event.label.name`:
+    `release:patch|minor|major` -> `bump=<that>`, `chart_bump=patch`;
+    `release:<semver>` (e.g. `release:1.4.2`) -> `version=<semver>` (v-prefix
+    stripped), `chart_bump=patch`; anything else under `release:` is an error.
+    `prepare-release.mjs` still owns the value semantics (explicit VERSION
+    overrides BUMP, BUMP=none is its no-op placeholder); this resolver only
+    decides which event shape supplied them. Pure exported `resolve(env)` + a
+    `--self-test` the workflow runs before it stages anything.
+  - Env: `EVENT_NAME` (`workflow_dispatch` | `issues`); dispatch path reads
+    `VERSION` / `BUMP` / `CHART_BUMP`; issues path reads `LABEL_NAME`;
+    `GITHUB_OUTPUT` (runner-provided; sets `version` / `bump` / `chart_bump`).
+  - Exit: `0` after writing the outputs (or a green self-test), `1` on an
+    unrecognised `release:` label or an unsupported event.
+- **`prepare-release.mjs`** — `prepare-release.yml`, the release-staging
+    workflow (`workflow_dispatch` or an `issues: labeled` `release:*` trigger;
+    see `resolve-release-trigger.mjs`). Bumps the chart `version:` + `appVersion:`, the image tag, and the
     Artifact Hub `changes` annotation, and rewrites the CHANGELOG `[Unreleased]`
     section into a dated `## [vX.Y.Z]` one — deriving the change summary and the
     PR body from the conventional commits since the last `v*` tag. The commit

@@ -1,12 +1,29 @@
 name: prepare-release
 
-# Manually-triggered release staging. Bumps the chart `version` + `appVersion`,
-# refreshes the Artifact Hub `changes` annotation and the CHANGELOG, regenerates
-# the chart README, and opens a PR — all derived from the conventional commits
-# since the last `v*` tag. Merging that PR is the human gate; the `v<version>`
-# tag (cut separately) is what triggers `release.yml` to build the image and
-# publish the chart. The logic lives in `.github/scripts/prepare-release.mjs`
-# (Node ESM, no deps) so it is unit-testable; this file is just wiring.
+# Release staging. Bumps chart `version` + `appVersion`, refreshes the Artifact
+# Hub `changes` annotation + CHANGELOG, regenerates the chart README, and opens
+# a PR — all derived from the conventional commits since the last `v*` tag.
+# Merging the PR is the human gate; the `v<version>` tag (cut separately)
+# triggers `release.yml` to build the image and publish the chart. The staging
+# logic lives in `.github/scripts/prepare-release.mjs` (Node ESM, no deps) so it
+# is unit-testable; this file is just wiring.
+#
+# Two ways to start a release:
+#   1. workflow_dispatch — pick version/bump/chart_bump from the Actions UI.
+#   2. Apply a `release:*` label to ANY issue:
+#        release:patch | release:minor | release:major  -> bump appVersion
+#        release:1.4.2 (a 3-part semver)                 -> explicit appVersion
+#      The label is consumed (removed) and the new PR's URL is posted back to
+#      the triggering issue. Re-apply the label to re-trigger.
+#
+# IMPORTANT — RELEASE_PAT secret. A PR opened with the default `GITHUB_TOKEN`
+# does NOT trigger `pull_request` workflows (GitHub's recursion guard), so the
+# release PR would run NONE of its required checks (incl. the full e2e matrix
+# release PRs run, and which release-preflight requires green). To make the
+# label/dispatch-created PR run CI, add a fine-grained PAT as the `RELEASE_PAT`
+# repo secret (contents: write + pull-requests: write, ideally actions too).
+# Without it the PR is still created but won't run CI and must be nudged
+# manually (close+reopen, or push an empty commit).
 
 on:
   workflow_dispatch:
@@ -21,19 +38,26 @@ on:
         options: [none, patch, minor, major]
         default: none
       chart_bump:
-        description: 'Semver level to bump the chart version'
+        description: 'Semver level to bump chart version'
         type: choice
         options: [patch, minor, major]
         default: patch
+  issues:
+    types: [labeled]
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   prepare:
     name: prepare
     runs-on: ubuntu-latest
+    # Run on a manual dispatch, or when a `release:*` label is applied to an issue.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && startsWith(github.event.label.name, 'release:'))
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,29 +67,48 @@ jobs:
         with:
           node-version: '20'
 
-      # Pin the deriver's own logic before it edits anything.
+      # Pin the resolver's + deriver's own logic before either edits anything.
+      - name: resolve-release-trigger self-test
+        run: node .github/scripts/resolve-release-trigger.mjs --self-test
+
       - name: prepare-release self-test
         run: node .github/scripts/prepare-release.mjs --self-test
+
+      # Normalise the two triggers (dispatch inputs / issue label) into the
+      # version/bump/chart_bump the staging step consumes.
+      - name: resolve trigger
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
+          CHART_BUMP: ${{ inputs.chart_bump }}
+          LABEL_NAME: ${{ github.event.label.name }}
+        run: node .github/scripts/resolve-release-trigger.mjs
 
       - name: stage release files
         id: prep
         env:
-          VERSION: ${{ inputs.version }}
-          BUMP: ${{ inputs.bump }}
-          CHART_BUMP: ${{ inputs.chart_bump }}
+          VERSION: ${{ steps.trigger.outputs.version }}
+          BUMP: ${{ steps.trigger.outputs.bump }}
+          CHART_BUMP: ${{ steps.trigger.outputs.chart_bump }}
           PR_BODY_FILE: release-pr-body.md
         run: node .github/scripts/prepare-release.mjs
 
-      # Regenerate the chart README with the SAME helm-docs the chart-validate
-      # drift gate uses (jnorwood/helm-docs:v1.14.2), so the opened PR is green.
+      # Keep the chart README in sync; the chart-ci drift gate uses the same
+      # helm-docs version (jnorwood/helm-docs:v1.14.2) so the opened PR is green.
       - name: regenerate chart README
         uses: docker://jnorwood/helm-docs:v1.14.2
         with:
           args: --chart-search-root=deploy/helm --template-files=README.md.gotmpl
 
       - name: create release PR
+        id: pr
+        # Prefer RELEASE_PAT so the created PR triggers pull_request CI; fall
+        # back to github.token (PR created, but its checks won't run — see the
+        # header note). gh reads GH_TOKEN.
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
           VERSION: ${{ steps.prep.outputs.new_version }}
           CHART_VERSION: ${{ steps.prep.outputs.chart_version }}
         run: |
@@ -77,4 +120,20 @@ jobs:
           git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
           git commit -m "$title"
           git push -u origin "$branch"
-          gh pr create --base main --head "$branch" --title "$title" --body-file release-pr-body.md
+          url="$(gh pr create --base main --head "$branch" --title "$title" --body-file release-pr-body.md)"
+          echo "url=$url" >>"$GITHUB_OUTPUT"
+          echo "PR: $url"
+
+      # issues trigger only: report the PR back on the issue, then consume the
+      # label so it can be cleanly re-applied to re-trigger (and doesn't re-fire
+      # on an unrelated edit). Uses github.token (issue write only).
+      - name: comment + remove label on issue
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          LABEL: ${{ github.event.label.name }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          gh issue comment "$ISSUE" --body "Release PR opened: ${PR_URL}"
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels/${LABEL}" || true
