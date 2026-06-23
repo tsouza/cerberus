@@ -108,6 +108,13 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 	inner.Select(Col(r.AttributesCol))
 	inner.Select(As(gridAgg, nativeGridArrayAlias))
 	inner.Select(As(gridTS, nativeGridTSAlias))
+	// Prune the inner scan to the offset-shifted half-open grid span
+	// `(Start - Offset - Lookback, End - Offset]` BEFORE the per-series
+	// GROUP BY so ClickHouse skips granules outside the eval window — the
+	// resample aggregate otherwise consumes every retained sample of every
+	// matching series. Gated on Start/End (always pinned on this node, but
+	// kept for a single uniform contract with the fan-out shapes).
+	maybePushRangeScanTimeBound(inner, r.TimestampCol, r.Start, r.End, offsetNS, r.Lookback.Nanoseconds())
 	inner.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol))
 
 	// Outer SELECT — explode the parallel arrays in lockstep, drop NULL cells,

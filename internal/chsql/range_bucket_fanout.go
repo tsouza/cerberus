@@ -125,6 +125,13 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		r.AnchorAlias,
 	))
 
+	// Prune the inner scan to the offset-shifted half-open grid span
+	// `(Start - Offset - Lookback, End - Offset]` before the SELECT-list
+	// arrayJoin fans each source row across its anchors — same granule-
+	// prune contract as emitRangeLWR. Gated on Start/End so the
+	// now64()/@-pinned/zero-grid fixtures stay byte-identical.
+	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
+
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
 	// AggFuncs. The user group keys are projected first (under their
 	// aliases) then the anchor, matching the column order the replaced

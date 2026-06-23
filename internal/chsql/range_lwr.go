@@ -108,6 +108,17 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 		"anchor_ts",
 	))
 
+	// Prune the inner scan to the offset-shifted half-open grid span
+	// `(Start - Offset - Lookback, End - Offset]` so ClickHouse can skip
+	// granules outside the window instead of arrayJoin-fanning every
+	// retained sample of every matching series (the query_range
+	// O(rows × anchors) re-scan class). The WHERE is evaluated on the
+	// source rows BEFORE the SELECT-list arrayJoin expands them, so it
+	// only narrows the scan and never drops an in-window anchor. Gated on
+	// Start/End being set so the now64()/@-pinned/zero-grid fixtures stay
+	// byte-identical.
+	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
+
 	// Collapse SELECT: collapse each (series, anchor) bucket to its newest
 	// in-window sample via argMax(Value, TimeUnix). The anchor stays under
 	// its own `anchor_ts` alias here — NOT re-aliased to TimeUnix — so the
@@ -203,4 +214,32 @@ func offsetShiftedBaseFrag(base Frag, offset time.Duration) Frag {
 		return base
 	}
 	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offset.Nanoseconds()))))
+}
+
+// maybePushRangeScanTimeBound pushes the offset-shifted half-open scan
+// bound `(start - offset - spanNS, end - offset]` onto `sb` (a SELECT
+// reading the inner Scan/Filter subquery) so ClickHouse prunes granules
+// outside the eval grid instead of fanning every retained sample over
+// every anchor. It is the raw-time-arg sibling of
+// maybePushInnerScanTimeBounds (which takes a *chplan.RangeWindow): the
+// RangeLWR / RangeBucketFanout / native-resample / native-rate nodes
+// carry Start/End/Offset directly, not a RangeWindow, so they pass the
+// times through here.
+//
+// spanNS is the grid's backward reach from each anchor — the staleness
+// Lookback for the LWR/bucket fanout shapes, the range `[range]` for the
+// native rate shape. It widens the lower edge so a sample that belongs to
+// the earliest in-grid anchor's window survives the scan prune.
+//
+// Gated on BOTH start and end being set: the now64()/@-pinned/zero-grid
+// fixture shapes leave them zero and rely on the bound being suppressed
+// to stay byte-stable against pinned goldens. The bound reuses
+// innerScanTsBoundsFrags so the offset-sign and strict-lower/inclusive-
+// upper semantics match the matrix path exactly.
+func maybePushRangeScanTimeBound(sb *QueryBuilder, tsCol string, start, end time.Time, offsetNS, spanNS int64) {
+	if start.IsZero() || end.IsZero() {
+		return
+	}
+	lo, hi := innerScanTsBoundsFrags(tsCol, start, end, offsetNS, spanNS)
+	sb.Where(lo, hi)
 }
