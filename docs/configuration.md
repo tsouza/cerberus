@@ -313,6 +313,7 @@ are reached only through the `CERBERUS_CH_OPTIMIZATIONS` list.
 | `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | duration | `1m0s`      | How often the reconciler joins recently-dispatched query_ids back to `system.query_log`.                                                                              |
 | `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | string   | (empty)     | JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink.                                                                             |
 | `CERBERUS_CH_OPT_CORPUS_RING`      | int      | `4096`      | Ring capacity for tracked query_ids; caps memory + the per-interval `IN(...)`.                                                                                        |
+| `CERBERUS_CH_OPT_CORPUS_SINK_MODE` | string   | `jsonl`     | Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis).           |
 
 ## Experimental flags
 
