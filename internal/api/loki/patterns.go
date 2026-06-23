@@ -71,7 +71,7 @@ func (nilLimits) PatternIngesterTokenizableJSONFields(string) []string { return 
 // `level:""` for every cluster; Grafana's pattern panel renders both
 // with-level and without-level payloads.
 func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
@@ -86,7 +86,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	lineLimit, err := parsePositiveInt31(r.URL.Query().Get("line_limit"), defaultPatternsLineLimit)
+	lineLimit, err := parsePositiveInt31(r.FormValue("line_limit"), defaultPatternsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

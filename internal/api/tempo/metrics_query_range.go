@@ -248,6 +248,15 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// diff'd on sample timestamps.
 	start, end = alignMetricsWindow(start, end, step)
 
+	// Cap the per-series anchor count (end-start)/step, mirroring the Prom
+	// head's resolution ceiling. Without it an unauthenticated client can
+	// force an arbitrarily wide matrix fan-out (compute-DoS). Uses the shared
+	// format.MaxResolutionPoints so all three heads reject the same shape.
+	if end.Sub(start)/step > format.MaxResolutionPoints {
+		writeError(w, http.StatusBadRequest, "", "", errors.New(format.ResolutionCapMessage))
+		return
+	}
+
 	ctx := r.Context()
 	// Parse + lower inline so we can wrap the lowered plan with the
 	// matrix-shape RangeWindow before engine.QueryPlan runs.

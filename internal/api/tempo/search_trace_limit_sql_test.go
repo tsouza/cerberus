@@ -80,6 +80,22 @@ func TestSearch_TraceLimitPushdown_DefaultLimit(t *testing.T) {
 	}
 }
 
+// TestSearch_TraceLimitPushdown_LimitClamped pins the P3 hardening: a
+// client-supplied `limit` above MaxSearchLimit is clamped, so the pushed
+// subquery LIMIT is the ceiling (1000), not the requested value. Without the
+// clamp an unauthenticated caller could make the summary shaper buffer the
+// spans of an unbounded number of traces.
+func TestSearch_TraceLimitPushdown_LimitClamped(t *testing.T) {
+	t.Parallel()
+	sql := searchSQL(t, "/api/search?q=%7B%7D&limit=999999")
+	if !strings.Contains(sql, "LIMIT 1000") {
+		t.Errorf("oversized limit must clamp to MaxSearchLimit (LIMIT 1000):\n%s", sql)
+	}
+	if strings.Contains(sql, "LIMIT 999999") {
+		t.Errorf("SQL carries the un-clamped requested limit:\n%s", sql)
+	}
+}
+
 // TestSearch_TraceLimitPushdown_WindowFolded pins that an explicit
 // start/end window folds a Timestamp range predicate into BOTH the inner
 // ranking subquery and the outer drain, so each scan is bounded to the
