@@ -3,8 +3,11 @@ name: prepare-release
 # Release staging. Bumps chart `version` + `appVersion`, refreshes the Artifact
 # Hub `changes` annotation + CHANGELOG, regenerates the chart README, and opens
 # a PR — all derived from the conventional commits since the last `v*` tag.
-# Merging the PR is the human gate; the `v<version>` tag (cut separately)
-# triggers `release.yml` to build the image and publish the chart. The staging
+# MERGING the PR is what publishes: `release.yml` runs on push-to-main, gates on
+# the per-line version bumps this PR staged (appVersion vs the latest `v*` tag;
+# chart `version:` vs the OCI registry), and on a real bump builds + publishes
+# the changed artifact AND auto-creates the `v<version>` / `chart-v<version>`
+# tag at the merge commit. There is no separate manual tag step. The staging
 # logic lives in `.github/scripts/prepare-release.mjs` (Node ESM, no deps) so it
 # is unit-testable; this file is just wiring.
 #
@@ -19,7 +22,9 @@ name: prepare-release
 # IMPORTANT — RELEASE_PAT secret. A PR opened with the default `GITHUB_TOKEN`
 # does NOT trigger `pull_request` workflows (GitHub's recursion guard), so the
 # release PR would run NONE of its required checks (incl. the full e2e matrix
-# release PRs run, and which release-preflight requires green). To make the
+# + the coverage/mutation/perf-profile/property parity lanes that release PRs
+# run, and which the merge-when-green branch protection requires before the PR
+# can merge and publish). To make the
 # label/dispatch-created PR run CI, add a fine-grained PAT as the `RELEASE_PAT`
 # repo secret (contents: write + pull-requests: write, ideally actions too).
 # Without it the PR is still created but won't run CI and must be nudged

@@ -1,14 +1,17 @@
 name: mutation
 
-# Mutation testing runs on push-to-main + nightly + manual dispatch
-# only. Per-PR runs were removed (#239): mutation jobs are
-# informational (test-quality regressions, not prod-blocking bugs),
-# the matrix cost is high, and noisy reds got debounced anyway.
-# Promotion to a required PR gate stays gated on every phase holding
-# its bar across an extended nightly window — at which point the
-# `pull_request:` trigger can be reintroduced.
+# Mutation testing runs on push-to-main + nightly + manual dispatch, and now
+# ALSO on pull_request as a parity lane for the publish-on-merge release flow:
+# every matrix entry runs on EVERY PR so it can be a required status check, but
+# short-circuits to a green no-op on a non-release PR (RUN_HEAVY below) and runs
+# the real gremlins kill-zone only on a `release/*` PR (so a release PR's green
+# status includes mutation). On ordinary PRs the lane stays the informational
+# push/nightly tool it always was (test-quality regressions, not prod-blocking
+# bugs) — the no-op keeps the high matrix cost off non-release PRs. Mirrors
+# chart-ci.yml's no-op pattern, keyed on the release branch.
 
 on:
+  pull_request:
   push:
     branches: [main]
   schedule:
@@ -36,6 +39,12 @@ jobs:
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
+    # a release PR (head branch release/*). On a regular PR every heavy step is
+    # skipped and each matrix entry reports green without work — so the per-phase
+    # gremlins checks can gate release PRs but never block ordinary PRs.
+    env:
+      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     strategy:
       fail-fast: false
       matrix:
@@ -197,7 +206,11 @@ jobs:
             workers: 0
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - name: No-op (non-release PR)
+        if: env.RUN_HEAVY != 'true'
+        run: echo "mutation is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
+      - if: env.RUN_HEAVY == 'true'
+        uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -215,11 +228,13 @@ jobs:
       # used to falsely deflate test_efficacy. Upstream PR:
       # https://github.com/go-gremlins/gremlins/pull/283
       - name: install gremlins
+        if: env.RUN_HEAVY == 'true'
         run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
       - name: gremlins unleash
+        if: env.RUN_HEAVY == 'true'
         run: |
           args=(unleash --output gremlins.json --on-shutdown-status=not-run)
           if [ "${{ matrix.workers }}" != "0" ]; then
@@ -234,12 +249,13 @@ jobs:
       # violated, so the gate is done in gremlins-threshold.mjs against
       # the parsed report JSON (measured < threshold -> fail).
       - name: enforce efficacy threshold
+        if: env.RUN_HEAVY == 'true'
         run: node .github/scripts/gremlins-threshold.mjs
         env:
           REPORT: gremlins.json
           THRESHOLD: ${{ matrix.efficacy }}
       - name: upload gremlins report
-        if: always()
+        if: always() && env.RUN_HEAVY == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: gremlins-${{ matrix.phase }}

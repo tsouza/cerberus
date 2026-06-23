@@ -785,9 +785,10 @@ jobs:
           # Split mode doubles the k3d boot count (the setup-bound long pole),
           # so regular PR/push exercise monolith only. It runs on schedule +
           # dispatch AND — critically — on release PRs (head branch release/*),
-          # so release-preflight's "all checks green" actually covers split.
-          # (A broken split shipped in v1.4.0 precisely because the release
-          # commit's checks never ran split; this closes that hole.)
+          # so the merge-when-green gate's "all checks green" actually covers
+          # split before the release PR can merge + publish. (A broken split
+          # shipped in v1.4.0 precisely because the release commit's checks
+          # never ran split; this closes that hole.)
           INCLUDE_SPLIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
 
   dashboard-shard:

@@ -7,10 +7,11 @@ name: config-docs
 # disagree with the config the binary actually loads.
 #
 # Runs on EVERY PR and on push to main so it CAN be a required status check
-# (branch protection) and therefore a release gate (release-preflight.mjs
-# gates all non-flaky merge-time checks). It is intentionally NOT short-
-# circuited on docs-only PRs: a hand-edit to docs/configuration.md is exactly
-# the drift this gate exists to reject.
+# (branch protection) and therefore a release gate too: a release publishes
+# only after its PR merges with every required check green (merge-when-green),
+# so a required check is automatically a release gate. It is intentionally NOT
+# short-circuited on docs-only PRs: a hand-edit to docs/configuration.md is
+# exactly the drift this gate exists to reject.
 on:
   pull_request:
   push:
