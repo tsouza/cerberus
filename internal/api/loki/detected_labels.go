@@ -51,7 +51,7 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var matchers []*labels.Matcher
-	if q := r.URL.Query().Get("query"); q != "" {
+	if q := r.FormValue("query"); q != "" {
 		matchers, err = selectorMatchers(q)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, ErrBadData, err)

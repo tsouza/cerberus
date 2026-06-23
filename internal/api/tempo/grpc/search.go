@@ -81,6 +81,12 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	if limit <= 0 {
 		limit = tempo.DefaultSearchLimit
 	}
+	// Clamp a client-supplied limit above the ceiling rather than reject it,
+	// mirroring the HTTP /api/search path: an unbounded limit would make the
+	// summary shaper buffer the spans of an unbounded number of traces.
+	if limit > tempo.MaxSearchLimit {
+		limit = tempo.MaxSearchLimit
+	}
 	ctx = traceql.WithSearchTraceLimit(ctx, limit)
 
 	// Thread the request time window so stampSearchTraceLimit folds it
@@ -133,7 +139,9 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// Tempo's documented defaults inside the shared helpers), so the
 	// streaming path stays wire-equivalent with /api/search.
 	summaries, missingRoots := tempo.ToTraceSummaries(samples, int(req.SpansPerSpanSet))
-	summaries, missingRoots = tempo.TruncateSummaries(summaries, missingRoots, int(req.Limit))
+	// Use the clamped `limit` (not the raw req.Limit) so the truncation honours
+	// the same ceiling the trace-limit pushdown above was bounded to.
+	summaries, missingRoots = tempo.TruncateSummaries(summaries, missingRoots, limit)
 	if len(missingRoots) > 0 {
 		// Same best-effort policy the HTTP handler uses: log + ignore
 		// a follow-up lookup failure (the earliest-span fallback in

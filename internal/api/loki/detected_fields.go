@@ -93,7 +93,7 @@ type DetectedFieldsResponse struct {
 //
 // https://grafana.com/docs/loki/latest/reference/loki-http-api/#detected-fields
 func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
@@ -104,12 +104,12 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lineLimit, err := parsePositiveInt31(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
+	lineLimit, err := parsePositiveInt31(r.FormValue("line_limit"), defaultDetectedFieldsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	limit, err := parsePositiveInt31(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
+	limit, err := parsePositiveInt31(r.FormValue("limit"), defaultDetectedFieldsLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

@@ -574,6 +574,15 @@ func httpServerFromEnv(v *viper.Viper) (HTTPServerConfig, error) {
 		return HTTPServerConfig{}, err
 	}
 
+	// CERBERUS_HTTP_MAX_BODY_BYTES is a byte size: it accepts the raw-integer
+	// form and a humanized size (4Mi / 1M). getByteSize rejects a negative
+	// value; 0 disables the cap. The downstream field is an int64 (passed to
+	// http.MaxBytesReader), so no narrowing is needed.
+	maxBody, err := getByteSize(v, envHTTPMaxBodyBytes)
+	if err != nil {
+		return HTTPServerConfig{}, err
+	}
+
 	// Cross-setting: a header read deadline longer than the whole-request read
 	// deadline can never fire — reject the incoherent pair.
 	if readTO > 0 && readHdrTO > readTO {
@@ -586,6 +595,7 @@ func httpServerFromEnv(v *viper.Viper) (HTTPServerConfig, error) {
 		WriteTimeout:      writeTO,
 		IdleTimeout:       idleTO,
 		MaxHeaderBytes:    maxHdr,
+		MaxBodyBytes:      maxBody,
 	}, nil
 }
 
