@@ -40,7 +40,14 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    # `release/*.x` so the three compatibility head checks also run on a
+    # maintenance-line hotfix push that touches a query path below — giving
+    # release.yml's maintenance preflight green check-runs to verify. The
+    # `paths:` filter applies equally to main and maintenance pushes: a hotfix
+    # that touches none of these paths legitimately produces no compat check-run
+    # (the preflight gates on the checks that ran, never on a check that didn't
+    # trigger), exactly as a path-skipped push to main does.
+    branches: [main, 'release/*.x']
     paths:
       - 'internal/promql/**'
       - 'internal/logql/**'

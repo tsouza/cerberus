@@ -146,7 +146,10 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   no-op. Pure exported `parseAppVersion(chartYaml)` + `decide(appVersion,
   existingTags)` (no I/O, no `process.exit`) + a `--self-test` the workflow runs
   before the gate. A prerelease appVersion (e.g. `1.5.0-rc.1`) is gated on the
-  exact `v1.5.0-rc.1` tag, never masked by a stable `v1.5.0`.
+  exact `v1.5.0-rc.1` tag, never masked by a stable `v1.5.0`. Because the gate is
+  tag-ABSENT and not newest-wins, a MAINTENANCE-line hotfix (`v1.4.1` cut off
+  `release/1.4.x` while `v1.5.0` is already the latest tag) still publishes — its
+  `v1.4.1` tag simply doesn't exist yet.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `GITHUB_OUTPUT`
     (runner-provided; sets `publish` / `version` / `tag`); argv `app-version-gate`
     (or no argument) runs the gate, `--self-test` runs the assertion suite.
@@ -196,13 +199,46 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   `sha256:` digest out of helm's output into the `digest` + `ref` step outputs
   for the downstream cosign-sign / attest steps; `ah-metadata` idempotently
   pushes `artifacthub-repo.yml` as the special Artifact Hub OCI artifact via
-  `oras`.
+  `oras`. The `version-gate` is ABSENCE-keyed, not newest-wins: it publishes iff
+  this exact chart version is not already in the registry, so a MAINTENANCE-line
+  chart hotfix whose version is OLDER than the latest published chart still
+  publishes. Pure exported `notFoundError(stderr)` + `decideFromProbe({status,
+  stderr})` (classify probe → `{publish}` | `{error}`, no I/O) + a `--self-test`
+  the `gate` job runs before deciding.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `OCI_REPO` (default
     `oci://ghcr.io/tsouza/cerberus/charts`), `CHART_NAME` (default `cerberus`),
-    `CHART_TGZ` (push only), `GITHUB_OUTPUT` (runner-provided).
-  - Exit: `0` on success (gate sets `publish` either way); `1` on a parse
-    failure / `helm push` / `oras push` error, or when the version-gate cannot
-    definitively determine existence (fails closed, with one `::error::`).
+    `CHART_TGZ` (push only), `GITHUB_OUTPUT` (runner-provided); argv `--self-test`
+    runs the assertion suite.
+  - Exit: `0` on success (gate sets `publish` either way, or a green self-test);
+    `1` on a parse failure / `helm push` / `oras push` error, or when the
+    version-gate cannot definitively determine existence (fails closed, with one
+    `::error::`).
+- **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
+  green-check guard for the MAINTENANCE-line release path ONLY (a push to a
+  `release/<major>.<minor>.x` hotfix branch). A push to `main` is implicitly
+  green (branch protection won't merge a red/behind PR), so the main path runs
+  no preflight; a `release/*.x` push has no PR gate, so before the publish jobs
+  run this re-reads the pushed commit's check-runs + legacy statuses via the
+  GitHub API and FAILS the release unless the commit is the branch tip AND every
+  non-self check is settled green (success / skipped / neutral). The release
+  run's own jobs (`gate` / `preflight` / `goreleaser` / `chart-release`) are
+  excluded via `RELEASE_SELF_JOBS` (gating on in-flight self-jobs would
+  deadlock). Latest-per-name dedup means a green re-run supersedes an earlier
+  red. The publish jobs guard `needs.preflight.result == 'success' ||
+  == 'skipped'`, so the main path (preflight skipped) stays preflight-free while
+  a failed/cancelled maintenance preflight blocks the publish. Pure exported
+  `MAINTENANCE_BRANCH_RE` + `evaluate({branchHead, pushedSha, checkRuns,
+  statuses, selfJobs, branchLabel})` (no network, no `process.exit`) + a
+  `--self-test`.
+  - Env: `GITHUB_TOKEN` (checks:read + statuses:read + contents:read),
+    `GITHUB_REPOSITORY`, `GITHUB_SHA` (pushed commit), `GITHUB_REF_NAME` (must
+    be `release/<major>.<minor>.x`), `GITHUB_API_URL` (default
+    `https://api.github.com`), `RELEASE_SELF_JOBS` (comma-separated self-job
+    names to exclude); argv `--self-test` runs the assertion suite.
+  - Exit: `0` when the commit is the branch tip and all gated checks are green
+    (or a green self-test); `1` on any red/running gated check, a non-tip /
+    unresolved commit, a non-maintenance `GITHUB_REF_NAME` (a wiring error), or
+    a missing required env var.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and

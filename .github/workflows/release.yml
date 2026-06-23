@@ -27,7 +27,15 @@ name: release
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      # MAINTENANCE-LINE hotfixes. A backport cherry-picked onto a
+      # `release/<major>.<minor>.x` branch (e.g. release/1.4.x, release/1.3.x)
+      # publishes the same way a main-line release does. The `*.x` glob matches
+      # ONLY the maintenance lines: `release/1.4.x` matches, but a main release
+      # PR branch like `release/v1.5.0-chart-0.6.4` does NOT (it doesn't end in
+      # `.x`), so the two branch families stay cleanly distinguishable.
+      - 'release/*.x'
   # Manual re-drive (e.g. if a publish step failed after the gate said
   # publish=true). The gates are idempotent, so a re-run that finds the tag /
   # chart already published is a clean no-op.
@@ -86,6 +94,9 @@ jobs:
       - name: app-version-gate self-test
         run: node .github/scripts/release-version-gate.mjs --self-test
 
+      - name: chart version-gate self-test
+        run: node .github/scripts/chart-publish.mjs --self-test
+
       # helm is needed for the chart gate's `helm show chart oci://…` probe.
       - uses: azure/setup-helm@v5
         with:
@@ -115,6 +126,46 @@ jobs:
           echo "app:   publish=${{ steps.app.outputs.publish }} version=${{ steps.app.outputs.version }} tag=${{ steps.app.outputs.tag }}"
           echo "chart: publish=${{ steps.chart.outputs.publish }} version=${{ steps.chart.outputs.version }}"
 
+  # Green-check guard — MAINTENANCE PATH ONLY.
+  #
+  # A push to `main` is implicitly green: branch protection refuses to merge a
+  # PR whose required checks are red or whose tree is behind main, so the merge
+  # commit is releasable by construction and needs no preflight. A push to a
+  # `release/*.x` maintenance branch has NO PR gate — a maintainer cherry-picks
+  # a hotfix straight onto the branch — so publishing it unguarded could ship a
+  # RED commit. This job re-reads the pushed commit's check-runs + legacy
+  # statuses and FAILS the release unless the commit is the branch tip AND every
+  # required check is settled green.
+  #
+  # It runs ONLY on a `release/*.x` push (the `if` below); on main + dispatch it
+  # is skipped, and the publish jobs' `always() && (preflight skipped || passed)`
+  # guard keeps the main path preflight-free. The standard CI workflows (ci /
+  # compatibility / chdb / e2e) are wired to also run on `release/*.x` pushes,
+  # so there ARE check-runs on the maintenance commit for this gate to read.
+  preflight:
+    name: preflight
+    needs: gate
+    if: startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '.x')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: preflight self-test
+        run: node .github/scripts/release-preflight.mjs --self-test
+
+      - name: Verify the maintenance commit is the branch tip and fully green
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This release run's own jobs are necessarily in-progress while the
+          # preflight reads check-runs, so they're excluded structurally (gating
+          # on them would deadlock).
+          RELEASE_SELF_JOBS: gate,preflight,goreleaser,chart-release
+        run: node .github/scripts/release-preflight.mjs
+
   # App release — binary archives + multi-arch images (GHCR + Docker Hub) +
   # SLSA provenance. Runs ONLY when the app gate says appVersion is new.
   #
@@ -127,8 +178,17 @@ jobs:
   # that finds the tag already present skips re-creating it.
   goreleaser:
     name: goreleaser
-    needs: gate
-    if: needs.gate.outputs.app_publish == 'true'
+    needs: [gate, preflight]
+    # Publish when the app gate says the appVersion is new AND the maintenance
+    # green-check guard is satisfied. On the main / dispatch path `preflight` is
+    # SKIPPED (result == 'skipped'), so `always()` unwraps the skip and the main
+    # path goes through preflight-free; on the maintenance path `preflight` must
+    # have SUCCEEDED. Requiring success-OR-skipped (not just `!= failure`) means
+    # a CANCELLED or otherwise non-green preflight also blocks the publish.
+    if: |
+      always() &&
+      needs.gate.outputs.app_publish == 'true' &&
+      (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -265,8 +325,14 @@ jobs:
   # tag should not exist; creating it at a different commit is a hard error.
   chart-release:
     name: chart-release
-    needs: gate
-    if: needs.gate.outputs.chart_publish == 'true'
+    needs: [gate, preflight]
+    # Same guard as goreleaser: chart gate says new AND (main path: preflight
+    # skipped) OR (maintenance path: preflight succeeded). A failed / cancelled
+    # maintenance preflight blocks the chart publish too.
+    if: |
+      always() &&
+      needs.gate.outputs.chart_publish == 'true' &&
+      (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
