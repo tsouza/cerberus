@@ -164,6 +164,13 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	}
 	inner.Select(As(gridAgg, nativeGridArrayAlias))
 	inner.Select(As(gridTS, nativeGridTSAlias))
+	// Prune the inner scan to the offset-shifted half-open grid span
+	// `(Start - Offset - Range, End - Offset]` BEFORE the per-series GROUP
+	// BY so ClickHouse skips granules outside the eval window — the
+	// timeSeries*ToGrid aggregate otherwise consumes every retained sample
+	// of every matching series. Gated on Start/End (always pinned on this
+	// node, but kept for a single uniform contract with the fan-out shapes).
+	maybePushRangeScanTimeBound(inner, r.TimestampColumn, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	inner.GroupBy(groupFrags...)
 
