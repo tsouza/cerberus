@@ -116,4 +116,28 @@ function count(haystack, needle) {
   check(!out.includes('name: GOMEMLIMIT'), 'no memory limit set -> GOMEMLIMIT skipped silently')
 }
 
+// --- 7. admit.{prom,loki,tempo} accept an integer concurrency cap -------------
+// Schema was boolean-only, which rejected an integer cap client-side even though
+// the binary + template both honor it. Guard against a revert to boolean-only.
+{
+  const out = tpl(['--set', 'admit.prom=128', '-s', 'templates/configmap-env.yaml'])
+  check(out.includes('CERBERUS_ADMIT_PROM: "128"'), 'admit.prom integer cap renders as CERBERUS_ADMIT_PROM="128"')
+
+  let boolOk = true
+  try {
+    tpl(['--set', 'admit.loki=false', '-s', 'templates/configmap-env.yaml'])
+  } catch {
+    boolOk = false
+  }
+  check(boolOk, 'admit.loki boolean still accepted (toggle preserved)')
+
+  let negRejected = false
+  try {
+    tpl(['--set', 'admit.tempo=-1', '-s', 'templates/configmap-env.yaml'])
+  } catch {
+    negRejected = true
+  }
+  check(negRejected, 'admit.tempo negative rejected (minimum:0 enforced)')
+}
+
 process.exit(ok ? 0 : 1)
