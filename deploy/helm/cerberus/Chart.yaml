@@ -60,6 +60,8 @@ annotations:
     - kind: added
       description: "config: add CERBERUS_ENABLED_HEADS per-head toggle (#1029)"
     - kind: fixed
+      description: "chart: allow integer admit.{prom,loki,tempo} concurrency caps in values.schema.json (#1040)"
+    - kind: fixed
       description: "test: thread a time window into the TraceQL property harness (#1032)"
     - kind: fixed
       description: "config: default-on per-query sample budget at 5M (#1028)"
