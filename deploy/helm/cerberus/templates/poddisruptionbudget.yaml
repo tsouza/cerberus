@@ -1,6 +1,36 @@
-{{- /* PDB is monolith-only: it selects the single aggregate Deployment's pods,
-       which don't exist in split mode (each head is its own Deployment). */ -}}
-{{- if and .Values.podDisruptionBudget.enabled (ne .Values.mode "split") }}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- if eq .Values.mode "split" }}
+{{- /* Split mode: one PDB per ENABLED head. Each head Deployment is its own
+       workload with a stable per-head selector (the base selector +
+       app.kubernetes.io/component=<svc>), so a PDB CAN target it — the old
+       monolith-only gate wrongly assumed those selectors don't exist in split.
+       minAvailable/maxUnavailable semantics are identical to the monolith
+       branch; a single global podDisruptionBudget is applied to each head. */ -}}
+{{- $root := . }}
+{{- range (include "cerberus.heads" . | fromYamlArray) }}
+{{- $svc := .svc }}
+{{- $hv := include "cerberus.headValues" (dict "ctx" $root "svc" $svc) | fromYaml }}
+{{- if $hv.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cerberus.headFullname" (dict "ctx" $root "svc" $svc) }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "cerberus.headLabels" (dict "ctx" $root "svc" $svc) | nindent 4 }}
+spec:
+  {{- if $root.Values.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ $root.Values.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cerberus.headSelectorLabels" (dict "ctx" $root "svc" $svc) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- else }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -17,4 +47,5 @@ spec:
   selector:
     matchLabels:
       {{- include "cerberus.selectorLabels" . | nindent 6 }}
+{{- end }}
 {{- end }}

@@ -136,6 +136,13 @@ spec:
                      the binary's integer parser rejects. */}}
               value: {{ $hv.maxSamples | int64 | quote }}
             {{- end }}
+            {{- /* GOMEMLIMIT derived from THIS head's own memory limit, so each
+                   head's Go soft heap limit tracks its own (possibly distinct)
+                   cgroup limit — a single global extraEnv value cannot. */}}
+            {{- $gomem := include "cerberus.gomemlimitEnv" (dict "ctx" $ctx "resources" $hv.resources) | trim }}
+            {{- with $gomem }}
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- $env := include "cerberus.env" $ctx | trim }}
             {{- with $env }}
             {{- . | nindent 12 }}

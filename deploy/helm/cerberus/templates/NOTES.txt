@@ -69,9 +69,12 @@ cerberus endpoint below — it speaks all three wire formats on one port.
 {{- end }}
 
 5. Memory sizing note:
-   resources.limits.memory is {{ .Values.resources.limits.memory }}. cerberus's
-   Go heap does not see the cgroup limit on its own — if you change the memory
-   limit, set GOMEMLIMIT (~80% of the limit) via extraEnv, e.g.:
+   cerberus's Go heap does not see the cgroup limit on its own, so the chart
+   auto-derives GOMEMLIMIT (~80% of each container's resources.limits.memory) and
+   injects it per-container — correct per-head in split mode, per-pod in monolith.
+   No action needed when you set a memory limit; it is skipped when no limit is
+   set. To override (or pin an exact value), set GOMEMLIMIT in extraEnv — an
+   explicit entry always wins over the derived one:
      extraEnv:
        - name: GOMEMLIMIT
          value: "1228MiB"

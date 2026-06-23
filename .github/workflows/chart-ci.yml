@@ -82,6 +82,10 @@ jobs:
           KUBE_VERSION: '1.33.0'
         run: node .github/scripts/chart-kubeconform.mjs
 
+      - name: Render assertions (split PDBs + derived GOMEMLIMIT)
+        if: steps.changes.outputs.chart == 'true'
+        run: node .github/scripts/chart-render-assert.mjs
+
       - name: chart-testing (ct) lint
         if: steps.changes.outputs.chart == 'true'
         uses: helm/chart-testing-action@v2

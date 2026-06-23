@@ -175,6 +175,16 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `1.28.0`), `SKIP_IMAGE_CHECK` (set `1` to skip the registry probe).
   - Exit: `0` when all fixtures validate + images present; `1` on any
     kubeconform failure or a missing image.
+- **`chart-render-assert.mjs`** — `chart-ci.yml`, the `Render assertions`
+  step. Behavioural render checks kubeconform's schema validation cannot make:
+  split mode renders one PodDisruptionBudget per enabled head (each with its
+  `app.kubernetes.io/component` selector), the monolith PDB render is unchanged,
+  and each container gets a `GOMEMLIMIT` env sized to ~80% of its own
+  `resources.limits.memory` (per-head in split, per-pod in monolith) — with an
+  explicit `extraEnv` `GOMEMLIMIT` always winning and an unset limit emitting
+  nothing.
+  - Env: `CHART_DIR` (default `deploy/helm/cerberus`).
+  - Exit: `0` when every assertion holds; `1` on the first failure.
 - **`compat-step-summary.mjs`** — `compatibility.yml`, the three
   `Append score to step summary` steps.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
