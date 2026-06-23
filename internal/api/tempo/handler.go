@@ -234,6 +234,15 @@ const (
 	DefaultSpansPerSpanSet = 3
 )
 
+// MaxSearchLimit caps the `limit` request param on /api/search (and the gRPC
+// Search RPC). A client-supplied limit above this is clamped rather than
+// rejected so a misbehaving caller can't make the response buffer the spans of
+// an unbounded number of traces. The inner SQL LIMIT bounds the trace COUNT,
+// not the per-trace span count, so the response shaper still materialises every
+// span of every matched trace before truncation — this cap bounds that buffer.
+// Exported so the gRPC Search callsite applies the same ceiling.
+const MaxSearchLimit = 1000
+
 // DefaultSearchLookback bounds a windowless /api/search (no start/end
 // params) to the most recent hour, so the trace-limit pushdown's inner
 // GROUP BY TraceId scans a window instead of the whole table. Matches
@@ -302,6 +311,9 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// list); ignoring them used to return every matching trace
 	// (observed live: 4937 summaries / ~755KB body for limit=200).
 	limit := positiveIntParam(r, "limit", DefaultSearchLimit)
+	if limit > MaxSearchLimit {
+		limit = MaxSearchLimit
+	}
 	spss := positiveIntParam(r, "spss", DefaultSpansPerSpanSet)
 	// The request time window bounds the plain-search scan so /api/search
 	// drains only the matching traces in [start, end] rather than the whole
