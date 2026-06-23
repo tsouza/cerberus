@@ -518,9 +518,25 @@ e2e-up: e2e-down
     kubectl apply -k test/e2e/k3s/
     @# In split mode the chart-managed datasource hostnames change (each head
     @# gets its own bare-named Service), so rewrite the Grafana datasource
-    @# ConfigMap to point each datasource type at its head Service BEFORE
-    @# Grafana provisions. In monolith mode the kustomize-applied ConfigMap
-    @# (url: http://cerberus:8080) is already correct.
+    @# ConfigMap to point each datasource type at its head Service. In monolith
+    @# mode the kustomize-applied ConfigMap (url: http://cerberus:8080) is
+    @# already correct.
+    @#
+    @# Grafana provisions datasources into its DB ONCE, at boot, from the
+    @# mounted ConfigMap file — and the kubelet's ConfigMap→volume sync lags a
+    @# pod's startup by tens of seconds. So updating the ConfigMap object after
+    @# `apply -k` has already created the Grafana Deployment does NOT change what
+    @# Grafana provisioned: it boots from the original `http://cerberus:8080`
+    @# and never re-reads. In split that URL resolves to the NodePort-alias
+    @# Service, which selects ONLY the prometheus head, so loki/tempo datasource
+    @# queries hit the prometheus process (no /loki/* or /api/* routes) and 404
+    @# — the v1.4.0 split-mode dashboard-lane breakage.
+    @#
+    @# Fix: after updating the ConfigMap, BLOCK until the kubelet has synced the
+    @# per-head URLs into the running Grafana pod's mounted file, THEN restart
+    @# Grafana so it re-provisions from the corrected file. Polling the mounted
+    @# file (not a fixed sleep) makes the restart race-free: Grafana only
+    @# re-reads once the new content is actually on disk.
     @if [ "{{E2E_MODE}}" = "split" ]; then \
         echo "==> [split] rewriting Grafana datasource URLs to per-head Services"; \
         kubectl -n cerberus get configmap grafana-datasources -o jsonpath='{.data.datasources\.yaml}' \
@@ -529,6 +545,19 @@ e2e-up: e2e-down
         kubectl -n cerberus create configmap grafana-datasources \
             --from-file=datasources.yaml=/tmp/cerberus-e2e-ds-split.yaml \
             --dry-run=client -o yaml | kubectl apply -f -; \
+        echo "==> [split] waiting for the per-head datasource URLs to sync into the Grafana pod"; \
+        kubectl -n cerberus rollout status deployment/grafana --timeout=120s; \
+        synced=0; \
+        for attempt in $(seq 1 60); do \
+            if kubectl -n cerberus exec deploy/grafana -- grep -q 'url: http://loki:8080' /etc/grafana/provisioning/datasources/datasources.yaml 2>/dev/null; then \
+                synced=1; break; \
+            fi; \
+            sleep 2; \
+        done; \
+        [ "$synced" = "1" ] || { echo "ERROR: per-head datasource URLs never synced into the Grafana pod after 120s" >&2; exit 1; }; \
+        echo "==> [split] restarting Grafana so it re-provisions datasources from the corrected file"; \
+        kubectl -n cerberus rollout restart deployment/grafana; \
+        kubectl -n cerberus rollout status deployment/grafana --timeout=120s; \
     fi
     @# cerberus is deployed via its OWN Helm chart so the e2e cluster dogfoods
     @# the published chart (deploy/helm/cerberus) — a chart bug now fails the
