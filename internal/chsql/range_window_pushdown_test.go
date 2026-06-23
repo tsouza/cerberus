@@ -357,3 +357,126 @@ func TestEmitMetricsExemplarsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 		})
 	}
 }
+
+// lwrPushdownLowerSubstr / lwrPushdownUpperSubstr are the load-bearing
+// substrings the range-query lowerings (RangeLWR / RangeBucketFanout /
+// native resample / native rate) render for the inner-scan time bound.
+// They reference the per-sample timestamp column `TimeUnix` (the
+// canonical OTel-CH column the bare-selector range shapes scan), so a
+// substring hit uniquely identifies the new inner-scan prune — distinct
+// from the per-anchor distance math (`dateDiff('nanosecond', \`TimeUnix\`,
+// …)`) which never renders the bare `\`TimeUnix\` > ` / `\`TimeUnix\` <= `
+// comparison.
+const (
+	lwrPushdownLowerSubstr = "`TimeUnix` > "
+	lwrPushdownUpperSubstr = "`TimeUnix` <= "
+)
+
+// TestRangeLWRInnerScanTimeBound_BothSet pins the P1 fix for the
+// query_range O(rows × anchors) re-scan class: a bare instant-vector
+// selector lowered over a pinned [Start, End] grid (the `query_range up`
+// shape) MUST carry BOTH a lower AND an upper `TimeUnix` bound on the
+// inner scan so ClickHouse prunes granules outside the eval window
+// instead of arrayJoin-fanning every retained sample over every anchor.
+func TestRangeLWRInnerScanTimeBound_BothSet(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+
+	plan := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:         start,
+		End:           end,
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, lwrPushdownLowerSubstr) {
+		t.Errorf("expected RangeLWR inner-scan lower bound %q in SQL=%s", lwrPushdownLowerSubstr, sql)
+	}
+	if !strings.Contains(sql, lwrPushdownUpperSubstr) {
+		t.Errorf("expected RangeLWR inner-scan upper bound %q in SQL=%s", lwrPushdownUpperSubstr, sql)
+	}
+}
+
+// TestRangeLWRInnerScanTimeBound_ZeroGridSuppressed pins the gate: the
+// now64()/@-pinned fixture shape leaves Start/End zero and relies on the
+// bound being suppressed to stay byte-stable. Kills the INVERT_LOGICAL
+// mutant on `start.IsZero() || end.IsZero()`.
+func TestRangeLWRInnerScanTimeBound_ZeroGridSuppressed(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(sql, lwrPushdownLowerSubstr) {
+		t.Errorf("RangeLWR inner-scan lower bound leaked on zero grid; SQL=%s", sql)
+	}
+	if strings.Contains(sql, lwrPushdownUpperSubstr) {
+		t.Errorf("RangeLWR inner-scan upper bound leaked on zero grid; SQL=%s", sql)
+	}
+}
+
+// TestRangeBucketFanoutInnerScanTimeBound_BothSet pins the same prune for
+// the array-aggregate histogram-over-range shape
+// (`histogram_quantile(…[range])` lowered as RangeBucketFanout): a pinned
+// [Start, End] grid MUST carry BOTH a lower AND an upper `TimeUnix` bound
+// on the inner scan before the SELECT-list arrayJoin fans each source row.
+func TestRangeBucketFanoutInnerScanTimeBound_BothSet(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+
+	plan := &chplan.RangeBucketFanout{
+		Input:        &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Start:        start,
+		End:          end,
+		Step:         30 * time.Second,
+		Lookback:     5 * time.Minute,
+		GroupBy:      []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+		AggFuncs: []chplan.AggFunc{
+			{
+				Name:  "argMax",
+				Alias: "BucketCounts",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "BucketCounts"},
+					&chplan.ColumnRef{Name: "TimeUnix"},
+				},
+			},
+		},
+	}
+
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, lwrPushdownLowerSubstr) {
+		t.Errorf("expected RangeBucketFanout inner-scan lower bound %q in SQL=%s", lwrPushdownLowerSubstr, sql)
+	}
+	if !strings.Contains(sql, lwrPushdownUpperSubstr) {
+		t.Errorf("expected RangeBucketFanout inner-scan upper bound %q in SQL=%s", lwrPushdownUpperSubstr, sql)
+	}
+}
