@@ -88,10 +88,16 @@ spec:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
+          {{- $gomem := include "cerberus.gomemlimitEnv" (dict "ctx" $ "resources" .Values.resources) | trim }}
           {{- $env := include "cerberus.env" . | trim }}
-          {{- if $env }}
+          {{- if or $gomem $env }}
           env:
-            {{- $env | nindent 12 }}
+            {{- with $gomem }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $env }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- $hasEnvCM := include "cerberus.nonSecretEnv" . | trim }}
           {{- if or $hasEnvCM .Values.extraEnvFrom }}

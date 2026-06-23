@@ -1,0 +1,39 @@
+# ct / helm-template fixture: split topology WITH PodDisruptionBudget enabled.
+# Exercises the per-head PDB path (one PDB per enabled head, each carrying the
+# head's component selector) that the default split-values fixture leaves off,
+# so kubeconform schema-validates the rendered policy/v1 PodDisruptionBudgets.
+mode: split
+
+clickhouse:
+  addr:
+    - clickhouse:9000
+  database: otel
+  username: default
+
+autoCreate:
+  schema: false
+  database: false
+
+otlp:
+  endpoint: ""
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+split:
+  prometheus:
+    replicaCount: 2
+    resources:
+      limits:
+        memory: 1Gi
+  loki:
+    replicaCount: 2
+    resources:
+      limits:
+        memory: 1Gi
+  tempo:
+    replicaCount: 1
+    resources:
+      limits:
+        memory: 4Gi

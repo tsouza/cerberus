@@ -352,6 +352,65 @@ ConfigMap and reach the container via envFrom.
 {{- end }}
 
 {{/*
+cerberus.memBytes — parse a Kubernetes memory quantity string into an integer
+number of bytes. Handles the binary suffixes (Ki/Mi/Gi/Ti), the decimal SI
+suffixes (k/K/M/G/T), and a bare integer (already bytes). Returns the byte
+count as a string; an unparseable/empty input returns "" (callers skip on
+empty). Input is the raw quantity (e.g. "1536Mi", "4Gi", "2G").
+*/}}
+{{- define "cerberus.memBytes" -}}
+{{- $q := . | toString | trim -}}
+{{- if hasSuffix "Ki" $q -}}{{ mulf (trimSuffix "Ki" $q) 1024 | int64 }}
+{{- else if hasSuffix "Mi" $q -}}{{ mulf (trimSuffix "Mi" $q) 1048576 | int64 }}
+{{- else if hasSuffix "Gi" $q -}}{{ mulf (trimSuffix "Gi" $q) 1073741824 | int64 }}
+{{- else if hasSuffix "Ti" $q -}}{{ mulf (trimSuffix "Ti" $q) 1099511627776 | int64 }}
+{{- else if hasSuffix "k" $q -}}{{ mulf (trimSuffix "k" $q) 1000 | int64 }}
+{{- else if hasSuffix "K" $q -}}{{ mulf (trimSuffix "K" $q) 1000 | int64 }}
+{{- else if hasSuffix "M" $q -}}{{ mulf (trimSuffix "M" $q) 1000000 | int64 }}
+{{- else if hasSuffix "G" $q -}}{{ mulf (trimSuffix "G" $q) 1000000000 | int64 }}
+{{- else if hasSuffix "T" $q -}}{{ mulf (trimSuffix "T" $q) 1000000000000 | int64 }}
+{{- else if regexMatch "^[0-9]+$" $q -}}{{ $q | int64 }}
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.gomemlimitEnv — emit a derived `GOMEMLIMIT` container env entry sized to
+a fraction of THIS container's memory limit, so the Go runtime's soft heap limit
+tracks the cgroup limit per-container (correct per-head in split, per-pod in
+monolith) instead of forcing operators to hand-set one global value via extraEnv.
+
+The byte budget is the limit times gomemlimitHeadroomFactor — headroom below
+100% for off-heap allocations (the ClickHouse driver's buffers, goroutine
+stacks, cgo) that GOMEMLIMIT does NOT bound. Emitted as a literal byte count
+with Go's `B` suffix.
+
+Args: dict "ctx" $ "resources" <resolved per-container resources>.
+Renders nothing (so the caller emits no env entry) when:
+  - limits.memory is unset (default OFF — no derivation to make), or
+  - the operator already set GOMEMLIMIT in .Values.extraEnv (explicit wins).
+*/}}
+{{- define "cerberus.gomemlimitEnv" -}}
+{{- /* gomemlimitHeadroomFactor: fraction of the memory limit handed to the Go
+       soft heap limit; the remainder is headroom for off-heap memory GOMEMLIMIT
+       cannot bound (CH driver buffers, goroutine stacks, cgo). */ -}}
+{{- $gomemlimitHeadroomFactor := 0.8 -}}
+{{- $ctx := .ctx -}}
+{{- $res := .resources -}}
+{{- $userSet := false -}}
+{{- range (default (list) $ctx.Values.extraEnv) -}}
+{{- if eq (default "" .name) "GOMEMLIMIT" -}}{{ $userSet = true }}{{- end -}}
+{{- end -}}
+{{- $limit := dig "limits" "memory" "" (default (dict) $res) -}}
+{{- if and (not $userSet) $limit -}}
+{{- $bytes := include "cerberus.memBytes" $limit -}}
+{{- if $bytes -}}
+- name: GOMEMLIMIT
+  value: {{ printf "%dB" (mulf $bytes $gomemlimitHeadroomFactor | floor | int64) | quote }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 cerberus.affinity — composes the optional colocateWithClickHouse podAffinity
 preset over the operator-supplied .Values.affinity. The preset only INJECTS a
 pod-affinity term (preferred/soft by default, required/hard opt-in) targeting
