@@ -1,0 +1,112 @@
+name: strict-scan
+
+# Strict-scan differential lane: executes the matrix-shaped spec golden SQL
+# corpus against a REAL ClickHouse (spun up via testcontainers-go) through the
+# production cursor's strict positional scan, and fails on any type-coercion
+# error.
+#
+# Why this lane exists: the chdb-tagged round-trip goldens and the text goldens
+# are both structurally BLIND to a documented production incident class. chDB
+# (libchdb, an embedded ClickHouse behind chdb-go's Parquet driver) leniently
+# COERCES result-column types into the Go destinations a Scan supplies — a
+# UInt8/UInt64 column lands happily in a *float64. Production cerberus does NOT
+# use chDB: it talks to a real ClickHouse over the native protocol via
+# clickhouse-go/v2, whose Scan is STRICT — a column type that doesn't match the
+# destination is a hard error (code 47, "cannot convert", "converting … to …"),
+# which the API layer surfaces to Grafana as a 502. An emitter that projects a
+# Value column as a CH integer expression instead of wrapping it in
+# toFloat64(...) passes every chDB golden yet 502s in production; the chdb cells
+# only ever observe the COERCED value, so they can never catch the emit-type
+# bug. This lane re-runs the same emitted SQL (native Map / DateTime64 / Float64
+# columns — NOT the chDB toJSONString Map-wrap that masks the divergence)
+# through the exact production cursor scan, so a type mismatch fails here exactly
+# as it would in prod. See test/spec/strictscan_integration_test.go.
+#
+# INFORMATIONAL, not a required PR gate (yet): it pulls a ClickHouse image and
+# starts a container, so it sits in the heavier / slower-to-warm category
+# alongside e2e, dashboard, and schema-integration. It runs on PRs for
+# author-time visibility, on push-to-main + nightly to catch drift. Promote to a
+# required status check once it has a green track record (the same playbook the
+# compatibility + schema-integration gates used) — promotion needs a
+# branch-protection edit by the maintainer.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # nightly at 04:45 UTC (offset from the chdb 04:00 and schema 04:30 lanes)
+    - cron: '45 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strict-scan-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Docs-only PRs short-circuit the Docker work. See ci.yml / chdb.yml for the
+  # `every` predicate-quantifier rationale.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  strict-scan:
+    name: strict-scan
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    # Generous: the lane pulls one ClickHouse image and seeds + executes the
+    # full matrix-shaped golden corpus (~330 fixtures) against it.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Run strict-scan differential (real ClickHouse)
+        run: just strict-scan-test

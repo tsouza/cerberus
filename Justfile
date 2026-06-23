@@ -125,6 +125,17 @@ perf-profile OUT="perf-profile.json" TOP="40":
 chclient-integration:
     go test -race -tags=integration ./internal/chclient/...
 
+# Run the strict-scan differential: execute the matrix-shaped spec golden
+# SQL corpus against a REAL ClickHouse (testcontainers-go) through the
+# production cursor's strict positional scan, failing on any type-coercion
+# error. This catches the prod-vs-chDB divergence the chdb-tagged goldens
+# are structurally blind to (chDB leniently coerces e.g. UInt8 -> *float64;
+# clickhouse-go strict-scans and 502s). Requires Docker; gated behind the
+# `integration` build tag. See test/spec/strictscan_integration_test.go and
+# .github/workflows/strict-scan.yml.
+strict-scan-test:
+    go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
