@@ -34,7 +34,8 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 		"`read_bytes` UInt64",
 		"`query_duration_ms` UInt64",
 		"`memory_usage` UInt64",
-		"`exit_status` Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2)",
+		"`exit_status` Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
+			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)",
 		"ENGINE = MergeTree",
 		"ORDER BY (`shape_id`, `n_anchors`, `fanout`)",
 		"TTL toDateTime(event_time) + toIntervalDay(30)",
@@ -154,5 +155,19 @@ func TestExitEnumValue(t *testing.T) {
 	t.Parallel()
 	if exitEnumValue("ok") != 0 || exitEnumValue("oom") != 1 || exitEnumValue("timeout") != 2 || exitEnumValue("") != 0 {
 		t.Error("exit enum mapping wrong")
+	}
+	// Cerberus-side outcomes must map to their DDL Enum8 values, in lockstep
+	// with the ExitStatus iota and the corpusCreateTableSQL Enum8.
+	if exitEnumValue("sample_budget") != 3 || exitEnumValue("breaker") != 4 || exitEnumValue("rejected") != 5 {
+		t.Error("cerberus-side exit enum mapping wrong")
+	}
+	// The enum value must round-trip from ExitStatus.String() through
+	// exitEnumValue for every cerberus-side status.
+	for status, want := range map[ExitStatus]int8{
+		ExitSampleBudget: 3, ExitBreaker: 4, ExitRejected: 5,
+	} {
+		if got := exitEnumValue(status.String()); got != want {
+			t.Errorf("exitEnumValue(%q) = %d, want %d", status.String(), got, want)
+		}
 	}
 }

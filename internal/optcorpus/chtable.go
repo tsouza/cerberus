@@ -93,6 +93,14 @@ func corpusCreateTableSQL() string {
 		chsql.EnumPair{Name: "ok", Value: 0},
 		chsql.EnumPair{Name: "oom", Value: 1},
 		chsql.EnumPair{Name: "timeout", Value: 2},
+		// Cerberus-side terminal outcomes query_log cannot reflect: the
+		// sample-budget 422 (after a clean CH finish), and the pre-dispatch
+		// breaker 503 / cap 400 rejections (no CH query at all). The Enum8
+		// values MUST stay in lockstep with the ExitStatus iota + its String()
+		// tokens (optcorpus.go) and exitEnumValue below.
+		chsql.EnumPair{Name: "sample_budget", Value: 3},
+		chsql.EnumPair{Name: "breaker", Value: 4},
+		chsql.EnumPair{Name: "rejected", Value: 5},
 	)
 	return chsql.CreateTable(CorpusTableName).
 		IfNotExists().
@@ -131,13 +139,20 @@ func routeEnumValue(route string) int8 {
 	return 0
 }
 
-// exitEnumValue maps the Row.ExitStatus string to the Enum8 value.
+// exitEnumValue maps the Row.ExitStatus string to the Enum8 value. The values
+// MUST match the corpusCreateTableSQL Enum8 DDL and the ExitStatus iota.
 func exitEnumValue(status string) int8 {
 	switch status {
 	case "oom":
 		return 1
 	case "timeout":
 		return 2
+	case "sample_budget":
+		return 3
+	case "breaker":
+		return 4
+	case "rejected":
+		return 5
 	default:
 		return 0
 	}

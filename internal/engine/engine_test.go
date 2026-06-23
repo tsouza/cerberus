@@ -90,6 +90,12 @@ type recordingObserver struct {
 	lastOuterRng uint32
 	lastStep     uint32
 	lastKShards  uint8
+
+	// outcomes captures (queryID, token) pairs from ObserveOutcome; rejections
+	// captures (language, token) pairs from ObserveRejection — the two
+	// cerberus-side terminal-outcome seams.
+	outcomes   [][2]string
+	rejections [][2]string
 }
 
 func (o *recordingObserver) ObserveQuery(
@@ -112,6 +118,24 @@ func (o *recordingObserver) ObserveQuery(
 	o.lastOuterRng = outerRange
 	o.lastStep = step
 	o.lastKShards = kShards
+}
+
+func (o *recordingObserver) ObserveOutcome(queryID, statusToken string) {
+	o.outcomes = append(o.outcomes, [2]string{queryID, statusToken})
+}
+
+func (o *recordingObserver) ObserveRejection(
+	_ string,
+	_ []string,
+	language string,
+	statusToken string,
+	_ bool,
+	_ string,
+	_, _, _, _, _ uint32,
+	_ uint8,
+	_ string,
+) {
+	o.rejections = append(o.rejections, [2]string{language, statusToken})
 }
 
 // TestEngine_QueryID_ObserverAndDispatchAgree proves the single-source-of-truth
@@ -442,6 +466,145 @@ func TestEngine_QueryPlan_NilPlan(t *testing.T) {
 	if _, err := eng.QueryPlan(context.Background(), lang, nil, engine.Meta{}); err == nil {
 		t.Errorf("QueryPlan(nil plan): expected error")
 	}
+}
+
+// tracedCtx returns a context carrying a real span so EnsureQueryID mints a
+// non-empty per-dispatch query_id (the corpus join key the outcome seams need).
+func tracedCtx() context.Context {
+	tid := trace.TraceID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
+	sid := trace.SpanID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid})
+	return trace.ContextWithSpanContext(context.Background(), sc)
+}
+
+// TestEngine_EagerSampleBudget_StampsOutcome pins that an eager-path drain that
+// hits the sample budget stamps the cerberus-side outcome onto the SAME
+// query_id the dispatch observed — so the reconciler later overrides the
+// query_log "ok" with "sample_budget".
+func TestEngine_EagerSampleBudget_StampsOutcome(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{err: chclient.ErrTooManySamples}
+	obs := &recordingObserver{}
+	eng := newEngine(q)
+	eng.QueryObserver = obs
+
+	_, err := eng.Query(tracedCtx(), &fakeLang{name: "promql"}, "up")
+	if err == nil {
+		t.Fatal("expected sample-budget error")
+	}
+	if len(obs.outcomes) != 1 {
+		t.Fatalf("ObserveOutcome calls = %d; want 1", len(obs.outcomes))
+	}
+	gotID, gotToken := obs.outcomes[0][0], obs.outcomes[0][1]
+	if gotToken != "sample_budget" {
+		t.Errorf("outcome token = %q; want sample_budget", gotToken)
+	}
+	// The outcome must be stamped on the same id the dispatch observed.
+	if len(obs.queryIDs) != 1 || obs.queryIDs[0] != gotID || gotID == "" {
+		t.Errorf("outcome id %q must equal dispatch id %v", gotID, obs.queryIDs)
+	}
+	if len(obs.rejections) != 0 {
+		t.Errorf("a dispatched 422 must not produce a rejection row: %v", obs.rejections)
+	}
+}
+
+// TestEngine_EagerBreaker_StampsRejection pins that a breaker fast-fail (no CH
+// query ran) produces a decision-only rejection row, not an outcome stamp.
+func TestEngine_EagerBreaker_StampsRejection(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{err: chclient.ErrCircuitOpen}
+	obs := &recordingObserver{}
+	eng := newEngine(q)
+	eng.QueryObserver = obs
+
+	_, err := eng.Query(tracedCtx(), &fakeLang{name: "promql"}, "up")
+	if err == nil {
+		t.Fatal("expected breaker error")
+	}
+	if len(obs.rejections) != 1 {
+		t.Fatalf("ObserveRejection calls = %d; want 1", len(obs.rejections))
+	}
+	if lang, token := obs.rejections[0][0], obs.rejections[0][1]; lang != "promql" || token != "breaker" {
+		t.Errorf("rejection = (%q, %q); want (promql, breaker)", lang, token)
+	}
+	if len(obs.outcomes) != 0 {
+		t.Errorf("a breaker reject must not stamp a dispatched outcome: %v", obs.outcomes)
+	}
+}
+
+// TestEngine_EagerOtherError_NoCerberusOutcome pins that a plain transport error
+// is left to the query_log-derived path — neither seam fires.
+func TestEngine_EagerOtherError_NoCerberusOutcome(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{err: errors.New("clickhouse: connection refused")}
+	obs := &recordingObserver{}
+	eng := newEngine(q)
+	eng.QueryObserver = obs
+
+	if _, err := eng.Query(tracedCtx(), &fakeLang{name: "promql"}, "up"); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(obs.outcomes) != 0 || len(obs.rejections) != 0 {
+		t.Errorf("transport error must not produce a cerberus-side outcome: outcomes=%v rejections=%v", obs.outcomes, obs.rejections)
+	}
+}
+
+// TestEngine_ObserveCapRejection pins the pre-parse cap seam: a decision-only
+// "rejected" row carrying the language and no routing read-out.
+func TestEngine_ObserveCapRejection(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	eng := newEngine(&fakeQuerier{})
+	eng.QueryObserver = obs
+
+	eng.ObserveCapRejection("traceql")
+	if len(obs.rejections) != 1 {
+		t.Fatalf("ObserveRejection calls = %d; want 1", len(obs.rejections))
+	}
+	if lang, token := obs.rejections[0][0], obs.rejections[0][1]; lang != "traceql" || token != "rejected" {
+		t.Errorf("cap rejection = (%q, %q); want (traceql, rejected)", lang, token)
+	}
+}
+
+// TestEngine_ObserveDrainOutcome pins the cursor-path drain seam: a
+// sample-budget error surfacing during the handler drain stamps "sample_budget"
+// on the supplied query_id; a nil error / empty id / other error is a no-op.
+func TestEngine_ObserveDrainOutcome(t *testing.T) {
+	t.Parallel()
+
+	obs := &recordingObserver{}
+	eng := newEngine(&fakeQuerier{})
+	eng.QueryObserver = obs
+
+	eng.ObserveDrainOutcome("qid-d", chclient.ErrTooManySamples)
+	eng.ObserveDrainOutcome("qid-d", nil)                     // no-op
+	eng.ObserveDrainOutcome("", chclient.ErrTooManySamples)   // no-op
+	eng.ObserveDrainOutcome("qid-d", errors.New("transport")) // no-op
+
+	if len(obs.outcomes) != 1 {
+		t.Fatalf("ObserveOutcome calls = %d; want exactly 1", len(obs.outcomes))
+	}
+	if id, token := obs.outcomes[0][0], obs.outcomes[0][1]; id != "qid-d" || token != "sample_budget" {
+		t.Errorf("drain outcome = (%q, %q); want (qid-d, sample_budget)", id, token)
+	}
+}
+
+// TestEngine_NoObserver_OutcomeNoop pins that the cerberus-side seams are a
+// no-op when no observer is registered (the default hot path).
+func TestEngine_NoObserver_OutcomeNoop(t *testing.T) {
+	t.Parallel()
+
+	eng := newEngine(&fakeQuerier{err: chclient.ErrTooManySamples})
+	// Must not panic with a nil observer.
+	if _, err := eng.Query(tracedCtx(), &fakeLang{name: "promql"}, "up"); err == nil {
+		t.Fatal("expected error")
+	}
+	eng.ObserveCapRejection("promql")
+	eng.ObserveDrainOutcome("x", chclient.ErrTooManySamples)
 }
 
 // scanRewriteRule is a probe rule for the IsTraceByID test: it
