@@ -741,6 +741,45 @@ data already persisted.
 The distroless image enforces this separation by construction: it
 ships only the compiled binary and root CA bundle.
 
+### Release pipeline (publish-on-merge)
+
+Cerberus publishes when a **validated release PR is merged to main**, not when
+a raw tag is pushed (release-please-style). The flow:
+
+1. **Open a release PR.** Apply a `release:*` label to any issue (or run the
+   `prepare-release` workflow manually). `prepare-release.yml` bumps the chart
+   `version:` and/or `appVersion:`, rewrites the CHANGELOG, regenerates the
+   chart README, and opens a PR from a `release/v<app>-chart-<chart>` branch.
+2. **The PR runs the full matrix.** Because the head branch starts with
+   `release/`, the PR runs not only the standard required checks and the e2e
+   `split` + `crawl` legs, but also the four parity lanes —
+   `coverage`, `mutation`, `perf-profile`, `property` — which on an ordinary PR
+   short-circuit to a green no-op and only do their real (chDB-heavy) work on a
+   release PR. So a release PR's green status reflects the *complete* matrix.
+3. **Merge when green.** The maintainer merges once every required check is
+   green on a tree up to date with main. That merge-when-green gate is the only
+   thing standing between a release PR and publication — the commit on main is
+   releasable by construction (its checks ran against the exact merged tree).
+4. **`release.yml` publishes on the push to main.** It runs two per-line
+   version gates:
+   - **app** (`release-version-gate.mjs`): is Chart.yaml `appVersion` newer
+     than the latest `v*` git tag? If so, create + push `v<appVersion>` at the
+     merge commit and run goreleaser (binaries + multi-arch images to GHCR and
+     Docker Hub + SLSA provenance).
+   - **chart** (`chart-publish.mjs version-gate`): is the chart `version:`
+     absent from the OCI registry? If so, create + push `chart-v<version>` at
+     the merge commit and publish the chart (helm push + cosign + attest +
+     Artifact Hub).
+   A merge that bumped **neither** line publishes nothing — both gates return
+   `publish=false`, so an ordinary code/docs merge is a complete no-op.
+
+The two version lines are independent: a chart-only fix (template change, new
+toggle) ships by bumping `version:` alone, and an app-only release bumps
+`appVersion:` (plus a patch to `version:` for the new default image). The
+publish gates handle either or both. The `:latest` image tag advances only for
+the highest stable `v*` release (a prerelease or a stable backport never drags
+it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
+
 ## Dev / prod parity
 
 Local development reads the same env vars and connects to the same

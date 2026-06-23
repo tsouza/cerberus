@@ -27,11 +27,14 @@ name: property
 # every test in `./test/property/...`).
 #
 # Like `chdb.yml`, this workflow links `libchdb.so` and is therefore
-# segregated from the required PR lane. NOT a required PR check; not
-# in the required-status-checks list. The required PR lane stays
-# `check` + `lint` and runs CGO-free Go tests.
+# segregated from the standard required PR lane (`check` + `lint`, CGO-free).
+# But it is ALSO a parity lane on the publish-on-merge release flow: it runs on
+# EVERY pull_request so it can be a required status check, short-circuiting to a
+# green no-op on a non-release PR and running the deep rapid sweep only on a
+# `release/*` PR (so a release PR's green status includes the property tests).
+# Mirrors chart-ci.yml's no-op pattern, keyed on the release branch.
 #
-# Triggers: push to main, manual dispatch, nightly. On failure, the
+# Triggers: pull_request + push to main + manual dispatch + nightly. On failure, the
 # rapid seed is captured in the test output (and the workflow log).
 # Authors can reproduce a failing run locally with:
 #
@@ -41,6 +44,7 @@ name: property
 #   go test -tags chdb -run TestTraceQL_Property             -rapid.seed=<N> ./test/property/...
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -61,22 +65,36 @@ jobs:
     name: property (PromQL + LogQL, rapid N=500)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
+    # a release PR (head branch release/*). On a regular PR every heavy step is
+    # skipped and the job reports green without work — so `property …` can be a
+    # required check that gates release PRs but never blocks ordinary PRs.
+    env:
+      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - if: env.RUN_HEAVY == 'true'
+        uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - if: env.RUN_HEAVY == 'true'
+        uses: taiki-e/install-action@v2
         with:
           tool: just
 
       - name: Install libchdb.so
+        if: env.RUN_HEAVY == 'true'
         run: just chdb-install
 
+      - name: No-op (non-release PR)
+        if: env.RUN_HEAVY != 'true'
+        run: echo "property is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
+
       - name: Run property tests (rapid N=500)
+        if: env.RUN_HEAVY == 'true'
         # `-tags chdb` enables the chdb-tagged property entry points;
         # `-rapid.checks=500` widens beyond rapid's default of 100;
         # `-rapid.shrinktime=5m` lets the shrinker work on a failing

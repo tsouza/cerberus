@@ -111,28 +111,27 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
-- **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
-  GATE that refuses to publish a release unless the tagged commit **IS main's
-  HEAD** and **every** check on it is **fully settled green**: nothing still
-  running, nothing red/cancelled/timed-out, on ANY lane. No flaky-lane
-  exclusions, no scheduled-event heuristics — the whole of main, complete and
-  green, or the release aborts before goreleaser publishes. Resolves the
-  default branch's HEAD and asserts it equals `GITHUB_SHA` (you release the tip
-  of main, never an older/side commit), then reads the check-runs + legacy
-  commit statuses on that commit. `skipped`/`neutral` count as green (settled
-  non-failures, e.g. the `changes`/`gate` no-ops); re-runs are deduped by name
-  (latest id = the check's current state, so a green re-run supersedes an
-  earlier red). The ONLY exclusion is this release run's own jobs
-  (`RELEASE_SELF_JOBS`) — they are necessarily in-progress while preflight runs,
-  so excluding them avoids a deadlock; it is structural, not a flakiness
-  heuristic. Core logic is the pure exported `evaluate(...)` + a `--self-test`
-  the workflow runs before the gate.
-  - Env: `GITHUB_TOKEN` (checks:read + statuses:read + contents:read),
-    `GITHUB_REPOSITORY`, `GITHUB_SHA`; optional `GITHUB_API_URL` (default
-    `https://api.github.com`) and `RELEASE_SELF_JOBS` (default
-    `preflight,goreleaser,chart-release`).
-  - Exit: `0` when the tag is main HEAD and every non-self check is settled
-    green, `1` otherwise (with one `::error::` per running/red lane).
+- **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
+  The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
+  to main (not on a raw pushed tag — that trigger is retired). On the resulting
+  push to main this gate decides whether the APP needs a release: it parses
+  Chart.yaml's `appVersion:` and sets `publish=true` ONLY when no `v<appVersion>`
+  git tag exists yet (a genuinely new app version), else `publish=false` (the
+  no-op case an ordinary code/docs merge hits). The app's release identity IS
+  the `vX.Y.Z` git tag — goreleaser derives `{{ .Version }}` from it and the
+  immutable GitHub release is keyed on it — so "already released" == "the tag
+  exists" (`git tag -l v*`). This is the app-side twin of `chart-publish.mjs`'s
+  `version-gate` (which gates the chart on its own `version:` line vs the OCI
+  registry); together they make a merge that bumped neither line a complete
+  no-op. Pure exported `parseAppVersion(chartYaml)` + `decide(appVersion,
+  existingTags)` (no I/O, no `process.exit`) + a `--self-test` the workflow runs
+  before the gate. A prerelease appVersion (e.g. `1.5.0-rc.1`) is gated on the
+  exact `v1.5.0-rc.1` tag, never masked by a stable `v1.5.0`.
+  - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `GITHUB_OUTPUT`
+    (runner-provided; sets `publish` / `version` / `tag`); argv `app-version-gate`
+    (or no argument) runs the gate, `--self-test` runs the assertion suite.
+  - Exit: `0` after writing the outputs (or a green self-test), `1` on a
+    missing/malformed `appVersion`, a `git tag` failure, or a bad subcommand.
 - **`resolve-release-trigger.mjs`** — `prepare-release.yml`, the `resolve
     trigger` step. Normalises the workflow's two entrypoints — a manual
     `workflow_dispatch` and an `issues: labeled` event — into the
@@ -327,8 +326,8 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   `timeoutMinutes`: the crawl shard gets a hard 30-min cap
   (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the k3d concurrency slot), the
   smoke shards keep their 75-min cluster-lifetime bound (`SMOKE_SHARD_TIMEOUT_MIN`).
-  The whole `dashboard` lane is informational (never a PR gate), and the crawl
-  shard is also excluded from the release preflight.
+  The whole `dashboard` lane is informational (never a PR gate), so the crawl
+  shard never gates a release PR's merge-when-green either.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
     `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `INCLUDE_CRAWL` (emit:
     `"true"` adds the crawl shard — schedule/dispatch only), `GITHUB_OUTPUT`

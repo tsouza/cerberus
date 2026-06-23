@@ -5,12 +5,17 @@ name: coverage
 # the cover-merged.out artifact, and writes the per-package summary
 # into the GitHub Actions step summary.
 #
-# Informational only. NOT a required PR check; not in the required
-# status-checks list. Tracks coverage drift between cuts.
+# Informational on push/nightly, but ALSO a parity lane on the
+# publish-on-merge release flow: it runs on EVERY pull_request so it can be a
+# required status check, short-circuiting to a green no-op on a non-release PR
+# and doing the real `just coverage` work only on a `release/*` PR (so a
+# release PR's green status actually includes coverage). Mirrors chart-ci.yml's
+# changes-filter no-op pattern, keyed on the release branch instead.
 #
-# Triggers: push-to-main + nightly + manual dispatch.
+# Triggers: pull_request + push-to-main + nightly + manual dispatch.
 
 on:
+  pull_request:
   push:
     branches: [main]
   schedule:
@@ -31,26 +36,40 @@ jobs:
     name: coverage
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
+    # a release PR (head branch release/*). On a regular PR every heavy step is
+    # skipped and the job reports green without work — so `coverage` can be a
+    # required check that gates release PRs but never blocks ordinary PRs.
+    env:
+      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - if: env.RUN_HEAVY == 'true'
+        uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - if: env.RUN_HEAVY == 'true'
+        uses: taiki-e/install-action@v2
         with:
           tool: just
 
       - name: Install libchdb.so
+        if: env.RUN_HEAVY == 'true'
         run: just chdb-install
 
       - name: Run coverage
+        if: env.RUN_HEAVY == 'true'
         run: just coverage | tee coverage.log
 
+      - name: No-op (non-release PR)
+        if: env.RUN_HEAVY != 'true'
+        run: echo "coverage is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
+
       - name: Write summary
-        if: always()
+        if: always() && env.RUN_HEAVY == 'true'
         run: |
           {
             echo "## Coverage baseline";
@@ -83,7 +102,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage profile
-        if: always()
+        if: always() && env.RUN_HEAVY == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-profile

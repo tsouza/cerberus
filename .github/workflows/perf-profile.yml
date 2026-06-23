@@ -25,14 +25,18 @@ name: perf-profile
 # It emits one JSON record per fixture, uploads the array as an artifact,
 # and renders the highest-fan_factor fixtures into the job step summary.
 #
-# NOT a per-PR gate. Profiling ~640 fixtures in-process is too heavy for
-# every PR (bounds CI minutes). It runs nightly + push-to-main + manual
-# dispatch, informational — a newly-introduced fan-out surfaces as a
-# step-summary outlier, not a merge block. The deterministic
-# per-construct ASSERTION pins (the `perf-guards` job in chdb.yml) stay
-# the gating lane.
+# Informational on push/nightly, but ALSO a parity lane on the
+# publish-on-merge release flow: it runs on EVERY pull_request so it can be a
+# required status check, short-circuiting to a green no-op on a non-release PR
+# and profiling the corpus only on a `release/*` PR (so a release PR's green
+# status includes the fan-out profile). The deterministic per-construct
+# ASSERTION pins (the `perf-guards` job in chdb.yml) stay the always-on gating
+# lane; this one stays breadth-coverage. Mirrors chart-ci.yml's no-op pattern.
+#
+# Triggers: pull_request + push-to-main + nightly + manual dispatch.
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -52,22 +56,32 @@ jobs:
     name: profile
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
+    # a release PR (head branch release/*). On a regular PR every heavy step is
+    # skipped and the job reports green without work — so `profile` can be a
+    # required check that gates release PRs but never blocks ordinary PRs.
+    env:
+      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - if: env.RUN_HEAVY == 'true'
+        uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - if: env.RUN_HEAVY == 'true'
+        uses: taiki-e/install-action@v2
         with:
           tool: just
 
       - name: Install libchdb.so
+        if: env.RUN_HEAVY == 'true'
         run: just chdb-install
 
       - name: Profile corpus fan-out
+        if: env.RUN_HEAVY == 'true'
         run: |
           go run -tags chdb ./cmd/perf-profile \
             -spec test/spec \
@@ -75,8 +89,12 @@ jobs:
             -md "$GITHUB_STEP_SUMMARY" \
             -top 40
 
+      - name: No-op (non-release PR)
+        if: env.RUN_HEAVY != 'true'
+        run: echo "perf-profile is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
+
       - name: Upload profile artifact
-        if: always()
+        if: always() && env.RUN_HEAVY == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: perf-profile

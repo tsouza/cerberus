@@ -6,7 +6,8 @@ name: link-check-external
 # blip / rate-limit on someone else's server must NEVER red a PR or abort a
 # release tag, so this lane runs ONLY on a weekly schedule + manual dispatch
 # and reports `fail: false`. The internal gate (offline, deterministic) is
-# the one wired into PRs and the release preflight.
+# the one wired into PRs (and so, as a required check, into the release PR's
+# merge-when-green gate).
 on:
   schedule:
     # Mondays 06:00 UTC. Weekly is plenty for catching link rot.
