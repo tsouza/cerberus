@@ -311,10 +311,29 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.
 		// (when `isMatrixRangeWindow` walks past the value-rewrite
 		// Project layer); forwarding the column keeps the per-anchor
 		// time-bucketing intact for callers like `abs(avg_over_time(…))`.
+		//
+		// The matrix RangeWindow ALSO surfaces `anchor_ts AS TimeUnix`
+		// (the schema timestamp column — see range_window.go
+		// `outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))`).
+		// A step-aligned vector↔vector join reads that column off each
+		// arm via `argMax(Value, TimeUnix)` / `As(Col(TimeUnix), …)`;
+		// when a scalar-wrapped arm (`100 * rate(…)`) feeds the join,
+		// dropping TimeUnix here makes the join wrapper reference a
+		// column that never materialises, so CH fails with code 47
+		// `Unknown expression identifier 'TimeUnix'` / `_join_TimeUnix`.
+		// Forward it so the scalar arm carries the same join-key columns
+		// the bare-rate arm does. The non-join path is unaffected: its
+		// outer wrapWithSampleProjection reads `anchor_ts`, not TimeUnix,
+		// and an extra subquery column is harmless.
 		if rw.OuterRange > 0 {
-			projections = append(projections, chplan.Projection{
-				Expr: &chplan.ColumnRef{Name: "anchor_ts"},
-			})
+			projections = append(
+				projections,
+				chplan.Projection{Expr: &chplan.ColumnRef{Name: "anchor_ts"}},
+				chplan.Projection{
+					Expr:  &chplan.ColumnRef{Name: s.TimestampColumn},
+					Alias: s.TimestampColumn,
+				},
+			)
 		}
 		projections = append(projections, chplan.Projection{Expr: newValue, Alias: s.ValueColumn})
 		return &chplan.Project{
