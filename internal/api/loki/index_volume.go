@@ -36,7 +36,7 @@ const defaultVolumeLimit = 100
 //     set) or "labels" (group by `targetLabels`; equivalent to "series"
 //     when targetLabels is unset)
 func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
@@ -47,14 +47,14 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, err := parseVolumeLimit(r.URL.Query().Get("limit"))
+	limit, err := parseVolumeLimit(r.FormValue("limit"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
 
-	targetLabels := parseTargetLabels(r.URL.Query().Get("targetLabels"))
-	aggregateBy := r.URL.Query().Get("aggregateBy")
+	targetLabels := parseTargetLabels(r.FormValue("targetLabels"))
+	aggregateBy := r.FormValue("aggregateBy")
 
 	matchers, err := selectorMatchers(q)
 	if err != nil {

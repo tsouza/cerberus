@@ -234,22 +234,28 @@ func (h *Handler) handleBuildInfo(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	// r.FormValue merges URL query params with a POST form-encoded body
+	// (auto-calling ParseForm). Grafana's Loki datasource POSTs queries as
+	// an application/x-www-form-urlencoded body, so reading r.URL.Query()
+	// alone returns an empty `query` → 400. FormValue keeps GET behaviour
+	// byte-identical while making the POST routes (registered in Mount)
+	// actually work.
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	ts, err := format.ParseTimeLoki(r.URL.Query().Get("time"), time.Now())
+	ts, err := format.ParseTimeLoki(r.FormValue("time"), time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	limit, err := parseLogLimit(r.URL.Query().Get("limit"))
+	limit, err := parseLogLimit(r.FormValue("limit"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	dir := parseLogDirection(r.URL.Query().Get("direction"))
+	dir := parseLogDirection(r.FormValue("direction"))
 
 	ctx, cancel, ok := h.applyQueryTimeout(w, r)
 	if !ok {
@@ -285,22 +291,26 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	// r.FormValue merges URL query params with a POST form-encoded body
+	// (auto-calling ParseForm). Grafana's Loki datasource POSTs queries as
+	// an application/x-www-form-urlencoded body; reading r.URL.Query() alone
+	// returns an empty `query` → 400. FormValue keeps GET byte-identical.
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	start, err := format.ParseTimeLoki(r.URL.Query().Get("start"), time.Time{})
+	start, err := format.ParseTimeLoki(r.FormValue("start"), time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := format.ParseTimeLoki(r.URL.Query().Get("end"), time.Time{})
+	end, err := format.ParseTimeLoki(r.FormValue("end"), time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	step, err := format.ParseDuration(r.URL.Query().Get("step"))
+	step, err := format.ParseDuration(r.FormValue("step"))
 	if err != nil {
 		// Loki allows missing step (auto-resolves); cerberus requires it for
 		// metric queries. Default to 1 minute when absent.
@@ -310,12 +320,20 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
 		return
 	}
-	limit, err := parseLogLimit(r.URL.Query().Get("limit"))
+	// Cap the returned points per timeseries (end-start)/step, mirroring the
+	// Prom head's resolution ceiling. Without it an unauthenticated client can
+	// force an arbitrarily wide matrix fan-out (compute-DoS). Uses the shared
+	// format.MaxResolutionPoints so all three heads reject the same shape.
+	if end.Sub(start)/step > format.MaxResolutionPoints {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New(format.ResolutionCapMessage))
+		return
+	}
+	limit, err := parseLogLimit(r.FormValue("limit"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	dir := parseLogDirection(r.URL.Query().Get("direction"))
+	dir := parseLogDirection(r.FormValue("direction"))
 
 	ctx, cancel, ok := h.applyQueryTimeout(w, r)
 	if !ok {
@@ -404,7 +422,7 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
 	ctx := r.Context()
 	budget := h.QueryTimeout
-	if raw := r.URL.Query().Get("timeout"); raw != "" {
+	if raw := r.FormValue("timeout"); raw != "" {
 		reqTimeout, err := format.ParseDuration(raw)
 		if err != nil || reqTimeout < 0 {
 			writeError(w, http.StatusBadRequest, ErrBadData,

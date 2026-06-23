@@ -1191,6 +1191,13 @@ func buildDualStackServer(addr string, httpCfg config.HTTPServerConfig, rootMux 
 			grpcServer.ServeHTTP(w, r)
 			return
 		}
+		// HTTP path only (the gRPC branch above has already returned, so gRPC
+		// framing is never touched): cap the request body so an unauthenticated
+		// ParseForm/FormValue read can't stream an unbounded body into memory.
+		// 0 disables the cap.
+		if httpCfg.MaxBodyBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, httpCfg.MaxBodyBytes)
+		}
 		rootMux.ServeHTTP(w, r)
 	})
 	protocols := new(http.Protocols)

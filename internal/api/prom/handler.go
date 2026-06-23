@@ -396,11 +396,12 @@ func matrixFromSamples(samples []chclient.Sample) []MatrixSample {
 }
 
 // maxResolutionPoints caps the returned points per timeseries on a range
-// query: (end-start)/step must not exceed it. Mirrors upstream
-// Prometheus's web/api/v1.queryRange ceiling (sufficient for 60s
-// resolution over a week, or 1h over a year), so Prom clients see
+// query: (end-start)/step must not exceed it. Aliases the shared
+// format.MaxResolutionPoints so the Prom, Loki, and Tempo heads enforce one
+// ceiling. Mirrors upstream Prometheus's web/api/v1.queryRange (sufficient for
+// 60s resolution over a week, or 1h over a year), so Prom clients see
 // identical behaviour.
-const maxResolutionPoints = 11000
+const maxResolutionPoints = format.MaxResolutionPoints
 
 func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with POST form-encoded body
@@ -441,8 +442,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// too (upstream rejects them as well; the check runs before the
 	// engine is consulted).
 	if end.Sub(start)/step > maxResolutionPoints {
-		writeError(w, http.StatusBadRequest, ErrBadData,
-			errors.New("exceeded maximum resolution of 11,000 points per timeseries. Try decreasing the query resolution (?step=XX)"))
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New(format.ResolutionCapMessage))
 		return
 	}
 
