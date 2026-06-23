@@ -1004,6 +1004,44 @@ func TestQueryRange_Streams_DefaultLimitClampsResponse(t *testing.T) {
 	}
 }
 
+// TestQueryRange_ResolutionCap pins the P2 hardening: a range whose
+// (end-start)/step exceeds the shared resolution ceiling is rejected with
+// 400 bad_data BEFORE any CH query runs, so an unauthenticated client can't
+// force an arbitrarily wide matrix fan-out (compute-DoS). A grid at exactly
+// the cap is allowed.
+func TestQueryRange_ResolutionCap(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	start := strconv.FormatInt(base.Unix(), 10)
+
+	q := &stubQuerier{samples: []chclient.Sample{}}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// step=1s, one point over the 11,000 ceiling → rejected.
+	overEnd := strconv.FormatInt(base.Add(11001*time.Second).Unix(), 10)
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=` + start + `&end=` + overEnd + `&step=1`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("over-cap range: status=%d, want 400", resp.StatusCode)
+	}
+
+	// Exactly at the cap → allowed (200).
+	atEnd := strconv.FormatInt(base.Add(11000*time.Second).Unix(), 10)
+	resp2, err := http.Get(srv.URL + `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=` + start + `&end=` + atEnd + `&step=1`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("at-cap range: status=%d, want 200", resp2.StatusCode)
+	}
+}
+
 // TestQuery_Streams_RespectsForwardDirection pins the wire-format
 // contract that `direction=forward` flips the limit clamp to surface
 // the EARLIEST N entries rather than the latest. The loki-bench
