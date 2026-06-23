@@ -107,6 +107,26 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `PR_BODY` (the pull request body); argv `--self-test`.
   - Exit: `0` when the description is substantive (or self-test passes), `1` on
     an empty / stub body (with one `::error::` explaining what to write).
+- **`pr-type-label.mjs`** — `pr-label.yml`, BOTH jobs (`label` + `backfill`).
+  The single source of truth for the PR-title -> Conventional-Commit type-label
+  mapping. Pure exported `labelsForTitle(title)` returns the label array a PR
+  with that title should carry (`feat`->enhancement, `fix`->bug, `docs`->
+  documentation, `ci`/`test`/`refactor`/`chore`/`build`/`revert`-> same name,
+  `perf`->performance, `style`->none); scope overrides `*(deps)`->dependencies
+  and `chore(release)`->release+chore take precedence over the bare type. The
+  two workflow jobs `require()` this module so the event-driven and the
+  self-healing backfill paths can't drift. Unlike the other scripts this one is
+  imported into a `github-script` step (node24 `require(ESM)`), not run as a
+  standalone `node ...` process, so it has no env contract — the title comes
+  from the caller. The `backfill` job walks every OPEN PR and applies any
+  MISSING expected label (idempotent; skips already-correct PRs), self-healing
+  the case where the event-driven run was queued / failed / never fired (the
+  #1049 / #1050 incident). Bot-authored PRs (`login` ending `[bot]`) are skipped
+  by both paths — Dependabot self-labels via `.github/dependabot.yml`, and a
+  label edit from here would block its auto-rebase.
+  - Env: none (the title is passed by the caller); argv `--self-test` pins the
+    full mapping incl. the deps/release scope overrides and the no-match cases.
+  - Exit: `0` on a green self-test, `1` on any failed assertion.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
