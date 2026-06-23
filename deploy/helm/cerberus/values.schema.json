@@ -90,9 +90,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "prom": { "type": "boolean" },
-        "loki": { "type": "boolean" },
-        "tempo": { "type": "boolean" },
+        "prom": { "type": ["boolean", "integer"], "minimum": 0 },
+        "loki": { "type": ["boolean", "integer"], "minimum": 0 },
+        "tempo": { "type": ["boolean", "integer"], "minimum": 0 },
         "disabled": { "type": "boolean" }
       }
     },
