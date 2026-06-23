@@ -222,6 +222,18 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "binop_redis_hit_ratio_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "binop_scalar_mul_rate_div_rate_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "binop_sumby_rate_plus_sumby_rate",
     "routed": false,
     "k": 0,
