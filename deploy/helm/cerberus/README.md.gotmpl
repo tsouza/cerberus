@@ -130,8 +130,15 @@ Set `otlp.endpoint` to enable export; leave it empty to disable.
 ## Memory sizing
 
 `resources.limits.memory` defaults to `1536Mi` with no CPU limit. cerberus's Go
-heap doesn't see the cgroup limit; if you change the memory limit, set
-`GOMEMLIMIT` (~80%) via `extraEnv`:
+heap doesn't see the cgroup limit, so the chart derives `GOMEMLIMIT` for you at
+~80% of the container's memory limit (the remaining headroom covers off-heap
+allocations GOMEMLIMIT can't bound — the ClickHouse driver's buffers, goroutine
+stacks, cgo). The value tracks `resources.limits.memory` automatically — per
+head in split mode, per pod in monolith — so changing the limit re-sizes it
+with no extra config.
+
+To override the derived value (or pin one when no memory limit is set), set
+`GOMEMLIMIT` explicitly via `extraEnv`; an explicit entry always wins:
 
 ```yaml
 extraEnv:

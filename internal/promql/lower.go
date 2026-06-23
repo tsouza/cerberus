@@ -1387,15 +1387,15 @@ func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.
 //     dedicated column is unpopulated. Mirrors the LogQL fix from
 //     PR #669 / task #217 in [internal/logql.matcherToExpr].
 //
-//  4. A non-service, non-`__name__` label when the schema names a
+//  3. A non-service, non-`__name__` label when the schema names a
 //     ResourceAttributes column (and the label is allowlisted, if an
 //     allowlist is configured) — resolves against BOTH the metric
 //     Attributes map AND the ResourceAttributes map, Attributes winning
-//     on collision. See [resourceMatcherFallback] / the branch-4 comment
+//     on collision. See [resourceMatcherFallback] / the branch-3 comment
 //     below for the coalesce-over-nullIf precedence + negative-matcher
 //     emptiness floor.
 //
-//  3. Anything else — falls through to the Attributes-map lookup
+//  4. Anything else — falls through to the Attributes-map lookup
 //     (with the dot/underscore candidate expansion documented on
 //     [attributeLookup]).
 func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
@@ -1419,7 +1419,7 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 			},
 		}
 	} else if resArm := resourceMatcherFallback(s, m.Name); resArm != nil {
-		// BRANCH 4 — Attributes ∪ ResourceAttributes, Attributes-win.
+		// BRANCH 3 — Attributes ∪ ResourceAttributes, Attributes-win.
 		//
 		//   coalesce(nullIf(Attributes[cands], ''),
 		//            nullIf(ResourceAttributes[cands], ''),
