@@ -78,7 +78,7 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		// Array(Float64) under an internal alias; the outer SELECT
 		// fans it out via arrayJoin + tupleElement.
 		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: ""}
-		sb.Select(rawAs(aggFuncFrag(af), "qs_array"))
+		sb.Select(RawAs(aggFuncFrag(af), "qs_array"))
 	} else {
 		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: m.ValueAlias}
 		sb.Select(aggFuncFrag(af))
@@ -105,7 +105,7 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		a := alias
 		outer.Select(func(b *Builder) { b.Ident(a) })
 	}
-	outer.Select(rawAs(metricsMultiQuantileFanoutFrag(m.Quantiles, "qs_array"), "phi_val"))
+	outer.Select(RawAs(metricsMultiQuantileFanoutFrag(m.Quantiles, "qs_array"), "phi_val"))
 
 	// Multi-phi wrap layer 2: split phi_val into the synthetic
 	// `__phi__` label + the Float64 `Value` column.
@@ -527,7 +527,7 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 	for _, g := range groupFrags {
 		innermost.Select(g)
 	}
-	innermost.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(RawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -541,14 +541,14 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 	for _, g := range groupFrags {
 		innerSb.Select(g)
 	}
-	innerSb.Select(rawAs(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
+	innerSb.Select(RawAs(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Outer SELECT — final value per series.
 	outerSb := NewQuery().From(innerSb.Frag())
 	for _, g := range groupFrags {
 		outerSb.Select(g)
 	}
-	outerSb.Select(rawAs(valueWriterFor(end), r.ValueColumn))
+	outerSb.Select(RawAs(valueWriterFor(end), r.ValueColumn))
 	if minWindowSize > 0 {
 		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
@@ -612,7 +612,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	}
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
-	fanout.Select(rawAs(
+	fanout.Select(RawAs(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
@@ -629,7 +629,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(rawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
+	regroup.Select(RawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -647,7 +647,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
 		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
 	}
-	outer.Select(rawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
+	outer.Select(RawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
@@ -723,29 +723,9 @@ func fanoutTsSource(innerSub Frag, tsCol string) (Frag, string) {
 	}
 	wrap := NewQuery().From(innerSub).Select(
 		Star(),
-		rawAs(Col("anchor_ts"), "_src_ts"),
+		RawAs(Col("anchor_ts"), "_src_ts"),
 	)
 	return wrap.Frag(), "_src_ts"
-}
-
-// rawAs wraps a Frag in "<expr> AS <alias>" with the alias emitted
-// VERBATIM (no backticks). The windowed-array idiom relies on internal
-// aliases like `series_array`, `window_pairs`, `window_vals`,
-// `counter_delta`, `anchor_ts`, `value` that are never user-supplied
-// and must stay un-backticked to keep the byte-level golden fixtures
-// stable. The typed `As` helper backticks every alias; this is the
-// matching variant for the legacy windowed-array shape.
-//
-// Empty alias renders the expression bare (no AS clause).
-func rawAs(expr Frag, alias string) Frag {
-	if alias == "" {
-		return expr
-	}
-	return func(b *Builder) {
-		expr(b)
-		b.sb.WriteString(" AS ")
-		b.sb.WriteString(alias)
-	}
 }
 
 // timeOrNowFrag returns a Frag rendering an explicit DateTime64(9)

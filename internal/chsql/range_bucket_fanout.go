@@ -120,7 +120,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// SELECT without enumerating the (schema-dependent) column set here.
 	fanout := NewQuery().From(inner)
 	fanout.Select(Star())
-	fanout.Select(rawAs(
+	fanout.Select(RawAs(
 		lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors),
 		r.AnchorAlias,
 	))
