@@ -776,14 +776,19 @@ jobs:
         run: node .github/scripts/dashboard-matrix.mjs
         env:
           MODE: emit
-          # Include the ~50min crawl shard only on schedule + manual dispatch;
-          # pull_request + push get a smoke-only matrix (fast, testable, no
-          # all-skipped crawl leg).
-          INCLUDE_CRAWL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-          # Split mode doubles the k3d boot count (the setup-bound long pole)
-          # for one unique spec, so it runs on schedule + dispatch only; PR/push
-          # exercise monolith. Both modes are still covered (split nightly).
-          INCLUDE_SPLIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          # Crawl runs on schedule + manual dispatch, AND on release PRs
+          # (head branch release/*) so the commit a release is cut from is
+          # validated by the FULL matrix — a release must never ship a mode
+          # the gate didn't exercise. Regular pull_request + push get the
+          # fast smoke-only matrix.
+          INCLUDE_CRAWL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
+          # Split mode doubles the k3d boot count (the setup-bound long pole),
+          # so regular PR/push exercise monolith only. It runs on schedule +
+          # dispatch AND — critically — on release PRs (head branch release/*),
+          # so release-preflight's "all checks green" actually covers split.
+          # (A broken split shipped in v1.4.0 precisely because the release
+          # commit's checks never ran split; this closes that hole.)
+          INCLUDE_SPLIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
 
   dashboard-shard:
     name: dashboard-shard
