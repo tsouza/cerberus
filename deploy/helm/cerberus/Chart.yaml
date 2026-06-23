@@ -50,9 +50,9 @@ annotations:
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: added
-      description: "chart: per-head PodDisruptionBudget in split mode (#PRNUM)"
+      description: "chart: per-head PodDisruptionBudget in split mode (#1040)"
     - kind: added
-      description: "chart: auto-derive per-container GOMEMLIMIT from limits.memory (#PRNUM)"
+      description: "chart: auto-derive per-container GOMEMLIMIT from limits.memory (#1040)"
     - kind: added
       description: "chart: split mode — isolated per-head deployments (no proxy) (#1031)"
     - kind: added
