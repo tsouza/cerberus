@@ -29,6 +29,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -210,13 +211,40 @@ func routeFeatures(d *solver.Decision) (present bool, route string, nAnchors, fa
 	}
 	return true,
 		route,
-		uint32(d.NAnchors),
-		uint32(d.Fanout),
-		uint32(int64(d.CumulativeD) / routeSecond),
-		uint32(int64(d.OuterRange) / routeSecond),
-		uint32(int64(d.Step) / routeSecond),
-		uint8(d.K),
+		clampU32(int64(d.NAnchors)),
+		clampU32(d.Fanout),
+		clampU32(int64(d.CumulativeD) / routeSecond),
+		clampU32(int64(d.OuterRange) / routeSecond),
+		clampU32(int64(d.Step) / routeSecond),
+		clampU8(int64(d.K)),
 		d.Reason
+}
+
+// clampU32 narrows a non-negative int64 grid scalar to uint32, clamping a
+// negative value to 0 and an over-range value to the uint32 max so the
+// conversion is provably overflow-free (gosec G115). The classifier's grid
+// scalars are always small non-negative values; the clamp documents that
+// invariant rather than trusting it silently.
+func clampU32(v int64) uint32 {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(v)
+}
+
+// clampU8 narrows the shard count to uint8 the same way; K is clamped to MaxK
+// (<= 255) by the Planner, so this only restates the bound.
+func clampU8(v int64) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxUint8 {
+		return math.MaxUint8
+	}
+	return uint8(v)
 }
 
 // planHasTSGridNative reports whether plan contains a node from the
