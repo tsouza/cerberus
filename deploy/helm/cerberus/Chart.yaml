@@ -8,7 +8,7 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.6.2
+version: 0.6.3
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
@@ -59,6 +59,8 @@ annotations:
       description: "api: O(output) drain counter + falsifiable bounds-drain regression harness (#1030)"
     - kind: added
       description: "config: add CERBERUS_ENABLED_HEADS per-head toggle (#1029)"
+    - kind: fixed
+      description: "chart: allow integer admit.{prom,loki,tempo} concurrency caps in values.schema.json (#1040)"
     - kind: fixed
       description: "test: thread a time window into the TraceQL property harness (#1032)"
     - kind: fixed
