@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1522,4 +1523,37 @@ func TestMetricsQueryRange_AlignsAnchorGridToStep(t *testing.T) {
 	assertSQLContains(t, matrixSQL, "range(0, 5)")
 	assertSQLContains(t, matrixSQL, "least(5, intDiv(dateDiff('nanosecond'")
 	assertSQLContains(t, q.lastSQL, "least(5, intDiv(dateDiff('nanosecond'")
+}
+
+// TestMetricsQueryRange_ResolutionCap pins the P2 hardening: a window whose
+// (end-start)/step exceeds the shared resolution ceiling is rejected with 400
+// BEFORE any CH query runs, so an unauthenticated client can't force an
+// arbitrarily wide matrix fan-out (compute-DoS).
+func TestMetricsQueryRange_ResolutionCap(t *testing.T) {
+	t.Parallel()
+
+	start, err := strconv.ParseInt(fixtureStartUnix, 10, 64)
+	if err != nil {
+		t.Fatalf("parse fixture start: %v", err)
+	}
+
+	q := &stubQuerier{}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	// step=1s, one point over the 11,000 ceiling → rejected.
+	overEnd := strconv.FormatInt(start+11001, 10)
+	u := metricsQueryRangeURL(srv.URL, "{} | count_over_time()",
+		map[string]string{"start": fixtureStartUnix, "end": overEnd, "step": "1s"})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("over-cap window: status=%d, want 400 body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if len(q.queriedSQLs) != 0 {
+		t.Errorf("over-cap window must be rejected before any CH query; saw %d", len(q.queriedSQLs))
+	}
 }

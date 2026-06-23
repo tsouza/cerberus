@@ -36,7 +36,7 @@ type IndexStats struct {
 // template stages) are ignored — Loki's contract is "selector only" for
 // this endpoint and that's what Grafana sends.
 func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
@@ -206,8 +206,11 @@ func selectorMatchers(q string) ([]*labels.Matcher, error) {
 // caller wraps that into a bad_data response).
 func parseStartEnd(r *http.Request) (time.Time, time.Time, error) {
 	now := time.Now().UTC()
-	startStr := r.URL.Query().Get("start")
-	endStr := r.URL.Query().Get("end")
+	// r.FormValue merges URL query params with a POST form-encoded body
+	// (auto-calling ParseForm) so the metadata endpoints work when Grafana's
+	// Loki datasource POSTs them; GET stays byte-identical.
+	startStr := r.FormValue("start")
+	endStr := r.FormValue("end")
 
 	start, err := format.ParseTimeLoki(startStr, now.Add(-time.Hour))
 	if err != nil {
