@@ -177,12 +177,19 @@ const SHARDS = [
       'helpers.spec.ts',
       'helpers-validity.spec.ts',
       'helpers-variables.spec.ts',
-      // split-only: runs ONLY on the split leg (filtered out of monolith
-      // entries at emit time — see SPLIT_ONLY_SPECS / buildMatrix). It is
-      // assigned HERE so the coverage gate counts it as covered; the spec
-      // itself hard-fails if run outside split mode (CERBERUS_MODE != split).
-      'split_isolation.spec.ts',
     ],
+  },
+  {
+    // Dedicated split-only shard. split_isolation scales a shared head to
+    // zero, so it MUST run alone in its own cluster — co-sharding it with
+    // tempo/loki specs let those 404 against the scaled-down head (the
+    // run-28002642584 nightly failure shape). split-only, so buildMatrix
+    // filters it to empty in monolith (a 0-spec leg is skipped) and emits it
+    // only on the split leg.
+    name: 'shard-split-isolation',
+    crawlStack: CRAWL_STACK_NONE,
+    runGoE2E: false,
+    specs: ['split_isolation.spec.ts'],
   },
   {
     name: 'shard-crawl',
