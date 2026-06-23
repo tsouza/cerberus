@@ -129,9 +129,9 @@ func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
 	bucket := Call("pow", InlineLit(int64(2)),
 		Call("ceil", Call("log2", Call("toFloat64", attrFrag))))
 	if isDuration {
-		// "/ 1000000000" — inline divisor (query-shape constant, not user
-		// data) rebasing the nanosecond bucket key into seconds.
-		return Div(bucket, InlineLit(int64(1000000000)))
+		// inline divisor (query-shape constant, not user data) rebasing
+		// the nanosecond bucket key into seconds.
+		return Div(bucket, InlineLit(chplan.NanoToSecondDivisor))
 	}
 	return bucket
 }

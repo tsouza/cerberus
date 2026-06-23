@@ -21,6 +21,7 @@ func TestInspectExprExhaustive(t *testing.T) {
 	all := []Expr{
 		&ColumnRef{},
 		&LitString{},
+		&InlineString{},
 		&LitInt{},
 		&LitFloat{},
 		&LitBool{},
@@ -68,7 +69,7 @@ func TestInspectExprExhaustive(t *testing.T) {
 	// switch has no default-panic), so this count forces the author to
 	// revisit both the switch AND this list. Keep it in lock-step with the
 	// number of exprNode() implementers under internal/chplan.
-	const wantExprTypes = 20
+	const wantExprTypes = 21
 	if len(all) != wantExprTypes {
 		t.Fatalf("expected %d Expr types in the exhaustiveness set, listed %d — "+
 			"a new Expr type was added: extend inspectExpr's switch in walk_expr.go AND this list",

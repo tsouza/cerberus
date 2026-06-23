@@ -119,7 +119,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 							Name: "toUnixTimestamp64Nano",
 							Args: []chplan.Expr{anchor},
 						},
-						Right: &chplan.LitInt{V: 1_000_000_000},
+						Right: &chplan.LitInt{V: chplan.NanoToSecondDivisor},
 					},
 				},
 			}, nil

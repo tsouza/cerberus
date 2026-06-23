@@ -205,14 +205,17 @@ func (e *emitter) emitUnionAll(u *chplan.UnionAll) error {
 	if len(u.Inputs) == 0 {
 		return fmt.Errorf("%w: UnionAll has no inputs", ErrUnsupported)
 	}
+	arms := make([]Frag, len(u.Inputs))
 	for i, in := range u.Inputs {
-		if i > 0 {
-			e.b.WriteString(" UNION ALL ")
-		}
-		if err := e.emitSubquery(in); err != nil {
+		f, err := e.subqueryFrag(in)
+		if err != nil {
 			return err
 		}
+		arms[i] = f
 	}
+	b := NewBuilder()
+	UnionAll(arms...)(b)
+	e.splice(b)
 	return nil
 }
 

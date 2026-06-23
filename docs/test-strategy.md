@@ -290,7 +290,7 @@ wall-clock comparisons live in `perf-benchmark.yml` (manual dispatch).
 The axis Layer 11's read-side benchmarks are blind to: peak intermediate
 cardinality and wall-time scaling against a query parameter (step count,
 chain depth, recursion depth). The thing cerberus watches is the **fan
-factor** — peak intermediate rows ÷ leaf scan rows — and four lanes hold
+factor** — peak intermediate rows ÷ leaf scan rows — and five lanes hold
 it flat from cheap-static to broad-corpus (see
 [`performance.md`](performance.md#how-fast-is-kept-fast--the-assurance-framework)
 for the strategy):
