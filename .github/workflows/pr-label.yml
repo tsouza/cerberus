@@ -6,6 +6,17 @@ name: pr-label
 # (see CONTRIBUTING.md "PR labels") self-maintaining instead of relying on
 # a human to remember.
 #
+# Two jobs share ONE mapping (`.github/scripts/pr-type-label.mjs`):
+#   - label    — event-driven: on pull_request_target opened/edited/reopened
+#                it labels the one PR in the payload.
+#   - backfill — self-healing: on a cron schedule + manual dispatch it walks
+#                every OPEN PR and applies any MISSING expected label. This
+#                catches PRs whose event-driven run was queued / failed /
+#                never fired (the #1049 / #1050 case — pr-label runs sat in
+#                the Actions queue, the PRs were left unlabeled with no
+#                self-heal until a future edit). The backfill is idempotent:
+#                it skips a PR that already carries its expected label.
+#
 # Mapping (type -> label):
 #   feat -> enhancement   fix -> bug          docs -> documentation
 #   ci -> ci              test -> test        refactor -> refactor
@@ -15,72 +26,129 @@ name: pr-label
 #   chore(deps) / build(deps) / *(deps) -> dependencies
 #   chore(release)                      -> release (+ chore)
 #
-# SECURITY: trigger is `pull_request_target`, which runs with a write token
-# on the BASE ref. This workflow NEVER checks out or executes PR head code —
-# it only reads the PR title from the event payload and calls the labels
-# API. Permissions are least-privilege (pull-requests: write only).
+# DEPENDABOT: bot-authored PRs (login ending `[bot]`) are SKIPPED by BOTH
+# paths. Dependabot already self-labels via `.github/dependabot.yml`
+# (`labels: [dependencies, …]`), so re-applying a label from here is pure
+# redundancy AND is harmful: a non-Dependabot label edit makes Dependabot
+# refuse to auto-rebase the PR (recovery is `@dependabot recreate`). Skipping
+# bots keeps both paths consistent and leaves Dependabot's rebase intact.
+#
+# SECURITY: the event trigger is `pull_request_target`, which runs with a
+# write token on the BASE ref. This workflow NEVER checks out or executes PR
+# head code — it reads the PR title from the event payload (event path) or
+# the REST API (backfill) and calls the labels API. The only code it runs is
+# the trusted, in-repo `pr-type-label.mjs` from the base ref. Permissions are
+# least-privilege (pull-requests: write only).
 on:
   pull_request_target:
     types: [opened, edited, reopened]
+  schedule:
+    # A few times a day, on an off-:00 minute to dodge the cron stampede.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
   contents: read
 
 concurrency:
-  group: pr-label-${{ github.event.pull_request.number }}
+  # PR number for the event path; the run id keeps schedule/dispatch runs
+  # (which carry no PR number) from cancelling each other.
+  group: pr-label-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  # Event-driven path: label the single PR in the payload.
   label:
     name: label
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
       - uses: actions/github-script@v9
         with:
           script: |
-            const title = context.payload.pull_request.title || '';
-            // Conventional-Commit header: type(scope)!: subject
-            const m = title.match(/^([a-z]+)(?:\(([^)]*)\))?!?:/i);
-            if (!m) {
-              core.notice(`PR title "${title}" has no Conventional-Commit prefix; no label applied.`);
+            const { labelsForTitle } = require('${{ github.workspace }}/.github/scripts/pr-type-label.mjs');
+            const pr = context.payload.pull_request;
+
+            // Skip bot authors (Dependabot self-labels; a label edit from
+            // here would block its auto-rebase). See the header comment.
+            if ((pr.user?.login || '').endsWith('[bot]')) {
+              core.notice(`PR #${pr.number} is bot-authored (${pr.user.login}); skipping (it self-labels).`);
               return;
             }
-            const type = m[1].toLowerCase();
-            const scope = (m[2] || '').toLowerCase();
 
-            const typeToLabel = {
-              feat: 'enhancement',
-              fix: 'bug',
-              docs: 'documentation',
-              ci: 'ci',
-              test: 'test',
-              refactor: 'refactor',
-              perf: 'performance',
-              chore: 'chore',
-              build: 'build',
-              revert: 'revert',
-              // style is cosmetic-only; intentionally unmapped.
-            };
-
-            const labels = [];
-            if (scope === 'deps') {
-              labels.push('dependencies');
-            } else if (type === 'chore' && scope === 'release') {
-              labels.push('release', 'chore');
-            } else if (typeToLabel[type]) {
-              labels.push(typeToLabel[type]);
+            const want = labelsForTitle(pr.title || '');
+            if (want.length === 0) {
+              core.notice(`PR title "${pr.title}" maps to no type label; nothing to apply.`);
+              return;
             }
 
-            if (labels.length === 0) {
-              core.notice(`No label maps to type "${type}" (scope "${scope}").`);
+            const have = new Set((pr.labels || []).map((l) => l.name));
+            const missing = want.filter((l) => !have.has(l));
+            if (missing.length === 0) {
+              core.notice(`PR #${pr.number} already carries: ${want.join(', ')}.`);
               return;
             }
 
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              labels,
+              issue_number: pr.number,
+              labels: missing,
             });
-            core.notice(`Applied label(s): ${labels.join(', ')}`);
+            core.notice(`Applied label(s) to PR #${pr.number}: ${missing.join(', ')}`);
+
+  # Self-healing path: walk every open PR, apply any missing expected label.
+  backfill:
+    name: backfill
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const { labelsForTitle } = require('${{ github.workspace }}/.github/scripts/pr-type-label.mjs');
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            let healed = 0;
+            let botSkipped = 0;
+            for (const pr of prs) {
+              // Match the event path: bots self-label and must keep their
+              // auto-rebase, so never touch them.
+              if ((pr.user?.login || '').endsWith('[bot]')) {
+                botSkipped++;
+                continue;
+              }
+              const want = labelsForTitle(pr.title || '');
+              if (want.length === 0) continue;
+
+              const have = new Set((pr.labels || []).map((l) => l.name));
+              const missing = want.filter((l) => !have.has(l));
+              if (missing.length === 0) continue; // idempotent: already correct.
+
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: missing,
+              });
+              core.notice(`Backfilled PR #${pr.number} (${pr.title}): ${missing.join(', ')}`);
+              healed++;
+            }
+            core.notice(
+              `Backfill scan complete: ${prs.length} open PR(s), ${healed} healed, ${botSkipped} bot(s) skipped.`,
+            );
