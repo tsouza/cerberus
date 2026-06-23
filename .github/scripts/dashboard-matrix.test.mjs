@@ -66,17 +66,36 @@ const SMOKE_SHARDS = SHARDS.filter((s) => s.crawlStack !== CRAWL_STACK_K3D);
 const specsOf = (entry) => entry.specs.split(' ').filter(Boolean);
 const hasSplitOnly = (entry) => specsOf(entry).some((spec) => SPLIT_ONLY_SPECS.has(spec));
 
-test('buildMatrix: with includeSplit, every smoke shard yields both a monolith and a split entry', () => {
+// A smoke shard whose specs are ALL split-only (e.g. shard-split-isolation)
+// has no monolith leg — buildMatrix filters it to empty in monolith and emits
+// only its split leg. Mixed shards yield both legs.
+const isSplitOnlyShard = (s) => s.specs.every((spec) => SPLIT_ONLY_SPECS.has(spec));
+
+test('buildMatrix: with includeSplit, every smoke shard yields a split leg; mixed shards also a monolith leg', () => {
   const include = buildMatrix(false, true); // schedule/dispatch: both modes
   for (const s of SMOKE_SHARDS) {
-    for (const mode of SMOKE_MODES) {
-      const name = `${s.name}-${mode}`;
-      assert.ok(
-        include.some((e) => e.name === name && e.mode === mode),
-        `expected a matrix entry ${name} (mode=${mode}); got ${include.map((e) => e.name).join(', ')}`,
-      );
+    assert.ok(
+      include.some((e) => e.name === `${s.name}-${MODE_SPLIT}` && e.mode === MODE_SPLIT),
+      `expected split entry ${s.name}-split; got ${include.map((e) => e.name).join(', ')}`,
+    );
+    const hasMono = include.some((e) => e.name === `${s.name}-${MODE_MONOLITH}` && e.mode === MODE_MONOLITH);
+    if (isSplitOnlyShard(s)) {
+      assert.ok(!hasMono, `split-only shard ${s.name} must NOT yield a monolith leg`);
+    } else {
+      assert.ok(hasMono, `mixed shard ${s.name} must yield a monolith leg`);
     }
   }
+});
+
+test('buildMatrix: split_isolation runs ALONE in its own shard (never co-sharded with head specs)', () => {
+  const include = buildMatrix(false, true);
+  const owning = include.filter((e) => specsOf(e).includes('split_isolation.spec.ts'));
+  assert.equal(owning.length, 1, `split_isolation must be in exactly one emitted shard; got ${owning.length}`);
+  assert.deepEqual(
+    specsOf(owning[0]),
+    ['split_isolation.spec.ts'],
+    `split_isolation must run alone (it scales a shared head to zero); shard ${owning[0].name} also has: ${owning[0].specs}`,
+  );
 });
 
 test('buildMatrix: without includeSplit (PR/push), smoke shards are monolith-only — no split legs', () => {
@@ -88,10 +107,13 @@ test('buildMatrix: without includeSplit (PR/push), smoke shards are monolith-onl
   );
   for (const s of SMOKE_SHARDS) {
     const name = `${s.name}-${MODE_MONOLITH}`;
-    assert.ok(
-      include.some((e) => e.name === name && e.mode === MODE_MONOLITH),
-      `expected monolith entry ${name}; got ${include.map((e) => e.name).join(', ')}`,
-    );
+    const hasMono = include.some((e) => e.name === name && e.mode === MODE_MONOLITH);
+    if (isSplitOnlyShard(s)) {
+      // A split-only shard emits nothing on PR/push (no monolith leg, no split leg).
+      assert.ok(!hasMono, `split-only shard ${s.name} must emit nothing on PR/push`);
+    } else {
+      assert.ok(hasMono, `expected monolith entry ${name}; got ${include.map((e) => e.name).join(', ')}`);
+    }
   }
 });
 
