@@ -435,6 +435,11 @@ type HTTPServerConfig struct {
 	// MaxHeaderBytes caps request header size (http.Server.MaxHeaderBytes).
 	// 0 leaves Go's 1 MiB default.
 	MaxHeaderBytes int
+
+	// MaxBodyBytes caps an inbound HTTP request body (applied via
+	// http.MaxBytesReader in cmd/cerberus's HTTP dispatcher). Default 4 MiB;
+	// 0 disables the cap. The gRPC path is unaffected.
+	MaxBodyBytes int64
 }
 
 // LogConfig controls the slog setup applied at startup.
@@ -529,6 +534,7 @@ const (
 	envHTTPWriteTimeout    = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
 	envHTTPIdleTimeout     = "CERBERUS_HTTP_IDLE_TIMEOUT"
 	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
+	envHTTPMaxBodyBytes    = "CERBERUS_HTTP_MAX_BODY_BYTES"
 	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
 	envDebugPProf          = "CERBERUS_DEBUG_PPROF"
 	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
@@ -916,6 +922,7 @@ var allEnvKeys = []string{
 	envHTTPWriteTimeout,
 	envHTTPIdleTimeout,
 	envHTTPMaxHeaderBytes,
+	envHTTPMaxBodyBytes,
 	envLokiTailWriteTO,
 	envDebugPProf,
 	envAutoCreateSchema,
@@ -1023,6 +1030,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envHTTPWriteTimeout, defaultHTTPWriteTimeout.String())
 	v.SetDefault(envHTTPIdleTimeout, defaultHTTPIdleTimeout.String())
 	v.SetDefault(envHTTPMaxHeaderBytes, defaultHTTPMaxHeaderBytes)
+	v.SetDefault(envHTTPMaxBodyBytes, defaultHTTPMaxBodyBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
@@ -1218,6 +1226,12 @@ const (
 	defaultHTTPIdleTimeout       time.Duration = 120 * time.Second
 	defaultHTTPMaxHeaderBytes                  = 0
 )
+
+// defaultHTTPMaxBodyBytes caps an inbound HTTP request body (4 MiB). It bounds
+// ParseForm/FormValue reads on the Prom/Loki/Tempo HTTP paths so an
+// unauthenticated client cannot stream an unbounded body into process memory.
+// The gRPC path is unaffected (it has its own framing). 0 disables the cap.
+const defaultHTTPMaxBodyBytes int64 = 4 << 20
 
 // defaultLokiTailWriteTimeout promotes the previously-hardcoded
 // tailWriteTimeout in internal/api/loki/tail.go: the bound on a single
