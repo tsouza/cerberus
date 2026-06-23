@@ -261,3 +261,28 @@ jobs:
           name: gremlins-${{ matrix.phase }}
           path: gremlins.json
           retention-days: 14
+
+  # Single rolled-up required-check context (mirrors compose-smoke). The matrix
+  # above exposes ONE .result to dependents: `success` only if EVERY phase
+  # succeeded, `failure`/`cancelled` if any did. On a non-release PR every phase
+  # is a green no-op, so this reports green without work; on a release/* PR or a
+  # push it reflects the real efficacy gate. Add `mutation` (not the per-phase
+  # `gremlins …` names) as the required status check.
+  mutation:
+    name: mutation
+    needs: [mutate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: gate on every mutation phase
+        run: |
+          echo "mutate = ${{ needs.mutate.result }}"
+          # Strict != 'success' catches failure AND cancelled (a contains-failure
+          # check would miss a cancelled phase). fail-fast:false keeps a real
+          # efficacy failure a clean `failure`, not an ambiguous `cancelled`.
+          if [ "${{ needs.mutate.result }}" != "success" ]; then
+            echo "::error::one or more mutation phases failed/cancelled (rolled-up: ${{ needs.mutate.result }})."
+            exit 1
+          fi
+          echo "all mutation phases green."
