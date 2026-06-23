@@ -1970,6 +1970,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/binop_redis_hit_ratio_range",
+    "fan_factor": 5.833333333333333,
+    "scan_rows": 6,
+    "peak_intermediate": 35,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/binop_scalar_mul_rate_div_rate_range",
+    "fan_factor": 5.833333333333333,
+    "scan_rows": 6,
+    "peak_intermediate": 35,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/binop_sumby_rate_plus_sumby_rate",
     "fan_factor": 1,
     "scan_rows": 4,
