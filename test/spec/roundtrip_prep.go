@@ -26,19 +26,7 @@ package spec
 
 import (
 	"strings"
-	"time"
 )
-
-// defaultNowAnchor is the deterministic eval instant every fixed-anchor
-// round-trip fixture is seeded against. It mirrors the instant-eval
-// anchor `internal/promql/lower_test.go` feeds into `LowerAt`
-// (`time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)`), so each round-trip
-// fixture sees the same wall-clock the lowering pass used to compute
-// filter bounds. [nowAnchorLiteral] is `chNow64Literal(defaultNowAnchor)`
-// by construction (asserted in TestNowAnchorLiteralMatchesDefault), so
-// the fixed-anchor and per-eval substitution paths share one source of
-// truth for the default instant.
-var defaultNowAnchor = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
 // nowAnchorLiteral is the deterministic CH literal we splice in place
 // of every `now64(...)` reference in the emitted SQL when no explicit

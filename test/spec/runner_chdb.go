@@ -60,10 +60,25 @@ var chdbEngineMu sync.Mutex
 // rows.Err() and must be ignored — any other error is real.
 const chdbEOFSentinel = "empty row"
 
-// defaultNowAnchor, nowAnchorLiteral, substituteNow64, the seed-statement
-// splitter, the idempotency promotion, and the ResourceAttributes backfill
-// now live in the build-tag-free roundtrip_prep.go so the `integration`-tagged
-// strict-scan differential shares the exact same seed + SQL prep pipeline.
+// nowAnchorLiteral, substituteNow64, the seed-statement splitter, the
+// idempotency promotion, and the ResourceAttributes backfill now live in the
+// build-tag-free roundtrip_prep.go so the `integration`-tagged strict-scan
+// differential shares the exact same seed + SQL prep pipeline. defaultNowAnchor
+// stays here because its only consumers (the eval-instant sweep and
+// TestNowAnchorLiteralMatchesDefault) are themselves chdb-tagged; the
+// integration lane anchors via the exported SubstituteNow64 / nowAnchorLiteral
+// seam and never needs the time.Time value.
+
+// defaultNowAnchor is the deterministic eval instant every fixed-anchor
+// round-trip fixture is seeded against. It mirrors the instant-eval
+// anchor `internal/promql/lower_test.go` feeds into `LowerAt`
+// (`time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)`), so each round-trip
+// fixture sees the same wall-clock the lowering pass used to compute
+// filter bounds. [nowAnchorLiteral] is `chNow64Literal(defaultNowAnchor)`
+// by construction (asserted in TestNowAnchorLiteralMatchesDefault), so
+// the fixed-anchor and per-eval substitution paths share one source of
+// truth for the default instant.
+var defaultNowAnchor = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
 // chNow64Literal renders a `time.Time` as the CH DateTime64(9) literal
 // shape `substituteNow64` splices in — `toDateTime64('YYYY-MM-DD
