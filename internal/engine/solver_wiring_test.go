@@ -132,8 +132,14 @@ func TestSolver_SingleMode_ByteIdenticalToNilSolver(t *testing.T) {
 	}
 
 	// Headers must match for EVERY pre-existing key; the shadow header is
-	// the only addition.
+	// the only addition. HeaderCHMillis is excluded: it's a measured CH
+	// wall-clock duration, so base vs sol differ run-to-run (e.g. "0" vs
+	// "1") — that's latency, not a divergence in the byte-identical OUTPUT
+	// invariant this test guards.
 	for k, bv := range baseRes.Headers {
+		if k == engine.HeaderCHMillis {
+			continue
+		}
 		if sv, ok := solRes.Headers[k]; !ok || sv != bv {
 			t.Errorf("header %q: base=%q sol=%q (present=%v)", k, bv, sv, ok)
 		}
