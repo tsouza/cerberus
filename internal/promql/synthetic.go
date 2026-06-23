@@ -293,7 +293,7 @@ func lowerTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 					Name: "toUnixTimestamp64Nano",
 					Args: []chplan.Expr{anchor},
 				},
-				Right: &chplan.LitInt{V: 1_000_000_000},
+				Right: &chplan.LitInt{V: chplan.NanoToSecondDivisor},
 			},
 		},
 	}

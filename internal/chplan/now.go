@@ -9,6 +9,12 @@ import "time"
 // scale)` everywhere a server-side or literal timestamp is stamped.
 const NanoScale = 9
 
+// NanoToSecondDivisor converts a nanosecond timestamp/duration into
+// seconds: it is the `/ 1e9` divisor applied wherever a DateTime64(9)
+// epoch (`toUnixTimestamp64Nano(...)`) or a nanosecond duration is
+// rebased to the seconds unit PromQL/Grafana expects.
+const NanoToSecondDivisor int64 = 1_000_000_000
+
 // stalenessLookbackNanos is how far before the server clock an
 // instant-shape sample row is anchored when the plan exposes no real
 // per-row timestamp (rate/count_over_time/… in instant mode): 5 seconds

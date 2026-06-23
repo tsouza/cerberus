@@ -1292,7 +1292,7 @@ func quantileSamplePredicateFrag(isDuration bool) Frag {
 	inWindow := Eq(BareIdent("in_window"), InlineLit(int64(1)))
 	if isDuration {
 		return And(inWindow,
-			Gte(Mul(BareIdent("metric_arg"), InlineLit(int64(1000000000))), InlineLit(int64(2))))
+			Gte(Mul(BareIdent("metric_arg"), InlineLit(chplan.NanoToSecondDivisor)), InlineLit(int64(2))))
 	}
 	return And(inWindow, Gte(BareIdent("metric_arg"), InlineLit(int64(2))))
 }
@@ -1330,8 +1330,8 @@ func quantileBucketFrag(isDuration bool) Frag {
 		// log2 over the raw nanosecond value (metric_arg rebased back up by
 		// 1e9), bucket divided back to fractional seconds.
 		bucket := Call("pow", InlineLit(int64(2)),
-			Call("ceil", Call("log2", Mul(metricArg, InlineLit(int64(1000000000))))))
-		return Div(bucket, InlineLit(int64(1000000000)))
+			Call("ceil", Call("log2", Mul(metricArg, InlineLit(chplan.NanoToSecondDivisor)))))
+		return Div(bucket, InlineLit(chplan.NanoToSecondDivisor))
 	}
 	return Call("pow", InlineLit(int64(2)), Call("ceil", Call("log2", metricArg)))
 }

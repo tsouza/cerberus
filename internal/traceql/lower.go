@@ -315,7 +315,7 @@ func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Trace
 
 	return &chplan.Filter{
 		Input:     aggPlan,
-		Predicate: &chplan.Binary{Op: op, Left: &chplan.ColumnRef{Name: "Value"}, Right: rhsExpr},
+		Predicate: &chplan.Binary{Op: op, Left: &chplan.ColumnRef{Name: aggValueAlias}, Right: rhsExpr},
 	}, nil
 }
 
@@ -429,8 +429,12 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 // so the Tempo handler stays the source of truth for "what the search
 // envelope needs". alignUnionArms reuses the same list so mixed
 // structural/plain `||` arms line up positionally.
+// structuralExtraProjectionColumnCount is the number of candidate
+// columns the loop below iterates — the exact pre-size for cols.
+const structuralExtraProjectionColumnCount = 10
+
 func structuralExtraProjectionColumns(s schema.Traces) []string {
-	cols := make([]string, 0, 10)
+	cols := make([]string, 0, structuralExtraProjectionColumnCount)
 	for _, col := range []string{
 		s.SpanNameColumn,
 		s.DurationColumn,
@@ -1409,6 +1413,10 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 	return &chplan.Binary{Op: op, Left: left, Right: rhs}, true, nil
 }
 
+// rootSpanNestedSetParent is the nestedSetParent value Tempo assigns to a
+// root span (no parent); every non-root span has a position >= 1.
+const rootSpanNestedSetParent int64 = -1
+
 // rootnessReduction returns the cheap ParentSpanId-based predicate for a
 // `nestedSetParent <op> <int>` comparison whose result is constant
 // across the non-root position domain (positions >= 1), or ok=false
@@ -1417,7 +1425,7 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) (chplan.Expr, bool) {
 	v64, _ := lit.Int()
 	v := int64(v64)
-	root, err := evalIntCmp(-1, op, v)
+	root, err := evalIntCmp(rootSpanNestedSetParent, op, v)
 	if err != nil {
 		return nil, false
 	}
