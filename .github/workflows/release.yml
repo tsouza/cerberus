@@ -157,13 +157,17 @@ jobs:
       - name: preflight self-test
         run: node .github/scripts/release-preflight.mjs --self-test
 
-      - name: Verify the maintenance commit is the branch tip and fully green
+      - name: Verify the line is in-window, the commit is the branch tip, and fully green
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # This release run's own jobs are necessarily in-progress while the
           # preflight reads check-runs, so they're excluded structurally (gating
           # on them would deadlock).
           RELEASE_SELF_JOBS: gate,preflight,goreleaser,chart-release
+        # Also enforces the support-window / EOL policy: a push to a maintenance
+        # line 3+ minors behind the current minor is refused (the line is EOL,
+        # gets no hotfixes). See docs/operations.md "Release support window / EOL
+        # policy".
         run: node .github/scripts/release-preflight.mjs
 
   # App release — binary archives + multi-arch images (GHCR + Docker Hub) +

@@ -226,19 +226,27 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   deadlock). Latest-per-name dedup means a green re-run supersedes an earlier
   red. The publish jobs guard `needs.preflight.result == 'success' ||
   == 'skipped'`, so the main path (preflight skipped) stays preflight-free while
-  a failed/cancelled maintenance preflight blocks the publish. Pure exported
-  `MAINTENANCE_BRANCH_RE` + `evaluate({branchHead, pushedSha, checkRuns,
-  statuses, selfJobs, branchLabel})` (no network, no `process.exit`) + a
+  a failed/cancelled maintenance preflight blocks the publish. It ALSO enforces
+  the **release support-window / EOL policy** (`SUPPORTED_MINOR_LINES = 3`): the
+  pushed line must be within the latest 3 minor lines (current + the two prior);
+  a push to a line 3+ minors behind the current minor (derived from the stable
+  `v*` tag set, listed via the API so no fetch-depth is needed) is REFUSED
+  before any artifact publishes, independent of how green the commit is. See
+  `docs/operations.md` "Release support window / EOL policy". Pure exported
+  `MAINTENANCE_BRANCH_RE` + `currentMinor(tags)` + `supportWindowProblem({branch,
+  tags, windowSize})` + `evaluate({branchHead, pushedSha, checkRuns, statuses,
+  selfJobs, branchLabel, tags})` (no network, no `process.exit`) + a
   `--self-test`.
   - Env: `GITHUB_TOKEN` (checks:read + statuses:read + contents:read),
     `GITHUB_REPOSITORY`, `GITHUB_SHA` (pushed commit), `GITHUB_REF_NAME` (must
     be `release/<major>.<minor>.x`), `GITHUB_API_URL` (default
     `https://api.github.com`), `RELEASE_SELF_JOBS` (comma-separated self-job
     names to exclude); argv `--self-test` runs the assertion suite.
-  - Exit: `0` when the commit is the branch tip and all gated checks are green
-    (or a green self-test); `1` on any red/running gated check, a non-tip /
-    unresolved commit, a non-maintenance `GITHUB_REF_NAME` (a wiring error), or
-    a missing required env var.
+  - Exit: `0` when the line is in-window, the commit is the branch tip, and all
+    gated checks are green (or a green self-test); `1` on an end-of-life line,
+    any red/running gated check, a non-tip / unresolved commit, a
+    non-maintenance `GITHUB_REF_NAME` (a wiring error), or a missing required
+    env var.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
