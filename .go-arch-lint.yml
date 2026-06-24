@@ -181,6 +181,15 @@ deps:
     mayDependOn:
       - chplan
 
+  # optcorpus records routing decisions + the reconciled cost-grid for
+  # the route A/B calibration corpus. The CH-table sink builds its
+  # CREATE TABLE column types via the typed chsql DDL builder instead of
+  # hand-rolled SQL strings, so it depends on chsql. chsql depends only
+  # on chplan, so there is no cycle (optcorpus → chsql → chplan).
+  optcorpus:
+    mayDependOn:
+      - chsql
+
   # chclient is the CH driver wrapper. Pure execution layer.
   # (mayDependOn intentionally omitted — see chplan comment.)
 

@@ -131,6 +131,10 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		}
 	}
 	if err := res.Cursor.Err(); err != nil {
+		// A sample-budget 422 surfacing during the drain — the CH query already
+		// finished cleanly. Stamp the cerberus-side outcome onto the corpus
+		// record for this dispatch (cost retained, exit overridden).
+		s.Handler.Engine.ObserveDrainOutcome(res.QueryID, err)
 		return mapEngineError(err)
 	}
 

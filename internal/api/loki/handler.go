@@ -325,6 +325,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// force an arbitrarily wide matrix fan-out (compute-DoS). Uses the shared
 	// format.MaxResolutionPoints so all three heads reject the same shape.
 	if end.Sub(start)/step > format.MaxResolutionPoints {
+		// Pre-parse cap rejection: no CH query runs, so query_log can never
+		// reflect it. Record a decision-only "rejected" corpus row.
+		h.Engine.ObserveCapRejection("logql")
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New(format.ResolutionCapMessage))
 		return
 	}

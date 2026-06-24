@@ -27,6 +27,13 @@ func newFakeSource() *fakeSource {
 	return &fakeSource{byID: map[string]SourceRow{}}
 }
 
+// observeNoRoute calls ObserveQuery with route features absent (the
+// Solver-off / unclassified-head shape), keeping the pre-route-feature call
+// sites readable. Routing-feature behavior is covered by its own tests.
+func observeNoRoute(r *Reconciler, queryID, shapeID string, opts []string, language string) {
+	r.ObserveQuery(queryID, shapeID, opts, language, false, "", 0, 0, 0, 0, 0, 0, "")
+}
+
 func (f *fakeSource) seed(row SourceRow) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -124,7 +131,7 @@ func TestObserveQuery_NonBlocking_DropsWhenBufferFull(t *testing.T) {
 	// (If they blocked, this test would hang.)
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, ObserveBuffer: 2})
 	for i := 0; i < 1000; i++ {
-		r.ObserveQuery("q"+strconv.Itoa(i), "cerb:scan", nil, "promql")
+		observeNoRoute(r, "q"+strconv.Itoa(i), "cerb:scan", nil, "promql")
 	}
 	// Nothing reached the ring yet (no drain ran); the seam only buffers.
 	if n := len(r.snapshotIDs()); n != 0 {
@@ -137,8 +144,8 @@ func TestObserveQuery_NonBlocking_DropsWhenBufferFull(t *testing.T) {
 
 func TestDrainIngest_MovesSeamRecordsIntoRing(t *testing.T) {
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, ObserveBuffer: 16})
-	r.ObserveQuery("qa", "cerb:a", []string{"condition_cache"}, "logql")
-	r.ObserveQuery("qb", "cerb:b", nil, "promql")
+	observeNoRoute(r, "qa", "cerb:a", []string{"condition_cache"}, "logql")
+	observeNoRoute(r, "qb", "cerb:b", nil, "promql")
 	r.drainIngest()
 	ids := r.snapshotIDs()
 	if len(ids) != 2 {
@@ -157,7 +164,7 @@ func TestRun_DrainsSeamThenReconciles(t *testing.T) {
 	sink := &memSink{}
 	r := New(src, sink, Options{RingCapacity: 8, ObserveBuffer: 16, Interval: time.Millisecond})
 	src.seed(SourceRow{QueryID: "qz", NormalizedQueryHash: 7, ReadRows: 10})
-	r.ObserveQuery("qz", "cerb:scan", nil, "traceql")
+	observeNoRoute(r, "qz", "cerb:scan", nil, "traceql")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

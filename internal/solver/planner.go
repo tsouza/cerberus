@@ -30,16 +30,19 @@ type Planner struct {
 //     AND K >= 2.
 func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	// (2)-prefix: instant queries are never time-slice routed in phase 1.
-	// Step == 0 means an instant evaluation; there is no anchor grid.
+	// Step == 0 means an instant evaluation; there is no anchor grid. The
+	// analyze pass below derives the cost grid (N/F/D/OuterRange); it has not
+	// run yet here, so the only meaningful scalar is Step (zero on an instant
+	// query). costGrid threads whatever the empty signals carry plus meta.Step.
 	if meta.Step <= 0 {
-		return notRouted(ReasonInstant), false
+		return notRouted(ReasonInstant).withGrid(signals{}, meta), false
 	}
 
 	sig := p.analyze(plan, meta)
 
 	// (1) Slice-invariance: any unmarked node anywhere → route A.
 	if !sig.allSliceInvariant {
-		return notRouted(ReasonNotSliceable), false
+		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
 	}
 	// (1b) Routable-spine restriction: the routable spine families are the
 	// *RangeWindow matrix family (phase 1) and the *RangeLWR bare-selector
@@ -49,37 +52,37 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	// those fail closed to route A. Widening to those families extends
 	// ReanchorRange + adds coverage.
 	if sig.sawNonRangeWindowSpine {
-		return notRouted(ReasonNotSliceable), false
+		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
 	}
 	// (3) now64 anywhere (predicate / projection / ScalarSubquery.Input).
 	if sig.sawNow64 {
-		return notRouted(ReasonNow64), false
+		return notRouted(ReasonNow64).withGrid(sig, meta), false
 	}
 	// (2) Both Start and End pinned on every windowed node, and no
 	// instant-shape windowed node (OuterRange == 0 / Step == 0).
 	if sig.sawUnpinnedBound || sig.sawInstantWindow {
-		return notRouted(ReasonInstant), false
+		return notRouted(ReasonInstant).withGrid(sig, meta), false
 	}
 	// (4) Grid-prediction check: a windowed node whose bounds diverge from
 	// the grid the request predicts at its spine depth (an @-pinned anchor).
 	if sig.sawGridMismatch {
-		return notRouted(ReasonGridMismatch), false
+		return notRouted(ReasonGridMismatch).withGrid(sig, meta), false
 	}
 	// (5) Grid commensurability for nested spines.
 	if sig.sawIncommensurate {
-		return notRouted(ReasonIncommensurate), false
+		return notRouted(ReasonIncommensurate).withGrid(sig, meta), false
 	}
 	// (6) A ScalarSubquery too expensive to replicate K× (and that cannot be
 	// classified safe by the cheap interior bound) → route A.
 	if sig.sawScalarHeavy {
-		return notRouted(ReasonScalarHeavy), false
+		return notRouted(ReasonScalarHeavy).withGrid(sig, meta), false
 	}
 
 	// The plan is ELIGIBLE. Compute the cost grid and the K clamp.
 	if !sig.hasWindow {
 		// Eligible but no windowed node carries an anchor grid to slice —
 		// nothing to gain from slicing.
-		return notRouted(ReasonBelowThreshold), false
+		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 	}
 
 	n := sig.outerN              // N = OuterRange/Step + 1
@@ -110,24 +113,24 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	// If the high-D clamp ceiling fell below 2 there is no valid K — the
 	// documented high-D floor.
 	if upper < 2 {
-		return notRouted(ReasonHighD), false
+		return notRouted(ReasonHighD).withGrid(sig, meta), false
 	}
 
 	// "single" classifies but never routes.
 	if p.Cfg.Mode == ModeSingle {
-		return notRouted(ReasonBelowThreshold), false
+		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 	}
 
 	if p.Cfg.Mode == ModeAuto {
 		// Cost thresholds gate the auto path. Below threshold → route A.
 		if f < int64(p.Cfg.MinFanout) {
-			return notRouted(ReasonBelowThreshold), false
+			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
 		if int64(n)*f < int64(p.Cfg.MinAnchorPairs) {
-			return notRouted(ReasonBelowThreshold), false
+			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
 		if k < 2 {
-			return notRouted(ReasonBelowThreshold), false
+			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
 	}
 	// "sharded": thresholds drop to the floor — every eligible plan routes
@@ -138,7 +141,7 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		// A slicing failure on a plan the Planner judged eligible is a
 		// construction bug, not a routing outcome: fall back to route A
 		// rather than emit a wrong shard set.
-		return notRouted(ReasonNotSliceable), false
+		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
 	}
 
 	// The doc's invariant is "route iff K >= 2". The clamp above keeps the
@@ -147,20 +150,37 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	// is route A with extra machinery, not a sharded route. Report the
 	// ACTUAL produced slice count and only route when it is >= 2.
 	if len(slices) < 2 {
-		return notRouted(ReasonBelowThreshold), false
+		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 	}
 
-	return &Decision{
+	return (&Decision{
 		Strategy: StrategyShardedTimeslice,
 		K:        len(slices),
 		Reason:   ReasonRouted,
 		Slices:   slices,
-	}, true
+	}).withGrid(sig, meta), true
 }
 
-// notRouted builds a non-route Decision carrying only the reason.
+// notRouted builds a non-route Decision carrying only the reason. Callers
+// chain .withGrid(sig, meta) to attach the cost-grid readout once analyze
+// has run; the pre-analyze instant guard passes empty signals.
 func notRouted(reason string) *Decision {
 	return &Decision{Reason: reason}
+}
+
+// withGrid stamps the RAW classifier cost scalars (N/F/D/OuterRange/Step)
+// onto the Decision from the eligibility-pass signals plus the request grid.
+// It is a pure readout of values analyze already computed — it changes no
+// routing behavior — and is applied to BOTH routed and not-routed decisions
+// so the calibration corpus can compare route-A and route-B cost
+// distributions at equal (N, F, D). Returns the receiver for chaining.
+func (d *Decision) withGrid(sig signals, meta RequestMeta) *Decision {
+	d.NAnchors = sig.outerN
+	d.Fanout = sig.maxFanout
+	d.CumulativeD = sig.cumulativeD
+	d.OuterRange = sig.outerRange
+	d.Step = meta.Step
+	return d
 }
 
 // signals is the accumulated result of the single eligibility pass.

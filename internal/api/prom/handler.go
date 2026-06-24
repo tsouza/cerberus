@@ -442,6 +442,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// too (upstream rejects them as well; the check runs before the
 	// engine is consulted).
 	if end.Sub(start)/step > maxResolutionPoints {
+		// Pre-parse cap rejection: no CH query runs, so query_log can never
+		// reflect it. Record a decision-only "rejected" corpus row.
+		h.Engine.ObserveCapRejection("promql")
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New(format.ResolutionCapMessage))
 		return
 	}
@@ -484,7 +487,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursor, hdr, err := h.executeRangeStreaming(ctx, q, start, end, step)
+	cursor, hdr, queryID, err := h.executeRangeStreaming(ctx, q, start, end, step)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -497,6 +500,11 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	result, err := matrixFromCursor(cursor, start, end, step)
 	if err != nil {
+		// A sample-budget 422 (or other cerberus-side outcome) surfaced during
+		// the drain — the CH query already finished cleanly, so query_log shows
+		// ok with real cost. Stamp the authoritative cerberus outcome onto the
+		// corpus record for this dispatch (cost retained, exit overridden).
+		h.Engine.ObserveDrainOutcome(queryID, err)
 		h.respondError(w, classifyDrainError(err))
 		return
 	}
@@ -635,7 +643,7 @@ func (h *Handler) executeRangeStreaming(
 	query string,
 	start, end time.Time,
 	step time.Duration,
-) (chclient.Cursor, map[string]string, error) {
+) (chclient.Cursor, map[string]string, string, error) {
 	l := &lang{
 		Parser:   h.parser,
 		Schema:   h.Schema,
@@ -655,10 +663,10 @@ func (h *Handler) executeRangeStreaming(
 		c.add(time.Since(chStart))
 	}
 	if err != nil {
-		return nil, nil, classifyEngineError(err)
+		return nil, nil, "", classifyEngineError(err)
 	}
 	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", res.SQL, "args", res.Args)
-	return res.Cursor, res.Headers, nil
+	return res.Cursor, res.Headers, res.QueryID, nil
 }
 
 // executeInstant runs a PromQL query through engine.Engine and returns

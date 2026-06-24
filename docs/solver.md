@@ -273,3 +273,101 @@ exactly once each. A late-registered child cursor that races teardown is closed
 immediately so no connection leaks. A client disconnect propagates through the
 request ctx to the group ctx to every shard. Every handler entrypoint is
 goleak-gated with routed queries.
+
+## Routing-decision calibration corpus (stage 0, measurement-only)
+
+The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single
+CH query) or B (time-slice sharded) by fixed thresholds over the cost grid it
+derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Stage 0
+asks, **without changing any threshold or routing behavior**, whether that
+heuristic is good enough or whether a calibrated/learned router would pay off.
+
+To answer it the engine closes the loop the optimization corpus
+(`internal/optcorpus`) already half-built:
+
+- **Decision read-out.** Every `solver.Decision` now carries the RAW classifier
+  scalars (`NAnchors` / `Fanout` / `CumulativeD` / `OuterRange` / `Step`)
+  alongside `Strategy` / `K` / `Reason`, populated for **both** routed and
+  not-routed decisions. The overlap analysis compares route-A and route-B cost
+  at equal `(N, F, D)`, so route A must record its grid too. Buckets key on the
+  raw scalars, never on `Reason` — the not-routed shadow header folds the
+  high-`D` class into `below-threshold`, so the reason string alone hides it.
+- **Join to observed cost.** At the dispatch seam the engine hands the corpus
+  reconciler the decision read-out next to the CH `query_id`. The reconciler
+  joins `query_id` → `system.query_log` (the cost columns plus a derived
+  `exit_status` of `ok` / `oom` / `timeout` from the row type + exception code)
+  and writes one corpus row per dispatch. All optcorpus invariants hold: it is
+  flag-gated, production-only, failure-open, and the observe call is a
+  non-blocking channel send — the hot path is byte-unchanged when the corpus is
+  off.
+- **Cerberus-side terminal outcomes.** `system.query_log` only reflects what
+  ClickHouse saw — it cannot show a request cerberus *itself* terminated. Three
+  cerberus-side outcomes are captured in-process and take precedence over (or
+  complement) the query_log-derived `exit_status`:
+  - **`sample_budget`** — the `query.maxSamples` 422. It fires during the
+    Go-side result drain *after* the CH query finished cleanly, so query_log
+    shows `ok` with real cost. The corpus **keeps that cost** but overrides
+    `exit_status` to `sample_budget`: the richest calibration signal is "CH cost
+    = X, but cerberus rejected the client: too big." Stamped onto the existing
+    dispatch record by `query_id` (eager path in the engine; cursor path via the
+    handler's drain seam), so the in-process outcome wins over a query_log `ok`.
+  - **`breaker`** — the chclient circuit-breaker 503. Cerberus fast-fails
+    *before* dispatching, so there is no CH query and no query_log row. The
+    corpus emits a **decision-only** row carrying the routing read-out known at
+    classify time, `exit_status = breaker`, and zero cost.
+  - **`rejected`** — the resolution-cap / body-limit 400. These guards fire
+    pre-parse, so there is likewise no CH query: a **decision-only** row with
+    `exit_status = rejected`, zero cost, and no routing read-out (no
+    classification ran). These outcomes carry the same invariants — flag-gated,
+    failure-open, non-blocking, drop-under-burst — and the in-process capture
+    works even where the query_log reconcile (production-only) does not.
+- **Sink.** With `CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable` the corpus lands in
+  the `cerberus_router_corpus` MergeTree (DDL built with the typed `chsql` DDL
+  builder, 30-day TTL); the default `jsonl` mode appends the same rows to the
+  sink-path file (load them into the same table shape for analysis).
+
+This is a pure additive read-out: it records values the classifier already
+computed and **changes no routing behavior**. The captured features suffice to
+**replay the classifier offline** — feed a corpus row's `(N, F, D, OuterRange,
+Step)` back through `Planner.Plan` and it reproduces the recorded route, so an
+operator can sweep counterfactual thresholds against history without touching
+production (proven by `TestPlan_OfflineReplay_ReproducesRoute`).
+
+### Blind spot: a cerberus process OOM-kill
+
+The in-process recorder dies with the process. If the **cerberus process
+itself** is OOM-killed — the Go-side result-buffering class the sample budget
+exists to bound (e.g. an unbounded `matrixFromCursor` double-buffer) — the
+recorder cannot emit a `cerberus-oom` row, because the goroutine that would
+write it is gone with the rest of the process. That specific event is
+**unrecordable in-process** and is explicitly **out of Stage-0 scope**.
+
+Partial recovery is two-fold, and neither is an authoritative marker:
+
+- The decision read-out is stamped *at dispatch*, before the drain that OOMs, so
+  the dispatch record exists in the ring — but it is lost on the kill (the ring
+  is in-memory).
+- After a restart, the reconciler backfills the CH **cost** for any `query_id`
+  that did finish on the CH side and still falls inside the query_log lookback
+  window — but it joins to `ok`/`oom`/`timeout` from query_log, never to a
+  cerberus-oom outcome, because no in-process call survived to stamp one.
+
+An authoritative "cerberus-oom" marker would require an **external** signal — a
+k8s `OOMKilled` container event correlated back to the in-flight requests —
+which is outside the corpus's in-process boundary and is not part of Stage 0.
+
+### Reading the go/no-go analysis
+
+Run [`router-calibration.sql`](router-calibration.sql) against the corpus table:
+
+- **Heuristic is fine (YAGNI — stop).** Route A's cost percentiles sit well
+  below route B's with little overlap, few route-A queries land in route B's
+  cost territory at the same `(N, F)`, and essentially no route-A query
+  OOMs/times out. The fixed thresholds separate the two populations cleanly;
+  calibration would add machinery for no measurable win.
+- **Calibration is justified.** A large share of route-A queries exceed route
+  B's median cost (query 2's `pct_a_misrouted_by_mem`), buckets show route A as
+  expensive as route B at the same `(N, F)` (query 3), or — the decisive signal
+  — route-A queries OOM/timeout (query 4). Any non-trivial route-A failure
+  count is a standalone go signal: the query died on the single path the
+  heuristic chose for it.
