@@ -135,6 +135,20 @@ func quantileFrag(frac float64, column string) chsql.Frag {
 	return chsql.Parametric("quantileExact", []chsql.Frag{chsql.InlineLit(frac)}, chsql.BareIdent(column))
 }
 
+// toFloat64Frag / toInt64Frag wrap an aggregate expression so its ClickHouse
+// return type matches the Go Scan destination exactly. The corpus numeric
+// columns are all integer types (UInt8/UInt32/UInt64), and several CH
+// aggregates preserve the integer input type: countIf/count return UInt64,
+// and quantileExact/sum/max/min over an integer column return that integer
+// type. Scanning those into a Go *float64/*int64 succeeds under chDB (which
+// silently coerces) but is REJECTED by the strict clickhouse-go/v2 driver
+// against a real ClickHouse (502). Wrapping every integer-returning aggregate
+// in toFloat64/toInt64 forces the wire type to match the scan target, so the
+// rule engine works against prod CH, not just the lenient chDB test harness.
+func toFloat64Frag(f chsql.Frag) chsql.Frag { return chsql.Call("toFloat64", f) }
+
+func toInt64Frag(f chsql.Frag) chsql.Frag { return chsql.Call("toInt64", f) }
+
 func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, aggExpr chsql.Frag) (Value, error) {
 	// An empty sub-population is no signal, not a watermark of 0. The scalar
 	// path carries a count() companion column so an empty population resolves to
@@ -145,7 +159,12 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 	// ifNull(<agg>, 0) and folded through normalizeEmptyAgg to keep a non-empty
 	// group's value finite — but with count() driving NoSignal, that folded 0 is
 	// never consumed as a watermark in the empty case.
-	aggExpr = chsql.Call("ifNull", aggExpr, chsql.InlineLit(int64(0)))
+	// toFloat64 forces a Float64 wire type: quantileExact/sum/max/min over the
+	// integer corpus columns otherwise return the column's integer type, which
+	// the strict clickhouse-go/v2 driver refuses to Scan into the *float64
+	// destinations below (and in scalarAggregate). ifNull stays inside so the
+	// empty/NULL fold still happens before the cast.
+	aggExpr = toFloat64Frag(chsql.Call("ifNull", aggExpr, chsql.InlineLit(int64(0))))
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	conds := scopeConds(spec.Scope)
 	if sf := s.sinceFrag(); sf != nil {
@@ -226,8 +245,10 @@ func normalizeEmptyAgg(v float64) float64 {
 }
 
 func (s *chCorpusSource) countRatio(ctx context.Context, spec AggSpec) (Value, error) {
-	numExpr := chsql.Call("countIf", chsql.And(scopeConds(spec.NumScope)...))
-	denExpr := chsql.Call("countIf", chsql.And(scopeConds(spec.DenScope)...))
+	// countIf returns UInt64; toFloat64 matches the *float64 Scan targets below
+	// (strict clickhouse-go/v2 rejects UInt64 → *float64).
+	numExpr := toFloat64Frag(chsql.Call("countIf", chsql.And(scopeConds(spec.NumScope)...)))
+	denExpr := toFloat64Frag(chsql.Call("countIf", chsql.And(scopeConds(spec.DenScope)...)))
 	qb := chsql.NewQuery().
 		From(chsql.BareIdent(CorpusTableName)).
 		SelectAs(numExpr, "num").
@@ -270,9 +291,13 @@ func (s *chCorpusSource) EvalRule(ctx context.Context, q RuleQuery) ([]GroupResu
 	for _, col := range q.GroupBy {
 		qb = qb.Select(groupKeyFrag(col))
 	}
-	qb = qb.SelectAs(chsql.Call("count"), "support")
+	// count() returns UInt64 → scanned into *int64; max/min/sum over an integer
+	// corpus column return that integer type → scanned into *float64. Both are
+	// rejected by the strict clickhouse-go/v2 driver, so cast to the exact Go
+	// destination type (toInt64 for support, toFloat64 for every evidence agg).
+	qb = qb.SelectAs(toInt64Frag(chsql.Call("count")), "support")
 	for _, ev := range q.Evidence {
-		qb = qb.Select(chsql.Call(string(ev.fn), chsql.BareIdent(ev.column)))
+		qb = qb.Select(toFloat64Frag(chsql.Call(string(ev.fn), chsql.BareIdent(ev.column))))
 	}
 
 	conds := []chsql.Frag{condFrag}

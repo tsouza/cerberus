@@ -97,13 +97,148 @@ func TestCHSourceBuildsTypedSQL(t *testing.T) {
 		// population folds to 0 at the SQL layer instead of returning NULL. This
 		// is the Frag-level half of the MAJOR-4 silent-suppression fix (#1060);
 		// the post-Scan NaN guard is the other half (see TestNormalizeEmptyAgg).
-		"ifNull(quantileExact(0.9)(memory_usage), 0)",
+		// The whole thing is then wrapped in toFloat64 so the UInt32/UInt64
+		// quantileExact result Scans into a *float64 under the strict
+		// clickhouse-go/v2 driver (see TestCHSourceStrictScanTypes).
+		"toFloat64(ifNull(quantileExact(0.9)(memory_usage), 0))",
 		"FROM cerberus_router_corpus",
 		"route = 'A'",
 		"exit_status = 'ok'",
 	} {
 		if stringIndex(q, want) < 0 {
 			t.Errorf("query missing %q:\n%s", want, q)
+		}
+	}
+}
+
+// TestCHSourceStrictScanTypes is the regression guard for the strict
+// clickhouse-go/v2 scan-type trap. Every numeric corpus column is an integer
+// CH type (UInt8/UInt32/UInt64), and several aggregates preserve the integer
+// input type: count()/countIf() return UInt64, and quantileExact/max/min/sum
+// over an integer column return that integer type. The Go scan destinations are
+// *float64 (every aggregate value, count ratio) and *int64 (EvalRule support).
+// chDB SILENTLY COERCES integer → *float64/*int64, so the chDB parity lane is
+// green while a real ClickHouse (strict clickhouse-go/v2) returns 502 on the
+// type mismatch — the whole rule engine is non-functional against prod CH.
+//
+// This test runs in the DEFAULT lane (no chdb tag) and asserts on the EMITTED
+// SQL that every integer-returning aggregate is wrapped in toFloat64 / toInt64
+// so the wire type matches the scan target exactly. It deliberately covers the
+// integer-preserving aggregates (quantileExact / max / min over UInt columns)
+// where the wrap is load-bearing, and asserts the negative: no bare aggregate
+// token is ever emitted into a SELECT slot unwrapped. The chDB parity test
+// cannot catch this regression; this SQL-shape assertion is the gate.
+func TestCHSourceStrictScanTypes(t *testing.T) {
+	ctx := context.Background()
+
+	// Each case drives one emission path and lists the wrapped aggregate tokens
+	// that MUST appear (the integer-preserving aggregates over UInt columns) plus
+	// the bare tokens that MUST NOT appear unwrapped (i.e. without the toFloat64/
+	// toInt64 prefix). All corpus numeric columns used here are integer types:
+	// memory_usage/read_rows/query_duration_ms = UInt64, cumulative_d = UInt32.
+	frac := 0.95
+	cases := []struct {
+		name string
+		emit func(src *chCorpusSource)
+		// wantWrapped: substrings that MUST be present (the typed cast applied).
+		wantWrapped []string
+		// forbidBare: tokens that, if present WITHOUT a toFloat64(/toInt64( in
+		// front, mean an integer aggregate is being scanned into a float/int
+		// mismatch. We assert each appears only as part of a wrapped expression.
+		forbidBare []string
+	}{
+		{
+			name: "scalar quantile over UInt64",
+			emit: func(src *chCorpusSource) {
+				_, _ = src.Aggregate(ctx, AggSpec{Column: "memory_usage", Percentile: &frac})
+			},
+			wantWrapped: []string{"toFloat64(ifNull(quantileExact(0.95)(memory_usage), 0))"},
+			forbidBare:  []string{"quantileExact"},
+		},
+		{
+			name: "partitioned quantile over UInt64",
+			emit: func(src *chCorpusSource) {
+				_, _ = src.Aggregate(ctx, AggSpec{Column: "read_rows", Percentile: &frac, PartitionBy: []string{"language"}})
+			},
+			wantWrapped: []string{"toFloat64(ifNull(quantileExact(0.95)(read_rows), 0))"},
+			forbidBare:  []string{"quantileExact"},
+		},
+		{
+			name: "scalar max over UInt64",
+			emit: func(src *chCorpusSource) {
+				_, _ = src.Aggregate(ctx, AggSpec{Column: "query_duration_ms", Agg: "max"})
+			},
+			wantWrapped: []string{"toFloat64(ifNull(max(query_duration_ms), 0))"},
+			forbidBare:  []string{"max(query_duration_ms)"},
+		},
+		{
+			name: "count ratio over countIf UInt64",
+			emit: func(src *chCorpusSource) {
+				_, _ = src.Aggregate(ctx, AggSpec{
+					CountRatio: true,
+					NumScope:   Scope{"exit_status": "oom"},
+					DenScope:   Scope{"route": "A"},
+				})
+			},
+			wantWrapped: []string{"toFloat64(countIf(", "den"},
+			forbidBare:  []string{"countIf("},
+		},
+		{
+			name: "eval support count + evidence max over UInt32",
+			emit: func(src *chCorpusSource) {
+				ev, err := parseEvidenceExpr("max(cumulative_d)")
+				if err != nil {
+					t.Fatalf("evidence: %v", err)
+				}
+				_, _ = src.EvalRule(ctx, RuleQuery{
+					Condition: &EnumCmp{Column: "route", Op: OpEq, Values: []string{"A"}},
+					GroupBy:   []string{"shape_id"},
+					Evidence:  []evidenceExpr{ev},
+					Env:       Env{},
+				})
+			},
+			wantWrapped: []string{"toInt64(count())", "toFloat64(max(cumulative_d))"},
+			forbidBare:  []string{"count()", "max(cumulative_d)"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &recordingConn{}
+			src := NewCHCorpusSource(conn, 0).(*chCorpusSource)
+			tc.emit(src)
+			if len(conn.queries) == 0 {
+				t.Fatalf("emit produced no query")
+			}
+			q := conn.queries[0]
+			for _, want := range tc.wantWrapped {
+				if stringIndex(q, want) < 0 {
+					t.Errorf("missing wrapped aggregate %q (integer column scanned into Go float/int would 502 under strict clickhouse-go):\n%s", want, q)
+				}
+			}
+			// Negative: every occurrence of a forbidden bare token must be
+			// immediately preceded by a toFloat64( or toInt64( cast.
+			for _, bare := range tc.forbidBare {
+				assertOnlyWrapped(t, q, bare)
+			}
+		})
+	}
+}
+
+// assertOnlyWrapped fails if `tok` is emitted as the LEADING token of a SELECT
+// projection slot — i.e. directly after "SELECT " or ", " — which would mean the
+// integer-returning aggregate is the top of a scanned expression with no
+// toFloat64/toInt64 cast around it. A correctly-wrapped aggregate always sits
+// inside a cast (e.g. toFloat64(ifNull(quantileExact(...), 0))), so the slot
+// leader is the cast, never the bare aggregate. This is the structural
+// regression guard: if someone strips the wrap, the aggregate becomes the slot
+// leader and this fails. The positive wantWrapped assertions pin the exact
+// wrapped shape; this catches the inverse.
+func assertOnlyWrapped(t *testing.T, sql, tok string) {
+	t.Helper()
+	for _, lead := range []string{"SELECT " + tok, ", " + tok} {
+		if stringIndex(sql, lead) >= 0 {
+			t.Errorf("aggregate %q leads a SELECT slot unwrapped (no toFloat64/toInt64 cast); strict clickhouse-go would 502 scanning the integer result:\n%s", tok, sql)
 		}
 	}
 }
@@ -194,7 +329,7 @@ func TestCHSourceEvalRulePushesGroupAndCount(t *testing.T) {
 		t.Fatalf("unexpected evidence: %+v", g.Evidence)
 	}
 	q := conn.queries[0]
-	for _, want := range []string{"count()", "GROUP BY", "max(memory_usage)", "route = 'A'"} {
+	for _, want := range []string{"toInt64(count())", "GROUP BY", "toFloat64(max(memory_usage))", "route = 'A'"} {
 		if stringIndex(q, want) < 0 {
 			t.Errorf("eval query missing %q:\n%s", want, q)
 		}
@@ -246,8 +381,8 @@ func TestCHSourceCountRatioSQL(t *testing.T) {
 	}
 	q := conn.queries[0]
 	for _, want := range []string{
-		"countIf(exit_status = 'rejected')",
-		"countIf(route = 'A')",
+		"toFloat64(countIf(exit_status = 'rejected'))",
+		"toFloat64(countIf(route = 'A'))",
 		"FROM cerberus_router_corpus",
 	} {
 		if stringIndex(q, want) < 0 {
@@ -292,7 +427,7 @@ func TestCHSourceEvalRuleEnumInCondition(t *testing.T) {
 	for _, want := range []string{
 		"exit_status IN ('oom', 'timeout')",
 		"cumulative_d >= 250",
-		"max(cumulative_d)",
+		"toFloat64(max(cumulative_d))",
 		"GROUP BY",
 		"decision_reason",
 	} {
