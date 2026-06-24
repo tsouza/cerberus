@@ -237,24 +237,25 @@ map, the CI-gate inventory, and the gremlins rollout.
 
 ## Documentation
 
-| Doc                                                                      | What's in it                                                                                                                 |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| [`docs/engine.md`](docs/engine.md)                                       | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                 |
-| [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                 |
-| [`docs/configuration.md`](docs/configuration.md)                         | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults.                              |
-| [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                          |
-| [`docs/performance.md`](docs/performance.md)                             | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression.                              |
-| [`docs/optimization-rules.md`](docs/optimization-rules.md)               | The standing optimizer-design rules (feature-registry single-source-of-truth, clone-less-not-faster).                        |
-| [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md)   | The ClickHouse-optimization suite: feature registry, version gating, the runtime probe, and the query_log corpus reconciler. |
-| [`docs/solver.md`](docs/solver.md)                                       | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.                                 |
-| [`docs/native-clickhouse-roadmap.md`](docs/native-clickhouse-roadmap.md) | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates (the upstream positioning).      |
-| [`docs/benchmarks.md`](docs/benchmarks.md)                               | Benchmark methodology and the recorded numbers (regenerable).                                                                |
-| [`docs/compatibility.md`](docs/compatibility.md)                         | The differential-harness playbook for all three heads.                                                                       |
-| [`docs/test-strategy.md`](docs/test-strategy.md)                         | The 13-layer test map and CI-gate inventory.                                                                                 |
-| [`docs/observability.md`](docs/observability.md)                         | Self-observability across logs / metrics / traces (OTLP export).                                                             |
-| [`docs/health.md`](docs/health.md)                                       | `/readyz` / `/healthz` probe semantics.                                                                                      |
-| [`docs/upstream-forks.md`](docs/upstream-forks.md)                       | The `tsouza/*` parser-fork + Dependabot-watch flow.                                                                          |
-| [`docs/forbid-skip.md`](docs/forbid-skip.md)                             | The forbidden-pattern reference for the `forbid-skip` gate.                                                                  |
+| Doc                                                                      | What's in it                                                                                                                  |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| [`docs/engine.md`](docs/engine.md)                                       | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                  |
+| [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                  |
+| [`docs/configuration.md`](docs/configuration.md)                         | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults.                               |
+| [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                           |
+| [`docs/performance.md`](docs/performance.md)                             | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression.                               |
+| [`docs/optimization-rules.md`](docs/optimization-rules.md)               | The standing optimizer-design rules (feature-registry single-source-of-truth, clone-less-not-faster).                         |
+| [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md)   | The ClickHouse-optimization suite: feature registry, version gating, the runtime probe, and the query_log corpus reconciler.  |
+| [`docs/solver.md`](docs/solver.md)                                       | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.                                  |
+| [`docs/router-rules.md`](docs/router-rules.md)                           | The offline router-rules catalog: generic drivers in the repo, per-deployment thresholds resolved from the corpus at runtime. |
+| [`docs/native-clickhouse-roadmap.md`](docs/native-clickhouse-roadmap.md) | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates (the upstream positioning).       |
+| [`docs/benchmarks.md`](docs/benchmarks.md)                               | Benchmark methodology and the recorded numbers (regenerable).                                                                 |
+| [`docs/compatibility.md`](docs/compatibility.md)                         | The differential-harness playbook for all three heads.                                                                        |
+| [`docs/test-strategy.md`](docs/test-strategy.md)                         | The 13-layer test map and CI-gate inventory.                                                                                  |
+| [`docs/observability.md`](docs/observability.md)                         | Self-observability across logs / metrics / traces (OTLP export).                                                              |
+| [`docs/health.md`](docs/health.md)                                       | `/readyz` / `/healthz` probe semantics.                                                                                       |
+| [`docs/upstream-forks.md`](docs/upstream-forks.md)                       | The `tsouza/*` parser-fork + Dependabot-watch flow.                                                                           |
+| [`docs/forbid-skip.md`](docs/forbid-skip.md)                             | The forbidden-pattern reference for the `forbid-skip` gate.                                                                   |
 
 ## Contributing
 
