@@ -110,3 +110,16 @@ jobs:
 
       - name: Run strict-scan differential (real ClickHouse)
         run: just strict-scan-test
+
+      # The router-calibration corpus has two CH seams — the WRITE path
+      # (optcorpus.CHTableSink: real CREATE DDL + columnar Enum8 batch) and the
+      # READ path (routerrules.chCorpusSource: strict-scanned aggregates) — that
+      # run against a real ClickHouse via clickhouse-go/v2 in production but,
+      # being OFFLINE (never on the data plane), are exercised nowhere in CI:
+      # compose-smoke / e2e drive the gateway, and their only unit coverage uses
+      # a no-op fake batch / chDB (which leniently coerces integer columns into
+      # *float64 — the exact #1064 strict-scan blind spot). This step runs both
+      # seams through the same testcontainers real-CH harness this lane already
+      # owns. See internal/routerrules/realch_integration_test.go.
+      - name: Run router-corpus write+read differential (real ClickHouse)
+        run: just router-corpus-integration
