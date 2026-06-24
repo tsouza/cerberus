@@ -4,6 +4,34 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.5.0] — 2026-06-24
+
+### Added
+
+- **optcorpus:** record routing decision + cost-grid for route A/B calibration (stage 0) (#1053)
+
+### Fixed
+
+- remediate verified audit findings (#1046)
+- **promql:** pass TimeUnix through scalar-wrapped rate arm in range joins (#1045)
+- **api:** harden Loki/Tempo HTTP surface against POST + DoS vectors (#1049)
+- **chart:** per-head PDB + auto-derived GOMEMLIMIT for split mode (#1040)
+- **e2e:** re-provision Grafana after split-mode datasource rewrite (#1037)
+
+### Performance
+
+- **chsql:** push inner-scan time bound on range query lowerings (#1048)
+
+### CI
+
+- **release:** support maintenance-line (release/X.Y.x) hotfix publishing (#1054)
+- **pr-label:** self-healing backfill + shared mapping (#1051)
+- **mutation:** skip gremlins matrix on non-release PRs (aggregator passes through) (#1052)
+- **release:** publish on merge of a validated release PR, not on raw tag (#1044)
+- **release:** make opening a release PR label-triggered (#1039)
+- **e2e:** isolate split_isolation in its own dashboard shard (#1038)
+- **e2e:** run the FULL matrix (split + crawl) on release PRs (#1036)
+
 ## [v1.4.0] — 2026-06-22
 
 ### Added

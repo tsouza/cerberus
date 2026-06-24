@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.6.3
+version: 0.6.4
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.4.0"
+appVersion: "1.5.0"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,25 +45,21 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.4.0
+      image: ghcr.io/tsouza/cerberus:v1.5.0
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: added
-      description: "chart: per-head PodDisruptionBudget in split mode (#1040)"
-    - kind: added
-      description: "chart: auto-derive per-container GOMEMLIMIT from limits.memory (#1040)"
-    - kind: added
-      description: "chart: split mode — isolated per-head deployments (no proxy) (#1031)"
-    - kind: added
-      description: "api: O(output) drain counter + falsifiable bounds-drain regression harness (#1030)"
-    - kind: added
-      description: "config: add CERBERUS_ENABLED_HEADS per-head toggle (#1029)"
+      description: "optcorpus: record routing decision + cost-grid for route A/B calibration (stage 0) (#1053)"
     - kind: fixed
-      description: "chart: allow integer admit.{prom,loki,tempo} concurrency caps in values.schema.json (#1040)"
+      description: "remediate verified audit findings (#1046)"
     - kind: fixed
-      description: "test: thread a time window into the TraceQL property harness (#1032)"
+      description: "promql: pass TimeUnix through scalar-wrapped rate arm in range joins (#1045)"
     - kind: fixed
-      description: "config: default-on per-query sample budget at 5M (#1028)"
+      description: "api: harden Loki/Tempo HTTP surface against POST + DoS vectors (#1049)"
     - kind: fixed
-      description: "tempo: bound /api/search drain with SQL trace-limit + window pushdown (#1027)"
+      description: "chart: per-head PDB + auto-derived GOMEMLIMIT for split mode (#1040)"
+    - kind: fixed
+      description: "e2e: re-provision Grafana after split-mode datasource rewrite (#1037)"
+    - kind: changed
+      description: "chsql: push inner-scan time bound on range query lowerings (#1048)"
