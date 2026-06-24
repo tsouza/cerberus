@@ -132,15 +132,22 @@ linters:
     lll:
       line-length: 280
   exclusions:
-    # Drop sibling agent worktrees from discovery. Lefthook pre-push runs
-    # `golangci-lint run ./...` from the active worktree root; without this
-    # exclusion any file under `.claude/worktrees/<other-agent>/...` (a
-    # parallel worktree's tree) gets reachable via explicit path / IDE
-    # integration and surfaces lint findings unrelated to the committer's
-    # change. The pattern is anchored on the literal segment so it matches
-    # both `.claude/worktrees/agent-…/…` and any nested re-entry.
+    # Drop sibling-worktree leakage. Lefthook pre-push runs
+    # `golangci-lint run ./...` from a worktree root under
+    # `.claude/worktrees/<name>/`; the golangci cache is shared (keyed
+    # by the single module path), so a run can surface OTHER agents'
+    # worktrees — reported relative to cwd as either a `.claude/...`
+    # segment (this tree's own nested re-entry) or `../<name>/...` (a
+    # collapsed sibling, where the shared `.claude/worktrees/` prefix
+    # is elided). Cerberus is one module rooted at go.mod, so `go list
+    # ./...` never yields a parent-relative package — any reported path
+    # that escapes upward via `..` is foreign-worktree noise, never the
+    # committer's change. Match both shapes. (`exclusions.paths` is the
+    # only directory-skip key the golangci-lint v2 schema accepts;
+    # `run.exclude-dirs` / `issues.exclude-dirs` are rejected.)
     paths:
-      - \.claude/worktrees
+      - (^|/)\.claude($|/)
+      - (^|/)\.\.($|/)
     rules:
       - path: _test\.go
         linters:
