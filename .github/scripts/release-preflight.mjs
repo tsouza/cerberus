@@ -22,6 +22,11 @@
 //      still running / queued) AND green (success / skipped / neutral). One
 //      running check, one failure, one cancelled/timed-out lane -> release
 //      ABORTS. No flaky-lane exclusions, no "informational" passes.
+//   3. The maintenance line must be INSIDE the support window — the latest
+//      SUPPORTED_MINOR_LINES minor lines (current + the two prior). A push to a
+//      line that is end-of-life (3+ minors behind the highest released minor)
+//      is REFUSED: an EOL line gets no further hotfixes. See the "Release
+//      support window / EOL policy" subsection of docs/operations.md.
 //
 // The ONLY exclusion is THIS release run's own jobs (gate / preflight /
 // goreleaser / chart-release): they are necessarily in-progress while the
@@ -49,10 +54,11 @@
 //                      workflow, excluded from the gate.
 //
 // `evaluate(...)` takes the branch HEAD sha, the pushed sha, the raw check-runs,
-// the legacy statuses, and the self-job name set, and returns a list of blocking
-// problems (empty == release may proceed) plus the count of gated checks. No
-// network, no exclusions beyond self-jobs — exported so the self-test pins the
-// exact pass/fail boundary.
+// the legacy statuses, the self-job name set, and the released-version tags, and
+// returns a list of blocking problems (empty == release may proceed) plus the
+// count of gated checks. No network, no exclusions beyond self-jobs — exported
+// so the self-test pins the exact pass/fail boundary. The support-window check
+// is a pure helper (`supportWindowProblem`) folded into the same problems list.
 //
 // argv `--self-test` runs the in-process assertion suite and exits.
 //
@@ -69,15 +75,81 @@ export const MAINTENANCE_BRANCH_RE = /^release\/(\d+)\.(\d+)\.x$/;
 // Conclusions that count as a settled, non-blocking check-run.
 const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
 
+// Cerberus supports the latest N minor release lines: the current minor plus
+// the two prior. A maintenance line that falls 3+ minors behind the highest
+// released minor is end-of-life — no further hotfixes. See the "Release support
+// window / EOL policy" subsection of docs/operations.md.
+export const SUPPORTED_MINOR_LINES = 3;
+
+// A released app tag, `v<major>.<minor>.<patch>` (stable only — a prerelease
+// suffix like `-rc.1` does NOT establish a new supported line).
+const APP_TAG_RE = /^v(\d+)\.(\d+)\.\d+$/;
+
 // ---------------------------------------------------------------------------
 // pure core (exported for the self-test — no network, no process.exit)
 // ---------------------------------------------------------------------------
 
+// currentMinor — the highest released `<major>.<minor>` from the stable `v*`
+// tag list, as a comparable [major, minor] tuple. null when no stable tag
+// exists yet (pre-first-release — the support window can't be computed, so it
+// is not enforced).
+export function currentMinor(tags) {
+  let best = null;
+  for (const t of tags ?? []) {
+    const m = APP_TAG_RE.exec(t);
+    if (!m) continue;
+    const v = [Number(m[1]), Number(m[2])];
+    if (!best || v[0] > best[0] || (v[0] === best[0] && v[1] > best[1])) best = v;
+  }
+  return best;
+}
+
+// supportWindowProblem — given a maintenance branch and the released tag set,
+// return a blocking-problem string iff the branch is end-of-life (its minor is
+// SUPPORTED_MINOR_LINES or more behind the current minor on the same major), or
+// null when the line is in-window (or the window can't be computed yet). Lines
+// on an older major are always EOL once a newer major exists.
+export function supportWindowProblem({ branch, tags, windowSize = SUPPORTED_MINOR_LINES }) {
+  const m = MAINTENANCE_BRANCH_RE.exec(branch);
+  if (!m) return null; // not a maintenance line — caller already guards this
+  const line = [Number(m[1]), Number(m[2])];
+  const cur = currentMinor(tags);
+  if (!cur) return null; // no stable release yet — nothing to be behind of
+
+  let behind;
+  if (line[0] === cur[0]) {
+    behind = cur[1] - line[1];
+  } else if (line[0] < cur[0]) {
+    // Older major: any newer major makes the line EOL. Treat as fully behind.
+    behind = windowSize;
+  } else {
+    // Line ahead of the highest released minor (e.g. tip cut but not yet
+    // tagged) — in-window by definition.
+    return null;
+  }
+
+  if (behind >= windowSize) {
+    return (
+      `${branch} is end-of-life: minor ${line[0]}.${line[1]} is ${behind} minor(s) behind the current ` +
+      `${cur[0]}.${cur[1]} (support window = latest ${windowSize} minor lines). An EOL line gets no ` +
+      `further hotfixes — see the Release support window / EOL policy in docs/operations.md.`
+    );
+  }
+  return null;
+}
+
 // evaluate — given the branch tip sha, the pushed sha, the commit's raw
 // check-runs + legacy statuses, and the set of self-job names to exclude,
 // return { problems, gated }. `problems` empty == release may proceed.
-export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs, branchLabel }) {
+export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags }) {
   const problems = [];
+
+  // Support-window / EOL gate — independent of the tip + green-check gates, so
+  // it is evaluated even when the tip check below short-circuits. A push to an
+  // end-of-life line is refused regardless of how green it is.
+  const eol = supportWindowProblem({ branch: branchLabel, tags });
+  if (eol) problems.push(eol);
+
   if (!branchHead) {
     problems.push(`could not resolve HEAD of ${branchLabel}`);
     return { problems, gated: 0 };
@@ -226,6 +298,49 @@ function selfTest() {
   });
   assert(r.problems.length === 1 && /GitGuardian: status failure/.test(r.problems[0]), 'legacy status red must block');
 
+  // --- support-window / EOL gate -------------------------------------------
+  // Worked example from the policy: at v1.5.x current, 1.4.x and 1.3.x are
+  // supported; 1.2.x and older are EOL.
+  const releasedTags = ['v1.5.0', 'v1.4.0', 'v1.4.1', 'v1.3.0', 'v1.2.0', 'v1.0.0', 'v1.5.0-rc.1'];
+  assert(currentMinor(releasedTags)[0] === 1 && currentMinor(releasedTags)[1] === 5, 'current minor is 1.5');
+  assert(currentMinor(['v1.5.0-rc.1', 'v1.4.0'])[1] === 4, 'prerelease does not advance the current minor');
+  assert(currentMinor([]) === null, 'no stable tag -> no current minor');
+
+  const sw = (b, tags = releasedTags) => supportWindowProblem({ branch: b, tags });
+  assert(sw('release/1.5.x') === null, '1.5.x (current) is in-window');
+  assert(sw('release/1.4.x') === null, '1.4.x (current-1) is in-window');
+  assert(sw('release/1.3.x') === null, '1.3.x (current-2) is in-window');
+  assert(/end-of-life/.test(sw('release/1.2.x')), '1.2.x (current-3) is EOL');
+  assert(/end-of-life/.test(sw('release/1.0.x')), '1.0.x (current-5) is EOL');
+  assert(/end-of-life/.test(sw('release/0.9.x')), 'older major is EOL once a newer major exists');
+  assert(sw('release/1.6.x') === null, 'a line ahead of the highest tagged minor is in-window');
+  assert(sw('release/1.2.x', []) === null, 'no stable release yet -> window not enforced');
+
+  // The EOL gate is independent of green checks: an all-green tip on an EOL line
+  // is still refused.
+  r = evaluate({
+    branchHead: 'abc',
+    pushedSha: 'abc',
+    selfJobs: self,
+    branchLabel: 'release/1.2.x',
+    tags: releasedTags,
+    checkRuns: [cr('check', 'completed', 'success')],
+    statuses: [],
+  });
+  assert(r.problems.some((p) => /end-of-life/.test(p)), 'all-green EOL line must still be blocked');
+
+  // An in-window line with a green tip and tags present -> pass.
+  r = evaluate({
+    branchHead: 'abc',
+    pushedSha: 'abc',
+    selfJobs: self,
+    branchLabel: 'release/1.4.x',
+    tags: releasedTags,
+    checkRuns: [cr('check', 'completed', 'success')],
+    statuses: [],
+  });
+  assert(r.problems.length === 0, 'in-window green line should pass: ' + r.problems.join('; '));
+
   ghNotice('release-preflight --self-test: all assertions passed');
 }
 
@@ -297,10 +412,27 @@ async function main() {
     return getJSON(`${apiBase}/repos/${repo}/commits/${pushedSha}/status?per_page=100`);
   }
 
+  // Every tag name — the support-window gate derives the current minor from the
+  // stable `v<major>.<minor>.<patch>` subset. Listed via the API (not git) so
+  // the preflight job needs no fetch-depth.
+  async function allTags() {
+    const out = [];
+    let page = 1;
+    for (;;) {
+      const data = await getJSON(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`);
+      const names = (data ?? []).map((t) => t.name);
+      out.push(...names);
+      if (names.length < 100) break;
+      page += 1;
+    }
+    return out;
+  }
+
   const head = await branchHead();
   const checkRuns = await allCheckRuns();
   const combined = await combinedStatus();
   const statuses = combined.statuses ?? [];
+  const tags = await allTags();
 
   const { problems, gated } = evaluate({
     branchHead: head,
@@ -309,6 +441,7 @@ async function main() {
     statuses,
     selfJobs,
     branchLabel: branch,
+    tags,
   });
 
   if (problems.length > 0) {
