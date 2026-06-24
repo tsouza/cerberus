@@ -205,10 +205,10 @@ func Calibrate(samples []CorpusSample, defaults Config) (Config, CalibrationRepo
 		return defaults, report
 	}
 
-	// Find the empirical danger frontier: the SMALLEST Fanout and smallest
-	// (N×F) anchor-pair product at which the deployment actually observed
-	// OOM/cost-danger dispatches, weighted by a min-danger-sample floor so a
-	// single unlucky OOM is treated as noise.
+	// Find the empirical danger frontier: the COUPLED (Fanout, N×F) coordinate
+	// of the single binding OOM sample (smallest anchor-pair product) at which
+	// the deployment actually observed OOM/cost-danger dispatches, weighted by a
+	// min-danger-sample floor so a single unlucky OOM is treated as noise.
 	frontierF, frontierPairs, dangerCount, sawBelowThreshold := scanFrontier(samples)
 
 	report.FrontierFanout = frontierF
