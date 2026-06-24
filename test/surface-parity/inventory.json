@@ -369,7 +369,7 @@
       "cerberus": "reject",
       "reference": "reject",
       "class": "parity-reject",
-      "cerberus_error": "promql: function end is not yet supported"
+      "cerberus_error": "promql: function end() is only valid inside an @ modifier (e.g. up @ end()), not as a standalone call"
     },
     {
       "head": "promql",
@@ -784,7 +784,7 @@
       "cerberus": "reject",
       "reference": "reject",
       "class": "parity-reject",
-      "cerberus_error": "promql: function start is not yet supported"
+      "cerberus_error": "promql: function start() is only valid inside an @ modifier (e.g. up @ start()), not as a standalone call"
     },
     {
       "head": "promql",
