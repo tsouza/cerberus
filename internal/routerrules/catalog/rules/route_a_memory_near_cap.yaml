@@ -1,0 +1,17 @@
+rules:
+  - id: route_a_memory_near_cap
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: eq, enum: ok }
+        - { col: memory_usage, op: gte, param: memory_high_watermark }
+    evidence:
+      report: [count, "max(memory_usage)"]
+    finding: "route A class {shape_id}/{language} at/above {memory_high_watermark}; corpus shows route B bounds peak memory — lower the route-B threshold for this class"
+    action: lower_route_b_threshold

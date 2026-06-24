@@ -340,9 +340,60 @@ func LoadCatalog(data []byte) (*Catalog, error) {
 	return cat, nil
 }
 
-// LoadEmbeddedCatalog loads and validates the shipped catalog.
+// LoadEmbeddedCatalog merges the shipped split catalog (base + one file per
+// rule) into a single Catalog and validates it. The base file carries
+// apiVersion / catalogVersion / params; each rules/<rule_id>.yaml carries
+// exactly one rule. Files are merged in a deterministic order (base first, then
+// rule files sorted by filename) so the resulting rule order is reproducible and
+// independent of FS iteration order.
 func LoadEmbeddedCatalog() (*Catalog, error) {
-	return LoadCatalog(embeddedCatalog)
+	files, err := EmbeddedCatalogFiles()
+	if err != nil {
+		return nil, err
+	}
+	cat, err := mergeCatalogFiles(files)
+	if err != nil {
+		return nil, err
+	}
+	if err := Validate(cat); err != nil {
+		return nil, fmt.Errorf("routerrules: catalog invalid:\n%w", indentErr(err))
+	}
+	return cat, nil
+}
+
+// mergeCatalogFiles strict-decodes the base file (which must carry the schema
+// contract + params) and folds every subsequent rule file's rules into it,
+// rejecting a rule id declared by two files. Each file is decoded with the same
+// strict KnownFields(true) contract as the single-file path, so a malformed
+// file or a smuggled unknown key is a hard error pointing at the offending file.
+func mergeCatalogFiles(files []CatalogFile) (*Catalog, error) {
+	if len(files) == 0 {
+		return nil, errors.New("routerrules: no catalog files to merge")
+	}
+	base, err := DecodeCatalog(files[0].Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("routerrules: base catalog %q: %w", files[0].Name, err)
+	}
+	// idSource maps each merged rule id to the file that declared it, so a
+	// cross-file collision names both offenders.
+	idSource := make(map[string]string, len(files))
+	for _, r := range base.Rules {
+		idSource[r.ID] = files[0].Name
+	}
+	for _, f := range files[1:] {
+		sub, err := DecodeCatalog(f.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("routerrules: rule file %q: %w", f.Name, err)
+		}
+		for _, r := range sub.Rules {
+			if prev, dup := idSource[r.ID]; dup {
+				return nil, fmt.Errorf("routerrules: duplicate rule id %q declared in both %q and %q", r.ID, prev, f.Name)
+			}
+			idSource[r.ID] = f.Name
+			base.Rules = append(base.Rules, r)
+		}
+	}
+	return base, nil
 }
 
 func indentErr(err error) error {

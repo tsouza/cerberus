@@ -18,10 +18,17 @@ catalog analyzes that table to surface where routing should improve.
 This is the architectural point of the feature, and a reviewer must be able to
 confirm it by reading the shipped files.
 
-- The catalog file that ships in the source tree —
-  [`internal/routerrules/catalog/router_rules.yaml`](../internal/routerrules/catalog/router_rules.yaml)
-  — contains **only generic drivers**: the rule structure and the detection
-  logic, deployment-independent, with **zero baked-in numeric thresholds**.
+- The catalog that ships in the source tree is split one file per rule under
+  [`internal/routerrules/catalog/`](../internal/routerrules/catalog): a base
+  [`catalog.yaml`](../internal/routerrules/catalog/catalog.yaml) carrying the
+  schema-shape contract (`apiVersion` / `catalogVersion`) and the shared
+  `params:` registry, plus one
+  [`rules/<rule_id>.yaml`](../internal/routerrules/catalog/rules) per rule
+  (filename = rule id). Every file contains **only generic drivers**: the rule
+  structure and the detection logic, deployment-independent, with **zero
+  baked-in numeric thresholds**. The loader embeds the base plus every
+  `rules/*.yaml`, merges them in a deterministic order (base first, then rule
+  files sorted by filename), and rejects a rule id declared by two files.
 - Every dynamic **parameter** (a threshold, a watermark, a cap, a
   percentile cutoff) is **per-deployment** and resolved **at runtime from the
   database** (the deployment's own corpus aggregates) and/or the deployment's
@@ -51,10 +58,11 @@ deployment's own data.
    numeric scalar smuggled into any enum or scope slot.
 3. **A CI guard test**
    ([`catalog/router_rules_test.go`](../internal/routerrules/catalog/router_rules_test.go))
-   walks the embedded catalog's YAML tree and fails the build if any
-   digit-bearing scalar appears in a param or condition value position. (The
-   only numbers allowed in the file are `apiVersion` / `catalogVersion` and each
-   rule's `since` provenance counter — structural metadata, not thresholds.)
+   walks the YAML tree of **every** embedded catalog file (the base plus each
+   `rules/<rule_id>.yaml`) and fails the build if any digit-bearing scalar
+   appears in a param or condition value position. (The only numbers allowed are
+   `apiVersion` / `catalogVersion` and each rule's `since` provenance counter —
+   structural metadata, not thresholds.)
 
 There is **no data-derived fallback constant anywhere**. Even the percentile
 *fraction* is a named `config`-kind parameter, so the number lives in the
@@ -63,14 +71,20 @@ hard error naming the key — never a silent default.
 
 ## Catalog grammar
 
-Two top-level sections, plus two version fields:
+Two top-level sections, plus two version fields. The shipped catalog is split
+across files — the base `catalog.yaml` carries the version fields and `params:`,
+and each `rules/<rule_id>.yaml` carries one entry under `rules:` — but the
+merged in-memory shape is exactly:
 
 ```yaml
 apiVersion: routerrules.cerberus/v1   # schema-shape contract; bumped only on a breaking grammar change
 catalogVersion: 1                     # content revision; bumped additively as rules grow
-params: [ ... ]                       # the named-parameter registry
-rules:  [ ... ]                       # the generic detectors
+params: [ ... ]                       # the named-parameter registry (base catalog.yaml)
+rules:  [ ... ]                       # the generic detectors (one per rules/<rule_id>.yaml)
 ```
+
+A single-file catalog with all four sections is still a valid override passed via
+`--catalog <path>`; the split is how the *embedded default* ships.
 
 ### params — name + how to resolve, never the value
 
@@ -158,19 +172,19 @@ finding by the **solver decision reason** (see below).
 
 ### catalogVersion 1 — observed-cost / recorded-route pairs
 
-| id                                 | severity | what it flags                                                                                             |
-| ---------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                 |
-| `route_a_memory_near_cap`          | high     | route-A queries at/above the per-language memory watermark — the leading indicator before a crash.        |
-| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards.                                 |
-| `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                              |
-| `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                      |
-| `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret). |
+| id                                 | severity | what it flags                                                                                               |
+| ---------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                   |
+| `route_a_memory_near_cap`          | high     | route-A queries at/above the per-language memory watermark — the leading indicator before a crash.          |
+| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards.                                   |
+| `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                                |
+| `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                        |
+| `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret).   |
 | `route_a_slow_hot_shape`           | medium   | high-frequency slow route-A shapes — the highest aggregate payoff to re-route (grouped by decision reason). |
 
 ### catalogVersion 2 — reason-attributed and shape-geometry detectors
 
-| id                                 | severity     | what it flags                                                                                                       |
+| id                                 | severity     | what it flags                                                                                                      |
 | ---------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------ |
 | `failure_cluster_by_reason`        | critical     | hard failures (OOM/timeout) on **any** route, grouped by `decision_reason` so the operator picks the right lever.  |
 | `route_b_still_failing`            | high         | route-B classes that **still** OOM/timeout — more sharding will not help; surfaces `max(k_shards)` as evidence.    |
@@ -266,14 +280,18 @@ SQL strings.
 
 Adding a detector is a declarative edit — **no Go change**:
 
-1. If it needs a new threshold, add a `params` entry naming it and its resolver
-   kind. If the number is operator-set, make it a `config` leaf; if it's learned
-   from the corpus, make it a `corpus_percentile` / `corpus_agg` /
-   `corpus_count_ratio`.
-2. Append a `rules` entry with the condition, `group_by`, `min_support`,
+1. If it needs a new threshold, add a `params` entry in the base
+   `catalog/catalog.yaml` naming it and its resolver kind. If the number is
+   operator-set, make it a `config` leaf; if it's learned from the corpus, make
+   it a `corpus_percentile` / `corpus_agg` / `corpus_count_ratio`.
+2. Drop a new `catalog/rules/<rule_id>.yaml` file (filename = the rule id) with a
+   single entry under `rules:` carrying the condition, `group_by`, `min_support`,
    `evidence`, and `finding` text. Reference columns and `${param}`s only —
-   never a number.
-3. Bump `catalogVersion` and set the rule's `since` to the new version.
+   never a number. The loader merges it automatically (rule files are sorted by
+   filename for a deterministic order; a duplicate id across two files is a hard
+   load error).
+3. Bump `catalogVersion` in the base and set the rule's `since` to the new
+   version.
 4. `just route-rules --validate-only` confirms the catalog still holds the
    invariant; the guard test confirms no number slipped in.
 
@@ -294,7 +312,8 @@ and percentile cutoff is a named parameter resolved per-deployment at runtime:
 - **`corpus_count_ratio`** — a deployment-wide scalar (`countIf(num scope) /
   countIf(den scope)`) surfaced as message context, never a gate.
 
-The result: a single audit target (`catalog/router_rules.yaml`) with a
+The result: a small audit surface (the base `catalog/catalog.yaml` plus one
+`catalog/rules/<rule_id>.yaml` per rule) with a
 no-numbers invariant enforced three independent ways (a condition AST with no
 number-literal node, a load-time validator, and the `TestEmbeddedCatalogHasNoNumbers`
 guard). The same rule fires correctly whether a deployment's pain is broad

@@ -10,31 +10,51 @@ import (
 )
 
 // TestEmbeddedCatalogHasNoNumbers is the reviewer-facing proof of the
-// no-numbers invariant: it walks the embedded catalog's YAML tree and asserts
-// that no scalar that lives in a param or condition value position is a number.
-// This is belt-and-suspenders over the structural guard (the condition AST has
-// no number-literal node) and the load-time validator — it points at exactly
-// what ships and fails the build the instant a deployment-specific number is
-// smuggled into the catalog file.
+// no-numbers invariant: it walks EVERY embedded catalog file (the base plus each
+// rules/<rule_id>.yaml) and asserts that no scalar that lives in a param or
+// condition value position is a number. This is belt-and-suspenders over the
+// structural guard (the condition AST has no number-literal node) and the
+// load-time validator — it points at exactly what ships and fails the build the
+// instant a deployment-specific number is smuggled into any catalog file.
 func TestEmbeddedCatalogHasNoNumbers(t *testing.T) {
-	var root yaml.Node
-	if err := yaml.Unmarshal(routerrules.EmbeddedCatalog(), &root); err != nil {
-		t.Fatalf("unmarshal embedded catalog: %v", err)
+	files, err := routerrules.EmbeddedCatalogFiles()
+	if err != nil {
+		t.Fatalf("read embedded catalog files: %v", err)
 	}
-
-	// apiVersion + catalogVersion are schema-shape contract scalars, not
-	// deployment parameters; they are allowed to be numeric. Everything under
-	// params: and rules: must be number-free.
-	doc := root.Content[0]
-	params := mappingValue(doc, "params")
-	rules := mappingValue(doc, "rules")
-	if params == nil || rules == nil {
-		t.Fatalf("catalog missing params or rules section")
+	if len(files) == 0 {
+		t.Fatalf("no embedded catalog files found")
 	}
 
 	var offenders []string
-	walkScalars(params, "params", &offenders)
-	walkScalars(rules, "rules", &offenders)
+	sawParams := false
+	sawRules := false
+	for _, f := range files {
+		var root yaml.Node
+		if err := yaml.Unmarshal(f.Bytes, &root); err != nil {
+			t.Fatalf("unmarshal embedded catalog file %q: %v", f.Name, err)
+		}
+		if len(root.Content) == 0 {
+			continue
+		}
+		// apiVersion + catalogVersion are schema-shape contract scalars, not
+		// deployment parameters; they are allowed to be numeric. Everything
+		// under params: and rules: in any file must be number-free.
+		doc := root.Content[0]
+		if params := mappingValue(doc, "params"); params != nil {
+			sawParams = true
+			walkScalars(params, f.Name+":params", &offenders)
+		}
+		if rules := mappingValue(doc, "rules"); rules != nil {
+			sawRules = true
+			walkScalars(rules, f.Name+":rules", &offenders)
+		}
+	}
+	if !sawParams {
+		t.Fatalf("no params section found across embedded catalog files")
+	}
+	if !sawRules {
+		t.Fatalf("no rules section found across embedded catalog files")
+	}
 	if len(offenders) > 0 {
 		t.Fatalf("the shipped catalog contains %d numeric scalar(s) in param/condition positions — every threshold must be a named parameter, not a literal:\n%s",
 			len(offenders), strings.Join(offenders, "\n"))

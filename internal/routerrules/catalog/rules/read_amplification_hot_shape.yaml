@@ -1,0 +1,24 @@
+# N5 — read-amplification hot shape (experimental). Softest signal, shipped
+# experimental so it is loaded + validated but only evaluated on explicit
+# opt-in until an operator confirms precision on a real corpus. Flags healthy
+# scans reading far above their OWN per-shape tail — the canonical signature
+# of a missing PREWHERE / late-materialisation rewrite (read_rows is the
+# honest self-relative signal; there is no result-cardinality column, so no
+# read_rows/result ratio is fabricated).
+rules:
+  - id: read_amplification_hot_shape
+    severity: medium
+    since: 2
+    status: experimental
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: exit_status, op: eq, enum: ok }
+        - { col: read_rows, op: gte, param: read_rows_high_watermark }
+    evidence:
+      report: [count, "max(read_rows)", "max(read_bytes)"]
+    finding: "read-amplification hot shape {shape_id}/{language}: healthy scans read at/above {read_rows_high_watermark} rows, in this shape's own tail — a candidate for a missing PREWHERE / late-materialisation optimizer rewrite"
+    action: investigate_read_amplification

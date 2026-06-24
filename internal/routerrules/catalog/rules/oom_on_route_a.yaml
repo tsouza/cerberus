@@ -1,0 +1,17 @@
+rules:
+  - id: oom_on_route_a
+    severity: critical
+    since: 1
+    status: active
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: in, enum: [oom] }
+    evidence:
+      report: [count, "max(memory_usage)"]
+    finding: "route A OOM in class {shape_id}/{language}; force route B for this class"
+    action: force_route_b

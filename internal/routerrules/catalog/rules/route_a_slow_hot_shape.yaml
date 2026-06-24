@@ -1,0 +1,16 @@
+rules:
+  - id: route_a_slow_hot_shape
+    severity: medium
+    since: 1
+    status: active
+    group_by: [normalized_query_hash, language, decision_reason]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: query_duration_ms, op: gte, param: slow_duration_watermark }
+    evidence:
+      report: [count, "max(query_duration_ms)"]
+    finding: "route A hot shape {normalized_query_hash}/{language} is slow at/above {slow_duration_watermark} with high frequency — highest aggregate payoff to re-route to B"
+    action: lower_route_b_threshold

@@ -1,0 +1,24 @@
+# N2 — route B already failing, attributed by shard count.
+# Guardrail against the shipped catalog's blind spot: the shard rules assume
+# route B bounds memory and recommend MORE sharding. A route-B class that
+# still fails is the counter-example. Rather than gate on an unknowable
+# k_shards saturation cap (a config number nobody can set correctly), this
+# rule fires on any route-B hard failure and surfaces max(k_shards) as
+# evidence so the operator reads the saturation from the data.
+rules:
+  - id: route_b_still_failing
+    severity: high
+    since: 2
+    status: active
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language, decision_reason]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: B }
+        - { col: exit_status, op: in, enum: [oom, timeout] }
+    evidence:
+      report: [count, "max(k_shards)", "max(memory_usage)"]
+    finding: "route B {shape_id}/{language} STILL fails (reason={decision_reason}) at up to the shard count in evidence — more sharding will not help; reduce per-query cardinality or reject the shape"
+    action: cap_cardinality_or_reject

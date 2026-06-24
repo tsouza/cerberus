@@ -1,0 +1,16 @@
+rules:
+  - id: route_a_timeout_should_shard
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: in, enum: [timeout] }
+    evidence:
+      report: [count, "max(query_duration_ms)"]
+    finding: "route A timeout in class {shape_id}/{language}; route B time-slicing bounds per-shard wall-clock — force route B"
+    action: force_route_b

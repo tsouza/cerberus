@@ -1,0 +1,23 @@
+# N3 — cerberus-side rejection cluster.
+# sample_budget / breaker / rejected are cerberus-side terminal outcomes
+# decided BEFORE the CH dispatch (read_rows/memory are meaningless for them) —
+# a distinct operator signal that neither route A nor route B addresses.
+# group_by exit_status separates the three sub-causes; the deployment-wide
+# rejection share is surfaced as MESSAGE context via {cerberus_reject_ratio}
+# (a corpus_count_ratio scalar, never a gate).
+rules:
+  - id: cerberus_side_rejection_pressure
+    severity: high
+    since: 2
+    status: active
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language, exit_status]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: exit_status, op: in, enum: [sample_budget, breaker, rejected] }
+    evidence:
+      report: [count, "max(read_rows)"]
+    finding: "cerberus-side rejection cluster in {shape_id}/{language} (exit={exit_status}); deployment-wide explicit-rejection share is {cerberus_reject_ratio}. sample_budget -> raise query.max_samples iff CH has headroom, else pre-aggregate; breaker -> investigate upstream CH health; rejected -> re-evaluate the hard cap. Route B never fixes a cerberus-side rejection"
+    action: review_rejection_guardrail

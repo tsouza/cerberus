@@ -1,0 +1,21 @@
+# N4 — heavy shape geometry failing (the cardinality-product the solver itself
+# uses for eligibility). cumulative_d is the spine lookback; its tail is the
+# most direct "this shape is pathological independent of route" signal, and a
+# closer-to-source signal than N5's downstream read_rows proxy.
+rules:
+  - id: heavy_shape_geometry_failing
+    severity: high
+    since: 2
+    status: active
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language, decision_reason]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: exit_status, op: in, enum: [oom, timeout] }
+        - { col: cumulative_d, op: gte, param: d_high_watermark }
+    evidence:
+      report: [count, "max(cumulative_d)", "max(n_anchors)", "max(fanout)"]
+    finding: "heavy-geometry failure cluster in {shape_id}/{language} (reason={decision_reason}) with cumulative_d at/above {d_high_watermark} — the shape's spine lookback is in its own pathological tail; cut the range/step or pre-aggregate before routing"
+    action: investigate_heavy_geometry

@@ -1,0 +1,22 @@
+# N1 — hard-failure cluster, route-agnostic, attributed by solver reason.
+# Generalizes oom_on_route_a (which AND-s route=A + recommends force_route_b
+# unconditionally) to ALL hard failures regardless of route, grouped by the
+# solver reason so the operator sees shardable vs non-shardable. oom_on_route_a
+# is kept (it owns the route-A-below-threshold force-route-B sub-population);
+# this rule's action is deliberately reason-agnostic.
+rules:
+  - id: failure_cluster_by_reason
+    severity: critical
+    since: 2
+    status: active
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language, decision_reason]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: exit_status, op: in, enum: [oom, timeout] }
+    evidence:
+      report: [count, "max(memory_usage)", "max(query_duration_ms)", "max(read_rows)"]
+    finding: "hard-failure cluster in {shape_id}/{language} under decision_reason={decision_reason}; if the reason is a route-B blocker (not-sliceable / high-D / scalar-heavy) route B cannot help — cap query.max_samples / query.max_memory_bytes or cut cardinality; if below-threshold / instant, force route B"
+    action: investigate_failure_cluster

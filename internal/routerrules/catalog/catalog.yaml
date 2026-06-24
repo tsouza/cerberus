@@ -1,0 +1,122 @@
+# Router-rules catalog BASE — GENERIC DRIVERS ONLY.
+#
+# This is the base of a split catalog: it carries the schema-shape contract
+# (apiVersion / catalogVersion) and the shared params: registry. The rules
+# themselves live one-per-file under rules/<rule_id>.yaml; the loader embeds
+# this base plus every rules/*.yaml, sorts the rule files for a deterministic
+# merge order, and folds them into a single in-memory Catalog.
+#
+# This file plus every rules/*.yaml is the audit target for the hard
+# architecture invariant: they carry ONLY rule STRUCTURE and detection LOGIC
+# plus NAMED parameter references. They contain ZERO deployment-specific
+# numbers. Every threshold, watermark, cap, and percentile cutoff is a named
+# parameter resolved at runtime, per-deployment, from that deployment's own
+# corpus aggregates or its config. A reviewer confirms the invariant by checking
+# that no digit-bearing scalar appears in any param or condition value position
+# in this base or in any rule file (the catalog/router_rules_test.go guard test
+# asserts exactly this across every file).
+#
+# Grammar: see docs/router-rules.md. Adding a rule = dropping a new
+# rules/<rule_id>.yaml file (filename = rule id) and bumping catalogVersion —
+# no Go change.
+
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 2
+
+# --------------------------------------------------------------------------
+# params: NAME + how to RESOLVE, never the value.
+# kinds (closed set): config | corpus_percentile | corpus_agg | corpus_count_ratio
+# --------------------------------------------------------------------------
+params:
+  # ---- config leaves: the ONLY place an operator number enters, via the
+  # ---- deployment's own config/env. The number lives there, never here.
+  - name: watermark_pctile
+    kind: config
+    key: router_rules.watermark_percentile        # fraction in (0,1); deployment env
+
+  - name: min_class_support
+    kind: config
+    key: router_rules.min_rows_per_class          # min corpus rows for a class to count
+
+  - name: memory_hard_cap
+    kind: config
+    key: query.max_memory_bytes                   # reuse the deployment's own query cap
+
+  - name: sample_budget
+    kind: config
+    key: query.max_samples                        # reuse the deployment's own sample budget
+
+  # ---- corpus-derived params: learned from THIS deployment's own data.
+  - name: memory_high_watermark
+    kind: corpus_percentile
+    column: memory_usage
+    percentile:
+      ref: watermark_pctile                       # the fraction is itself a param ref
+    partition_by: [language]                      # one watermark per language
+    scope:
+      route: A
+      exit_status: ok                             # learn from the HEALTHY population only
+
+  - name: fanout_route_b_floor
+    kind: corpus_percentile
+    column: fanout
+    percentile:
+      ref: watermark_pctile
+    scope:
+      route: B                                    # learn the shard floor from rows that DID shard
+
+  - name: slow_duration_watermark
+    kind: corpus_percentile
+    column: query_duration_ms
+    percentile:
+      ref: watermark_pctile
+    partition_by: [language]                      # one slow-watermark per language
+                                                  # (a group_by column of every rule that uses it)
+
+
+  # ---- new corpus-derived params (catalogVersion 2) -----------------------
+  # A second percentile fraction, kept separate from watermark_pctile so the
+  # cardinality-tail watermark and the read-amplification watermark tune
+  # independently (a deployment may want a stricter tail on one than the other).
+  - name: d_pctile
+    kind: config
+    key: router_rules.cumulative_d_percentile   # fraction in (0,1); deployment env
+
+  # Per-shape cumulative-D tail learned from the corpus. cumulative_d is the
+  # spine lookback the solver itself uses for eligibility, so its tail is the
+  # most direct "this shape's geometry is pathological" signal.
+  - name: d_high_watermark
+    kind: corpus_percentile
+    column: cumulative_d
+    percentile:
+      ref: d_pctile
+    partition_by: [language]                       # one D-watermark per language
+                                                   # (a group_by column of the rule that uses it)
+
+  # Per-shape read_rows tail learned from the HEALTHY population only. A scan
+  # reading far above its own healthy tail is the canonical signature of a
+  # missing PREWHERE / late-materialisation rewrite.
+  - name: read_rows_high_watermark
+    kind: corpus_percentile
+    column: read_rows
+    percentile:
+      ref: watermark_pctile
+    partition_by: [shape_id]                       # self-relative per shape
+    scope:
+      exit_status: ok                              # learn the healthy tail only
+
+  # Deployment-wide fraction of cerberus-side hard rejections over the routable
+  # population. This is a single scalar surfaced in a finding MESSAGE for
+  # context — it is NEVER a condition operand. corpus_count_ratio resolves to a
+  # deployment-wide scalar (countIf(num)/countIf(den)), not a per-row/per-group
+  # column, so it cannot gate a rule; recasting prevalence as message context
+  # (not a gate) is what keeps this buildable in the existing grammar. A Scope
+  # is one value per enum column (the count-ratio conds are AND-ed), so the
+  # numerator names the explicit-rejection status; the finding text spells out
+  # that breaker / sample_budget are tracked by the same rule's group_by.
+  - name: cerberus_reject_ratio
+    kind: corpus_count_ratio
+    numerator_scope:
+      exit_status: rejected                        # explicit cap-rejection
+    denominator_scope:
+      route: A                                     # over the routable population
