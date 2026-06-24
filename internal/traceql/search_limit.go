@@ -76,7 +76,7 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) ch
 }
 
 // inputGuaranteesRootInResult reports whether every trace n emits is
-// guaranteed to carry its own root span (ParentSpanId = ”) in the result —
+// guaranteed to carry its own root span (ParentSpanId = "") in the result —
 // the precondition for bounding the numbering walk by root-span Timestamp.
 //
 // The recognised shape is the Grafana Traces Drilldown structure-tab input:
@@ -95,7 +95,7 @@ func inputGuaranteesRootInResult(n chplan.Node, parentSpanIDCol string) bool {
 }
 
 // isRootSpanFilter reports whether n is a root-span filter
-// (`ParentSpanId = ”`) over a Scan, looking through a bare passthrough
+// (`ParentSpanId = ""`) over a Scan, looking through a bare passthrough
 // Project (the union-arm-alignment lowering re-projects the plain arm to
 // match the structural arm's column list without changing its rows).
 func isRootSpanFilter(n chplan.Node, parentSpanIDCol string) bool {

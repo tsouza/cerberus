@@ -424,7 +424,7 @@ propagation, query-budget enforcement, per-tenant quotas) plug
 into the same context — no engine surface change required.
 
 For the full OTel setup — exporters, env vars, dashboards — see
-[`docs/observability.md`](observability.md).
+[`observability.md`](observability.md).
 
 ## What the engine is not
 

@@ -99,20 +99,7 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	}, true, nil
 }
 
-// SplitSeedStatements splits a seed script on top-level semicolons,
-// shielding semicolons inside single-quoted strings — the same split
-// applySeed (runner_chdb.go) uses before exec'ing each statement. It is
-// exported so the perf profiler can seed its own chDB session
-// statement-by-statement (chdb-go's Exec is single-statement).
-func SplitSeedStatements(seed string) []string {
-	return splitStatements(seed)
-}
-
-// PromoteCreateTable rewrites a bare `CREATE TABLE …` to
-// `CREATE OR REPLACE TABLE …` for cross-fixture idempotency inside a
-// shared chDB process, leaving `CREATE OR REPLACE` / `IF NOT EXISTS` /
-// `TEMPORARY` variants untouched — the same promotion applySeed applies.
-// Exported for the perf profiler's seed loop.
-func PromoteCreateTable(stmt string) string {
-	return promoteCreateTable(stmt)
-}
+// SplitSeedStatements and PromoteCreateTable now live in the build-tag-free
+// roundtrip_prep.go so the perf profiler (chdb-tagged), the chDB round-trip
+// runner, and the integration-tagged strict-scan differential all share one
+// copy. They remain reachable from this package under any build tag.

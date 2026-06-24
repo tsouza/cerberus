@@ -431,6 +431,11 @@ func classifyMetricsQueryRangeErr(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
 	}
+	// Breaker-open → 503, mirroring classifySearchErr in handler.go; see
+	// the rationale there.
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		return http.StatusServiceUnavailable
+	}
 	// Sample-budget exceedance → 422, mirroring classifySearchErr in
 	// handler.go; see the rationale there.
 	if errors.Is(err, chclient.ErrTooManySamples) {
@@ -440,6 +445,11 @@ func classifyMetricsQueryRangeErr(err error) int {
 	// classifySearchErr in handler.go; see the rationale there.
 	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
 		return http.StatusUnprocessableEntity
+	}
+	// Wall-clock timeout / request-ctx deadline → 503, mirroring
+	// classifySearchErr in handler.go; see the rationale there.
+	if errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusServiceUnavailable
 	}
 	if strings.Contains(err.Error(), "engine: execute:") {
 		return http.StatusBadGateway

@@ -73,6 +73,13 @@ func allNodeKinds() []chplan.Node {
 			MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
+		&chplan.RangeWindowResample{
+			Input: leaf, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
+			Step: time.Minute, Lookback: 5 * time.Minute, Offset: time.Minute,
+			MetricNameCol: "MetricName", AttributesCol: "Attributes",
+			TimestampCol: "TimeUnix", ValueCol: "Value",
+		},
+		&chplan.SearchTraceLimit{Input: leaf, TraceIDColumn: "TraceId", TimestampColumn: "TimeUnix", TraceLimit: 20},
 	}
 }
 
@@ -115,7 +122,7 @@ func TestCloneNodeExhaustive(t *testing.T) {
 	// Lock-step guard: every concrete planNode() implementer in chplan must
 	// appear here. When this count drifts, a Node type was added — extend
 	// allNodeKinds AND the CloneNode switch in clone.go.
-	const wantNodeTypes = 29
+	const wantNodeTypes = 31
 	if len(nodes) != wantNodeTypes {
 		t.Fatalf("expected %d Node types, listed %d — a Node type was added: "+
 			"extend allNodeKinds + CloneNode", wantNodeTypes, len(nodes))
