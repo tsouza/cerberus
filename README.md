@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="https://cerberus.foo/assets/brand/readme-banner-1280x640.png" alt="cerberus — three query languages, one backend" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://cerberus.foo/assets/brand/readme-banner-light-1280x640.png">
+  <img src="https://cerberus.foo/assets/brand/readme-banner-1280x640.png" alt="cerberus — three query languages, one backend" width="100%">
+</picture>
 
 <br>
 
