@@ -213,3 +213,91 @@ func TestCHSourceSinceWindow(t *testing.T) {
 		t.Errorf("expected since window predicate, got:\n%s", q)
 	}
 }
+
+// TestCHSourceCountRatioSQL pins the SQL shape of the corpus_count_ratio
+// resolver path in the DEFAULT (untagged) lane. The catalogVersion-2 N3 rule is
+// the first to use a corpus_count_ratio param (cerberus_reject_ratio), and the
+// CH render of countIf(<scope>)/<scope> had no default-lane shape coverage
+// before this — only quantile/agg/eval/since were asserted. This test is the
+// durable guarantee that the count-ratio SQL stays typed and correct even on a
+// PR that the chDB parity job's path filter would skip.
+func TestCHSourceCountRatioSQL(t *testing.T) {
+	conn := &recordingConn{respond: []scriptedResponse{
+		{match: "countIf", rows: [][]any{{2.0, 13.0}}},
+	}}
+	src := NewCHCorpusSource(conn, 0).(*chCorpusSource)
+	v, err := src.Aggregate(context.Background(), AggSpec{
+		CountRatio: true,
+		NumScope:   Scope{"exit_status": "rejected"},
+		DenScope:   Scope{"route": "A"},
+	})
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	if v.IsPartitioned() {
+		t.Fatalf("count ratio must resolve to a scalar, got partitioned")
+	}
+	want := 2.0 / 13.0
+	if v.Scalar < want-1e-9 || v.Scalar > want+1e-9 {
+		t.Fatalf("count ratio scalar = %v, want %v", v.Scalar, want)
+	}
+	if len(conn.queries) != 1 {
+		t.Fatalf("expected 1 query, got %d", len(conn.queries))
+	}
+	q := conn.queries[0]
+	for _, want := range []string{
+		"countIf(exit_status = 'rejected')",
+		"countIf(route = 'A')",
+		"FROM cerberus_router_corpus",
+	} {
+		if stringIndex(q, want) < 0 {
+			t.Errorf("count-ratio query missing %q:\n%s", want, q)
+		}
+	}
+}
+
+// TestCHSourceEvalRuleEnumInCondition pins the SQL shape of an `exit_status IN
+// (...)` leaf — the condition shape every catalogVersion-2 failure rule uses
+// (N1/N2/N4 gate on exit_status in [oom,timeout]; N3 on the three cerberus-side
+// statuses). It proves the IN frag and the partitioned param's numeric leaf
+// render through the typed builder in the default lane.
+func TestCHSourceEvalRuleEnumInCondition(t *testing.T) {
+	conn := &recordingConn{respond: []scriptedResponse{
+		{match: "count()", rows: [][]any{{"trc:compare", "traceql", "not-sliceable", int64(2), 950.0}}},
+	}}
+	src := NewCHCorpusSource(conn, 0).(*chCorpusSource)
+	// heavy_shape_geometry_failing's shape: exit_status IN (oom,timeout) AND
+	// cumulative_d >= <resolved d_high_watermark>.
+	cond := &AndCond{Children: []Condition{
+		&EnumCmp{Column: "exit_status", Op: OpIn, Values: []string{"oom", "timeout"}},
+		&ParamCmp{Column: "cumulative_d", Op: OpGte, Param: "d_wm"},
+	}}
+	ev, err := parseEvidenceExpr("max(cumulative_d)")
+	if err != nil {
+		t.Fatalf("evidence: %v", err)
+	}
+	groups, err := src.EvalRule(context.Background(), RuleQuery{
+		Condition: cond,
+		GroupBy:   []string{"shape_id", "language", "decision_reason"},
+		Evidence:  []evidenceExpr{ev},
+		Env:       Env{"d_wm": {Scalar: 250}},
+	})
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Support != 2 {
+		t.Fatalf("unexpected groups: %+v", groups)
+	}
+	q := conn.queries[0]
+	for _, want := range []string{
+		"exit_status IN ('oom', 'timeout')",
+		"cumulative_d >= 250",
+		"max(cumulative_d)",
+		"GROUP BY",
+		"decision_reason",
+	} {
+		if stringIndex(q, want) < 0 {
+			t.Errorf("eval query missing %q:\n%s", want, q)
+		}
+	}
+}

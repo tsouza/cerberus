@@ -97,9 +97,26 @@ type Finding struct {
 	groupKeyOrdered []string // group_by-ordered values, for deterministic tie-break
 }
 
-// Report is the ordered set of findings from one evaluation.
+// SkippedRule records a rule the evaluator declined to run because a fire-gate
+// parameter it depends on had no signal — its scoped sub-population was empty,
+// so there is no learned watermark to compare against. This is reported (not
+// silently dropped) so an operator can see that the absence of findings for a
+// rule is "no data to learn the threshold from", not "the threshold was met by
+// nothing". The canonical case is the route-B fanout floor on a deployment that
+// has never routed to B: the floor cannot be learned, so the rules that gate on
+// it are skipped rather than firing on every route-A row.
+type SkippedRule struct {
+	RuleID string `json:"rule_id"`
+	// Params are the no-signal fire-gate params that caused the skip, sorted.
+	Params []string `json:"params"`
+	Reason string   `json:"reason"`
+}
+
+// Report is the ordered set of findings from one evaluation, plus any rules
+// skipped for lack of a fire-gate signal.
 type Report struct {
-	Findings []Finding `json:"findings"`
+	Findings []Finding     `json:"findings"`
+	Skipped  []SkippedRule `json:"skipped,omitempty"`
 }
 
 // sortFindings orders findings deterministically: severity descending, then

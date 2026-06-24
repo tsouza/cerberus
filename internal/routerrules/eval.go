@@ -3,6 +3,7 @@ package routerrules
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -39,9 +40,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, opts EvalOptions) (*Report, er
 	}
 
 	var findings []Finding
+	var skipped []SkippedRule
 	for i := range e.cat.Rules {
 		rule := &e.cat.Rules[i]
 		if !ruleSelected(rule, opts) {
+			continue
+		}
+		if sk, ok := noSignalSkip(rule, env); ok {
+			skipped = append(skipped, sk)
 			continue
 		}
 		got, err := e.evalRule(ctx, rule, env)
@@ -51,7 +57,48 @@ func (e *Evaluator) Evaluate(ctx context.Context, opts EvalOptions) (*Report, er
 		findings = append(findings, got...)
 	}
 	sortFindings(findings)
-	return &Report{Findings: findings}, nil
+	sortSkipped(skipped)
+	return &Report{Findings: findings, Skipped: skipped}, nil
+}
+
+// noSignalSkip reports whether a rule must be skipped because a fire-gate
+// parameter it references resolved to NoSignal — i.e. the param's scoped
+// sub-population was empty, so there is no learned watermark to compare against.
+// An empty fire-gate population is the inverse of safe: normalizing it to 0
+// would make a `>=` gate fire on every row and a `<` gate fire on none, so the
+// only honest outcome is to not run the rule and say so. A param referenced only
+// in the finding message (never in a ParamCmp condition) is not a fire-gate and
+// never triggers a skip; the message simply renders that param's empty/0 form.
+func noSignalSkip(rule *Rule, env Env) (SkippedRule, bool) {
+	cond, err := lowerPredicate(rule.Condition)
+	if err != nil {
+		// A malformed condition is surfaced by evalRule's own lowering, which
+		// runs next and returns the structured error; don't mask it here.
+		return SkippedRule{}, false
+	}
+	refs := map[string]struct{}{}
+	cond.paramRefs(refs)
+
+	var noSignal []string
+	for name := range refs {
+		if v, ok := env[name]; ok && !v.IsPartitioned() && v.NoSignal {
+			noSignal = append(noSignal, name)
+		}
+	}
+	if len(noSignal) == 0 {
+		return SkippedRule{}, false
+	}
+	sort.Strings(noSignal)
+	return SkippedRule{
+		RuleID: rule.ID,
+		Params: noSignal,
+		Reason: fmt.Sprintf("fire-gate param(s) %s have no signal (empty sub-population); rule not evaluated", strings.Join(noSignal, ", ")),
+	}, true
+}
+
+// sortSkipped orders skipped-rule records by rule id for a deterministic report.
+func sortSkipped(skipped []SkippedRule) {
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].RuleID < skipped[j].RuleID })
 }
 
 func ruleSelected(rule *Rule, opts EvalOptions) bool {

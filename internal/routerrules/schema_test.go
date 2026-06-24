@@ -6,9 +6,13 @@ import (
 )
 
 func TestDecodeEmbeddedCatalogRoundTrips(t *testing.T) {
-	cat, err := DecodeCatalog(embeddedCatalog)
+	files, err := EmbeddedCatalogFiles()
 	if err != nil {
-		t.Fatalf("decode embedded catalog: %v", err)
+		t.Fatalf("read embedded catalog files: %v", err)
+	}
+	cat, err := mergeCatalogFiles(files)
+	if err != nil {
+		t.Fatalf("merge embedded catalog: %v", err)
 	}
 	if cat.APIVersion != SchemaAPIVersion {
 		t.Fatalf("apiVersion = %q, want %q", cat.APIVersion, SchemaAPIVersion)

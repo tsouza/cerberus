@@ -194,15 +194,23 @@ func writeJSON(out *os.File, report *routerrules.Report) error {
 func writeTable(out *os.File, report *routerrules.Report) error {
 	if len(report.Findings) == 0 {
 		fmt.Fprintln(out, "no findings")
-		return nil
+	} else {
+		tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "SEVERITY\tRULE\tCLASS\tSUPPORT\tACTION\tMESSAGE")
+		for _, f := range report.Findings {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				f.Severity, f.RuleID, formatClass(f.GroupKey), strconv.FormatInt(f.Support, 10), f.Action, f.Message)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
 	}
-	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "SEVERITY\tRULE\tCLASS\tSUPPORT\tACTION\tMESSAGE")
-	for _, f := range report.Findings {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			f.Severity, f.RuleID, formatClass(f.GroupKey), strconv.FormatInt(f.Support, 10), f.Action, f.Message)
+	// Skipped rules are surfaced, not silent: a rule that gates on a watermark
+	// learned from an empty sub-population has no signal and is not evaluated.
+	for _, s := range report.Skipped {
+		fmt.Fprintf(out, "skipped %s: %s\n", s.RuleID, s.Reason)
 	}
-	return tw.Flush()
+	return nil
 }
 
 func formatClass(gk map[string]string) string {

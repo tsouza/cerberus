@@ -41,7 +41,7 @@ func Validate(cat *Catalog) error {
 		add("%v", err)
 	}
 
-	validateRules(cat, paramNames, add)
+	validateRules(cat, paramNames, specs, add)
 
 	return errors.Join(errs...)
 }
@@ -161,7 +161,7 @@ func validateScope(owner string, scope Scope, add func(string, ...any)) {
 	}
 }
 
-func validateRules(cat *Catalog, paramNames map[string]struct{}, add func(string, ...any)) {
+func validateRules(cat *Catalog, paramNames map[string]struct{}, specs map[string]ParamSpec, add func(string, ...any)) {
 	seen := map[string]struct{}{}
 	for i := range cat.Rules {
 		r := &cat.Rules[i]
@@ -183,6 +183,37 @@ func validateRules(cat *Catalog, paramNames map[string]struct{}, add func(string
 		validateMinSupport(r, paramNames, add)
 		validateEvidence(r, add)
 		validateCondition(r, paramNames, add)
+		validatePartitionInGroupBy(r, specs, add)
+	}
+}
+
+// validatePartitionInGroupBy enforces at LOAD time the contract the evaluator
+// otherwise only catches at report time (sharedPartition): if a rule's condition
+// references a partitioned corpus param, that param's partition column must be
+// one of the rule's group_by columns, so the per-partition sub-evaluation can be
+// anchored to a group key. Failing at catalog load is better than at report
+// time, and it makes the partitioned-param contract a structural guarantee.
+func validatePartitionInGroupBy(r *Rule, specs map[string]ParamSpec, add func(string, ...any)) {
+	cond, err := lowerPredicate(r.Condition)
+	if err != nil {
+		return // a malformed condition is already reported by validateCondition.
+	}
+	gb := make(map[string]struct{}, len(r.GroupBy))
+	for _, c := range r.GroupBy {
+		gb[c] = struct{}{}
+	}
+	refs := map[string]struct{}{}
+	cond.paramRefs(refs)
+	for name := range refs {
+		spec, ok := specs[name]
+		if !ok || len(spec.PartitionBy) == 0 {
+			continue
+		}
+		for _, partCol := range spec.PartitionBy {
+			if _, ok := gb[partCol]; !ok {
+				add("rule %q references partitioned param %q whose partition column %q is not in the rule's group_by %v", r.ID, name, partCol, r.GroupBy)
+			}
+		}
 	}
 }
 
@@ -309,9 +340,60 @@ func LoadCatalog(data []byte) (*Catalog, error) {
 	return cat, nil
 }
 
-// LoadEmbeddedCatalog loads and validates the shipped catalog.
+// LoadEmbeddedCatalog merges the shipped split catalog (base + one file per
+// rule) into a single Catalog and validates it. The base file carries
+// apiVersion / catalogVersion / params; each rules/<rule_id>.yaml carries
+// exactly one rule. Files are merged in a deterministic order (base first, then
+// rule files sorted by filename) so the resulting rule order is reproducible and
+// independent of FS iteration order.
 func LoadEmbeddedCatalog() (*Catalog, error) {
-	return LoadCatalog(embeddedCatalog)
+	files, err := EmbeddedCatalogFiles()
+	if err != nil {
+		return nil, err
+	}
+	cat, err := mergeCatalogFiles(files)
+	if err != nil {
+		return nil, err
+	}
+	if err := Validate(cat); err != nil {
+		return nil, fmt.Errorf("routerrules: catalog invalid:\n%w", indentErr(err))
+	}
+	return cat, nil
+}
+
+// mergeCatalogFiles strict-decodes the base file (which must carry the schema
+// contract + params) and folds every subsequent rule file's rules into it,
+// rejecting a rule id declared by two files. Each file is decoded with the same
+// strict KnownFields(true) contract as the single-file path, so a malformed
+// file or a smuggled unknown key is a hard error pointing at the offending file.
+func mergeCatalogFiles(files []CatalogFile) (*Catalog, error) {
+	if len(files) == 0 {
+		return nil, errors.New("routerrules: no catalog files to merge")
+	}
+	base, err := DecodeCatalog(files[0].Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("routerrules: base catalog %q: %w", files[0].Name, err)
+	}
+	// idSource maps each merged rule id to the file that declared it, so a
+	// cross-file collision names both offenders.
+	idSource := make(map[string]string, len(files))
+	for _, r := range base.Rules {
+		idSource[r.ID] = files[0].Name
+	}
+	for _, f := range files[1:] {
+		sub, err := DecodeCatalog(f.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("routerrules: rule file %q: %w", f.Name, err)
+		}
+		for _, r := range sub.Rules {
+			if prev, dup := idSource[r.ID]; dup {
+				return nil, fmt.Errorf("routerrules: duplicate rule id %q declared in both %q and %q", r.ID, prev, f.Name)
+			}
+			idSource[r.ID] = f.Name
+			base.Rules = append(base.Rules, r)
+		}
+	}
+	return base, nil
 }
 
 func indentErr(err error) error {

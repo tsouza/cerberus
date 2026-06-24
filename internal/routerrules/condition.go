@@ -157,6 +157,13 @@ func (c *ParamCmp) frag(env Env) (chsql.Frag, error) {
 	if val.IsPartitioned() {
 		return nil, fmt.Errorf("routerrules: param %q is partition-keyed and cannot be used in a flat WHERE clause", c.Param)
 	}
+	if val.NoSignal {
+		// A no-signal fire-gate must never be lowered to a watermark of 0 (which
+		// would fire on everything). The evaluator skips any rule referencing a
+		// no-signal fire-gate before reaching here; this guard fails closed so a
+		// direct caller can't silently turn no-signal into a 0-watermark gate.
+		return nil, fmt.Errorf("routerrules: fire-gate param %q has no signal (empty sub-population); rule must be skipped, not evaluated", c.Param)
+	}
 	col := chsql.BareIdent(c.Column)
 	lit := chsql.InlineLit(val.Scalar)
 	return cmpFrag(c.Op, col, lit)
@@ -244,6 +251,12 @@ func (c *ParamCmp) match(row corpusRow, env Env) (bool, error) {
 	}
 	if val.IsPartitioned() {
 		return false, fmt.Errorf("routerrules: param %q is partition-keyed and cannot be used as a flat row predicate", c.Param)
+	}
+	if val.NoSignal {
+		// Symmetric with ParamCmp.frag: a no-signal fire-gate fails closed rather
+		// than degrading to a 0-watermark comparison. The evaluator's no-signal
+		// skip means this branch is unreachable in a normal Evaluate run.
+		return false, fmt.Errorf("routerrules: fire-gate param %q has no signal (empty sub-population); rule must be skipped, not evaluated", c.Param)
 	}
 	lhs := row.numericValue(c.Column)
 	rhs := val.Scalar

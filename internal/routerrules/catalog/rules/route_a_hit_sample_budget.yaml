@@ -1,0 +1,16 @@
+rules:
+  - id: route_a_hit_sample_budget
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: in, enum: [sample_budget] }
+    evidence:
+      report: [count, "max(read_rows)"]
+    finding: "route A hit the sample budget {sample_budget} in class {shape_id}/{language}; route B time-slicing would keep each shard under budget"
+    action: force_route_b

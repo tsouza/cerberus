@@ -1,0 +1,16 @@
+rules:
+  - id: route_a_high_fanout_should_shard
+    severity: medium
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: fanout, op: gte, param: fanout_route_b_floor }
+    evidence:
+      report: [count, "max(fanout)"]
+    finding: "route A class {shape_id}/{language} has fan-out at/above {fanout_route_b_floor} (the range this deployment normally shards) — consider routing to B"
+    action: lower_route_b_threshold

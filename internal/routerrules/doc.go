@@ -6,8 +6,9 @@
 //
 // # The hard invariant
 //
-// The shipped catalog file (catalog/router_rules.yaml) contains ONLY generic
-// drivers — the rule STRUCTURE, detection LOGIC, and NAMED parameter references
+// The shipped catalog (the base catalog/catalog.yaml plus one
+// catalog/rules/<rule_id>.yaml per rule) contains ONLY generic drivers — the
+// rule STRUCTURE, detection LOGIC, and NAMED parameter references
 // — and ZERO deployment-specific numbers. Every threshold, watermark, cap, or
 // percentile cutoff is a named parameter resolved at runtime, per-deployment,
 // from that deployment's own corpus aggregates or its config. The number lives

@@ -41,8 +41,15 @@ func NewCHCorpusSource(conn CHConn, sinceUnix float64) CorpusSource {
 }
 
 func (s *chCorpusSource) query(ctx context.Context, sql string, args []any) (rows, error) {
+	// The timeout context must outlive the returned rows: callers iterate and
+	// Scan AFTER query() returns. Cancelling here (defer cancel()) would tear
+	// the context down before the first Scan — under the chdb-go database/sql
+	// driver that surfaces as "context canceled" on Scan and poisons the
+	// single global chdb session for every later query. clickhouse-go's native
+	// driver buffers rows so it tolerated the premature cancel, masking the
+	// bug. Tie cancel to rows.Close() instead so the context spans the scan and
+	// is never leaked (every caller already defers Close).
 	ctx, cancel := context.WithTimeout(ctx, chCorpusTimeout)
-	defer cancel()
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_execution_time":    chCorpusMaxExecutionTime,
 		"timeout_overflow_mode": "throw",
@@ -55,9 +62,10 @@ func (s *chCorpusSource) query(ctx context.Context, sql string, args []any) (row
 	}))
 	r, err := s.conn.Query(ctx, sql, args...)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("routerrules: query %s: %w", CorpusTableName, err)
 	}
-	return r, nil
+	return &cancelRows{rows: r, cancel: cancel}, nil
 }
 
 // rows is the subset of driver.Rows this source consumes.
@@ -66,6 +74,32 @@ type rows interface {
 	Scan(dest ...any) error
 	Err() error
 	Close() error
+}
+
+// cancelRows binds a context.CancelFunc to a rows lifetime: the cancel fires on
+// Close (which every consumer defers), so the query timeout context spans the
+// whole scan rather than being torn down the instant query() returns.
+type cancelRows struct {
+	rows
+	cancel context.CancelFunc
+}
+
+func (c *cancelRows) Close() error {
+	err := c.rows.Close()
+	c.cancel()
+	return err
+}
+
+// groupKeyFrag is the SELECT/GROUP BY expression for a group-key column.
+//
+// Group keys are scanned into *string. Reference (Enum8) and LowCardinality
+// columns both carry string names, but the chdb-go database/sql driver cannot
+// cast a bare Enum8 column into *string ("could not cast to type: ENUM").
+// Wrapping every group key in toString() yields the enum's string name (and is
+// a no-op on String / LowCardinality(String)), so the CH group key equals the
+// JSONL path's value (which reads the same string name) — parity holds.
+func groupKeyFrag(col string) chsql.Frag {
+	return chsql.Call("toString", chsql.BareIdent(col))
 }
 
 // sinceFrag returns the event_time window predicate, or nil when unwindowed.
@@ -102,15 +136,15 @@ func quantileFrag(frac float64, column string) chsql.Frag {
 }
 
 func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, aggExpr chsql.Frag) (Value, error) {
-	// Empty corpus = no signal = no findings. A non-grouped CH aggregate
-	// (quantileExact/avg/stddevPop/…) over an empty or fully-TTL'd population
-	// returns one row of NaN; the per-partition path returns NaN per empty
-	// bucket. The JSONL backend yields 0 for the same empty case (see
-	// aggregate/quantileExact in source_jsonl.go), so wrap every aggregate in
-	// ifNull(<agg>, 0) to hold both backends to the identical 0-contract. This
-	// keeps watermark resolution byte-for-byte across backends and prevents a
-	// NaN watermark from silently suppressing all findings (every `x > NaN` is
-	// false).
+	// An empty sub-population is no signal, not a watermark of 0. The scalar
+	// path carries a count() companion column so an empty population resolves to
+	// Value{NoSignal: true} (mirroring the JSONL backend's len(all)==0 guard),
+	// and a fire-gate that depends on it is skipped rather than firing on
+	// everything. A non-grouped aggregate (quantileExact/avg/stddevPop/…) over a
+	// zero-row group returns NaN, so the aggregate is still wrapped in
+	// ifNull(<agg>, 0) and folded through normalizeEmptyAgg to keep a non-empty
+	// group's value finite — but with count() driving NoSignal, that folded 0 is
+	// never consumed as a watermark in the empty case.
 	aggExpr = chsql.Call("ifNull", aggExpr, chsql.InlineLit(int64(0)))
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	conds := scopeConds(spec.Scope)
@@ -122,27 +156,11 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 	}
 
 	if len(spec.PartitionBy) == 0 {
-		qb = qb.SelectAs(aggExpr, "v")
-		sql, args := qb.Build()
-		r, err := s.query(ctx, sql, args)
-		if err != nil {
-			return Value{}, err
-		}
-		defer func() { _ = r.Close() }()
-		var v float64
-		if r.Next() {
-			if err := r.Scan(&v); err != nil {
-				return Value{}, fmt.Errorf("routerrules: scan aggregate: %w", err)
-			}
-		}
-		if err := r.Err(); err != nil {
-			return Value{}, err
-		}
-		return Value{Scalar: normalizeEmptyAgg(v)}, nil
+		return s.scalarAggregate(ctx, qb, aggExpr)
 	}
 
 	partCol := spec.PartitionBy[0]
-	qb = qb.Select(chsql.BareIdent(partCol)).SelectAs(aggExpr, "v").GroupBy(chsql.BareIdent(partCol))
+	qb = qb.Select(groupKeyFrag(partCol)).SelectAs(aggExpr, "v").GroupBy(groupKeyFrag(partCol))
 	sql, args := qb.Build()
 	r, err := s.query(ctx, sql, args)
 	if err != nil {
@@ -164,6 +182,35 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 		return Value{}, err
 	}
 	return Value{Partition: part, PartitionCol: partCol}, nil
+}
+
+// scalarAggregate runs the non-partitioned aggregate with a count() companion so
+// an empty sub-population resolves to Value{NoSignal:true} rather than a 0
+// watermark (which would make a fire-gate match everything).
+func (s *chCorpusSource) scalarAggregate(ctx context.Context, qb *chsql.QueryBuilder, aggExpr chsql.Frag) (Value, error) {
+	qb = qb.SelectAs(aggExpr, "v").SelectAs(chsql.Call("count"), "n")
+	sql, args := qb.Build()
+	r, err := s.query(ctx, sql, args)
+	if err != nil {
+		return Value{}, err
+	}
+	defer func() { _ = r.Close() }()
+	var (
+		v float64
+		n uint64
+	)
+	if r.Next() {
+		if err := r.Scan(&v, &n); err != nil {
+			return Value{}, fmt.Errorf("routerrules: scan aggregate: %w", err)
+		}
+	}
+	if err := r.Err(); err != nil {
+		return Value{}, err
+	}
+	if n == 0 {
+		return Value{NoSignal: true}, nil
+	}
+	return Value{Scalar: normalizeEmptyAgg(v)}, nil
 }
 
 // normalizeEmptyAgg folds a CH aggregate over an empty/TTL'd population to the
@@ -221,7 +268,7 @@ func (s *chCorpusSource) EvalRule(ctx context.Context, q RuleQuery) ([]GroupResu
 
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	for _, col := range q.GroupBy {
-		qb = qb.Select(chsql.BareIdent(col))
+		qb = qb.Select(groupKeyFrag(col))
 	}
 	qb = qb.SelectAs(chsql.Call("count"), "support")
 	for _, ev := range q.Evidence {
@@ -234,7 +281,7 @@ func (s *chCorpusSource) EvalRule(ctx context.Context, q RuleQuery) ([]GroupResu
 	}
 	qb = qb.Where(conds...)
 	for _, col := range q.GroupBy {
-		qb = qb.GroupBy(chsql.BareIdent(col))
+		qb = qb.GroupBy(groupKeyFrag(col))
 	}
 
 	sql, args := qb.Build()

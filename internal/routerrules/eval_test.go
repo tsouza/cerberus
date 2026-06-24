@@ -24,10 +24,11 @@ func seedSource(t *testing.T) CorpusSource {
 // predictable values; min_rows_per_class is 1 so no class is dropped.
 func evalConfig() ConfigLookup {
 	return staticConfig(map[string]string{
-		"router_rules.watermark_percentile": "0.5",
-		"router_rules.min_rows_per_class":   "1",
-		"query.max_memory_bytes":            "1073741824",
-		"query.max_samples":                 "5000000",
+		"router_rules.watermark_percentile":    "0.5",
+		"router_rules.cumulative_d_percentile": "0.5",
+		"router_rules.min_rows_per_class":      "1",
+		"query.max_memory_bytes":               "1073741824",
+		"query.max_samples":                    "5000000",
 	})
 }
 
@@ -54,14 +55,36 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 		class   string
 		support int64
 	}{
+		// --- shipped 7-rule baseline (catalogVersion 1) ---------------------
 		{"oom_on_route_a", "language=promql,shape_id=cerb:sum", 2},
+		{"oom_on_route_a", "language=traceql,shape_id=trc:spans", 1},
 		{"route_a_memory_near_cap", "language=promql,shape_id=cerb:sum", 2},
 		{"route_a_high_fanout_should_shard", "language=logql,shape_id=cerb:rate", 2},
 		{"route_a_timeout_should_shard", "language=logql,shape_id=cerb:rate", 1},
+		{"route_a_timeout_should_shard", "language=traceql,shape_id=trc:spans", 1},
 		{"route_a_hit_sample_budget", "language=logql,shape_id=cerb:rate", 1},
 		{"route_b_overshard_low_fanout", "language=promql,shape_id=cerb:topk", 3},
-		{"route_a_slow_hot_shape", "language=promql,normalized_query_hash=11", 4},
-		{"route_a_slow_hot_shape", "language=logql,normalized_query_hash=22", 2},
+		// route_a_slow_hot_shape now carries decision_reason in its group key
+		// (the catalogVersion-2 one-line group_by amendment).
+		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=11", 4},
+		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=logql,normalized_query_hash=22", 2},
+		{"route_a_slow_hot_shape", "decision_reason=instant,language=traceql,normalized_query_hash=55", 2},
+		// --- catalogVersion 2: N1 failure_cluster_by_reason -----------------
+		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=promql,shape_id=cerb:sum", 2},
+		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=logql,shape_id=cerb:rate", 1},
+		{"failure_cluster_by_reason", "decision_reason=not-sliceable,language=traceql,shape_id=trc:compare", 2},
+		{"failure_cluster_by_reason", "decision_reason=instant,language=traceql,shape_id=trc:spans", 2},
+		// --- N2 route_b_still_failing ---------------------------------------
+		{"route_b_still_failing", "decision_reason=not-sliceable,language=traceql,shape_id=trc:compare", 2},
+		// --- N3 cerberus_side_rejection_pressure (one per exit_status) -------
+		{"cerberus_side_rejection_pressure", "exit_status=sample_budget,language=logql,shape_id=cerb:rate", 1},
+		{"cerberus_side_rejection_pressure", "exit_status=breaker,language=traceql,shape_id=trc:breaker", 2},
+		{"cerberus_side_rejection_pressure", "exit_status=rejected,language=traceql,shape_id=trc:rejected", 2},
+		// --- N4 heavy_shape_geometry_failing --------------------------------
+		{"heavy_shape_geometry_failing", "decision_reason=below-threshold,language=promql,shape_id=cerb:sum", 2},
+		{"heavy_shape_geometry_failing", "decision_reason=below-threshold,language=logql,shape_id=cerb:rate", 1},
+		{"heavy_shape_geometry_failing", "decision_reason=not-sliceable,language=traceql,shape_id=trc:compare", 2},
+		// N5 read_amplification_hot_shape is experimental (asserted separately).
 	}
 	for _, w := range want {
 		f, ok := got[key{w.rule, w.class}]
@@ -103,10 +126,11 @@ func TestEvaluateMinSupportDropsThinClasses(t *testing.T) {
 		t.Fatalf("load catalog: %v", err)
 	}
 	cfg := staticConfig(map[string]string{
-		"router_rules.watermark_percentile": "0.5",
-		"router_rules.min_rows_per_class":   "2", // drop the 1-row classes
-		"query.max_memory_bytes":            "1073741824",
-		"query.max_samples":                 "5000000",
+		"router_rules.watermark_percentile":    "0.5",
+		"router_rules.cumulative_d_percentile": "0.5",
+		"router_rules.min_rows_per_class":      "2", // drop the 1-row classes
+		"query.max_memory_bytes":               "1073741824",
+		"query.max_samples":                    "5000000",
 	})
 	ev := NewEvaluator(cat, cfg, seedSource(t))
 	report, err := ev.Evaluate(context.Background(), EvalOptions{})
@@ -151,11 +175,13 @@ func TestEvaluateMissingConfigKeyFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load catalog: %v", err)
 	}
-	// Omit router_rules.watermark_percentile.
+	// Omit router_rules.watermark_percentile (supply every other key so the
+	// missing-key error names exactly the omitted one).
 	cfg := staticConfig(map[string]string{
-		"router_rules.min_rows_per_class": "1",
-		"query.max_memory_bytes":          "1073741824",
-		"query.max_samples":               "5000000",
+		"router_rules.cumulative_d_percentile": "0.5",
+		"router_rules.min_rows_per_class":      "1",
+		"query.max_memory_bytes":               "1073741824",
+		"query.max_samples":                    "5000000",
 	})
 	ev := NewEvaluator(cat, cfg, seedSource(t))
 	_, err = ev.Evaluate(context.Background(), EvalOptions{})
