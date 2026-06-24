@@ -156,29 +156,7 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 	}
 
 	if len(spec.PartitionBy) == 0 {
-		qb = qb.SelectAs(aggExpr, "v").SelectAs(chsql.Call("count"), "n")
-		sql, args := qb.Build()
-		r, err := s.query(ctx, sql, args)
-		if err != nil {
-			return Value{}, err
-		}
-		defer func() { _ = r.Close() }()
-		var (
-			v float64
-			n uint64
-		)
-		if r.Next() {
-			if err := r.Scan(&v, &n); err != nil {
-				return Value{}, fmt.Errorf("routerrules: scan aggregate: %w", err)
-			}
-		}
-		if err := r.Err(); err != nil {
-			return Value{}, err
-		}
-		if n == 0 {
-			return Value{NoSignal: true}, nil
-		}
-		return Value{Scalar: normalizeEmptyAgg(v)}, nil
+		return s.scalarAggregate(ctx, qb, aggExpr)
 	}
 
 	partCol := spec.PartitionBy[0]
@@ -204,6 +182,35 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 		return Value{}, err
 	}
 	return Value{Partition: part, PartitionCol: partCol}, nil
+}
+
+// scalarAggregate runs the non-partitioned aggregate with a count() companion so
+// an empty sub-population resolves to Value{NoSignal:true} rather than a 0
+// watermark (which would make a fire-gate match everything).
+func (s *chCorpusSource) scalarAggregate(ctx context.Context, qb *chsql.QueryBuilder, aggExpr chsql.Frag) (Value, error) {
+	qb = qb.SelectAs(aggExpr, "v").SelectAs(chsql.Call("count"), "n")
+	sql, args := qb.Build()
+	r, err := s.query(ctx, sql, args)
+	if err != nil {
+		return Value{}, err
+	}
+	defer func() { _ = r.Close() }()
+	var (
+		v float64
+		n uint64
+	)
+	if r.Next() {
+		if err := r.Scan(&v, &n); err != nil {
+			return Value{}, fmt.Errorf("routerrules: scan aggregate: %w", err)
+		}
+	}
+	if err := r.Err(); err != nil {
+		return Value{}, err
+	}
+	if n == 0 {
+		return Value{NoSignal: true}, nil
+	}
+	return Value{Scalar: normalizeEmptyAgg(v)}, nil
 }
 
 // normalizeEmptyAgg folds a CH aggregate over an empty/TTL'd population to the

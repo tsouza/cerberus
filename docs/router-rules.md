@@ -122,6 +122,27 @@ params:
     scope: { route: A, exit_status: ok }     # aggregate over the HEALTHY population only
 ```
 
+#### Empty populations are no signal, not zero
+
+A `corpus_percentile` / `corpus_agg` watermark whose scoped sub-population is
+**empty** (zero rows match the `scope`) resolves to **no signal**, not to a
+watermark of `0`. The distinction matters for **fire-gate** params — those a rule
+references in a `>=`/`>`/`<` condition. If an empty fire-gate normalized to `0`, a
+`fanout >= 0` gate would fire on *every* row (the inverse of safe). So a scalar
+fire-gate over an empty population is marked no-signal, and the evaluator
+**skips** any rule that gates on it, reporting the skip with a structured reason
+(rule id + the offending param) rather than firing or silently dropping it. The
+canonical case is `fanout_route_b_floor` (the route-B fanout p95) on a deployment
+that has never routed to route B: the floor cannot be learned, so
+`route_a_high_fanout_should_shard` and `route_b_overshard_low_fanout` are skipped,
+not fired on the whole route-A population.
+
+A **message-only** param — one referenced solely in a finding template, never in
+a condition, such as `cerberus_reject_ratio` — keeps resolving an empty
+population to `0`: there, `0` is the correct "no rejections observed" value. The
+fire-gate-vs-message distinction is structural (referenced in a condition vs only
+in a message), so no extra annotation is needed in the catalog.
+
 ### rules — generic detectors
 
 A rule pairs an observed-cost signal with the route the corpus recorded, so each
@@ -271,6 +292,23 @@ The evaluator never branches on backend: a rule's condition lowers to a typed
 *same* AST, so the two backends produce identical findings. A `chdb`-tagged
 parity test seeds one fixture as JSONL and as a CH table and asserts the findings
 match.
+
+### The effectiveness fixture
+
+`testdata/effectiveness.jsonl` is a fabricated corpus (no production-identifying
+values) calibrated to a realistic query mix: a PromQL-dominant, range-heavy
+healthy majority on route A, plus an injected failure surface a healthy
+deployment lacks — OOM / timeout / sample-budget / breaker / rejected clusters, a
+route-B failing cluster with non-zero `k_shards`, a route-B overshard-regret
+class, a high-fanout route-A class, and a high-geometry sub-population. It proves
+the catalog is **effective**, not just well-formed: default-lane tests assert that
+every rule fires on its planted pathology with the expected class set and support,
+that the hard-failure rules stay quiet on the healthy majority (a real
+false-positive check), and that the resolved watermarks are non-degenerate. A
+maintainer-reviewable golden pins exactly which shapes get flagged and with which
+action; the `effectiveness_no_route_b.jsonl` variant exercises the
+empty-population no-signal skip. Both backends run the fixture under the parity
+test, so the JSONL and CH paths must agree finding-for-finding.
 
 All ClickHouse SQL is composed via the typed `internal/chsql` Frag API
 (`Call` / `Parametric` / `Eq` / `Gt` / `And` / `In` / `BareIdent` / …) — no raw

@@ -66,13 +66,13 @@ const sinceAfterAllRows = 100_000
 // TestCrossBackendParityEmptyCorpus is the empty-corpus parity guard. Both
 // backends scan the SAME seeded corpus but with a --since floor past every row,
 // so each sees an empty population. The contract is: empty corpus = no signal =
-// no findings, and every corpus-derived param resolves to 0 on BOTH backends.
-// Before the ifNull(...,0) Frag wrap + NaN/Inf guard in source_ch.go, the CH
-// backend resolved its watermarks to NaN (a non-grouped aggregate over zero
-// rows), while the JSONL backend resolved them to 0 — diverging the resolved
-// Env and silently suppressing every finding on CH (x > NaN is always false).
-// This test asserts the two backends agree, scalar-for-scalar, and that both
-// produce an empty report.
+// no findings. A scalar fire-gate watermark over an empty population resolves to
+// Value{NoSignal:true} on BOTH backends (the CH backend detects emptiness via a
+// count() companion; the JSONL backend via len(all)==0), so assertEnvParity
+// checks NoSignal parity as well as scalar parity. A message-only count ratio
+// still resolves to a finite 0 on both. The rules then produce no findings —
+// either skipped for no signal (the fire-gate rules) or matching zero rows (the
+// enum-only rules).
 func TestCrossBackendParityEmptyCorpus(t *testing.T) {
 	db := openParityChDB(t)
 	seedParityTable(t, db)
@@ -116,8 +116,51 @@ func TestCrossBackendParityEmptyCorpus(t *testing.T) {
 	}
 }
 
-// assertEnvParity fails if the two resolved Envs differ in key set, scalar
-// values (NaN/Inf is never tolerated), or partition contents.
+// TestCrossBackendParityEffectiveness runs the realistic effectiveness fixture
+// through both backends and asserts the findings are identical, class-for-class
+// and support-for-support. This is the end-to-end proof that the SQL (CH) path
+// and the in-Go (JSONL) path agree on the full catalog over a corpus that
+// actually exercises every rule's fire path — not just the minimal seed. It is
+// the parity counterpart of the default-lane TestEffectivenessGolden.
+func TestCrossBackendParityEffectiveness(t *testing.T) {
+	db := openParityChDB(t)
+	seedParityTableFrom(t, db, "testdata/effectiveness.jsonl")
+
+	cat, err := LoadEmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	cfg := effConfig()
+	opts := EvalOptions{IncludeExperimental: true}
+
+	chReport, err := NewEvaluator(cat, cfg, NewCHCorpusSource(&sqlDBConn{db: db}, 0)).Evaluate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("ch evaluate: %v", err)
+	}
+	jsonlReport, err := NewEvaluator(cat, cfg, effSource()).Evaluate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("jsonl evaluate: %v", err)
+	}
+
+	chKeys := findingKeys(chReport)
+	jsonlKeys := findingKeys(jsonlReport)
+	if len(chKeys) != len(jsonlKeys) {
+		t.Fatalf("finding count differs: ch=%d jsonl=%d\nch=%v\njsonl=%v", len(chKeys), len(jsonlKeys), chKeys, jsonlKeys)
+	}
+	for k, chSup := range chKeys {
+		jSup, ok := jsonlKeys[k]
+		if !ok {
+			t.Errorf("ch finding %q absent from jsonl", k)
+			continue
+		}
+		if chSup != jSup {
+			t.Errorf("support differs for %q: ch=%d jsonl=%d", k, chSup, jSup)
+		}
+	}
+}
+
+// assertEnvParity fails if the two resolved Envs differ in key set, NoSignal
+// flags, scalar values (NaN/Inf is never tolerated), or partition contents.
 func assertEnvParity(t *testing.T, a, b Env) {
 	t.Helper()
 	if len(a) != len(b) {
@@ -132,6 +175,9 @@ func assertEnvParity(t *testing.T, a, b Env) {
 		if av.IsPartitioned() != bv.IsPartitioned() {
 			t.Errorf("param %q partitioned-ness differs: ch=%v jsonl=%v", name, av.IsPartitioned(), bv.IsPartitioned())
 			continue
+		}
+		if av.NoSignal != bv.NoSignal {
+			t.Errorf("param %q NoSignal differs: ch=%v jsonl=%v", name, av.NoSignal, bv.NoSignal)
 		}
 		if !av.IsPartitioned() {
 			if av.Scalar != bv.Scalar {
@@ -171,10 +217,16 @@ func openParityChDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// seedParityTable creates the corpus table in chdb and loads the seed rows. The
-// column types mirror the optcorpus MergeTree DDL so the CH source's queries
-// behave as they would against the real table.
+// seedParityTable creates the corpus table in chdb and loads testdata/seed.jsonl.
 func seedParityTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	seedParityTableFrom(t, db, "testdata/seed.jsonl")
+}
+
+// seedParityTableFrom creates the corpus table in chdb and loads the named JSONL
+// fixture. The column types mirror the optcorpus MergeTree DDL so the CH source's
+// queries behave as they would against the real table.
+func seedParityTableFrom(t *testing.T, db *sql.DB, fixture string) {
 	t.Helper()
 	ddl := "CREATE OR REPLACE TABLE " + CorpusTableName + ` (
 		event_time DateTime,
@@ -194,7 +246,7 @@ func seedParityTable(t *testing.T, db *sql.DB) {
 		t.Fatalf("create table: %v", err)
 	}
 
-	rows := readSeedRows(t)
+	rows := readSeedRows(t, fixture)
 	var vals []string
 	for _, r := range rows {
 		vals = append(vals, fmt.Sprintf(
@@ -213,9 +265,9 @@ func seedParityTable(t *testing.T, db *sql.DB) {
 
 // readSeedRows decodes the JSONL fixture into jsonlRow values for re-insertion
 // into chdb, so both backends read byte-identical data.
-func readSeedRows(t *testing.T) []jsonlRow {
+func readSeedRows(t *testing.T, fixture string) []jsonlRow {
 	t.Helper()
-	data, err := os.ReadFile("testdata/seed.jsonl")
+	data, err := os.ReadFile(fixture) //nolint:gosec // test fixture path under testdata/
 	if err != nil {
 		t.Fatalf("read seed: %v", err)
 	}
