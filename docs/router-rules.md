@@ -293,6 +293,38 @@ The evaluator never branches on backend: a rule's condition lowers to a typed
 parity test seeds one fixture as JSONL and as a CH table and asserts the findings
 match.
 
+### Why parity-on-chDB is not enough: the strict-scan integration lane
+
+The `chdb`-tagged parity test executes the CH path's SQL, but against chDB
+(libchdb behind chdb-go's Parquet `database/sql` driver), which **leniently
+coerces** result-column types into whatever Go destination a `Scan` supplies — a
+`UInt64` `count()` or an integer-typed `quantileExact` lands happily in a
+`*float64`. Production cerberus does not use chDB: the offline analysis talks to
+a real ClickHouse over the native protocol via `clickhouse-go/v2`, whose `Scan`
+is **strict** — a column type that doesn't match the destination is a hard error
+(`converting … to … is unsupported`, code 47) the operator sees as a 502. This
+is exactly the class of bug `#1064` was: the corpus SELECTs returned integer CH
+types but the cursor scanned them into `*float64`/`*int64`; every chDB parity
+test stayed green while the read path 502'd against real ClickHouse. The fix
+wraps every integer-returning aggregate in `toFloat64(…)`/`toInt64(…)`
+([`source_ch.go`](../internal/routerrules/source_ch.go)) so the wire type
+matches the scan destination.
+
+Because the chDB parity lane is structurally blind to that class, and because
+compose-smoke / e2e drive the data plane (never the offline corpus reconciler),
+an `integration`-tagged real-CH lane covers both corpus seams end-to-end against
+a real `clickhouse/clickhouse-server` (testcontainers-go, the same harness the
+strict-scan gateway differential uses):
+[`realch_integration_test.go`](../internal/routerrules/realch_integration_test.go)
+runs the **WRITE** path (`optcorpus.CHTableSink` — real CREATE-TABLE DDL plus the
+columnar `Enum8` batch, then reads the rows back to assert the `route` /
+`exit_status` enums round-tripped) and the **READ** path
+(`routerrules.chCorpusSource` — every strict-scanned aggregate the catalog
+resolves), plus the upstream `system.query_log` reconciler read
+(`optcorpus.CHQueryLogSource`). It is wired into the informational
+[`strict-scan.yml`](../.github/workflows/strict-scan.yml) lane via
+`just router-corpus-integration` and runs on PR + push + nightly.
+
 ### The effectiveness fixture
 
 `testdata/effectiveness.jsonl` is a fabricated corpus (no production-identifying
