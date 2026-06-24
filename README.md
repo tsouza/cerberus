@@ -199,8 +199,8 @@ see [`docs/performance.md`](docs/performance.md).
 
 Each query language has a **differential harness**: cerberus and a
 reference engine answer the same corpus against the same seeded data, and
-the responses are diffed case-for-case — pinning *observed semantics on
-real ClickHouse* against an upstream oracle, not just emitted SQL.
+the responses are diffed case-for-case — pinning _observed semantics on
+real ClickHouse_ against an upstream oracle, not just emitted SQL.
 
 The strongest leg is **PromQL**, which runs the third-party **PromQL
 Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
@@ -229,7 +229,7 @@ won't boot, seed fails, report unparseable). Per-case **parity drift is
 report-only** by design ([#503](https://github.com/tsouza/cerberus/pull/503)):
 it is recorded in `report.json` and rendered into the live `compat-score.json`
 badge, but does not turn the required check red. The one lane that
-*hard-fails on any parity diff* is `compatibility/prometheus-forced-route`
+_hard-fails on any parity diff_ is `compatibility/prometheus-forced-route`
 (`FAIL_ON_DIFF=1`, proving the sharded solver route is byte-identical to
 reference Prometheus over the whole corpus) — that lane is informational,
 not a required check. The honest reading: the badges are a continuously
