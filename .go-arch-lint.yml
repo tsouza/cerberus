@@ -127,6 +127,11 @@ components:
   # Async system.query_log performance-corpus reconciler. Leaf; wired from
   # cmd only (off by default).
   optcorpus:      { in: optcorpus }
+  # Offline router-rules catalog analysis engine: mines the router corpus and
+  # emits findings. Leaf; wired from cmd/route-rules only. Re-declares its own
+  # narrow CHConn + column contract rather than importing optcorpus/chclient, so
+  # it depends only on chsql for typed SQL composition.
+  routerrules:    { in: routerrules }
 
 # commonComponents are importable from every layer without an explicit
 # `mayDependOn` entry. These are the cross-cutting utility packages
@@ -187,6 +192,15 @@ deps:
   # hand-rolled SQL strings, so it depends on chsql. chsql depends only
   # on chplan, so there is no cycle (optcorpus → chsql → chplan).
   optcorpus:
+    mayDependOn:
+      - chsql
+
+  # routerrules composes its corpus-mining SQL via the typed chsql Frag API, so
+  # it depends on chsql (chsql → chplan, no cycle). It must NOT depend on
+  # optcorpus, engine, or chclient — the CLI (cmd/route-rules, arch-lint-exempt)
+  # supplies the resolved config + the narrow CHConn at boot, so routerrules
+  # takes only values, not those layers.
+  routerrules:
     mayDependOn:
       - chsql
 
