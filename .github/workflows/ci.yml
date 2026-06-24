@@ -2,7 +2,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # `release/*.x` so the required check / lint / forbid-skip gates also run on
+    # a maintenance-line hotfix push (release/1.4.x, …) — release.yml's
+    # maintenance preflight reads these check-runs before publishing.
+    branches: [main, 'release/*.x']
   pull_request:
 
 permissions:

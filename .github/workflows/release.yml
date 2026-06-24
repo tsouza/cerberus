@@ -1,20 +1,45 @@
 name: release
 
+# Publish-on-merge (release-please-style). The OLD raw-tag trigger
+# (`on: push: tags: [v*, chart-v*]`) is RETIRED — nothing publishes from a
+# pushed tag any more. Instead a release ships when a VALIDATED release PR is
+# MERGED to main:
+#
+#   prepare-release.yml  (label / dispatch)  ->  opens a `release/*` PR
+#     -> the PR runs the FULL matrix (every required check + the four parity
+#        lanes coverage/mutation/perf-profile/property, which run their heavy
+#        work on release/* PRs) and the e2e split + crawl legs (#1036)
+#     -> maintainer merges when green  ->  this workflow runs on push-to-main
+#     -> per-line version gates decide what actually changed, then publish +
+#        auto-tag ONLY the changed artifact(s).
+#
+# The merge-when-green branch protection (every required check green on a tree
+# that is up to date with main) is the gate that the deleted `preflight` job
+# used to enforce by re-reading check-runs on the tagged commit. Because the PR
+# merged green against the exact merged tree, the merge commit is releasable by
+# construction — no second "is main green?" probe is needed.
+#
+# Idempotency / no-op safety: a merge that bumped NEITHER version line is a
+# complete no-op. The app gate (release-version-gate.mjs) sets publish=false
+# when `v<appVersion>` already exists; the chart gate (chart-publish.mjs
+# version-gate) sets publish=false when the chart `version:` is already in the
+# OCI registry. So an ordinary code/docs PR merging to main publishes nothing.
+
 on:
   push:
-    tags:
-      # App releases: `vX.Y.Z` (+ prerelease). Runs preflight + goreleaser
-      # (binary/image/provenance) AND chart-release — which publishes the
-      # chart ONLY if its Chart.yaml version changed, so an app-only tag never
-      # republishes an unchanged chart.
-      - 'v*.*.*'
-      - 'v*.*.*-*'
-      # Chart-only releases: `chart-vX.Y.Z` — the chart has its OWN SemVer
-      # line, so a chart-only change (template fix, new toggle, values change)
-      # ships without re-tagging the app. goreleaser is guarded off these tags
-      # (see its `if:`); only preflight + chart-release run.
-      - 'chart-v*.*.*'
-      - 'chart-v*.*.*-*'
+    branches:
+      - main
+      # MAINTENANCE-LINE hotfixes. A backport cherry-picked onto a
+      # `release/<major>.<minor>.x` branch (e.g. release/1.4.x, release/1.3.x)
+      # publishes the same way a main-line release does. The `*.x` glob matches
+      # ONLY the maintenance lines: `release/1.4.x` matches, but a main release
+      # PR branch like `release/v1.5.0-chart-0.6.4` does NOT (it doesn't end in
+      # `.x`), so the two branch families stay cleanly distinguishable.
+      - 'release/*.x'
+  # Manual re-drive (e.g. if a publish step failed after the gate said
+  # publish=true). The gates are idempotent, so a re-run that finds the tag /
+  # chart already published is a clean no-op.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,40 +48,158 @@ permissions:
   # `attestations` (writes the attestation record back to the repo).
   id-token: write
   attestations: write
-  # The preflight gate reads the check-runs / statuses on the tagged commit.
-  checks: read
-  statuses: read
+
+# A second push to main while a release is mid-publish must not race the first
+# (two goreleaser runs cutting the same tag). Serialise per-ref; never cancel a
+# publish in flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # Refuse to publish unless the tagged commit IS main's HEAD and EVERY check
-  # on it is FULLY SETTLED GREEN — nothing still running, nothing red/cancelled,
-  # on ANY lane. No flaky-lane exclusions, no scheduled-event heuristics: the
-  # whole of main, complete and green, or the release aborts before goreleaser
-  # publishes anything. The only checks excluded are this release run's own
-  # jobs (they are necessarily in-progress here). See release-preflight.mjs.
-  preflight:
-    name: preflight
+  # Per-line version gates. On a push to main (a merged PR), decide which
+  # artifact actually changed:
+  #   - app:   Chart.yaml appVersion vs the latest `v*` git tag
+  #            (release-version-gate.mjs).
+  #   - chart: Chart.yaml version vs the chart already in the OCI registry
+  #            (chart-publish.mjs version-gate — the SAME gate the old tag-
+  #            triggered chart-release used, reused verbatim).
+  # Each gate is fail-safe: an unchanged line yields publish=false, so the
+  # downstream publish job is skipped entirely.
+  gate:
+    name: gate
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Pin the gate logic
-        run: node .github/scripts/release-preflight.mjs --self-test
-      - name: Verify main HEAD is fully complete + green on the tagged commit
-        run: node .github/scripts/release-preflight.mjs
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_SELF_JOBS: preflight,goreleaser,chart-release
-
-  release:
-    name: goreleaser
-    needs: preflight
-    # App-binary release only — skipped on chart-only `chart-v*` tags (those
-    # publish just the chart via chart-release below).
-    if: ${{ !startsWith(github.ref_name, 'chart-v') }}
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      app_publish: ${{ steps.app.outputs.publish }}
+      app_version: ${{ steps.app.outputs.version }}
+      app_tag: ${{ steps.app.outputs.tag }}
+      chart_publish: ${{ steps.chart.outputs.publish }}
+      chart_version: ${{ steps.chart.outputs.version }}
+    env:
+      CHART_DIR: deploy/helm/cerberus
+      OCI_REPO: oci://ghcr.io/${{ github.repository_owner }}/cerberus/charts
+      CHART_NAME: cerberus
     steps:
       - uses: actions/checkout@v7
         with:
+          # Full history + every tag so the app gate's `git tag -l v*` sees the
+          # complete release-tag set (a shallow clone would hide older tags and
+          # could wrongly publish an already-released appVersion).
+          fetch-depth: 0
+
+      # Pin both gates' own logic before they decide anything.
+      - name: app-version-gate self-test
+        run: node .github/scripts/release-version-gate.mjs --self-test
+
+      - name: chart version-gate self-test
+        run: node .github/scripts/chart-publish.mjs --self-test
+
+      # helm is needed for the chart gate's `helm show chart oci://…` probe.
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.21.1
+
+      # The chart gate probes the OCI registry — authenticate so the probe of a
+      # private/rate-limited GHCR repo is reliable (it fails CLOSED on an
+      # indeterminate registry error, so an unauthenticated probe could abort
+      # the whole release).
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: app
+        name: App version gate (publish iff appVersion un-tagged)
+        run: node .github/scripts/release-version-gate.mjs app-version-gate
+
+      - id: chart
+        name: Chart version gate (publish iff chart version unpublished)
+        run: node .github/scripts/chart-publish.mjs version-gate
+
+      - name: Summarise gate decision
+        run: |
+          echo "app:   publish=${{ steps.app.outputs.publish }} version=${{ steps.app.outputs.version }} tag=${{ steps.app.outputs.tag }}"
+          echo "chart: publish=${{ steps.chart.outputs.publish }} version=${{ steps.chart.outputs.version }}"
+
+  # Green-check guard — MAINTENANCE PATH ONLY.
+  #
+  # A push to `main` is implicitly green: branch protection refuses to merge a
+  # PR whose required checks are red or whose tree is behind main, so the merge
+  # commit is releasable by construction and needs no preflight. A push to a
+  # `release/*.x` maintenance branch has NO PR gate — a maintainer cherry-picks
+  # a hotfix straight onto the branch — so publishing it unguarded could ship a
+  # RED commit. This job re-reads the pushed commit's check-runs + legacy
+  # statuses and FAILS the release unless the commit is the branch tip AND every
+  # required check is settled green.
+  #
+  # It runs ONLY on a `release/*.x` push (the `if` below); on main + dispatch it
+  # is skipped, and the publish jobs' `always() && (preflight skipped || passed)`
+  # guard keeps the main path preflight-free. The standard CI workflows (ci /
+  # compatibility / chdb / e2e) are wired to also run on `release/*.x` pushes,
+  # so there ARE check-runs on the maintenance commit for this gate to read.
+  preflight:
+    name: preflight
+    needs: gate
+    if: startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '.x')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: preflight self-test
+        run: node .github/scripts/release-preflight.mjs --self-test
+
+      - name: Verify the maintenance commit is the branch tip and fully green
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This release run's own jobs are necessarily in-progress while the
+          # preflight reads check-runs, so they're excluded structurally (gating
+          # on them would deadlock).
+          RELEASE_SELF_JOBS: gate,preflight,goreleaser,chart-release
+        run: node .github/scripts/release-preflight.mjs
+
+  # App release — binary archives + multi-arch images (GHCR + Docker Hub) +
+  # SLSA provenance. Runs ONLY when the app gate says appVersion is new.
+  #
+  # Tag-creation timing: the raw-tag trigger is gone, so this job CREATES the
+  # `v<appVersion>` annotated tag at the merge commit (github.sha) and pushes
+  # it, THEN runs goreleaser. goreleaser derives `{{ .Version }}` from the tag,
+  # so the tag must exist before it runs. Pushing the tag does NOT recurse into
+  # another release run (the workflow no longer triggers on tags — only on
+  # push-to-main). The tag is created idempotently: a workflow_dispatch re-run
+  # that finds the tag already present skips re-creating it.
+  goreleaser:
+    name: goreleaser
+    needs: [gate, preflight]
+    # Publish when the app gate says the appVersion is new AND the maintenance
+    # green-check guard is satisfied. On the main / dispatch path `preflight` is
+    # SKIPPED (result == 'skipped'), so `always()` unwraps the skip and the main
+    # path goes through preflight-free; on the maintenance path `preflight` must
+    # have SUCCEEDED. Requiring success-OR-skipped (not just `!= failure`) means
+    # a CANCELLED or otherwise non-green preflight also blocks the publish.
+    if: |
+      always() &&
+      needs.gate.outputs.app_publish == 'true' &&
+      (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # fetch-depth: 0 so goreleaser's changelog + the `:latest` highest-
+          # stable computation below see the full tag history.
           fetch-depth: 0
 
       - uses: actions/setup-go@v6
@@ -75,23 +218,50 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Docker Hub mirror — goreleaser pushes the same per-arch images and
+      # Docker Hub mirror — goreleaser pushes the same per-arch images +
       # manifests to docker.io/tsouza/cerberus in the same build. A login
-      # failure here aborts the whole release (atomic dual-registry push).
+      # failure aborts the whole release (atomic dual-registry push).
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
-      # Whether THIS tag is the highest stable release (so it may move the
-      # rolling `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after
-      # v1.3.0) is NOT the highest -> `:latest` stays on v1.3.0. goreleaser
-      # reads this via `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push.
-      # Needs fetch-depth: 0 above so all tags are present.
-      - name: Determine if this tag is the latest stable release
+      # Create + push the `v<appVersion>` annotated tag at the merge commit.
+      # goreleaser reads the version from this tag. The push does NOT recurse:
+      # the workflow's only trigger is push-to-main (the raw-tag trigger was
+      # retired). Idempotent: a re-run that finds the tag already present (same
+      # commit) is a no-op; a tag pointing at a DIFFERENT commit is a hard error
+      # (a moved release tag is never correct).
+      - name: Create + push v<appVersion> tag at merge commit
+        env:
+          TAG: ${{ needs.gate.outputs.app_tag }}
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            existing="$(git rev-list -n1 "${TAG}")"
+            if [ "${existing}" != "${GITHUB_SHA}" ]; then
+              echo "::error::tag ${TAG} already exists at ${existing}, not the merge commit ${GITHUB_SHA} — refusing to move a release tag"
+              exit 1
+            fi
+            echo "tag ${TAG} already at ${GITHUB_SHA} — nothing to do"
+          else
+            git tag -a "${TAG}" -m "release ${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+            echo "created + pushed ${TAG} at ${GITHUB_SHA}"
+          fi
+
+      # Whether THIS tag is the highest stable release (so we move the rolling
+      # `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is
+      # NOT highest -> `:latest` stays on v1.3.0. goreleaser reads this via
+      # `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push templates. Needs
+      # fetch-depth: 0 so all tags (including the one just pushed) are present.
+      - name: Compute RELEASE_IS_LATEST
+        env:
+          TAG: ${{ needs.gate.outputs.app_tag }}
+        run: |
+          tag="${TAG#v}"
           highest=$(git tag -l 'v*.*.*' | awk '!/-/' | sed 's/^v//' | sort -V | tail -1)
           if [ "$tag" = "$highest" ]; then
             echo "RELEASE_IS_LATEST=true" >> "$GITHUB_ENV"
@@ -111,26 +281,26 @@ jobs:
           RELEASE_IS_LATEST: ${{ env.RELEASE_IS_LATEST }}
 
       # SLSA build provenance for the release binaries. Lets downstream
-      # consumers verify each artifact was built from this repo at this
-      # commit via `gh attestation verify ...`. Sigstore signs the
-      # attestation through the workflow's OIDC token.
+      # consumers verify an artifact was built in this repo at this commit via
+      # `gh attestation verify ...`. Sigstore signs the attestation through the
+      # workflow's OIDC token.
       - name: Attest release binary provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/*.tar.gz'
 
       # goreleaser created the release as a DRAFT (see .goreleaser.yml
-      # release.draft) so it could attach the binary archives + checksums
-      # while the release was still mutable. Flip it to published now, AFTER
-      # the assets and provenance are in place: the repo's immutable-releases
-      # policy then freezes the release WITH its assets. Publishing up-front
-      # (e.g. `gh release create`) would lock it before goreleaser could
-      # upload -- the 422 that broke v1.0.1. Idempotent: a no-op if already
-      # published.
-      - name: Publish the release (flip draft -> published)
-        run: gh release edit "${{ github.ref_name }}" --draft=false
+      # release.draft) so it could attach assets while the release is still
+      # mutable. Flip it published NOW, AFTER the assets + provenance are in
+      # place: the repo's immutable-releases policy then freezes the release
+      # WITH its assets. Publishing up-front (e.g. `gh release create`) would
+      # lock it before goreleaser could upload — the 422 that broke v1.0.1.
+      # Idempotent: a no-op if already published.
+      - name: Publish release (flip draft -> published)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.gate.outputs.app_tag }}
+        run: gh release edit "${TAG}" --draft=false
 
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
@@ -143,18 +313,29 @@ jobs:
           repository: tsouza/cerberus
           readme-filepath: ./README.md
 
-  # Publish the Helm chart to GHCR as an OCI artifact, cosign-sign it keyless,
-  # attest provenance, and (idempotently) push the Artifact Hub metadata. Gated
-  # on the same preflight as the binary release. The chart is published ONLY
-  # when its Chart.yaml `version:` differs from what's already in the registry —
-  # an app-only `v*` tag must not republish an unchanged chart (chart-publish.mjs
-  # version-gate). cosign + oras are installed via their official actions.
+  # Chart release — publish the Helm chart to GHCR as an OCI artifact, cosign-
+  # sign it keyless, attest provenance, and (idempotently) push Artifact Hub
+  # metadata. Runs ONLY when the chart gate says the chart `version:` is new.
+  #
+  # Tag-creation timing: like goreleaser, this job CREATES the `chart-v<version>`
+  # annotated tag at the merge commit (so the published chart has a matching git
+  # ref) IN ADDITION to publishing — the raw-tag trigger that used to create the
+  # release context is gone. The push does not recurse (push-to-main is the only
+  # trigger). The chart gate already proved the version is unpublished, so the
+  # tag should not exist; creating it at a different commit is a hard error.
   chart-release:
     name: chart-release
-    needs: preflight
+    needs: [gate, preflight]
+    # Same guard as goreleaser: chart gate says new AND (main path: preflight
+    # skipped) OR (maintenance path: preflight succeeded). A failed / cancelled
+    # maintenance preflight blocks the chart publish too.
+    if: |
+      always() &&
+      needs.gate.outputs.chart_publish == 'true' &&
+      (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
       attestations: write
@@ -164,14 +345,15 @@ jobs:
       CHART_NAME: cerberus
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: azure/setup-helm@v5
         with:
           version: v3.21.1
 
-      # cosign-installer publishes NO moving v4 major tag (only v3 floats);
-      # pin the exact latest v4 patch or the job fails with "unable to resolve
-      # action sigstore/cosign-installer@v4".
+      # cosign-installer publishes NO moving v4 major tag (only v3 floats); pin
+      # the exact latest v4 patch or the job fails resolving the action.
       - uses: sigstore/cosign-installer@v4.1.2
 
       - uses: oras-project/setup-oras@v2
@@ -183,27 +365,40 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: gate
-        name: Chart version gate (skip if unchanged)
-        run: node .github/scripts/chart-publish.mjs version-gate
+      # Create + push the `chart-v<version>` annotated tag at the merge commit.
+      # Idempotent / fail-safe in the same shape as the app tag step above.
+      - name: Create + push chart-v<version> tag at merge commit
+        env:
+          TAG: chart-v${{ needs.gate.outputs.chart_version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            existing="$(git rev-list -n1 "${TAG}")"
+            if [ "${existing}" != "${GITHUB_SHA}" ]; then
+              echo "::error::tag ${TAG} already exists at ${existing}, not the merge commit ${GITHUB_SHA} — refusing to move a release tag"
+              exit 1
+            fi
+            echo "tag ${TAG} already at ${GITHUB_SHA} — nothing to do"
+          else
+            git tag -a "${TAG}" -m "chart release ${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+            echo "created + pushed ${TAG} at ${GITHUB_SHA}"
+          fi
 
       - name: helm package
-        if: steps.gate.outputs.publish == 'true'
         run: helm package "$CHART_DIR" --destination "$RUNNER_TEMP"
 
       - id: push
         name: helm push + capture digest
-        if: steps.gate.outputs.publish == 'true'
         run: node .github/scripts/chart-publish.mjs push
         env:
-          CHART_TGZ: ${{ runner.temp }}/cerberus-${{ steps.gate.outputs.version }}.tgz
+          CHART_TGZ: ${{ runner.temp }}/cerberus-${{ needs.gate.outputs.chart_version }}.tgz
 
       - name: cosign sign (keyless)
-        if: steps.gate.outputs.publish == 'true'
         run: cosign sign --yes "${{ steps.push.outputs.ref }}"
 
       - name: Attest chart provenance
-        if: steps.gate.outputs.publish == 'true'
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/cerberus/charts/cerberus
@@ -211,5 +406,4 @@ jobs:
           push-to-registry: true
 
       - name: Push Artifact Hub metadata
-        if: steps.gate.outputs.publish == 'true'
         run: node .github/scripts/chart-publish.mjs ah-metadata

@@ -70,7 +70,10 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    # `release/*.x` so the required `compose-smoke` aggregate also runs on a
+    # maintenance-line hotfix push — release.yml's maintenance preflight reads
+    # this check-run before publishing a `release/*.x` commit.
+    branches: [main, 'release/*.x']
   schedule:
     # nightly at 03:17 UTC
     - cron: '17 3 * * *'
