@@ -66,7 +66,7 @@ func sliceAnchors(s Slice, step time.Duration) []time.Time {
 
 func TestSlice_AnchorUnionAndDisjoint(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 
 	rapid.Check(t, func(t *rapid.T) {
 		step := time.Duration(rapid.IntRange(1, 120).Draw(t, "stepSec")) * time.Second
@@ -135,7 +135,7 @@ func TestSlice_AnchorUnionAndDisjoint(t *testing.T) {
 
 func TestSlice_ScanFromSignAware(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)
@@ -171,7 +171,7 @@ func TestSlice_ScanFromSignAware(t *testing.T) {
 
 func TestSlice_KClampHonored(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := time.Minute
 	// N = 5 anchors; ask for K = 8 → clamped to <= N, with singleton-tail
@@ -206,7 +206,7 @@ func TestSlice_KClampHonored(t *testing.T) {
 // only the cloned spine fields, which the COW contract keeps isolated.
 func TestSlice_SpineImmutability(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)
@@ -243,7 +243,7 @@ func TestSlice_SpineImmutability(t *testing.T) {
 // no-mutate-after-slice contract — see TestSlice_NoSharedMutation.
 func TestSlice_OffSpineIsShared(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)
@@ -280,7 +280,7 @@ func TestSlice_OffSpineIsShared(t *testing.T) {
 // disjoint, and the slices are oldest-first.
 func TestSliceLWR_AnchorUnionAndDisjoint(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 
 	rapid.Check(t, func(t *rapid.T) {
 		step := time.Duration(rapid.IntRange(1, 120).Draw(t, "stepSec")) * time.Second
@@ -362,7 +362,7 @@ func TestSliceLWR_AnchorUnionAndDisjoint(t *testing.T) {
 // offset-sign-aware.
 func TestSliceLWR_ScanFromSignAware(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)
@@ -401,7 +401,7 @@ func TestSliceLWR_ScanFromSignAware(t *testing.T) {
 // TestSliceLWR_OffSpineIsShared); this test mutates only the cloned spine.
 func TestSliceLWR_SpineImmutability(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)
@@ -482,7 +482,7 @@ func nestedSubqueryWindowPlan(start, end time.Time, step, rang time.Duration) ch
 //  3. the spine is correctly re-gridded per shard.
 func TestSlice_NestedSubqueryDescendsAndClones(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)
@@ -533,7 +533,7 @@ func TestSlice_NestedSubqueryDescendsAndClones(t *testing.T) {
 // the bare-selector family.
 func TestSliceLWR_OffSpineIsShared(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	start := time.Unix(1_700_000_000, 0).UTC()
 	step := 15 * time.Second
 	end := start.Add(time.Hour)

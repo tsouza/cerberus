@@ -371,3 +371,86 @@ Run [`router-calibration.sql`](router-calibration.sql) against the corpus table:
   — route-A queries OOM/timeout (query 4). Any non-trivial route-A failure
   count is a standalone go signal: the query died on the single path the
   heuristic chose for it.
+
+## Per-deployment self-tuning
+
+Stage 0 records each deployment's own observed cost into
+`cerberus_router_corpus`. **Per-deployment self-tuning** closes that loop at
+runtime: when enabled, cerberus periodically reads *its own* corpus, derives
+route thresholds calibrated to *that deployment's* cost frontier, and swaps them
+into the live router — so squid's data tunes squid only, and any other install
+tunes itself from its own corpus.
+
+The architecture is deliberately split into a generic half and a local half, and
+the split is the whole point:
+
+- **Generic (shipped to every deployment).** The calibration *logic*, the
+  background *loop*, and a *conservative default* for the thresholds. This is
+  deployment-independent: `Calibrate` (`internal/solver/calibrate.go`) is a pure,
+  deterministic function whose only deployment-specific input is the corpus
+  samples; the loop (`internal/solver/selftune.go`) and the shipped
+  `DefaultConfig` carry **no** learned constants. A fresh install runs the same
+  code over its own (initially empty) corpus.
+- **Local (never shipped).** The *calibrated constants* themselves, derived **at
+  runtime** from this deployment's `cerberus_router_corpus` and held in memory
+  only. They are never written back into the shipped code or defaults. A single
+  deployment's corpus deliberately never leaks into the shipped defaults —
+  baking one install's numbers into the binary would over-fit every other
+  deployment to a workload it never runs.
+
+This is **optimizer self-tuning, not result caching**: it adjusts which *plan
+shape* (single vs sharded) the router chooses, never memoizes query results, and
+honors the no-caching invariant (only `/readyz` has a TTL).
+
+### What the calibrator does
+
+`Calibrate(samples, defaults) → (Config, CalibrationReport)` reads the empirical
+cost frontier from the local corpus — the smallest fan-out `F` and anchor-pair
+product `N×F` at which the deployment actually observed OOM/cost-danger
+dispatches (`exit_status` ∈ `oom` / `timeout` / `sample_budget`) — and derives
+thresholds that route B *before* that frontier. Only `MinFanout` and
+`MinAnchorPairs` are calibrated; the geometric knobs (`MaxK`,
+`MinAnchorsPerSlice`, the high-`D` clamp) are structural grid invariants the
+corpus does not re-derive, so they pass through from the defaults untouched.
+
+The derivation is expressed in the corpus's own relative `(F, N×F)` coordinates
+scaled by a shipped safety-margin percent — not absolutes hardcoded to one
+deployment.
+
+### Safety rails (non-negotiable, each has a test)
+
+- **Conservative-floor / tighten-only.** A calibrated threshold may only move in
+  the *safer* direction — lower, so the deployment shards **more** readily as it
+  approaches its own OOM frontier. This is the PARQO asymmetric penalty:
+  under-sharding into an OOM is catastrophic, over-sharding merely wastes a
+  connection. `Calibrate` never *raises* a threshold and never lowers past the
+  shipped safety floor (`minCalibratedFanout` / `minCalibratedAnchorPairs`).
+- **Fail-open / no-op without signal.** A thin corpus (below the min-sample
+  floor), no `below-threshold` decisions, or no OOM/cost-danger exemplars →
+  `Calibrate` returns `defaults` **unchanged**. On squid today the corpus is all
+  route-A, `below-threshold = 0`, and zero failures, so `Calibrate` returns the
+  defaults **verbatim** — a true no-op (pinned by
+  `TestCalibrate_NoOpOnSquidShapedCorpus`).
+- **Off by default.** The loop is gated behind `CERBERUS_ROUTE_SELFTUNE`
+  (default off). Unset → the router uses the static shipped `Config` and the loop
+  never starts, so existing deployments are byte-for-byte unchanged.
+
+### The loop
+
+When `CERBERUS_ROUTE_SELFTUNE` is on, `cmd/cerberus` starts a background
+goroutine after the PromQL solver is built. On a fixed cadence it reads the
+local corpus (`optcorpus.CHFrontierSource` — a few aggregate SELECTs per
+`(N, F[, D])` bucket, never all rows, under the same rate-limited /
+deprioritised / read-only / failure-open discipline as the query_log source),
+runs `Calibrate`, and **atomically** swaps the new `Config` into the router
+(`Planner.cfg` is an `atomic.Pointer[Config]`; `Plan` reads it lock-free). Any
+read or calibrate error keeps the current `Config`, logs, and never crashes
+(fail-open). The loop derives its context from a cancelable parent and cancels
+in-flight reads on shutdown, so `Close` is goleak-clean (it mirrors — and fixes
+— the `breaker_recovery.go` recovery-loop shape: no context rooted in
+`context.Background()` without cancellation).
+
+Every recalibration logs the active thresholds plus a `CalibrationReport`
+(sample count, what moved versus the default and why, the detected frontier), so
+operators can **see** what their deployment self-tuned to and that the constants
+are local to their install.

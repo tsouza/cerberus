@@ -59,7 +59,7 @@ func guardRoute(t *testing.T, plan chplan.Node) *solver.Decision {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("sharded Config invalid: %v", err)
 	}
-	pl := &solver.Planner{Cfg: cfg}
+	pl := solver.NewPlanner(cfg)
 	gs, ge, gstep := solver.GridOf(plan)
 	dec, isRouted := pl.Plan(plan, solver.RequestMeta{
 		Lang:  solver.LangPromQL,

@@ -30,7 +30,7 @@ func BenchmarkSlice(b *testing.B) {
 	meta := RequestMeta{Lang: LangPromQL, Start: start, End: end, Step: step}
 
 	plan := benchSlicePlan(start, end, step, 5*time.Minute)
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 
 	for _, k := range []int{2, 4, 8, 16} {
 		k := k

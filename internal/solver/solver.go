@@ -45,7 +45,7 @@ type Solver struct {
 // until cfg.Mode flips off "single".
 func New(cfg Config, emitter SQLEmitter, deps ExecDeps) *Solver {
 	return &Solver{
-		Planner: &Planner{Cfg: cfg},
+		Planner: NewPlanner(cfg),
 		Executor: &Executor{
 			Client:  deps.Client,
 			Emitter: emitter,

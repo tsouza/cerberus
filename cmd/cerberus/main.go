@@ -88,7 +88,15 @@ func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *
 // skips the gRPC branch and shutdown skips GracefulStop).
 type apiHeads struct {
 	grpcServer *grpc.Server
+	// selfTuner is the per-deployment route self-tuning loop, started only
+	// when CERBERUS_ROUTE_SELFTUNE is on and the PromQL head is enabled. nil
+	// otherwise; stopSelfTune is nil-safe so run() can defer it unconditionally.
+	selfTuner *solver.SelfTuner
 }
+
+// stopSelfTune joins the self-tuning goroutine (goleak-clean) if one was
+// started. A no-op when self-tuning is off.
+func (h apiHeads) stopSelfTune() { h.selfTuner.Stop() }
 
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
 // CERBERUS_ENABLED_HEADS (default: all three) onto traceMux. A disabled head's
@@ -117,6 +125,10 @@ func mountAPIHeads(
 	// observes only live heads (a disabled head has no engine to observe).
 	var engines []*engine.Engine
 
+	// selfTuner is started only on the prom head when CERBERUS_ROUTE_SELFTUNE
+	// is on; nil otherwise. Returned in apiHeads so run() joins it on shutdown.
+	var selfTuner *solver.SelfTuner
+
 	if cfg.HeadEnabled(config.HeadProm) {
 		// Per-head Client VIEW (#94): own breaker over the shared pool. Built
 		// only for the prom head — and the prom-only sharded-pushdown solver is
@@ -130,6 +142,12 @@ func mountAPIHeads(
 		promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
+
+		// Per-deployment route self-tuning (off by default). When on, start the
+		// background loop that reads THIS deployment's router corpus and swaps
+		// locally-calibrated thresholds into the solver's Planner. Default off →
+		// nothing starts and routing uses the static shipped Config.
+		selfTuner = startRouteSelfTune(ctx, logger, promClient, cfg, evalSolver)
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
@@ -164,7 +182,7 @@ func mountAPIHeads(
 	// hot path).
 	startOptCorpus(ctx, logger, client, cfg, engines...)
 
-	return apiHeads{grpcServer: grpcServer}, nil
+	return apiHeads{grpcServer: grpcServer, selfTuner: selfTuner}, nil
 }
 
 // enabledHeadNames returns the enabled heads in the canonical prom,loki,tempo
@@ -360,6 +378,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Join the route self-tune goroutine (if any) on shutdown so Close is
+	// goleak-clean. No-op when self-tuning is off.
+	defer heads.stopSelfTune()
 	grpcServer := heads.grpcServer
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
@@ -761,6 +782,93 @@ func buildSolver(
 	)
 	return s, nil
 }
+
+// frontierReaderAdapter bridges optcorpus.CHFrontierSource (which reads THIS
+// deployment's cerberus_router_corpus) to solver.FrontierReader (the calibrator
+// loop's input seam). It is the LOCAL data path: it maps each neutral
+// optcorpus.FrontierBucket into a solver.CorpusSample, the only
+// deployment-specific input Calibrate consumes. Keeping the mapping here (not in
+// either package) preserves the generic/local boundary — optcorpus owns the
+// table + CH read discipline, solver owns the calibration math, neither imports
+// the other.
+type frontierReaderAdapter struct {
+	src *optcorpus.CHFrontierSource
+}
+
+// ReadFrontier reads the local corpus aggregates and maps them to the
+// calibrator's sample shape. A nil/empty result is a legitimate "no signal yet"
+// and is passed straight through (Calibrate fails open on it).
+func (a frontierReaderAdapter) ReadFrontier(ctx context.Context) ([]solver.CorpusSample, error) {
+	buckets, err := a.src.ReadFrontier(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]solver.CorpusSample, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, solver.CorpusSample{
+			NAnchors:        int(b.NAnchors),
+			Fanout:          int(b.Fanout),
+			CumulativeD:     int(b.CumulativeD),
+			Route:           b.Route,
+			BelowThreshold:  b.BelowThreshold,
+			MemoryUsage:     b.MaxMemoryUsage,
+			QueryDurationMS: b.MaxQueryDurationMS,
+			OOM:             b.Danger,
+			Count:           int(b.Count),
+		})
+	}
+	return out, nil
+}
+
+// startRouteSelfTune starts the per-deployment route self-tuning loop when
+// CERBERUS_ROUTE_SELFTUNE is on (carried on the resolved solver Config). It is
+// OFF by default: when the flag is unset the function returns nil and nothing
+// starts, so routing uses the static shipped Config and existing deployments
+// are byte-for-byte unchanged. When on, it wires the local corpus reader to the
+// generic calibrator loop and hands it the resolved Config as both the
+// conservative defaults (calibration floor / fail-open fallback) and the value
+// the loop swaps into the solver's Planner.
+func startRouteSelfTune(
+	ctx context.Context,
+	logger *slog.Logger,
+	client *chclient.Client,
+	cfg config.Config,
+	s *solver.Solver,
+) *solver.SelfTuner {
+	if s == nil || !s.Cfg.SelfTune {
+		return nil
+	}
+	// Reuse the corpus read discipline: bound each frontier SELECT in
+	// wall-clock and derive the lookback window from the recalibration
+	// interval so a longer interval still covers more than one read.
+	srcTimeout := selfTuneReadTimeout
+	window := optcorpus.QueryLogWindow(selfTuneInterval)
+	src := optcorpus.NewCHFrontierSource(client.Conn(), srcTimeout, window)
+	tuner := solver.StartSelfTuner(ctx, solver.SelfTuneParams{
+		Planner:  s.Planner,
+		Reader:   frontierReaderAdapter{src: src},
+		Defaults: s.Cfg,
+		Interval: selfTuneInterval,
+		Logger:   logger.With("component", "route-selftune"),
+	})
+	logger.Info(
+		"per-deployment route self-tuning started (constants learned locally from this deployment's corpus)",
+		"interval", selfTuneInterval.String(),
+		"defaults_min_fanout", s.Cfg.MinFanout,
+		"defaults_min_anchor_pairs", s.Cfg.MinAnchorPairs,
+	)
+	return tuner
+}
+
+// selfTuneInterval is the recalibration cadence and selfTuneReadTimeout bounds
+// each corpus frontier read in wall-clock. The interval is long because the
+// cost frontier moves on the timescale of workload shifts, not seconds; the
+// read timeout is the belt-and-braces client deadline on top of the server-side
+// max_execution_time cap.
+const (
+	selfTuneInterval    = 15 * time.Minute
+	selfTuneReadTimeout = 30 * time.Second
+)
 
 // warnIfClickHouseUnreachable performs the best-effort startup
 // connectivity validation, demoted to a WARN. A replica that boots

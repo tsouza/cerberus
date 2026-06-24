@@ -90,6 +90,17 @@ type Config struct {
 	// per-shard max_memory_usage is cap/P (256 MiB floor), holding total
 	// exposure at exactly the single-query cap.
 	MemoryApportion bool
+
+	// SelfTune (CERBERUS_ROUTE_SELFTUNE) enables the per-deployment
+	// self-tuning loop (selftune.go): when true, cmd/cerberus starts a
+	// background goroutine that periodically reads THIS deployment's router
+	// corpus, runs Calibrate, and atomically swaps the locally-calibrated
+	// thresholds into the Planner. Default FALSE — the static shipped Config
+	// is used and the loop never starts, so existing deployments are
+	// byte-for-byte unchanged. It tunes only MinFanout / MinAnchorPairs and
+	// only ever in the SAFER (tighten-toward-route-B) direction; see
+	// calibrate.go for the safety rails.
+	SelfTune bool
 }
 
 // Default tuning constants (docs §Routing / §"The solver framework").

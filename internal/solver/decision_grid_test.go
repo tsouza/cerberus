@@ -13,7 +13,7 @@ import (
 func TestDecision_CostGrid_PopulatedOnRoute(t *testing.T) {
 	t.Parallel()
 
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(oomWindow(), oomMeta())
 	if !routed {
 		t.Fatalf("OOM shape should route under auto; reason=%q", d.Reason)
@@ -65,7 +65,7 @@ func TestDecision_CostGrid_PopulatedOnNotRouted(t *testing.T) {
 		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(plan, oomMeta())
 	if routed {
 		t.Fatalf("F=2 shape should NOT route under auto")
@@ -116,7 +116,7 @@ func TestDecision_CostGrid_HighDNotFoldedIntoReason(t *testing.T) {
 		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(plan, oomMeta())
 	if routed {
 		t.Fatalf("high-D shape should NOT route")
@@ -153,7 +153,7 @@ func TestPlan_OfflineReplay_ReproducesRoute(t *testing.T) {
 			t.Parallel()
 			cfg := DefaultConfig()
 			cfg.Mode = tc.mode
-			p := &Planner{Cfg: cfg}
+			p := NewPlanner(cfg)
 
 			// Original classification, capturing the recorded features.
 			plan := buildReplayPlan(tc.fanRn)

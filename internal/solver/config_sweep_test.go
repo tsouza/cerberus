@@ -87,7 +87,7 @@ func TestSweep_PlanNeverPanics(t *testing.T) {
 			&chplan.Limit{Input: drawEligibleWindow(t, start, end, step), Count: 5}, // unmarked node
 			now64Window(start, end, step),                                           // now64 in a projection
 		}
-		p := &Planner{Cfg: cfg}
+		p := NewPlanner(cfg)
 		for _, plan := range plans {
 			// The contract is "does not panic"; the decision itself is asserted
 			// by the targeted invariants below.
@@ -109,7 +109,7 @@ func TestSweep_SingleNeverRoutes(t *testing.T) {
 		meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
 		plan := drawEligibleWindow(t, start, end, step) // the most routable shape
 
-		p := &Planner{Cfg: cfg}
+		p := NewPlanner(cfg)
 		_, routed := p.Plan(plan, meta)
 		if routed {
 			t.Fatalf("Mode=single routed (cfg=%+v) — ship-dark guarantee broken", cfg)
@@ -130,7 +130,7 @@ func TestSweep_RoutedDecisionIsWellFormed(t *testing.T) {
 		meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
 		plan := drawEligibleWindow(t, start, end, step)
 
-		p := &Planner{Cfg: cfg}
+		p := NewPlanner(cfg)
 		d, routed := p.Plan(plan, meta)
 		if !routed {
 			return // ineligible-for-threshold under this config; nothing to check.
@@ -216,7 +216,7 @@ func TestSweep_IneligibleAlwaysRoutesA(t *testing.T) {
 			{"instant-window", instantWindow(start, end), instantMeta},
 		}
 
-		p := &Planner{Cfg: cfg}
+		p := NewPlanner(cfg)
 		for _, c := range cases {
 			_, routed := p.Plan(c.plan, c.meta)
 			if routed {
@@ -250,8 +250,8 @@ func TestSweep_ThresholdMonotonicity(t *testing.T) {
 		strict.MinFanout = base.MinFanout + bumpFanout
 		strict.MinAnchorPairs = base.MinAnchorPairs + bumpPairs
 
-		lowP := &Planner{Cfg: base}
-		hiP := &Planner{Cfg: strict}
+		lowP := NewPlanner(base)
+		hiP := NewPlanner(strict)
 
 		_, lowRouted := lowP.Plan(plan, meta)
 		_, hiRouted := hiP.Plan(plan, meta)

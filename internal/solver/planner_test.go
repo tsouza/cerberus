@@ -58,7 +58,7 @@ func autoCfg() Config {
 // routes under Mode=auto with K=8 and Reason=routed.
 func TestPlan_OOMShapeRoutes(t *testing.T) {
 	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(oomWindow(), oomMeta())
 	if !routed {
 		t.Fatalf("OOM shape must route; got reason=%q", d.Reason)
@@ -114,7 +114,7 @@ func TestPlan_RangeLWRSpineRoutes(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := &Planner{Cfg: autoCfg()}
+			p := NewPlanner(autoCfg())
 			d, routed := p.Plan(lwrSpine(tc.offset), oomMeta())
 			if !routed {
 				t.Fatalf("RangeLWR spine must route; got reason=%q", d.Reason)
@@ -161,7 +161,7 @@ func TestPlan_RangeLWRSpineRoutes(t *testing.T) {
 func TestPlan_SingleNeverRoutes(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig() // Mode == single
-	p := &Planner{Cfg: cfg}
+	p := NewPlanner(cfg)
 	d, routed := p.Plan(oomWindow(), oomMeta())
 	if routed {
 		t.Fatal("Mode=single must never route")
@@ -191,7 +191,7 @@ func TestPlan_ShardedRoutesEligible(t *testing.T) {
 		ValueColumn:     "Value",
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
-	p := &Planner{Cfg: cfg}
+	p := NewPlanner(cfg)
 	d, routed := p.Plan(rw, oomMeta())
 	if !routed {
 		t.Fatalf("sharded must route eligible plan; reason=%q", d.Reason)
@@ -364,7 +364,7 @@ func TestPlan_RejectionTable(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := &Planner{Cfg: autoCfg()}
+			p := NewPlanner(autoCfg())
 			d, routed := p.Plan(tc.plan(), tc.meta())
 			if routed {
 				t.Fatalf("%s: expected NOT routed, got routed (K=%d)", tc.name, d.K)
@@ -392,7 +392,7 @@ func TestPlan_Now64InAggregateArgsRejected(t *testing.T) {
 			Right: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
 		}},
 	}}
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(agg, oomMeta())
 	if routed {
 		t.Fatal("now64 in outer Aggregate args must not route")
@@ -408,7 +408,7 @@ func TestPlan_Now64InAggregateGroupByRejected(t *testing.T) {
 	t.Parallel()
 	agg := oomWindow().(*chplan.Aggregate)
 	agg.GroupBy = []chplan.Expr{&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}}
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(agg, oomMeta())
 	if routed {
 		t.Fatal("now64 in outer Aggregate GroupBy must not route")
@@ -441,7 +441,7 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 			Right: &chplan.ScalarSubquery{Input: scalarInner},
 		},
 	}
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(plan, oomMeta())
 	if routed {
 		t.Fatal("now64 in scalar-interior Aggregate must not route")
@@ -492,7 +492,7 @@ func TestPlan_NonRangeWindowSpineRejected(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := &Planner{Cfg: autoCfg()}
+			p := NewPlanner(autoCfg())
 			d, routed := p.Plan(tc.plan(), oomMeta())
 			if routed {
 				t.Fatalf("%s must not route (K=%d)", tc.name, d.K)
@@ -529,7 +529,7 @@ func TestPlan_SingleProducedSliceNotRouted(t *testing.T) {
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 	meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
-	p := &Planner{Cfg: cfg}
+	p := NewPlanner(cfg)
 	d, routed := p.Plan(plan, meta)
 	if routed {
 		t.Fatalf("a plan collapsing to one slice must not route (K=%d)", d.K)
@@ -563,7 +563,7 @@ func TestPlan_ScalarHeavyRejected(t *testing.T) {
 			Right: &chplan.ScalarSubquery{Input: heavyInner},
 		},
 	}
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(plan, oomMeta())
 	if routed {
 		t.Fatal("scalar-heavy plan must not route")
@@ -601,7 +601,7 @@ func TestPlan_IncommensurateNestedSpine(t *testing.T) {
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     "Value",
 	}
-	p := &Planner{Cfg: autoCfg()}
+	p := NewPlanner(autoCfg())
 	d, routed := p.Plan(outer, RequestMeta{Lang: "promql", Start: start, End: end, Step: step})
 	if routed {
 		t.Fatal("incommensurate nested spine must not route")

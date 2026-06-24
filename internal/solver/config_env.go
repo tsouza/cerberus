@@ -24,6 +24,9 @@ const (
 	EnvMemoryApportion    = "CERBERUS_SHARD_MEMORY_APPORTION"
 )
 
+// EnvRouteSelfTune is declared in selftune.go (the loop owns the flag name);
+// referenced here so ConfigFromEnv parses it alongside the other knobs.
+
 // ConfigFromEnv builds a Config from the CERBERUS_* environment, starting
 // from DefaultConfig and overriding each field from its env var when set. It
 // does NOT call Validate — the caller (cmd/cerberus) runs Validate to fail-fast
@@ -71,6 +74,10 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MemoryApportion, err = envBool(EnvMemoryApportion, cfg.MemoryApportion); err != nil {
+		return Config{}, err
+	}
+	// Self-tuning is OFF unless explicitly enabled, regardless of route mode.
+	if cfg.SelfTune, err = envBool(EnvRouteSelfTune, cfg.SelfTune); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

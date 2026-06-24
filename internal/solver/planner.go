@@ -1,6 +1,7 @@
 package solver
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -10,8 +11,42 @@ import (
 // routing Decision. It never mutates the plan: every check reads the tree,
 // and slicing (the only path that copies) goes through ReanchorRange, which
 // deep-copies.
+//
+// The active Config is held behind an atomic.Pointer so the per-deployment
+// self-tuning loop (selftune.go) can atomically swap a freshly calibrated
+// Config in while concurrent Plan calls read it lock-free. When self-tuning is
+// off (the default) the pointer is written exactly once at construction and
+// never changes, so the hot path is a single atomic load with no contention.
 type Planner struct {
-	Cfg Config
+	cfg atomic.Pointer[Config]
+}
+
+// NewPlanner builds a Planner with the given static Config installed. Use this
+// rather than a bare &Planner{} so the atomic Config pointer is always
+// initialised before the first Plan call.
+func NewPlanner(cfg Config) *Planner {
+	p := &Planner{}
+	p.cfg.Store(&cfg)
+	return p
+}
+
+// Cfg returns the currently active Config (lock-free). It is a value copy, so
+// callers never observe a torn struct even if a swap races the read: the
+// atomic load returns either the old or the new whole Config pointer, never a
+// half-updated one.
+func (p *Planner) Cfg() Config {
+	if c := p.cfg.Load(); c != nil {
+		return *c
+	}
+	return Config{}
+}
+
+// SetConfig atomically swaps the active Config. The next Plan call observes the
+// new thresholds; in-flight Plan calls finish against whichever pointer they
+// already loaded. This is the only writer and is safe to call concurrently
+// with Plan (the self-tuning loop calls it on each recalibration).
+func (p *Planner) SetConfig(cfg Config) {
+	p.cfg.Store(&cfg)
 }
 
 // Plan classifies plan against meta and returns the Decision plus whether the
@@ -29,6 +64,11 @@ type Planner struct {
 //   - "auto": route iff eligible AND F >= MinFanout AND N x F >= MinAnchorPairs
 //     AND K >= 2.
 func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
+	// Snapshot the active Config once (lock-free atomic load) so the whole
+	// classification runs against one consistent threshold set even if the
+	// self-tuning loop swaps a new Config in mid-Plan.
+	cfg := p.Cfg()
+
 	// (2)-prefix: instant queries are never time-slice routed in phase 1.
 	// Step == 0 means an instant evaluation; there is no anchor grid. The
 	// analyze pass below derives the cost grid (N/F/D/OuterRange); it has not
@@ -38,7 +78,7 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		return notRouted(ReasonInstant).withGrid(signals{}, meta), false
 	}
 
-	sig := p.analyze(plan, meta)
+	sig := p.analyze(plan, meta, cfg)
 
 	// (1) Slice-invariance: any unmarked node anywhere → route A.
 	if !sig.allSliceInvariant {
@@ -97,12 +137,12 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		denom = step
 	}
 	highBound := int64(outerRange / denom) // floor(OuterRange / max(D, Step))
-	upper := int64(p.Cfg.MaxK)
+	upper := int64(cfg.MaxK)
 	if highBound < upper {
 		upper = highBound
 	}
 	lower := int64(2)
-	k := int64(n / p.Cfg.MinAnchorsPerSlice)
+	k := int64(n / cfg.MinAnchorsPerSlice)
 	if k < lower {
 		k = lower
 	}
@@ -117,16 +157,16 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	}
 
 	// "single" classifies but never routes.
-	if p.Cfg.Mode == ModeSingle {
+	if cfg.Mode == ModeSingle {
 		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 	}
 
-	if p.Cfg.Mode == ModeAuto {
+	if cfg.Mode == ModeAuto {
 		// Cost thresholds gate the auto path. Below threshold → route A.
-		if f < int64(p.Cfg.MinFanout) {
+		if f < int64(cfg.MinFanout) {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
-		if int64(n)*f < int64(p.Cfg.MinAnchorPairs) {
+		if int64(n)*f < int64(cfg.MinAnchorPairs) {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
 		if k < 2 {
@@ -214,12 +254,18 @@ type signals struct {
 	// innerResolutions records every inner-spine Step for the lcm
 	// commensurability check.
 	innerResolutions []time.Duration
+
+	// minAnchorsPerSlice snapshots cfg.MinAnchorsPerSlice for the duration of
+	// this one analyze pass, so checkCommensurability reads the SAME Config
+	// snapshot the rest of Plan uses even if the self-tuning loop swaps a new
+	// Config in mid-pass.
+	minAnchorsPerSlice int
 }
 
 // analyze runs the one eligibility pass over both the node tree and every
 // expr tree (recursing into ScalarSubquery.Input, which chplan.Walk skips).
-func (p *Planner) analyze(plan chplan.Node, meta RequestMeta) signals {
-	sig := signals{allSliceInvariant: true}
+func (p *Planner) analyze(plan chplan.Node, meta RequestMeta, cfg Config) signals {
+	sig := signals{allSliceInvariant: true, minAnchorsPerSlice: cfg.MinAnchorsPerSlice}
 
 	// depth tracks how deep on the windowed spine we are, so the
 	// grid-prediction check can predict the right (start, end) per level.
@@ -467,7 +513,7 @@ func (p *Planner) checkCommensurability(sig *signals) {
 	// Equivalently m must be a multiple of lcm/gcd(Step,lcm) = lcm/g.
 	// Defer the Step-dependent half to the slicer; here record the gate
 	// only when the outer grid is known.
-	loBound := p.Cfg.MinAnchorsPerSlice
+	loBound := sig.minAnchorsPerSlice
 	hiBound := sig.outerN / 2
 	if hiBound < loBound {
 		// No room for a valid quantum window at all.
