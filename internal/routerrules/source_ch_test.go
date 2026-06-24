@@ -3,6 +3,7 @@ package routerrules
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -92,7 +93,11 @@ func TestCHSourceBuildsTypedSQL(t *testing.T) {
 	}
 	q := conn.queries[0]
 	for _, want := range []string{
-		"quantileExact(0.9)(memory_usage)",
+		// The aggregate is wrapped in ifNull(<agg>, 0) so an empty / fully-TTL'd
+		// population folds to 0 at the SQL layer instead of returning NULL. This
+		// is the Frag-level half of the MAJOR-4 silent-suppression fix (#1060);
+		// the post-Scan NaN guard is the other half (see TestNormalizeEmptyAgg).
+		"ifNull(quantileExact(0.9)(memory_usage), 0)",
 		"FROM cerberus_router_corpus",
 		"route = 'A'",
 		"exit_status = 'ok'",
@@ -100,6 +105,37 @@ func TestCHSourceBuildsTypedSQL(t *testing.T) {
 		if stringIndex(q, want) < 0 {
 			t.Errorf("query missing %q:\n%s", want, q)
 		}
+	}
+}
+
+// TestNormalizeEmptyAgg pins the post-Scan guard half of the MAJOR-4 fix
+// (#1060): a CH aggregate (avg/quantileExact/stddevPop) over an empty or
+// fully-TTL'd population returns NaN, which ifNull does not catch. Left
+// unfolded, a NaN watermark makes every `x > NaN` comparison false and
+// silently suppresses every finding. The guard folds NaN/±Inf to the JSONL
+// backend's 0-contract while leaving finite values (including negatives and
+// zero) untouched.
+func TestNormalizeEmptyAgg(t *testing.T) {
+	posInf := math.Inf(1)
+	negInf := math.Inf(-1)
+	cases := []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{"NaN folds to zero", math.NaN(), 0},
+		{"positive infinity folds to zero", posInf, 0},
+		{"negative infinity folds to zero", negInf, 0},
+		{"finite positive unchanged", 42.5, 42.5},
+		{"zero unchanged", 0, 0},
+		{"finite negative unchanged", -7.25, -7.25},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeEmptyAgg(tc.in); got != tc.want {
+				t.Errorf("normalizeEmptyAgg(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
