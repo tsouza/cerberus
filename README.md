@@ -1,7 +1,34 @@
-# cerberus
+<div align="center">
 
-**Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse.**
-Keep Grafana, alerting, and your CLI tooling. Swap the backend.
+<img src="https://cerberus.foo/assets/brand/readme-banner-1280x640.png" alt="cerberus — three query languages, one backend" width="100%">
+
+<br>
+
+### Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse
+
+_Keep Grafana, alerting, and your CLI tooling. Swap the backend._
+
+<sub>
+<a href="#why-cerberus">Why cerberus</a> &nbsp;·&nbsp;
+<a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
+<a href="#architecture">Architecture</a> &nbsp;·&nbsp;
+<a href="#compatibility">Compatibility</a> &nbsp;·&nbsp;
+<a href="#documentation">Docs</a>
+</sub>
+
+<br><br>
+
+[![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
+[![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tsouza/cerberus.svg)](https://pkg.go.dev/github.com/tsouza/cerberus)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tsouza/cerberus)](https://goreportcard.com/report/github.com/tsouza/cerberus)
+
+[![PromQL compat](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftsouza%2Fcerberus%2Fcompat-scores%2Fbadges%2Fprometheus.json)](https://github.com/tsouza/cerberus/actions/workflows/compatibility.yml)
+[![LogQL compat](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftsouza%2Fcerberus%2Fcompat-scores%2Fbadges%2Floki.json)](https://github.com/tsouza/cerberus/actions/workflows/compatibility.yml)
+[![TraceQL compat](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftsouza%2Fcerberus%2Fcompat-scores%2Fbadges%2Ftempo.json)](https://github.com/tsouza/cerberus/actions/workflows/compatibility.yml)
+
+</div>
 
 > [!NOTE]
 > **1.0.0 — stable wire API, young project.** The Prometheus / Loki /
@@ -14,15 +41,6 @@ Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 > the lightest conformance confidence of the three heads
 > ([details](#compatibility)). See [`CHANGELOG.md`](CHANGELOG.md) for what
 > has landed.
-
-[![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
-[![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Go Reference](https://pkg.go.dev/badge/github.com/tsouza/cerberus.svg)](https://pkg.go.dev/github.com/tsouza/cerberus)
-[![Go Report Card](https://goreportcard.com/badge/github.com/tsouza/cerberus)](https://goreportcard.com/report/github.com/tsouza/cerberus)
-[![PromQL compat](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftsouza%2Fcerberus%2Fcompat-scores%2Fbadges%2Fprometheus.json)](https://github.com/tsouza/cerberus/actions/workflows/compatibility.yml)
-[![LogQL compat](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftsouza%2Fcerberus%2Fcompat-scores%2Fbadges%2Floki.json)](https://github.com/tsouza/cerberus/actions/workflows/compatibility.yml)
-[![TraceQL compat](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftsouza%2Fcerberus%2Fcompat-scores%2Fbadges%2Ftempo.json)](https://github.com/tsouza/cerberus/actions/workflows/compatibility.yml)
 
 The three `*QL compat` badges are **differential parity scores** —
 `passed / total` cases where cerberus matched a reference Prometheus /
