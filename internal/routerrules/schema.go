@@ -39,6 +39,13 @@ const (
 	// ParamCorpusCountRatio resolves to countIf(num scope) / countIf(den
 	// scope) over the corpus population.
 	ParamCorpusCountRatio ParamKind = "corpus_count_ratio"
+	// ParamConfigScaled resolves to the product of two already-declared config
+	// params: a fraction (Ref) times a magnitude (ScaleBy). It lets a rule gate
+	// on a tunable fraction of an operator-configured absolute (e.g. a near-cap
+	// threshold = 0.8 × the deployment's query memory cap) while keeping the
+	// catalog number-free — both the fraction default and the absolute live in
+	// deployment config/env, never in catalog YAML.
+	ParamConfigScaled ParamKind = "config_scaled"
 )
 
 // ParamRef is a reference to another declared parameter by name. It is the only
@@ -74,6 +81,13 @@ type ParamSpec struct {
 	// corpus_count_ratio kind: numerator / denominator scopes.
 	NumeratorScope   Scope `yaml:"numerator_scope,omitempty"`
 	DenominatorScope Scope `yaml:"denominator_scope,omitempty"`
+
+	// config_scaled kind: Ref is the fraction param, ScaleBy is the magnitude
+	// param; the resolved value is Ref.Scalar * ScaleBy.Scalar. Both must name
+	// already-declared params (in practice config-kind ones), so the only numbers
+	// in play enter through deployment config, never the catalog.
+	Ref     *ParamRef `yaml:"ref,omitempty"`
+	ScaleBy *ParamRef `yaml:"scale_by,omitempty"`
 }
 
 // RuleStatus gates whether a rule is evaluated. Experimental rules are loaded

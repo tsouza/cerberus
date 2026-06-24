@@ -80,11 +80,12 @@ func scorePoint(ctx context.Context, cat *Catalog, seed int64, wm float64, ms in
 	params := BenchParams{Seed: seed, MinSupport: ms, PathologyPrevalence: prev}
 	corpus := GenerateBenchCorpus(params)
 	cfg := BenchConfig{
-		"router_rules.watermark_percentile":    formatNumeric(wm),
-		"router_rules.cumulative_d_percentile": formatNumeric(wm),
-		"router_rules.min_rows_per_class":      fmt.Sprintf("%d", ms),
-		"query.max_memory_bytes":               "1073741824",
-		"query.max_samples":                    "50000000",
+		"router_rules.watermark_percentile":     formatNumeric(wm),
+		"router_rules.cumulative_d_percentile":  formatNumeric(wm),
+		"router_rules.min_rows_per_class":       fmt.Sprintf("%d", ms),
+		"router_rules.memory_near_cap_fraction": benchMemoryNearCapFraction,
+		"query.max_memory_bytes":                benchMemoryHardCapStr,
+		"query.max_samples":                     "50000000",
 	}
 	src := corpus.AsCorpusSource()
 	rep, err := NewEvaluator(cat, staticConfigLookup(cfg), src).

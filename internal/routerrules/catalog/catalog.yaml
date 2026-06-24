@@ -42,9 +42,22 @@ params:
     kind: config
     key: query.max_memory_bytes                   # reuse the deployment's own query cap
 
+  - name: memory_near_cap_fraction
+    kind: config
+    key: router_rules.memory_near_cap_fraction    # fraction in (0,1) of the cap; deployment env
+
   - name: sample_budget
     kind: config
     key: query.max_samples                        # reuse the deployment's own sample budget
+
+  # ---- config-scaled params: a tunable fraction of an operator-configured cap.
+  # memory_near_cap = memory_near_cap_fraction × memory_hard_cap, so the rule
+  # gates on proximity to the deployment's ACTUAL query memory cap, not on the
+  # corpus's own p95 (which ~5% of any healthy population trivially exceeds).
+  - name: memory_near_cap
+    kind: config_scaled
+    ref: memory_near_cap_fraction                 # the fraction
+    scale_by: memory_hard_cap                     # the configured absolute cap
 
   # ---- corpus-derived params: learned from THIS deployment's own data.
   - name: memory_high_watermark

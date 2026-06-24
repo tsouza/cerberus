@@ -62,12 +62,26 @@ func validateParams(cat *Catalog, add func(string, ...any)) map[string]struct{} 
 		names[p.Name] = struct{}{}
 		validateParamKind(p, add)
 	}
-	// A second pass resolves percentile fraction refs now that all names exist.
+	// A second pass resolves cross-param refs now that all names exist.
 	for i := range cat.Params {
 		p := &cat.Params[i]
-		if p.Kind == ParamCorpusPercentile && p.Percentile != nil && p.Percentile.Ref != "" {
-			if _, ok := names[p.Percentile.Ref]; !ok {
-				add("param %q references undeclared fraction param %q", p.Name, p.Percentile.Ref)
+		switch p.Kind {
+		case ParamCorpusPercentile:
+			if p.Percentile != nil && p.Percentile.Ref != "" {
+				if _, ok := names[p.Percentile.Ref]; !ok {
+					add("param %q references undeclared fraction param %q", p.Name, p.Percentile.Ref)
+				}
+			}
+		case ParamConfigScaled:
+			if p.Ref != nil && p.Ref.Ref != "" {
+				if _, ok := names[p.Ref.Ref]; !ok {
+					add("param %q references undeclared ref param %q", p.Name, p.Ref.Ref)
+				}
+			}
+			if p.ScaleBy != nil && p.ScaleBy.Ref != "" {
+				if _, ok := names[p.ScaleBy.Ref]; !ok {
+					add("param %q references undeclared scale_by param %q", p.Name, p.ScaleBy.Ref)
+				}
 			}
 		}
 	}
@@ -79,6 +93,9 @@ func validateParamKind(p *ParamSpec, add func(string, ...any)) {
 	case ParamConfig:
 		if p.Key == "" {
 			add("config param %q must set a key", p.Name)
+		}
+		if p.Ref != nil || p.ScaleBy != nil {
+			add("config param %q must not set ref/scale_by (those are config_scaled fields)", p.Name)
 		}
 		forbidCorpusFields(p, add)
 	case ParamCorpusPercentile:
@@ -103,8 +120,16 @@ func validateParamKind(p *ParamSpec, add func(string, ...any)) {
 		}
 		validateScope(p.Name, p.NumeratorScope, add)
 		validateScope(p.Name, p.DenominatorScope, add)
+	case ParamConfigScaled:
+		if p.Ref == nil || p.Ref.Ref == "" {
+			add("config_scaled param %q must set ref (the fraction param)", p.Name)
+		}
+		if p.ScaleBy == nil || p.ScaleBy.Ref == "" {
+			add("config_scaled param %q must set scale_by (the magnitude param)", p.Name)
+		}
+		forbidCorpusFields(p, add)
 	default:
-		add("param %q has unknown kind %q (want config|corpus_percentile|corpus_agg|corpus_count_ratio)", p.Name, p.Kind)
+		add("param %q has unknown kind %q (want config|config_scaled|corpus_percentile|corpus_agg|corpus_count_ratio)", p.Name, p.Kind)
 	}
 }
 

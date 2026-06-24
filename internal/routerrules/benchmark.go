@@ -170,6 +170,15 @@ const (
 	// but it must keep at least one row so the class is still present in the corpus
 	// to be scored as a false negative rather than vanishing entirely.
 	minPathologyClassRows = 1
+
+	// benchMemoryHardCapBytes is the deployment query memory cap the benchmark
+	// scores at (query.max_memory_bytes), and benchMemoryNearCapFraction is the
+	// fraction of it route_a_memory_near_cap gates on. Their product is the
+	// near-cap line the planted memory pathologies must clear. These are benchmark
+	// config values an operator overrides at runtime, not catalog thresholds.
+	benchMemoryHardCapBytes    = 1_073_741_824.0 // 1 GiB
+	benchMemoryHardCapStr      = "1073741824"
+	benchMemoryNearCapFraction = "0.8"
 )
 
 func (p BenchParams) withDefaults() BenchParams {
@@ -206,8 +215,13 @@ const (
 
 	// Pathology magnitudes, placed past the p95 tail the healthy body implies.
 	// Severe sits far past; marginal sits just past.
-	sevMemSevere  = 950_000_000.0
-	sevMemMarg    = 130_000_000.0
+	//
+	// route_a_memory_near_cap now gates on a fraction of the CONFIGURED cap
+	// (benchMemoryHardCapBytes), not the corpus p95, so both near-cap pathology
+	// magnitudes must clear benchMemoryNearCapThreshold. Severe sits near the cap
+	// itself; marginal sits just over the near-cap line.
+	sevMemSevere  = 0.93 * benchMemoryHardCapBytes // ~93% of the cap
+	sevMemMarg    = 0.83 * benchMemoryHardCapBytes // just over the 0.8 near-cap line
 	sevDurSevere  = 9_000.0
 	sevDurMarg    = 280.0
 	sevReadSevere = 8_000_000.0

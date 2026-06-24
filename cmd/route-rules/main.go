@@ -125,11 +125,12 @@ func run(args []string, stdout, stderr *os.File) error {
 // are benchmark settings, not catalog thresholds (the shipped catalog stays
 // number-free); an operator can override any of them with --param.
 var benchDefaultConfig = map[string]string{
-	"router_rules.watermark_percentile":    "0.95",
-	"router_rules.cumulative_d_percentile": "0.95",
-	"router_rules.min_rows_per_class":      "5",
-	"query.max_memory_bytes":               "1073741824",
-	"query.max_samples":                    "50000000",
+	"router_rules.watermark_percentile":     "0.95",
+	"router_rules.cumulative_d_percentile":  "0.95",
+	"router_rules.min_rows_per_class":       "5",
+	"router_rules.memory_near_cap_fraction": "0.8",
+	"query.max_memory_bytes":                "1073741824",
+	"query.max_samples":                     "50000000",
 }
 
 func runBenchmark(args []string, stdout, stderr *os.File) error {
@@ -208,10 +209,11 @@ func buildSource(opts options) (routerrules.CorpusSource, error) {
 // router-rules-specific keys have no cerberus env yet, so they are supplied
 // exclusively via --param (or a future env), keeping zero numbers in the repo.
 var configEnvKeys = map[string]string{
-	"query.max_memory_bytes":            "CERBERUS_CH_QUERY_MAX_MEMORY",
-	"query.max_samples":                 "CERBERUS_QUERY_MAX_SAMPLES",
-	"router_rules.watermark_percentile": "ROUTER_RULES_WATERMARK_PERCENTILE",
-	"router_rules.min_rows_per_class":   "ROUTER_RULES_MIN_ROWS_PER_CLASS",
+	"query.max_memory_bytes":                "CERBERUS_CH_QUERY_MAX_MEMORY",
+	"query.max_samples":                     "CERBERUS_QUERY_MAX_SAMPLES",
+	"router_rules.watermark_percentile":     "ROUTER_RULES_WATERMARK_PERCENTILE",
+	"router_rules.min_rows_per_class":       "ROUTER_RULES_MIN_ROWS_PER_CLASS",
+	"router_rules.memory_near_cap_fraction": "ROUTER_RULES_MEMORY_NEAR_CAP_FRACTION",
 }
 
 // newConfigLookup resolves a catalog config key from --param overrides first,
