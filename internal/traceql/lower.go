@@ -1025,7 +1025,64 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// the rewrite ClickHouse rejects the String-vs-Bool comparison with
 	// NO_COMMON_TYPE (the showcase's static:bool panel 502'd).
 	lhs, rhs = coerceBoolFieldAccess(op, lhs, rhs)
+	if folded, ok := foldTrivialBoolConjunct(op, lhs, rhs); ok {
+		return folded, nil
+	}
 	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+}
+
+// foldTrivialBoolConjunct collapses a logical AND / OR with a constant-true or
+// constant-false operand to the other operand (the algebraic identity). It
+// targets the shape Grafana's Traces Drilldown app appends to every breakdown
+// query — `{nestedSetParent<0 && true}` — where the `&& true` conjunct is the
+// literal `traceql.Static{Bool:true}` and lowers to a chplan.LitBool. Folding
+// it keeps the emitted predicate to the meaningful conjunct (`ParentSpanId = ”`)
+// instead of `ParentSpanId = ” AND true`, which is byte-noise CH would
+// evaluate per row.
+//
+//   - AND true  → other      AND false → false
+//   - OR  false → other      OR  true  → true
+//
+// Only logical AND/OR fold here; arithmetic/comparison ops never carry a bare
+// LitBool operand. ok is false (caller keeps the Binary) for any non-logical op
+// or when neither operand is a constant boolean.
+func foldTrivialBoolConjunct(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, bool) {
+	if op != chplan.OpAnd && op != chplan.OpOr {
+		return nil, false
+	}
+	lb, lok := lhs.(*chplan.LitBool)
+	rb, rok := rhs.(*chplan.LitBool)
+	switch op {
+	case chplan.OpAnd:
+		// `x AND true` → x; `true AND x` → x; either side false → false.
+		if lok {
+			if !lb.V {
+				return &chplan.LitBool{V: false}, true
+			}
+			return rhs, true
+		}
+		if rok {
+			if !rb.V {
+				return &chplan.LitBool{V: false}, true
+			}
+			return lhs, true
+		}
+	case chplan.OpOr:
+		// `x OR false` → x; `false OR x` → x; either side true → true.
+		if lok {
+			if lb.V {
+				return &chplan.LitBool{V: true}, true
+			}
+			return rhs, true
+		}
+		if rok {
+			if rb.V {
+				return &chplan.LitBool{V: true}, true
+			}
+			return lhs, true
+		}
+	}
+	return nil, false
 }
 
 // lowerInOperation lowers a folded membership comparison

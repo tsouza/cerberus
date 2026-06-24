@@ -1103,6 +1103,16 @@ func (c *Client) PeekBreakerState() string {
 	return c.br.peek()
 }
 
+// MaxQueryMemoryBytes returns the per-query `max_memory_usage` cap (bytes)
+// this Client stamps on every data-plane query (Config.MaxQueryMemoryBytes).
+// 0 means no cap is configured (the setting is not sent). Read by the engine
+// so plan-shape settings rules that must stay strictly below the cap (the
+// compare() external-group-by spill threshold) can size themselves relative to
+// the SAME value the data-plane query path uses, never a hard-coded guess.
+func (c *Client) MaxQueryMemoryBytes() int64 {
+	return c.maxMemory
+}
+
 // Exec runs sql with positional args against ClickHouse and returns any
 // error. Use for DDL (CREATE TABLE, ...) and DML (INSERT, ...) that don't
 // produce a result set.

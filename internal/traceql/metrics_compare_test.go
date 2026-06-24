@@ -138,6 +138,36 @@ func TestLowerMetricsCompare_DrilldownVerbatim(t *testing.T) {
 	}
 }
 
+// TestLowerMetricsCompare_FoldsTrivialAndTrue — the Drilldown-appended
+// `&& true` conjunct is folded out in lowering: the emitted selection
+// predicate carries the meaningful `ParentSpanId = ”` (nestedSetParent<0)
+// alone, not `... AND true`.
+func TestLowerMetricsCompare_FoldsTrivialAndTrue(t *testing.T) {
+	t.Parallel()
+
+	const q = `{nestedSetParent<0 && true} | compare({status = error}, 10)`
+	expr, err := tempo.Parse(q)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := traceql.Lower(context.Background(), expr, schema.DefaultOTelTraces())
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The folded inner scan filter must still be present (the conjunct is
+	// dropped, not the whole predicate) and the trivial `AND true` gone.
+	if !strings.Contains(sql, "ParentSpanId") {
+		t.Errorf("emitted SQL lost the nestedSetParent<0 predicate:\n%s", sql)
+	}
+	if strings.Contains(sql, "AND true") || strings.Contains(sql, "AND TRUE") {
+		t.Errorf("emitted SQL still carries a trivial `AND true` conjunct:\n%s", sql)
+	}
+}
+
 // TestLowerMetricsCompare_PairsSkipRootWithoutColumns — blanking the
 // parent-span-id column drops the root lookup (and the rootName /
 // rootServiceName pairs) instead of failing the query.

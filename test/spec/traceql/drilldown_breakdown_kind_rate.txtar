@@ -1,12 +1,10 @@
 -- query.traceql --
 {nestedSetParent<0 && true && kind != nil} | rate() by(kind)
 -- sql --
-SELECT lower(`SpanKind`) AS `kind`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE (`ParentSpanId` = ?) AND ? WHERE ?) GROUP BY lower(`SpanKind`)
+SELECT lower(`SpanKind`) AS `kind`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY lower(`SpanKind`)
 -- args --
 [0] int64 = 1
 [1] string = ""
-[2] bool = true
-[3] bool = true
 -- seed --
 CREATE TABLE otel_traces (
     SpanId String,
@@ -25,5 +23,5 @@ INSERT INTO otel_traces (SpanId, ParentSpanId, SpanKind) VALUES
 ]
 -- chplan --
 MetricsAggregate op=rate groupBy=[lower(SpanKind) AS kind] valueAlias=Value
-  Filter predicate=(((ParentSpanId = "") AND true) AND true)
+  Filter predicate=(ParentSpanId = "")
     Scan(otel_traces)
