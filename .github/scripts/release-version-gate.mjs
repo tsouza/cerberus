@@ -157,6 +157,19 @@ function selfTest() {
   assert(d.publish === true, 'new appVersion must publish');
   assert(d.tag === 'v1.5.0', 'tag derived as v<appVersion>');
 
+  // decide: MAINTENANCE-LINE hotfix. appVersion 1.4.1 is OLDER than the latest
+  // tagged release v1.5.0, but the v1.4.1 tag itself is absent -> publish. This
+  // is the case a "newer-than-latest-tag" gate would WRONGLY skip; the gate is
+  // tag-absent, not newest-wins, so a backport off release/1.4.x still ships.
+  d = decide('1.4.1', ['v1.2.1', 'v1.3.0', 'v1.4.0', 'v1.5.0']);
+  assert(d.publish === true, 'tag-absent maintenance hotfix older than latest must still publish');
+  assert(d.tag === 'v1.4.1', 'maintenance tag derived as v<appVersion>');
+
+  // decide: the same maintenance hotfix re-run AFTER its tag landed -> no-op
+  // (idempotency on the maintenance path, identical to the main path).
+  d = decide('1.4.1', ['v1.2.1', 'v1.3.0', 'v1.4.0', 'v1.4.1', 'v1.5.0']);
+  assert(d.publish === false, 're-run of an already-tagged maintenance hotfix must not republish');
+
   // decide: empty tag set (fresh repo) -> publish.
   d = decide('1.0.0', []);
   assert(d.publish === true, 'no tags yet -> publish');
