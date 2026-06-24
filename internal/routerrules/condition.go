@@ -336,7 +336,7 @@ func lowerLeaf(p Predicate) (Condition, error) {
 	hasEnum := p.Enum != nil
 	hasParam := p.Param != ""
 	if hasEnum == hasParam {
-		return nil, fmt.Errorf("routerrules: leaf on column %q must set exactly one of enum: or param:", p.Col)
+		return nil, fmt.Errorf("routerrules: leaf on column %q must set exactly one of 'enum' or 'param'", p.Col)
 	}
 	if hasEnum {
 		vals, err := enumValues(p.Enum)

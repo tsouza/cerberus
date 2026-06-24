@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -121,7 +120,7 @@ func (s *jsonlCorpusSource) streamFile(path string, fn func(corpusRow) error) er
 			return err
 		}
 	}
-	if err := sc.Err(); err != nil && err != io.EOF {
+	if err := sc.Err(); err != nil {
 		return fmt.Errorf("routerrules: scan corpus %q: %w", path, err)
 	}
 	return nil

@@ -3,10 +3,12 @@ package routerrules
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
@@ -100,6 +102,16 @@ func quantileFrag(frac float64, column string) chsql.Frag {
 }
 
 func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, aggExpr chsql.Frag) (Value, error) {
+	// Empty corpus = no signal = no findings. A non-grouped CH aggregate
+	// (quantileExact/avg/stddevPop/…) over an empty or fully-TTL'd population
+	// returns one row of NaN; the per-partition path returns NaN per empty
+	// bucket. The JSONL backend yields 0 for the same empty case (see
+	// aggregate/quantileExact in source_jsonl.go), so wrap every aggregate in
+	// ifNull(<agg>, 0) to hold both backends to the identical 0-contract. This
+	// keeps watermark resolution byte-for-byte across backends and prevents a
+	// NaN watermark from silently suppressing all findings (every `x > NaN` is
+	// false).
+	aggExpr = chsql.Call("ifNull", aggExpr, chsql.InlineLit(int64(0)))
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	conds := scopeConds(spec.Scope)
 	if sf := s.sinceFrag(); sf != nil {
@@ -126,7 +138,7 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 		if err := r.Err(); err != nil {
 			return Value{}, err
 		}
-		return Value{Scalar: v}, nil
+		return Value{Scalar: normalizeEmptyAgg(v)}, nil
 	}
 
 	partCol := spec.PartitionBy[0]
@@ -146,12 +158,24 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 		if err := r.Scan(&key, &v); err != nil {
 			return Value{}, fmt.Errorf("routerrules: scan partitioned aggregate: %w", err)
 		}
-		part[key] = v
+		part[key] = normalizeEmptyAgg(v)
 	}
 	if err := r.Err(); err != nil {
 		return Value{}, err
 	}
 	return Value{Partition: part, PartitionCol: partCol}, nil
+}
+
+// normalizeEmptyAgg folds a CH aggregate over an empty/TTL'd population to the
+// JSONL backend's 0-contract. The ifNull(<agg>, 0) Frag wrap handles
+// NULL-returning aggregates; this guard additionally catches the NaN/±Inf a
+// non-grouped aggregate (avg/quantileExact/stddevPop) yields over a zero-row
+// group, which ifNull does not. Empty corpus = no signal = no findings.
+func normalizeEmptyAgg(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
 }
 
 func (s *chCorpusSource) countRatio(ctx context.Context, spec AggSpec) (Value, error) {
