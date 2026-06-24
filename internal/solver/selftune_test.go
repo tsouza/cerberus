@@ -76,14 +76,14 @@ func TestSelfTuner_ImmediatePassSwapsCalibratedConfig(t *testing.T) {
 	}
 }
 
-// TestSelfTuner_NoOpReinstallsDefaultsVerbatim: a squid-shaped corpus must
-// leave the Planner on the defaults (the no-op-on-squid behavior, end to end
+// TestSelfTuner_NoOpReinstallsDefaultsVerbatim: a no-signal corpus must
+// leave the Planner on the defaults (the no-op-on-no-signal behavior, end to end
 // through the loop).
 func TestSelfTuner_NoOpReinstallsDefaultsVerbatim(t *testing.T) {
 	defaults := calibDefaults()
 	pl := NewPlanner(defaults)
 	reader := &fakeFrontierReader{}
-	reader.set(squidShapedCorpus(), nil)
+	reader.set(noSignalCorpus(), nil)
 
 	st := StartSelfTuner(context.Background(), SelfTuneParams{
 		Planner: pl, Reader: reader, Defaults: defaults, Interval: time.Hour,
@@ -94,7 +94,7 @@ func TestSelfTuner_NoOpReinstallsDefaultsVerbatim(t *testing.T) {
 	// Give the swap a moment; defaults must remain in force.
 	time.Sleep(20 * time.Millisecond)
 	if pl.Cfg() != defaults {
-		t.Fatalf("squid-shaped corpus must keep defaults, got %+v", pl.Cfg())
+		t.Fatalf("no-signal corpus must keep defaults, got %+v", pl.Cfg())
 	}
 }
 

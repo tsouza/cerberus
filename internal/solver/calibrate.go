@@ -13,7 +13,7 @@ package solver
 //
 //   - LOCAL (never shipped): the CALIBRATED constants Calibrate returns. They
 //     are derived AT RUNTIME, exclusively from `samples` — THIS deployment's
-//     own cerberus_router_corpus rows. Squid's corpus tunes squid only;
+//     own cerberus_router_corpus rows. A deployment's corpus tunes that deployment only;
 //     another install tunes itself. A single deployment's corpus deliberately
 //     never leaks into the shipped defaults (that would be cross-deployment
 //     over-fit), which is why the only deployment-specific input to Calibrate
@@ -161,9 +161,9 @@ const (
 //     floor (minCalibratedFanout / minCalibratedAnchorPairs).
 //   - Fail-open / no-op without signal: a thin corpus (< minCalibrationSamples
 //     real dispatches), no below-threshold decisions, or no OOM/cost-danger
-//     exemplars → return `defaults` UNCHANGED with NoOp set. (Squid today is
-//     exactly this shape — all route A, below-threshold=0, zero failures — so
-//     Calibrate is a true verbatim no-op there.)
+//     exemplars → return `defaults` UNCHANGED with NoOp set. (A no-signal
+//     corpus is exactly this shape — all route A, below-threshold=0, zero
+//     failures — so Calibrate is a true verbatim no-op there.)
 //   - Relative terms: the frontier is expressed in the corpus's own observed
 //     (F, N×F) coordinates scaled by a shipped margin percent, not absolutes
 //     hardcoded to one deployment.

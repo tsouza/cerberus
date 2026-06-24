@@ -153,7 +153,7 @@ func (st *SelfTuner) recalibrate(ctx context.Context) {
 
 	if report.NoOp {
 		// Reinstall the conservative defaults verbatim (Calibrate returned
-		// them unchanged). This is the squid-shaped path: all route A,
+		// them unchanged). This is the no-signal path: all route A,
 		// below-threshold=0, no failures → defaults stay in force.
 		st.planner.SetConfig(calibrated)
 		st.logger.Info("route self-tune: no-op (local corpus carries no actionable signal)",

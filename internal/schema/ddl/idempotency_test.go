@@ -82,7 +82,7 @@ func TestRenderCreateDatabase(t *testing.T) {
 // engine path: the CREATE DATABASE statement carries
 // `ENGINE = Replicated(<path>, <shard>, <replica>)`, the shard/replica
 // default to the server macros when unset, and an explicit override is
-// honoured. This is the squid-style clustered shape where the Replicated
+// honoured. This is a replicated clustered shape where the Replicated
 // database auto-replicates DDL (the tables themselves get an explicit
 // ReplicatedMergeTree engine to replicate their DATA).
 func TestRenderCreateDatabase_ReplicatedEngine(t *testing.T) {

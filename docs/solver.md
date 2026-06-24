@@ -378,8 +378,8 @@ Stage 0 records each deployment's own observed cost into
 `cerberus_router_corpus`. **Per-deployment self-tuning** closes that loop at
 runtime: when enabled, cerberus periodically reads *its own* corpus, derives
 route thresholds calibrated to *that deployment's* cost frontier, and swaps them
-into the live router — so squid's data tunes squid only, and any other install
-tunes itself from its own corpus.
+into the live router — so a deployment's data tunes that deployment only, and
+any other install tunes itself from its own corpus.
 
 The architecture is deliberately split into a generic half and a local half, and
 the split is the whole point:
@@ -427,10 +427,10 @@ deployment.
   shipped safety floor (`minCalibratedFanout` / `minCalibratedAnchorPairs`).
 - **Fail-open / no-op without signal.** A thin corpus (below the min-sample
   floor), no `below-threshold` decisions, or no OOM/cost-danger exemplars →
-  `Calibrate` returns `defaults` **unchanged**. On squid today the corpus is all
-  route-A, `below-threshold = 0`, and zero failures, so `Calibrate` returns the
-  defaults **verbatim** — a true no-op (pinned by
-  `TestCalibrate_NoOpOnSquidShapedCorpus`).
+  `Calibrate` returns `defaults` **unchanged**. For a no-signal corpus that is
+  all route-A, with `below-threshold = 0` and zero failures, `Calibrate` returns
+  the defaults **verbatim** — a true no-op (pinned by
+  `TestCalibrate_NoOpOnNoSignalCorpus`).
 - **Off by default.** The loop is gated behind `CERBERUS_ROUTE_SELFTUNE`
   (default off). Unset → the router uses the static shipped `Config` and the loop
   never starts, so existing deployments are byte-for-byte unchanged.

@@ -19,11 +19,11 @@ func calibDefaults() Config {
 	return c
 }
 
-// squidShapedCorpus models squid's corpus TODAY: every dispatch is route A,
+// noSignalCorpus models a no-signal corpus: every dispatch is route A,
 // below-threshold never fired (the thresholds never gated a plan), and there
 // are zero OOM/cost-danger outcomes. Calibrate MUST treat this as no-signal and
-// return the defaults verbatim — the load-bearing no-op-on-squid proof.
-func squidShapedCorpus() []CorpusSample {
+// return the defaults verbatim — the load-bearing no-op-on-no-signal proof.
+func noSignalCorpus() []CorpusSample {
 	out := make([]CorpusSample, 0, 8)
 	for i := 0; i < 8; i++ {
 		out = append(out, CorpusSample{
@@ -43,15 +43,15 @@ func squidShapedCorpus() []CorpusSample {
 	return out
 }
 
-func TestCalibrate_NoOpOnSquidShapedCorpus(t *testing.T) {
+func TestCalibrate_NoOpOnNoSignalCorpus(t *testing.T) {
 	defaults := calibDefaults()
-	got, report := Calibrate(squidShapedCorpus(), defaults)
+	got, report := Calibrate(noSignalCorpus(), defaults)
 
 	if !reflect.DeepEqual(got, defaults) {
-		t.Fatalf("squid-shaped corpus must return defaults verbatim, got %+v want %+v", got, defaults)
+		t.Fatalf("no-signal corpus must return defaults verbatim, got %+v want %+v", got, defaults)
 	}
 	if !report.NoOp {
-		t.Fatalf("expected NoOp report on squid-shaped corpus, got %+v", report)
+		t.Fatalf("expected NoOp report on no-signal corpus, got %+v", report)
 	}
 	if len(report.Changes) != 0 {
 		t.Fatalf("no-op must report zero changes, got %+v", report.Changes)
@@ -182,7 +182,7 @@ func TestCalibrate_NeverLoosensTightenOnlyInvariant(t *testing.T) {
 	defaults := calibDefaults()
 
 	corpora := map[string][]CorpusSample{
-		"squid":          squidShapedCorpus(),
+		"no-signal":      noSignalCorpus(),
 		"clear-frontier": clearFrontierCorpus(),
 		"no-below":       mustManySamples(false, true),
 		"no-danger":      mustManySamples(true, false),
