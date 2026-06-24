@@ -136,6 +136,14 @@ const (
 	ExitTokenSampleBudget = "sample_budget"
 	ExitTokenBreaker      = "breaker"
 	ExitTokenRejected     = "rejected"
+	// ExitTokenOOM is the dispatched memory-cap rejection token. Unlike the
+	// three above it is NOT a cerberusSide() override token (oom is also the
+	// query_log-derived label for the same physical event); it rides the
+	// ObserveDispatchedRejection seam, which emits the row TERMINALLY at the
+	// rejection site (zero cost, route features) without waiting for a
+	// query_log join. The memory-cap 241 aborts the query on CH, but the
+	// corpus must not depend on the join landing a row for it.
+	ExitTokenOOM = "oom"
 )
 
 // parseExitStatus maps an exit_status token back to its ExitStatus. It accepts
@@ -168,6 +176,20 @@ func (e ExitStatus) cerberusSide() bool {
 	default:
 		return false
 	}
+}
+
+// parseTerminalRejectionStatus maps a token to its ExitStatus for the
+// terminal-at-rejection seam (ObserveDispatchedRejection). It accepts the three
+// cerberus-side tokens PLUS oom: a dispatched memory-cap (CH code 241) abort the
+// engine knows in-process at the error site, recorded directly with zero cost
+// rather than waiting for a system.query_log row that may never be joined. An
+// unrecognised token returns ok=false so a typo cannot masquerade as a real
+// outcome. ok / timeout stay query_log-derived and are not parsed here.
+func parseTerminalRejectionStatus(token string) (ExitStatus, bool) {
+	if token == ExitTokenOOM {
+		return ExitOOM, true
+	}
+	return parseExitStatus(token)
 }
 
 // Record is one dispatched query's identity, registered (via Observe) when
@@ -407,19 +429,33 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 // ring is full it overwrites the oldest slot in place (O(1) circular-buffer
 // eviction, no reindex). Safe for concurrent callers, though in production only
 // the single Run drain calls it; the data-plane seam is ObserveQuery /
-// ObserveOutcome / ObserveRejection (all non-blocking).
+// ObserveOutcome / ObserveRejection / ObserveDispatchedRejection (all
+// non-blocking).
 //
 // It handles three Record kinds, in FIFO order off the ingest channel:
-//   - decision-only (DecisionOnly): a pre-dispatch breaker / cap rejection with
-//     no query_id — buffered for the next reconcile flush, never ringed.
+//   - decision-only (DecisionOnly): a rejection recorded terminally at the
+//     engine site — buffered for the next reconcile flush, never ringed. A
+//     pre-dispatch breaker / cap rejection has no query_id; a DISPATCHED
+//     memory-cap (oom) rejection carries the dispatch query_id, which is dropped
+//     from the join index here so the query_log reconcile cannot double-write it.
 //   - outcome-update (HasOutcome with no ShapeID): merges a cerberus-side
 //     terminal outcome onto an already-ringed dispatch record by query_id.
 //   - dispatch (the default): the normal at-dispatch metadata record.
 func (r *Reconciler) Observe(rec Record) {
 	if rec.DecisionOnly {
-		// A pre-dispatch rejection: no query_id, no CH cost. Buffer it for the
-		// next reconcile flush rather than placing it in the join ring.
+		// A terminal rejection recorded at the engine site: no usable CH cost,
+		// buffered for the next reconcile flush rather than carried in the join
+		// ring. A pre-dispatch rejection (breaker / cap) has no QueryID. A
+		// DISPATCHED rejection (memory-cap oom) DOES carry the dispatch query_id:
+		// drop it from the join index here so the later query_log reconcile
+		// cannot ALSO emit a row for the same physical event (no double-count).
 		r.mu.Lock()
+		if rec.QueryID != "" {
+			if idx, ok := r.byID[rec.QueryID]; ok && r.ring[idx].QueryID == rec.QueryID {
+				delete(r.byID, rec.QueryID)
+				delete(r.seenAt, rec.QueryID)
+			}
+		}
 		r.pendingRejections = append(r.pendingRejections, rec)
 		r.mu.Unlock()
 		return
@@ -592,10 +628,64 @@ func (r *Reconciler) ObserveRejection(
 	})
 }
 
+// ObserveDispatchedRejection is the data-plane seam for a CERBERUS-side terminal
+// outcome on a query that DID dispatch a CH query but was aborted by a
+// resource cap the engine recognises in-process at the error site — currently
+// the per-query memory cap (max_memory_usage, CH code 241 MEMORY_LIMIT_EXCEEDED,
+// statusToken "oom"). The abort runs ON ClickHouse, so a system.query_log row
+// MAY land (type QueryExceptionWhileProcessing), but the corpus must not depend
+// on the join landing: the row is recorded TERMINALLY here with the dispatch's
+// known route features and ZERO cost (read_rows / bytes / duration / memory are
+// unknowable at the engine error site — kept honestly unset, never fabricated).
+//
+// queryID is the dispatched query's join key: the drain FORGETS it from the
+// join ring so the later query_log reconcile cannot ALSO emit a row for the same
+// physical event (no double-count). An empty queryID still records the terminal
+// row; it just has no ring entry to forget. The routing scalars mirror
+// ObserveQuery; routePresent is false when no classification ran. statusToken is
+// the stable exit_status token (oom or a cerberus-side token); an unrecognised
+// token is ignored. Non-blocking, drop-under-burst.
+func (r *Reconciler) ObserveDispatchedRejection(
+	queryID, shapeID string,
+	opts []string,
+	language string,
+	statusToken string,
+	routePresent bool,
+	route string,
+	nAnchors, fanout, cumulativeD, outerRange, step uint32,
+	kShards uint8,
+	decisionReason string,
+) {
+	status, ok := parseTerminalRejectionStatus(statusToken)
+	if !ok {
+		return
+	}
+	r.enqueue(Record{
+		QueryID:      queryID,
+		ShapeID:      shapeID,
+		Opts:         opts,
+		Language:     language,
+		Outcome:      status,
+		HasOutcome:   true,
+		DecisionOnly: true,
+		Route: RouteFeatures{
+			Present:        routePresent,
+			Route:          route,
+			NAnchors:       nAnchors,
+			Fanout:         fanout,
+			CumulativeD:    cumulativeD,
+			OuterRange:     outerRange,
+			Step:           step,
+			KShards:        kShards,
+			DecisionReason: decisionReason,
+		},
+	})
+}
+
 // enqueue does the shared single non-blocking send onto the ingest channel,
-// counting a drop when the buffer is momentarily full. All three data-plane
-// seams (ObserveQuery / ObserveOutcome / ObserveRejection) funnel through it so
-// the drop-under-burst contract is identical and stated once.
+// counting a drop when the buffer is momentarily full. All data-plane seams
+// (ObserveQuery / ObserveOutcome / ObserveRejection / ObserveDispatchedRejection)
+// funnel through it so the drop-under-burst contract is identical and stated once.
 func (r *Reconciler) enqueue(rec Record) {
 	select {
 	case r.ingest <- rec:

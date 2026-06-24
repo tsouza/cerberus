@@ -780,6 +780,74 @@ publish gates handle either or both. The `:latest` image tag advances only for
 the highest stable `v*` release (a prerelease or a stable backport never drags
 it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
 
+#### Maintenance lines (hotfix backports)
+
+Beyond the main line, a hotfix can be cut on a **maintenance line** —
+`release/<major>.<minor>.x` (e.g. `release/1.4.x`, `release/1.3.x`). The
+maintainer cherry-picks the fix straight onto the branch and pushes; `release.yml`
+also triggers on `release/*.x` pushes (the `.x` glob deliberately excludes the
+main release PR branch shape `release/v1.5.0-chart-0.6.4`). The same per-line
+version gates decide what to publish, and because the gates are
+absence-keyed (tag-absent / OCI-absent, not newest-wins) a hotfix older than the
+latest tag — `v1.4.1` cut after `v1.5.0` — still publishes. A maintenance push
+has no PR gate, so the `preflight` job (`release-preflight.mjs`) re-reads the
+pushed commit's check-runs and refuses to publish unless the commit is the
+branch tip and every required check is settled green.
+
+### Release support window / EOL policy
+
+Cerberus maintains the **latest 3 minor release lines**: the current minor plus
+the two prior. When a new minor ships, the line that becomes **3 minors behind**
+the current minor reaches **end-of-life (EOL)**. An EOL line:
+
+- gets **no further hotfixes**;
+- has its `release/<major>.<minor>.x` maintenance branch **deleted
+  automatically** when the new minor ships (the `eol-retire` job — see below);
+- has its maintenance-line **publish/CI disabled** (the `preflight` gate refuses
+  to publish a push on an out-of-window line — see below).
+
+What stays: the **version tags and GitHub Releases** for EOL versions **remain
+available** — only the future-hotfix branch is removed. Already-published images,
+charts, and binaries are never unpublished.
+
+**Worked example.** At **v1.5.x** current, the supported lines are
+`release/1.5.x`, `release/1.4.x`, and `release/1.3.x`. Shipping v1.5.0 retired
+`1.2.x` and older: `release/1.2.x` was deleted, `v1.2.*` tags and Releases stay
+up. `1.4.x` and `1.3.x` remain supported and keep taking backports.
+
+**Enforcement.** The support window is enforced on both halves of the EOL
+policy, sharing one piece of window math
+(`.github/scripts/release-preflight.mjs`, `SUPPORTED_MINOR_LINES` — single
+source of truth):
+
+- **Passive (publish refusal).** The maintenance-release `preflight`
+  (`supportWindowProblem`) refuses a push to a `release/<major>.<minor>.x` line
+  that is 3+ minors behind the current minor (derived from the stable `v*` tag
+  set) — **before** any artifact publishes, independent of how green the commit
+  is. An out-of-window line takes no further hotfixes.
+- **Active (branch retirement).** When a NEW minor actually ships, the
+  `eol-retire` job in `release.yml` deletes the maintenance branch that just
+  fell out of the window **automatically** — no manual maintainer step. It runs
+  only after a successful new-version publish, computes the line via
+  `retireLineForPublish` (the same `SUPPORTED_MINOR_LINES` window: publishing
+  `1.6.0` retires `release/1.3.x`), and deletes that `release/X.W.x` branch iff
+  it exists. Guards: it retires **at most one** line and **only on a minor open**
+  (`X.Y.0`, `Y>0`) — patches, major bumps, stable backports, and prereleases
+  retire nothing; it deletes **only** a provably out-of-window branch that
+  exists (idempotent — an already-absent branch is a clean no-op), with a
+  `supportWindowProblem` cross-check before the destructive call; and it is
+  **fail-open** — the release has already published, so any deletion failure
+  (token, future protection, network) logs loudly and the step still succeeds,
+  leaving a one-line manual `git push origin --delete release/X.W.x` as the
+  fallback. The job uses `RELEASE_PAT` (fine-grained, `contents:write`) when
+  present and falls back to the default `GITHUB_TOKEN`; both can delete the
+  `release/*.x` branches, which carry no branch protection or ruleset (only
+  `main` is protected).
+
+EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
+their GitHub Releases — and the already-pushed images, charts, and binaries —
+stay available; only the future-hotfix branch is removed.
+
 ## Dev / prod parity
 
 Local development reads the same env vars and connects to the same

@@ -118,6 +118,70 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 	}
 }
 
+// TestEvaluate_CerberusSideRejectionRows_DriveFindings is the integration end of
+// the corpus-rejection-capture fix: it feeds the evaluator corpus rows shaped
+// EXACTLY as the engine now emits for cerberus-side rejections — a memory-cap
+// abort (route A, exit_status "oom", zero cost columns, routing read-out carried)
+// and the three explicit rejection tokens (sample_budget / breaker / rejected,
+// zero cost) — and asserts the failure rules fire on them. Before the fix the
+// memory-cap rejection never reached the corpus, so oom_on_route_a was
+// structurally blind to it; this proves a captured rejection row drives a
+// finding even with zero cost columns (the rules key on route + exit_status, not
+// read_rows). The rows are built in-memory via BenchRow so the test does not
+// import optcorpus (the two packages stay decoupled by the columns.go contract).
+func TestEvaluate_CerberusSideRejectionRows_DriveFindings(t *testing.T) {
+	cat, err := LoadEmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	// Corpus shaped like the engine's terminal-at-rejection emit: zero cost,
+	// route features carried (route A for the memory-cap abort), exit_status set.
+	var rows []BenchRow
+	const supportFloor = 2
+	for range supportFloor {
+		// Memory-cap (oom) dispatched rejection — route A, zero cost.
+		rows = append(rows, BenchRow{
+			ShapeID: "cerb:sum", Language: "promql", Route: "A",
+			NAnchors: 500, Fanout: 30, CumulativeD: 600, OuterRange: 7200, Step: 15,
+			DecisionReason: "below-threshold", ExitStatus: "oom",
+		})
+		// Explicit cerberus-side rejections — sample_budget / breaker / rejected.
+		rows = append(
+			rows,
+			BenchRow{ShapeID: "cerb:rate", Language: "logql", Route: "A", ExitStatus: "sample_budget"},
+			BenchRow{ShapeID: "trc:breaker", Language: "traceql", ExitStatus: "breaker"},
+			BenchRow{ShapeID: "trc:rejected", Language: "traceql", ExitStatus: "rejected"},
+		)
+	}
+	src := (&BenchCorpus{Rows: rows}).AsCorpusSource()
+
+	report, err := NewEvaluator(cat, evalConfig(), src).Evaluate(context.Background(), EvalOptions{})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+
+	fired := map[string]bool{}
+	rejectionExits := map[string]bool{}
+	for _, f := range report.Findings {
+		fired[f.RuleID] = true
+		if f.RuleID == "cerberus_side_rejection_pressure" {
+			rejectionExits[f.GroupKey["exit_status"]] = true
+		}
+	}
+
+	// The memory-cap abort drives the OOM route-A rule despite zero memory_usage.
+	if !fired["oom_on_route_a"] {
+		t.Errorf("oom_on_route_a did not fire on the captured memory-cap rejection rows; findings=%+v", report.Findings)
+	}
+	// The three explicit rejection tokens drive N3.
+	for _, exit := range []string{"sample_budget", "breaker", "rejected"} {
+		if !rejectionExits[exit] {
+			t.Errorf("cerberus_side_rejection_pressure did not fire for exit_status=%q", exit)
+		}
+	}
+}
+
 // TestEvaluateMinSupportDropsThinClasses raises the support floor so the
 // single-row timeout/sample_budget classes are dropped.
 func TestEvaluateMinSupportDropsThinClasses(t *testing.T) {

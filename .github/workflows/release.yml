@@ -157,13 +157,17 @@ jobs:
       - name: preflight self-test
         run: node .github/scripts/release-preflight.mjs --self-test
 
-      - name: Verify the maintenance commit is the branch tip and fully green
+      - name: Verify the line is in-window, the commit is the branch tip, and fully green
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # This release run's own jobs are necessarily in-progress while the
           # preflight reads check-runs, so they're excluded structurally (gating
           # on them would deadlock).
           RELEASE_SELF_JOBS: gate,preflight,goreleaser,chart-release
+        # Also enforces the support-window / EOL policy: a push to a maintenance
+        # line 3+ minors behind the current minor is refused (the line is EOL,
+        # gets no hotfixes). See docs/operations.md "Release support window / EOL
+        # policy".
         run: node .github/scripts/release-preflight.mjs
 
   # App release — binary archives + multi-arch images (GHCR + Docker Hub) +
@@ -312,6 +316,61 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PAT }}
           repository: tsouza/cerberus
           readme-filepath: ./README.md
+
+  # Active EOL — after a NEW app version actually publishes, retire the release
+  # line that just fell out of the latest-3-minor support window by DELETING its
+  # `release/<major>.<minor>.x` maintenance branch (e.g. publishing v1.6.0
+  # retires release/1.3.x). This is the ACTIVE half of the EOL policy; the
+  # PASSIVE half (refusing to PUBLISH on an out-of-window line) lives in the
+  # `preflight` gate. Both share `release-preflight.mjs`'s window math
+  # (SUPPORTED_MINOR_LINES) — single source of truth, no duplicated arithmetic.
+  #
+  # Guards (all in release-preflight.mjs `retireLineForPublish` + the
+  # `eol-retire-line` driver):
+  #   - runs ONLY after goreleaser SUCCEEDED (a real new-version publish);
+  #   - retires AT MOST one line, ONLY on a minor open (X.Y.0, Y>0). Patches +
+  #     major bumps + backports + prereleases retire nothing;
+  #   - deletes ONLY a provably out-of-window line that EXISTS (idempotent: a
+  #     404 / already-absent branch is a clean noop), with a cross-check against
+  #     `supportWindowProblem` before the destructive call;
+  #   - FAIL-OPEN: the release already published, so ANY deletion failure
+  #     (token perms, protection, network) logs loudly via `::error::` and the
+  #     step still exits 0 — a retirement hiccup never fails a shipped release.
+  #     `continue-on-error: true` is belt-and-braces on top of the in-script
+  #     fail-open.
+  #
+  # Token: RELEASE_PAT (fine-grained, contents:write) when present, else the
+  # default GITHUB_TOKEN — both can delete an UNPROTECTED `release/*.x` branch
+  # (no ruleset / classic branch protection covers `release/*`; only `main` is
+  # protected). See docs/operations.md "Release support window / EOL policy".
+  eol-retire:
+    name: eol-retire
+    needs: [gate, goreleaser]
+    # Only when a NEW app version actually published (goreleaser ran + succeeded).
+    # No `always()`: if goreleaser was skipped or failed, nothing shipped, so the
+    # window did not move and there is nothing to retire.
+    if: needs.gate.outputs.app_publish == 'true' && needs.goreleaser.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      # Deleting a branch ref needs contents:write. (The job uses RELEASE_PAT
+      # when present; this scope covers the github.token fallback.)
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: retire-line self-test
+        run: node .github/scripts/release-preflight.mjs --self-test
+
+      - name: Retire the out-of-window release line (active EOL)
+        continue-on-error: true
+        env:
+          # RELEASE_PAT (fine-grained contents:write) deletes the branch even if
+          # a future ruleset protects `release/*` and grants the PAT bypass;
+          # falls back to github.token, which suffices for today's unprotected
+          # `release/*.x` branches.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          RELEASE_APP_VERSION: ${{ needs.gate.outputs.app_version }}
+        run: node .github/scripts/release-preflight.mjs eol-retire-line
 
   # Chart release — publish the Helm chart to GHCR as an OCI artifact, cosign-
   # sign it keyless, attest provenance, and (idempotently) push Artifact Hub

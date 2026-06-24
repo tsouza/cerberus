@@ -226,19 +226,46 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   deadlock). Latest-per-name dedup means a green re-run supersedes an earlier
   red. The publish jobs guard `needs.preflight.result == 'success' ||
   == 'skipped'`, so the main path (preflight skipped) stays preflight-free while
-  a failed/cancelled maintenance preflight blocks the publish. Pure exported
-  `MAINTENANCE_BRANCH_RE` + `evaluate({branchHead, pushedSha, checkRuns,
-  statuses, selfJobs, branchLabel})` (no network, no `process.exit`) + a
-  `--self-test`.
-  - Env: `GITHUB_TOKEN` (checks:read + statuses:read + contents:read),
-    `GITHUB_REPOSITORY`, `GITHUB_SHA` (pushed commit), `GITHUB_REF_NAME` (must
-    be `release/<major>.<minor>.x`), `GITHUB_API_URL` (default
-    `https://api.github.com`), `RELEASE_SELF_JOBS` (comma-separated self-job
-    names to exclude); argv `--self-test` runs the assertion suite.
-  - Exit: `0` when the commit is the branch tip and all gated checks are green
-    (or a green self-test); `1` on any red/running gated check, a non-tip /
-    unresolved commit, a non-maintenance `GITHUB_REF_NAME` (a wiring error), or
-    a missing required env var.
+  a failed/cancelled maintenance preflight blocks the publish. It ALSO enforces
+  the **release support-window / EOL policy** (`SUPPORTED_MINOR_LINES = 3`): the
+  pushed line must be within the latest 3 minor lines (current + the two prior);
+  a push to a line 3+ minors behind the current minor (derived from the stable
+  `v*` tag set, listed via the API so no fetch-depth is needed) is REFUSED
+  before any artifact publishes, independent of how green the commit is. See
+  `docs/operations.md` "Release support window / EOL policy". The SAME module
+  also drives the **active** half of the EOL policy via the `eol-retire-line`
+  command (the `eol-retire` job in `release.yml`): post-publish, it computes the
+  line that just fell out of the window with `retireLineForPublish` (the same
+  `SUPPORTED_MINOR_LINES` math — publishing `1.6.0` retires `release/1.3.x`) and
+  DELETES that `release/X.W.x` branch via the Git refs API iff it exists.
+  Conservative + fail-open: it retires at most one line, only on a minor open
+  (`X.Y.0`, `Y>0`) — patches / major bumps / backports / prereleases retire
+  nothing — deletes only a provably out-of-window branch that exists (idempotent
+  on a 404) with a `supportWindowProblem` cross-check, and ANY deletion failure
+  logs `::error::` and still exits 0 (the release already published). Pure
+  exported `MAINTENANCE_BRANCH_RE` + `currentMinor(tags)` +
+  `supportWindowProblem({branch, tags, windowSize})` +
+  `retireLineForPublish({version, tags, windowSize})` + `evaluate({branchHead,
+  pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags})` (no network, no
+  `process.exit`) + a `--self-test`.
+  - Env (preflight, default command): `GITHUB_TOKEN` (checks:read +
+    statuses:read + contents:read), `GITHUB_REPOSITORY`, `GITHUB_SHA` (pushed
+    commit), `GITHUB_REF_NAME` (must be `release/<major>.<minor>.x`),
+    `GITHUB_API_URL` (default `https://api.github.com`), `RELEASE_SELF_JOBS`
+    (comma-separated self-job names to exclude).
+  - Env (`eol-retire-line` command): `GITHUB_TOKEN` (contents:write — the
+    workflow passes `RELEASE_PAT || github.token`), `GITHUB_REPOSITORY`,
+    `RELEASE_APP_VERSION` (the just-published `X.Y.Z`), `GITHUB_API_URL`.
+  - Args: argv `--self-test` runs the assertion suite; `eol-retire-line` runs
+    the active-EOL retirement; no command runs the maintenance preflight gate.
+  - Exit (preflight): `0` when the line is in-window, the commit is the branch
+    tip, and all gated checks are green (or a green self-test); `1` on an
+    end-of-life line, any red/running gated check, a non-tip / unresolved
+    commit, a non-maintenance `GITHUB_REF_NAME` (a wiring error), or a missing
+    required env var.
+  - Exit (`eol-retire-line`): `0` always (fail-open — a retirement failure must
+    never fail an already-published release); `1` only on a gross wiring error
+    (missing repo/token) before any publish-affecting work.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
