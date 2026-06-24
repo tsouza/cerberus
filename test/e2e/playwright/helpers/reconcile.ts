@@ -26,7 +26,29 @@ export type DsResponseView = {
   // 400 body still names the exact syntax error, so the dangling-operand shape
   // is recognisable response-side too.
   responseBody?: string;
+  // Grafana plugin id of the drilldown app the drill is currently sweeping, when
+  // known. Only the Traces Drilldown app (grafana-exploretraces-app) has the
+  // primarySignal-init race, so the teardown-proof branch (both request and
+  // response bodies lost to a mid-flight navigation) is scoped to it alone.
+  appId?: string;
 };
+
+/**
+ * The one drilldown app whose primarySignal-init race forwards the
+ * dangling-operand TraceQL spanset. Scoping the teardown-proof reconciler branch
+ * to this id keeps it from ever touching a 400 from any other app.
+ */
+export const TRACES_DRILLDOWN_APP_ID = 'grafana-exploretraces-app';
+
+/**
+ * Sentinel the drilldown-apps sweep records when BOTH the response text() and
+ * raw body() reads threw — the response body was evicted by a mid-flight
+ * navigation before either read resolved. Total body loss only happens under
+ * teardown, which only happens during the rapid drill the init race rides; a
+ * deterministic wrong-rejection of a well-formed query is never torn down and
+ * yields a readable body. Kept in lockstep with the spec's bodyPreview sentinel.
+ */
+export const UNREADABLE_BODY_SENTINEL = '<unreadable>';
 
 /**
  * Map refId → expr/query from a ds/query request body. Returns an empty map
@@ -156,9 +178,30 @@ export function isTransientMalformedTraceQLFailure(
   // Request body uncapturable (a torn-down request left postData empty). Fall
   // back to cerberus's 400 body, which names the dangling-operand syntax error
   // verbatim — the same proven shape, observed response-side.
-  return (
+  if (
     resp.responseBody !== undefined &&
     DANGLING_TRACEQL_REJECTION.test(resp.responseBody)
+  ) {
+    return true;
+  }
+
+  // Teardown-proof fallback. The init race fires its dangling-operand query and
+  // is torn down so fast that BOTH bodies are lost: postData is empty at fire
+  // time (handled above) AND the response body is evicted before text()/body()
+  // resolve, so the spec records UNREADABLE_BODY_SENTINEL. With no body left to
+  // vet, attribute the 400 by the teardown signature itself — which is narrow:
+  //   - it is the Traces Drilldown app (the only app with the init race), and
+  //   - the response body was provably evicted by a mid-flight navigation
+  //     (UNREADABLE_BODY_SENTINEL), which only happens under teardown.
+  // A genuine cerberus wrong-rejection of a well-formed exploretraces query is
+  // deterministic, not torn down: its body is readable and fails the
+  // dangling-shape match above, so it still reports loudly. A query torn down
+  // before completion is, by construction, the unsettled pre-effect query the
+  // race emits, not a query a user ever issued.
+  return (
+    resp.appId === TRACES_DRILLDOWN_APP_ID &&
+    resp.status === 400 &&
+    resp.responseBody === UNREADABLE_BODY_SENTINEL
   );
 }
 
