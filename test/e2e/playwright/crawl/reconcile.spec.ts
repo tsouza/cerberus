@@ -40,6 +40,8 @@ import {
   isClientSideFetchAbort,
   isResourceStatusTwin,
   reportableConsoleErrors,
+  TRACES_DRILLDOWN_APP_ID,
+  UNREADABLE_BODY_SENTINEL,
 } from '../helpers/reconcile.js';
 
 const tempoBody = (query: string, refId = 'A'): string =>
@@ -339,6 +341,76 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
           status: 400,
           requestBody: '<streamed>',
           responseBody: body,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  // Teardown-proof fallback: the rapid drill tore the request down so fast that
+  // BOTH bodies were lost — postData empty AND the response body evicted before
+  // text()/body() resolved, so the sweep recorded the unreadable sentinel. With
+  // no body to vet, the 400 is attributed by the teardown signature itself, but
+  // ONLY for the one app that has the init race. Observed: run 28104559120.
+  test('reconciles the Traces-Drilldown 400 when BOTH bodies are lost (teardown)', () => {
+    expect(
+      isTransientMalformedTraceQLFailure({
+        url: '/api/ds/query?ds_type=tempo&requestId=SQR108',
+        status: 400,
+        requestBody: '',
+        responseBody: UNREADABLE_BODY_SENTINEL,
+        appId: TRACES_DRILLDOWN_APP_ID,
+      }),
+    ).toBe(true);
+  });
+
+  test('teardown fallback is scoped to the Traces-Drilldown app only', () => {
+    // Same unreadable-body 400, but a DIFFERENT (or absent) app id: no init-race
+    // exists there, so an unreadable 400 is a real failure and must report.
+    for (const appId of [
+      undefined,
+      'grafana-lokiexplore-app',
+      'grafana-metricsdrilldown-app',
+    ]) {
+      expect(
+        isTransientMalformedTraceQLFailure({
+          url: '/api/ds/query?ds_type=tempo&requestId=SQR108',
+          status: 400,
+          requestBody: '',
+          responseBody: UNREADABLE_BODY_SENTINEL,
+          appId,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  test('teardown fallback fires ONLY on the unreadable sentinel, not any empty body', () => {
+    // A readable-but-empty or partially-captured body is NOT proof of teardown,
+    // so the narrow branch must not fire — only the exact sentinel the sweep
+    // records when both reads threw counts as teardown-proof.
+    for (const responseBody of [undefined, '', '{}', 'some other error']) {
+      expect(
+        isTransientMalformedTraceQLFailure({
+          url: '/api/ds/query?ds_type=tempo&requestId=SQR108',
+          status: 400,
+          requestBody: '',
+          responseBody,
+          appId: TRACES_DRILLDOWN_APP_ID,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  test('teardown fallback does NOT fire on a non-400 unreadable response', () => {
+    // A 500/502 with an unreadable body is a real server failure, not the
+    // parse-time init-race 400 — it must still report.
+    for (const status of [500, 502, 503]) {
+      expect(
+        isTransientMalformedTraceQLFailure({
+          url: '/api/ds/query?ds_type=tempo&requestId=SQR108',
+          status,
+          requestBody: '',
+          responseBody: UNREADABLE_BODY_SENTINEL,
+          appId: TRACES_DRILLDOWN_APP_ID,
         }),
       ).toBe(false);
     }

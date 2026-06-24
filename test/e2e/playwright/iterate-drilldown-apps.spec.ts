@@ -60,6 +60,7 @@ import {
   captureConsoleErrors,
   captureRoleAlertBanners,
   drillTwoLevels,
+  UNREADABLE_BODY_SENTINEL,
   isTransientMalformedTraceQLFailure,
   iterateDrilldownApps,
   reportableConsoleErrors,
@@ -88,6 +89,12 @@ type DrilldownFailure = {
   rule: string;
   detail: string;
 };
+
+// Upper bound on how long we wait for a failing response body to finish
+// buffering before falling through to the best-effort text()/body() reads.
+// resp.finished() normally resolves in single-digit ms once the body lands;
+// the cap only guards against a genuinely-stalled stream hanging the sweep.
+const BODY_FINISH_TIMEOUT_MS = 2_000;
 
 test('drilldown-apps: each installed drilldown app drills two levels without 4xx/5xx + no role=alert error + no console errors', async ({
   page,
@@ -234,10 +241,18 @@ async function sweepDrilldownApp(
       const status = resp.status();
       const method = resp.request().method();
       // Prefer the body snapshotted at request time (onRequest); fall back
-      // to the response-time read. The forwarded ds/query body is what the
-      // init-race reconciler matches the dangling-operand TraceQL shape from.
+      // to the response-time read (both the decoded string and the raw buffer,
+      // mirroring onRequest, since either can be the populated one). The
+      // forwarded ds/query body is what the init-race reconciler matches the
+      // dangling-operand TraceQL shape from. When even this is empty, the
+      // finished()-gated response body below carries the response-side
+      // signature (DANGLING_TRACEQL_REJECTION) as the teardown-proof fallback.
+      const req = resp.request();
       const requestBody =
-        requestBodies.get(resp.request()) ?? resp.request().postData() ?? '';
+        requestBodies.get(req) ||
+        req.postData() ||
+        req.postDataBuffer()?.toString('utf8') ||
+        '';
       const summaryPromise = (async () => {
         let bodyPreview = '';
         // Only read the body when it's a failure so we don't spam
@@ -248,13 +263,28 @@ async function sweepDrilldownApp(
           // time; fall back to the raw buffer body() (a second read path) so
           // the response-side init-race reconciler (DANGLING_TRACEQL_REJECTION)
           // has the `unexpected &&` body to match even when text() throws.
+          //
+          // The race the bare text()/body() reads still lost (run 28104559120):
+          // the rapid two-level drill commits a cross-document navigation in the
+          // same microtask window, evicting the body buffer before either read
+          // resolves — both throw, leaving '<unreadable>' and the reconciler
+          // blind, so a known init-race 400 lands as a genuine http-non-2xx
+          // failure (THE flake). resp.finished() resolves once Playwright has
+          // buffered the full body internally; reading after it resolves wins
+          // against the eviction because the buffer is already captured. It is
+          // bounded by a short deadline so a genuinely-stuck stream can't hang
+          // the sweep — on timeout we fall through to the best-effort reads.
+          await Promise.race([
+            resp.finished().catch(() => undefined),
+            sleep(BODY_FINISH_TIMEOUT_MS),
+          ]);
           try {
             bodyPreview = truncate(await resp.text(), 600);
           } catch {
             try {
               bodyPreview = truncate((await resp.body()).toString('utf8'), 600);
             } catch {
-              bodyPreview = '<unreadable>';
+              bodyPreview = UNREADABLE_BODY_SENTINEL;
             }
           }
         }
@@ -332,6 +362,7 @@ async function sweepDrilldownApp(
         status: resp.status,
         requestBody: resp.requestBody,
         responseBody: resp.bodyPreview,
+        appId: app.id,
       })
     ) {
       reconciledInitRace++;
@@ -390,6 +421,14 @@ async function sweepDrilldownApp(
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}…<truncated, ${s.length - max} more char(s)>`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    // unref so a timer still pending when finished() wins the race can't keep
+    // the node process alive at teardown.
+    setTimeout(resolve, ms).unref?.();
+  });
 }
 
 function stripBase(url: string, baseURL: string): string {
