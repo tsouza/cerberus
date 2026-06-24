@@ -809,12 +809,13 @@ func (a frontierReaderAdapter) ReadFrontier(ctx context.Context) ([]solver.Corpu
 			NAnchors:        int(b.NAnchors),
 			Fanout:          int(b.Fanout),
 			CumulativeD:     int(b.CumulativeD),
-			Route:           b.Route,
-			BelowThreshold:  b.BelowThreshold,
-			MemoryUsage:     b.MaxMemoryUsage,
-			QueryDurationMS: b.MaxQueryDurationMS,
-			OOM:             b.Danger,
-			Count:           int(b.Count),
+			Route:          b.Route,
+			BelowThreshold: b.BelowThreshold,
+			// MaxMemoryUsage / MaxQueryDurationMS are captured in the corpus
+			// bucket but the calibrator gates on the terminal-OOM coordinate
+			// (b.Danger) alone, so they are not forwarded.
+			OOM:   b.Danger,
+			Count: int(b.Count),
 		})
 	}
 	return out, nil

@@ -5,8 +5,8 @@ package solver
 // ARCHITECTURE (the whole point of this file — keep it explicit):
 //
 //   - GENERIC (shipped to every deployment): everything in THIS file — the
-//     Calibrate logic, the cost-frontier model, the safety rails, and the
-//     CONSERVATIVE DEFAULT thresholds (DefaultConfig in config.go). This code
+//     Calibrate logic, the terminal-OOM frontier model, the safety rails, and
+//     the CONSERVATIVE DEFAULT thresholds (DefaultConfig in config.go). This code
 //     is deployment-independent: no deployment's learned constants are ever
 //     baked into it. A fresh install runs the same Calibrate over its own
 //     (initially empty) corpus.
@@ -29,9 +29,9 @@ import (
 
 // CorpusSample is one aggregated frontier bucket read from THIS deployment's
 // cerberus_router_corpus — the ONLY deployment-specific input to Calibrate.
-// Each sample summarises the observed cost of queries that classified at a
-// given (N, F, D) cost-grid point, so the calibrator can find where the
-// deployment's own cost frontier approaches the danger zone.
+// Each sample summarises the queries that classified at a given (N, F, D)
+// cost-grid point and whether any of them hit a TERMINAL OOM, so the
+// calibrator can locate where the deployment's own queries actually fall over.
 //
 // It is intentionally a flat value type (no chplan / optcorpus dependency) so
 // the calibrator stays pure and the reader that fills it can live anywhere
@@ -56,19 +56,14 @@ type CorpusSample struct {
 	// tell us where the CURRENT thresholds sit relative to the frontier.
 	BelowThreshold bool
 
-	// MemoryUsage is the peak server-side memory the dispatched query used
-	// (bytes), from the corpus memory_usage column. Zero for decision-only
-	// rows that never dispatched a CH query.
-	MemoryUsage uint64
-
-	// QueryDurationMS is the server-side wall-clock duration, from the corpus
-	// query_duration_ms column. Zero for decision-only rows.
-	QueryDurationMS uint64
-
 	// OOM is true when this sample's query terminated in the OOM / cost danger
 	// zone — ExitStatus oom / timeout / sample_budget (the three terminal
-	// outcomes route B exists to avoid). These are the frontier-defining
-	// catastrophes.
+	// outcomes route B exists to avoid). This is the only cost read-out the
+	// calibrator consults: it locates the frontier from the TERMINAL-OOM
+	// coordinate alone. The corpus still captures peak memory / wall-clock per
+	// bucket (see optcorpus.FrontierBucket), but the calibrator deliberately
+	// does NOT read a soft cost gradient — matching the shipped behaviour, which
+	// gates purely on the terminal outcome.
 	OOM bool
 
 	// Count is how many real dispatches this aggregated bucket summarises, so

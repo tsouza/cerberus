@@ -33,11 +33,9 @@ func noSignalCorpus() []CorpusSample {
 			Route:       "A",
 			// Not below-threshold: these were genuinely small (ineligible /
 			// instant), never held back by the cost thresholds.
-			BelowThreshold:  false,
-			MemoryUsage:     50 << 20, // 50 MiB — nowhere near danger
-			QueryDurationMS: 40,
-			OOM:             false,
-			Count:           50, // 8 * 50 = 400 ≥ minCalibrationSamples
+			BelowThreshold: false,
+			OOM:            false,
+			Count:          50, // 8 * 50 = 400 ≥ minCalibrationSamples
 		})
 	}
 	return out
@@ -103,7 +101,7 @@ func TestCalibrate_NoOpWhenNoDangerSignal(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		s = append(s, CorpusSample{
 			NAnchors: 100, Fanout: 8, CumulativeD: 300, Route: "A",
-			BelowThreshold: true, OOM: false, MemoryUsage: 30 << 20, Count: 30,
+			BelowThreshold: true, OOM: false, Count: 30,
 		})
 	}
 	got, report := Calibrate(s, defaults)
@@ -127,18 +125,16 @@ func clearFrontierCorpus() []CorpusSample {
 	for i := 0; i < 10; i++ {
 		s = append(s, CorpusSample{
 			NAnchors: 100, Fanout: 10, CumulativeD: 300, Route: "A",
-			BelowThreshold:  true,
-			MemoryUsage:     8 << 30, // 8 GiB
-			QueryDurationMS: 30000,
-			OOM:             true,
-			Count:           30,
+			BelowThreshold: true,
+			OOM:            true,
+			Count:          30,
 		})
 	}
 	// Some safe small queries below the frontier, also below-threshold.
 	for i := 0; i < 5; i++ {
 		s = append(s, CorpusSample{
 			NAnchors: 50, Fanout: 3, CumulativeD: 300, Route: "A",
-			BelowThreshold: true, MemoryUsage: 20 << 20, OOM: false, Count: 40,
+			BelowThreshold: true, OOM: false, Count: 40,
 		})
 	}
 	return s
@@ -219,7 +215,7 @@ func highFrontierCorpus() []CorpusSample {
 	for i := 0; i < 10; i++ {
 		s = append(s, CorpusSample{
 			NAnchors: 5000, Fanout: 2000, CumulativeD: 300, Route: "B",
-			BelowThreshold: true, OOM: true, MemoryUsage: 8 << 30, Count: 30,
+			BelowThreshold: true, OOM: true, Count: 30,
 		})
 	}
 	return s
@@ -230,7 +226,7 @@ func mustManySamples(belowThreshold, oom bool) []CorpusSample {
 	for i := 0; i < 20; i++ {
 		s = append(s, CorpusSample{
 			NAnchors: 100, Fanout: 10, CumulativeD: 300, Route: "A",
-			BelowThreshold: belowThreshold, OOM: oom, MemoryUsage: 4 << 30, Count: 30,
+			BelowThreshold: belowThreshold, OOM: oom, Count: 30,
 		})
 	}
 	return s
