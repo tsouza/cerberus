@@ -91,12 +91,13 @@ A single-file catalog with all four sections is still a valid override passed vi
 Each param declares a `name` and a resolver `kind` (a closed set). The number it
 resolves to comes from the deployment at runtime.
 
-| kind                 | resolves to             | how                                                                                                                                                                                 |
-| -------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config`             | scalar                  | reads a deployment config value by `key`. The **only** place an operator number enters. The CLI also accepts `--param key=value` overrides. A missing required key is a hard error. |
-| `corpus_percentile`  | scalar or partition-map | `quantileExact(${fraction})(<column>)` over an optional `scope`, optionally partitioned. The fraction is **itself** a param ref (`percentile: { ref: <param> }`), never a number.   |
-| `corpus_agg`         | scalar or partition-map | a simple aggregate (`agg:` one of `max`, `avg`, `min`, `stddevPop`) of a column.                                                                                                    |
-| `corpus_count_ratio` | scalar                  | `countIf(<numerator_scope>) / countIf(<denominator_scope>)` over the population.                                                                                                    |
+| kind                 | resolves to             | how                                                                                                                                                                                                                                                                                                                        |
+| -------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`             | scalar                  | reads a deployment config value by `key`. The **only** place an operator number enters. The CLI also accepts `--param key=value` overrides. A missing required key is a hard error.                                                                                                                                        |
+| `config_scaled`      | scalar                  | the **product** of two already-declared params: `ref` (a fraction) × `scale_by` (a magnitude). Lets a rule gate on a tunable fraction of an operator-configured absolute (e.g. a near-cap threshold = `0.8 × query.max_memory_bytes`) while the catalog stays number-free — both operands enter through deployment config. |
+| `corpus_percentile`  | scalar or partition-map | `quantileExact(${fraction})(<column>)` over an optional `scope`, optionally partitioned. The fraction is **itself** a param ref (`percentile: { ref: <param> }`), never a number.                                                                                                                                          |
+| `corpus_agg`         | scalar or partition-map | a simple aggregate (`agg:` one of `max`, `avg`, `min`, `stddevPop`) of a column.                                                                                                                                                                                                                                           |
+| `corpus_count_ratio` | scalar                  | `countIf(<numerator_scope>) / countIf(<denominator_scope>)` over the population.                                                                                                                                                                                                                                           |
 
 `scope`, `numerator_scope`, and `denominator_scope` are enum-equality filters
 (e.g. `{ route: A, exit_status: ok }`). They may reference only the three enum
@@ -114,12 +115,18 @@ params:
     kind: config
     key: router_rules.watermark_percentile
 
-  - name: memory_high_watermark
-    kind: corpus_percentile
-    column: memory_usage
-    percentile: { ref: watermark_pctile }   # fraction is a param ref, never a literal
-    partition_by: [language]                 # one watermark per language
-    scope: { route: A, exit_status: ok }     # aggregate over the HEALTHY population only
+  - name: memory_hard_cap                   # the configured query memory cap
+    kind: config
+    key: query.max_memory_bytes
+
+  - name: memory_near_cap_fraction          # fraction of the cap to alarm at (e.g. 0.8)
+    kind: config
+    key: router_rules.memory_near_cap_fraction
+
+  - name: memory_near_cap                    # = memory_near_cap_fraction × memory_hard_cap
+    kind: config_scaled
+    ref: memory_near_cap_fraction            # the fraction
+    scale_by: memory_hard_cap                # the configured absolute cap
 ```
 
 #### Empty populations are no signal, not zero
@@ -161,10 +168,10 @@ rules:
       all:
         - { col: route,        op: eq,  enum: A }     # a category comparison
         - { col: exit_status,  op: eq,  enum: ok }
-        - { col: memory_usage, op: gte, param: memory_high_watermark }  # a param comparison
+        - { col: memory_usage, op: gte, param: memory_near_cap }  # a param comparison
     evidence:
       report: [count, "max(memory_usage)"]            # closed aggregate vocabulary
-    finding: "route A class {shape_id}/{language} at/above {memory_high_watermark}; ..."
+    finding: "route A class {shape_id}/{language} peaks at/above {memory_near_cap} — near the configured memory cap; ..."
     action: lower_route_b_threshold
 ```
 
@@ -182,7 +189,7 @@ Condition grammar:
 `{column}` and `{param}` placeholders in the `finding` string are substituted at
 runtime with the class's group-key values and the resolved numbers, so the
 operator sees concrete values (`… at/above 4.2 GiB`) even though the file said
-`{memory_high_watermark}`.
+`{memory_near_cap}`.
 
 ## The shipped rule set
 
@@ -193,15 +200,15 @@ finding by the **solver decision reason** (see below).
 
 ### catalogVersion 1 — observed-cost / recorded-route pairs
 
-| id                                 | severity | what it flags                                                                                               |
-| ---------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
-| `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                   |
-| `route_a_memory_near_cap`          | high     | route-A queries at/above the per-language memory watermark — the leading indicator before a crash.          |
-| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards.                                   |
-| `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                                |
-| `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                        |
-| `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret).   |
-| `route_a_slow_hot_shape`           | medium   | high-frequency slow route-A shapes — the highest aggregate payoff to re-route (grouped by decision reason). |
+| id                                 | severity | what it flags                                                                                                                                                                                                                                        |
+| ---------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                                                                                                                                                            |
+| `route_a_memory_near_cap`          | high     | route-A queries whose peak memory is at/above a fraction (`memory_near_cap_fraction`, default 0.8) of the configured cap (`query.max_memory_bytes`) — the leading indicator before an OOM. Gated on proximity to the actual cap, not the corpus p95. |
+| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards.                                                                                                                                                                            |
+| `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                                                                                                                                                                         |
+| `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                                                                                                                                                                 |
+| `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret).                                                                                                                                            |
+| `route_a_slow_hot_shape`           | medium   | high-frequency route-A shapes that are slow **relative to their own language's duration norm** (the corpus p95) — a self-relative tail signal, not an absolute SLA breach; the highest aggregate payoff to re-route (grouped by decision reason).    |
 
 ### catalogVersion 2 — reason-attributed and shape-geometry detectors
 
@@ -432,6 +439,11 @@ and percentile cutoff is a named parameter resolved per-deployment at runtime:
 - **`config`** — a number the operator sets in their own deployment config
   (e.g. `router_rules.watermark_percentile`, or reuses an existing knob like
   `query.max_memory_bytes`). This is the only place an operator number enters.
+- **`config_scaled`** — the product of two config params (`ref` × `scale_by`),
+  e.g. `memory_near_cap = memory_near_cap_fraction × query.max_memory_bytes`.
+  Lets a rule gate on a tunable fraction of the deployment's **actual**
+  configured cap (rather than the corpus p95, which ~5% of any healthy
+  population trivially exceeds), still without a number in the catalog.
 - **`corpus_percentile` / `corpus_agg`** — learned from the deployment's own
   corpus (a per-shape `read_rows` tail, a per-language `cumulative_d`
   watermark). Self-relative, so a shape is judged against its own history.

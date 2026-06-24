@@ -11,11 +11,12 @@ import (
 // row above the firing floor.
 func benchConfig() BenchConfig {
 	return BenchConfig{
-		"router_rules.watermark_percentile":    "0.95",
-		"router_rules.cumulative_d_percentile": "0.95",
-		"router_rules.min_rows_per_class":      "5",
-		"query.max_memory_bytes":               "1073741824",
-		"query.max_samples":                    "50000000",
+		"router_rules.watermark_percentile":     "0.95",
+		"router_rules.cumulative_d_percentile":  "0.95",
+		"router_rules.min_rows_per_class":       "5",
+		"router_rules.memory_near_cap_fraction": benchMemoryNearCapFraction,
+		"query.max_memory_bytes":                benchMemoryHardCapStr,
+		"query.max_samples":                     "50000000",
 	}
 }
 

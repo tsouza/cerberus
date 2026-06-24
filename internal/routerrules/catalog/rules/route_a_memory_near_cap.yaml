@@ -10,8 +10,8 @@ rules:
       all:
         - { col: route, op: eq, enum: A }
         - { col: exit_status, op: eq, enum: ok }
-        - { col: memory_usage, op: gte, param: memory_high_watermark }
+        - { col: memory_usage, op: gte, param: memory_near_cap }
     evidence:
       report: [count, "max(memory_usage)"]
-    finding: "route A class {shape_id}/{language} at/above {memory_high_watermark}; corpus shows route B bounds peak memory — lower the route-B threshold for this class"
+    finding: "route A class {shape_id}/{language} peaks at/above {memory_near_cap} — near the configured memory cap (a fraction of query.max_memory_bytes); one more step in shape or range risks an OOM. Route B bounds peak memory; lower the route-B threshold for this class"
     action: lower_route_b_threshold

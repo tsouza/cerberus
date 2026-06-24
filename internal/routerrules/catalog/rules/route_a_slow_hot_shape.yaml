@@ -12,5 +12,5 @@ rules:
         - { col: query_duration_ms, op: gte, param: slow_duration_watermark }
     evidence:
       report: [count, "max(query_duration_ms)"]
-    finding: "route A hot shape {normalized_query_hash}/{language} is slow at/above {slow_duration_watermark} with high frequency — highest aggregate payoff to re-route to B"
+    finding: "route A hot shape {normalized_query_hash}/{language} is slow relative to this language's own duration norm (at/above {slow_duration_watermark}, the corpus p95) and runs frequently — highest aggregate payoff to re-route to B. This is a self-relative tail signal, not an absolute SLA breach"
     action: lower_route_b_threshold

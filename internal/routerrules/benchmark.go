@@ -170,6 +170,15 @@ const (
 	// but it must keep at least one row so the class is still present in the corpus
 	// to be scored as a false negative rather than vanishing entirely.
 	minPathologyClassRows = 1
+
+	// benchMemoryHardCapBytes is the deployment query memory cap the benchmark
+	// scores at (query.max_memory_bytes), and benchMemoryNearCapFraction is the
+	// fraction of it route_a_memory_near_cap gates on. Their product is the
+	// near-cap line the planted memory pathologies must clear. These are benchmark
+	// config values an operator overrides at runtime, not catalog thresholds.
+	benchMemoryHardCapBytes    = 1_073_741_824.0 // 1 GiB
+	benchMemoryHardCapStr      = "1073741824"
+	benchMemoryNearCapFraction = "0.8"
 )
 
 func (p BenchParams) withDefaults() BenchParams {
@@ -206,14 +215,26 @@ const (
 
 	// Pathology magnitudes, placed past the p95 tail the healthy body implies.
 	// Severe sits far past; marginal sits just past.
-	sevMemSevere  = 950_000_000.0
-	sevMemMarg    = 130_000_000.0
-	sevDurSevere  = 9_000.0
-	sevDurMarg    = 280.0
-	sevReadSevere = 8_000_000.0
-	sevReadMarg   = 520_000.0
-	sevDSevere    = 400.0
-	sevDMarg      = 130.0
+	//
+	// route_a_memory_near_cap now gates on a fraction of the CONFIGURED cap
+	// (benchMemoryHardCapBytes), not the corpus p95, so both near-cap pathology
+	// magnitudes must clear benchMemoryNearCapThreshold. Severe sits near the cap
+	// itself; marginal sits just over the near-cap line.
+	sevMemSevere = 0.93 * benchMemoryHardCapBytes // ~93% of the cap
+	sevMemMarg   = 0.83 * benchMemoryHardCapBytes // just over the 0.8 near-cap line
+	sevDurSevere = 9_000.0
+	sevDurMarg   = 280.0
+	// sevDurMargSlow is the marginal slow-shape duration: it sits in the band
+	// between the p95 (~886 ms) and p99 (~9 s) duration watermarks, so the slow
+	// rule catches it at the nominal 0.95 watermark but loses it as the watermark
+	// tightens to 0.99 — the percentile-gated marginal-recall sensitivity the
+	// degradation sweep asserts (route_a_memory_near_cap no longer provides it now
+	// that it is cap-relative, not p95-relative).
+	sevDurMargSlow = 1_500.0
+	sevReadSevere  = 8_000_000.0
+	sevReadMarg    = 520_000.0
+	sevDSevere     = 400.0
+	sevDMarg       = 130.0
 	// Fan-out positives must clear the route-B fanout floor (= routeBFloorFanout,
 	// the p95 of the constant-fan-out route-B seed). Severe is far past; marginal
 	// is just past, to probe retention as the floor moves.
@@ -595,11 +616,11 @@ func pathologyTailSpecs() []pathologySpec {
 		{
 			shape: "prom:slow_hot", lang: "promql", hashBase: 39000,
 			expect:     always("route_a_slow_hot_shape"),
-			severities: []PathologySeverity{SevSevere},
-			fill: func(rng *rand.Rand, _ PathologySeverity) BenchRow {
+			severities: []PathologySeverity{SevSevere, SevMarginal},
+			fill: func(rng *rand.Rand, sev PathologySeverity) BenchRow {
 				return BenchRow{
 					Route: "A", ExitStatus: "ok", DecisionReason: "below-threshold",
-					QueryDurationMS: sevDurSevere,
+					QueryDurationMS: pick(sev, sevDurSevere, sevDurMargSlow),
 					MemoryUsage:     jitter(rng, healthyMemBase, healthyMemSpread),
 					Fanout:          jitter(rng, healthyFanBase, healthyFanSpread),
 					CumulativeD:     jitter(rng, healthyDBase, healthyDSpread),

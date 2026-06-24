@@ -44,8 +44,8 @@ func TestResolveScanCount(t *testing.T) {
 		switch p.Kind {
 		case ParamCorpusPercentile, ParamCorpusAgg, ParamCorpusCountRatio:
 			wantCorpusParams++
-		case ParamConfig:
-			// config leaves resolve inline, no corpus scan.
+		case ParamConfig, ParamConfigScaled:
+			// config + config_scaled params resolve inline, no corpus scan.
 		}
 	}
 

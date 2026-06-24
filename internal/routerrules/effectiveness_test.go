@@ -32,11 +32,12 @@ import (
 // support and exercise the support no-fire path).
 func effConfig() ConfigLookup {
 	return staticConfig(map[string]string{
-		"router_rules.watermark_percentile":    "0.95",
-		"router_rules.cumulative_d_percentile": "0.95",
-		"router_rules.min_rows_per_class":      "5",
-		"query.max_memory_bytes":               "1073741824",
-		"query.max_samples":                    "50000000",
+		"router_rules.watermark_percentile":     "0.95",
+		"router_rules.cumulative_d_percentile":  "0.95",
+		"router_rules.min_rows_per_class":       "5",
+		"router_rules.memory_near_cap_fraction": "0.8",
+		"query.max_memory_bytes":                "1073741824",
+		"query.max_samples":                     "50000000",
 	})
 }
 
@@ -94,10 +95,13 @@ var effectivenessGolden = []effFinding{
 	{"route_b_overshard_low_fanout", "language=promql,shape_id=prom:rate_overshard", 7, "raise_route_b_threshold"},
 	// high-fanout route-A class.
 	{"route_a_high_fanout_should_shard", "language=promql,shape_id=prom:rate_sum_by_hot", 7, "lower_route_b_threshold"},
-	// memory-near-cap route-A ok classes (self-relative tail detector): the two
-	// promql ok shapes whose memory sits in the per-language p95 tail.
-	{"route_a_memory_near_cap", "language=promql,shape_id=prom:hq_rate_heavy", 7, "lower_route_b_threshold"},
-	{"route_a_memory_near_cap", "language=promql,shape_id=prom:rate_sum_by_hot", 7, "lower_route_b_threshold"},
+	// memory-near-cap route-A ok class (cap-relative gate): the ONLY ok shape
+	// whose peak memory clears 0.8 x the configured 1 GiB cap (~859 MB). The
+	// healthy-but-above-own-p95 shapes prom:hq_rate_heavy (700 MB, 65% of cap) and
+	// prom:rate_sum_by_hot (180 MB, 17% of cap) sit above their corpus p95 yet
+	// well below the cap, so they deliberately do NOT fire here anymore — that is
+	// the false-positive-by-construction the cap-relative gate removes.
+	{"route_a_memory_near_cap", "language=promql,shape_id=prom:mem_near_cap", 7, "lower_route_b_threshold"},
 	// slow hot shapes: the two slow failure clusters are also in their language's
 	// duration p95 tail (oom 4s / timeout 9s), so the slow-shape detector flags
 	// them by normalized_query_hash.
@@ -214,8 +218,20 @@ func TestRuleOOMOnRouteAFiresAndQuiet(t *testing.T) {
 func TestRuleMemoryNearCapFiresAndQuiet(t *testing.T) {
 	rep := effReport(t, false)
 	fired := firingClasses(rep, "route_a_memory_near_cap")
-	if fired["language=promql,shape_id=prom:hq_rate_heavy"] != 7 {
-		t.Errorf("route_a_memory_near_cap should fire on the high-memory ok class (support 7), got %v", fired)
+	// Fires only on the genuine near-cap class: 950 MB peak = 88% of the 1 GiB
+	// configured cap, clearing the 0.8 x cap (~859 MB) near-cap line.
+	if fired["language=promql,shape_id=prom:mem_near_cap"] != 7 {
+		t.Errorf("route_a_memory_near_cap should fire on the genuine near-cap class (support 7), got %v", fired)
+	}
+	// The cap-relative gate's whole point: ok classes that sit above their corpus
+	// p95 but well below the configured cap are NOT near-cap and must stay quiet.
+	// prom:hq_rate_heavy (700 MB, 65% of cap) and prom:rate_sum_by_hot (180 MB,
+	// 17% of cap) both cleared the OLD corpus-p95 gate; under the cap-relative gate
+	// they no longer fire — the false-positive-by-construction is gone.
+	for _, belowCap := range []string{"prom:hq_rate_heavy", "prom:rate_sum_by_hot"} {
+		if n, ok := fired["language=promql,shape_id="+belowCap]; ok {
+			t.Errorf("route_a_memory_near_cap fired on below-cap ok class %q (support %d); a class above its own p95 but far below the configured cap must NOT fire", belowCap, n)
+		}
 	}
 	assertNotFiredOnHealthy(t, rep, "route_a_memory_near_cap")
 }

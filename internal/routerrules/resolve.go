@@ -105,6 +105,8 @@ func (r *ParamResolver) resolveOne(ctx context.Context, spec ParamSpec, env Env)
 	switch spec.Kind {
 	case ParamConfig:
 		return r.resolveConfig(spec)
+	case ParamConfigScaled:
+		return resolveConfigScaled(spec, env)
 	case ParamCorpusPercentile, ParamCorpusAgg, ParamCorpusCountRatio:
 		return r.resolveCorpus(ctx, spec, env)
 	default:
@@ -174,6 +176,40 @@ func resolveFraction(spec ParamSpec, env Env) (float64, error) {
 	return v.Scalar, nil
 }
 
+// resolveConfigScaled resolves a config_scaled param to Ref.Scalar * ScaleBy.Scalar.
+// Both referenced params are resolved already (topo order guarantees it) and must
+// be scalars. The product carries the fraction × magnitude semantics (e.g. a
+// near-cap threshold = fraction × configured memory cap) without any number ever
+// living in the catalog: both operands enter through deployment config.
+func resolveConfigScaled(spec ParamSpec, env Env) (Value, error) {
+	frac, err := scaledOperand(spec, spec.Ref, "ref", env)
+	if err != nil {
+		return Value{}, err
+	}
+	mag, err := scaledOperand(spec, spec.ScaleBy, "scale_by", env)
+	if err != nil {
+		return Value{}, err
+	}
+	return Value{Scalar: frac * mag}, nil
+}
+
+// scaledOperand resolves one config_scaled operand (the fraction or the
+// magnitude) to a scalar, with a clear error if the ref is missing, dangling, or
+// partition-keyed.
+func scaledOperand(spec ParamSpec, ref, field string, env Env) (float64, error) {
+	if ref == "" {
+		return 0, fmt.Errorf("routerrules: config_scaled param %q has no %s ref", spec.Name, field)
+	}
+	v, ok := env[ref]
+	if !ok {
+		return 0, fmt.Errorf("routerrules: config_scaled param %q references unresolved %s param %q", spec.Name, field, ref)
+	}
+	if v.IsPartitioned() {
+		return 0, fmt.Errorf("routerrules: config_scaled %s param %q must be a scalar, got a partition-keyed value", field, ref)
+	}
+	return v.Scalar, nil
+}
+
 // topoSortParams returns the params in dependency order (a percentile param's
 // fraction ref resolved before the percentile param itself). It fails closed on
 // a cycle. The graph is small (the param registry), so a simple DFS suffices.
@@ -224,11 +260,23 @@ func topoSortParams(specs map[string]ParamSpec) ([]string, error) {
 	return order, nil
 }
 
-// paramDeps returns the names a param spec depends on (currently only a
-// percentile param's fraction ref).
+// paramDeps returns the names a param spec depends on: a percentile param's
+// fraction ref, or a config_scaled param's fraction + magnitude refs.
 func paramDeps(spec ParamSpec) []string {
-	if spec.Kind == ParamCorpusPercentile && spec.Percentile != nil && spec.Percentile.Ref != "" {
-		return []string{spec.Percentile.Ref}
+	switch spec.Kind {
+	case ParamCorpusPercentile:
+		if spec.Percentile != nil && spec.Percentile.Ref != "" {
+			return []string{spec.Percentile.Ref}
+		}
+	case ParamConfigScaled:
+		var deps []string
+		if spec.Ref != "" {
+			deps = append(deps, spec.Ref)
+		}
+		if spec.ScaleBy != "" {
+			deps = append(deps, spec.ScaleBy)
+		}
+		return deps
 	}
 	return nil
 }
