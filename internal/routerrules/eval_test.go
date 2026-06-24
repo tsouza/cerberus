@@ -74,6 +74,17 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 		}
 	}
 
+	// Assert the EXACT total finding count, not just that the expected ones are
+	// present. The (rule,class) index above is last-wins, so a rule that
+	// double-emits a class (e.g. a broken per-partition restrict re-emitting the
+	// same group once per partition value) would collapse to one entry and slip
+	// past the membership checks. A raw count over report.Findings catches any
+	// over-firing or duplicate emission.
+	if len(report.Findings) != len(want) {
+		t.Errorf("total finding count = %d, want %d (over-firing / double-emission?):\n%+v",
+			len(report.Findings), len(want), report.Findings)
+	}
+
 	// Spot-check that the per-language partitioned watermark substituted the
 	// correct concrete number into the message (promql median memory of the
 	// healthy route-A rows is 80).
