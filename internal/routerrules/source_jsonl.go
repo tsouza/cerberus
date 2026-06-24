@@ -154,22 +154,35 @@ func (s *jsonlCorpusSource) files() ([]string, error) {
 
 // Aggregate resolves a corpus param in-Go.
 func (s *jsonlCorpusSource) Aggregate(_ context.Context, spec AggSpec) (Value, error) {
+	return inGoAggregate(s.stream, spec)
+}
+
+// EvalRule folds the corpus in-Go.
+func (s *jsonlCorpusSource) EvalRule(_ context.Context, q RuleQuery) ([]GroupResult, error) {
+	return inGoEvalRule(s.stream, q)
+}
+
+// inGoAggregate resolves a corpus param by streaming rows through stream and
+// folding them in-Go. It is shared by the JSONL source and the in-memory
+// benchmark source so both take the identical aggregation path (and therefore
+// the identical quantile formula) the catalog is validated against.
+func inGoAggregate(stream func(func(corpusRow) error) error, spec AggSpec) (Value, error) {
 	switch {
 	case spec.CountRatio:
-		return s.countRatio(spec)
+		return inGoCountRatio(stream, spec)
 	case spec.Percentile != nil:
-		return s.percentile(spec)
+		return inGoPercentile(stream, spec)
 	case spec.Agg != "":
-		return s.agg(spec)
+		return inGoAgg(stream, spec)
 	default:
-		return Value{}, fmt.Errorf("routerrules: jsonl aggregate: empty AggSpec for column %q", spec.Column)
+		return Value{}, fmt.Errorf("routerrules: in-go aggregate: empty AggSpec for column %q", spec.Column)
 	}
 }
 
-func (s *jsonlCorpusSource) percentile(spec AggSpec) (Value, error) {
+func inGoPercentile(stream func(func(corpusRow) error) error, spec AggSpec) (Value, error) {
 	buckets := map[string][]float64{}
 	all := []float64{}
-	err := s.stream(func(r corpusRow) error {
+	err := stream(func(r corpusRow) error {
 		if !matchScope(r, spec.Scope) {
 			return nil
 		}
@@ -198,10 +211,10 @@ func (s *jsonlCorpusSource) percentile(spec AggSpec) (Value, error) {
 	return Value{Scalar: quantileExact(all, *spec.Percentile)}, nil
 }
 
-func (s *jsonlCorpusSource) agg(spec AggSpec) (Value, error) {
+func inGoAgg(stream func(func(corpusRow) error) error, spec AggSpec) (Value, error) {
 	buckets := map[string][]float64{}
 	all := []float64{}
-	err := s.stream(func(r corpusRow) error {
+	err := stream(func(r corpusRow) error {
 		if !matchScope(r, spec.Scope) {
 			return nil
 		}
@@ -230,9 +243,9 @@ func (s *jsonlCorpusSource) agg(spec AggSpec) (Value, error) {
 	return Value{Scalar: aggregate(spec.Agg, all)}, nil
 }
 
-func (s *jsonlCorpusSource) countRatio(spec AggSpec) (Value, error) {
+func inGoCountRatio(stream func(func(corpusRow) error) error, spec AggSpec) (Value, error) {
 	var num, den float64
-	err := s.stream(func(r corpusRow) error {
+	err := stream(func(r corpusRow) error {
 		if matchScope(r, spec.NumScope) {
 			num++
 		}
@@ -250,9 +263,9 @@ func (s *jsonlCorpusSource) countRatio(spec AggSpec) (Value, error) {
 	return Value{Scalar: num / den}, nil
 }
 
-// EvalRule folds the corpus in-Go: it groups matched rows by the rule's
+// inGoEvalRule folds the corpus in-Go: it groups matched rows by the rule's
 // group_by columns, counting support and accumulating evidence aggregates.
-func (s *jsonlCorpusSource) EvalRule(_ context.Context, q RuleQuery) ([]GroupResult, error) {
+func inGoEvalRule(stream func(func(corpusRow) error) error, q RuleQuery) ([]GroupResult, error) {
 	type acc struct {
 		key      []string
 		support  int64
@@ -261,7 +274,7 @@ func (s *jsonlCorpusSource) EvalRule(_ context.Context, q RuleQuery) ([]GroupRes
 	groups := map[string]*acc{}
 	var order []string
 
-	err := s.stream(func(r corpusRow) error {
+	err := stream(func(r corpusRow) error {
 		ok, err := q.Condition.match(r, q.Env)
 		if err != nil {
 			return err

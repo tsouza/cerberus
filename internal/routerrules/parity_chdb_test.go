@@ -159,6 +159,74 @@ func TestCrossBackendParityEffectiveness(t *testing.T) {
 	}
 }
 
+// TestCrossBackendParityBenchmark runs the LABELED benchmark corpus through both
+// backends and asserts identical findings. This proves the precision/recall/F1
+// the benchmark reports is the same whether measured on the in-Go matcher (the
+// default-lane benchmark harness) or the production CH SQL path — so the
+// effectiveness numbers are not an artefact of the in-memory source.
+func TestCrossBackendParityBenchmark(t *testing.T) {
+	corpus := GenerateBenchCorpus(nominalBenchParams())
+
+	db := openParityChDB(t)
+	seedParityTableFromBench(t, db, corpus.Rows)
+
+	cat, err := LoadEmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	cfg := staticConfigLookup(benchConfig())
+	opts := EvalOptions{IncludeExperimental: true}
+
+	chReport, err := NewEvaluator(cat, cfg, NewCHCorpusSource(&sqlDBConn{db: db}, 0)).Evaluate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("ch evaluate: %v", err)
+	}
+	memReport, err := NewEvaluator(cat, cfg, corpus.AsCorpusSource()).Evaluate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("mem evaluate: %v", err)
+	}
+
+	chKeys := findingKeys(chReport)
+	memKeys := findingKeys(memReport)
+	if len(chKeys) != len(memKeys) {
+		t.Fatalf("finding count differs: ch=%d mem=%d\nch=%v\nmem=%v", len(chKeys), len(memKeys), chKeys, memKeys)
+	}
+	for k, chSup := range chKeys {
+		mSup, ok := memKeys[k]
+		if !ok {
+			t.Errorf("ch finding %q absent from mem", k)
+			continue
+		}
+		if chSup != mSup {
+			t.Errorf("support differs for %q: ch=%d mem=%d", k, chSup, mSup)
+		}
+	}
+
+	// And the scored metrics must be identical across backends.
+	chMetrics := scoreReport(chReport, corpus)
+	memMetrics := scoreReport(memReport, corpus)
+	if chMetrics.Overall != memMetrics.Overall {
+		t.Errorf("overall metrics differ across backends:\nch=%+v\nmem=%+v", chMetrics.Overall, memMetrics.Overall)
+	}
+}
+
+// seedParityTableFromBench creates the corpus table in chdb and loads benchmark
+// rows directly (no JSONL round-trip), mirroring seedParityTableFrom's DDL.
+func seedParityTableFromBench(t *testing.T, db *sql.DB, rows []BenchRow) {
+	t.Helper()
+	jr := make([]jsonlRow, len(rows))
+	for i, r := range rows {
+		jr[i] = jsonlRow{
+			ShapeID: r.ShapeID, Language: r.Language, NormalizedQueryHash: r.NormalizedQueryHash,
+			NAnchors: r.NAnchors, Fanout: r.Fanout, CumulativeD: r.CumulativeD,
+			OuterRange: r.OuterRange, Step: r.Step, Route: r.Route, KShards: r.KShards,
+			DecisionReason: r.DecisionReason, ReadRows: r.ReadRows, ReadBytes: r.ReadBytes,
+			QueryDurationMS: r.QueryDurationMS, MemoryUsage: r.MemoryUsage, ExitStatus: r.ExitStatus,
+		}
+	}
+	seedParityTableFromRows(t, db, jr)
+}
+
 // assertEnvParity fails if the two resolved Envs differ in key set, NoSignal
 // flags, scalar values (NaN/Inf is never tolerated), or partition contents.
 func assertEnvParity(t *testing.T, a, b Env) {
@@ -228,6 +296,14 @@ func seedParityTable(t *testing.T, db *sql.DB) {
 // queries behave as they would against the real table.
 func seedParityTableFrom(t *testing.T, db *sql.DB, fixture string) {
 	t.Helper()
+	seedParityTableFromRows(t, db, readSeedRows(t, fixture))
+}
+
+// seedParityTableFromRows creates the corpus table in chdb and loads the given
+// decoded rows. The column types mirror the optcorpus MergeTree DDL so the CH
+// source's queries behave as they would against the real table.
+func seedParityTableFromRows(t *testing.T, db *sql.DB, rows []jsonlRow) {
+	t.Helper()
 	ddl := "CREATE OR REPLACE TABLE " + CorpusTableName + ` (
 		event_time DateTime,
 		shape_id LowCardinality(String),
@@ -246,7 +322,6 @@ func seedParityTableFrom(t *testing.T, db *sql.DB, fixture string) {
 		t.Fatalf("create table: %v", err)
 	}
 
-	rows := readSeedRows(t, fixture)
 	var vals []string
 	for _, r := range rows {
 		vals = append(vals, fmt.Sprintf(

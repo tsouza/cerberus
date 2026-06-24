@@ -45,10 +45,21 @@ type Env map[string]Value
 type ConfigLookup func(key string) (string, bool)
 
 // ParamResolver resolves the catalog's named-parameter registry against a
-// deployment's config and corpus. It topo-sorts the parameter dependency DAG,
-// resolves leaves first, memoizes, and batches corpus aggregates that share a
-// (scope, partition_by) group into one scan so a whole catalog costs
-// O(distinct scope-groups) scans, not O(params).
+// deployment's config and corpus. It topo-sorts the parameter dependency DAG and
+// resolves leaves first (a percentile param's fraction ref is resolved before the
+// percentile itself).
+//
+// Cost: it resolves one param at a time, and every corpus-kind param triggers a
+// full corpus pass (CorpusSource.Aggregate streams the whole corpus once), so a
+// catalog costs ~O(corpus-params) scans, not O(distinct scope-groups). The corpus
+// is small (per-pod JSONL, or a single CH GROUP BY) and resolution is offline, so
+// this has never mattered in practice.
+//
+// ponytail: batching corpus aggregates that share an AggSpec (scope, partition_by,
+// fraction) into one scan would cut this to O(distinct scope-groups) passes. It is
+// left unimplemented because the corpus is small and the win is unmeasured — do it
+// only if a large corpus ever makes resolution a hotspot. TestResolveScanCount
+// pins the actual scan count so this doc can't drift from the code again.
 type ParamResolver struct {
 	cfg ConfigLookup
 	src CorpusSource
@@ -73,11 +84,11 @@ func (r *ParamResolver) Resolve(ctx context.Context, cat *Catalog) (Env, error) 
 		return nil, err
 	}
 
-	// Batch corpus aggregates that share an identical AggSpec group so the
-	// percentile-fraction differences (which are inputs, resolved first as
-	// config leaves) collapse to one scan per distinct (column, scope,
-	// partition, fraction) shape. Config leaves and ratios are resolved
-	// inline; percentile/agg params are grouped by their resolved AggSpec.
+	// Resolve in dependency order, one param at a time: config leaves and ratios
+	// resolve inline, and each corpus-kind param drives its own full corpus pass
+	// via resolveOne -> resolveCorpus -> CorpusSource.Aggregate. No cross-param
+	// batching today (see the type doc's ponytail note); the corpus is small and
+	// resolution is offline.
 	env := make(Env, len(order))
 	for _, name := range order {
 		spec := specs[name]
