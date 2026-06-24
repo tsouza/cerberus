@@ -123,6 +123,7 @@ Grafana's Loki, Tempo, and `dskit` all use a forked memberlist internally (via t
 ## Pointers if you're lost
 
 - "How does this PR ship?" → branch + push + `gh pr create` → CI must pass → squash-merge with `gh pr merge --squash --delete-branch`.
+- "How are releases cut / which lines are still supported?" → `docs/operations.md` → "Release pipeline (publish-on-merge)" + "Release support window / EOL policy" (latest 3 minor lines; older lines are EOL — branch deleted, no hotfixes, tags/Releases retained; enforced in `release-preflight.mjs`).
 - "Where do I add this feature?" → match the layer to the head: `internal/{promql,logql,traceql}/` for parse + lowering, `internal/chplan/` for the shared IR, `internal/optimizer/` for rewrites, `internal/chsql/` for SQL emission, `internal/api/{prom,loki,tempo}/` for HTTP handlers. Fixtures live in `test/spec/<head>/`.
 - "Can I update the Project from a PR?" → yes, the repo is linked. Move the matching draft item to `In Progress` when you start, `Done` when the PR merges (or wire a workflow that does it).
 
