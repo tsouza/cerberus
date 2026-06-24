@@ -212,6 +212,11 @@ func metricsLabelsToKeyValues(in []tempo.MetricsLabel) []v1.KeyValue {
 //     codes.InvalidArgument (user-facing query errors).
 //   - chclient circuit-open (errors.Is against chclient.ErrCircuitOpen) →
 //     codes.Unavailable (downstream saturation, retry-after).
+//   - CH memory-limit abort (code 241, errors.Is chclient.ErrMemoryLimitExceeded)
+//     → codes.ResourceExhausted (the over-broad query exceeded the per-query
+//     memory cap — a resource ceiling, not a server fault). Mirrors the HTTP
+//     path's 422 for the same sentinel; without this it fell through to
+//     codes.Internal, mis-signalling an availability bug.
 //   - everything else (emit / execute / unexpected) → codes.Internal.
 func mapMetricsError(err error) error {
 	if err == nil {
@@ -220,6 +225,8 @@ func mapMetricsError(err error) error {
 	switch {
 	case errors.Is(err, chclient.ErrCircuitOpen):
 		return status.Errorf(codes.Unavailable, "%v", err)
+	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
+		return status.Errorf(codes.ResourceExhausted, "%v", err)
 	case errors.Is(err, tempo.ErrParseStage), errors.Is(err, tempo.ErrLowerStage):
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	}

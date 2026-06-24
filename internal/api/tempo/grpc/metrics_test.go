@@ -365,6 +365,41 @@ func TestMetricsQueryRange_CircuitOpen(t *testing.T) {
 	}
 }
 
+// TestMetricsQueryRange_MemoryLimit confirms a CH memory-limit abort (code 241,
+// errors.Is chclient.ErrMemoryLimitExceeded) surfaces as codes.ResourceExhausted
+// rather than the default codes.Internal. This is the gRPC equivalent of the
+// HTTP 422 the handler returns for the same sentinel — an over-broad query that
+// exceeded the per-query memory cap is a resource ceiling, not a server fault.
+func TestMetricsQueryRange_MemoryLimit(t *testing.T) {
+	t.Parallel()
+	q := &metricsFakeQuerier{err: chclient.ErrMemoryLimitExceeded}
+	client, cleanup := newMetricsTestServer(t, q)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.MetricsQueryRange(ctx, &tempopb.QueryRangeRequest{
+		Query: "{} | rate()",
+		Start: metricsFixtureStartNs,
+		End:   metricsFixtureEndNs,
+		Step:  metricsFixtureStepNs,
+	})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	_, recvErr := stream.Recv()
+	if recvErr == nil {
+		t.Fatalf("want error, got nil")
+	}
+	st, ok := status.FromError(recvErr)
+	if !ok {
+		t.Fatalf("want grpc status, got %v", recvErr)
+	}
+	if st.Code() != codes.ResourceExhausted {
+		t.Errorf("code: got %s, want ResourceExhausted (err=%v)", st.Code(), recvErr)
+	}
+}
+
 // TestMetricsQueryRange_NonMetricsQuery asserts the parse-then-lower
 // path's "not a metrics-pipeline expression" rejection: a bare TraceQL
 // query (no `| rate()` / `| *_over_time()` tail) returns InvalidArgument
