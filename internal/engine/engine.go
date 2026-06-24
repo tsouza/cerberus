@@ -198,22 +198,30 @@ func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string,
 
 // outcomeTokenForErr classifies a dispatch error into the corpus exit-status
 // token for the CERBERUS-side terminal outcome it represents, or "" when the
-// error is not a cerberus-side outcome the corpus records in-process (CH-side
-// oom / timeout are derived from query_log by the reconciler instead). It is
-// the single error→outcome mapping shared by the eager and cursor paths and by
-// the breaker-vs-drain split, so the classification lives in one place.
+// error is not a resource rejection the corpus records in-process (CH-side
+// timeout is derived from query_log by the reconciler instead). It is the
+// single error→outcome mapping shared by the eager and cursor paths and by the
+// breaker-vs-drain split, so the classification lives in one place.
 //
 //   - sample-budget exceedance (chclient.ErrTooManySamples) → "sample_budget":
 //     the CH query finished cleanly but cerberus rejected the drain. Stamped
 //     onto the dispatched record (cost retained, exit overridden).
 //   - circuit-breaker open (chclient.ErrCircuitOpen) → "breaker": no CH query
 //     ran. Recorded as a decision-only rejection (no cost).
+//   - memory-cap rejection (chclient.ErrMemoryLimitExceeded, CH code 241) →
+//     "oom": cerberus's per-query max_memory_usage cap aborted the query ON
+//     ClickHouse. A query_log row MAY land, but the corpus records the row
+//     terminally at the engine site (zero cost) so it does not depend on the
+//     join — without this the memory-cap rejection is invisible to the corpus,
+//     which is the observability gap this seam closes.
 func outcomeTokenForErr(err error) string {
 	switch {
 	case errors.Is(err, chclient.ErrTooManySamples):
 		return optcorpusExitSampleBudget
 	case errors.Is(err, chclient.ErrCircuitOpen):
 		return optcorpusExitBreaker
+	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
+		return optcorpusExitOOM
 	default:
 		return ""
 	}
@@ -224,11 +232,12 @@ func outcomeTokenForErr(err error) string {
 // purpose: the engine declares the QueryObserver interface in primitive terms
 // so it never imports optcorpus (the nil-interface decoupling the rest of the
 // seam relies on). The corpus parses these back; a drift between the two sets
-// would simply be ignored by parseExitStatus rather than mislabel a row.
+// would simply be ignored by the corpus parser rather than mislabel a row.
 const (
 	optcorpusExitSampleBudget = "sample_budget"
 	optcorpusExitBreaker      = "breaker"
 	optcorpusExitRejected     = "rejected"
+	optcorpusExitOOM          = "oom"
 )
 
 // observeOutcomeForErr maps a dispatch error to its cerberus-side outcome and
@@ -236,20 +245,25 @@ const (
 // budget (queryID known) is stamped via ObserveOutcome so the reconciler keeps
 // the joined CH cost but overrides exit_status. A breaker rejection (no CH
 // query ran) is recorded as a decision-only rejection carrying the routing
-// read-out. Any other error is left to the query_log-derived path. No-op when
-// no observer is registered (the default hot path is byte-unchanged).
+// read-out. A memory-cap rejection (CH code 241) is recorded as a DISPATCHED
+// rejection: it carries the dispatch query_id (so the reconciler forgets it and
+// the query_log join cannot double-write the same abort) plus the routing
+// read-out, with zero cost. Any other error is left to the query_log-derived
+// path. No-op when no observer is registered (the default hot path is
+// byte-unchanged).
 func (e *Engine) observeOutcomeForErr(queryID, language string, plan chplan.Node, decision *solver.Decision, err error) {
 	if e.QueryObserver == nil || err == nil {
 		return
 	}
-	token := outcomeTokenForErr(err)
-	switch token {
+	switch outcomeTokenForErr(err) {
 	case optcorpusExitSampleBudget:
 		if queryID != "" {
-			e.QueryObserver.ObserveOutcome(queryID, token)
+			e.QueryObserver.ObserveOutcome(queryID, optcorpusExitSampleBudget)
 		}
 	case optcorpusExitBreaker:
-		e.observeRejection(language, plan, decision, token)
+		e.observeRejection(language, plan, decision, optcorpusExitBreaker)
+	case optcorpusExitOOM:
+		e.observeDispatchedRejection(queryID, language, plan, decision, optcorpusExitOOM)
 	}
 }
 
@@ -264,6 +278,25 @@ func (e *Engine) observeRejection(language string, plan chplan.Node, decision *s
 	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
 	e.QueryObserver.ObserveRejection(
 		planShapeID(plan), e.Settings.enabledOpts(), language, token,
+		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
+	)
+}
+
+// observeDispatchedRejection records a terminal corpus row for a query that DID
+// dispatch a CH query but was aborted by a resource cap the engine recognises at
+// the error site — the per-query memory cap (CH code 241, token "oom"). Unlike
+// observeRejection (pre-dispatch, no query_id), it passes the dispatch query_id
+// so the reconciler drops it from the join index and the query_log reconcile
+// cannot ALSO emit a row for the same abort. The cost columns stay zero (the
+// rows/bytes/memory CH actually paid before aborting are unknowable here — kept
+// unset honestly), and the routing read-out is carried as on the dispatch.
+func (e *Engine) observeDispatchedRejection(queryID, language string, plan chplan.Node, decision *solver.Decision, token string) {
+	if e.QueryObserver == nil {
+		return
+	}
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	e.QueryObserver.ObserveDispatchedRejection(
+		queryID, planShapeID(plan), e.Settings.enabledOpts(), language, token,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
 	)
 }
@@ -472,6 +505,26 @@ type QueryObserver interface {
 	// ("breaker" / "rejected"). It must be non-blocking and cheap.
 	ObserveRejection(
 		shapeID string,
+		opts []string,
+		language string,
+		statusToken string,
+		routePresent bool,
+		route string,
+		nAnchors, fanout, cumulativeD, outerRange, step uint32,
+		kShards uint8,
+		decisionReason string,
+	)
+
+	// ObserveDispatchedRejection records a terminal corpus row for a query that
+	// DID dispatch a CH query but was aborted by a resource cap recognised at the
+	// engine error site — currently the per-query memory cap (CH code 241,
+	// statusToken "oom"). It carries the dispatch queryID so the observer drops it
+	// from the query_log join index (no double-count with the CH-derived row) and
+	// records the row TERMINALLY with the routing read-out and zero cost (the cost
+	// CH paid before aborting is unknowable here). The scalars mirror ObserveQuery.
+	// It must be non-blocking and cheap.
+	ObserveDispatchedRejection(
+		queryID, shapeID string,
 		opts []string,
 		language string,
 		statusToken string,
@@ -918,19 +971,29 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 }
 
 // ObserveDrainOutcome stamps a CERBERUS-side terminal outcome that surfaced
-// while the handler drained a cursor (currently the sample-budget 422, which
-// fires after a clean CH finish) onto the corpus record for queryID. It is the
-// cursor-path sibling of the eager path's in-engine observeOutcomeForErr: the
-// drain happens in the handler, so the handler calls this with the
-// CursorResult.QueryID and the drain error. No-op when no observer is
-// registered, the queryID is empty, or the error is not a cerberus-side
-// outcome.
-func (e *Engine) ObserveDrainOutcome(queryID string, err error) {
+// while the handler drained a cursor onto the corpus record for queryID. It is
+// the cursor-path sibling of the eager path's in-engine observeOutcomeForErr:
+// the drain happens in the handler, so the handler calls this with the
+// CursorResult.QueryID and the drain error. The sample-budget 422 (fires after a
+// clean CH finish) is stamped via ObserveOutcome so the reconciler keeps the
+// joined cost and overrides exit_status; a memory-cap abort (CH code 241,
+// "oom") surfacing mid-drain is recorded as a dispatched rejection so the row
+// lands even if the query_log join misses. No-op when no observer is registered,
+// the queryID is empty, or the error is not a recorded outcome. The drain site
+// has no plan/decision, so the dispatched-rejection row carries the language but
+// no routing read-out (routePresent=false) — exit_status stays the operator signal.
+func (e *Engine) ObserveDrainOutcome(queryID, language string, err error) {
 	if e.QueryObserver == nil || queryID == "" || err == nil {
 		return
 	}
-	if token := outcomeTokenForErr(err); token != "" {
-		e.QueryObserver.ObserveOutcome(queryID, token)
+	switch outcomeTokenForErr(err) {
+	case optcorpusExitSampleBudget:
+		e.QueryObserver.ObserveOutcome(queryID, optcorpusExitSampleBudget)
+	case optcorpusExitOOM:
+		e.QueryObserver.ObserveDispatchedRejection(
+			queryID, "", nil, language, optcorpusExitOOM,
+			false, "", 0, 0, 0, 0, 0, 0, "",
+		)
 	}
 }
 

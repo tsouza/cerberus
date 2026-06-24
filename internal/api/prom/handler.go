@@ -500,11 +500,12 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	result, err := matrixFromCursor(cursor, start, end, step)
 	if err != nil {
-		// A sample-budget 422 (or other cerberus-side outcome) surfaced during
-		// the drain — the CH query already finished cleanly, so query_log shows
-		// ok with real cost. Stamp the authoritative cerberus outcome onto the
-		// corpus record for this dispatch (cost retained, exit overridden).
-		h.Engine.ObserveDrainOutcome(queryID, err)
+		// A cerberus-side outcome surfaced during the drain. A sample-budget 422
+		// fires after a clean CH finish (query_log shows ok with real cost), so it
+		// is stamped onto the dispatch record (cost retained, exit overridden); a
+		// memory-cap abort is recorded terminally so the corpus does not depend on
+		// the query_log join landing a row.
+		h.Engine.ObserveDrainOutcome(queryID, "promql", err)
 		h.respondError(w, classifyDrainError(err))
 		return
 	}

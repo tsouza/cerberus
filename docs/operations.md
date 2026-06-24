@@ -801,7 +801,8 @@ the two prior. When a new minor ships, the line that becomes **3 minors behind**
 the current minor reaches **end-of-life (EOL)**. An EOL line:
 
 - gets **no further hotfixes**;
-- has its `release/<major>.<minor>.x` maintenance branch **deleted**;
+- has its `release/<major>.<minor>.x` maintenance branch **deleted
+  automatically** when the new minor ships (the `eol-retire` job — see below);
 - has its maintenance-line **publish/CI disabled** (the `preflight` gate refuses
   to publish a push on an out-of-window line — see below).
 
@@ -814,14 +815,38 @@ charts, and binaries are never unpublished.
 `1.2.x` and older: `release/1.2.x` was deleted, `v1.2.*` tags and Releases stay
 up. `1.4.x` and `1.3.x` remain supported and keep taking backports.
 
-**Enforcement.** The support window is enforced in the maintenance-release
-`preflight` (`.github/scripts/release-preflight.mjs`, `supportWindowProblem` /
-`SUPPORTED_MINOR_LINES`): a push to a `release/<major>.<minor>.x` line that is
-3+ minors behind the current minor (derived from the stable `v*` tag set) is
-**refused** before any artifact publishes — independent of how green the commit
-is. Branch deletion itself is a manual maintainer step performed when the new
-minor ships (this gate is the publish-side backstop, not the branch-ops
-automation).
+**Enforcement.** The support window is enforced on both halves of the EOL
+policy, sharing one piece of window math
+(`.github/scripts/release-preflight.mjs`, `SUPPORTED_MINOR_LINES` — single
+source of truth):
+
+- **Passive (publish refusal).** The maintenance-release `preflight`
+  (`supportWindowProblem`) refuses a push to a `release/<major>.<minor>.x` line
+  that is 3+ minors behind the current minor (derived from the stable `v*` tag
+  set) — **before** any artifact publishes, independent of how green the commit
+  is. An out-of-window line takes no further hotfixes.
+- **Active (branch retirement).** When a NEW minor actually ships, the
+  `eol-retire` job in `release.yml` deletes the maintenance branch that just
+  fell out of the window **automatically** — no manual maintainer step. It runs
+  only after a successful new-version publish, computes the line via
+  `retireLineForPublish` (the same `SUPPORTED_MINOR_LINES` window: publishing
+  `1.6.0` retires `release/1.3.x`), and deletes that `release/X.W.x` branch iff
+  it exists. Guards: it retires **at most one** line and **only on a minor open**
+  (`X.Y.0`, `Y>0`) — patches, major bumps, stable backports, and prereleases
+  retire nothing; it deletes **only** a provably out-of-window branch that
+  exists (idempotent — an already-absent branch is a clean no-op), with a
+  `supportWindowProblem` cross-check before the destructive call; and it is
+  **fail-open** — the release has already published, so any deletion failure
+  (token, future protection, network) logs loudly and the step still succeeds,
+  leaving a one-line manual `git push origin --delete release/X.W.x` as the
+  fallback. The job uses `RELEASE_PAT` (fine-grained, `contents:write`) when
+  present and falls back to the default `GITHUB_TOKEN`; both can delete the
+  `release/*.x` branches, which carry no branch protection or ruleset (only
+  `main` is protected).
+
+EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
+their GitHub Releases — and the already-pushed images, charts, and binaries —
+stay available; only the future-hotfix branch is removed.
 
 ## Dev / prod parity
 

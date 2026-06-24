@@ -222,6 +222,116 @@ func TestObserveRejection_IgnoresNonCerberusSideToken(t *testing.T) {
 	}
 }
 
+// TestObserveDispatchedRejection_OOM_TerminalZeroCost is the headline of the
+// memory-cap gap fix: a query that DID dispatch but was aborted by the per-query
+// memory cap (CH code 241, token "oom"). The corpus must emit a TERMINAL row at
+// the rejection site — exit_status "oom", routing read-out carried, ZERO cost —
+// WITHOUT waiting for a system.query_log join (the row may never land or the id
+// may be evicted first).
+func TestObserveDispatchedRejection_OOM_TerminalZeroCost(t *testing.T) {
+	t.Parallel()
+
+	src := newFakeSource()
+	sink := &memSink{}
+	r := New(src, sink, Options{RingCapacity: 8})
+
+	r.ObserveDispatchedRejection("qid-oom", "cerb:agg", []string{"o"}, "promql", ExitTokenOOM,
+		true, "A", 500, 30, 600, 7200, 15, 0, "below-threshold")
+	r.drainIngest()
+	// No query_log row is seeded: the terminal row must be written regardless.
+	r.reconcileOnce(context.Background())
+
+	rows := sink.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("sink rows = %d; want 1 terminal oom row", len(rows))
+	}
+	got := rows[0]
+	if got.ExitStatus != "oom" {
+		t.Errorf("exit_status = %q; want oom", got.ExitStatus)
+	}
+	if got.ReadRows != 0 || got.ReadBytes != 0 || got.MemoryUsage != 0 || got.QueryDurationMS != 0 {
+		t.Errorf("dispatched-rejection row must carry zero cost (unknowable at the abort site): %+v", got)
+	}
+	if got.Route != "A" || got.NAnchors != 500 || got.Fanout != 30 || got.DecisionReason != "below-threshold" {
+		t.Errorf("routing read-out not joined onto oom row: %+v", got)
+	}
+}
+
+// TestObserveDispatchedRejection_OOM_NoDoubleCountWithQueryLog pins the
+// no-double-count contract: the dispatch query_id was registered via
+// ObserveQuery, then the memory-cap abort records a terminal oom row carrying
+// that id. The reconciler must FORGET the id so the later query_log join (which
+// may also land an oom row for the same physical abort) cannot emit a second row.
+func TestObserveDispatchedRejection_OOM_NoDoubleCountWithQueryLog(t *testing.T) {
+	t.Parallel()
+
+	src := newFakeSource()
+	sink := &memSink{}
+	r := New(src, sink, Options{RingCapacity: 8})
+
+	// Dispatch seam first (id enters the join ring), then the terminal oom.
+	r.ObserveQuery("qid-oom", "cerb:agg", []string{"o"}, "promql",
+		true, "A", 500, 30, 600, 7200, 15, 0, "below-threshold")
+	r.ObserveDispatchedRejection("qid-oom", "cerb:agg", []string{"o"}, "promql", ExitTokenOOM,
+		true, "A", 500, 30, 600, 7200, 15, 0, "below-threshold")
+	r.drainIngest()
+
+	// The id must already be gone from the join index (forgotten by the terminal).
+	if ids := r.snapshotIDs(); len(ids) != 0 {
+		t.Errorf("dispatched oom must forget the join id; still tracked: %v", ids)
+	}
+
+	// Even if query_log later reports the same id as oom, the join writes nothing.
+	src.seed(SourceRow{QueryID: "qid-oom", ReadRows: 9_000_000, ExitStatus: ExitOOM})
+	r.reconcileOnce(context.Background())
+
+	rows := sink.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("sink rows = %d; want exactly 1 (terminal row only, no join duplicate)", len(rows))
+	}
+	if rows[0].ExitStatus != "oom" || rows[0].ReadRows != 0 {
+		t.Errorf("the single row must be the terminal zero-cost oom: %+v", rows[0])
+	}
+}
+
+// TestObserveDispatchedRejection_IgnoresUnknownToken pins that an unrecognised
+// token never produces a row.
+func TestObserveDispatchedRejection_IgnoresUnknownToken(t *testing.T) {
+	t.Parallel()
+	sink := &memSink{}
+	r := New(newFakeSource(), sink, Options{RingCapacity: 8})
+	r.ObserveDispatchedRejection("qid", "cerb:scan", nil, "promql", "bogus",
+		false, "", 0, 0, 0, 0, 0, 0, "")
+	r.drainIngest()
+	r.reconcileOnce(context.Background())
+	if rows := sink.snapshot(); len(rows) != 0 {
+		t.Errorf("unknown-token dispatched rejection wrote a row: %+v", rows)
+	}
+}
+
+// TestParseTerminalRejectionStatus pins the terminal-at-rejection token set: the
+// three cerberus-side tokens PLUS oom parse; the query_log-derived ok / timeout
+// and an unknown token do not.
+func TestParseTerminalRejectionStatus(t *testing.T) {
+	t.Parallel()
+	for token, want := range map[string]ExitStatus{
+		ExitTokenSampleBudget: ExitSampleBudget,
+		ExitTokenBreaker:      ExitBreaker,
+		ExitTokenRejected:     ExitRejected,
+		ExitTokenOOM:          ExitOOM,
+	} {
+		got, ok := parseTerminalRejectionStatus(token)
+		if !ok || got != want {
+			t.Errorf("parseTerminalRejectionStatus(%q) = (%v, %v); want (%v, true)", token, got, ok, want)
+		}
+	}
+	for _, token := range []string{"ok", "timeout", "bogus", ""} {
+		if _, ok := parseTerminalRejectionStatus(token); ok {
+			t.Errorf("parseTerminalRejectionStatus(%q) accepted a non-terminal token", token)
+		}
+	}
+}
+
 // TestFlushRejections_SinkError_Rebuffers pins the failure-open contract for
 // decision-only rows: a sink write failure re-buffers the rejections so the next
 // interval retries them rather than dropping them.
