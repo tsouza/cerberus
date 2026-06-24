@@ -70,8 +70,8 @@ func TestJSONLCountRatio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("aggregate: %v", err)
 	}
-	// 2 oom / 7 route-A.
-	want := 2.0 / 7.0
+	// 4 oom rows (any route) over 13 route-A rows in the seed.
+	want := 4.0 / 13.0
 	if v.Scalar < want-1e-9 || v.Scalar > want+1e-9 {
 		t.Fatalf("oom ratio = %v, want %v", v.Scalar, want)
 	}
