@@ -85,15 +85,15 @@ func parseEvidenceExpr(tok string) (evidenceExpr, error) {
 // {column} placeholder substituted with the runtime-resolved value, so the
 // operator sees concrete numbers even though the catalog carried only names.
 type Finding struct {
-	RuleID    string            `json:"rule_id"`
-	Severity  string            `json:"severity"`
-	GroupKey  map[string]string `json:"group_key"`
-	Support   int64             `json:"support"`
-	Evidence  map[string]float64 `json:"evidence,omitempty"`
-	Action    string            `json:"action,omitempty"`
-	Message   string            `json:"message"`
+	RuleID   string             `json:"rule_id"`
+	Severity string             `json:"severity"`
+	GroupKey map[string]string  `json:"group_key"`
+	Support  int64              `json:"support"`
+	Evidence map[string]float64 `json:"evidence,omitempty"`
+	Action   string             `json:"action,omitempty"`
+	Message  string             `json:"message"`
 
-	severity Severity // for ordering
+	severity        Severity // for ordering
 	groupKeyOrdered []string // group_by-ordered values, for deterministic tie-break
 }
 

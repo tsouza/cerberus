@@ -59,6 +59,15 @@ clean:
 gen-opt-docs:
     go run ./cmd/optdocs -doc docs/clickhouse-optimizations.md
 
+# Run the router-rules catalog against a corpus (offline analysis). Mines the
+# cerberus_router_corpus table (or its per-pod JSONL fallback) and prints
+# findings where the recorded A/B route is paying a cost the corpus shows the
+# other route would avoid. Pass flags through, e.g.:
+#   just route-rules --source jsonl --corpus-path /var/lib/cerberus/router-corpus
+#   just route-rules --validate-only
+route-rules *ARGS:
+    go run ./cmd/route-rules {{ARGS}}
+
 # === Test ===
 
 # Run unit + spec tests with race detector.

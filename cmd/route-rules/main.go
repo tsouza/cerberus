@@ -145,8 +145,8 @@ func buildSource(opts options) (routerrules.CorpusSource, error) {
 // router-rules-specific keys have no cerberus env yet, so they are supplied
 // exclusively via --param (or a future env), keeping zero numbers in the repo.
 var configEnvKeys = map[string]string{
-	"query.max_memory_bytes":           "CERBERUS_CH_QUERY_MAX_MEMORY",
-	"query.max_samples":                "CERBERUS_QUERY_MAX_SAMPLES",
+	"query.max_memory_bytes":            "CERBERUS_CH_QUERY_MAX_MEMORY",
+	"query.max_samples":                 "CERBERUS_QUERY_MAX_SAMPLES",
 	"router_rules.watermark_percentile": "ROUTER_RULES_WATERMARK_PERCENTILE",
 	"router_rules.min_rows_per_class":   "ROUTER_RULES_MIN_ROWS_PER_CLASS",
 }

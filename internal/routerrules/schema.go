@@ -119,10 +119,10 @@ type Predicate struct {
 	Not *Predicate  `yaml:"not,omitempty"`
 
 	// Leaf comparison fields (set only on a leaf node).
-	Col  string   `yaml:"col,omitempty"`
-	Op   string   `yaml:"op,omitempty"`
-	Enum any       `yaml:"enum,omitempty"` // string | []string for enum columns
-	Param string  `yaml:"param,omitempty"` // a ${param} ref — the ONLY numeric operand path
+	Col   string `yaml:"col,omitempty"`
+	Op    string `yaml:"op,omitempty"`
+	Enum  any    `yaml:"enum,omitempty"`  // string | []string for enum columns
+	Param string `yaml:"param,omitempty"` // a ${param} ref — the ONLY numeric operand path
 }
 
 // DecodeCatalog strict-decodes YAML bytes into a Catalog, rejecting unknown

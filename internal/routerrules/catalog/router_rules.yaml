@@ -62,7 +62,8 @@ params:
     column: query_duration_ms
     percentile:
       ref: watermark_pctile
-    partition_by: [shape_id]                      # one slow-watermark per shape class
+    partition_by: [language]                      # one slow-watermark per language
+                                                  # (a group_by column of every rule that uses it)
 
 # --------------------------------------------------------------------------
 # rules: generic detectors. A condition references columns + ${param} only.

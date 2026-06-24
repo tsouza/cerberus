@@ -21,10 +21,10 @@ type CHConn interface {
 type AggFunc string
 
 const (
-	AggMax      AggFunc = "max"
-	AggAvg      AggFunc = "avg"
-	AggMin      AggFunc = "min"
-	AggStdDev   AggFunc = "stddevPop"
+	AggMax    AggFunc = "max"
+	AggAvg    AggFunc = "avg"
+	AggMin    AggFunc = "min"
+	AggStdDev AggFunc = "stddevPop"
 )
 
 // AggSpec is a resolved request to aggregate one corpus column, used to resolve
@@ -34,12 +34,12 @@ const (
 // when non-empty, yields a partition-keyed Value (one scalar per partition).
 type AggSpec struct {
 	Column      string
-	Percentile  *float64  // corpus_percentile: the resolved fraction in (0,1)
-	Agg         AggFunc   // corpus_agg
-	CountRatio  bool      // corpus_count_ratio
-	Scope       Scope     // percentile/agg population filter
-	NumScope    Scope     // count_ratio numerator
-	DenScope    Scope     // count_ratio denominator
+	Percentile  *float64 // corpus_percentile: the resolved fraction in (0,1)
+	Agg         AggFunc  // corpus_agg
+	CountRatio  bool     // corpus_count_ratio
+	Scope       Scope    // percentile/agg population filter
+	NumScope    Scope    // count_ratio numerator
+	DenScope    Scope    // count_ratio denominator
 	PartitionBy []string
 }
 
