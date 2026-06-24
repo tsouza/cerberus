@@ -172,6 +172,24 @@ func (st *SelfTuner) recalibrate(ctx context.Context) {
 		"min_fanout", calibrated.MinFanout,
 		"min_anchor_pairs", calibrated.MinAnchorPairs,
 		"changes", changeStrings(report.Changes))
+
+	// Surface the floor/margin interaction: when the shipped safety floor bound
+	// a calibrated threshold at or above the margin-reduced frontier, the safety
+	// margin is reduced (or, in the sub-floor case, the floor would have gated
+	// above the OOM coordinate and the calibrator capped strictly below the
+	// frontier instead). Operators must SEE this — the floor previously moved
+	// silently, defeating the safety margin near the floor without a trace.
+	if report.FloorClampedFanout || report.FloorClampedAnchorPairs {
+		st.logger.Warn("route self-tune: safety floor swallowed the margin near the frontier",
+			"floor_clamped_fanout", report.FloorClampedFanout,
+			"floor_clamped_anchor_pairs", report.FloorClampedAnchorPairs,
+			"frontier_fanout", report.FrontierFanout,
+			"frontier_anchor_pairs", report.FrontierAnchorPairs,
+			"min_fanout", calibrated.MinFanout,
+			"min_anchor_pairs", calibrated.MinAnchorPairs,
+			"min_calibrated_fanout", minCalibratedFanout,
+			"min_calibrated_anchor_pairs", minCalibratedAnchorPairs)
+	}
 }
 
 // changeStrings renders the report's threshold moves into a flat []string for

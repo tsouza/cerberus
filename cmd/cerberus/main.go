@@ -806,9 +806,9 @@ func (a frontierReaderAdapter) ReadFrontier(ctx context.Context) ([]solver.Corpu
 	out := make([]solver.CorpusSample, 0, len(buckets))
 	for _, b := range buckets {
 		out = append(out, solver.CorpusSample{
-			NAnchors:        int(b.NAnchors),
-			Fanout:          int(b.Fanout),
-			CumulativeD:     int(b.CumulativeD),
+			NAnchors:       int(b.NAnchors),
+			Fanout:         int(b.Fanout),
+			CumulativeD:    int(b.CumulativeD),
 			Route:          b.Route,
 			BelowThreshold: b.BelowThreshold,
 			// MaxMemoryUsage / MaxQueryDurationMS are captured in the corpus

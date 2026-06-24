@@ -93,11 +93,23 @@ type CalibrationReport struct {
 	Changes []ThresholdChange
 
 	// FrontierFanout / FrontierAnchorPairs record the empirical frontier the
-	// run detected: the smallest Fanout / (N×F) anchor-pair product at which
-	// the corpus showed OOM/cost-danger samples. Zero when no danger frontier
-	// was observed. Reported even on a no-op so operators see the evidence.
+	// run detected: the COUPLED (single-OOM-coordinate) Fanout / (N×F)
+	// anchor-pair product that defines the binding danger corner. Zero when no
+	// danger frontier was observed. Reported even on a no-op so operators see
+	// the evidence.
 	FrontierFanout      int
 	FrontierAnchorPairs int
+
+	// FloorClampedFanout / FloorClampedAnchorPairs are set when the shipped
+	// safety floor (minCalibratedFanout / minCalibratedAnchorPairs) bound the
+	// calibrated threshold at or ABOVE the margin-reduced frontier — i.e. the
+	// floor swallowed the safety margin (and, in the sub-floor case, would have
+	// installed a gate above the actual OOM coordinate). When set, the
+	// calibrated threshold no longer sits a full margin below the frontier; the
+	// loop logs a WARN so operators see the rail has been reached. This is the
+	// honest surfacing the floor previously hid (it moved silently before).
+	FloorClampedFanout      bool
+	FloorClampedAnchorPairs bool
 }
 
 // ThresholdChange is one field's defaults → calibrated movement plus a short
@@ -213,17 +225,17 @@ func Calibrate(samples []CorpusSample, defaults Config) (Config, CalibrationRepo
 	}
 
 	// We have a real frontier. Derive calibrated thresholds that route B
-	// strictly BEFORE it, then apply tighten-only + safety-floor clamps.
+	// strictly BEFORE it, then apply tighten-only + safety-floor clamps. Each
+	// axis reports whether the floor swallowed the safety margin so the loop can
+	// WARN (and so a genuine sub-floor OOM caps strictly below the frontier
+	// rather than installing a gate above the OOM coordinate).
 	calibrated := defaults
 
-	wantFanout := applyMargin(frontierF)
-	wantPairs := applyMargin(frontierPairs)
-
-	calibrated.MinFanout = clampTighten(
-		defaults.MinFanout, wantFanout, minCalibratedFanout,
+	calibrated.MinFanout, report.FloorClampedFanout = calibrateAxis(
+		defaults.MinFanout, frontierF, minCalibratedFanout,
 	)
-	calibrated.MinAnchorPairs = clampTighten(
-		defaults.MinAnchorPairs, wantPairs, minCalibratedAnchorPairs,
+	calibrated.MinAnchorPairs, report.FloorClampedAnchorPairs = calibrateAxis(
+		defaults.MinAnchorPairs, frontierPairs, minCalibratedAnchorPairs,
 	)
 
 	if calibrated.MinFanout != defaults.MinFanout {
@@ -231,7 +243,7 @@ func Calibrate(samples []CorpusSample, defaults Config) (Config, CalibrationRepo
 			Field: "MinFanout",
 			From:  defaults.MinFanout,
 			To:    calibrated.MinFanout,
-			Why:   "observed OOM/cost-danger at lower fanout; shard before the local frontier",
+			Why:   axisWhy("fanout", report.FloorClampedFanout),
 		})
 	}
 	if calibrated.MinAnchorPairs != defaults.MinAnchorPairs {
@@ -239,7 +251,7 @@ func Calibrate(samples []CorpusSample, defaults Config) (Config, CalibrationRepo
 			Field: "MinAnchorPairs",
 			From:  defaults.MinAnchorPairs,
 			To:    calibrated.MinAnchorPairs,
-			Why:   "observed OOM/cost-danger at fewer anchor-pairs; shard before the local frontier",
+			Why:   axisWhy("anchor-pairs", report.FloorClampedAnchorPairs),
 		})
 	}
 
@@ -255,22 +267,32 @@ func Calibrate(samples []CorpusSample, defaults Config) (Config, CalibrationRepo
 	return calibrated, report
 }
 
-// scanFrontier finds, across all samples, the smallest Fanout and smallest
-// (N×F) anchor-pair product at which the deployment observed OOM/cost-danger
-// dispatches, plus the total danger-sample count and whether any
-// below-threshold decision exists. Deterministic: samples are sorted before
-// scanning so the result never depends on input order.
+// scanFrontier finds the deployment's binding danger corner: ONE OOM sample's
+// COUPLED (Fanout, N×F) coordinate, plus the total danger-sample count and
+// whether any below-threshold decision exists. Deterministic: samples are
+// sorted before scanning so the result never depends on input order.
+//
+// COUPLED, not per-axis-independent. An earlier version minimised frontierF and
+// frontierPairs separately, so the two could come from two DIFFERENT OOM
+// samples — a synthetic corner that exists at no real query, and that let a
+// fanout-gated OOM (small fanout, large N → large pairs) drag the pairs
+// frontier down below where the pairs axis is actually dangerous. Both frontier
+// values now come from the SAME sample: the OOM coordinate with the smallest
+// anchor-pair product (ties broken by smaller fanout, then D, then Route for
+// determinism). Anchor-pairs is the dominant cost proxy (route B exists to cap
+// the N×F scan), so the smallest-pairs OOM is the corner closest to the safe
+// region — the conservative binding frontier.
 func scanFrontier(samples []CorpusSample) (frontierF, frontierPairs, dangerCount int, sawBelowThreshold bool) {
 	ordered := make([]CorpusSample, len(samples))
 	copy(ordered, samples)
 	sort.Slice(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if a.Fanout != b.Fanout {
-			return a.Fanout < b.Fanout
-		}
 		ap, bp := a.NAnchors*a.Fanout, b.NAnchors*b.Fanout
 		if ap != bp {
 			return ap < bp
+		}
+		if a.Fanout != b.Fanout {
+			return a.Fanout < b.Fanout
 		}
 		if a.CumulativeD != b.CumulativeD {
 			return a.CumulativeD < b.CumulativeD
@@ -293,11 +315,14 @@ func scanFrontier(samples []CorpusSample) (frontierF, frontierPairs, dangerCount
 		}
 		dangerCount += c
 
-		if s.Fanout > 0 && (frontierF == 0 || s.Fanout < frontierF) {
-			frontierF = s.Fanout
-		}
 		pairs := s.NAnchors * s.Fanout
-		if pairs > 0 && (frontierPairs == 0 || pairs < frontierPairs) {
+		if pairs <= 0 || s.Fanout <= 0 {
+			continue
+		}
+		// First valid OOM sample in (pairs, fanout, …) order is the binding
+		// corner; both axes are read from it so the coordinate is real.
+		if frontierPairs == 0 {
+			frontierF = s.Fanout
 			frontierPairs = pairs
 		}
 	}
@@ -316,19 +341,57 @@ func applyMargin(frontierValue int) int {
 	return scaled
 }
 
-// clampTighten enforces the tighten-only + safety-floor rails for an int
-// threshold: the calibrated value `want` is accepted ONLY if it is strictly
-// LOWER than the shipped default (the safer direction — shard more readily)
-// AND not below the shipped floor. Otherwise the default is kept verbatim.
-// This is the load-bearing safety invariant: Calibrate can never RAISE a
-// threshold, and never lower past the floor.
-func clampTighten(def, want, floor int) int {
-	if want < floor {
-		want = floor
+// axisWhy renders the reason string for one axis's threshold move, calling out
+// when the safety floor swallowed the margin so the change log is honest.
+func axisWhy(axis string, floorClamped bool) string {
+	if floorClamped {
+		return "observed OOM/cost-danger at low " + axis +
+			"; calibrated threshold pinned by the safety floor — margin reduced (see floor-clamp WARN)"
 	}
+	return "observed OOM/cost-danger at lower " + axis + "; shard before the local frontier"
+}
+
+// calibrateAxis derives one axis's calibrated threshold from its observed
+// frontier and reports whether the safety floor swallowed the margin.
+//
+// It enforces the tighten-only + safety-floor rails: the result is accepted
+// only if it tightens (strictly LOWER than the shipped default — shard more
+// readily) and never sits below the shipped floor; otherwise the default is
+// kept. Calibrate can never RAISE a threshold.
+//
+// The floor/margin interaction (the bug this replaces hid): the margin-reduced
+// target `want` is the value that puts route B a full safety margin below the
+// frontier. When the floor would raise `want` back up to or above the frontier,
+// the margin is gone — and a genuine SUB-FLOOR frontier (frontier ≤ floor) is
+// worse still: pinning to the floor installs a gate ABOVE the OOM coordinate,
+// keeping an already-OOMing query on route A. Both cases set floorClamped=true
+// so the loop WARNs instead of moving silently:
+//
+//   - frontier ≤ floor (sub-floor OOM): cap STRICTLY BELOW the frontier
+//     (frontier-1) so route B still fires before the danger zone, rather than
+//     pinning to a floor that sits above it.
+//   - floor < frontier but floor ≥ want (floor ate the margin): pin to the
+//     floor — route B still fires before the frontier, just with less headroom.
+func calibrateAxis(def, frontier, floor int) (value int, floorClamped bool) {
+	want := applyMargin(frontier)
 	if want >= def {
-		// Not a tightening (would loosen or no-op) — keep the default.
-		return def
+		// Not a tightening (frontier above current threshold) — keep default.
+		return def, false
 	}
-	return want
+	if want >= floor {
+		// Clean tightening: full margin preserved, floor not reached.
+		return want, false
+	}
+	// The floor would raise `want`. Surface it.
+	if frontier <= floor {
+		// Sub-floor OOM: floor sits at/above the OOM coordinate. Cap strictly
+		// below the frontier so route B fires before the danger zone.
+		capped := frontier - 1
+		if capped < 1 {
+			capped = 1
+		}
+		return capped, true
+	}
+	// Floor is still below the frontier — pin to it, but flag the lost margin.
+	return floor, true
 }
