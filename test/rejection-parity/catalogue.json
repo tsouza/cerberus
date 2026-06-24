@@ -556,8 +556,15 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:lowerCall#ab321c46",
-      "message": "promql: function %s is not yet supported",
+      "site": "internal/promql/lower.go:lowerCall#682975f8",
+      "message": "promql: function %s is not a recognized lowering target",
+      "class": "internal",
+      "rationale": "Every PromQL function the reference parser produces is dispatched by an explicit case in lowerCall or by the instantFnCH table; start()/end() have their own dedicated parity-reject case. This generic fall-through guards against a parser-accepted function with no lowering, of which there are currently none, so no wire query reaches it."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCall#87f33f63",
+      "message": "promql: function %s() is only valid inside an @ modifier (e.g. up @ %s()), not as a standalone call",
       "class": "rejection",
       "trigger_query": "start()"
     },
