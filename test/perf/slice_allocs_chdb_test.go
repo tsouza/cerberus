@@ -158,7 +158,7 @@ func TestSliceAllocs_ChDB(t *testing.T) {
 		cfg := solver.DefaultConfig()
 		cfg.Mode = solver.ModeAuto
 		cfg.MaxK = tc.k
-		p := &solver.Planner{Cfg: cfg}
+		p := solver.NewPlanner(cfg)
 
 		// Sanity: the fixed plan/grid must actually route at the pinned K, or
 		// the arm would be measuring the cheap not-routed path and silently

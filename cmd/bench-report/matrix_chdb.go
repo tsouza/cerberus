@@ -181,7 +181,7 @@ func measureMatrixCell(ctx context.Context, s *session, iters int, st matrixStra
 	if err := cfg.Validate(); err != nil {
 		return matrixCell{}, fmt.Errorf("solver config: %w", err)
 	}
-	pl := &solver.Planner{Cfg: cfg}
+	pl := solver.NewPlanner(cfg)
 	gs, ge, gstep := solver.GridOf(plan)
 	dec, routed := pl.Plan(plan, solver.RequestMeta{
 		Lang: solver.LangPromQL, Start: gs, End: ge, Step: gstep,

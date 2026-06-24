@@ -164,7 +164,7 @@ func measureSharded(s *session, iters int) (shardedResult, error) {
 	if err := cfg.Validate(); err != nil {
 		return shardedResult{}, fmt.Errorf("sharded config invalid: %w", err)
 	}
-	pl := &solver.Planner{Cfg: cfg}
+	pl := solver.NewPlanner(cfg)
 	gs, ge, gstep := solver.GridOf(plan)
 	dec, routed := pl.Plan(plan, solver.RequestMeta{
 		Lang:  solver.LangPromQL,

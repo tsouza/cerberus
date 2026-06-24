@@ -155,7 +155,7 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 	sm := schema.DefaultOTelMetrics()
 	cfg := solver.DefaultConfig()
 	cfg.Mode = solver.ModeAuto // the production routing mode the ratchet pins.
-	planner := &solver.Planner{Cfg: cfg}
+	planner := solver.NewPlanner(cfg)
 	// Mirror the production PromQL head, which builds its parser with
 	// EnableExperimentalFunctions=true (see internal/api/prom/lang.go) so
 	// the deliberately-supported experimental subset
