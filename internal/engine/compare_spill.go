@@ -28,6 +28,39 @@ const settingMaxBytesBeforeExternalGroupBy = "max_bytes_before_external_group_by
 // before the cap is reached.
 const compareGroupBySpillBytes int64 = 512 << 20 // 536870912 bytes
 
+// compareSpillCapDenominator divides the live per-query memory cap to derive a
+// cap-relative spill threshold: the spill must begin at a fraction of the cap
+// so the disk-backed merge still has headroom under max_memory_usage.
+// ClickHouse's own guidance for max_bytes_before_external_group_by is ~50% of
+// max_memory_usage, hence 2 — half the cap.
+const compareSpillCapDenominator int64 = 2
+
+// compareSpillThreshold returns the byte threshold to stamp for
+// max_bytes_before_external_group_by, given the live per-query memory cap
+// (max_memory_usage, in bytes; 0 = no cap configured).
+//
+// The fixed compareGroupBySpillBytes (512 MiB) is only safe when the cap sits
+// comfortably above it. When an operator lowers CERBERUS_CH_QUERY_MAX_MEMORY to
+// at or below 512 MiB (the envdocs example cites 512Mi), a fixed 512 MiB spill
+// threshold lands AT or ABOVE the cap, so the GROUP BY never spills and the
+// query OOMs before the threshold is reached — the very bug this rule exists to
+// prevent. So when a cap is set, take the smaller of the fixed threshold and a
+// cap-relative fraction (~50% of the cap), keeping the spill strictly below the
+// cap for every config.
+//
+// When no cap is configured (cap <= 0) the threshold is the plain fixed value:
+// max_bytes_before_external_group_by=0 means the spill is DISABLED, so min'ing
+// against a non-positive cap would re-introduce the unbounded-RAM bug.
+func compareSpillThreshold(maxMemory int64) int64 {
+	if maxMemory <= 0 {
+		return compareGroupBySpillBytes
+	}
+	if capRelative := maxMemory / compareSpillCapDenominator; capRelative < compareGroupBySpillBytes {
+		return capRelative
+	}
+	return compareGroupBySpillBytes
+}
+
 // applyCompareSpill stamps the external-group-by spill threshold on ctx when
 // plan contains a chplan.MetricsCompare node. Unlike the DARK, flag-gated
 // SettingsRules, this rule is ALWAYS ON for the compare shape: an OOM abort is
@@ -39,11 +72,16 @@ const compareGroupBySpillBytes int64 = 512 << 20 // 536870912 bytes
 // never rides an unrelated query. Written through chclient.WithQuerySetting so
 // it merges onto the one per-request settings map alongside max_memory_usage
 // and any plan-shape-gated knobs.
-func applyCompareSpill(ctx context.Context, plan chplan.Node) context.Context {
+//
+// maxMemory is the live per-query memory cap — the SAME value the chclient
+// query path stamps as max_memory_usage — so the threshold is sized relative to
+// it and the spill always triggers strictly below the cap (see
+// compareSpillThreshold).
+func applyCompareSpill(ctx context.Context, plan chplan.Node, maxMemory int64) context.Context {
 	if !planHasMetricsCompare(plan) {
 		return ctx
 	}
-	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalGroupBy, compareGroupBySpillBytes)
+	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalGroupBy, compareSpillThreshold(maxMemory))
 }
 
 // planHasMetricsCompare reports whether plan contains a chplan.MetricsCompare

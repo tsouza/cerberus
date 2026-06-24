@@ -154,7 +154,7 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	}
 	// Always-on, result-equivalent: let the compare() GROUP BY spill to disk
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
-	ctx = applyCompareSpill(ctx, plan)
+	ctx = applyCompareSpill(ctx, plan, e.queryMemoryCap())
 	ctx = e.Settings.apply(ctx, plan)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the
@@ -367,6 +367,27 @@ type Querier interface {
 // per-language adapters to opt into streaming on a per-call basis.
 type CursorQuerier interface {
 	QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error)
+}
+
+// memoryCapQuerier is the optional surface a Client exposes when it can report
+// its per-query memory cap (max_memory_usage, bytes). *chclient.Client
+// implements it; test fakes that don't simply report no cap (0). The engine
+// reads it so the compare() spill threshold sizes itself relative to the SAME
+// cap the data-plane query path stamps, never a hard-coded value that could sit
+// at or above a lowered cap and silently disable the spill.
+type memoryCapQuerier interface {
+	MaxQueryMemoryBytes() int64
+}
+
+// queryMemoryCap returns the engine Client's per-query memory cap in bytes, or
+// 0 when the Client doesn't expose one. A 0 cap means "no max_memory_usage
+// configured", which compareSpillThreshold treats as "use the fixed spill
+// threshold" (never min against a non-positive value).
+func (e *Engine) queryMemoryCap() int64 {
+	if mc, ok := e.Client.(memoryCapQuerier); ok {
+		return mc.MaxQueryMemoryBytes()
+	}
+	return 0
 }
 
 // Engine owns the shared dependencies (optimizer, ClickHouse client)
