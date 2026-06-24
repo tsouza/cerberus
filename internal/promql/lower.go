@@ -1755,6 +1755,15 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		// path, not here. Lowering bare `start()` / `end()` as scalar
 		// calls would accept a shape stock reference Prometheus rejects.
 		return lowerQueryContextFold(c, s, ctx)
+	case "start", "end":
+		// `start()` / `end()` are query-context time anchors, not
+		// standalone callable functions. Upstream's parser admits them
+		// only inside an `@` modifier (`up @ start()`, `up @ end()` —
+		// both supported, lowered via the at-modifier path); the bare
+		// top-level call is invalid PromQL that stock reference
+		// Prometheus rejects. Cerberus rejects it identically — a
+		// permanent parity decision, not a coverage gap.
+		return nil, fmt.Errorf("promql: function %s() is only valid inside an @ modifier (e.g. up @ %s()), not as a standalone call", c.Func.Name, c.Func.Name)
 	case "pi":
 		// Bare top-level `pi()` (or any scalar-foldable call the parser
 		// admits as a top-level expression). The /api/v1/query handler
@@ -1769,7 +1778,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn, ctx)
 	}
-	return nil, fmt.Errorf("promql: function %s is not yet supported", c.Func.Name)
+	return nil, fmt.Errorf("promql: function %s is not a recognized lowering target", c.Func.Name)
 }
 
 // lowerRangeVectorCall handles range-vector functions: rate, increase,
