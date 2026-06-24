@@ -41,8 +41,15 @@ func NewCHCorpusSource(conn CHConn, sinceUnix float64) CorpusSource {
 }
 
 func (s *chCorpusSource) query(ctx context.Context, sql string, args []any) (rows, error) {
+	// The timeout context must outlive the returned rows: callers iterate and
+	// Scan AFTER query() returns. Cancelling here (defer cancel()) would tear
+	// the context down before the first Scan — under the chdb-go database/sql
+	// driver that surfaces as "context canceled" on Scan and poisons the
+	// single global chdb session for every later query. clickhouse-go's native
+	// driver buffers rows so it tolerated the premature cancel, masking the
+	// bug. Tie cancel to rows.Close() instead so the context spans the scan and
+	// is never leaked (every caller already defers Close).
 	ctx, cancel := context.WithTimeout(ctx, chCorpusTimeout)
-	defer cancel()
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_execution_time":    chCorpusMaxExecutionTime,
 		"timeout_overflow_mode": "throw",
@@ -55,9 +62,10 @@ func (s *chCorpusSource) query(ctx context.Context, sql string, args []any) (row
 	}))
 	r, err := s.conn.Query(ctx, sql, args...)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("routerrules: query %s: %w", CorpusTableName, err)
 	}
-	return r, nil
+	return &cancelRows{rows: r, cancel: cancel}, nil
 }
 
 // rows is the subset of driver.Rows this source consumes.
@@ -66,6 +74,32 @@ type rows interface {
 	Scan(dest ...any) error
 	Err() error
 	Close() error
+}
+
+// cancelRows binds a context.CancelFunc to a rows lifetime: the cancel fires on
+// Close (which every consumer defers), so the query timeout context spans the
+// whole scan rather than being torn down the instant query() returns.
+type cancelRows struct {
+	rows
+	cancel context.CancelFunc
+}
+
+func (c *cancelRows) Close() error {
+	err := c.rows.Close()
+	c.cancel()
+	return err
+}
+
+// groupKeyFrag is the SELECT/GROUP BY expression for a group-key column.
+//
+// Group keys are scanned into *string. Reference (Enum8) and LowCardinality
+// columns both carry string names, but the chdb-go database/sql driver cannot
+// cast a bare Enum8 column into *string ("could not cast to type: ENUM").
+// Wrapping every group key in toString() yields the enum's string name (and is
+// a no-op on String / LowCardinality(String)), so the CH group key equals the
+// JSONL path's value (which reads the same string name) — parity holds.
+func groupKeyFrag(col string) chsql.Frag {
+	return chsql.Call("toString", chsql.BareIdent(col))
 }
 
 // sinceFrag returns the event_time window predicate, or nil when unwindowed.
@@ -142,7 +176,7 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 	}
 
 	partCol := spec.PartitionBy[0]
-	qb = qb.Select(chsql.BareIdent(partCol)).SelectAs(aggExpr, "v").GroupBy(chsql.BareIdent(partCol))
+	qb = qb.Select(groupKeyFrag(partCol)).SelectAs(aggExpr, "v").GroupBy(groupKeyFrag(partCol))
 	sql, args := qb.Build()
 	r, err := s.query(ctx, sql, args)
 	if err != nil {
@@ -221,7 +255,7 @@ func (s *chCorpusSource) EvalRule(ctx context.Context, q RuleQuery) ([]GroupResu
 
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	for _, col := range q.GroupBy {
-		qb = qb.Select(chsql.BareIdent(col))
+		qb = qb.Select(groupKeyFrag(col))
 	}
 	qb = qb.SelectAs(chsql.Call("count"), "support")
 	for _, ev := range q.Evidence {
@@ -234,7 +268,7 @@ func (s *chCorpusSource) EvalRule(ctx context.Context, q RuleQuery) ([]GroupResu
 	}
 	qb = qb.Where(conds...)
 	for _, col := range q.GroupBy {
-		qb = qb.GroupBy(chsql.BareIdent(col))
+		qb = qb.GroupBy(groupKeyFrag(col))
 	}
 
 	sql, args := qb.Build()
