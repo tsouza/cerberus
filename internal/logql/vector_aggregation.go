@@ -479,7 +479,7 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 			{Expr: &chplan.LitString{V: ""}, Alias: metricNameCol},
 			{Expr: attrs, Alias: attrsCol},
 			{Expr: tsExpr, Alias: tsCol},
-			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: valueCol},
+			{Expr: &chplan.ColumnRef{Name: valueCol}, Alias: valueCol},
 		},
 	}
 }

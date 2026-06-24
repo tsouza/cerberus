@@ -125,6 +125,17 @@ perf-profile OUT="perf-profile.json" TOP="40":
 chclient-integration:
     go test -race -tags=integration ./internal/chclient/...
 
+# Run the strict-scan differential: execute the matrix-shaped spec golden
+# SQL corpus against a REAL ClickHouse (testcontainers-go) through the
+# production cursor's strict positional scan, failing on any type-coercion
+# error. This catches the prod-vs-chDB divergence the chdb-tagged goldens
+# are structurally blind to (chDB leniently coerces e.g. UInt8 -> *float64;
+# clickhouse-go strict-scans and 502s). Requires Docker; gated behind the
+# `integration` build tag. See test/spec/strictscan_integration_test.go and
+# .github/workflows/strict-scan.yml.
+strict-scan-test:
+    go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
@@ -986,9 +997,10 @@ compat-all: compat-promql compat-logql compat-traceql
 # available, and — critically — ENFORCE the canonical release-branch names
 # so nobody hand-rolls an inconsistent one:
 #   - tip-of-main release PR : release/v<version>-chart-<chartVersion>
-#   - maintenance backport   : release/<major>.<minor>.x   (the name
-#     release-preflight.mjs looks up to verify a backport tag is cut from
-#     the tip of its line — a wrong name makes the tag get REJECTED)
+#   - maintenance backport   : release/<major>.<minor>.x   (publishing is
+#     gated on merge of a validated release PR — resolve-release-trigger.mjs
+#     + release-version-gate.mjs key off this branch name, so a wrong one
+#     makes the publish step REJECT the run)
 # Both wrap the same .github/scripts/prepare-release.mjs + helm-docs the CI
 # uses, so the opened PR is drift-clean.
 

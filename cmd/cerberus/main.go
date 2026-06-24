@@ -409,7 +409,7 @@ func run() error {
 		logger.Info("signal received, shutting down")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
@@ -438,6 +438,10 @@ func run() error {
 // gate is sized MaxOpenConns − reserve; the Executor additionally caps any
 // single routed request at gate/2 so >=2 routed requests can always progress.
 const solverGateReserve = 2
+
+// gracefulShutdownTimeout bounds in-flight request draining + provider
+// teardown after a shutdown signal before the process exits regardless.
+const gracefulShutdownTimeout = 10 * time.Second
 
 // buildSolver constructs the sharded-pushdown solver from the CERBERUS_*
 // environment and wires its data-plane hooks. The Config is validated

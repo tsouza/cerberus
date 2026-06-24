@@ -233,6 +233,11 @@ func bareGroupByColumns(agg *chplan.Aggregate) (cols []string, ok bool) {
 // singleScanTable returns the one physical table the plan scans, or ok=false
 // when there is not exactly one (zero Scans, a multi-table union, or two
 // Scans from a join).
+// ineligibleMarker poisons the scan count so the final count != 1
+// guard rejects the plan (a union / empty-table scan has no single
+// sort key to be a prefix of).
+const ineligibleMarker = -1
+
 func singleScanTable(plan chplan.Node) (table string, ok bool) {
 	count := 0
 	chplan.Walk(plan, func(n chplan.Node) bool {
@@ -242,7 +247,7 @@ func singleScanTable(plan chplan.Node) (table string, ok bool) {
 		}
 		// A union scan has no single sort key to be a prefix of.
 		if len(s.UnionTables) > 0 || s.Table == "" {
-			count = -1 // poison: force ineligible
+			count = ineligibleMarker
 			return false
 		}
 		table = s.Table

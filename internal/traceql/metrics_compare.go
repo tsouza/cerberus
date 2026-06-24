@@ -49,6 +49,12 @@ const (
 	compareNilLiteral = "nil"
 )
 
+// arrayZip produces 1-based (key, value) tuples; tupleElement indexes them.
+const (
+	tupleKeyIdx   = 1
+	tupleValueIdx = 2
+)
+
 // wellKnownResourceAttrs are the resource-scoped attributes vparquet4
 // stores in dedicated columns (tempodb/encoding/vparquet4/block_traceql.go,
 // `WellKnownColumnLookups`). Under select-all, reference Tempo fetches
@@ -276,7 +282,7 @@ func compareAttrPairsExpr(s schema.Traces) chplan.Expr {
 			"arrayFilter",
 			&chplan.Lambda{Params: []string{"t"}, Body: call(
 				"not",
-				call("has", call("array", exq...), call("tupleElement", t, &chplan.LitInt{V: 1})),
+				call("has", call("array", exq...), call("tupleElement", t, &chplan.LitInt{V: tupleKeyIdx})),
 			)},
 			zipped,
 		)
@@ -284,8 +290,8 @@ func compareAttrPairsExpr(s schema.Traces) chplan.Expr {
 			"arrayMap",
 			&chplan.Lambda{Params: []string{"t"}, Body: call(
 				"tuple",
-				call("concat", lit(scopePrefix), call("tupleElement", t, &chplan.LitInt{V: 1})),
-				call("toString", call("tupleElement", t, &chplan.LitInt{V: 2})),
+				call("concat", lit(scopePrefix), call("tupleElement", t, &chplan.LitInt{V: tupleKeyIdx})),
+				call("toString", call("tupleElement", t, &chplan.LitInt{V: tupleValueIdx})),
 			)},
 			filtered,
 		)

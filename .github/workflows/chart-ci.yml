@@ -101,6 +101,22 @@ jobs:
       # carries a LOWER chart version than main (e.g. 0.4.2 < main's 0.5.x), and
       # ct's bump check would otherwise read that as a downgrade. Falls back to
       # the default branch for push events (base_ref is empty there).
-      - name: ct lint — enforce the version bump on real chart changes
+      # Version-increment enforcement is scoped to release/* PRs only. With
+      # publish-on-merge live (release.yml publishes whenever main's Chart.yaml
+      # version exceeds the last-published version), forcing a bump on every
+      # chart-touching PR would auto-publish from an unvalidated monolith-only
+      # PR. So the bump belongs in the release/* PR (which runs the full split +
+      # crawl matrix); feature PRs run ct lint WITHOUT the version-increment
+      # check (--check-version-increment=false), and so does push-to-main.
+      - name: ct lint — enforce the version bump on release PRs only
         if: steps.changes.outputs.chart == 'true'
-        run: ct lint --chart-dirs deploy/helm --target-branch "${{ github.base_ref || github.event.repository.default_branch }}" --validate-maintainers=false
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          TARGET_BRANCH: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          if [[ "$HEAD_REF" == release/* ]]; then
+            version_flag=""
+          else
+            version_flag="--check-version-increment=false"
+          fi
+          ct lint --chart-dirs deploy/helm --target-branch "$TARGET_BRANCH" --validate-maintainers=false $version_flag

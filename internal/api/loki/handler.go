@@ -666,6 +666,10 @@ const (
 	maxLogQueryLimit     = 5000
 )
 
+// msToSeconds converts a millisecond epoch to the fractional-second
+// timestamp Loki's vector/matrix wire format reports.
+const msToSeconds = 1e3
+
 // parseLogLimit reads the URL's `limit` query parameter, clamping at
 // [maxLogQueryLimit] and defaulting to [defaultLogQueryLimit] when
 // absent. Non-positive or non-numeric values fail with a 400-mapped
@@ -753,7 +757,7 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 		}
 	}
 	out := make([]VectorSample, 0, len(bySeries))
-	stamp := float64(ts.UnixMilli()) / 1e3
+	stamp := float64(ts.UnixMilli()) / msToSeconds
 	for _, l := range bySeries {
 		out = append(out, VectorSample{
 			Metric: format.NormalizeLabelMap(l.labels),
@@ -815,7 +819,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
 				continue
 			}
-			stamp := float64(r.Timestamp.UnixMilli()) / 1e3
+			stamp := float64(r.Timestamp.UnixMilli()) / msToSeconds
 			ms.Values = append(ms.Values, [2]any{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
 		}
 		if len(ms.Values) > 0 {
