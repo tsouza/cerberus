@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -805,6 +806,13 @@ func (a frontierReaderAdapter) ReadFrontier(ctx context.Context) ([]solver.Corpu
 	}
 	out := make([]solver.CorpusSample, 0, len(buckets))
 	for _, b := range buckets {
+		// Count is a uint64 corpus row aggregate; bound it before the int
+		// conversion so gosec G115 is satisfied. A bucket can never realistically
+		// hold 2^31 rows, so the clamp is a safety net, not an expected path.
+		count := b.Count
+		if count > math.MaxInt32 {
+			count = math.MaxInt32
+		}
 		out = append(out, solver.CorpusSample{
 			NAnchors:       int(b.NAnchors),
 			Fanout:         int(b.Fanout),
@@ -815,7 +823,7 @@ func (a frontierReaderAdapter) ReadFrontier(ctx context.Context) ([]solver.Corpu
 			// bucket but the calibrator gates on the terminal-OOM coordinate
 			// (b.Danger) alone, so they are not forwarded.
 			OOM:   b.Danger,
-			Count: int(b.Count),
+			Count: int(count),
 		})
 	}
 	return out, nil
