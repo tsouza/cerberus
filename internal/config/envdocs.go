@@ -297,6 +297,7 @@ var envDocs = []EnvDoc{
 	{envCHOptCorpusInterval, "duration", "ClickHouse optimizations", "How often the reconciler joins recently-dispatched query_ids back to `system.query_log`."},
 	{envCHOptCorpusSinkPath, "string", "ClickHouse optimizations", "JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink."},
 	{envCHOptCorpusRing, "int", "ClickHouse optimizations", "Ring capacity for tracked query_ids; caps memory + the per-interval `IN(...)`."},
+	{envCHOptCorpusSinkMode, "string", "ClickHouse optimizations", "Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis)."},
 
 	// --- Experimental flags ---
 	{envExperimentalTSGrid, "bool", "Experimental flags", "Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.6."},

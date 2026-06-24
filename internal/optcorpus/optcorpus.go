@@ -29,6 +29,147 @@ import (
 	"time"
 )
 
+// RouteFeatures is the routing classifier's read-out captured at dispatch:
+// the route the pure classifier (internal/solver Planner.Plan) chose plus the
+// RAW cost-grid scalars it computed (N anchors, fan-out, cumulative spine
+// lookback D, outer range, step) and the decision reason. It is the
+// dispatch-side half of the route A/B calibration corpus (stage 0): the
+// reconciler joins it to the OBSERVED server-side cost so an operator can
+// replay the classifier offline (counterfactual threshold testing) and
+// measure the wrong-route overlap.
+//
+// Recording these features is a pure additive readout — it changes no routing
+// behavior. The features are present for BOTH route A (not-routed,
+// below-threshold) and route B (routed) decisions, because the overlap
+// analysis compares the cost distributions of the two routes at equal
+// (N, F, D). Buckets are keyed on the RAW scalars, never on Reason: the
+// not-routed shadow header folds the high-D class into below-threshold, so the
+// reason string alone hides it.
+type RouteFeatures struct {
+	// Route is "A" (single CH query) or "B" (time-slice sharded). It is the
+	// route the classifier actually chose for this dispatch.
+	Route string
+	// NAnchors is N = OuterRange/Step + 1 on the outermost spine.
+	NAnchors uint32
+	// Fanout is F = max(Range/Step or Lookback/Step) over the windowed nodes.
+	Fanout uint32
+	// CumulativeD is D = Σ spine lookback, in seconds (the corpus stores
+	// durations as whole seconds, matching the UInt32 columns).
+	CumulativeD uint32
+	// OuterRange is the outermost spine OuterRange, in seconds.
+	OuterRange uint32
+	// Step is the request grid step, in seconds.
+	Step uint32
+	// KShards is the shard count on route B, 0 on route A.
+	KShards uint8
+	// DecisionReason is the classifier's Reason* vocabulary value.
+	DecisionReason string
+	// Present reports whether routing features were captured for this
+	// dispatch. It is false when the Solver is off or the head is not the
+	// classified head, so the reconciler can leave the routing columns at
+	// their zero defaults rather than record a fictitious route-A row.
+	Present bool
+}
+
+// ExitStatus is how a dispatched query terminated, derived from the
+// system.query_log row type plus its exception. It is the corpus's
+// cost-distribution discriminator: an OOM or timeout exit is the very signal
+// route B (time-slice sharding) exists to avoid, so the go/no-go analysis
+// reads it directly.
+type ExitStatus uint8
+
+const (
+	// ExitOK is a clean QueryFinish.
+	ExitOK ExitStatus = iota
+	// ExitOOM is a QueryExceptionWhileProcessing whose exception is a
+	// ClickHouse memory-limit / OOM code. CH-side, derived from query_log.
+	ExitOOM
+	// ExitTimeout is a QueryExceptionWhileProcessing whose exception is a
+	// ClickHouse timeout / exceeded-execution-time code. CH-side, derived from
+	// query_log.
+	ExitTimeout
+	// ExitSampleBudget is a CERBERUS-side terminal outcome: the CH query
+	// FINISHED cleanly (query_log shows ok with real cost), but cerberus
+	// rejected the client with the query.maxSamples 422 during the Go-side
+	// result drain. The richest calibration signal — "CH cost = X, but
+	// cerberus rejected: too big" — so the cost columns are KEPT while the
+	// exit status records cerberus's authoritative outcome. It takes
+	// precedence over the query_log-derived ExitOK for the same query_id.
+	ExitSampleBudget
+	// ExitBreaker is a CERBERUS-side terminal outcome: the chclient circuit
+	// breaker was OPEN, so cerberus fast-failed the request 503 BEFORE
+	// dispatching any CH query. There is no query_log row to join — the corpus
+	// row is decision-only, with no cost.
+	ExitBreaker
+	// ExitRejected is a CERBERUS-side terminal outcome: cerberus rejected the
+	// request 400 BEFORE dispatching (resolution-cap / body-limit). There is
+	// no CH query and no query_log row — the corpus row is decision-only, with
+	// no cost.
+	ExitRejected
+)
+
+// String renders the ExitStatus as the corpus enum token. The tokens are the
+// stable wire/DDL contract shared by the JSONL sink, the CH Enum8 column, and
+// the calibration SQL — keep them in lockstep with exitEnumValue (chtable.go)
+// and the CH Enum8 DDL (corpusCreateTableSQL).
+func (e ExitStatus) String() string {
+	switch e {
+	case ExitOOM:
+		return "oom"
+	case ExitTimeout:
+		return "timeout"
+	case ExitSampleBudget:
+		return "sample_budget"
+	case ExitBreaker:
+		return "breaker"
+	case ExitRejected:
+		return "rejected"
+	default:
+		return "ok"
+	}
+}
+
+// Exit-status tokens — the stable string contract shared with callers that do
+// not import this package's enum (the engine passes these primitive tokens
+// through the QueryObserver seam). They MUST match ExitStatus.String().
+const (
+	ExitTokenSampleBudget = "sample_budget"
+	ExitTokenBreaker      = "breaker"
+	ExitTokenRejected     = "rejected"
+)
+
+// parseExitStatus maps an exit_status token back to its ExitStatus. It accepts
+// only the cerberus-side tokens (the in-process seams never pass a CH-derived
+// token); an unrecognised token returns ok=false so a typo cannot masquerade as
+// a real outcome. ExitOK / oom / timeout are query_log-derived and not parsed
+// here on purpose.
+func parseExitStatus(token string) (ExitStatus, bool) {
+	switch token {
+	case ExitTokenSampleBudget:
+		return ExitSampleBudget, true
+	case ExitTokenBreaker:
+		return ExitBreaker, true
+	case ExitTokenRejected:
+		return ExitRejected, true
+	default:
+		return ExitOK, false
+	}
+}
+
+// cerberusSide reports whether the ExitStatus is a CERBERUS-side terminal
+// outcome that cerberus determined in-process (sample-budget / breaker /
+// rejected), as opposed to a CH-side outcome derived from system.query_log
+// (ok / oom / timeout). A cerberus-side outcome is authoritative: it takes
+// precedence over the query_log-derived status when both exist for one query.
+func (e ExitStatus) cerberusSide() bool {
+	switch e {
+	case ExitSampleBudget, ExitBreaker, ExitRejected:
+		return true
+	default:
+		return false
+	}
+}
+
 // Record is one dispatched query's identity, registered (via Observe) when
 // cerberus sends the query. The QueryID is the join key into system.query_log;
 // the rest is the metadata the reconciler joins onto each finished row.
@@ -45,6 +186,29 @@ type Record struct {
 	Opts []string
 	// Language is the query language: "promql" | "logql" | "traceql".
 	Language string
+	// Route is the routing classifier read-out captured at dispatch. It is the
+	// dispatch-side half of the route A/B calibration corpus; the reconciler
+	// joins it to the observed cost. Route.Present is false when no routing
+	// classification ran (Solver off / unclassified head).
+	Route RouteFeatures
+
+	// Outcome is the CERBERUS-side terminal outcome cerberus determined
+	// in-process for this request (ExitSampleBudget / ExitBreaker /
+	// ExitRejected). It is the authoritative exit status query_log cannot
+	// reflect: the sample-budget 422 fires AFTER a clean CH finish, and the
+	// breaker / cap rejections fire BEFORE any CH dispatch. HasOutcome gates
+	// it so the zero value (ExitOK) is not mistaken for a real outcome. When
+	// set on a query_id that also joins a query_log row, the reconciler keeps
+	// the query_log COST but overrides exit_status with this value.
+	Outcome    ExitStatus
+	HasOutcome bool
+
+	// DecisionOnly marks a row that has NO CH query to join (a pre-dispatch
+	// breaker / cap rejection): the Decision + N/F/D are known at classify
+	// time but there is no query_id and no cost. The reconciler writes these
+	// straight to the sink with zero cost rather than carrying them in the
+	// query_log IN(...) join.
+	DecisionOnly bool
 }
 
 // Row is the durable corpus tuple written to the sink. The field shape is
@@ -61,6 +225,25 @@ type Row struct {
 	QueryDurationMS     uint64           `json:"query_duration_ms"`
 	MemoryUsage         uint64           `json:"memory_usage"`
 	ProfileEvents       map[string]int64 `json:"profile_events,omitempty"`
+
+	// Routing features (stage 0 route A/B calibration). These join each
+	// routing DECISION to its OBSERVED cost so the pure classifier can be
+	// replayed offline. They are zero-valued when the dispatch carried no
+	// routing classification (Solver off / unclassified head) — Route is then
+	// "" and the scalar columns are 0. The field shape stays column-for-column
+	// aligned with the cerberus_router_corpus MergeTree (see chtable.go) so the
+	// JSONL and CH-table sinks write the same Row.
+	NAnchors       uint32 `json:"n_anchors"`
+	Fanout         uint32 `json:"fanout"`
+	CumulativeD    uint32 `json:"cumulative_d"`
+	OuterRange     uint32 `json:"outer_range"`
+	Step           uint32 `json:"step"`
+	Route          string `json:"route"`
+	KShards        uint8  `json:"k_shards"`
+	DecisionReason string `json:"decision_reason"`
+	// ExitStatus is "ok" | "oom" | "timeout", derived by the reconciler from
+	// the system.query_log row type + exception.
+	ExitStatus string `json:"exit_status"`
 }
 
 // Sink is the durable write target for reconciled rows. JSONLSink is the v1
@@ -77,16 +260,19 @@ type Sink interface {
 // (ShapeID/Opts/Language) — the reconciler joins those back from its ring by
 // matching on query_id, so the source returns the query_id alongside each row.
 type QueryLogSource interface {
-	// FinishedByQueryID returns the finished (type='QueryFinish') query_log
-	// rows for the supplied query_ids. Each returned SourceRow carries the
-	// query_id it belongs to so the reconciler can join it back to the
-	// observed Record. ids is never empty when called.
+	// FinishedByQueryID returns the terminal query_log rows for the supplied
+	// query_ids: clean finishes (type='QueryFinish') AND exception exits
+	// (type='QueryExceptionWhileProcessing'), so the corpus can record how a
+	// query terminated. Each returned SourceRow carries the query_id it belongs
+	// to so the reconciler can join it back to the observed Record. ids is
+	// never empty when called.
 	FinishedByQueryID(ctx context.Context, ids []string) ([]SourceRow, error)
 }
 
-// SourceRow is one finished system.query_log row as returned by a
+// SourceRow is one terminal system.query_log row as returned by a
 // QueryLogSource, before the reconciler joins the shape metadata onto it. It
-// carries the query_id (the join key) plus the raw cost columns.
+// carries the query_id (the join key), the raw cost columns, and the derived
+// exit status (clean / oom / timeout).
 type SourceRow struct {
 	QueryID             string
 	NormalizedQueryHash uint64
@@ -95,6 +281,9 @@ type SourceRow struct {
 	QueryDurationMS     uint64
 	MemoryUsage         uint64
 	ProfileEvents       map[string]int64
+	// ExitStatus is how the query terminated, derived by the source from the
+	// query_log row type + exception code (ExitOK on a QueryFinish).
+	ExitStatus ExitStatus
 }
 
 // defaultRingCapacity is the fallback ring capacity when Options.RingCapacity
@@ -174,6 +363,14 @@ type Reconciler struct {
 	// methods (incremented on the data-plane seam, Swap-and-logged on the
 	// drain), so it never needs the ring mutex.
 	dropped atomic.Uint64
+
+	// pendingRejections buffers decision-only rejection Records (pre-dispatch
+	// breaker / cap outcomes) that have no query_id to join. The Run drain
+	// appends to it under the ring mutex; reconcileOnce flushes it straight to
+	// the sink with zero cost, then clears it. It is bounded by the same
+	// drop-under-burst contract as the ring (a rejection is a best-effort
+	// sample, never a system record).
+	pendingRejections []Record
 }
 
 // New builds a Reconciler over src and sink with opts. It does not start any
@@ -208,21 +405,55 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 
 // Observe registers a dispatched query's Record in the bounded ring. When the
 // ring is full it overwrites the oldest slot in place (O(1) circular-buffer
-// eviction, no reindex). A Record with an empty QueryID is ignored (no join
-// key). Safe for concurrent callers, though in production only the single Run
-// drain calls it; the data-plane seam is ObserveQuery (non-blocking).
+// eviction, no reindex). Safe for concurrent callers, though in production only
+// the single Run drain calls it; the data-plane seam is ObserveQuery /
+// ObserveOutcome / ObserveRejection (all non-blocking).
+//
+// It handles three Record kinds, in FIFO order off the ingest channel:
+//   - decision-only (DecisionOnly): a pre-dispatch breaker / cap rejection with
+//     no query_id — buffered for the next reconcile flush, never ringed.
+//   - outcome-update (HasOutcome with no ShapeID): merges a cerberus-side
+//     terminal outcome onto an already-ringed dispatch record by query_id.
+//   - dispatch (the default): the normal at-dispatch metadata record.
 func (r *Reconciler) Observe(rec Record) {
+	if rec.DecisionOnly {
+		// A pre-dispatch rejection: no query_id, no CH cost. Buffer it for the
+		// next reconcile flush rather than placing it in the join ring.
+		r.mu.Lock()
+		r.pendingRejections = append(r.pendingRejections, rec)
+		r.mu.Unlock()
+		return
+	}
 	if rec.QueryID == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Outcome-update: a cerberus-side terminal outcome (sample-budget 422)
+	// arriving AFTER the dispatch record. Merge the outcome onto the existing
+	// ring record, preserving its metadata, rather than clobbering it with an
+	// otherwise-empty record. If the dispatch record is not present (evicted /
+	// never observed) the outcome is dropped — there is nothing to join it to.
+	if rec.HasOutcome && rec.ShapeID == "" {
+		if idx, ok := r.byID[rec.QueryID]; ok {
+			r.ring[idx].Outcome = rec.Outcome
+			r.ring[idx].HasOutcome = true
+		}
+		return
+	}
+
 	// Replace an existing record for the same query_id in place rather than
 	// consuming a new slot (defensive: a re-Observe of the same per-dispatch
 	// query_id updates rather than duplicates the ring entry). Refresh its
 	// observation time so a re-observed id is not TTL-evicted prematurely.
+	// Preserve any cerberus-side outcome already merged onto the slot so an
+	// out-of-order outcome-update is not lost on a late dispatch re-observe.
 	if idx, ok := r.byID[rec.QueryID]; ok {
+		if r.ring[idx].HasOutcome && !rec.HasOutcome {
+			rec.Outcome = r.ring[idx].Outcome
+			rec.HasOutcome = true
+		}
 		r.ring[idx] = rec
 		r.seenAt[rec.QueryID] = r.now()
 		return
@@ -253,7 +484,25 @@ func (r *Reconciler) Observe(rec Record) {
 // full the Record is DROPPED (the corpus is a best-effort sample, not a system
 // of record) and counted for a rate-limited diagnostic; the drop is strictly
 // preferable to blocking a data-plane dispatch on the corpus.
-func (r *Reconciler) ObserveQuery(queryID, shapeID string, opts []string, language string) {
+//
+// The trailing route* parameters carry the routing classifier read-out for
+// this dispatch (stage 0 route A/B calibration). They are passed as primitive
+// scalars — not a shared struct — so neither package imports the other's types
+// (the engine declares the QueryObserver interface; optcorpus supplies the
+// concrete *Reconciler, and a shared struct would couple them and risk the
+// nil-interface trap the engine guards against). routePresent is false when
+// the dispatch carried no routing classification (Solver off / unclassified
+// head); the reconciler then leaves the routing columns at zero.
+func (r *Reconciler) ObserveQuery(
+	queryID, shapeID string,
+	opts []string,
+	language string,
+	routePresent bool,
+	route string,
+	nAnchors, fanout, cumulativeD, outerRange, step uint32,
+	kShards uint8,
+	decisionReason string,
+) {
 	if queryID == "" {
 		return
 	}
@@ -262,7 +511,92 @@ func (r *Reconciler) ObserveQuery(queryID, shapeID string, opts []string, langua
 		ShapeID:  shapeID,
 		Opts:     opts,
 		Language: language,
+		Route: RouteFeatures{
+			Present:        routePresent,
+			Route:          route,
+			NAnchors:       nAnchors,
+			Fanout:         fanout,
+			CumulativeD:    cumulativeD,
+			OuterRange:     outerRange,
+			Step:           step,
+			KShards:        kShards,
+			DecisionReason: decisionReason,
+		},
 	}
+	r.enqueue(rec)
+}
+
+// ObserveOutcome is the data-plane seam for a CERBERUS-side terminal outcome on
+// a DISPATCHED query — currently the query.maxSamples 422, which fires during
+// the Go-side result drain AFTER the CH query finished cleanly. It stamps the
+// authoritative cerberus outcome onto the already-observed dispatch record
+// (matched by query_id) so the reconciler keeps the joined query_log COST but
+// overrides exit_status with this value. Like ObserveQuery it does a single
+// non-blocking channel send: the data plane never touches the ring mutex and a
+// momentarily-full buffer drops the update (best-effort sample).
+//
+// statusToken is the stable exit_status token (the engine passes a primitive
+// string rather than the optcorpus enum so the engine stays decoupled from this
+// package). A token that is not a cerberus-side outcome, or an empty queryID,
+// is ignored.
+func (r *Reconciler) ObserveOutcome(queryID, statusToken string) {
+	status, ok := parseExitStatus(statusToken)
+	if queryID == "" || !ok || !status.cerberusSide() {
+		return
+	}
+	r.enqueue(Record{QueryID: queryID, Outcome: status, HasOutcome: true})
+}
+
+// ObserveRejection is the data-plane seam for a CERBERUS-side terminal outcome
+// on a query that was rejected BEFORE any CH dispatch (breaker 503 / cap 400):
+// there is no query_id and no CH cost, but the routing Decision + N/F/D are
+// known at classify time. It records a decision-only corpus row (zero cost,
+// the supplied outcome) so these pre-CH rejections — the most diagnostic
+// misroute signals — are not missed entirely. The routing scalars mirror
+// ObserveQuery; routePresent is false when no classification ran. statusToken
+// is the stable exit_status token; a token that is not a cerberus-side outcome
+// is ignored. Non-blocking, drop-under-burst.
+func (r *Reconciler) ObserveRejection(
+	shapeID string,
+	opts []string,
+	language string,
+	statusToken string,
+	routePresent bool,
+	route string,
+	nAnchors, fanout, cumulativeD, outerRange, step uint32,
+	kShards uint8,
+	decisionReason string,
+) {
+	status, ok := parseExitStatus(statusToken)
+	if !ok || !status.cerberusSide() {
+		return
+	}
+	r.enqueue(Record{
+		ShapeID:      shapeID,
+		Opts:         opts,
+		Language:     language,
+		Outcome:      status,
+		HasOutcome:   true,
+		DecisionOnly: true,
+		Route: RouteFeatures{
+			Present:        routePresent,
+			Route:          route,
+			NAnchors:       nAnchors,
+			Fanout:         fanout,
+			CumulativeD:    cumulativeD,
+			OuterRange:     outerRange,
+			Step:           step,
+			KShards:        kShards,
+			DecisionReason: decisionReason,
+		},
+	})
+}
+
+// enqueue does the shared single non-blocking send onto the ingest channel,
+// counting a drop when the buffer is momentarily full. All three data-plane
+// seams (ObserveQuery / ObserveOutcome / ObserveRejection) funnel through it so
+// the drop-under-burst contract is identical and stated once.
+func (r *Reconciler) enqueue(rec Record) {
 	select {
 	case r.ingest <- rec:
 	default:
@@ -394,6 +728,12 @@ func (r *Reconciler) Run(ctx context.Context) {
 // early WITHOUT taking the process down. Exposed (unexported) so tests can
 // drive a single reconcile deterministically.
 func (r *Reconciler) reconcileOnce(ctx context.Context) {
+	// Flush decision-only rejection rows first: these pre-dispatch breaker / cap
+	// outcomes have no query_id and so never enter the query_log join. They are
+	// written even when the join below has nothing (the most diagnostic misroute
+	// rows must not depend on a CH query existing).
+	r.flushRejections()
+
 	// Drop ids older than the lookback window before snapshotting, so a
 	// never-finished query is not carried in the IN(...) forever (it can no
 	// longer match a row the source can still see).
@@ -421,7 +761,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 			// Evicted between snapshot and read, or a stray id — skip.
 			continue
 		}
-		rows = append(rows, Row{
+		row := Row{
 			ShapeID:             rec.ShapeID,
 			Opts:                rec.Opts,
 			Language:            rec.Language,
@@ -431,7 +771,18 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 			QueryDurationMS:     sr.QueryDurationMS,
 			MemoryUsage:         sr.MemoryUsage,
 			ProfileEvents:       sr.ProfileEvents,
-		})
+			// exit_status is the observed-cost discriminator the go/no-go
+			// analysis reads (oom / timeout = the cost route B avoids).
+			// Precedence: a CERBERUS-side outcome (e.g. the sample-budget 422
+			// that fired after a clean CH finish) is authoritative over the
+			// query_log-derived status — the query_log shows 'ok' with real
+			// cost, but cerberus actually rejected the client. The COST columns
+			// are kept (the richest signal: "CH cost = X, but cerberus
+			// rejected"); only the exit status is overridden.
+			ExitStatus: exitStatusToken(sr.ExitStatus, rec),
+		}
+		joinRouteFeatures(&row, rec)
+		rows = append(rows, row)
 		reconciled = append(reconciled, sr.QueryID)
 	}
 	if len(rows) == 0 {
@@ -443,4 +794,83 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		return
 	}
 	r.forget(reconciled)
+}
+
+// exitStatusToken resolves the exit_status token for a joined row, giving a
+// CERBERUS-side outcome (sample-budget / breaker / rejected) precedence over
+// the query_log-derived CH-side status. The CH cost stays on the row either
+// way; only the discriminator changes.
+func exitStatusToken(chStatus ExitStatus, rec Record) string {
+	if rec.HasOutcome && rec.Outcome.cerberusSide() {
+		return rec.Outcome.String()
+	}
+	return chStatus.String()
+}
+
+// joinRouteFeatures copies the dispatch-side routing read-out from rec onto
+// row. Left at zero when no classification ran for the dispatch (route stays
+// ""). Shared by the query_log join and the decision-only rejection flush.
+func joinRouteFeatures(row *Row, rec Record) {
+	if !rec.Route.Present {
+		return
+	}
+	row.Route = rec.Route.Route
+	row.NAnchors = rec.Route.NAnchors
+	row.Fanout = rec.Route.Fanout
+	row.CumulativeD = rec.Route.CumulativeD
+	row.OuterRange = rec.Route.OuterRange
+	row.Step = rec.Route.Step
+	row.KShards = rec.Route.KShards
+	row.DecisionReason = rec.Route.DecisionReason
+}
+
+// flushRejections drains the buffered decision-only rejection Records into
+// zero-cost corpus Rows and writes them to the sink. On a sink-write failure
+// the rejections are re-buffered for the next interval (failure-open: a sink
+// outage degrades the corpus, never the data plane), mirroring the join path's
+// "do not forget on write failure" retry contract.
+func (r *Reconciler) flushRejections() {
+	pending := r.takeRejections()
+	if len(pending) == 0 {
+		return
+	}
+	rows := make([]Row, 0, len(pending))
+	for _, rec := range pending {
+		row := Row{
+			ShapeID:  rec.ShapeID,
+			Opts:     rec.Opts,
+			Language: rec.Language,
+			// No CH query ran: cost columns stay zero. exit_status carries the
+			// cerberus-side outcome (breaker / rejected).
+			ExitStatus: rec.Outcome.String(),
+		}
+		joinRouteFeatures(&row, rec)
+		rows = append(rows, row)
+	}
+	if err := r.sink.Write(rows); err != nil {
+		r.logger.Warn("optcorpus: rejection sink write failed", "err", err, "rows", len(rows))
+		r.rebufferRejections(pending)
+	}
+}
+
+// takeRejections atomically swaps out the pending decision-only rejection
+// buffer under the ring mutex, returning what was buffered and leaving the
+// buffer empty for the next interval.
+func (r *Reconciler) takeRejections() []Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pendingRejections) == 0 {
+		return nil
+	}
+	out := r.pendingRejections
+	r.pendingRejections = nil
+	return out
+}
+
+// rebufferRejections prepends not-yet-written rejections back onto the pending
+// buffer after a sink-write failure, so the next interval retries them.
+func (r *Reconciler) rebufferRejections(recs []Record) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingRejections = append(recs, r.pendingRejections...)
 }

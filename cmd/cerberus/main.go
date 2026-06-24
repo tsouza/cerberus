@@ -627,13 +627,8 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	if !cfg.CHOptCorpus.Enabled {
 		return
 	}
-	if cfg.CHOptCorpus.SinkPath == "" {
-		logger.Warn("ch_opt corpus enabled but CERBERUS_CH_OPT_CORPUS_SINK_PATH is empty; reconciler disabled")
-		return
-	}
-	sink, err := optcorpus.NewJSONLSink(cfg.CHOptCorpus.SinkPath)
-	if err != nil {
-		logger.Warn("ch_opt corpus sink unavailable; reconciler disabled", "err", err)
+	sink, sinkDesc, ok := buildCorpusSink(ctx, logger, client, cfg)
+	if !ok {
 		return
 	}
 	// Bound each corpus SELECT in wall-clock to a fraction of the reconcile
@@ -664,8 +659,37 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	logger.Info(
 		"ch_opt query_log performance-corpus reconciler started",
 		"interval", cfg.CHOptCorpus.Interval.String(),
-		"sink", cfg.CHOptCorpus.SinkPath,
+		"sink", sinkDesc,
 	)
+}
+
+// corpusSinkModeCHTable selects the cerberus_router_corpus MergeTree sink.
+const corpusSinkModeCHTable = "chtable"
+
+// buildCorpusSink selects the durable corpus sink from CHOptCorpus.SinkMode:
+// the CH-table MergeTree (which it creates IF NOT EXISTS) or the JSONL file.
+// It returns the Sink, a short description for the startup log, and ok=false
+// (already logged) when the configured sink cannot be built — in which case the
+// reconciler stays disabled rather than degrading the data plane.
+func buildCorpusSink(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg config.Config) (optcorpus.Sink, string, bool) {
+	if cfg.CHOptCorpus.SinkMode == corpusSinkModeCHTable {
+		sink, err := optcorpus.NewCHTableSink(ctx, client.Conn())
+		if err != nil {
+			logger.Warn("ch_opt corpus CH-table sink unavailable; reconciler disabled", "err", err)
+			return nil, "", false
+		}
+		return sink, "chtable:" + optcorpus.CorpusTableName, true
+	}
+	if cfg.CHOptCorpus.SinkPath == "" {
+		logger.Warn("ch_opt corpus enabled but CERBERUS_CH_OPT_CORPUS_SINK_PATH is empty; reconciler disabled")
+		return nil, "", false
+	}
+	sink, err := optcorpus.NewJSONLSink(cfg.CHOptCorpus.SinkPath)
+	if err != nil {
+		logger.Warn("ch_opt corpus sink unavailable; reconciler disabled", "err", err)
+		return nil, "", false
+	}
+	return sink, "jsonl:" + cfg.CHOptCorpus.SinkPath, true
 }
 
 // attachQueryObserver registers the corpus reconciler as the QueryObserver on

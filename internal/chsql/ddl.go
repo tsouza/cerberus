@@ -202,3 +202,164 @@ func RenderDDL(f Frag) string {
 	}
 	return sql
 }
+
+// --- CREATE TABLE surface (cerberus-owned tables) ---
+//
+// CreateDatabaseBuilder covers the database statement; the table side below
+// builds a CREATE TABLE for tables cerberus authors in full (no upstream
+// template backs them), such as the router-calibration corpus. Like the
+// database builder, every token flows through builder.go primitives
+// (ddlToken / BareIdent / InlineLit / Call) so no constructor here writes a raw
+// token of its own — the closed-surface discipline extends to table DDL.
+
+// ColumnType is a Frag rendering a ClickHouse column type. The constructors
+// below (TypeRaw / TypeLowCardinality / TypeEnum8) compose it; a ColumnDef
+// pairs it with a column name.
+
+// TypeRaw renders a bare ClickHouse type name (UInt32, UInt64, String,
+// DateTime, …). The name MUST be a CH type token, not user data — it is
+// emitted as a bare identifier, the same trust contract as BareIdent.
+func TypeRaw(name string) Frag { return BareIdent(name) }
+
+// TypeLowCardinality wraps an inner type in LowCardinality(...), the CH
+// dictionary-encoded wrapper used for the low-arity string columns (shape_id,
+// language, decision_reason).
+func TypeLowCardinality(inner Frag) Frag {
+	return Call("LowCardinality", inner)
+}
+
+// EnumPair is one (name → value) entry of an Enum8 column type.
+type EnumPair struct {
+	Name  string
+	Value int64
+}
+
+// TypeEnum8 renders an Enum8('a'=0,'b'=1,...) column type. Each name is
+// emitted as a single-quoted CH string literal via InlineLit and each value as
+// a bare integer, so the rendered type is byte-identical to a hand-written
+// Enum8 declaration without any raw token write.
+func TypeEnum8(pairs ...EnumPair) Frag {
+	return func(b *Builder) {
+		ddlToken("Enum8(")(b)
+		for i, p := range pairs {
+			if i > 0 {
+				ddlToken(", ")(b)
+			}
+			InlineLit(p.Name)(b)
+			ddlToken(" = ")(b)
+			InlineLit(p.Value)(b)
+		}
+		ddlToken(")")(b)
+	}
+}
+
+// ColumnDef is one `name Type` entry inside a CREATE TABLE column list.
+type ColumnDef struct {
+	Name string
+	Type Frag
+}
+
+// frag renders the column as `<name> <type>` with the name backtick-quoted
+// (Col) and the type composed from the typed type constructors.
+func (c ColumnDef) frag() Frag {
+	return func(b *Builder) {
+		Col(c.Name)(b)
+		ddlToken(" ")(b)
+		c.Type(b)
+	}
+}
+
+// CreateTableBuilder builds a `CREATE TABLE` statement for a cerberus-owned
+// table. Construct via CreateTable, set the columns, the engine, ORDER BY, and
+// optional TTL, and terminate with SQL. Like CreateDatabaseBuilder it binds no
+// positional `?` values, so SQL renders through RenderDDL.
+type CreateTableBuilder struct {
+	name        string
+	ifNotExists bool
+	columns     []ColumnDef
+	engine      Frag
+	orderBy     []string
+	ttl         Frag
+}
+
+// CreateTable starts a CREATE TABLE builder for the named table.
+func CreateTable(name string) *CreateTableBuilder {
+	return &CreateTableBuilder{name: name}
+}
+
+// IfNotExists adds the IF NOT EXISTS guard so re-create is idempotent.
+func (c *CreateTableBuilder) IfNotExists() *CreateTableBuilder {
+	c.ifNotExists = true
+	return c
+}
+
+// Columns sets the column list.
+func (c *CreateTableBuilder) Columns(cols ...ColumnDef) *CreateTableBuilder {
+	c.columns = cols
+	return c
+}
+
+// Engine sets the table ENGINE clause (e.g. EngineMergeTree).
+func (c *CreateTableBuilder) Engine(e Frag) *CreateTableBuilder {
+	c.engine = e
+	return c
+}
+
+// OrderBy sets the ORDER BY key column list.
+func (c *CreateTableBuilder) OrderBy(cols ...string) *CreateTableBuilder {
+	c.orderBy = cols
+	return c
+}
+
+// TTL sets the TTL clause Frag (typically TableTTL). A nil Frag omits it.
+func (c *CreateTableBuilder) TTL(t Frag) *CreateTableBuilder {
+	c.ttl = t
+	return c
+}
+
+// EngineMergeTree renders the bare `MergeTree` table engine (no arguments) —
+// the single-node corpus table engine.
+func EngineMergeTree() Frag { return BareIdent("MergeTree") }
+
+// frag assembles the whole CREATE TABLE statement from typed pieces.
+func (c *CreateTableBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("CREATE TABLE ")(b)
+		if c.ifNotExists {
+			ddlToken("IF NOT EXISTS ")(b)
+		}
+		BareIdent(c.name)(b)
+		ddlToken(" (")(b)
+		for i, col := range c.columns {
+			if i > 0 {
+				ddlToken(", ")(b)
+			}
+			col.frag()(b)
+		}
+		ddlToken(")")(b)
+		if c.engine != nil {
+			ddlToken(" ENGINE = ")(b)
+			c.engine(b)
+		}
+		if len(c.orderBy) > 0 {
+			ddlToken(" ORDER BY (")(b)
+			for i, k := range c.orderBy {
+				if i > 0 {
+					ddlToken(", ")(b)
+				}
+				Col(k)(b)
+			}
+			ddlToken(")")(b)
+		}
+		if c.ttl != nil {
+			ddlToken(" ")(b)
+			c.ttl(b)
+		}
+	}
+}
+
+// SQL renders the CREATE TABLE statement to ClickHouse text via RenderDDL
+// (which asserts the no-positional-bindings DDL invariant).
+func (c *CreateTableBuilder) SQL() string {
+	return RenderDDL(c.frag())
+}
