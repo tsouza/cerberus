@@ -151,8 +151,12 @@ operator sees concrete values (`… at/above 4.2 GiB`) even though the file said
 
 ## The shipped rule set
 
-The initial catalog ships seven generic detectors, each pairing an observed cost
-with the recorded route:
+The catalog ships twelve generic detectors (`catalogVersion: 2`). The first
+seven (`since: 1`) pair an observed cost with the recorded route; the next five
+(`since: 2`) generalize beyond the route-A/route-B framing and attribute each
+finding by the **solver decision reason** (see below).
+
+### catalogVersion 1 — observed-cost / recorded-route pairs
 
 | id                                 | severity | what it flags                                                                                             |
 | ---------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
@@ -162,12 +166,43 @@ with the recorded route:
 | `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                              |
 | `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                      |
 | `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret). |
-| `route_a_slow_hot_shape`           | medium   | high-frequency slow route-A shapes — the highest aggregate payoff to re-route.                            |
+| `route_a_slow_hot_shape`           | medium   | high-frequency slow route-A shapes — the highest aggregate payoff to re-route (grouped by decision reason). |
 
-A wrong-rejection rule (flagging `exit_status=rejected`) is deliberately
-**excluded**: judging it needs a rejection-parity oracle the corpus alone lacks,
-and shipping it would force an inline tolerance number. Excluding it is the
-right call rather than inventing a magic number.
+### catalogVersion 2 — reason-attributed and shape-geometry detectors
+
+| id                                 | severity     | what it flags                                                                                                       |
+| ---------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `failure_cluster_by_reason`        | critical     | hard failures (OOM/timeout) on **any** route, grouped by `decision_reason` so the operator picks the right lever.  |
+| `route_b_still_failing`            | high         | route-B classes that **still** OOM/timeout — more sharding will not help; surfaces `max(k_shards)` as evidence.    |
+| `cerberus_side_rejection_pressure` | high         | `sample_budget` / `breaker` / `rejected` clusters — decided before CH dispatch; neither route addresses them.      |
+| `heavy_shape_geometry_failing`     | high         | failing classes whose `cumulative_d` sits in their own per-language tail (the geometry the solver uses to route).  |
+| `read_amplification_hot_shape`     | experimental | healthy scans reading above their own per-shape `read_rows` tail — a missing-PREWHERE / late-materialisation hint. |
+
+The original analysis dropped a naive *wrong-rejection* rule (flagging
+`exit_status=rejected` against a parity oracle) because judging it needs a
+rejection-parity oracle the corpus alone lacks. `cerberus_side_rejection_pressure`
+ships the buildable form instead: it fires on the cerberus-side rejection
+*cluster* (gated by `min_support`) and surfaces the deployment-wide rejection
+share as message context (`{cerberus_reject_ratio}`, a `corpus_count_ratio`
+scalar) — context, never a gate, so no inline tolerance number is needed.
+
+### decision_reason is an attribution column, never a condition operand
+
+The catalogVersion-2 failure rules group by `decision_reason` — the
+shadow-header value the solver records to explain each non-route decision
+(`routed`, `below-threshold`, `not-sliceable`, `instant`, `high-D`, `now64`,
+`grid-mismatch`, `incommensurate`, `scalar-heavy`; see
+[`internal/solver/decision.go`](../internal/solver/decision.go)). It is a
+**grouping / attribution** column: it tells the operator *which solver path*
+produced the failure, so they can pick the right lever (shard vs cap vs reject
+vs rewrite) — the catalog never encodes that branch in a number. It is **never**
+a condition operand (the grammar classifies it `ColumnGroup`, rejected in a
+leaf). Because the rules only group by it, they are immune to token drift; the
+finding message is the only place the token surfaces, so it always shows
+whatever token the corpus actually carries. A meta-test
+([`test/regression/router_corpus_seed_test.go`](../test/regression/router_corpus_seed_test.go))
+pins the seed corpus's `decision_reason` tokens to the solver's `Reason*`
+constants so the fixtures never drift from production.
 
 ## Running it
 
@@ -241,3 +276,79 @@ Adding a detector is a declarative edit — **no Go change**:
 3. Bump `catalogVersion` and set the rule's `since` to the new version.
 4. `just route-rules --validate-only` confirms the catalog still holds the
    invariant; the guard test confirms no number slipped in.
+
+## Why generic drivers + dynamic params (and not a tuned ruleset)
+
+A router-rules catalog that shipped concrete thresholds — "OOM above 4 GiB",
+"shard above 8× fan-out" — would encode **one** deployment's cost surface and
+quietly mis-fire on every other. The catalog instead ships only rule
+*structure* and *named parameter references*; every threshold, watermark, cap,
+and percentile cutoff is a named parameter resolved per-deployment at runtime:
+
+- **`config`** — a number the operator sets in their own deployment config
+  (e.g. `router_rules.watermark_percentile`, or reuses an existing knob like
+  `query.max_memory_bytes`). This is the only place an operator number enters.
+- **`corpus_percentile` / `corpus_agg`** — learned from the deployment's own
+  corpus (a per-shape `read_rows` tail, a per-language `cumulative_d`
+  watermark). Self-relative, so a shape is judged against its own history.
+- **`corpus_count_ratio`** — a deployment-wide scalar (`countIf(num scope) /
+  countIf(den scope)`) surfaced as message context, never a gate.
+
+The result: a single audit target (`catalog/router_rules.yaml`) with a
+no-numbers invariant enforced three independent ways (a condition AST with no
+number-literal node, a load-time validator, and the `TestEmbeddedCatalogHasNoNumbers`
+guard). The same rule fires correctly whether a deployment's pain is broad
+PromQL aggregations, high-cardinality TraceQL `compare()`, or LogQL line scans —
+because the *number* that decides "pathological" comes from that deployment's
+own data, not the catalog.
+
+## Limitations / future grammar work
+
+- **No group-aggregate-vs-fleet node.** The grammar cannot express "this
+  group's cost share exceeds the fleet's" inside a condition, so Pareto
+  cost-share rules are deferred. `corpus_count_ratio` resolves a deployment-wide
+  scalar (usable only as message context), not a per-group fraction.
+- **No time-windowed param kind.** Params resolve over the whole `--since`
+  window; drift/regression rules that compare two windows are deferred.
+- **No arithmetic in params.** "0.8 × cap" cannot be expressed in the catalog;
+  a deployment that wants a self-relative warn-floor supplies the product as one
+  `config` number, or uses a `corpus_percentile` instead. This is why the
+  early-warning memory rule stays a `corpus_percentile` of the healthy
+  population rather than a hand-computed fraction of the hard cap.
+
+## Academic references
+
+The detector design draws on the database-systems literature on cost-based
+optimization, cardinality-estimation error, memory-aware admission control, and
+self-driving / continuously-tuned systems:
+
+1. P. G. Selinger, M. M. Astrahan, D. D. Chamberlin, R. A. Lorie, T. G. Price.
+   *Access Path Selection in a Relational Database Management System.* ACM
+   SIGMOD 1979, pp. 23–34. — cost-based optimization and the divergence between
+   predicted and observed cost from stale catalog statistics. (Grounds the
+   whole corpus-vs-decision premise: a router decision made on estimated cost is
+   audited against realized cost.)
+2. V. Leis, A. Gubichev, A. Mirchev, P. Boncz, A. Kemper, T. Neumann. *How Good
+   Are Query Optimizers, Really?* PVLDB 9(3), 2015, pp. 204–215. — cardinality
+   estimation is the dominant source of optimizer cost error. (Grounds
+   `read_rows`/`cumulative_d` as the realized-cardinality signals to mine.)
+3. Y. Wu, et al. *Robust Query-Driven Cardinality Estimation under Changing
+   Workloads.* PVLDB 16, 2023. — estimator drift under shifting workloads; act
+   on outcome-changing errors, recomputed per window. (Grounds the
+   `corpus_percentile` watermarks recomputed over the `--since` window.)
+4. *LearnedWMP: Workload Memory Prediction Using Distribution of Query
+   Templates.* arXiv:2401.12103, 2024; with Microsoft SQL Server memory-grant /
+   `RESOURCE_SEMAPHORE` admission-control documentation. — OOM/spill as a
+   dominant failure mode cured by admission control + rewrite/cap rather than
+   more parallelism. (Grounds `failure_cluster_by_reason`, `route_b_still_failing`,
+   `cerberus_side_rejection_pressure`.)
+5. A. Pavlo, et al. *Self-Driving Database Management Systems.* CIDR 2017; L. Ma,
+   D. Van Aken, et al. *Query-based Workload Forecasting for Self-Driving DBMS.*
+   SIGMOD 2018 (OtterTune). — continuous, bidirectional tuning against the live
+   workload. (Grounds the per-deployment parameter-resolution model and the
+   route-B-regret rule.)
+6. *(Boundary, cited for the out-of-scope rationale.)* R. Avnur, J. M.
+   Hellerstein. *Eddies: Continuously Adaptive Query Processing.* ACM SIGMOD
+   2000. — mid-query, per-tuple reoptimization yields no post-hoc corpus signal;
+   the router is a coarse-grained admission decision, so eddy-style adaptivity
+   is explicitly out of scope for this catalog.
