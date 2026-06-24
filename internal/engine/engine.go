@@ -152,6 +152,9 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
+	// Always-on, result-equivalent: let the compare() GROUP BY spill to disk
+	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
+	ctx = applyCompareSpill(ctx, plan)
 	ctx = e.Settings.apply(ctx, plan)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the
