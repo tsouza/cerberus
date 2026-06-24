@@ -21,14 +21,19 @@ func seedSource(t *testing.T) CorpusSource {
 
 // evalConfig resolves every config-kind param the embedded catalog needs. The
 // percentile is 0.5 (median) so the seeded fixture's watermarks land on
-// predictable values; min_rows_per_class is 1 so no class is dropped.
+// predictable values; min_rows_per_class is 1 so no class is dropped. The seed
+// fixture uses small synthetic memory magnitudes, so the memory cap is set to
+// 100 here: with the 0.8 near-cap fraction the near-cap line lands at 80, which
+// the cerb:sum route-A ok rows {80, 90} clear (support 2), matching the seed's
+// design under the cap-relative gate.
 func evalConfig() ConfigLookup {
 	return staticConfig(map[string]string{
-		"router_rules.watermark_percentile":    "0.5",
-		"router_rules.cumulative_d_percentile": "0.5",
-		"router_rules.min_rows_per_class":      "1",
-		"query.max_memory_bytes":               "1073741824",
-		"query.max_samples":                    "5000000",
+		"router_rules.watermark_percentile":     "0.5",
+		"router_rules.cumulative_d_percentile":  "0.5",
+		"router_rules.min_rows_per_class":       "1",
+		"router_rules.memory_near_cap_fraction": "0.8",
+		"query.max_memory_bytes":                "100",
+		"query.max_samples":                     "5000000",
 	})
 }
 
@@ -108,12 +113,12 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 			len(report.Findings), len(want), report.Findings)
 	}
 
-	// Spot-check that the per-language partitioned watermark substituted the
-	// correct concrete number into the message (promql median memory of the
-	// healthy route-A rows is 80).
+	// Spot-check that the cap-relative near-cap threshold substituted the correct
+	// concrete number into the message: 0.8 (memory_near_cap_fraction) x 100
+	// (query.max_memory_bytes) = 80.
 	if f, ok := got[key{"route_a_memory_near_cap", "language=promql,shape_id=cerb:sum"}]; ok {
 		if !containsToken(f.Message, "80") {
-			t.Errorf("expected memory watermark 80 in message, got: %q", f.Message)
+			t.Errorf("expected near-cap threshold 80 in message, got: %q", f.Message)
 		}
 	}
 }
@@ -126,11 +131,12 @@ func TestEvaluateMinSupportDropsThinClasses(t *testing.T) {
 		t.Fatalf("load catalog: %v", err)
 	}
 	cfg := staticConfig(map[string]string{
-		"router_rules.watermark_percentile":    "0.5",
-		"router_rules.cumulative_d_percentile": "0.5",
-		"router_rules.min_rows_per_class":      "2", // drop the 1-row classes
-		"query.max_memory_bytes":               "1073741824",
-		"query.max_samples":                    "5000000",
+		"router_rules.watermark_percentile":     "0.5",
+		"router_rules.cumulative_d_percentile":  "0.5",
+		"router_rules.min_rows_per_class":       "2", // drop the 1-row classes
+		"router_rules.memory_near_cap_fraction": "0.8",
+		"query.max_memory_bytes":                "100", // seed uses small synthetic memory; near-cap line lands at 80
+		"query.max_samples":                     "5000000",
 	})
 	ev := NewEvaluator(cat, cfg, seedSource(t))
 	report, err := ev.Evaluate(context.Background(), EvalOptions{})

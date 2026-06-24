@@ -73,14 +73,14 @@ func validateParams(cat *Catalog, add func(string, ...any)) map[string]struct{} 
 				}
 			}
 		case ParamConfigScaled:
-			if p.Ref != nil && p.Ref.Ref != "" {
-				if _, ok := names[p.Ref.Ref]; !ok {
-					add("param %q references undeclared ref param %q", p.Name, p.Ref.Ref)
+			if p.Ref != "" {
+				if _, ok := names[p.Ref]; !ok {
+					add("param %q references undeclared ref param %q", p.Name, p.Ref)
 				}
 			}
-			if p.ScaleBy != nil && p.ScaleBy.Ref != "" {
-				if _, ok := names[p.ScaleBy.Ref]; !ok {
-					add("param %q references undeclared scale_by param %q", p.Name, p.ScaleBy.Ref)
+			if p.ScaleBy != "" {
+				if _, ok := names[p.ScaleBy]; !ok {
+					add("param %q references undeclared scale_by param %q", p.Name, p.ScaleBy)
 				}
 			}
 		}
@@ -94,7 +94,7 @@ func validateParamKind(p *ParamSpec, add func(string, ...any)) {
 		if p.Key == "" {
 			add("config param %q must set a key", p.Name)
 		}
-		if p.Ref != nil || p.ScaleBy != nil {
+		if p.Ref != "" || p.ScaleBy != "" {
 			add("config param %q must not set ref/scale_by (those are config_scaled fields)", p.Name)
 		}
 		forbidCorpusFields(p, add)
@@ -121,10 +121,10 @@ func validateParamKind(p *ParamSpec, add func(string, ...any)) {
 		validateScope(p.Name, p.NumeratorScope, add)
 		validateScope(p.Name, p.DenominatorScope, add)
 	case ParamConfigScaled:
-		if p.Ref == nil || p.Ref.Ref == "" {
+		if p.Ref == "" {
 			add("config_scaled param %q must set ref (the fraction param)", p.Name)
 		}
-		if p.ScaleBy == nil || p.ScaleBy.Ref == "" {
+		if p.ScaleBy == "" {
 			add("config_scaled param %q must set scale_by (the magnitude param)", p.Name)
 		}
 		forbidCorpusFields(p, add)

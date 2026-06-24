@@ -82,12 +82,12 @@ type ParamSpec struct {
 	NumeratorScope   Scope `yaml:"numerator_scope,omitempty"`
 	DenominatorScope Scope `yaml:"denominator_scope,omitempty"`
 
-	// config_scaled kind: Ref is the fraction param, ScaleBy is the magnitude
-	// param; the resolved value is Ref.Scalar * ScaleBy.Scalar. Both must name
-	// already-declared params (in practice config-kind ones), so the only numbers
-	// in play enter through deployment config, never the catalog.
-	Ref     *ParamRef `yaml:"ref,omitempty"`
-	ScaleBy *ParamRef `yaml:"scale_by,omitempty"`
+	// config_scaled kind: Ref names the fraction param, ScaleBy names the
+	// magnitude param; the resolved value is Ref.Scalar * ScaleBy.Scalar. Both
+	// must name already-declared params (in practice config-kind ones), so the
+	// only numbers in play enter through deployment config, never the catalog.
+	Ref     string `yaml:"ref,omitempty"`
+	ScaleBy string `yaml:"scale_by,omitempty"`
 }
 
 // RuleStatus gates whether a rule is evaluated. Experimental rules are loaded

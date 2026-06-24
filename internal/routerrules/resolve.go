@@ -196,16 +196,16 @@ func resolveConfigScaled(spec ParamSpec, env Env) (Value, error) {
 // scaledOperand resolves one config_scaled operand (the fraction or the
 // magnitude) to a scalar, with a clear error if the ref is missing, dangling, or
 // partition-keyed.
-func scaledOperand(spec ParamSpec, ref *ParamRef, field string, env Env) (float64, error) {
-	if ref == nil || ref.Ref == "" {
+func scaledOperand(spec ParamSpec, ref, field string, env Env) (float64, error) {
+	if ref == "" {
 		return 0, fmt.Errorf("routerrules: config_scaled param %q has no %s ref", spec.Name, field)
 	}
-	v, ok := env[ref.Ref]
+	v, ok := env[ref]
 	if !ok {
-		return 0, fmt.Errorf("routerrules: config_scaled param %q references unresolved %s param %q", spec.Name, field, ref.Ref)
+		return 0, fmt.Errorf("routerrules: config_scaled param %q references unresolved %s param %q", spec.Name, field, ref)
 	}
 	if v.IsPartitioned() {
-		return 0, fmt.Errorf("routerrules: config_scaled %s param %q must be a scalar, got a partition-keyed value", field, ref.Ref)
+		return 0, fmt.Errorf("routerrules: config_scaled %s param %q must be a scalar, got a partition-keyed value", field, ref)
 	}
 	return v.Scalar, nil
 }
@@ -270,11 +270,11 @@ func paramDeps(spec ParamSpec) []string {
 		}
 	case ParamConfigScaled:
 		var deps []string
-		if spec.Ref != nil && spec.Ref.Ref != "" {
-			deps = append(deps, spec.Ref.Ref)
+		if spec.Ref != "" {
+			deps = append(deps, spec.Ref)
 		}
-		if spec.ScaleBy != nil && spec.ScaleBy.Ref != "" {
-			deps = append(deps, spec.ScaleBy.Ref)
+		if spec.ScaleBy != "" {
+			deps = append(deps, spec.ScaleBy)
 		}
 		return deps
 	}
