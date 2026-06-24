@@ -268,3 +268,41 @@ rules: []
 		})
 	}
 }
+
+// TestValidateRejectsPartitionNotInGroupBy pins the catalogVersion-2 load-time
+// hardening (critique C5): a rule that references a partitioned corpus param
+// whose partition column is NOT in the rule's group_by must fail at LOAD, not
+// silently at report time. Here mem_wm partitions by language but the rule's
+// group_by omits language.
+func TestValidateRejectsPartitionNotInGroupBy(t *testing.T) {
+	const y = `
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+params:
+  - name: pctile
+    kind: config
+    key: router_rules.watermark_percentile
+  - name: mem_wm
+    kind: corpus_percentile
+    column: memory_usage
+    percentile: { ref: pctile }
+    partition_by: [language]
+rules:
+  - id: r1
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id]
+    condition:
+      all:
+        - { col: memory_usage, op: gte, param: mem_wm }
+    finding: "x {mem_wm}"
+`
+	_, err := LoadCatalog([]byte(y))
+	if err == nil {
+		t.Fatal("expected load to fail: partition column language not in group_by")
+	}
+	if !strings.Contains(err.Error(), "partition column") || !strings.Contains(err.Error(), "group_by") {
+		t.Fatalf("error should name the partition/group_by mismatch, got: %v", err)
+	}
+}

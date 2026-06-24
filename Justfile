@@ -95,8 +95,10 @@ spec-chdb:
 # (test/consumer-corpus — captured Grafana request shapes executed
 # through chDB seeds). Same prerequisite as spec-chdb (libchdb at the
 # default install path). Mirrors the `chdb` CI job.
+# Includes ./internal/routerrules/... so the chDB cross-backend parity test
+# (parity_chdb_test.go) actually RUNS, not just compiles.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./test/consumer-corpus/...
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's

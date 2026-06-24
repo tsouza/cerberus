@@ -41,7 +41,7 @@ func Validate(cat *Catalog) error {
 		add("%v", err)
 	}
 
-	validateRules(cat, paramNames, add)
+	validateRules(cat, paramNames, specs, add)
 
 	return errors.Join(errs...)
 }
@@ -161,7 +161,7 @@ func validateScope(owner string, scope Scope, add func(string, ...any)) {
 	}
 }
 
-func validateRules(cat *Catalog, paramNames map[string]struct{}, add func(string, ...any)) {
+func validateRules(cat *Catalog, paramNames map[string]struct{}, specs map[string]ParamSpec, add func(string, ...any)) {
 	seen := map[string]struct{}{}
 	for i := range cat.Rules {
 		r := &cat.Rules[i]
@@ -183,6 +183,37 @@ func validateRules(cat *Catalog, paramNames map[string]struct{}, add func(string
 		validateMinSupport(r, paramNames, add)
 		validateEvidence(r, add)
 		validateCondition(r, paramNames, add)
+		validatePartitionInGroupBy(r, specs, add)
+	}
+}
+
+// validatePartitionInGroupBy enforces at LOAD time the contract the evaluator
+// otherwise only catches at report time (sharedPartition): if a rule's condition
+// references a partitioned corpus param, that param's partition column must be
+// one of the rule's group_by columns, so the per-partition sub-evaluation can be
+// anchored to a group key. Failing at catalog load is better than at report
+// time, and it makes the partitioned-param contract a structural guarantee.
+func validatePartitionInGroupBy(r *Rule, specs map[string]ParamSpec, add func(string, ...any)) {
+	cond, err := lowerPredicate(r.Condition)
+	if err != nil {
+		return // a malformed condition is already reported by validateCondition.
+	}
+	gb := make(map[string]struct{}, len(r.GroupBy))
+	for _, c := range r.GroupBy {
+		gb[c] = struct{}{}
+	}
+	refs := map[string]struct{}{}
+	cond.paramRefs(refs)
+	for name := range refs {
+		spec, ok := specs[name]
+		if !ok || len(spec.PartitionBy) == 0 {
+			continue
+		}
+		for _, partCol := range spec.PartitionBy {
+			if _, ok := gb[partCol]; !ok {
+				add("rule %q references partitioned param %q whose partition column %q is not in the rule's group_by %v", r.ID, name, partCol, r.GroupBy)
+			}
+		}
 	}
 }
 

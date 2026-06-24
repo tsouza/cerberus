@@ -367,3 +367,56 @@ func TestNewRulesNoDoubleEmission(t *testing.T) {
 		}
 	}
 }
+
+// TestAppliesToExcludesOtherLanguages proves applies_to is real machinery, not
+// decoration (critique C4): a rule scoped to a single language must NOT fire on
+// rows of other languages, even when their cost/exit columns satisfy the
+// condition. A traceql-only failure rule fires on the traceql failure cluster
+// and is silent on the promql/logql ones.
+func TestAppliesToExcludesOtherLanguages(t *testing.T) {
+	const y = `
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+params:
+  - name: min_class_support
+    kind: config
+    key: router_rules.min_rows_per_class
+rules:
+  - id: traceql_only_failures
+    severity: high
+    since: 1
+    status: active
+    applies_to: [traceql]
+    group_by: [shape_id, language]
+    min_support: { ref: min_class_support }
+    condition:
+      all:
+        - { col: exit_status, op: in, enum: [oom, timeout] }
+    finding: "traceql-only failure cluster in {shape_id}"
+    action: investigate
+`
+	cat, err := LoadCatalog([]byte(y))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ev := NewEvaluator(cat, staticConfig(map[string]string{"router_rules.min_rows_per_class": "1"}), seedSource(t))
+	report, err := ev.Evaluate(context.Background(), EvalOptions{})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	for _, f := range report.Findings {
+		if lang := f.GroupKey["language"]; lang != "traceql" {
+			t.Errorf("applies_to:[traceql] rule fired on a %q row: %+v", lang, f.GroupKey)
+		}
+	}
+	// The promql cerb:sum OOM cluster and logql cerb:rate timeout DO satisfy the
+	// condition but must be excluded; only traceql failures remain.
+	if len(report.Findings) == 0 {
+		t.Fatal("expected the traceql failure clusters to fire")
+	}
+	for _, f := range report.Findings {
+		if f.GroupKey["shape_id"] == "cerb:sum" || f.GroupKey["shape_id"] == "cerb:rate" {
+			t.Errorf("promql/logql failure cluster leaked past applies_to:[traceql]: %+v", f.GroupKey)
+		}
+	}
+}
