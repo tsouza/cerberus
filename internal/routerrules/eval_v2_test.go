@@ -263,15 +263,78 @@ func TestN4NoFireWhenFailingButLightGeometry(t *testing.T) {
 // TestN5IsExperimentalGated confirms N5 is loaded+validated but produces zero
 // findings unless IncludeExperimental is set, then fires on the read-amplified
 // healthy classes when opted in.
+//
+// The exact class set + per-class support below is what makes N5's two
+// condition leaves mutation-sensitive (a count-only or single-class check let
+// both leaf mutants survive). The seed's per-shape `ok` read_rows and the
+// median (watermark_percentile=0.5) watermark:
+//
+//	cerb:rate  ok [6000,7000,8000] wm=7000 -> {7000,8000}        support 2
+//	cerb:sum   ok [700,800,900]    wm=800  -> {800,900}          support 2
+//	cerb:topk  ok [300,310,320]    wm=310  -> {310,320}          support 2
+//	trc:compare ok [9200]          wm=9200 -> {9200}             support 1
+//	trc:breaker/trc:rejected/trc:spans: zero ok rows -> empty wm -> no fire
+//
+// So N5 fires on EXACTLY 4 classes. Mutation coverage:
+//   - Deleting the `read_rows >= read_rows_high_watermark` leaf (MUT5) makes
+//     every ok row match, so cerb:sum/rate/topk each jump to support 3 — caught
+//     by the per-class support==2 assertions.
+//   - Flipping `exit_status == ok` to `in [oom,timeout]` (MUT6) is the subtle
+//     one: the watermark param is scoped to ok rows, so it stays put, but the
+//     firing rows become the oom/timeout rows. cerb:rate's timeout row (5000)
+//     and cerb:topk have no oom/timeout rows >= their watermark, so BOTH classes
+//     vanish and the total drops to 2 — caught by the exact count==4 plus the
+//     "cerb:rate and cerb:topk must fire" assertions.
 func TestN5IsExperimentalGated(t *testing.T) {
 	active := evalReport(t, false)
 	if got := countFor(active, "read_amplification_hot_shape"); got != 0 {
 		t.Errorf("N5 is experimental and must not fire in the active lane, fired %d", got)
 	}
 	exp := evalReport(t, true)
-	if got := countFor(exp, "read_amplification_hot_shape"); got == 0 {
-		t.Error("N5 should fire when experimental rules are opted in")
+
+	// Exact class set — pins both leaves: the read_rows leaf (any added class
+	// from a deleted/loosened gate trips this) and the exit_status leaf (MUT6
+	// drops cerb:rate + cerb:topk, shrinking the set to 2).
+	const wantN5Count = 4
+	if got := countFor(exp, "read_amplification_hot_shape"); got != wantN5Count {
+		t.Errorf("N5 fired on %d classes, want %d:\n%+v", got, wantN5Count, exp.Findings)
 	}
+
+	// Per-class support. cerb:sum==2 kills MUT5 (the deleted read_rows leaf
+	// lets all 3 ok rows through -> support 3). cerb:rate==2 / cerb:topk==2
+	// both kill MUT6 (those classes have no oom/timeout rows above their
+	// healthy watermark, so flipping the status leaf makes them disappear).
+	wantSupport := map[string]int64{
+		"language=logql,shape_id=cerb:rate":     2,
+		"language=promql,shape_id=cerb:sum":     2,
+		"language=promql,shape_id=cerb:topk":    2,
+		"language=traceql,shape_id=trc:compare": 1,
+	}
+	for class, want := range wantSupport {
+		f, ok := findingFor(exp, "read_amplification_hot_shape", class)
+		if !ok {
+			t.Errorf("N5 should fire on %s under --experimental", class)
+			continue
+		}
+		if f.Support != want {
+			t.Errorf("N5 %s support = %d, want %d", class, f.Support, want)
+		}
+	}
+
+	// Zero-healthy-row shapes never fire: their watermark partition is empty,
+	// so they are excluded regardless of the status leaf. (A mutant that read
+	// the watermark from the full population instead of the ok-scoped one would
+	// let these in.)
+	for _, class := range []string{
+		"language=traceql,shape_id=trc:breaker",
+		"language=traceql,shape_id=trc:rejected",
+		"language=traceql,shape_id=trc:spans",
+	} {
+		if _, ok := findingFor(exp, "read_amplification_hot_shape", class); ok {
+			t.Errorf("N5 must NOT fire on %s (no healthy rows -> empty watermark)", class)
+		}
+	}
+
 	f, ok := findingFor(exp, "read_amplification_hot_shape", "language=traceql,shape_id=trc:compare")
 	if !ok {
 		t.Fatal("N5 should fire on the trc:compare healthy-read tail under --experimental")
