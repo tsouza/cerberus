@@ -1,0 +1,323 @@
+package routerrules
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// Validate enforces the no-numbers invariant and every structural rule of the
+// catalog. It is run at load time (LoadCatalog) and standalone (the CLI's
+// --validate-only gate). It returns a single error joining all problems found,
+// so a reviewer or CI run sees every issue at once rather than one-at-a-time.
+//
+// The strongest invariant guard is upstream of this function: the condition AST
+// (condition.go) has no number-literal node, so a number in a comparison
+// operand is unrepresentable. Validate adds the load-time checks the AST alone
+// cannot make: dangling param refs, unknown resolver kinds, unknown columns,
+// duplicate rule ids, cyclic param dependencies, and a numeric scalar smuggled
+// into an enum or scope slot.
+func Validate(cat *Catalog) error {
+	var errs []error
+	add := func(format string, args ...any) {
+		errs = append(errs, fmt.Errorf(format, args...))
+	}
+
+	if cat.APIVersion != SchemaAPIVersion {
+		add("apiVersion %q is not the supported %q", cat.APIVersion, SchemaAPIVersion)
+	}
+	if cat.CatalogVersion <= 0 {
+		add("catalogVersion must be a positive integer, got %d", cat.CatalogVersion)
+	}
+
+	paramNames := validateParams(cat, add)
+
+	// The param dependency graph must be acyclic (topo sort fails closed).
+	specs := make(map[string]ParamSpec, len(cat.Params))
+	for _, p := range cat.Params {
+		specs[p.Name] = p
+	}
+	if _, err := topoSortParams(specs); err != nil {
+		add("%v", err)
+	}
+
+	validateRules(cat, paramNames, add)
+
+	return errors.Join(errs...)
+}
+
+// validateParams checks each param spec and returns the set of declared param
+// names for cross-referencing by rules.
+func validateParams(cat *Catalog, add func(string, ...any)) map[string]struct{} {
+	names := map[string]struct{}{}
+	for i := range cat.Params {
+		p := &cat.Params[i]
+		if p.Name == "" {
+			add("params[%d] has no name", i)
+			continue
+		}
+		if _, dup := names[p.Name]; dup {
+			add("duplicate param name %q", p.Name)
+		}
+		names[p.Name] = struct{}{}
+		validateParamKind(p, add)
+	}
+	// A second pass resolves percentile fraction refs now that all names exist.
+	for i := range cat.Params {
+		p := &cat.Params[i]
+		if p.Kind == ParamCorpusPercentile && p.Percentile != nil && p.Percentile.Ref != "" {
+			if _, ok := names[p.Percentile.Ref]; !ok {
+				add("param %q references undeclared fraction param %q", p.Name, p.Percentile.Ref)
+			}
+		}
+	}
+	return names
+}
+
+func validateParamKind(p *ParamSpec, add func(string, ...any)) {
+	switch p.Kind {
+	case ParamConfig:
+		if p.Key == "" {
+			add("config param %q must set a key", p.Name)
+		}
+		forbidCorpusFields(p, add)
+	case ParamCorpusPercentile:
+		validateColumn(p.Name, p.Column, add)
+		if p.Percentile == nil || p.Percentile.Ref == "" {
+			add("corpus_percentile param %q must set percentile.ref", p.Name)
+		}
+		validateScope(p.Name, p.Scope, add)
+		validatePartition(p.Name, p.PartitionBy, add)
+	case ParamCorpusAgg:
+		validateColumn(p.Name, p.Column, add)
+		switch AggFunc(p.Agg) {
+		case AggMax, AggAvg, AggMin, AggStdDev:
+		default:
+			add("corpus_agg param %q has unknown agg %q (want max|avg|min|stddevPop)", p.Name, p.Agg)
+		}
+		validateScope(p.Name, p.Scope, add)
+		validatePartition(p.Name, p.PartitionBy, add)
+	case ParamCorpusCountRatio:
+		if len(p.NumeratorScope) == 0 || len(p.DenominatorScope) == 0 {
+			add("corpus_count_ratio param %q must set numerator_scope and denominator_scope", p.Name)
+		}
+		validateScope(p.Name, p.NumeratorScope, add)
+		validateScope(p.Name, p.DenominatorScope, add)
+	default:
+		add("param %q has unknown kind %q (want config|corpus_percentile|corpus_agg|corpus_count_ratio)", p.Name, p.Kind)
+	}
+}
+
+// forbidCorpusFields catches a config param that also sets corpus-only fields, a
+// likely smuggling attempt or a copy-paste error.
+func forbidCorpusFields(p *ParamSpec, add func(string, ...any)) {
+	if p.Column != "" || p.Percentile != nil || p.Agg != "" || len(p.PartitionBy) > 0 || len(p.Scope) > 0 {
+		add("config param %q must not set corpus fields (column/percentile/agg/partition_by/scope)", p.Name)
+	}
+}
+
+func validateColumn(owner, col string, add func(string, ...any)) {
+	if col == "" {
+		add("%q must set a column", owner)
+		return
+	}
+	if !knownColumn(col) {
+		add("%q references unknown column %q", owner, col)
+		return
+	}
+	if columnKinds[col] != ColumnNumeric {
+		add("%q aggregates non-numeric column %q", owner, col)
+	}
+}
+
+func validatePartition(owner string, partitionBy []string, add func(string, ...any)) {
+	for _, col := range partitionBy {
+		if !knownColumn(col) {
+			add("%q partitions by unknown column %q", owner, col)
+		}
+	}
+	if len(partitionBy) > 1 {
+		add("%q partitions by more than one column (%v); only single-column partitions are supported", owner, partitionBy)
+	}
+}
+
+// validateScope checks a scope filter references only enum columns and valid
+// category tokens. A numeric value in a scope slot is caught here: an enum
+// column never accepts a number, and a non-enum column is rejected outright, so
+// no number can hide in a scope.
+func validateScope(owner string, scope Scope, add func(string, ...any)) {
+	for col, val := range scope {
+		if !knownColumn(col) {
+			add("%q scope references unknown column %q", owner, col)
+			continue
+		}
+		if !isEnumColumn(col) {
+			add("%q scope filters non-enum column %q (only route/exit_status/language may be scoped)", owner, col)
+			continue
+		}
+		if !validEnumValue(col, val) {
+			add("%q scope value %q is not a valid category of enum column %q", owner, val, col)
+		}
+	}
+}
+
+func validateRules(cat *Catalog, paramNames map[string]struct{}, add func(string, ...any)) {
+	seen := map[string]struct{}{}
+	for i := range cat.Rules {
+		r := &cat.Rules[i]
+		if r.ID == "" {
+			add("rules[%d] has no id", i)
+			continue
+		}
+		if _, dup := seen[r.ID]; dup {
+			add("duplicate rule id %q", r.ID)
+		}
+		seen[r.ID] = struct{}{}
+
+		if _, ok := parseSeverity(r.Severity); !ok {
+			add("rule %q has unknown severity %q", r.ID, r.Severity)
+		}
+		validateStatus(r, add)
+		validateAppliesTo(r, add)
+		validateGroupBy(r, add)
+		validateMinSupport(r, paramNames, add)
+		validateEvidence(r, add)
+		validateCondition(r, paramNames, add)
+	}
+}
+
+func validateStatus(r *Rule, add func(string, ...any)) {
+	switch r.Status {
+	case StatusActive, StatusExperimental, StatusDeprecated:
+	case "":
+		add("rule %q has no status (want active|experimental|deprecated)", r.ID)
+	default:
+		add("rule %q has unknown status %q", r.ID, r.Status)
+	}
+}
+
+func validateAppliesTo(r *Rule, add func(string, ...any)) {
+	for _, lang := range r.AppliesTo {
+		if !validEnumValue("language", lang) {
+			add("rule %q applies_to has unknown language %q", r.ID, lang)
+		}
+	}
+}
+
+func validateGroupBy(r *Rule, add func(string, ...any)) {
+	if len(r.GroupBy) == 0 {
+		add("rule %q has no group_by", r.ID)
+	}
+	for _, col := range r.GroupBy {
+		if !knownColumn(col) {
+			add("rule %q group_by references unknown column %q", r.ID, col)
+		}
+	}
+}
+
+func validateMinSupport(r *Rule, paramNames map[string]struct{}, add func(string, ...any)) {
+	if r.MinSupport == nil || r.MinSupport.Ref == "" {
+		return
+	}
+	if _, ok := paramNames[r.MinSupport.Ref]; !ok {
+		add("rule %q min_support references undeclared param %q", r.ID, r.MinSupport.Ref)
+	}
+}
+
+func validateEvidence(r *Rule, add func(string, ...any)) {
+	if r.Evidence == nil {
+		return
+	}
+	for _, tok := range r.Evidence.Report {
+		if tok == "count" {
+			continue
+		}
+		if _, err := parseEvidenceExpr(tok); err != nil {
+			add("rule %q evidence: %v", r.ID, err)
+		}
+	}
+}
+
+// validateCondition lowers the rule's condition (which structurally cannot carry
+// a number), then walks it to verify every column is known, every enum
+// comparison targets an enum column with valid tokens, every param comparison
+// targets a numeric column and references a declared param, and an enum column
+// is never compared against a resolved param (a category is not a threshold).
+func validateCondition(r *Rule, paramNames map[string]struct{}, add func(string, ...any)) {
+	cond, err := lowerPredicate(r.Condition)
+	if err != nil {
+		add("rule %q condition: %v", r.ID, err)
+		return
+	}
+	walkCondition(cond, func(c Condition) {
+		switch n := c.(type) {
+		case *EnumCmp:
+			if !knownColumn(n.Column) {
+				add("rule %q condition references unknown column %q", r.ID, n.Column)
+				return
+			}
+			if !isEnumColumn(n.Column) {
+				add("rule %q compares non-enum column %q against a category (use a param instead)", r.ID, n.Column)
+				return
+			}
+			for _, v := range n.Values {
+				if !validEnumValue(n.Column, v) {
+					add("rule %q condition value %q is not a category of enum column %q", r.ID, v, n.Column)
+				}
+			}
+		case *ParamCmp:
+			if !knownColumn(n.Column) {
+				add("rule %q condition references unknown column %q", r.ID, n.Column)
+				return
+			}
+			if columnKinds[n.Column] != ColumnNumeric {
+				add("rule %q compares non-numeric column %q against a param", r.ID, n.Column)
+			}
+			if _, ok := paramNames[n.Param]; !ok {
+				add("rule %q condition references undeclared param %q", r.ID, n.Param)
+			}
+		}
+	})
+}
+
+func walkCondition(c Condition, fn func(Condition)) {
+	fn(c)
+	switch n := c.(type) {
+	case *AndCond:
+		for _, ch := range n.Children {
+			walkCondition(ch, fn)
+		}
+	case *OrCond:
+		for _, ch := range n.Children {
+			walkCondition(ch, fn)
+		}
+	case *NotCond:
+		walkCondition(n.Child, fn)
+	}
+}
+
+// LoadCatalog decodes and validates a catalog from raw YAML bytes. It is the
+// single entry point callers use to obtain a trusted Catalog.
+func LoadCatalog(data []byte) (*Catalog, error) {
+	cat, err := DecodeCatalog(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := Validate(cat); err != nil {
+		return nil, fmt.Errorf("routerrules: catalog invalid:\n%w", indentErr(err))
+	}
+	return cat, nil
+}
+
+// LoadEmbeddedCatalog loads and validates the shipped catalog.
+func LoadEmbeddedCatalog() (*Catalog, error) {
+	return LoadCatalog(embeddedCatalog)
+}
+
+func indentErr(err error) error {
+	lines := strings.Split(err.Error(), "\n")
+	for i, l := range lines {
+		lines[i] = "  - " + l
+	}
+	return errors.New(strings.Join(lines, "\n"))
+}

@@ -1,0 +1,187 @@
+# Router-rules catalog — GENERIC DRIVERS ONLY.
+#
+# This file is the single audit target for the hard architecture invariant:
+# it carries ONLY rule STRUCTURE and detection LOGIC plus NAMED parameter
+# references. It contains ZERO deployment-specific numbers. Every threshold,
+# watermark, cap, and percentile cutoff is a named parameter resolved at
+# runtime, per-deployment, from that deployment's own corpus aggregates or its
+# config. A reviewer confirms the invariant by checking that no digit-bearing
+# scalar appears in any param or condition value position below (the
+# catalog/router_rules_test.go guard test asserts exactly this).
+#
+# Grammar: see docs/router-rules.md. Adding a rule = appending an entry here and
+# bumping catalogVersion — no Go change.
+
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+
+# --------------------------------------------------------------------------
+# params: NAME + how to RESOLVE, never the value.
+# kinds (closed set): config | corpus_percentile | corpus_agg | corpus_count_ratio
+# --------------------------------------------------------------------------
+params:
+  # ---- config leaves: the ONLY place an operator number enters, via the
+  # ---- deployment's own config/env. The number lives there, never here.
+  - name: watermark_pctile
+    kind: config
+    key: router_rules.watermark_percentile        # fraction in (0,1); deployment env
+
+  - name: min_class_support
+    kind: config
+    key: router_rules.min_rows_per_class          # min corpus rows for a class to count
+
+  - name: memory_hard_cap
+    kind: config
+    key: query.max_memory_bytes                   # reuse the deployment's own query cap
+
+  - name: sample_budget
+    kind: config
+    key: query.max_samples                        # reuse the deployment's own sample budget
+
+  # ---- corpus-derived params: learned from THIS deployment's own data.
+  - name: memory_high_watermark
+    kind: corpus_percentile
+    column: memory_usage
+    percentile:
+      ref: watermark_pctile                       # the fraction is itself a param ref
+    partition_by: [language]                      # one watermark per language
+    scope:
+      route: A
+      exit_status: ok                             # learn from the HEALTHY population only
+
+  - name: fanout_route_b_floor
+    kind: corpus_percentile
+    column: fanout
+    percentile:
+      ref: watermark_pctile
+    scope:
+      route: B                                    # learn the shard floor from rows that DID shard
+
+  - name: slow_duration_watermark
+    kind: corpus_percentile
+    column: query_duration_ms
+    percentile:
+      ref: watermark_pctile
+    partition_by: [shape_id]                      # one slow-watermark per shape class
+
+# --------------------------------------------------------------------------
+# rules: generic detectors. A condition references columns + ${param} only.
+# Each rule pairs an observed-cost signal with the route the corpus recorded,
+# so every finding states the wrong-route overlap.
+# --------------------------------------------------------------------------
+rules:
+  - id: oom_on_route_a
+    severity: critical
+    since: 1
+    status: active
+    applies_to: [promql, logql, traceql]
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: in, enum: [oom] }
+    evidence:
+      report: [count, "max(memory_usage)"]
+    finding: "route A OOM in class {shape_id}/{language}; force route B for this class"
+    action: force_route_b
+
+  - id: route_a_memory_near_cap
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: eq, enum: ok }
+        - { col: memory_usage, op: gte, param: memory_high_watermark }
+    evidence:
+      report: [count, "max(memory_usage)"]
+    finding: "route A class {shape_id}/{language} at/above {memory_high_watermark}; corpus shows route B bounds peak memory — lower the route-B threshold for this class"
+    action: lower_route_b_threshold
+
+  - id: route_a_high_fanout_should_shard
+    severity: medium
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: fanout, op: gte, param: fanout_route_b_floor }
+    evidence:
+      report: [count, "max(fanout)"]
+    finding: "route A class {shape_id}/{language} has fan-out at/above {fanout_route_b_floor} (the range this deployment normally shards) — consider routing to B"
+    action: lower_route_b_threshold
+
+  - id: route_a_timeout_should_shard
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: in, enum: [timeout] }
+    evidence:
+      report: [count, "max(query_duration_ms)"]
+    finding: "route A timeout in class {shape_id}/{language}; route B time-slicing bounds per-shard wall-clock — force route B"
+    action: force_route_b
+
+  - id: route_a_hit_sample_budget
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: exit_status, op: in, enum: [sample_budget] }
+    evidence:
+      report: [count, "max(read_rows)"]
+    finding: "route A hit the sample budget {sample_budget} in class {shape_id}/{language}; route B time-slicing would keep each shard under budget"
+    action: force_route_b
+
+  - id: route_b_overshard_low_fanout
+    severity: medium
+    since: 1
+    status: active
+    group_by: [shape_id, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: B }
+        - { col: exit_status, op: eq, enum: ok }
+        - { col: query_duration_ms, op: lt, param: slow_duration_watermark }
+        - { col: fanout, op: lt, param: fanout_route_b_floor }
+    evidence:
+      report: [count, "avg(k_shards)"]
+    finding: "route B class {shape_id}/{language} paid k-shard overhead below {fanout_route_b_floor} fan-out while finishing under {slow_duration_watermark} — route A is cheaper here (route-B regret)"
+    action: raise_route_b_threshold
+
+  - id: route_a_slow_hot_shape
+    severity: medium
+    since: 1
+    status: active
+    group_by: [normalized_query_hash, language]
+    min_support:
+      ref: min_class_support
+    condition:
+      all:
+        - { col: route, op: eq, enum: A }
+        - { col: query_duration_ms, op: gte, param: slow_duration_watermark }
+    evidence:
+      report: [count, "max(query_duration_ms)"]
+    finding: "route A hot shape {normalized_query_hash}/{language} is slow at/above {slow_duration_watermark} with high frequency — highest aggregate payoff to re-route to B"
+    action: lower_route_b_threshold
