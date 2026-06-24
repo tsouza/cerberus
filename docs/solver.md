@@ -405,13 +405,26 @@ honors the no-caching invariant (only `/readyz` has a TTL).
 ### What the calibrator does
 
 `Calibrate(samples, defaults) → (Config, CalibrationReport)` reads the empirical
-cost frontier from the local corpus — the smallest fan-out `F` and anchor-pair
-product `N×F` at which the deployment actually observed OOM/cost-danger
-dispatches (`exit_status` ∈ `oom` / `timeout` / `sample_budget`) — and derives
-thresholds that route B *before* that frontier. Only `MinFanout` and
-`MinAnchorPairs` are calibrated; the geometric knobs (`MaxK`,
-`MinAnchorsPerSlice`, the high-`D` clamp) are structural grid invariants the
-corpus does not re-derive, so they pass through from the defaults untouched.
+**terminal-OOM** frontier from the local corpus — the single binding coordinate
+at which the deployment actually observed OOM/cost-danger dispatches
+(`exit_status` ∈ `oom` / `timeout` / `sample_budget`) — and derives thresholds
+that route B *before* that frontier. Only `MinFanout` and `MinAnchorPairs` are
+calibrated; the geometric knobs (`MaxK`, `MinAnchorsPerSlice`, the high-`D`
+clamp) are structural grid invariants the corpus does not re-derive, so they
+pass through from the defaults untouched.
+
+The frontier is read from the terminal outcome only — there is **no** soft
+cost-gradient model. The corpus bucket still records peak memory and wall-clock
+(`optcorpus.FrontierBucket`), but the calibrator does not consult them; gating
+purely on the terminal OOM keeps the shipped behaviour honest about what it
+measures.
+
+The frontier coordinate is **coupled**: both axes (`F` and `N×F`) are read from
+the *same* OOM sample — the one with the smallest anchor-pair product (the
+binding danger corner closest to the safe region). The two axes are never
+minimized independently across different samples, which would invent a synthetic
+corner at no real query and let a fanout-gated OOM drag the anchor-pair frontier
+down.
 
 The derivation is expressed in the corpus's own relative `(F, N×F)` coordinates
 scaled by a shipped safety-margin percent — not absolutes hardcoded to one
@@ -425,6 +438,19 @@ deployment.
   under-sharding into an OOM is catastrophic, over-sharding merely wastes a
   connection. `Calibrate` never *raises* a threshold and never lowers past the
   shipped safety floor (`minCalibratedFanout` / `minCalibratedAnchorPairs`).
+- **Floor / margin interaction (surfaced, never silent).** The safety margin
+  puts route B a fixed percent *below* the frontier. When the frontier sits so
+  close to the floor that the margin-reduced target would fall below the floor,
+  the floor wins on the tighten-only invariant — but the full margin is then
+  *gone*, and a genuine **sub-floor** OOM (frontier ≤ floor) is worse: pinning to
+  the floor would install a gate *above* the OOM coordinate, leaving an
+  already-OOMing query on route A. The calibrator handles both honestly: in the
+  sub-floor case it caps **strictly below** the frontier (so route B still fires
+  before the danger zone) instead of pinning above it, and in either case it sets
+  `CalibrationReport.FloorClamped{Fanout,AnchorPairs}` and the loop logs a
+  `WARN`. Operators *see* when the floor has swallowed the margin rather than the
+  threshold moving silently. (If a deployment legitimately OOMs below the shipped
+  floor, the floor itself — not the calibrator — is the thing to lower.)
 - **Fail-open / no-op without signal.** A thin corpus (below the min-sample
   floor), no `below-threshold` decisions, or no OOM/cost-danger exemplars →
   `Calibrate` returns `defaults` **unchanged**. For a no-signal corpus that is
@@ -453,4 +479,6 @@ in-flight reads on shutdown, so `Close` is goleak-clean (it mirrors — and fixe
 Every recalibration logs the active thresholds plus a `CalibrationReport`
 (sample count, what moved versus the default and why, the detected frontier), so
 operators can **see** what their deployment self-tuned to and that the constants
-are local to their install.
+are local to their install. When the safety floor swallowed the margin near the
+frontier, the loop additionally logs a `WARN` carrying the floor-clamp flags, the
+frontier, and the installed thresholds.

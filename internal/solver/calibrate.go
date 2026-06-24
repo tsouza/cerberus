@@ -166,6 +166,13 @@ const (
 //     never RAISES a threshold (which would route B less readily and risk the
 //     under-shard→OOM catastrophe), and never lowers past the shipped safety
 //     floor (minCalibratedFanout / minCalibratedAnchorPairs).
+//   - Floor / margin interaction surfaced (never silent): when the floor would
+//     raise the margin-reduced threshold to/above the frontier, the margin is
+//     lost — and a sub-floor OOM (frontier ≤ floor) is capped STRICTLY BELOW the
+//     frontier rather than pinned above the OOM coordinate. Both set
+//     CalibrationReport.FloorClamped{Fanout,AnchorPairs} for the loop's WARN.
+//   - Coupled frontier: both axes come from the SAME OOM sample (smallest N×F),
+//     never minimized independently into a synthetic corner.
 //   - Fail-open / no-op without signal: a thin corpus (< minCalibrationSamples
 //     real dispatches), no below-threshold decisions, or no OOM/cost-danger
 //     exemplars → return `defaults` UNCHANGED with NoOp set. (A no-signal
