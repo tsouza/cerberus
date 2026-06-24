@@ -34,6 +34,15 @@ func main() {
 	}
 }
 
+// benchmarkSubcommand is the offline detection-fidelity benchmark: it scores the
+// catalog against a fabricated, seed-deterministic labeled corpus and prints the
+// per-rule precision/recall/F1 table. It takes no corpus path — the corpus is
+// generated — so an operator (or CI) can quantify how consistently the rules
+// detect their planted pathologies (and guard against regressions) with nothing
+// to set up. The labels share provenance with the rules' thresholds, so this
+// measures detection consistency, not real-world rule effectiveness.
+const benchmarkSubcommand = "benchmark"
+
 type options struct {
 	catalogPath  string
 	source       string
@@ -59,6 +68,10 @@ func (p paramFlags) Set(v string) error {
 }
 
 func run(args []string, stdout, stderr *os.File) error {
+	if len(args) > 0 && args[0] == benchmarkSubcommand {
+		return runBenchmark(args[1:], stdout, stderr)
+	}
+
 	opts := options{params: paramFlags{}}
 	fs := flag.NewFlagSet("route-rules", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -105,6 +118,56 @@ func run(args []string, stdout, stderr *os.File) error {
 	default:
 		return fmt.Errorf("unknown --format %q (want table|json)", opts.format)
 	}
+}
+
+// benchDefaultConfig is the nominal operating point the benchmark scores at: a
+// p95 watermark on both percentile knobs and a min_rows_per_class of 5. These
+// are benchmark settings, not catalog thresholds (the shipped catalog stays
+// number-free); an operator can override any of them with --param.
+var benchDefaultConfig = map[string]string{
+	"router_rules.watermark_percentile":    "0.95",
+	"router_rules.cumulative_d_percentile": "0.95",
+	"router_rules.min_rows_per_class":      "5",
+	"query.max_memory_bytes":               "1073741824",
+	"query.max_samples":                    "50000000",
+}
+
+func runBenchmark(args []string, stdout, stderr *os.File) error {
+	params := paramFlags{}
+	fs := flag.NewFlagSet("route-rules benchmark", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to a router-rules catalog YAML (default: embedded)")
+	seed := fs.Int64("seed", 1, "PRNG seed for the fabricated labeled corpus (deterministic)")
+	minSupport := fs.Int("min-support", 5, "min_rows_per_class the corpus is sized and scored at")
+	fs.Var(params, "param", "config-kind param override KEY=VALUE (repeatable)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cat, err := loadCatalog(*catalogPath)
+	if err != nil {
+		return err
+	}
+
+	cfg := routerrules.BenchConfig{}
+	for k, v := range benchDefaultConfig {
+		cfg[k] = v
+	}
+	cfg["router_rules.min_rows_per_class"] = strconv.Itoa(*minSupport)
+	for k, v := range params {
+		cfg[k] = v
+	}
+
+	corpus := routerrules.GenerateBenchCorpus(routerrules.BenchParams{Seed: *seed, MinSupport: *minSupport})
+	metrics, err := routerrules.ScoreCatalog(context.Background(), cat, cfg, corpus)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(stdout, "router-rules detection-fidelity benchmark (seed=%d, rows=%d, labeled classes=%d):\n\n",
+		*seed, len(corpus.Rows), len(corpus.Classes))
+	fmt.Fprint(stdout, routerrules.FormatMetricsTable(metrics))
+	return nil
 }
 
 func loadCatalog(path string) (*routerrules.Catalog, error) {

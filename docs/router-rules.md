@@ -310,6 +310,62 @@ action; the `effectiveness_no_route_b.jsonl` variant exercises the
 empty-population no-signal skip. Both backends run the fixture under the parity
 test, so the JSONL and CH paths must agree finding-for-finding.
 
+### The detection-fidelity benchmark
+
+The effectiveness fixture answers "does every rule fire on its planted
+pathology?" as a binary. The benchmark answers a graded version of the same
+question — **how consistently does each rule detect its planted pathologies,
+measured as precision / recall / F1 against a synthetic labeled corpus, and how
+does that detection degrade as the deployment is tuned off-nominal?**
+
+This is a *detection-fidelity / regression* gate, not a real-world
+effectiveness measurement. The corpus labels share provenance with the rules'
+p95-watermark thresholds — the same model decides both what counts as a planted
+pathology and what each rule fires on — so a perfect score proves the rules
+detect what the model says they should and pins that against regressions. It
+does **not** prove the rules catch real production incidents; that would require
+labels grounded in real incident outcomes, which this corpus does not have.
+
+- `benchmark.go` generates a fabricated, seed-deterministic corpus (no
+  production-identifying values) shaped like a real deployment — a healthy,
+  PromQL-dominant, range-heavy majority on route A plus a planted failure
+  surface — where every class carries a ground-truth label: the rule ids that
+  *should* fire on it, and a pathology severity (`severe` far past the watermark,
+  `marginal` just past it). The in-memory source folds these rows through the
+  same matcher + `quantileExact` path the JSONL/CH backends use.
+- `metrics.go` scores the catalog against the labels at the CLASS granularity
+  (TP = labeled class the rule fired on; FP = unlabeled class it fired on; FN =
+  labeled class it stayed silent on) and reports per-rule precision / recall / F1
+  plus a micro-averaged overall. At the nominal p95 / min-support-5 operating
+  point the catalog scores **precision 1.000 / recall 1.000 / F1 1.000** over the
+  12 rules — every planted pathology detected, zero false positives on the healthy
+  majority. (A perfect score here is a self-consistency result, by construction —
+  see the provenance caveat above.)
+- `sweep.go` turns that single point into a sensitivity surface: it sweeps
+  `watermark_percentile`, `min_rows_per_class`, and pathology prevalence around
+  the nominal and reports how recall/precision (and severe-vs-marginal recall)
+  hold up. The shape is the design's stated tradeoff made measurable: loosening
+  the watermark or the support floor floods false positives (precision falls
+  toward ~0.33 at p50); over-tightening sheds marginal recall first; a rare
+  deployment (low prevalence) starves its *marginal* pathologies below the support
+  floor and loses their detection, while *severe* pathologies are detected at
+  every operating point. A guard test fails if any swept axis is inert (its whole
+  grid collapses to one identical score), so the sweep can't silently grow a dead
+  knob.
+- The regression-floor tests pin numeric recall/precision/F1 minimums at the
+  nominal point and across the operationally sane tuning range (the only place
+  numbers belong — the shipped catalog stays number-free; the floors live in
+  test code). The overall recall/precision floors hold at nominal prevalence;
+  severe-recall is floored at 1.0 across the whole grid including off-nominal
+  prevalence. Adversarial corpora (monochrome-healthy, distribution-shifted
+  across seeds) and a multi-rule-interaction test guard the edges.
+- `route-rules benchmark` runs the whole thing from the CLI: it scores the
+  embedded catalog over the generated corpus and prints the metric table, no
+  corpus file required (`--seed`, `--min-support`, and `--param` tune it). The
+  `chdb`-tagged parity test re-runs the benchmark through the CH SQL backend and
+  asserts identical findings and identical metrics, so the numbers are not an
+  artefact of the in-memory source.
+
 All ClickHouse SQL is composed via the typed `internal/chsql` Frag API
 (`Call` / `Parametric` / `Eq` / `Gt` / `And` / `In` / `BareIdent` / …) — no raw
 SQL strings.

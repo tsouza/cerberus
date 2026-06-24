@@ -34,6 +34,9 @@ go.work.sum
 # Local build outputs
 bin/
 dist/
+# route-rules CLI build output (never commit the compiled binary)
+/route-rules
+/cmd/route-rules/route-rules
 
 # direnv local override
 .direnv/
