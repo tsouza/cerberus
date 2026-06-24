@@ -136,15 +136,15 @@ func quantileFrag(frac float64, column string) chsql.Frag {
 }
 
 func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, aggExpr chsql.Frag) (Value, error) {
-	// Empty corpus = no signal = no findings. A non-grouped CH aggregate
-	// (quantileExact/avg/stddevPop/…) over an empty or fully-TTL'd population
-	// returns one row of NaN; the per-partition path returns NaN per empty
-	// bucket. The JSONL backend yields 0 for the same empty case (see
-	// aggregate/quantileExact in source_jsonl.go), so wrap every aggregate in
-	// ifNull(<agg>, 0) to hold both backends to the identical 0-contract. This
-	// keeps watermark resolution byte-for-byte across backends and prevents a
-	// NaN watermark from silently suppressing all findings (every `x > NaN` is
-	// false).
+	// An empty sub-population is no signal, not a watermark of 0. The scalar
+	// path carries a count() companion column so an empty population resolves to
+	// Value{NoSignal: true} (mirroring the JSONL backend's len(all)==0 guard),
+	// and a fire-gate that depends on it is skipped rather than firing on
+	// everything. A non-grouped aggregate (quantileExact/avg/stddevPop/…) over a
+	// zero-row group returns NaN, so the aggregate is still wrapped in
+	// ifNull(<agg>, 0) and folded through normalizeEmptyAgg to keep a non-empty
+	// group's value finite — but with count() driving NoSignal, that folded 0 is
+	// never consumed as a watermark in the empty case.
 	aggExpr = chsql.Call("ifNull", aggExpr, chsql.InlineLit(int64(0)))
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	conds := scopeConds(spec.Scope)
@@ -156,21 +156,27 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 	}
 
 	if len(spec.PartitionBy) == 0 {
-		qb = qb.SelectAs(aggExpr, "v")
+		qb = qb.SelectAs(aggExpr, "v").SelectAs(chsql.Call("count"), "n")
 		sql, args := qb.Build()
 		r, err := s.query(ctx, sql, args)
 		if err != nil {
 			return Value{}, err
 		}
 		defer func() { _ = r.Close() }()
-		var v float64
+		var (
+			v float64
+			n uint64
+		)
 		if r.Next() {
-			if err := r.Scan(&v); err != nil {
+			if err := r.Scan(&v, &n); err != nil {
 				return Value{}, fmt.Errorf("routerrules: scan aggregate: %w", err)
 			}
 		}
 		if err := r.Err(); err != nil {
 			return Value{}, err
+		}
+		if n == 0 {
+			return Value{NoSignal: true}, nil
 		}
 		return Value{Scalar: normalizeEmptyAgg(v)}, nil
 	}

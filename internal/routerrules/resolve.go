@@ -14,10 +14,21 @@ import (
 // evaluation, not embedded in a flat WHERE clause. PartitionCol names the
 // group-by column the map is keyed by, so the evaluator can anchor a
 // per-partition sub-evaluation to the right group key.
+//
+// NoSignal marks a scalar corpus-derived watermark whose sub-population was
+// EMPTY (zero rows matched the param's scope). An empty population is not the
+// same as a watermark of 0: it means there is no learned signal at all. A
+// fire-gate that depends on a no-signal watermark must NOT fire — see the
+// evaluator's no-signal skip. NoSignal is only meaningful on a scalar Value; a
+// partition-keyed Value represents an empty bucket by the bucket's absence from
+// the map. corpus_count_ratio params are message-only context, so they keep
+// resolving an empty population to a 0 scalar (NoSignal stays false) — 0 is the
+// correct "no rejections observed" value for that context.
 type Value struct {
 	Scalar       float64
 	Partition    map[string]float64
 	PartitionCol string
+	NoSignal     bool
 }
 
 // IsPartitioned reports whether the value is partition-keyed.

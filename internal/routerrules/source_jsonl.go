@@ -192,6 +192,9 @@ func (s *jsonlCorpusSource) percentile(spec AggSpec) (Value, error) {
 		}
 		return Value{Partition: part, PartitionCol: spec.PartitionBy[0]}, nil
 	}
+	if len(all) == 0 {
+		return Value{NoSignal: true}, nil
+	}
 	return Value{Scalar: quantileExact(all, *spec.Percentile)}, nil
 }
 
@@ -220,6 +223,9 @@ func (s *jsonlCorpusSource) agg(spec AggSpec) (Value, error) {
 			part[k] = aggregate(spec.Agg, vs)
 		}
 		return Value{Partition: part, PartitionCol: spec.PartitionBy[0]}, nil
+	}
+	if len(all) == 0 {
+		return Value{NoSignal: true}, nil
 	}
 	return Value{Scalar: aggregate(spec.Agg, all)}, nil
 }
