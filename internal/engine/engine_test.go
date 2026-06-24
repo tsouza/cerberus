@@ -92,10 +92,12 @@ type recordingObserver struct {
 	lastKShards  uint8
 
 	// outcomes captures (queryID, token) pairs from ObserveOutcome; rejections
-	// captures (language, token) pairs from ObserveRejection — the two
-	// cerberus-side terminal-outcome seams.
-	outcomes   [][2]string
-	rejections [][2]string
+	// captures (language, token) pairs from ObserveRejection; dispatchedRej
+	// captures (queryID, language, token) triples from ObserveDispatchedRejection
+	// — the cerberus-side terminal-outcome seams.
+	outcomes      [][2]string
+	rejections    [][2]string
+	dispatchedRej [][3]string
 }
 
 func (o *recordingObserver) ObserveQuery(
@@ -136,6 +138,20 @@ func (o *recordingObserver) ObserveRejection(
 	_ string,
 ) {
 	o.rejections = append(o.rejections, [2]string{language, statusToken})
+}
+
+func (o *recordingObserver) ObserveDispatchedRejection(
+	queryID, _ string,
+	_ []string,
+	language string,
+	statusToken string,
+	_ bool,
+	_ string,
+	_, _, _, _, _ uint32,
+	_ uint8,
+	_ string,
+) {
+	o.dispatchedRej = append(o.dispatchedRej, [3]string{queryID, language, statusToken})
 }
 
 // TestEngine_QueryID_ObserverAndDispatchAgree proves the single-source-of-truth
@@ -509,6 +525,41 @@ func TestEngine_EagerSampleBudget_StampsOutcome(t *testing.T) {
 	}
 }
 
+// TestEngine_EagerMemoryCap_StampsDispatchedRejection pins the observability-gap
+// fix: an eager-path query aborted by the per-query memory cap (CH code 241,
+// chclient.ErrMemoryLimitExceeded) records a DISPATCHED rejection — exit_status
+// "oom", carrying the dispatch query_id (so the corpus can drop it from the
+// query_log join) and the language. Before this fix the memory-cap error fell
+// through outcomeTokenForErr's default and was invisible to the corpus.
+func TestEngine_EagerMemoryCap_StampsDispatchedRejection(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{err: chclient.ErrMemoryLimitExceeded}
+	obs := &recordingObserver{}
+	eng := newEngine(q)
+	eng.QueryObserver = obs
+
+	_, err := eng.Query(tracedCtx(), &fakeLang{name: "promql"}, "up")
+	if err == nil {
+		t.Fatal("expected memory-cap error")
+	}
+	if len(obs.dispatchedRej) != 1 {
+		t.Fatalf("ObserveDispatchedRejection calls = %d; want 1", len(obs.dispatchedRej))
+	}
+	got := obs.dispatchedRej[0]
+	if got[1] != "promql" || got[2] != "oom" {
+		t.Errorf("dispatched rejection = %v; want lang=promql token=oom", got)
+	}
+	// The terminal row must carry the SAME query_id the dispatch observed, so the
+	// reconciler can forget it and the query_log join cannot double-write.
+	if len(obs.queryIDs) != 1 || got[0] != obs.queryIDs[0] || got[0] == "" {
+		t.Errorf("dispatched-rejection id %q must equal dispatch id %v", got[0], obs.queryIDs)
+	}
+	if len(obs.outcomes) != 0 || len(obs.rejections) != 0 {
+		t.Errorf("a memory-cap abort must use the dispatched-rejection seam only: outcomes=%v rejections=%v", obs.outcomes, obs.rejections)
+	}
+}
+
 // TestEngine_EagerBreaker_StampsRejection pins that a breaker fast-fail (no CH
 // query ran) produces a decision-only rejection row, not an outcome stamp.
 func TestEngine_EagerBreaker_StampsRejection(t *testing.T) {
@@ -572,7 +623,8 @@ func TestEngine_ObserveCapRejection(t *testing.T) {
 
 // TestEngine_ObserveDrainOutcome pins the cursor-path drain seam: a
 // sample-budget error surfacing during the handler drain stamps "sample_budget"
-// on the supplied query_id; a nil error / empty id / other error is a no-op.
+// on the supplied query_id; a memory-cap abort is recorded as a dispatched
+// rejection carrying the language; a nil error / empty id / other error is a no-op.
 func TestEngine_ObserveDrainOutcome(t *testing.T) {
 	t.Parallel()
 
@@ -580,16 +632,29 @@ func TestEngine_ObserveDrainOutcome(t *testing.T) {
 	eng := newEngine(&fakeQuerier{})
 	eng.QueryObserver = obs
 
-	eng.ObserveDrainOutcome("qid-d", chclient.ErrTooManySamples)
-	eng.ObserveDrainOutcome("qid-d", nil)                     // no-op
-	eng.ObserveDrainOutcome("", chclient.ErrTooManySamples)   // no-op
-	eng.ObserveDrainOutcome("qid-d", errors.New("transport")) // no-op
+	eng.ObserveDrainOutcome("qid-d", "promql", chclient.ErrTooManySamples)
+	eng.ObserveDrainOutcome("qid-d", "promql", nil)                     // no-op
+	eng.ObserveDrainOutcome("", "promql", chclient.ErrTooManySamples)   // no-op
+	eng.ObserveDrainOutcome("qid-d", "promql", errors.New("transport")) // no-op
 
 	if len(obs.outcomes) != 1 {
 		t.Fatalf("ObserveOutcome calls = %d; want exactly 1", len(obs.outcomes))
 	}
 	if id, token := obs.outcomes[0][0], obs.outcomes[0][1]; id != "qid-d" || token != "sample_budget" {
 		t.Errorf("drain outcome = (%q, %q); want (qid-d, sample_budget)", id, token)
+	}
+	if len(obs.dispatchedRej) != 0 {
+		t.Errorf("a sample-budget drain must not produce a dispatched rejection: %v", obs.dispatchedRej)
+	}
+
+	// A memory-cap abort surfacing mid-drain is recorded as a dispatched
+	// rejection (terminal, zero cost), carrying the language and the query_id.
+	eng.ObserveDrainOutcome("qid-oom", "logql", chclient.ErrMemoryLimitExceeded)
+	if len(obs.dispatchedRej) != 1 {
+		t.Fatalf("ObserveDispatchedRejection calls = %d; want 1", len(obs.dispatchedRej))
+	}
+	if got := obs.dispatchedRej[0]; got[0] != "qid-oom" || got[1] != "logql" || got[2] != "oom" {
+		t.Errorf("drain oom rejection = %v; want [qid-oom logql oom]", got)
 	}
 }
 
@@ -604,7 +669,7 @@ func TestEngine_NoObserver_OutcomeNoop(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	eng.ObserveCapRejection("promql")
-	eng.ObserveDrainOutcome("x", chclient.ErrTooManySamples)
+	eng.ObserveDrainOutcome("x", "promql", chclient.ErrTooManySamples)
 }
 
 // scanRewriteRule is a probe rule for the IsTraceByID test: it

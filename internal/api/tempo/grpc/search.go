@@ -131,10 +131,11 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		}
 	}
 	if err := res.Cursor.Err(); err != nil {
-		// A sample-budget 422 surfacing during the drain — the CH query already
-		// finished cleanly. Stamp the cerberus-side outcome onto the corpus
-		// record for this dispatch (cost retained, exit overridden).
-		s.Handler.Engine.ObserveDrainOutcome(res.QueryID, err)
+		// A cerberus-side outcome surfacing during the drain: a sample-budget 422
+		// (the CH query finished cleanly, cost retained + exit overridden) or a
+		// memory-cap abort (recorded terminally so the corpus does not depend on
+		// the query_log join). Stamp it onto the corpus record for this dispatch.
+		s.Handler.Engine.ObserveDrainOutcome(res.QueryID, "traceql", err)
 		return mapEngineError(err)
 	}
 
