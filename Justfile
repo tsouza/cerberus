@@ -147,6 +147,18 @@ chclient-integration:
 strict-scan-test:
     go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
 
+# Run the router-corpus real-CH integration tests: the offline corpus WRITE
+# path (optcorpus.CHTableSink: real CREATE DDL + columnar Enum8 batch) and READ
+# path (routerrules.chCorpusSource: strict-scanned aggregates) executed against
+# a REAL ClickHouse (testcontainers-go) through clickhouse-go/v2. These offline
+# paths never touch the data plane, so compose-smoke / e2e never exercise them,
+# and their only other tests use a fake batch / chDB (which leniently coerces
+# integer columns into *float64 — exactly the #1064 strict-scan blind spot).
+# Requires Docker; gated behind the `integration` build tag. See
+# internal/routerrules/realch_integration_test.go and strict-scan.yml.
+router-corpus-integration:
+    go test -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
