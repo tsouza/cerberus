@@ -232,6 +232,56 @@ func TestResolve_ColumnarResultDecode_NoVersionFloor(t *testing.T) {
 	}
 }
 
+func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
+	// The headline case: "auto,columnar_result_decode" = the version-gated auto
+	// set PLUS the opt-in feature, without bailing out of auto.
+	set, _, err := Resolve(Config{Optimizations: "auto,columnar_result_decode"}, v(25, 8))
+	if err != nil {
+		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
+	}
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureColumnarResultDecode)
+}
+
+func TestResolve_AutoPlusOptIn_AutoSetStillVersionGated(t *testing.T) {
+	// On 24.8 the auto half drops condition_cache (needs 25.3) but keeps
+	// aggregation_in_order; the opt-in (no floor) still enables. Auto stays
+	// silent about its own version skips even when composed.
+	set, warns, err := Resolve(Config{Optimizations: "auto,columnar_result_decode"}, v(24, 8))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureAggregationInOrder, FeatureColumnarResultDecode)
+	if len(warns) != 0 {
+		t.Errorf("auto-skip in a composed selection emitted warnings %v; want none", warns)
+	}
+}
+
+func TestResolve_AutoPlusExplicitVersionGated_EnforcingFatal(t *testing.T) {
+	// An explicit version-gated id keeps its "I require this" contract even next
+	// to auto: condition_cache on 25.0 under Enforcing is fatal (unlike the
+	// silent skip auto alone would do).
+	_, _, err := Resolve(Config{Optimizations: "auto,condition_cache", Mode: Enforcing}, v(25, 0))
+	if err == nil {
+		t.Fatal("auto,condition_cache on 25.0 enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "condition_cache") || !strings.Contains(err.Error(), "25.3") {
+		t.Errorf("err = %v; want it to name condition_cache + 25.3", err)
+	}
+}
+
+func TestResolve_OffCannotBeCombined(t *testing.T) {
+	for _, sel := range []string{"auto,off", "off,columnar_result_decode", "off,auto"} {
+		_, _, err := Resolve(Config{Optimizations: sel}, v(25, 8))
+		if err == nil {
+			t.Errorf("%q: want fatal (off is absolute), got nil", sel)
+			continue
+		}
+		if !strings.Contains(err.Error(), "off") {
+			t.Errorf("%q: err = %v; want it to mention off", sel, err)
+		}
+	}
+}
+
 func TestResolve_LegacyTrue_ForceEnables(t *testing.T) {
 	set, warns, err := Resolve(Config{
 		Optimizations: "auto",

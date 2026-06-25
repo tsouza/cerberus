@@ -23,20 +23,29 @@ cerberus config idiom (per-key viper `BindEnv`, fail-fast parse, env > file
 
 | Env var                            | Type     | Default       | Meaning                                                                            |
 | ---------------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
-| `CERBERUS_CH_OPTIMIZATIONS`        | string   | `auto`        | `auto`, `off`, or a comma-separated list of feature ids.                           |
+| `CERBERUS_CH_OPTIMIZATIONS`        | string   | `auto`        | `auto`, `off`, or a comma-separated list of feature ids (`auto` may appear in it). |
 | `CERBERUS_CH_OPTIMIZATIONS_MODE`   | string   | `enforcing`   | `enforcing` or `permissive`. Governs how an unsupported requested id is handled.   |
 
 ### `CERBERUS_CH_OPTIMIZATIONS`
 
+The value is a comma-separated list of tokens; each is `auto`, `off`, or a
+feature id, and they **compose**:
+
 - **`auto`** (default) — enable every **stable** feature whose minimum
-  version is `<=` the connected server's version. Experimental features are
-  **never** auto-enabled; they require explicit listing. This preserves the
-  historical "experimental paths off out of the box" default.
+  version is `<=` the connected server's version. Experimental / opt-in
+  features are **never** auto-enabled; they require explicit listing. This
+  preserves the historical "experimental paths off out of the box" default.
+  `auto` may appear **alongside** explicit ids, so
+  `auto,columnar_result_decode` means "the auto-selected set **plus**
+  `columnar_result_decode`" — the way to add an opt-in feature without giving
+  up version-aware auto-selection of the rest.
 - **`off`** — enable nothing. The empty set. Every optimization stays dark.
-- **comma-separated list** — e.g. `aggregation_in_order,condition_cache`.
-  Enable exactly the listed feature ids (subject to version gating, see
-  mode below). An **unknown** id is **always** a fatal startup error
-  (a typo guard), regardless of mode.
+  `off` is **absolute** and may not be combined with any other token.
+- **a feature id** — e.g. `aggregation_in_order,condition_cache`. Enable
+  exactly the listed feature ids (subject to version gating, see mode below).
+  An explicit id keeps its "I require this" semantics even next to `auto`. An
+  **unknown** id is **always** a fatal startup error (a typo guard),
+  regardless of mode.
 
 ### `CERBERUS_CH_OPTIMIZATIONS_MODE`
 

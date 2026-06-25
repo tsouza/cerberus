@@ -46,7 +46,8 @@ const (
 	// on any native-protocol server, so it carries NO version floor
 	// (AlwaysAvailable). It is opt-in-only (Experimental stability): a perf
 	// tradeoff (a second ch-go dial), so auto never selects it; it engages only
-	// when listed explicitly in CERBERUS_CH_OPTIMIZATIONS.
+	// when listed explicitly in CERBERUS_CH_OPTIMIZATIONS — typically alongside
+	// auto (`auto,columnar_result_decode`) to keep the version-gated picks.
 	FeatureColumnarResultDecode = "columnar_result_decode"
 
 	// FeatureTSGridChanges opts eligible changes(<v>[<range>]) query_range
