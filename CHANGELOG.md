@@ -4,6 +4,35 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.6.0] — 2026-06-25
+
+### Added
+
+- **optcorpus:** capture cerberus-side rejections in the router corpus (#1065)
+- **routerrules:** detection-fidelity benchmark + degradation sweep (#1063)
+- **routerrules:** concrete 5-rule ruleset + harness + chDB-parity CI fix (#1062)
+- **routerrules:** generic router-rules catalog + offline analysis engine (#1060)
+
+### Fixed
+
+- **routerrules:** gate route_a_memory_near_cap on the configured cap, not the corpus p95 (#1066)
+- **e2e:** reconcile Traces-Drilldown init-race 400 when both bodies are lost (#1070)
+- **routerrules:** wrap integer CH columns to match Go scan types (strict clickhouse-go) (#1064)
+- **traceql:** bound compare() query memory to avoid 2GiB ClickHouse OOM (#1059)
+
+### CI
+
+- **lint:** exclude .claude worktrees from golangci-lint scan (#1071)
+- **release:** auto-retire the out-of-window release line on a new minor (active EOL) (#1072)
+
+### Documentation
+
+- theme-aware README hero via <picture> (#1074)
+- **readme:** branded hero banner + regrouped badges (#1073)
+- forbid "pre-existing" as an escape hatch for leaving bugs unfixed (#1069)
+- **release:** define the maintenance support-window / EOL policy (latest 3 minor lines) (#1068)
+- **coverage:** reframe PromQL start()/end() rejection as permanent parity (#1061)
+
 ## [v1.5.0] — 2026-06-24
 
 ### Added
