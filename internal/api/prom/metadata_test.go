@@ -188,6 +188,63 @@ func TestLabelValues_MetricNameLabel(t *testing.T) {
 	}
 }
 
+// TestMetadataDiscovery_WindowPrune pins the index/partition-bounding fix:
+// the no-`match[]` discovery endpoints (`/label/__name__/values`,
+// `/labels`, `/label/<name>/values`) must push the request `start`/`end`
+// window onto each per-table arm so ClickHouse prunes by the
+// `toDate(TimeUnix)` partition instead of streaming the full leading-key
+// column (the unbounded `SELECT DISTINCT MetricName` that scanned ~2.6B
+// rows in prod). When no window is sent the SQL stays unbounded — that is
+// the inherent exact answer for Prometheus's no-bound metadata semantics.
+func TestMetadataDiscovery_WindowPrune(t *testing.T) {
+	t.Parallel()
+
+	const window = "start=1700000000&end=1700003600"
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"metric_names", "/api/v1/label/__name__/values"},
+		{"label_names", "/api/v1/labels"},
+		{"label_values", "/api/v1/label/job/values"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// With a window: every arm must carry the TimeUnix bound.
+			qw := &stubQuerier{strings: []string{"up"}}
+			srvW := newServer(qw)
+			t.Cleanup(srvW.Close)
+			resp, err := http.Get(srvW.URL + tc.path + "?" + window)
+			if err != nil {
+				t.Fatalf("GET windowed: %v", err)
+			}
+			resp.Body.Close()
+			if !strings.Contains(qw.lastSQL, "toDateTime64(") ||
+				!strings.Contains(qw.lastSQL, "TimeUnix") {
+				t.Errorf("windowed %s must push a TimeUnix partition bound; got %q",
+					tc.path, qw.lastSQL)
+			}
+
+			// Without a window: SQL stays unbounded (no time predicate),
+			// byte-for-byte the prior emit.
+			qn := &stubQuerier{strings: []string{"up"}}
+			srvN := newServer(qn)
+			t.Cleanup(srvN.Close)
+			resp, err = http.Get(srvN.URL + tc.path)
+			if err != nil {
+				t.Fatalf("GET unbounded: %v", err)
+			}
+			resp.Body.Close()
+			if strings.Contains(qn.lastSQL, "TimeUnix") {
+				t.Errorf("unbounded %s must not emit a TimeUnix bound; got %q",
+					tc.path, qn.lastSQL)
+			}
+		})
+	}
+}
+
 func TestLabelValues_InvalidName(t *testing.T) {
 	t.Parallel()
 
