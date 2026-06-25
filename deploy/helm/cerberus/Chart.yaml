@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.6.3
+version: 0.6.4
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.4.3"
+appVersion: "1.4.4"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,9 +45,11 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.4.3
+      image: ghcr.io/tsouza/cerberus:v1.4.4
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
-    - kind: added
-      description: "chopt: composable auto token in CERBERUS_CH_OPTIMIZATIONS (#1076)"
+    - kind: fixed
+      description: "traceql: push time bound into compare scan + root leg, not above the join (#1080)"
+    - kind: fixed
+      description: "chopt: probe CH version over the default connection so a missing otel DB no longer pins 24.8 (#1079)"

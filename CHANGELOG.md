@@ -4,6 +4,13 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.4.4] — 2026-06-25
+
+### Fixed
+
+- **traceql:** push time bound into compare scan + root leg, not above the join (#1080)
+- **chopt:** probe CH version over the default connection so a missing otel DB no longer pins 24.8 (#1079)
+
 ## [v1.4.3] — 2026-06-25
 
 ### Added
