@@ -64,8 +64,9 @@ type LegacyFlag struct {
 // and the tri-state legacy alias; the resolver combines them with the probed
 // server version.
 type Config struct {
-	// Optimizations is the raw CERBERUS_CH_OPTIMIZATIONS value:
-	// "auto" | "off" | comma-separated feature ids.
+	// Optimizations is the raw CERBERUS_CH_OPTIMIZATIONS value: a
+	// comma-separated list of tokens, each "auto", "off", or a feature id.
+	// "auto" composes with explicit ids (e.g. "auto,columnar_result_decode").
 	Optimizations string
 	// Mode is the parsed CERBERUS_CH_OPTIMIZATIONS_MODE (enforcing/permissive).
 	Mode Mode
@@ -107,16 +108,22 @@ const (
 // the immutable EnabledSet plus the human-readable warnings to log at boot
 // (permissive skips and the legacy-alias deprecation / override notices).
 //
-// Selection semantics:
+// Selection is a comma-separated list of tokens; each is "auto", "off", or a
+// feature id, and the tokens compose:
 //
-//   - "off"  -> the empty set.
-//   - "auto" -> every STABLE feature whose MinVersion <= server. Experimental
-//     features are NEVER auto-enabled (they require explicit listing), which
-//     preserves the historical experimental-off default. Mode is ignored.
-//   - explicit comma list -> for each requested id: supported -> enable;
-//     unsupported under Enforcing -> err (FATAL); unsupported under Permissive
-//     -> WARN + skip. An UNKNOWN id is ALWAYS err (typo guard), regardless of
-//     mode.
+//   - "off"  -> the empty set. "off" is absolute and may NOT be combined with
+//     any other token (off + anything -> FATAL).
+//   - "auto" -> unions in every STABLE feature whose MinVersion <= server.
+//     Experimental / opt-in features are NEVER pulled in by "auto" (they
+//     require explicit listing), preserving the historical experimental-off
+//     default. "auto" may sit alongside explicit ids, so
+//     "auto,columnar_result_decode" means the auto-set PLUS columnar_result_decode
+//     -- the way to add an opt-in feature without giving up version-aware
+//     auto-selection of the rest.
+//   - a feature id -> an explicit request: supported -> enable; unsupported
+//     under Enforcing -> err (FATAL); unsupported under Permissive -> WARN +
+//     skip. An explicit id keeps its "I require this" semantics even next to
+//     "auto". An UNKNOWN id is ALWAYS err (typo guard), regardless of mode.
 //
 // The legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias is layered on top:
 //
@@ -141,17 +148,18 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	enabled := make(map[string]struct{})
 	var warnings []string
 
-	switch selection {
-	case selectionOff:
-		// Empty set; nothing selected.
-	case selectionAuto:
-		for _, f := range registry {
-			if f.Stability == Stable && server.AtLeast(f.MinVersion) {
-				enabled[f.ID] = struct{}{}
-			}
+	tokens := splitSelection(selection)
+	if hasToken(tokens, selectionOff) {
+		// "off" is the absolute kill-switch and may not be combined with
+		// anything else: it leaves the empty set.
+		if len(tokens) != 1 {
+			return EnabledSet{}, nil, fmt.Errorf("ch_opt %q cannot be combined with other selections (got %q)", selectionOff, selection)
 		}
-	default: // explicit list
-		warns, err := resolveExplicitList(selection, cfg.Mode, server, enabled)
+	} else {
+		// "auto" tokens union in the auto-set; every other token is an explicit
+		// feature request. They compose, so "auto,columnar_result_decode" is the
+		// auto-set plus that one opt-in feature.
+		warns, err := resolveTokens(tokens, cfg.Mode, server, enabled)
 		if err != nil {
 			return EnabledSet{}, nil, err
 		}
@@ -173,32 +181,62 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	return EnabledSet{ids: enabled}, warnings, nil
 }
 
-// resolveExplicitList parses the comma-separated selection, enabling each
-// supported feature into enabled and applying the mode policy to unsupported
-// ones. An unknown id is always fatal. Returns the permissive WARN strings.
-func resolveExplicitList(selection string, mode Mode, server Version, enabled map[string]struct{}) ([]string, error) {
+// resolveTokens walks the parsed selection tokens. An "auto" token unions in
+// the auto-set (every STABLE feature the server supports); every other token is
+// an explicit feature request, enabled if supported and otherwise handled per
+// mode (Enforcing -> fatal, Permissive -> WARN + skip). An unknown id is always
+// fatal. Tokens compose, so "auto,columnar_result_decode" yields the auto-set
+// plus that one opt-in feature. Returns the permissive WARN strings.
+func resolveTokens(tokens []string, mode Mode, server Version, enabled map[string]struct{}) ([]string, error) {
 	var warnings []string
-	for _, raw := range strings.Split(selection, ",") {
-		id := strings.TrimSpace(raw)
-		if id == "" {
+	for _, id := range tokens {
+		if id == selectionAuto {
+			for _, f := range registry {
+				if f.Stability == Stable && server.AtLeast(f.MinVersion) {
+					enabled[f.ID] = struct{}{}
+				}
+			}
 			continue
 		}
 		f, ok := featureByID(id)
 		if !ok {
 			// Typo guard: unknown id is fatal in BOTH modes.
-			return nil, fmt.Errorf("unknown ch_opt feature %q (valid: %s)", id, strings.Join(allFeatureIDs(), ", "))
+			return nil, fmt.Errorf("unknown ch_opt feature %q (valid: %s, or %q/%q)", id, strings.Join(allFeatureIDs(), ", "), selectionAuto, selectionOff)
 		}
 		if server.AtLeast(f.MinVersion) {
 			enabled[f.ID] = struct{}{}
 			continue
 		}
-		// Requested but unsupported by the connected server.
+		// Explicitly requested but unsupported by the connected server. The
+		// "I require this" contract holds even alongside "auto".
 		if mode == Enforcing {
 			return nil, fmt.Errorf("ch_opt %q requires ClickHouse >=%s, server is %s", f.ID, f.MinVersion, server)
 		}
 		warnings = append(warnings, fmt.Sprintf("ch_opt %q disabled: needs ClickHouse >=%s, server is %s", f.ID, f.MinVersion, server))
 	}
 	return warnings, nil
+}
+
+// splitSelection comma-splits a selection string into trimmed, non-empty tokens.
+func splitSelection(selection string) []string {
+	parts := strings.Split(selection, ",")
+	tokens := make([]string, 0, len(parts))
+	for _, raw := range parts {
+		if t := strings.TrimSpace(raw); t != "" {
+			tokens = append(tokens, t)
+		}
+	}
+	return tokens
+}
+
+// hasToken reports whether want appears among tokens.
+func hasToken(tokens []string, want string) bool {
+	for _, t := range tokens {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 // applyLegacyTSGrid layers the deprecated CERBERUS_EXPERIMENTAL_TS_GRID_RANGE

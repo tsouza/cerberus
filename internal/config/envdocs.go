@@ -290,7 +290,7 @@ var envDocs = []EnvDoc{
 	{envRequirementsCheck, "bool", "Schema provisioning", "Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes."},
 
 	// --- ClickHouse optimizations ---
-	{envCHOptimizations, "string", "ClickHouse optimizations", "`auto` (enable every **stable** feature the probed server supports), `off` (enable nothing), or a comma-separated list of feature ids."},
+	{envCHOptimizations, "string", "ClickHouse optimizations", "`auto` (enable every **stable** feature the probed server supports), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add an opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined."},
 	{envCHOptimizationsMode, "string", "ClickHouse optimizations", "`enforcing` (an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`."},
 	{envLogCommentShape, "bool", "ClickHouse optimizations", "Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`."},
 	{envCHOptCorpusEnabled, "bool", "ClickHouse optimizations", "Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none)."},
