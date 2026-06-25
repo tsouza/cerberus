@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.4.3] — 2026-06-25
+
+### Added
+
+- **chopt:** composable auto token in CERBERUS_CH_OPTIMIZATIONS (#1076)
+
 ## [v1.4.2] — 2026-06-25
 
 ### Fixed
