@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.4.2] — 2026-06-25
+
+### Fixed
+
+- **traceql:** bound compare() query memory to avoid 2GiB ClickHouse OOM (#1059)
+
 ## [v1.4.0] — 2026-06-22
 
 ### Added
