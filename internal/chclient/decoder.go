@@ -145,6 +145,16 @@ type columnarDecoder struct {
 // bindable): a false with nil err means "not the matrix shape" — delegate to
 // the embedded row path, byte-unchanged from the flag-off behaviour. A non-nil
 // err is a real, already-classified-and-recorded failure and surfaces as-is.
+//
+// The columnar attempt already dispatched the cached per-dispatch query_id to
+// ClickHouse. On a slow backend that query can still be running when the row
+// fallback fires, so the fallback MUST run under a FRESH query_id — reusing the
+// cached one collides with the in-flight columnar query and ClickHouse rejects
+// the fallback with code 216 (QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING). The
+// columnar attempt keeps the original (optcorpus-recorded) id; only this second
+// physical execution re-keys, so the corpus reconciler's join key still matches
+// the primary attempt's terminal query_log row, and cancellation (ctx-based)
+// is unaffected by the id string.
 func (d columnarDecoder) decode(c *Client, ctx context.Context, sql string, args ...any) (Cursor, error) {
 	cur, ok, err := d.queryCursorColumnar(c, ctx, sql, args...)
 	if err != nil {
@@ -153,6 +163,7 @@ func (d columnarDecoder) decode(c *Client, ctx context.Context, sql string, args
 	if ok {
 		return cur, nil
 	}
+	_, ctx = freshQueryID(ctx)
 	return d.fallback.decode(c, ctx, sql, args...)
 }
 
