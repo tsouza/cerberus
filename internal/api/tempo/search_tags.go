@@ -140,6 +140,10 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
+	// Bound a windowless discovery request to the recent window so the
+	// mapKeys fan-out part-prunes otel_traces instead of full-scanning +
+	// exploding the attribute Map (the multi-minute / timeout failure).
+	start, end = BoundDiscoveryWindow(start, end)
 
 	scope, err := parseTagScope(r.URL.Query().Get("scope"))
 	if err != nil {
