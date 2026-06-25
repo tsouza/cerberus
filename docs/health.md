@@ -7,7 +7,13 @@ Cerberus exposes two HTTP endpoints intended for orchestrator probes
 the graceful-shutdown contract described in factor IX of the
 [12-factor methodology](https://12factor.net/disposability).
 
-Both endpoints live on the same HTTP listener as the Prom/Loki/Tempo
+Alongside them sits a third, cerberus-native endpoint —
+[`/info`](#info--metadata-fingerprint) — which returns a single JSON
+fingerprint of the build, the enabled heads, the resolved ClickHouse
+optimizations, and the live connection state. It is for humans and
+dashboards, not orchestrator probes.
+
+All three endpoints live on the same HTTP listener as the Prom/Loki/Tempo
 APIs (`CERBERUS_HTTP_ADDR`, default `:8080`) and are deliberately served
 **outside** the OpenTelemetry middleware so high-frequency probe traffic
 does not flood the trace backend.
@@ -73,6 +79,89 @@ Content-Type: application/json
 | ------ | ------------------------------------------------------------- |
 | 200    | Both ClickHouse and the schema invariant report healthy.      |
 | 503    | At least one dependency is not yet ready.                     |
+
+## `/info` — metadata fingerprint
+
+```text
+GET /info
+200 OK
+Content-Type: application/json
+
+{
+  "service": "cerberus",
+  "version": "1.6.1",
+  "revision": "78f6a5720c…",
+  "goVersion": "go1.23.0",
+  "uptimeSeconds": 3725,
+  "heads": ["prom", "loki", "tempo"],
+  "clickhouse": {
+    "address": "clickhouse:9000",
+    "database": "otel",
+    "serverVersion": "25.8",
+    "serverVersionSource": "probe",
+    "reachable": true,
+    "breaker": "closed",
+    "schemaReady": true
+  },
+  "optimizations": {
+    "selection": "auto,columnar_result_decode",
+    "mode": "enforcing",
+    "resolvedAgainstVersion": "25.8",
+    "enabled": ["aggregation_in_order", "columnar_result_decode", "condition_cache"]
+  },
+  "ready": true
+}
+```
+
+`/info` is cerberus's own, unauthenticated build/config/connection
+fingerprint — **not** an upstream-compat surface. The Prometheus and Loki
+`buildinfo` endpoints (`/api/v1/status/buildinfo`,
+`/loki/api/v1/status/buildinfo`) mirror their reference backends
+byte-for-byte and stay faithful; cerberus's own metadata lives here at the
+top level instead.
+
+Unlike `/readyz`, `/info` **always returns `200 OK`** — it is a metadata
+surface, not a probe. Readiness is reported *in the body* (`ready`, plus
+the live `clickhouse` sub-object), so a scrape can read the fingerprint of
+an unready process. The live fields (`reachable`, `breaker`, `schemaReady`,
+`ready`) are read on every request through the same dedicated `probe`
+breaker `/readyz` uses; the rest of the body is captured once at boot.
+
+### Response shape
+
+Static fields, captured once at boot:
+
+- `service` — always `"cerberus"`.
+- `version` — build version (the goreleaser ldflag; `"dev"` in dev builds).
+- `revision` — VCS commit (`runtime/debug` `vcs.revision`), or `"unknown"`
+  when the build carries no VCS stamp.
+- `goVersion` — `runtime.Version()`.
+- `heads` — the **enabled** query heads (`CERBERUS_ENABLED_HEADS`), in
+  `prom`, `loki`, `tempo` order.
+- `clickhouse.address` / `clickhouse.database` — configured ClickHouse
+  endpoint and database.
+- `clickhouse.serverVersion` — resolved server version `<major>.<minor>`.
+- `clickhouse.serverVersionSource` — `"probe"` when read live at boot, or
+  `"fallback"` when the probe failed and the supported floor (`24.8`) was
+  assumed.
+- `optimizations.selection` — raw `CERBERUS_CH_OPTIMIZATIONS` selection.
+- `optimizations.mode` — `"enforcing"` or `"permissive"`.
+- `optimizations.resolvedAgainstVersion` — the version the auto-picker
+  resolved the selection against (equals `serverVersion`).
+- `optimizations.enabled` — **the headline field**: the effectively enabled
+  optimization feature ids. Makes plain whether cerberus is running the
+  optimizations it should.
+
+Live fields, re-read on every request:
+
+- `uptimeSeconds` — seconds since process start.
+- `clickhouse.reachable` — a ClickHouse ping succeeds right now.
+- `clickhouse.breaker` — circuit-breaker phase: `"closed"`, `"open"`, or
+  `"half-open"`.
+- `clickhouse.schemaReady` — schema provisioned and the auto-create hook
+  complete (or disabled).
+- `ready` — the same condition `/readyz` uses (CH reachable AND schema
+  present AND schema ready).
 
 ## Kubernetes probe configuration
 
@@ -169,8 +258,11 @@ the contract: a too-old / unparseable version, or a wrong-shape table. Set
 
 ## Implementation pointers
 
-- Endpoint code: `internal/api/health/health.go`.
+- Endpoint code: `internal/api/health/health.go` (`/healthz` + `/readyz`),
+  `internal/api/info/info.go` (`/info`).
 - Wire-up: `cmd/cerberus/main.go` (separate sub-mux so probes bypass
-  the otelhttp wrapper).
+  the otelhttp wrapper; `infoOptions` builds the `/info` snapshot from
+  config + chopt + chclient and injects the live closures).
 - ClickHouse ping: `internal/chclient/client.go` — `(*Client).Ping`.
+- Breaker phase: `internal/chclient/client.go` — `(*Client).PeekBreakerState`.
 - Startup benchmark: `test/e2e/startup_bench_test.go`.
