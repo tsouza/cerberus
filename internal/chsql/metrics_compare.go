@@ -58,11 +58,33 @@ const (
 	compareJoinRightAlias = "r"
 )
 
+// compareScanBound carries the (Start-range, End] Timestamp window the
+// matrix path pushes INTO each MergeTree scan of the compare join so
+// ClickHouse can partition/granule-prune both legs. lo / hi are the
+// strict-lower / inclusive-upper Frags from innerScanTsBoundsFrags; a
+// nil compareScanBound (the bare time-collapsed shape, which has no
+// anchor grid) leaves both scans unbounded — byte-stable against the
+// pinned bare fixtures.
+//
+// Why the bound must live inside the scans, not above the join: CH
+// 24.12 cannot push a predicate sitting on the SELECT that wraps
+// `s LEFT JOIN r` down into either MergeTree input, so a window filter
+// landed there scans the full span table on both legs (the prod
+// traces-drilldown OOM: a 15-min compare read ~731M rows before the
+// 2 GiB cap killed it; EXPLAIN showed ~130x fewer rows once the bound
+// pruned the scans). compareBaseQuery therefore attaches lo/hi to the
+// `s` subquery's own WHERE and seeds the root leg with a TraceId-IN
+// over the same bounded cohort.
+type compareScanBound struct {
+	lo, hi Frag
+}
+
 // compareBaseQuery builds the innermost SELECT — cohort flag +
 // arrayJoin'd attribute pairs (+ extraCols, used by the matrix path to
 // carry the timestamp column up to the fanout level) over Inner,
-// LEFT JOINed against RootLookup when present.
-func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, extraCols ...string) (*QueryBuilder, error) {
+// LEFT JOINed against RootLookup when present. When bound is non-nil the
+// Timestamp window is pushed into both join legs (see compareScanBound).
+func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanBound, extraCols ...string) (*QueryBuilder, error) {
 	if m.Selection == nil {
 		return nil, fmt.Errorf("%w: MetricsCompare.Selection is nil", ErrUnsupported)
 	}
@@ -86,6 +108,15 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, extraCols ...string
 		return nil, err
 	}
 
+	// Left ('s') leg: wrap the inner spanset in a SELECT * that carries
+	// the Timestamp window in its own WHERE so the bound sits BELOW the
+	// join, inside the span scan, where CH can prune it. When unbounded
+	// the inner Frag is aliased directly (byte-stable bare shape).
+	sLeg := inner
+	if bound != nil {
+		sLeg = NewQuery().Select(Star()).From(inner).Where(bound.lo, bound.hi).Frag()
+	}
+
 	qb := NewQuery()
 	if m.RootLookup != nil {
 		if m.TraceIDColumn == "" {
@@ -95,7 +126,21 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, extraCols ...string
 		if rerr != nil {
 			return nil, rerr
 		}
-		qb.From(aliasedFrag(inner, compareJoinLeftAlias)).
+		// Right ('r') leg: bound the per-trace root lookup to the same
+		// windowed cohort the 's' leg scans via `TraceId IN (<bounded s
+		// trace-ids>)` — mirroring structuralSeedTraceFilter's seed
+		// pushdown. The predicate is on the root aggregate's GROUP BY key
+		// (TraceId), so CH pushes it through the aggregate into the root
+		// span scan, pruning it the same way the 's' leg is pruned. A
+		// plain Timestamp bound on the root leg would instead drop
+		// enrichment for traces whose root span straddles the window
+		// edge; seeding by the cohort's trace-id set keeps every root the
+		// LEFT JOIN can match (the join output is determined by
+		// s.TraceId, already windowed) while still scoping the scan.
+		if bound != nil {
+			root = e.boundedRootLeg(root, m.TraceIDColumn, inner, bound)
+		}
+		qb.From(aliasedFrag(sLeg, compareJoinLeftAlias)).
 			Join(
 				LeftJoin,
 				aliasedFrag(root, compareJoinRightAlias),
@@ -105,7 +150,7 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, extraCols ...string
 				),
 			)
 	} else {
-		qb.From(inner)
+		qb.From(sLeg)
 	}
 
 	sel := m.Selection
@@ -117,6 +162,26 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, extraCols ...string
 		qb.Select(func(b *Builder) { b.Ident(col) })
 	}
 	return qb, nil
+}
+
+// boundedRootLeg wraps the rendered root-lookup subquery so its scan is
+// pruned to the windowed cohort: it filters the root rows to
+// `<traceID> IN (SELECT <traceID> FROM (<bounded inner>) AS _cmp_seed)`,
+// where the bounded inner is the same windowed span scan the 's' leg
+// uses. Because <traceID> is the root aggregate's GROUP BY key, the
+// predicate pushes through the aggregate into the root span scan.
+// _cmp_seed aliases the seed subquery so CH's analyzer resolves the
+// projected trace-id column. See compareScanBound for the why.
+func (e *emitter) boundedRootLeg(root Frag, traceIDCol string, inner Frag, bound *compareScanBound) Frag {
+	boundedInner := NewQuery().Select(Star()).From(inner).Where(bound.lo, bound.hi)
+	seedIDs := NewQuery().
+		Select(Col(traceIDCol)).
+		From(aliasedFrag(boundedInner.Frag(), "_cmp_seed"))
+	return NewQuery().
+		Select(Star()).
+		From(root).
+		Where(In(Col(traceIDCol), Spliced(seedIDs))).
+		Frag()
 }
 
 // compareSelOut / compareAttrOut / compareValOut / compareValueOut
@@ -172,7 +237,7 @@ func compareCountValueFrag() Frag {
 
 // emitMetricsCompare renders the bare (time-collapsed) shape.
 func (e *emitter) emitMetricsCompare(m *chplan.MetricsCompare) error {
-	base, err := e.compareBaseQuery(m)
+	base, err := e.compareBaseQuery(m, nil)
 	if err != nil {
 		return err
 	}
@@ -226,11 +291,19 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	}
 
 	tsCol := r.TimestampColumn
-	base, err := e.compareBaseQuery(m, tsCol)
+	// Push the (Start-range, End] Timestamp window INTO each scan of the
+	// compare join (the 's' span scan + the seeded root leg) rather than
+	// above the join where CH 24.12 cannot prune it. Gated on both Start
+	// and End being set, matching maybePushInnerScanTimeBounds' contract.
+	var bound *compareScanBound
+	if !r.Start.IsZero() && !r.End.IsZero() {
+		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, r.Offset.Nanoseconds(), rangeNS)
+		bound = &compareScanBound{lo: lo, hi: hi}
+	}
+	base, err := e.compareBaseQuery(m, bound, tsCol)
 	if err != nil {
 		return err
 	}
-	maybePushInnerScanTimeBounds(base, r, tsCol, rangeNS)
 
 	selA, attrA, valA := compareSelOut(m), compareAttrOut(m), compareValOut(m)
 

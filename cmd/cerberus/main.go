@@ -240,15 +240,19 @@ func run() error {
 	warnIfClickHouseUnreachable(ctx, logger, client, cfg.ClickHouse)
 
 	// Resolve the ClickHouse-optimization auto-picker ONCE, here, after the
-	// client is built and the runtime version is probed. The probe needs a
-	// live connection (which config.FromEnv does not have), so FromEnv carried
-	// only the raw CERBERUS_CH_OPTIMIZATIONS selection + parsed mode + the
-	// tri-state legacy alias; this is where they become the immutable
-	// EnabledSet every consumer reads. A fatal resolve (unknown feature id in
-	// any mode, or an unsupported explicit id under enforcing) aborts startup.
-	// The resolved set then back-fills cfg.ExperimentalTSGridRange (the single
-	// source of truth for the legacy ts-grid consumers) and drives the
-	// per-query SettingsRules built below.
+	// client is built and the runtime version is probed. The version probe runs
+	// over a short-lived connection bound to ClickHouse's always-present
+	// `default` database (NOT the configured otel one), because this runs before
+	// setupSchema creates otel and a session whose default database is absent
+	// rejects every statement, version() included (code 81). config.FromEnv has
+	// no live connection, so it carried only the raw CERBERUS_CH_OPTIMIZATIONS
+	// selection + parsed mode + the tri-state legacy alias; this is where they
+	// become the immutable EnabledSet every consumer reads. A fatal resolve
+	// (unknown feature id in any mode, or an unsupported explicit id under
+	// enforcing) aborts startup. The resolved set then back-fills
+	// cfg.ExperimentalTSGridRange (the single source of truth for the legacy
+	// ts-grid consumers), drives the per-query SettingsRules built below, and
+	// the main client (passed here) gets the one boot-time columnar-decode swap.
 	optSet, err := resolveCHOptimizations(ctx, logger, client, &cfg)
 	if err != nil {
 		return err
@@ -573,7 +577,7 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 // (unknown feature id, or an unsupported explicit id under enforcing) is still
 // fatal — that is a typo/operator error, independent of connectivity.
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, error) {
-	resolvedVersion, err := client.ProbeVersion(ctx)
+	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
 	if err != nil {
 		// Connectivity fallback: assume the supported floor so 24.8-safe
 		// stable features still resolve under auto; newer features stay off
@@ -619,6 +623,30 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"enabled", strings.Join(set.IDs(), ","),
 	)
 	return set, nil
+}
+
+// probeVersionOverBootstrap issues the SELECT version() probe over a
+// short-lived client bound to ClickHouse's always-present `default` database,
+// not the configured (otel) one. The version probe must succeed on a fresh or
+// freshly-upgraded server whose configured database does not exist yet: it runs
+// at boot BEFORE setupSchema creates the target database, and ClickHouse rejects
+// EVERY statement — version() included — on a session whose default database is
+// absent (code 81, UNKNOWN_DATABASE). Binding the probe to `default` (which is
+// always present, the same database the auto-create DDL targets) makes the probe
+// independent of whether the configured database exists, so a CH upgrade takes
+// effect on the next boot instead of being masked as a probe failure that pins
+// the supported floor. The client is opened, probed, and closed here — it never
+// outlives the probe; the breaker-guarded read surface still makes a genuinely
+// unreachable server fail (not hang), preserving the connectivity fallback.
+func probeVersionOverBootstrap(ctx context.Context, chCfg chclient.Config) (chopt.Version, error) {
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg))
+	if err != nil {
+		return chopt.Version{}, fmt.Errorf("open bootstrap client for version probe: %w", err)
+	}
+	defer func() {
+		_ = bootClient.Close()
+	}()
+	return bootClient.ProbeVersion(ctx)
 }
 
 // startOptCorpus starts the async system.query_log performance-corpus
