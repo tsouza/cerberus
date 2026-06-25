@@ -118,6 +118,11 @@
             "enabled": { "type": "boolean" },
             "zookeeperPath": { "type": "string" }
           }
+        },
+        "storagePolicy": { "type": "string" },
+        "settings": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
         }
       },
       "additionalProperties": { "type": ["string", "number", "boolean"] }

@@ -1097,6 +1097,8 @@ func TestInlineLit_RendersTypes(t *testing.T) {
 		{"int", 42, "42"},
 		{"int64", int64(9), "9"},
 		{"float64", 0.5, "0.5"},
+		{"bool_true", true, "true"},
+		{"bool_false", false, "false"},
 		{"string_plain", "hello", "'hello'"},
 		{"string_quote", "it's", "'it\\'s'"},
 		{"string_backslash", `a\b`, `'a\\b'`},

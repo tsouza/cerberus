@@ -1048,6 +1048,12 @@ func InlineLit(v any) Frag {
 			b.sb.WriteString(strconv.FormatInt(x, 10))
 		case int:
 			b.sb.WriteString(strconv.FormatInt(int64(x), 10))
+		case bool:
+			// Bare CH boolean literal (true / false) — the form a
+			// ClickHouse SETTINGS / DDL value takes when it isn't a
+			// quoted string. ClickHouse accepts the bare keywords for
+			// boolean settings.
+			b.sb.WriteString(strconv.FormatBool(x))
 		case float64:
 			// Mirror the LitFloat path in Builder.Expr: emit ±Inf
 			// / NaN as a CH-portable division form so the SQL the

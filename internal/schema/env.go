@@ -1,7 +1,9 @@
 package schema
 
 import (
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -101,6 +103,73 @@ func envCSVList(key string) []string {
 		}
 	}
 	return out
+}
+
+// KV is one ordered `key = value` entry of a ClickHouse MergeTree SETTINGS
+// tail — the value-carrier the schema-provisioning escape hatch threads from
+// the CERBERUS_SCHEMA_SETTINGS env var through to chsql.TableSettings. The
+// slice order is preserved end-to-end so the emitted DDL is deterministic
+// (a stable golden / byte-identical re-apply). Value carries its Go type: an
+// int64 / float64 / bool renders BARE (the form a numeric or boolean CH
+// setting takes — e.g. `min_bytes_for_wide_part = 0`), a string renders
+// single-quoted (e.g. `storage_policy = 's3_tiered'`) — the RHS quoting is
+// inferred from the value's dynamic type by chsql.InlineLit. It lives here
+// rather than in chsql because chsql already imports this package, so a
+// chsql-owned KV would form an import cycle.
+type KV struct {
+	Key   string
+	Value any
+}
+
+// ParseKVList parses a `k=v,k2=v2` string into the ordered KV slice the
+// schema-provisioning SETTINGS escape hatch consumes. It mirrors envCSVList's
+// trim-and-skip-empty discipline for the comma split, but is FAIL-FAST on a
+// token that carries no `=` (a malformed setting must surface at startup, not
+// be silently dropped). Order is preserved so the rendered DDL is
+// deterministic. Each value's Go type is inferred — a bare integer parses to
+// int64, a bare float to float64, `true`/`false` to bool, anything else stays a
+// string — so chsql.TableSettings renders numerics/bools bare and strings
+// single-quoted. Unset / whitespace-only returns nil.
+func ParseKVList(raw string) ([]KV, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var out []KV
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, fmt.Errorf("malformed setting %q: expected k=v", part)
+		}
+		k = strings.TrimSpace(k)
+		if k == "" {
+			return nil, fmt.Errorf("malformed setting %q: empty key", part)
+		}
+		out = append(out, KV{Key: k, Value: inferKVValue(strings.TrimSpace(v))})
+	}
+	return out, nil
+}
+
+// inferKVValue maps a raw setting value to the Go type chsql.InlineLit renders
+// in the right CH form: a bare integer / float / boolean stays numeric/bool (so
+// it renders unquoted), and anything else is a string (single-quoted). This is
+// what lets `storage_policy=s3_tiered` render quoted while
+// `min_bytes_for_wide_part=0` renders bare.
+func inferKVValue(v string) any {
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return f
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	return v
 }
 
 // DefaultOTelLogsFromEnv returns DefaultOTelLogs() with the
