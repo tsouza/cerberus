@@ -13,6 +13,20 @@
 //   this preflight re-reads the pushed commit's check-runs + legacy statuses and
 //   refuses to release unless EVERY required check is settled GREEN.
 //
+// WAIT-then-EVALUATE (why it can't snapshot once):
+//   release.yml fires on the SAME push event as the CI workflows
+//   (ci / e2e / compatibility / chdb / …), so a one-shot snapshot taken the
+//   moment preflight starts sees every lane `queued` / `in_progress` and aborts
+//   with "still queued (not completed)" — a guaranteed false negative that used
+//   to force a manual re-run of release.yml after CI finished. So the driver
+//   first POLLS the commit's check-SUITES until every suite EXCEPT this release
+//   run's own suite is `completed`, THEN runs the existing one-shot green/tip/EOL
+//   evaluation exactly as before. Waiting on our own suite would deadlock (it is
+//   necessarily in-progress while we poll), so it is resolved by GITHUB_RUN_ID ->
+//   check_suite_id and excluded. The wait is bounded (maxWaitMs / pollIntervalMs);
+//   on timeout the preflight ABORTS naming the still-running suites — fail-safe,
+//   never publish on an unknown/incomplete state.
+//
 // The rule, with no softening:
 //   1. The pushed commit MUST be the current tip of the `release/*.x` branch
 //      it was pushed to. You release the tip of a maintenance line, never an
@@ -57,15 +71,25 @@
 //                      ONLY meaningful on the maintenance path and refuses to
 //                      run otherwise (a wiring guard, not a silent pass).
 //   GITHUB_API_URL     API base (default https://api.github.com).
+//   GITHUB_RUN_ID      this release run's id — resolved to its check_suite_id so
+//                      the wait phase can skip our own (in-progress) suite.
+//                      Auto-present in the Actions runtime; absent off-runner.
 //   RELEASE_SELF_JOBS  comma-separated check-run names belonging to THIS release
 //                      workflow, excluded from the gate.
 //
 // `evaluate(...)` takes the branch HEAD sha, the pushed sha, the raw check-runs,
 // the legacy statuses, the self-job name set, and the released-version tags, and
 // returns a list of blocking problems (empty == release may proceed) plus the
-// count of gated checks. No network, no exclusions beyond self-jobs — exported
-// so the self-test pins the exact pass/fail boundary. The support-window check
-// is a pure helper (`supportWindowProblem`) folded into the same problems list.
+// count of gated checks. It is a ONE-SHOT decision run AFTER the wait phase has
+// confirmed the CI matrix settled. No network, no exclusions beyond self-jobs —
+// exported so the self-test pins the exact pass/fail boundary. The support-window
+// check is a pure helper (`supportWindowProblem`) folded into the same problems
+// list.
+//
+// `allSuitesSettled(suites, ownSuiteId)` is the pure decision behind the wait
+// loop: a check-suite is settled when `status === "completed"`; the release run's
+// own suite (`ownSuiteId`) is ignored. Returns { done, pending } — side-effect
+// free so the self-test pins it; the polling / sleep wrapper lives in main().
 //
 // argv `--self-test` runs the in-process assertion suite and exits.
 //
@@ -97,9 +121,34 @@ const APP_TAG_RE = /^v(\d+)\.(\d+)\.\d+$/;
 // publishes — `release-version-gate.mjs` emits `version` without the `v`).
 const APP_VERSION_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 
+// Wait-phase bounds. The preflight polls the commit's check-suites until every
+// non-own suite is `completed`, then evaluates once. maxWaitMs caps the total
+// wall-clock wait (after which the preflight ABORTS — fail-safe, never publish on
+// an unknown state); pollIntervalMs is the gap between check-suite polls.
+const maxWaitMs = 50 * 60 * 1000; // 50 min — comfortably past the slowest CI lane
+const pollIntervalMs = 30 * 1000; // 30 s between check-suite polls
+
 // ---------------------------------------------------------------------------
 // pure core (exported for the self-test — no network, no process.exit)
 // ---------------------------------------------------------------------------
+
+// allSuitesSettled — the pure decision behind the wait loop. Given the commit's
+// check-suites and THIS release run's own suite id (which is necessarily
+// in-progress and must be ignored — waiting on it deadlocks), return
+// { done, pending } where `done` is true iff every other suite has
+// `status === "completed"`, and `pending` lists the names of the suites still
+// running. The suite name is best-effort (`app.slug` / `app.name` / id) — only
+// used for the abort/notice message, never for the gate decision.
+export function allSuitesSettled(suites, ownSuiteId) {
+  const pending = [];
+  for (const s of suites ?? []) {
+    if (ownSuiteId != null && s.id === ownSuiteId) continue;
+    if (s.status !== 'completed') {
+      pending.push(s.app?.slug ?? s.app?.name ?? `suite#${s.id}`);
+    }
+  }
+  return { done: pending.length === 0, pending };
+}
 
 // currentMinor — the highest released `<major>.<minor>` from the stable `v*`
 // tag list, as a comparable [major, minor] tuple. null when no stable tag
@@ -293,6 +342,45 @@ function selfTest() {
   assert(!MAINTENANCE_BRANCH_RE.test('release/v1.5.0-chart-0.6.4'), 'main release PR branch is NOT a maintenance line');
   assert(!MAINTENANCE_BRANCH_RE.test('main'), 'main is not a maintenance line');
   assert(!MAINTENANCE_BRANCH_RE.test('release/1.4.0'), 'concrete patch is not a maintenance line');
+
+  // --- wait phase: allSuitesSettled ----------------------------------------
+  // A suite is settled when status === "completed"; the release run's own suite
+  // (ownId) is ignored — it is necessarily in-progress while preflight polls.
+  const suite = (id, status, slug) => ({ id, status, app: { slug } });
+  const ownId = 99;
+
+  // All non-own suites completed (own suite still in_progress) -> done.
+  let s = allSuitesSettled(
+    [suite(1, 'completed', 'ci'), suite(2, 'completed', 'compatibility'), suite(ownId, 'in_progress', 'release')],
+    ownId,
+  );
+  assert(s.done === true && s.pending.length === 0, 'all non-own suites completed -> done, no pending');
+
+  // A queued non-own suite -> not done, named in pending; own suite ignored.
+  s = allSuitesSettled(
+    [suite(1, 'completed', 'ci'), suite(2, 'queued', 'e2e'), suite(ownId, 'in_progress', 'release')],
+    ownId,
+  );
+  assert(s.done === false, 'a queued non-own suite -> not done');
+  assert(s.pending.length === 1 && s.pending[0] === 'e2e', 'pending names the queued suite, ignores own');
+
+  // An in_progress non-own suite -> not done.
+  s = allSuitesSettled([suite(1, 'in_progress', 'chdb'), suite(ownId, 'in_progress', 'release')], ownId);
+  assert(s.done === false && s.pending[0] === 'chdb', 'an in_progress non-own suite -> not done, named');
+
+  // The own suite being in_progress alone -> done (it is the only suite and is ignored).
+  s = allSuitesSettled([suite(ownId, 'in_progress', 'release')], ownId);
+  assert(s.done === true && s.pending.length === 0, 'own suite alone is ignored -> done');
+
+  // Multiple pending suites are all named.
+  s = allSuitesSettled([suite(1, 'queued', 'ci'), suite(2, 'in_progress', 'e2e')], ownId);
+  assert(s.done === false && s.pending.length === 2, 'multiple pending suites -> all named');
+
+  // No own suite id (e.g. off-runner) -> every non-completed suite counts.
+  s = allSuitesSettled([suite(1, 'completed', 'ci')], null);
+  assert(s.done === true, 'null ownId: a completed suite is still settled');
+  s = allSuitesSettled([suite(1, 'in_progress', 'ci')], null);
+  assert(s.done === false && s.pending[0] === 'ci', 'null ownId: an in_progress suite is pending');
 
   // All-green tip -> pass. 5 non-self check-runs + 1 status.
   let r = evaluate({
@@ -497,6 +585,7 @@ async function main() {
   const branch = process.env.GITHUB_REF_NAME ?? '';
   const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
   const token = process.env.GITHUB_TOKEN;
+  const runId = process.env.GITHUB_RUN_ID;
   const selfJobs = new Set(
     (process.env.RELEASE_SELF_JOBS ?? '')
       .split(',')
@@ -576,6 +665,69 @@ async function main() {
       page += 1;
     }
     return out;
+  }
+
+  // All check-suites on the pushed commit. The wait phase polls this until every
+  // suite EXCEPT this release run's own is `completed`.
+  async function allCheckSuites() {
+    const out = [];
+    let page = 1;
+    for (;;) {
+      const data = await getJSON(
+        `${apiBase}/repos/${repo}/commits/${pushedSha}/check-suites?per_page=100&page=${page}`,
+      );
+      const suites = data.check_suites ?? [];
+      out.push(...suites);
+      if (suites.length < 100) break;
+      page += 1;
+    }
+    return out;
+  }
+
+  // Resolve THIS release run's own check-suite id via the run -> check_suite_id
+  // link, so the wait loop can skip it (it is necessarily in-progress while we
+  // poll — waiting on it deadlocks). null when GITHUB_RUN_ID is absent (e.g. a
+  // local run) — the wait then treats no suite as "own", which is still correct
+  // because the release suite isn't a CI lane the maintainer is waiting on.
+  async function ownSuiteId() {
+    if (!runId) return null;
+    const run = await getJSON(`${apiBase}/repos/${repo}/actions/runs/${runId}`);
+    return run.check_suite_id ?? null;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // --- WAIT PHASE: poll until the CI matrix on the commit settles -------------
+  // release.yml fires on the same push as CI, so a one-shot snapshot here would
+  // see everything queued/in_progress and false-abort. Poll the check-suites
+  // until every non-own suite is completed, bounded by maxWaitMs. On timeout,
+  // ABORT naming the still-running suites (fail-safe — never publish on an
+  // unknown state).
+  const ownId = await ownSuiteId();
+  const waitDeadline = Date.now() + maxWaitMs;
+  for (;;) {
+    const suites = await allCheckSuites();
+    const { done, pending } = allSuitesSettled(suites, ownId);
+    if (done) {
+      ghNotice(
+        `maintenance preflight: CI matrix on ${pushedSha.slice(0, 8)} has settled ` +
+          `(${suites.length} check-suite(s)); evaluating green gate.`,
+      );
+      break;
+    }
+    if (Date.now() >= waitDeadline) {
+      ghError(
+        `maintenance preflight: timed out after ${Math.round(maxWaitMs / 60000)} min waiting for CI on ` +
+          `${branch}@${pushedSha.slice(0, 8)} to finish — still running: ${pending.join(', ')}. ` +
+          `Refusing to publish on an incomplete state; re-run once CI settles.`,
+      );
+      process.exit(1);
+    }
+    ghNotice(
+      `maintenance preflight: ${pending.length} check-suite(s) still running ` +
+        `(${pending.join(', ')}); re-polling in ${Math.round(pollIntervalMs / 1000)}s.`,
+    );
+    await sleep(pollIntervalMs);
   }
 
   const head = await branchHead();
