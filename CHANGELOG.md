@@ -4,6 +4,20 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.7.0] — 2026-06-25
+
+### Added
+
+- **api:** add /info metadata + optimization fingerprint endpoint (#1082)
+- **schema:** configurable storage_policy + MergeTree settings on auto-created tables (#1081)
+
+### Fixed
+
+- **chclient:** re-key query_id on columnar row-path fallback to avoid CH 216 (#1086)
+- **release:** maintenance preflight waits for CI to finish instead of snapshotting (#1083)
+- **traceql:** push time bound into compare scan + root leg, not above the join (#1080)
+- **chopt:** probe CH version over the default connection so a missing otel DB no longer pins 24.8 (#1079)
+
 ## [v1.6.1] — 2026-06-25
 
 ### Added
