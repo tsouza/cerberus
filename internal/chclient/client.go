@@ -921,6 +921,28 @@ func queryIDFromContext(ctx context.Context) string {
 	return id
 }
 
+// freshQueryID mints a NEW per-dispatch query_id for ctx and re-stamps it onto
+// the returned context, OVERWRITING any id ensureQueryID previously cached. It
+// exists for the one case where a single logical query drives a SECOND physical
+// ClickHouse execution under the same ctx: the columnar matrix decode's row-path
+// fallback. The columnar attempt already dispatched the cached id to the server;
+// reusing that same id for the fallback collides with the still-running columnar
+// query on a slow backend and ClickHouse rejects the fallback with code 216
+// (QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING). A fresh counter value keeps the
+// fallback's id unique while preserving the "<traceID>-<spanID>-<counter>" shape
+// (the trace id stays a greppable prefix). When no valid trace is present the id
+// is "" (the driver self-generates one) and ctx is returned unchanged, matching
+// ensureQueryID's no-trace contract.
+func freshQueryID(ctx context.Context) (string, context.Context) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.HasTraceID() {
+		return "", ctx
+	}
+	id := sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
+		strconv.FormatUint(queryIDCounter.Add(1), 10)
+	return id, context.WithValue(ctx, queryIDKey, id)
+}
+
 // EnsureQueryID is the exported single-source-of-truth seam for the
 // per-dispatch ClickHouse query_id. It returns the id for ctx (generating and
 // caching it on the returned context if absent) so the engine can fix ONE id

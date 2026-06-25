@@ -184,3 +184,98 @@ func TestQueryContext_StampsAndCachesQueryID(t *testing.T) {
 		t.Errorf("cached query_id %q is not prefixed by the trace id", got)
 	}
 }
+
+// TestFreshQueryID_DistinctFromCached — freshQueryID mints a NEW id even when
+// ctx already carries a cached one (the columnar attempt's id), overwriting the
+// cache so a SECOND physical execution under the same ctx never reuses the
+// in-flight id. This is the code-216 guard: the columnar matrix attempt and its
+// row-path fallback are two physical CH executions under one request ctx, and
+// they MUST carry distinct query_ids or the slow-backend fallback collides with
+// the still-running columnar query.
+func TestFreshQueryID_DistinctFromCached(t *testing.T) {
+	t.Parallel()
+
+	tid := trace.TraceID{
+		0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+		0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+	}
+	sid := trace.SpanID{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11}
+	prefix := tid.String() + "-"
+
+	// The columnar attempt fixes its id (the engine's EnsureQueryID seam).
+	columnarID, ctx := ensureQueryID(tracedCtx(tid, sid))
+	if columnarID == "" {
+		t.Fatal("ensureQueryID returned empty under a valid trace")
+	}
+
+	// The fallback re-keys: a fresh, DISTINCT id that overwrites the cache.
+	fallbackID, ctx := freshQueryID(ctx)
+	if fallbackID == "" {
+		t.Fatal("freshQueryID returned empty under a valid trace")
+	}
+	if fallbackID == columnarID {
+		t.Fatalf("fallback reused the columnar query_id %q; ClickHouse would reject it with code 216", columnarID)
+	}
+	if !strings.HasPrefix(fallbackID, prefix) {
+		t.Errorf("fallback query_id %q lost the trace prefix %q", fallbackID, prefix)
+	}
+
+	// The cache now reads back the FRESH id — the row fallback's queryContext
+	// (which reads queryIDFromContext) stamps the distinct id, not the columnar
+	// one.
+	if got := queryIDFromContext(ctx); got != fallbackID {
+		t.Errorf("queryIDFromContext after freshQueryID = %q; want the re-keyed %q", got, fallbackID)
+	}
+}
+
+// TestFreshQueryID_NoTrace — with no valid trace, freshQueryID yields "" and
+// leaves ctx unchanged (the driver self-generates an id), mirroring
+// ensureQueryID's no-trace contract so an un-instrumented fallback is never an
+// error path.
+func TestFreshQueryID_NoTrace(t *testing.T) {
+	t.Parallel()
+
+	id, out := freshQueryID(context.Background())
+	if id != "" {
+		t.Errorf("freshQueryID(plain) = %q; want empty", id)
+	}
+	if out != context.Background() {
+		t.Error("freshQueryID(plain) re-keyed the ctx; want it unchanged when no trace is present")
+	}
+}
+
+// TestColumnarFallback_DistinctQueryIDFromColumnar — drives the columnar
+// decoder's fallback path the way a non-matrix shape (the Loki log-stream
+// projection) does in production: the columnar attempt caches its id, then the
+// row fallback re-keys via freshQueryID before queryContext stamps it. Asserts
+// the two physical executions resolve to DISTINCT ids end-to-end through
+// queryContext (the WithQueryID stamp), which is the exact pairing ClickHouse
+// rejected with code 216 before the fix.
+func TestColumnarFallback_DistinctQueryIDFromColumnar(t *testing.T) {
+	t.Parallel()
+
+	tid := trace.TraceID{
+		0x2b, 0x58, 0x00, 0x71, 0x90, 0xa6, 0x32, 0xed,
+		0x79, 0xd3, 0x3b, 0xb7, 0xc4, 0xd2, 0x4b, 0x1e,
+	}
+	sid := trace.SpanID{0x1f, 0xb3, 0xec, 0x1e, 0x9b, 0x59, 0xe6, 0x14}
+	c := &Client{}
+
+	// Columnar attempt: queryContext caches + stamps the id queryCursorColumnar
+	// sends to ch-go.
+	columnarCtx := c.queryContext(tracedCtx(tid, sid))
+	columnarID := queryIDFromContext(columnarCtx)
+
+	// Fallback: columnarDecoder.decode re-keys with freshQueryID, then the row
+	// path's queryContext reads back the re-keyed id.
+	_, fallbackBaseCtx := freshQueryID(columnarCtx)
+	fallbackCtx := c.queryContext(fallbackBaseCtx)
+	fallbackID := queryIDFromContext(fallbackCtx)
+
+	if columnarID == "" || fallbackID == "" {
+		t.Fatalf("expected non-empty ids; got columnar=%q fallback=%q", columnarID, fallbackID)
+	}
+	if columnarID == fallbackID {
+		t.Fatalf("columnar and fallback share query_id %q; this is the code-216 collision the fix prevents", columnarID)
+	}
+}
