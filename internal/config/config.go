@@ -364,6 +364,22 @@ type SchemaProvisioning struct {
 	// cluster setup), resolved in internal/schema/ddl.
 	DatabaseReplicatedShard   string
 	DatabaseReplicatedReplica string
+
+	// StoragePolicy (CERBERUS_SCHEMA_STORAGE_POLICY) is the typed shorthand
+	// for the MergeTree `storage_policy` setting on every auto-created table —
+	// the common S3 / tiered-storage knob. Empty (the default) appends no
+	// storage_policy. When set it is folded into the SETTINGS tail PINNED
+	// FIRST (before Settings) so the emitted DDL is deterministic. Setting it
+	// AND also putting a `storage_policy` key in Settings is rejected at
+	// startup (one way to set it).
+	StoragePolicy string
+
+	// Settings (CERBERUS_SCHEMA_SETTINGS, `k=v,k2=v2`) is the generic
+	// MergeTree-SETTINGS escape hatch: an ORDERED list of extra settings
+	// appended to every auto-created table's SETTINGS tail (e.g.
+	// `min_bytes_for_wide_part=0`). Order is preserved for deterministic DDL.
+	// Empty (the default) appends nothing — strict backward compatibility.
+	Settings []schema.KV
 }
 
 // AdmitConfig holds the per-handler admission-control concurrency caps.
@@ -555,6 +571,8 @@ const (
 	envSchemaDBReplPath    = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
 	envSchemaDBReplShard   = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
 	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
+	envSchemaStoragePolicy = "CERBERUS_SCHEMA_STORAGE_POLICY"
+	envSchemaSettings      = "CERBERUS_SCHEMA_SETTINGS"
 	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
 	envLogCommentShape     = "CERBERUS_LOG_COMMENT_SHAPE"
@@ -944,6 +962,8 @@ var allEnvKeys = []string{
 	envSchemaDBReplPath,
 	envSchemaDBReplShard,
 	envSchemaDBReplReplica,
+	envSchemaStoragePolicy,
+	envSchemaSettings,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
 	envLogCommentShape,
@@ -1917,6 +1937,10 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
+	settings, err := getKVList(v, envSchemaSettings)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
 	return SchemaProvisioning{
 		Cluster:                   getString(v, envSchemaCluster),
 		TableEngine:               getString(v, envSchemaTableEngine),
@@ -1928,7 +1952,23 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 		DatabaseReplicatedPath:    getString(v, envSchemaDBReplPath),
 		DatabaseReplicatedShard:   getString(v, envSchemaDBReplShard),
 		DatabaseReplicatedReplica: getString(v, envSchemaDBReplReplica),
+		StoragePolicy:             getString(v, envSchemaStoragePolicy),
+		Settings:                  settings,
 	}, nil
+}
+
+// getKVList resolves a `k=v,k2=v2` env var (via viper) into the ordered
+// schema.KV slice the schema-provisioning escape hatch consumes. Unset / empty
+// returns nil; a token with no `=` is a fail-fast error (a silent drop would
+// hide a misconfigured setting). The parse + type inference lives in
+// schema.ParseKVList so the env-shape discipline sits next to the other schema
+// env helpers.
+func getKVList(v *viper.Viper, key string) ([]schema.KV, error) {
+	kvs, err := schema.ParseKVList(getString(v, key))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return kvs, nil
 }
 
 // envLog parses CERBERUS_LOG_FORMAT + CERBERUS_LOG_LEVEL from the viper

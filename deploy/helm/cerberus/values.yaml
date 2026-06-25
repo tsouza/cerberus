@@ -235,6 +235,16 @@ schema:
     # `{replica}` macros and mirror the ClickHouse cluster's Replicated-DB
     # coordination path, e.g. "/clickhouse/databases/otel/{shard}/{replica}".
     zookeeperPath: ""
+  # -- MergeTree `storage_policy` for every auto-created table
+  # (CERBERUS_SCHEMA_STORAGE_POLICY) — the S3 / tiered-storage shorthand.
+  # Empty appends nothing. Mutually exclusive with a `storage_policy` key in
+  # `settings` below.
+  storagePolicy: ""
+  # -- Extra MergeTree SETTINGS appended to every auto-created table's SETTINGS
+  # tail (CERBERUS_SCHEMA_SETTINGS), as a map of setting name -> value, e.g.
+  # `{ min_bytes_for_wide_part: 0 }`. Joined sorted into `k=v,k2=v2`. Empty
+  # appends nothing (byte-identical default DDL).
+  settings: {}
 
 # -- Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify
 # the ClickHouse connection + schema are usable at boot. Non-fatal — logs and

@@ -287,6 +287,8 @@ var envDocs = []EnvDoc{
 	{envSchemaDBReplPath, "string", "Schema provisioning", "ZooKeeper/Keeper path the Replicated engine coordinates on (e.g. `/clickhouse/databases/otel`). **Required** when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`."},
 	{envSchemaDBReplShard, "string", "Schema provisioning", "Shard name for the Replicated engine - defaults to the ClickHouse server `{shard}` macro."},
 	{envSchemaDBReplReplica, "string", "Schema provisioning", "Replica name for the Replicated engine - defaults to the ClickHouse server `{replica}` macro."},
+	{envSchemaStoragePolicy, "string", "Schema provisioning", "Typed shorthand for the MergeTree `storage_policy` setting on every auto-created table (the S3 / tiered-storage knob). Appended FIRST to the SETTINGS tail. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `CERBERUS_SCHEMA_SETTINGS` (set it in exactly one)."},
+	{envSchemaSettings, "string", "Schema provisioning", "Generic MergeTree-SETTINGS escape hatch: an ordered `k=v,k2=v2` list appended to every auto-created table's SETTINGS tail (e.g. `min_bytes_for_wide_part=0`). Numeric / boolean values render bare, others single-quoted. Empty appends nothing (byte-identical default DDL)."},
 	{envRequirementsCheck, "bool", "Schema provisioning", "Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes."},
 
 	// --- ClickHouse optimizations ---
