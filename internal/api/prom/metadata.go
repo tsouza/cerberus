@@ -253,7 +253,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 
 	var names []string
 	if len(matchers) == 0 {
-		names, err = h.fetchLabelNames(r.Context())
+		names, err = h.fetchLabelNames(r.Context(), startT, endT)
 	} else {
 		names, err = h.fetchLabelNamesMatched(r.Context(), matchers, startT, endT)
 	}
@@ -317,7 +317,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 
 	var values []string
 	if len(matchers) == 0 {
-		values, err = h.fetchLabelValues(r.Context(), name)
+		values, err = h.fetchLabelValues(r.Context(), name, startT, endT)
 	} else {
 		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT)
 	}
@@ -589,8 +589,8 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // stores dotted keys (`service.name`, `http.request.method`) that PromQL
 // grammar forbids in identifier position; without the rewrite, panels
 // doing `sum by (service_name)` silently produce empty matrices.
-func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
-	sql := h.unionLabelNamesSQL()
+func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time) ([]string, error) {
+	sql := h.unionLabelNamesSQL(start, end)
 	names, err := timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql)
 	})
@@ -599,7 +599,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 	}
 	collected := append([]string{model.MetricNameLabel}, names...)
 	if h.resourceArmActive() {
-		resNames, err := h.fetchResourceLabelNames(ctx)
+		resNames, err := h.fetchResourceLabelNames(ctx, start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -616,9 +616,9 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 // allowlist = every key) and emitted in its dot->underscore sanitized form
 // (the wire spelling operators see in Grafana). The caller folds these into
 // the /labels listing alongside the Attributes keys + __name__.
-func (h *Handler) fetchResourceLabelNames(ctx context.Context) ([]string, error) {
+func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.Time) ([]string, error) {
 	resNames, err := timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, h.unionResourceLabelNamesSQL())
+		return h.Client.QueryStrings(ctx, h.unionResourceLabelNamesSQL(start, end))
 	})
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -643,11 +643,11 @@ func (h *Handler) fetchResourceLabelNames(ctx context.Context) ([]string, error)
 	return out, nil
 }
 
-func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, error) {
+func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end time.Time) ([]string, error) {
 	if name == model.MetricNameLabel {
-		return h.fetchMetricNameValues(ctx)
+		return h.fetchMetricNameValues(ctx, start, end)
 	}
-	sql, args := h.unionLabelValuesSQL(name)
+	sql, args := h.unionLabelValuesSQL(name, start, end)
 	values, err := timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql, args...)
 	})
@@ -691,11 +691,11 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 // the summary table has no lowering at all), and advertising names the
 // query surface can't serve is exactly the bug this function's split
 // shape exists to prevent.
-func (h *Handler) fetchMetricNameValues(ctx context.Context) ([]string, error) {
+func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Time) ([]string, error) {
 	bareTables, histogramTable := h.catalogNameTables()
 	var values []string
 	if len(bareTables) > 0 {
-		sql := h.metricNamesSQL(bareTables)
+		sql := h.metricNamesSQL(bareTables, start, end)
 		bare, err := timeCH(ctx, func() ([]string, error) {
 			return h.Client.QueryStrings(ctx, sql)
 		})
@@ -709,7 +709,7 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context) ([]string, error) {
 		values = normalizeMetricValues(bare)
 	}
 	if histogramTable != "" {
-		sql := h.metricNamesSQL([]string{histogramTable})
+		sql := h.metricNamesSQL([]string{histogramTable}, start, end)
 		hist, err := timeCH(ctx, func() ([]string, error) {
 			return h.Client.QueryStrings(ctx, sql)
 		})
@@ -1245,14 +1245,18 @@ func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
 }
 
 // unionLabelNamesSQL builds a UNION of all metric tables' label keys.
-func (h *Handler) unionLabelNamesSQL() string {
+func (h *Handler) unionLabelNamesSQL(start, end time.Time) string {
 	tables := h.metricTables()
 	attrsCol := h.Schema.AttributesColumn
+	pred := h.metadataWindowPred(start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
 		arm := chsql.NewQuery().
 			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
 			From(chsql.Col(t))
+		if pred != nil {
+			arm = arm.Where(pred)
+		}
 		parts = append(parts, arm.Frag())
 	}
 	outer := chsql.NewQuery().
@@ -1269,14 +1273,18 @@ func (h *Handler) unionLabelNamesSQL() string {
 // sanitizes + allowlist-filters in Go (cheaper than an N-key SQL IN over
 // every row's map, and it keeps the Attributes union byte-identical so the
 // promote-all default adds no churn to existing fixtures).
-func (h *Handler) unionResourceLabelNamesSQL() string {
+func (h *Handler) unionResourceLabelNamesSQL(start, end time.Time) string {
 	tables := h.metricTables()
 	resCol := h.Schema.ResourceAttributesColumn
+	pred := h.metadataWindowPred(start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
 		arm := chsql.NewQuery().
 			Select(chsql.As(arrayJoinMapKeysFrag(resCol), "name")).
 			From(chsql.Col(t))
+		if pred != nil {
+			arm = arm.Where(pred)
+		}
 		parts = append(parts, arm.Frag())
 	}
 	outer := chsql.NewQuery().
@@ -1287,17 +1295,61 @@ func (h *Handler) unionResourceLabelNamesSQL() string {
 	return sql
 }
 
+// dateTime64Frag renders the `toDateTime64('<ts>', 9)` literal used to
+// bound the metadata-discovery window. It mirrors the matched-path bound
+// emitted by promql.metadataBoundExpr so the unmatched (no-`match[]`)
+// discovery arms carry byte-identical time semantics.
+func dateTime64Frag(t time.Time) chsql.Frag {
+	return chsql.Frag(func(b *chsql.Builder) { b.DateTime64Lit(t) })
+}
+
+// metadataWindowPred builds the closed `[start,end]` TimeUnix bound the
+// no-`match[]` discovery arms push so a request that carries a window
+// (Grafana's metric/label picker forwards the dashboard range) prunes by
+// the `toDate(TimeUnix)` partition instead of streaming the whole table —
+// turning the leading-key DISTINCT from an O(rows) full-column scan into
+// an O(window) partition-bounded scan. Each bound is omitted when zero, so
+// a no-bound side scans the whole table, matching reference Prometheus's
+// min/max-retention default and the matched-path semantics in
+// promql.wrapMetadataFullRange. Returns nil when both bounds are zero
+// (no WHERE emitted — byte-identical to the prior unbounded form, which is
+// the inherent exact answer when the caller supplies no window).
+func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
+	tsCol := h.Schema.TimestampColumn
+	var bounds []chsql.Frag
+	if !start.IsZero() {
+		bounds = append(bounds, chsql.Gte(chsql.Col(tsCol), dateTime64Frag(start)))
+	}
+	if !end.IsZero() {
+		bounds = append(bounds, chsql.Lte(chsql.Col(tsCol), dateTime64Frag(end)))
+	}
+	switch len(bounds) {
+	case 0:
+		return nil
+	case 1:
+		return bounds[0]
+	default:
+		return chsql.And(bounds...)
+	}
+}
+
 // metricNamesSQL returns the distinct MetricName values across the
 // given tables. Callers group tables by how their names surface in the
 // catalog (see fetchMetricNameValues) — the SQL shape itself is the
-// same UNION-of-DISTINCT-arms for any group size.
-func (h *Handler) metricNamesSQL(tables []string) string {
+// same UNION-of-DISTINCT-arms for any group size. A non-zero start/end
+// pushes the closed metadata window onto each arm so the leading-key
+// DISTINCT prunes by partition instead of scanning the whole table.
+func (h *Handler) metricNamesSQL(tables []string, start, end time.Time) string {
 	metricCol := h.Schema.MetricNameColumn
+	pred := h.metadataWindowPred(start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
 		arm := chsql.NewQuery().
 			Select(chsql.As(distinctIdent(metricCol), "value")).
 			From(chsql.Col(t))
+		if pred != nil {
+			arm = arm.Where(pred)
+		}
 		parts = append(parts, arm.Frag())
 	}
 	outer := chsql.NewQuery().
@@ -1324,19 +1376,30 @@ func (h *Handler) metricNamesSQL(tables []string) string {
 // Mirrors the matcher-side `attributeLookup` chain in
 // `internal/promql/lower.go`: both query and listing surfaces now
 // resolve the same Prom-grammar → OTel-key candidates the same way.
-func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
+func (h *Handler) unionLabelValuesSQL(name string, start, end time.Time) (string, []any) {
 	tables := h.metricTables()
 	attrsCol := h.Schema.AttributesColumn
 	candidates := labelValueCandidates(name)
 	resCol := h.Schema.ResourceAttributesColumn
 	resourceArm := h.resourceLabelValueArmActive(name)
+	pred := h.metadataWindowPred(start, end)
+	// withWindow ANDs the closed metadata window onto an arm's not-empty
+	// predicate so the per-table scan prunes by partition when a window is
+	// present; with no window it returns the not-empty predicate unchanged
+	// (byte-identical to the prior emit).
+	withWindow := func(notEmpty chsql.Frag) chsql.Frag {
+		if pred == nil {
+			return notEmpty
+		}
+		return chsql.And(notEmpty, pred)
+	}
 	parts := make([]chsql.Frag, 0, len(tables)*len(candidates)*2)
 	for _, t := range tables {
 		for _, k := range candidates {
 			arm := chsql.NewQuery().
 				Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
 				From(chsql.Col(t)).
-				Where(mapAtNotEmptyFrag(attrsCol, k))
+				Where(withWindow(mapAtNotEmptyFrag(attrsCol, k)))
 			parts = append(parts, arm.Frag())
 			// Resource arm: read the same candidate key out of the
 			// ResourceAttributes map so a value stored only under a
@@ -1348,7 +1411,7 @@ func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 				resArm := chsql.NewQuery().
 					Select(chsql.As(distinctMapAtFrag(resCol, k), "value")).
 					From(chsql.Col(t)).
-					Where(mapAtNotEmptyFrag(resCol, k))
+					Where(withWindow(mapAtNotEmptyFrag(resCol, k)))
 				parts = append(parts, resArm.Frag())
 			}
 		}
