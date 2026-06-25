@@ -35,6 +35,94 @@ func compareNode() *chplan.MetricsCompare {
 	}
 }
 
+// compareNodeWithRoot extends compareNode with the per-trace root
+// lookup leg (the LEFT JOIN shape that the production traceql
+// drilldown compare emits). It mirrors internal/traceql's
+// compareRootLookup: an Aggregate over a Filter(ParentSpanId empty)
+// GROUP BY TraceId. The join shape is what makes scan-bound pushdown
+// non-trivial (a window filter above `s LEFT JOIN r` cannot prune
+// either MergeTree leg), so the matrix pushdown test below exercises
+// this node rather than the join-free compareNode.
+func compareNodeWithRoot() *chplan.MetricsCompare {
+	m := compareNode()
+	m.TraceIDColumn = "TraceId"
+	m.RootLookup = &chplan.Aggregate{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_traces"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "ParentSpanId"},
+				Right: &chplan.LitString{V: ""},
+			},
+		},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
+		},
+	}
+	return m
+}
+
+// TestEmitRangeWindowCompare_JoinScanPushdown pins the FIX-1 scan-
+// bounding pushdown for the join (RootLookup) shape — the prod
+// traces-drilldown OOM. The (Start - range, End] Timestamp window must
+// land INSIDE each MergeTree scan of `s LEFT JOIN r`, never on the
+// SELECT wrapping the join (CH 24.12 cannot push a join-level predicate
+// into either leg):
+//
+//   - the `s` span leg carries the bound in its own WHERE, immediately
+//     above the `AS s` alias;
+//   - the `r` root leg is seeded with `TraceId IN (<bounded cohort
+//     trace-ids>)` so the same window prunes the root scan through the
+//     GROUP BY TraceId aggregate, while preserving rootName enrichment
+//     for every trace the join can match.
+func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
+	t.Parallel()
+
+	rw := &chplan.RangeWindow{
+		Input:           compareNodeWithRoot(),
+		Range:           time.Minute,
+		Step:            time.Minute,
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	lo := "`Timestamp` > toDateTime64('2026-05-12 10:00:00.000000000', 9) - toIntervalNanosecond(60000000000)"
+	hi := "`Timestamp` <= toDateTime64('2026-05-12 10:03:00.000000000', 9)"
+
+	// The 's' span leg: bound sits in the WHERE immediately preceding the
+	// `AS s` alias — i.e. inside the scan, below the join.
+	sLeg := "WHERE " + lo + " AND " + hi + ") AS s"
+	if !strings.Contains(sql, sLeg) {
+		t.Errorf("matrix join SQL must bound the 's' scan inside the join (want %q):\n%s", sLeg, sql)
+	}
+
+	// The 'r' root leg: seeded by the bounded cohort's trace-id set so
+	// the root scan prunes the same way, with enrichment preserved.
+	rSeed := "WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) " +
+		"WHERE " + lo + " AND " + hi + ") AS _cmp_seed)) AS r"
+	if !strings.Contains(sql, rSeed) {
+		t.Errorf("matrix join SQL must seed the 'r' root leg by bounded trace-ids (want %q):\n%s", rSeed, sql)
+	}
+
+	// Regression guard: the bound must NOT sit on the SELECT that wraps
+	// the whole `s LEFT JOIN r` (the original un-prunable placement). The
+	// join's ON clause is the last token before the wrapping SELECT's
+	// own scope; assert no Timestamp predicate trails the join's ON.
+	onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
+	if onIdx < 0 {
+		t.Fatalf("expected the LEFT JOIN ON clause in:\n%s", sql)
+	}
+	if strings.Contains(sql[onIdx:], "`Timestamp` >") || strings.Contains(sql[onIdx:], "`Timestamp` <=") {
+		t.Errorf("Timestamp bound must not sit above the join (found after ON clause):\n%s", sql[onIdx:])
+	}
+}
+
 // TestEmitMetricsCompare_BareShape — bare emission groups by
 // (cohort, attr, val) with a deterministic ORDER BY and the Float64
 // count reducer.
