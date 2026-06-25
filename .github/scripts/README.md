@@ -220,7 +220,14 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   no preflight; a `release/*.x` push has no PR gate, so before the publish jobs
   run this re-reads the pushed commit's check-runs + legacy statuses via the
   GitHub API and FAILS the release unless the commit is the branch tip AND every
-  non-self check is settled green (success / skipped / neutral). The release
+  non-self check is settled green (success / skipped / neutral). Because
+  `release.yml` fires on the SAME push as the CI workflows, the driver first
+  WAITS — polling the commit's check-SUITES (`allSuitesSettled`) until every
+  suite except this release run's own (resolved via `GITHUB_RUN_ID` ->
+  `check_suite_id`) is `completed` — THEN runs the one-shot green evaluation.
+  The wait is bounded (`maxWaitMs` ~50 min / `pollIntervalMs` ~30 s); on timeout
+  it ABORTS naming the still-running suites (fail-safe — never publish on an
+  incomplete state). The release
   run's own jobs (`gate` / `preflight` / `goreleaser` / `chart-release`) are
   excluded via `RELEASE_SELF_JOBS` (gating on in-flight self-jobs would
   deadlock). Latest-per-name dedup means a green re-run supersedes an earlier
