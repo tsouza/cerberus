@@ -10,6 +10,8 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
+	"github.com/tsouza/cerberus/internal/api/info"
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
@@ -198,6 +201,10 @@ func main() {
 }
 
 func run() error {
+	// Captured first so the /info fingerprint's uptimeSeconds counts from the
+	// earliest point in process lifetime, before any config/connection work.
+	startTime := time.Now()
+
 	cfg, err := config.FromEnv()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -252,10 +259,11 @@ func run() error {
 	// cfg.ExperimentalTSGridRange (the single source of truth for the legacy
 	// ts-grid consumers), drives the per-query SettingsRules built below, and
 	// the main client (passed here) gets the one boot-time columnar-decode swap.
-	optSet, err := resolveCHOptimizations(ctx, logger, client, &cfg)
+	optRes, err := resolveCHOptimizations(ctx, logger, client, &cfg)
 	if err != nil {
 		return err
 	}
+	optSet := optRes.Set
 
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
@@ -387,8 +395,18 @@ func run() error {
 		SchemaPresent: schemaPresent,
 	})
 
+	// /info is cerberus's own metadata/health/connection fingerprint — a
+	// top-level, unauthenticated sibling to /healthz + /readyz, deliberately
+	// NOT under the upstream-compat buildinfo namespaces (which must mirror
+	// Prometheus/Loki byte-for-byte). It reads the SAME HeadProbe breaker the
+	// readiness probe uses for its live reachability/breaker fields, and
+	// reuses the /readyz readiness condition for "ready". Like the health
+	// probes it bypasses otelhttp (low-frequency metadata scrape, no spans).
+	infoHandler := info.New(infoOptions(client, cfg, optRes, schemaReady, schemaPresent, startTime))
+
 	rootMux := http.NewServeMux()
 	healthHandler.Mount(rootMux)
+	infoHandler.Mount(rootMux)
 	maybeMountPProf(rootMux, cfg.DebugPProf, logger)
 	rootMux.Handle("/", tracedAPI)
 
@@ -553,6 +571,95 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 	}
 }
 
+// infoOptions assembles the /info handler options: the static boot Snapshot
+// (build identity, enabled heads, CH address/database, and the resolved
+// optimization decision) plus the live closures the handler re-reads per
+// request. The live reachability + readiness funcs run over the HeadProbe
+// breaker view — the SAME breaker /readyz uses — so /info's clickhouse fields
+// agree with the readiness probe; "ready" mirrors the /readyz condition (CH
+// reachable AND schema present AND schema ready).
+func infoOptions(
+	client *chclient.Client,
+	cfg config.Config,
+	optRes chOptResolution,
+	schemaReady health.SchemaReadyFunc,
+	schemaPresent health.SchemaPresentFunc,
+	startTime time.Time,
+) info.Options {
+	probe := client.ForHead(chclient.HeadProbe)
+
+	serverVersionSource := info.ServerVersionSourceProbe
+	if optRes.VersionFallback {
+		serverVersionSource = info.ServerVersionSourceFallback
+	}
+
+	schemaReadyNow := func() bool {
+		return schemaReady == nil || schemaReady()
+	}
+	schemaPresentNow := func() bool {
+		if schemaPresent == nil {
+			return true
+		}
+		present, _ := schemaPresent()
+		return present
+	}
+
+	return info.Options{
+		Snapshot: info.Snapshot{
+			Service:                   "cerberus",
+			Version:                   Version,
+			Revision:                  buildRevision(),
+			GoVersion:                 runtime.Version(),
+			Heads:                     enabledHeadsList(cfg),
+			CHAddress:                 cfg.ClickHouse.Addr,
+			CHDatabase:                cfg.ClickHouse.Database,
+			ServerVersion:             optRes.ResolvedVersion.String(),
+			ServerVersionSource:       serverVersionSource,
+			OptSelection:              cfg.CHOptimizations,
+			OptMode:                   cfg.CHOptimizationsMode.String(),
+			OptResolvedAgainstVersion: optRes.ResolvedVersion.String(),
+			OptEnabled:                optRes.Set.IDs(),
+		},
+		StartTime:   startTime,
+		Reachable:   func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
+		Breaker:     probe.PeekBreakerState,
+		SchemaReady: schemaReadyNow,
+		Ready: func(ctx context.Context) bool {
+			return probe.Ping(ctx) == nil && schemaPresentNow() && schemaReadyNow()
+		},
+	}
+}
+
+// enabledHeadsList renders the ENABLED heads in the canonical prom/loki/tempo
+// order for the /info fingerprint. The order is fixed (not map iteration) so
+// the body is deterministic.
+func enabledHeadsList(cfg config.Config) []string {
+	order := []config.Head{config.HeadProm, config.HeadLoki, config.HeadTempo}
+	heads := make([]string, 0, len(order))
+	for _, h := range order {
+		if cfg.HeadEnabled(h) {
+			heads = append(heads, string(h))
+		}
+	}
+	return heads
+}
+
+// buildRevision returns the VCS commit the binary was built from, read from
+// the embedded build info (runtime/debug). It is "unknown" when the build
+// carries no VCS stamp (e.g. `go test` binaries or a build with -buildvcs=false).
+func buildRevision() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" {
+			return s.Value
+		}
+	}
+	return "unknown"
+}
+
 // resolveCHOptimizations probes the connected ClickHouse server version and
 // resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it ONCE, returning
 // the immutable EnabledSet. It back-fills cfg.ExperimentalTSGridRange from the
@@ -571,8 +678,20 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 // restart re-probes against a reachable server. A genuine CONFIG fault
 // (unknown feature id, or an unsupported explicit id under enforcing) is still
 // fatal — that is a typo/operator error, independent of connectivity.
-func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, error) {
+// chOptResolution is the boot-time ClickHouse-optimization decision, captured
+// once for the consumers that need more than the EnabledSet: the engine/handler
+// wiring reads Set, while the /info fingerprint also reports the version the
+// auto-picker resolved against and whether that version was probed live or
+// assumed from the supported floor (VersionFallback) after a failed probe.
+type chOptResolution struct {
+	Set             chopt.EnabledSet
+	ResolvedVersion chopt.Version
+	VersionFallback bool
+}
+
+func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chOptResolution, error) {
 	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
+	versionFallback := err != nil
 	if err != nil {
 		// Connectivity fallback: assume the supported floor so 24.8-safe
 		// stable features still resolve under auto; newer features stay off
@@ -591,7 +710,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		LegacyTSGrid:  cfg.LegacyTSGridFlag,
 	}, resolvedVersion)
 	if err != nil {
-		return chopt.EnabledSet{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
+		return chOptResolution{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
 	}
 	for _, w := range warnings {
 		logger.Warn("ch_opt: " + w)
@@ -617,7 +736,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_version", resolvedVersion.String(),
 		"enabled", strings.Join(set.IDs(), ","),
 	)
-	return set, nil
+	return chOptResolution{
+		Set:             set,
+		ResolvedVersion: resolvedVersion,
+		VersionFallback: versionFallback,
+	}, nil
 }
 
 // probeVersionOverBootstrap issues the SELECT version() probe over a

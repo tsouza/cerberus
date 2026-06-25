@@ -111,6 +111,10 @@ components:
   api-admit:      { in: api/admit }
   api-format:     { in: api/format }
   api-health:     { in: api/health }
+  # /info metadata/health/connection fingerprint. Pure leaf like api-health:
+  # cmd builds the static Snapshot from config/chopt/chclient and injects the
+  # live closures, so this package imports no other internal layer.
+  api-info:       { in: api/info }
   chclienttest:   { in: chclienttest }
   qlcommon:       { in: qlcommon }
   # Static fan-out perf linter — reads the chplan IR; leaf utility.
@@ -145,6 +149,7 @@ commonComponents:
   - api-admit
   - api-format
   - api-health
+  - api-info
   - chclienttest
   - qlcommon
   - chopt
