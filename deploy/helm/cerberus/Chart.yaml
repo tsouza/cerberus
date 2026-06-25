@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.6.6
+version: 0.6.7
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.6.1"
+appVersion: "1.7.0"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,27 +45,17 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.6.1
+      image: ghcr.io/tsouza/cerberus:v1.7.0
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: added
-      description: "chopt: composable auto token in CERBERUS_CH_OPTIMIZATIONS (#1076)"
+      description: "api: add /info metadata + optimization fingerprint endpoint (#1082)"
     - kind: added
-      description: "optcorpus: capture cerberus-side rejections in the router corpus (#1065)"
-    - kind: added
-      description: "routerrules: detection-fidelity benchmark + degradation sweep (#1063)"
-    - kind: added
-      description: "routerrules: concrete 5-rule ruleset + harness + chDB-parity CI fix (#1062)"
-    - kind: added
-      description: "routerrules: generic router-rules catalog + offline analysis engine (#1060)"
+      description: "schema: configurable storage_policy + MergeTree settings on auto-created tables (#1081)"
     - kind: fixed
-      description: "release: maintenance preflight excludes de-gated informational lanes (#1077)"
+      description: "release: maintenance preflight waits for CI to finish instead of snapshotting (#1083)"
     - kind: fixed
-      description: "routerrules: gate route_a_memory_near_cap on the configured cap, not the corpus p95 (#1066)"
+      description: "traceql: push time bound into compare scan + root leg, not above the join (#1080)"
     - kind: fixed
-      description: "e2e: reconcile Traces-Drilldown init-race 400 when both bodies are lost (#1070)"
-    - kind: fixed
-      description: "routerrules: wrap integer CH columns to match Go scan types (strict clickhouse-go) (#1064)"
-    - kind: fixed
-      description: "traceql: bound compare() query memory to avoid 2GiB ClickHouse OOM (#1059)"
+      description: "chopt: probe CH version over the default connection so a missing otel DB no longer pins 24.8 (#1079)"
