@@ -164,6 +164,11 @@ jobs:
           # preflight reads check-runs, so they're excluded structurally (gating
           # on them would deadlock).
           RELEASE_SELF_JOBS: gate,preflight,goreleaser,chart-release
+          # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
+          # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate
+          # does NOT `needs:` the crawl info shard, and `dashboard` is informational
+          # on merges — a flake in either must not block a hotfix release.
+          RELEASE_INFORMATIONAL_CHECKS: compose-smoke-shard-info,dashboard
         # Also enforces the support-window / EOL policy: a push to a maintenance
         # line 3+ minors behind the current minor is refused (the line is EOL,
         # gets no hotfixes). See docs/operations.md "Release support window / EOL

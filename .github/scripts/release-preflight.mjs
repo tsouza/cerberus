@@ -18,10 +18,17 @@
 //      it was pushed to. You release the tip of a maintenance line, never an
 //      older/side commit. (For a branch push GITHUB_SHA is normally already the
 //      tip; the check defends against a stale re-drive racing a newer push.)
-//   2. EVERY check-run + legacy status on the commit must be COMPLETED (nothing
-//      still running / queued) AND green (success / skipped / neutral). One
-//      running check, one failure, one cancelled/timed-out lane -> release
-//      ABORTS. No flaky-lane exclusions, no "informational" passes.
+//   2. Every gated check-run + legacy status on the commit must be COMPLETED
+//      (nothing still running / queued) AND green (success / skipped / neutral).
+//      One running check, one failure, one cancelled/timed-out lane -> release
+//      ABORTS. Two name sets are excluded: this release run's OWN jobs
+//      (RELEASE_SELF_JOBS, structural — gating on them deadlocks) and explicitly
+//      de-gated INFORMATIONAL lanes (RELEASE_INFORMATIONAL_CHECKS, prefix-matched
+//      — the compose-smoke-shard-info crawl shard, the dashboard smoke). Those
+//      are deliberately not part of the required gate (the required compose-smoke
+//      aggregate already rolls up the gating shards), so a flake there must not
+//      block a hotfix. Everything else gates by default — a new lane is never
+//      silently un-gated.
 //   3. The maintenance line must be INSIDE the support window — the latest
 //      SUPPORTED_MINOR_LINES minor lines (current + the two prior). A push to a
 //      line that is end-of-life (3+ minors behind the highest released minor)
@@ -197,7 +204,7 @@ export function retireLineForPublish({ version, tags, windowSize = SUPPORTED_MIN
 // evaluate — given the branch tip sha, the pushed sha, the commit's raw
 // check-runs + legacy statuses, and the set of self-job names to exclude,
 // return { problems, gated }. `problems` empty == release may proceed.
-export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags }) {
+export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags, informational }) {
   const problems = [];
 
   // Support-window / EOL gate — independent of the tip + green-check gates, so
@@ -225,9 +232,19 @@ export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs,
     if (!prev || cr.id > prev.id) latest.set(cr.name, cr);
   }
 
+  // A check is excluded from the gate if it is one of THIS release run's own
+  // jobs (structural — gating on them would deadlock) or an explicitly de-gated
+  // INFORMATIONAL lane. Informational lanes are matched by name PREFIX because
+  // matrix children carry a "(shard-…)" suffix; e.g. "compose-smoke-shard-info"
+  // matches "compose-smoke-shard-info (shard-crawl, …)". The required
+  // `compose-smoke` aggregate already rolls up the gating shards, so the crawl
+  // info shard is redundant — a flake there must not block a release. Everything
+  // else that ran must be completed + green (a new lane gates by default).
+  const isInformational = (name) => (informational ?? []).some((p) => p && name.startsWith(p));
+
   let gated = 0;
   for (const cr of latest.values()) {
-    if (selfJobs.has(cr.name)) continue; // this release run's own jobs (structural)
+    if (selfJobs.has(cr.name) || isInformational(cr.name)) continue;
     gated += 1;
     if (cr.status !== 'completed') {
       problems.push(`${cr.name}: still ${cr.status} (not completed)`);
@@ -236,9 +253,9 @@ export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs,
     }
   }
 
-  // Legacy combined statuses (e.g. GitGuardian) — each context must be success.
+  // Legacy combined statuses (e.g. GitGuardian) — each gated context must succeed.
   for (const st of statuses ?? []) {
-    if (selfJobs.has(st.context)) continue;
+    if (selfJobs.has(st.context) || isInformational(st.context)) continue;
     gated += 1;
     if (st.state !== 'success') {
       problems.push(`${st.context}: status ${st.state}`);
@@ -295,6 +312,42 @@ function selfTest() {
   });
   assert(r.problems.length === 0, 'all-green tip should pass: ' + r.problems.join('; '));
   assert(r.gated === 6, `expected 6 gated (self-jobs excluded), got ${r.gated}`);
+
+  // --- informational-lane exclusion (the headline fix) -----------------------
+  const info = ['compose-smoke-shard-info', 'dashboard'];
+  // A flaky de-gated INFORMATIONAL lane (the compose-smoke-shard-info crawl
+  // shard, matched by name prefix despite its "(shard-…)" suffix; a dashboard
+  // smoke) does NOT block the release. Its required roll-up (compose-smoke)
+  // being green is enough.
+  r = evaluate({
+    branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label, informational: info,
+    checkRuns: [
+      cr('check', 'completed', 'success'),
+      cr('compose-smoke', 'completed', 'success'),
+      cr('compose-smoke-shard-info (shard-crawl, crawl/crawl.spec.ts)', 'completed', 'failure'),
+      cr('dashboard-shard (shard-smoke-b)', 'completed', 'failure'),
+    ],
+    statuses: [],
+  });
+  assert(r.problems.length === 0, 'informational red must NOT block: ' + r.problems.join('; '));
+  assert(r.gated === 2, `informational lanes excluded from the gate, got ${r.gated}`);
+
+  // A RED gating (non-informational) check still blocks.
+  r = evaluate({
+    branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label, informational: info,
+    checkRuns: [cr('check', 'completed', 'success'), cr('compose-smoke', 'completed', 'failure')],
+    statuses: [],
+  });
+  assert(r.problems.some((p) => /compose-smoke: failure/.test(p)), 'a red gating check must still block');
+
+  // A gating check that is NOT in the informational list gates by default
+  // (the exclusion is opt-in; a new lane is conservative).
+  r = evaluate({
+    branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label, informational: info,
+    checkRuns: [cr('check', 'completed', 'success'), cr('some-new-lane', 'completed', 'failure')],
+    statuses: [],
+  });
+  assert(r.problems.some((p) => /some-new-lane: failure/.test(p)), 'an unlisted lane must gate by default');
 
   // Pushed commit is NOT the branch tip -> reject (stale re-drive).
   r = evaluate({ branchHead: 'def', pushedSha: 'abc', selfJobs: self, branchLabel: label, checkRuns: [], statuses: [] });
@@ -450,6 +503,13 @@ async function main() {
       .map((s) => s.trim())
       .filter(Boolean),
   );
+  // Name-prefix list of explicitly de-gated INFORMATIONAL lanes (e.g. the
+  // compose-smoke-shard-info crawl shard, the dashboard smoke). A flake in one
+  // of these must not block a maintenance release; everything else still gates.
+  const informational = (process.env.RELEASE_INFORMATIONAL_CHECKS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   if (!MAINTENANCE_BRANCH_RE.test(branch)) {
     ghError(
@@ -532,6 +592,7 @@ async function main() {
     selfJobs,
     branchLabel: branch,
     tags,
+    informational,
   });
 
   if (problems.length > 0) {
