@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.6.3] — 2026-06-25
+
+### Fixed
+
+- **chclient:** re-key query_id on columnar row-path fallback to avoid CH 216
+
 ## [v1.6.2] — 2026-06-25
 
 ### Fixed
