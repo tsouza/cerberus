@@ -302,11 +302,29 @@ CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: {{ . | quote }}
 {{- end }}
 {{- end }}
 {{- end }}
+{{- /* storage_policy shorthand -> its own dedicated env key (NOT the generic
+       settings join), so it can be folded in PINNED FIRST by cerberus. */}}
+{{- with .Values.schema.storagePolicy }}
+CERBERUS_SCHEMA_STORAGE_POLICY: {{ . | quote }}
+{{- end }}
+{{- /* Generic MergeTree SETTINGS map -> CERBERUS_SCHEMA_SETTINGS as a sorted
+       k=v,k2=v2 list (sorted so the rendered env is deterministic; cerberus
+       preserves the order it receives). */}}
+{{- $settings := .Values.schema.settings }}
+{{- if $settings }}
+{{- $pairs := list }}
+{{- range $k := (keys $settings | sortAlpha) }}
+{{- $pairs = append $pairs (printf "%s=%v" $k (index $settings $k | toString)) }}
+{{- end }}
+{{- if $pairs }}
+CERBERUS_SCHEMA_SETTINGS: {{ join "," $pairs | quote }}
+{{- end }}
+{{- end }}
 {{- /* Generic schema.<KEY> long-tail passthrough; skip the typed sub-keys
-       (ttl / replicated) handled above so a duplicate env key is never
-       emitted into the ConfigMap. */}}
+       (ttl / replicated / storagePolicy / settings) handled above so a
+       duplicate env key is never emitted into the ConfigMap. */}}
 {{- range $k, $v := .Values.schema }}
-{{- if not (has $k (list "ttl" "replicated")) }}
+{{- if not (has $k (list "ttl" "replicated" "storagePolicy" "settings")) }}
 CERBERUS_SCHEMA_{{ $k }}: {{ $v | quote }}
 {{- end }}
 {{- end }}

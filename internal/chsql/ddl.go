@@ -1,6 +1,10 @@
 package chsql
 
-import "time"
+import (
+	"time"
+
+	"github.com/tsouza/cerberus/internal/schema"
+)
 
 // Typed ClickHouse DDL surface.
 //
@@ -111,6 +115,35 @@ func TableTTL(column string, d time.Duration) Frag {
 	return func(b *Builder) {
 		ddlToken("TTL ")(b)
 		expr(b)
+	}
+}
+
+// TableSettings returns a Frag rendering a leading-comma-continued SETTINGS
+// tail — `, <k> = <v>, <k2> = <v2>` — for the given ordered entries, or nil
+// when none are supplied (so an unset settings slice appends nothing and the
+// rendered DDL stays byte-identical to the bare upstream template). The leading
+// comma is deliberate: the upstream templates already bake a `SETTINGS ...`
+// clause, so this fragment continues that existing clause rather than opening a
+// second one. Keys are emitted bare (CH setting identifiers), values via
+// InlineLit so the RHS quoting is type-inferred (see schema.KV). Like TableTTL
+// it composes only builder.go primitives — no raw token is written here.
+//
+// The KV data type lives in internal/schema (schema.KV), not here: chsql
+// already imports internal/schema (late_mat.go reads the default OTel schema),
+// so a chsql-owned KV that schema's env parser had to reference would form an
+// import cycle. The token-emitting Frag stays in chsql (the sanctioned
+// primitive zone); only the plain value-carrier struct sits one layer down.
+func TableSettings(kv ...schema.KV) Frag {
+	if len(kv) == 0 {
+		return nil
+	}
+	return func(b *Builder) {
+		for _, e := range kv {
+			ddlToken(", ")(b)
+			BareIdent(e.Key)(b)
+			ddlToken(" = ")(b)
+			InlineLit(e.Value)(b)
+		}
 	}
 }
 

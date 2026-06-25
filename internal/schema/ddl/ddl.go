@@ -42,6 +42,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates"
 
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // Config carries the rendering inputs for the upstream DDL templates. The
@@ -94,6 +95,20 @@ type Config struct {
 	// otel_metrics_gauge, otel_metrics_sum, otel_metrics_histogram,
 	// otel_metrics_exp_histogram, otel_metrics_summary).
 	Tables Tables
+
+	// Settings appends extra MergeTree SETTINGS to every auto-created table,
+	// continuing the `SETTINGS index_granularity=..., ttl_only_drop_parts=1`
+	// tail the upstream templates already bake — the escape hatch for
+	// deployment-specific MergeTree knobs (e.g. an S3 `storage_policy`, or
+	// `min_bytes_for_wide_part`). It is an ORDERED slice, not a map, so the
+	// emitted DDL is deterministic. The zero value (nil/empty) appends
+	// nothing, leaving the DDL byte-identical to the bare template — strict
+	// backward compatibility. The continuation is orthogonal to the
+	// engine / ON CLUSTER mode: it lands on the SETTINGS tail in both
+	// MergeTree and ReplicatedMergeTree shapes. Only the four MergeTree
+	// tables carry a SETTINGS tail; the traces materialized view has none, so
+	// Settings does not apply to it.
+	Settings []schema.KV
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -270,6 +285,36 @@ func ttlExpr(column string, ttl time.Duration) string {
 	return chsql.RenderDDL(frag)
 }
 
+// settingsClause renders the leading-comma-continued SETTINGS tail
+// (`, k = v, k2 = v2`) for cfg.Settings, or "" when none are configured.
+// The fragment continues the `SETTINGS index_granularity=..., ttl_only_drop_parts=1`
+// clause the upstream templates already bake, rather than opening a second
+// SETTINGS clause. Built via the typed chsql.TableSettings constructor — no
+// hand-assembled SQL — so the RHS quoting is type-inferred per entry.
+func (c Config) settingsClause() string {
+	frag := chsql.TableSettings(c.Settings...)
+	if frag == nil {
+		return ""
+	}
+	return chsql.RenderDDL(frag)
+}
+
+// appendSettings splices the configured SETTINGS continuation into a rendered
+// CREATE TABLE statement, immediately after the baked SETTINGS tail and before
+// any trailing newline the template carried. When no extra settings are
+// configured it returns stmt unchanged, so the auto-create DDL stays
+// byte-identical to the bare upstream template (the backward-compat contract).
+// Splicing before the trailing newline (rather than appending after it) keeps
+// the continuation part of the SETTINGS line it extends.
+func (c Config) appendSettings(stmt string) string {
+	clause := c.settingsClause()
+	if clause == "" {
+		return stmt
+	}
+	body := strings.TrimRight(stmt, "\n")
+	return body + clause + stmt[len(body):]
+}
+
 // Apply ensures the configured database exists, then runs CREATE TABLE IF
 // NOT EXISTS for each requested signal against conn using the upstream OTel
 // exporter's DDL templates. Idempotent: re-running over an existing schema is
@@ -406,7 +451,9 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 // see metrics_*_table.sql in the fork and internal/metrics/metrics_model.go
 // in upstream for the canonical Sprintf call.
 func renderMetricsTable(tmpl string, cfg Config, table, ttl string) string {
-	return fmt.Sprintf(tmpl, cfg.Database, table, cfg.clusterClause(), cfg.Engine, ttl)
+	return cfg.appendSettings(
+		fmt.Sprintf(tmpl, cfg.Database, table, cfg.clusterClause(), cfg.Engine, ttl),
+	)
 }
 
 // renderLogsTable renders the logs DDL. The logs template became a
@@ -430,19 +477,19 @@ func renderLogsTable(cfg Config) (string, error) {
 	if err := sqltemplates.LogsCreateTableTmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("ddl: execute logs create-table template: %w", err)
 	}
-	return buf.String(), nil
+	return cfg.appendSettings(buf.String()), nil
 }
 
 // renderTracesTable formats the traces spans-table DDL. Upstream shape:
 // `(database, table, cluster, engine, ttl)`. TTL field is
 // `toDateTime(Timestamp)`.
 func renderTracesTable(cfg Config) string {
-	return fmt.Sprintf(
+	return cfg.appendSettings(fmt.Sprintf(
 		sqltemplates.TracesCreateTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
 		ttlExpr("Timestamp", cfg.TTL.Traces),
-	)
+	))
 }
 
 // renderTracesCreateTsTable formats the `<table>_trace_id_ts` lookup table
@@ -451,12 +498,12 @@ func renderTracesTable(cfg Config) string {
 // caller passes the base traces table name. TTL field is
 // `toDateTime(Start)`.
 func renderTracesCreateTsTable(cfg Config) string {
-	return fmt.Sprintf(
+	return cfg.appendSettings(fmt.Sprintf(
 		sqltemplates.TracesCreateTsTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
 		ttlExpr("Start", cfg.TTL.Traces),
-	)
+	))
 }
 
 // renderTracesCreateTsView formats the `<table>_trace_id_ts_mv`

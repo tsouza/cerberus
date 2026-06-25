@@ -430,26 +430,48 @@ func TestFrag_InlineLit_StringEscapesPreserveBytes(t *testing.T) {
 }
 
 // TestFrag_InlineLit_PanicMessage — the panic message includes the
-// rejected Go type so a wrong callsite is easy to locate.
+// rejected Go type so a wrong callsite is easy to locate. A []byte is a
+// genuinely unsupported type (int / int64 / float64 / bool / string are the
+// supported set), so it stands in as the rejected example.
 func TestFrag_InlineLit_PanicMessage(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("InlineLit(bool) did not panic")
+			t.Fatal("InlineLit([]byte) did not panic")
 		}
 		msg, _ := r.(string)
 		if !strings.Contains(msg, "InlineLit unsupported type") {
 			t.Errorf("panic value = %v; want message mentioning 'InlineLit unsupported type'", r)
 		}
-		if !strings.Contains(msg, "bool") {
-			t.Errorf("panic value = %v; want message mentioning 'bool'", r)
+		if !strings.Contains(msg, "uint8") {
+			t.Errorf("panic value = %v; want message mentioning the rejected type", r)
 		}
 	}()
 	// InlineLit returns a closure; the panic fires only when the closure
 	// runs against a Builder. Invoke it here to surface the panic.
-	InlineLit(true)(NewBuilder())
+	InlineLit([]byte("x"))(NewBuilder())
+}
+
+// TestFrag_InlineLit_Bool pins that a bool renders as the bare CH keyword
+// (true / false), the form a boolean MergeTree SETTINGS value takes.
+func TestFrag_InlineLit_Bool(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		in   bool
+		want string
+	}{
+		{true, "true"},
+		{false, "false"},
+	} {
+		b := NewBuilder()
+		InlineLit(tc.in)(b)
+		if got := b.String(); got != tc.want {
+			t.Errorf("InlineLit(%v) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
 }
 
 // TestFrag_Array_BindsAtPosition — Array elements emit their args

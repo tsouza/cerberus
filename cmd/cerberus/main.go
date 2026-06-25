@@ -33,6 +33,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
@@ -255,7 +256,11 @@ func run() error {
 
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
-	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse, schemaApplyConfig(cfg), cfg.AutoCreateSchema, cfg.AutoCreateDatabase)
+	applyCfg, err := schemaApplyConfig(cfg)
+	if err != nil {
+		return err
+	}
+	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse, applyCfg, cfg.AutoCreateSchema, cfg.AutoCreateDatabase)
 
 	// Boot-time requirements preflight (ON by default). It MUST run AFTER
 	// the schema-create step above — on a fresh DB cerberus has just
@@ -795,7 +800,7 @@ func warnIfClickHouseUnreachable(ctx context.Context, logger *slog.Logger, clien
 // the query heads read (cfg.Schema / cfg.Logs / cfg.Traces), so a
 // CERBERUS_SCHEMA_*_TABLE override creates and queries the same table instead of
 // silently diverging.
-func schemaApplyConfig(cfg config.Config) ddl.Config {
+func schemaApplyConfig(cfg config.Config) (ddl.Config, error) {
 	p := cfg.SchemaProvisioning
 	// Per-signal TTL: a non-zero per-signal override wins; otherwise the
 	// signal inherits the global CERBERUS_SCHEMA_TTL default (which is itself
@@ -805,6 +810,10 @@ func schemaApplyConfig(cfg config.Config) ddl.Config {
 			return override
 		}
 		return p.TTL
+	}
+	settings, err := schemaSettings(p)
+	if err != nil {
+		return ddl.Config{}, err
 	}
 	return ddl.Config{
 		Database: cfg.ClickHouse.Database,
@@ -830,7 +839,36 @@ func schemaApplyConfig(cfg config.Config) ddl.Config {
 			MetricsExpHistogram: cfg.Schema.ExpHistogramTable,
 			MetricsSummary:      cfg.Schema.SummaryTable,
 		},
+		Settings: settings,
+	}, nil
+}
+
+// storagePolicySetting is the MergeTree setting key the StoragePolicy shorthand
+// folds into the SETTINGS tail. Pinned first so the emitted DDL is
+// deterministic regardless of any further Settings entries.
+const storagePolicySetting = "storage_policy"
+
+// schemaSettings resolves the auto-create-table SETTINGS tail from the
+// provisioning config: the StoragePolicy shorthand (when set) is folded in
+// PINNED FIRST, ahead of the generic Settings list, so `storage_policy` always
+// precedes the long-tail settings deterministically. Setting StoragePolicy AND
+// also carrying a `storage_policy` key in Settings is a fail-fast startup error
+// — there is one way to set it.
+func schemaSettings(p config.SchemaProvisioning) ([]schema.KV, error) {
+	if p.StoragePolicy == "" {
+		return p.Settings, nil
 	}
+	for _, kv := range p.Settings {
+		if kv.Key == storagePolicySetting {
+			return nil, fmt.Errorf(
+				"schema: storage_policy set via both CERBERUS_SCHEMA_STORAGE_POLICY and CERBERUS_SCHEMA_SETTINGS — set it in exactly one",
+			)
+		}
+	}
+	out := make([]schema.KV, 0, len(p.Settings)+1)
+	out = append(out, schema.KV{Key: storagePolicySetting, Value: p.StoragePolicy})
+	out = append(out, p.Settings...)
+	return out, nil
 }
 
 // setupSchema runs the auto-create-schema startup hook (when enabled)

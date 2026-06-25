@@ -39,7 +39,10 @@ func TestSchemaApplyConfig_PerSignalTTLFallback(t *testing.T) {
 			TTLMetrics: 0,                   // metrics inherit the global
 		},
 	}
-	got := schemaApplyConfig(cfg)
+	got, err := schemaApplyConfig(cfg)
+	if err != nil {
+		t.Fatalf("schemaApplyConfig: %v", err)
+	}
 	if got.TTL.Metrics != 90*24*time.Hour {
 		t.Errorf("metrics TTL = %v; want global 90d (inherited)", got.TTL.Metrics)
 	}
@@ -67,7 +70,10 @@ func TestSchemaApplyConfig_TableNamesThreaded(t *testing.T) {
 		Logs:   schema.Logs{LogsTable: "my_logs"},
 		Traces: schema.Traces{SpansTable: "my_spans"},
 	}
-	got := schemaApplyConfig(cfg)
+	got, err := schemaApplyConfig(cfg)
+	if err != nil {
+		t.Fatalf("schemaApplyConfig: %v", err)
+	}
 	if got.Tables.MetricsGauge != "m_gauge" || got.Tables.MetricsSum != "m_sum" ||
 		got.Tables.MetricsHistogram != "m_hist" || got.Tables.MetricsExpHistogram != "m_exp" ||
 		got.Tables.MetricsSummary != "m_summary" {
@@ -93,11 +99,78 @@ func TestSchemaApplyConfig_ReplicatedThreaded(t *testing.T) {
 			DatabaseReplicatedReplica: "replica0",
 		},
 	}
-	got := schemaApplyConfig(cfg)
+	got, err := schemaApplyConfig(cfg)
+	if err != nil {
+		t.Fatalf("schemaApplyConfig: %v", err)
+	}
 	if !got.DatabaseEngine.Replicated ||
 		got.DatabaseEngine.ReplicatedZooPath != "/clickhouse/databases/otel" ||
 		got.DatabaseEngine.ReplicatedShard != "shard0" ||
 		got.DatabaseEngine.ReplicatedReplica != "replica0" {
 		t.Errorf("replicated engine not threaded: %+v", got.DatabaseEngine)
+	}
+}
+
+// TestSchemaApplyConfig_StoragePolicyPinnedFirst pins the StoragePolicy
+// shorthand: it folds into Settings ahead of the generic settings list, so
+// `storage_policy` always precedes any CERBERUS_SCHEMA_SETTINGS entries
+// deterministically.
+func TestSchemaApplyConfig_StoragePolicyPinnedFirst(t *testing.T) {
+	cfg := config.Config{
+		SchemaProvisioning: config.SchemaProvisioning{
+			StoragePolicy: "s3_tiered",
+			Settings: []schema.KV{
+				{Key: "min_bytes_for_wide_part", Value: int64(0)},
+			},
+		},
+	}
+	got, err := schemaApplyConfig(cfg)
+	if err != nil {
+		t.Fatalf("schemaApplyConfig: %v", err)
+	}
+	if len(got.Settings) != 2 {
+		t.Fatalf("want 2 settings, got %d: %+v", len(got.Settings), got.Settings)
+	}
+	if got.Settings[0].Key != "storage_policy" || got.Settings[0].Value != "s3_tiered" {
+		t.Errorf("storage_policy not pinned first: %+v", got.Settings)
+	}
+	if got.Settings[1].Key != "min_bytes_for_wide_part" {
+		t.Errorf("generic setting not preserved after storage_policy: %+v", got.Settings)
+	}
+}
+
+// TestSchemaApplyConfig_StoragePolicyDualSourceRejected pins the fail-fast:
+// setting storage_policy via BOTH the shorthand and a Settings key is a
+// startup error — there is exactly one way to set it.
+func TestSchemaApplyConfig_StoragePolicyDualSourceRejected(t *testing.T) {
+	cfg := config.Config{
+		SchemaProvisioning: config.SchemaProvisioning{
+			StoragePolicy: "s3_tiered",
+			Settings: []schema.KV{
+				{Key: "storage_policy", Value: "other"},
+			},
+		},
+	}
+	if _, err := schemaApplyConfig(cfg); err == nil {
+		t.Fatal("want error for storage_policy set via both shorthand and Settings, got nil")
+	}
+}
+
+// TestSchemaApplyConfig_SettingsOnlyNoStoragePolicy pins that a bare Settings
+// list (no shorthand) threads through unchanged — no spurious storage_policy.
+func TestSchemaApplyConfig_SettingsOnlyNoStoragePolicy(t *testing.T) {
+	cfg := config.Config{
+		SchemaProvisioning: config.SchemaProvisioning{
+			Settings: []schema.KV{
+				{Key: "min_bytes_for_wide_part", Value: int64(0)},
+			},
+		},
+	}
+	got, err := schemaApplyConfig(cfg)
+	if err != nil {
+		t.Fatalf("schemaApplyConfig: %v", err)
+	}
+	if len(got.Settings) != 1 || got.Settings[0].Key != "min_bytes_for_wide_part" {
+		t.Errorf("settings not threaded as-is: %+v", got.Settings)
 	}
 }
