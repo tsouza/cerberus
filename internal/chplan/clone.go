@@ -54,6 +54,7 @@ func CloneNode(n Node) Node {
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.Scalars = cloneFloats(v.Scalars)
 		c.ScalarExprs = cloneExprs(v.ScalarExprs)
+		// InstantScanBounded is a bool — copied by the `c := *v` above.
 		return &c
 	case *RangeWindowNative:
 		c := *v

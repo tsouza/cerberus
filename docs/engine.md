@@ -301,6 +301,55 @@ substitution rule would be a guaranteed no-op).
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.
 
+#### Scan time-bound contract
+
+An instant windowed range aggregation (`rate` / `increase` /
+`*_over_time` / …) reads per-sample rows out of MergeTree and
+`groupArray`s them per series at the innermost level before the
+post-`groupArray` `arrayFilter` discards out-of-window samples. If that
+innermost read carries no time predicate, ClickHouse cannot prune
+granules and materialises the full per-series retention — tens of
+millions of rows on a prod instant query. The bound used to live only in
+the emitter, so it was repeatedly forgotten as new `groupArray` emitters
+landed.
+
+It is now an IR-level property: an instant windowed-array **leaf**
+RangeWindow (`OuterRange == 0`, and `Input` is **not** a
+`MetricsAggregate` / `MetricsHistogramOverTime` / `MetricsCompare`)
+carries `RangeWindow.InstantScanBounded`, established once by
+`chplan.AttachInstantScanTimeBounds` (run at the top of `chsql.Emit`) and
+by the optimiser's must-run `analyzer.scan-time-bound` batch
+(`NormalizeScanTimeBound` establishes, `RequireScanTimeBound`
+fail-closes). The flag is the contract object; the predicate text is
+rendered byte-identically by the emitters.
+
+Two layers enforce it:
+
+- **Plan-build** — `RequireScanTimeBound` panics (→ HTTP 500 via the
+  panic-recovery middleware) if any instant windowed-array leaf reaches
+  the end of the analyzer batch unmarked.
+- **Emit** — every instant-leaf emit path (`emitWindowedArray` /
+  `emitWindowedArrayPairsAnchored` / `emitWindowedArrayExtrapolated` via
+  `pushInstantScanBound`, and the `emitRangeWindowOverTimeDirect` instant
+  path via `requireInstantScanBound`) refuses to render an unbounded
+  innermost scan.
+
+**IR-verified paths** (governed by the contract above): every instant
+`rate` / `irate` / `increase` / `delta` / `idelta` / `*_over_time`
+(array and direct) / `ts_of_*_over_time` / `quantile_over_time` /
+`deriv` / `resets` / `changes` / `holt_winters` / `predict_linear` /
+`log_rate` leaf.
+
+**Excluded paths** (bounded at emit time by their own mechanism, *not*
+flagged in the IR — by design, not by default):
+
+- Matrix shapes (`OuterRange > 0`) and the `MetricsAggregate` /
+  `MetricsHistogramOverTime` / `MetricsCompare` emitters bound via
+  `maybePushInnerScanTimeBounds` (gated on `Start && End`).
+- `RangeLWR`, `RangeBucketFanout`, and `AbsentOverTime` are separate IR
+  node types with their own `maybePushRangeScanTimeBound` / inner-scan
+  bounds.
+
 ### Typed SQL — `internal/chsql`
 
 Every emitted byte goes through a typed builder. Query shapes compose
