@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.6.8
+version: 0.6.9
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.5.4"
+appVersion: "1.5.5"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,11 +45,9 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.5.4
+      image: ghcr.io/tsouza/cerberus:v1.5.5
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: fixed
-      description: "tempo: bound windowless tag/attribute discovery to recent window (#1089)"
-    - kind: fixed
-      description: "prom: push request window into no-match metadata discovery scans (#1088)"
+      description: "chsql: dedup duplicate-timestamp samples in row-path rate/increase/delta (#1092)"

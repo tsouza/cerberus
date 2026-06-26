@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.5.5] — 2026-06-26
+
+### Fixed
+
+- **chsql:** dedup duplicate-timestamp samples in row-path rate/increase/delta (#1092)
+
 ## [v1.5.4] — 2026-06-26
 
 ### Fixed
