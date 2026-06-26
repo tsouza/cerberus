@@ -1644,26 +1644,27 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 // downstream quantity (length, counter_delta, first/last_ts, first_val)
 // count distinct timestamps.
 //
-// `arr` must be a bare column reference (it is rendered four times — as
-// the filter source, the enumerate source, the `length(arr)`
-// last-element guard, and the `arr[i + 1]` neighbour lookup), so the
-// repetition is a column read, never a recomputed expression.
+// Collapse strategy: `arrayCompact(p -> ts(p), …)` drops every element
+// equal (by ts) to its predecessor, keeping the FIRST of each run in a
+// single linear pass that never captures `arr` itself — so, unlike an
+// `arrayFilter` whose lambda reads `arr[i + 1]`, ClickHouse does not
+// replicate the whole window array once per element (that O(n²) blow-up
+// per window OOM'd `rate(…[5m])` query_range past the per-query memory
+// cap). To keep the LAST (max-valued) tuple of each run rather than the
+// first while staying linear, the array is reversed into ts-descending
+// order before the compact and reversed back after: arrayCompact then
+// keeps the max-valued tuple of each run, and the outer reverse restores
+// the ts-ascending order the downstream layers assume — byte-identical
+// membership and ordering to the prior arrayFilter form.
 func dedupWindowPairsByTsFrag(arr Frag) Frag {
 	tsOf := func(t Frag) Frag { return Call("tupleElement", t, InlineLit(int64(1))) }
 	return Call(
-		"arrayFilter",
-		Lambda2(
-			"p", "i",
-			Or(
-				Eq(BareIdent("i"), Call("length", arr)),
-				Neq(
-					tsOf(BareIdent("p")),
-					tsOf(Subscript(arr, Add(BareIdent("i"), InlineLit(int64(1))))),
-				),
-			),
+		"arrayReverse",
+		Call(
+			"arrayCompact",
+			Lambda1("p", tsOf(BareIdent("p"))),
+			Call("arrayReverse", arr),
 		),
-		arr,
-		Call("arrayEnumerate", arr),
 	)
 }
 
