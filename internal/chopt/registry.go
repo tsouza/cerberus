@@ -118,7 +118,7 @@ const (
 // TRADEOFF rather than a version-gated win (columnar_result_decode) stays
 // AutoSelect=false and is reachable only by explicit listing.
 //
-// Note: the per-feature ClickHouse allow_experimental_* setting is NOT a
+// Note: the per-feature ClickHouse allow_experimental_* setting NAME is NOT a
 // registry field. Stamping that setting lives in the engine plan path: the
 // engine inspects the post-optimize plan (planHasTSGridNative) and co-stamps
 // allow_experimental_time_series_aggregate_functions=1 via
@@ -126,12 +126,27 @@ const (
 // rather than on every query merely because the feature is enabled. Carrying a
 // setting name on the registry entry as well would be a dead second source of
 // truth, so it is intentionally absent here.
+//
+// RequiresExperimentalTSGrid DOES record, data-driven rather than by hardcoded
+// id, WHICH features need that experimental setting stamped — the four native
+// timeSeries*ToGrid aggregates. The resolver reads this flag to gate those
+// features on the boot capability verdict (Config.Capability): a feature with
+// RequiresExperimentalTSGrid is enabled only when the server both meets its
+// version floor AND permits the experimental setting. Features that touch no
+// experimental setting (aggregation_in_order, condition_cache,
+// columnar_result_decode) leave it false and are never capability-gated.
 type Feature struct {
 	ID         string
 	MinVersion Version
 	Stability  Stability
 	AutoSelect bool
-	Doc        string
+	// RequiresExperimentalTSGrid marks a feature whose native node makes the
+	// engine stamp allow_experimental_time_series_aggregate_functions=1. Such a
+	// feature is additionally gated on the boot capability verdict: a server that
+	// forbids the setting (constrained profile / readonly user) drops it to the
+	// fan-out path even when the version floor is met.
+	RequiresExperimentalTSGrid bool
+	Doc                        string
 }
 
 // registry is the seeded feature table. It is value data (no init-time
@@ -153,18 +168,20 @@ var registry = []Feature{
 		Doc:        "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)",
 	},
 	{
-		ID:         FeatureTSGridRange,
-		MinVersion: Version{Major: 25, Minor: 6},
-		Stability:  Experimental,
-		AutoSelect: true,
-		Doc:        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.6)",
+		ID:                         FeatureTSGridRange,
+		MinVersion:                 Version{Major: 25, Minor: 6},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.6)",
 	},
 	{
-		ID:         FeatureTSGridResample,
-		MinVersion: Version{Major: 25, Minor: 6},
-		Stability:  Experimental,
-		AutoSelect: true,
-		Doc:        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.6)",
+		ID:                         FeatureTSGridResample,
+		MinVersion:                 Version{Major: 25, Minor: 6},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.6)",
 	},
 	{
 		ID:         FeatureColumnarResultDecode,
@@ -174,18 +191,20 @@ var registry = []Feature{
 		Doc:        "decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only — never auto)",
 	},
 	{
-		ID:         FeatureTSGridChanges,
-		MinVersion: Version{Major: 25, Minor: 9},
-		Stability:  Experimental,
-		AutoSelect: true,
-		Doc:        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental maturity, auto-enabled on server >= 25.9)",
+		ID:                         FeatureTSGridChanges,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental maturity, auto-enabled on server >= 25.9)",
 	},
 	{
-		ID:         FeatureTSGridResets,
-		MinVersion: Version{Major: 25, Minor: 9},
-		Stability:  Experimental,
-		AutoSelect: true,
-		Doc:        "opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental maturity, auto-enabled on server >= 25.9)",
+		ID:                         FeatureTSGridResets,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental maturity, auto-enabled on server >= 25.9)",
 	},
 }
 

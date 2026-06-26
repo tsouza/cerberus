@@ -204,6 +204,17 @@ the SQL array machinery leaves at high cardinality. See
   queries that actually use the native node** (cerberus detects a
   `RangeWindowNative` in the emitted plan and stamps the setting per-query), so
   enabling the flag never adds an unknown setting to unrelated queries.
+- **The server must permit that experimental setting.** Meeting the 25.6 floor
+  is necessary but not sufficient: a hardened ClickHouse profile that
+  constrains/pins `allow_experimental_time_series_aggregate_functions`, or a
+  readonly user, will reject the per-query stamp with
+  `SETTING_CONSTRAINT_VIOLATION` / `READONLY`. cerberus **probes this at boot**
+  (a one-shot capability canary alongside the version probe) and gates the
+  native family on the verdict: under `auto` a forbidden server silently falls
+  back to the fan-out with a boot `WARN`; an explicit `ts_grid_*` (or the legacy
+  force-enable) on a forbidden server is FATAL under `enforcing` and WARN+skip
+  under `permissive` — exactly the version-floor semantics. See
+  [`clickhouse-optimizations.md`](clickhouse-optimizations.md#boot-capability-probe-experimental-ts_grid-setting).
 - **Scope: `rate` only.** `increase` / `delta` / `deriv` / `predict_linear`
   stay on the fan-out — there is no `timeSeriesIncreaseToGrid`, and the
   `timeSeriesDeltaToGrid` mapping is not yet differentially proven against

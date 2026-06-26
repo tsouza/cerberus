@@ -709,10 +709,22 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		)
 	}
 
+	// Capability canary: a server may meet the native ts_grid version floor yet
+	// still FORBID the experimental setting cerberus stamps on the native node (a
+	// hardened/constrained profile, or a readonly user). Auto-selecting the
+	// native node there would only earn a SETTING_CONSTRAINT_VIOLATION at query
+	// time, breaking a deployment that worked on fan-out. The canary probes the
+	// setting at boot over the same bootstrap/default-DB connection the version
+	// probe uses, and the verdict gates the four RequiresExperimentalTSGrid
+	// features in Resolve. A failed/unreachable canary is conservative (native
+	// stays off), never fatal here.
+	capability := probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse)
+
 	set, warnings, err := chopt.Resolve(chopt.Config{
 		Optimizations: cfg.CHOptimizations,
 		Mode:          cfg.CHOptimizationsMode,
 		LegacyTSGrid:  cfg.LegacyTSGridFlag,
+		Capability:    capability,
 	}, resolvedVersion)
 	if err != nil {
 		return chOptResolution{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
@@ -739,6 +751,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"selection", cfg.CHOptimizations,
 		"mode", cfg.CHOptimizationsMode.String(),
 		"server_version", resolvedVersion.String(),
+		"server_ts_grid_capability", capability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
 	)
 	return chOptResolution{
@@ -770,6 +783,26 @@ func probeVersionOverBootstrap(ctx context.Context, chCfg chclient.Config) (chop
 		_ = bootClient.Close()
 	}()
 	return bootClient.ProbeVersion(ctx)
+}
+
+// probeTSGridCapabilityOverBootstrap runs the experimental-setting capability
+// canary over a short-lived client bound to ClickHouse's always-present
+// `default` database, exactly like probeVersionOverBootstrap. The canary must
+// not depend on the configured (otel) database existing -- it runs at boot
+// BEFORE setupSchema creates it, and ClickHouse rejects every statement on a
+// session whose default database is absent (code 81), which would masquerade as
+// a capability rejection. Binding to `default` keeps the verdict about the
+// SETTING, not the missing database. A failure to even open the client is
+// itself an unreachable verdict (conservative: native stays off), never fatal.
+func probeTSGridCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config) chopt.Capability {
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg))
+	if err != nil {
+		return chopt.CapabilityUnreachable
+	}
+	defer func() {
+		_ = bootClient.Close()
+	}()
+	return bootClient.ProbeTSGridCapability(ctx)
 }
 
 // startOptCorpus starts the async system.query_log performance-corpus

@@ -111,8 +111,9 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	// 25.3) plus the 25.6-floored native aggregates (ts_grid_range,
 	// ts_grid_resample) are AutoSelect=true and supported; the 25.9-floored
 	// changes/resets are not yet reachable, and columnar_result_decode is
-	// AutoSelect=false so auto never picks it.
-	set, _, err := Resolve(Config{Optimizations: "auto"}, v(25, 8))
+	// AutoSelect=false so auto never picks it. Capability=Available is the
+	// happy-path boot verdict (the server permits the experimental setting).
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, v(25, 8))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 }
 
 func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
-	set, _, err := Resolve(Config{Optimizations: ""}, v(25, 8))
+	set, _, err := Resolve(Config{Optimizations: "", Capability: CapabilityAvailable}, v(25, 8))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -133,7 +134,9 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 }
 
 func TestResolve_Auto_VersionBoundaries(t *testing.T) {
-	// The auto-selection matrix as the probed server version crosses each floor.
+	// The auto-selection matrix as the probed server version crosses each floor,
+	// with the boot capability verdict = Available (the server permits the
+	// experimental setting) so the version floor is the only gate in play.
 	// columnar_result_decode (AutoSelect=false) is absent from every row even
 	// though it carries no version floor — auto must never select it.
 	cases := []struct {
@@ -177,7 +180,7 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			set, warns, err := Resolve(Config{Optimizations: "auto"}, tc.server)
+			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, tc.server)
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
@@ -262,8 +265,9 @@ func TestResolve_UnknownID_FatalBothModes(t *testing.T) {
 }
 
 func TestResolve_ExplicitTSGrid_Supported(t *testing.T) {
-	// Experimental ts_grid_range IS reachable by explicit listing (25.6+).
-	set, _, err := Resolve(Config{Optimizations: "ts_grid_range"}, v(25, 6))
+	// Experimental ts_grid_range IS reachable by explicit listing (25.6+) when
+	// the server also permits the experimental setting (Capability=Available).
+	set, _, err := Resolve(Config{Optimizations: "ts_grid_range", Capability: CapabilityAvailable}, v(25, 6))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -301,7 +305,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 	// The headline case: "auto,columnar_result_decode" = the version-gated auto
 	// set PLUS the opt-in feature, without bailing out of auto. On 25.8 the auto
 	// half now includes the 25.6-floored native aggregates.
-	set, _, err := Resolve(Config{Optimizations: "auto,columnar_result_decode"}, v(25, 8))
+	set, _, err := Resolve(Config{Optimizations: "auto,columnar_result_decode", Capability: CapabilityAvailable}, v(25, 8))
 	if err != nil {
 		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
 	}
@@ -353,6 +357,7 @@ func TestResolve_OffCannotBeCombined(t *testing.T) {
 func TestResolve_LegacyTrue_ForceEnables(t *testing.T) {
 	set, warns, err := Resolve(Config{
 		Optimizations: "auto",
+		Capability:    CapabilityAvailable,
 		LegacyTSGrid:  LegacyFlag{Set: true, Value: true},
 	}, v(25, 8))
 	if err != nil {
@@ -374,6 +379,7 @@ func TestResolve_LegacyFalse_ForceDisables(t *testing.T) {
 	// notice.
 	set, warns, err := Resolve(Config{
 		Optimizations: "auto",
+		Capability:    CapabilityAvailable,
 		LegacyTSGrid:  LegacyFlag{Set: true, Value: false},
 	}, v(25, 8))
 	if err != nil {
@@ -453,6 +459,7 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 	// not by the legacy flag) and no deprecation notice is emitted.
 	set, warns, err := Resolve(Config{
 		Optimizations: "auto",
+		Capability:    CapabilityAvailable,
 		LegacyTSGrid:  LegacyFlag{Set: false},
 	}, v(25, 8))
 	if err != nil {
@@ -470,14 +477,17 @@ func TestRegistry_SeededEntries(t *testing.T) {
 	// aggregates are Experimental maturity yet AutoSelect=true (auto picks them
 	// by version), while columnar_result_decode is the lone AutoSelect=false
 	// opt-in perf tradeoff.
+	// RequiresExperimentalTSGrid marks the four native timeSeries*ToGrid
+	// aggregates (the experimental-setting family); the stable/client-side
+	// features leave it false.
 	want := map[string]Feature{
-		FeatureAggregationInOrder:   {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true},
-		FeatureConditionCache:       {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable, AutoSelect: true},
-		FeatureTSGridRange:          {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental, AutoSelect: true},
-		FeatureTSGridResample:       {ID: FeatureTSGridResample, MinVersion: v(25, 6), Stability: Experimental, AutoSelect: true},
-		FeatureColumnarResultDecode: {ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false},
-		FeatureTSGridChanges:        {ID: FeatureTSGridChanges, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true},
-		FeatureTSGridResets:         {ID: FeatureTSGridResets, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true},
+		FeatureAggregationInOrder:   {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureConditionCache:       {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureTSGridRange:          {ID: FeatureTSGridRange, MinVersion: v(25, 6), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridResample:       {ID: FeatureTSGridResample, MinVersion: v(25, 6), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureColumnarResultDecode: {ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridChanges:        {ID: FeatureTSGridChanges, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridResets:         {ID: FeatureTSGridResets, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -488,9 +498,147 @@ func TestRegistry_SeededEntries(t *testing.T) {
 			t.Errorf("unexpected feature %q", f.ID)
 			continue
 		}
-		if f.MinVersion != w.MinVersion || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect {
-			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect %+v", f.ID, f, w)
+		if f.MinVersion != w.MinVersion || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect || f.RequiresExperimentalTSGrid != w.RequiresExperimentalTSGrid {
+			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect/requiresExperimentalTSGrid %+v", f.ID, f, w)
 		}
+	}
+}
+
+func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
+	// A 25.9 server (every native floor met) whose boot verdict is FORBIDDEN:
+	// auto drops ALL FOUR native ts_grid_* features and keeps the non-experimental
+	// stable ones (aggregation_in_order, condition_cache). Each dropped native
+	// feature emits a boot WARN naming the experimental setting + the fan-out
+	// fallback (auto is silent on version skips, but NOT on a capability block —
+	// the operator should see a working deployment lost the native path).
+	set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityForbidden}, v(25, 9))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache)
+	for _, native := range []string{FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets} {
+		if set.Has(native) {
+			t.Errorf("auto enabled %q on a capability-forbidden server; want it dropped to fan-out", native)
+		}
+	}
+	if len(warns) != 4 {
+		t.Fatalf("want one WARN per dropped native feature (4); got %d: %v", len(warns), warns)
+	}
+	for _, w := range warns {
+		if !strings.Contains(w, "allow_experimental_time_series_aggregate_functions") || !strings.Contains(w, "fan-out") {
+			t.Errorf("capability WARN %q must name the experimental setting + the fan-out fallback", w)
+		}
+	}
+}
+
+func TestResolve_Auto_CapabilityUnreachable_DropsNative(t *testing.T) {
+	// An inconclusive (UNREACHABLE) verdict is conservative — identical to
+	// FORBIDDEN for selection: auto drops the native family and keeps stable.
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityUnreachable}, v(25, 9))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache)
+	for _, native := range []string{FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets} {
+		if set.Has(native) {
+			t.Errorf("auto enabled %q on an unreachable-capability server; want it dropped", native)
+		}
+	}
+}
+
+func TestResolve_Auto_CapabilityUnknown_DropsNative(t *testing.T) {
+	// The zero-value verdict (canary never ran / not threaded in) is conservative:
+	// the native family stays off so a caller that forgets to probe can never
+	// silently re-enable the experimental path.
+	set, _, err := Resolve(Config{Optimizations: "auto"}, v(25, 9))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache)
+}
+
+func TestResolve_ExplicitTSGrid_CapabilityForbidden_EnforcingFatal(t *testing.T) {
+	// An explicit ts_grid_range on a version-capable (25.6) server that FORBIDS
+	// the setting behaves exactly like an explicit feature on a too-old server:
+	// enforcing -> FATAL. The error names the feature + the experimental setting.
+	_, _, err := Resolve(Config{
+		Optimizations: "ts_grid_range",
+		Mode:          Enforcing,
+		Capability:    CapabilityForbidden,
+	}, v(25, 6))
+	if err == nil {
+		t.Fatal("explicit ts_grid_range on a capability-forbidden server under enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "ts_grid_range") || !strings.Contains(err.Error(), "allow_experimental_time_series_aggregate_functions") {
+		t.Errorf("err = %v; want it to name ts_grid_range + the experimental setting", err)
+	}
+}
+
+func TestResolve_ExplicitTSGrid_CapabilityForbidden_PermissiveWarns(t *testing.T) {
+	// Same shape under permissive: WARN + skip, no error, feature absent.
+	set, warns, err := Resolve(Config{
+		Optimizations: "ts_grid_range",
+		Mode:          Permissive,
+		Capability:    CapabilityForbidden,
+	}, v(25, 6))
+	if err != nil {
+		t.Fatalf("Resolve: unexpected err %v", err)
+	}
+	if set.Has(FeatureTSGridRange) {
+		t.Error("permissive enabled ts_grid_range on a capability-forbidden server")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "ts_grid_range") || !strings.Contains(warns[0], "allow_experimental_time_series_aggregate_functions") {
+		t.Errorf("permissive warns = %v; want one naming ts_grid_range + the experimental setting", warns)
+	}
+}
+
+func TestResolve_ExplicitTSGrid_VersionTooOld_NotMaskedByCapability(t *testing.T) {
+	// When the server is BOTH too old AND would forbid the setting, the
+	// version floor is reported first (the most specific cause), not the
+	// capability block. Enforcing on 25.0 -> fatal naming the 25.6 floor.
+	_, _, err := Resolve(Config{
+		Optimizations: "ts_grid_range",
+		Mode:          Enforcing,
+		Capability:    CapabilityForbidden,
+	}, v(25, 0))
+	if err == nil {
+		t.Fatal("explicit ts_grid_range on 25.0 under enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "25.6") {
+		t.Errorf("err = %v; want it to report the version floor (25.6), not the capability block", err)
+	}
+}
+
+func TestResolve_ExplicitNonExperimental_CapabilityForbidden_StillEnabled(t *testing.T) {
+	// A capability-forbidden verdict only gates the experimental ts_grid family.
+	// Non-experimental features (condition_cache) are untouched and resolve
+	// normally even under enforcing on a forbidden server.
+	set, _, err := Resolve(Config{
+		Optimizations: "condition_cache",
+		Mode:          Enforcing,
+		Capability:    CapabilityForbidden,
+	}, v(25, 8))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureConditionCache)
+}
+
+func TestResolve_LegacyTrue_CapabilityForbidden_EnforcingFatal(t *testing.T) {
+	// The legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE force-enable is itself a
+	// RequiresExperimentalTSGrid request, so a forbidden server makes it fatal
+	// under enforcing exactly as a too-old server does.
+	_, _, err := Resolve(Config{
+		Optimizations: "auto",
+		Mode:          Enforcing,
+		Capability:    CapabilityForbidden,
+		LegacyTSGrid:  LegacyFlag{Set: true, Value: true},
+	}, v(25, 6))
+	if err == nil {
+		t.Fatal("legacy true on a capability-forbidden server under enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "allow_experimental_time_series_aggregate_functions") {
+		t.Errorf("err = %v; want it to name the experimental setting", err)
 	}
 }
 

@@ -20,7 +20,9 @@ Auto-eligibility is a separate axis from maturity. A feature carries a
 (whether `auto` picks it by version). The two are decoupled: the native
 `timeSeries*ToGrid` aggregates are `experimental` in maturity yet
 auto-enabled on capable servers, because they are validated result-correct
-and run at flat memory — auto picks them once the server meets their floor.
+and run at flat memory — auto picks them once the server meets their floor
+**and** the server permits the experimental setting they need (see
+[Boot capability probe](#boot-capability-probe-experimental-ts_grid-setting)).
 The lone opt-in-only feature is `columnar_result_decode` (`autoSelect: no`),
 a perf tradeoff that auto never selects.
 
@@ -43,7 +45,10 @@ feature id, and they **compose**:
 - **`auto`** (default) — enable every **auto-select** feature (`autoSelect:
   yes`) whose minimum version is `<=` the connected server's version.
   Auto-eligibility is independent of maturity, so this includes the
-  `experimental` native `timeSeries*ToGrid` aggregates on a capable server.
+  `experimental` native `timeSeries*ToGrid` aggregates on a capable server —
+  provided that server also **permits the experimental setting** they require;
+  a server that forbids it silently keeps the native family on the fan-out path
+  (see [Boot capability probe](#boot-capability-probe-experimental-ts_grid-setting)).
   The only feature `auto` never picks is `columnar_result_decode`
   (`autoSelect: no`, a perf tradeoff), which requires explicit listing.
   `auto` may appear **alongside** explicit ids, so
@@ -208,6 +213,54 @@ availability lands at minor-version granularity, so the comparison is over
 The probe runs **once**. A rolling ClickHouse upgrade that crosses a feature
 floor needs a cerberus **restart/reconnect** to re-probe and re-resolve.
 This is the documented v1 behaviour.
+
+## Boot capability probe (experimental ts_grid setting)
+
+The native `timeSeries*ToGrid` features (`ts_grid_range`, `ts_grid_resample`,
+`ts_grid_changes`, `ts_grid_resets`) need the server to run with
+`allow_experimental_time_series_aggregate_functions=1`, which cerberus
+co-stamps on exactly the queries that emit the native node. A server can be
+**new enough** for the version floor yet still **forbid** that setting — a
+hardened profile that pins or constrains it, or a readonly user. Auto-selecting
+the native node there would only earn a `SETTING_CONSTRAINT_VIOLATION` (or
+`READONLY`) rejection at query time, turning a deployment that worked on the
+fan-out path into a 5xx.
+
+So auto-selection of the native family is gated on **two** axes, not just the
+version floor: at boot, alongside `SELECT version()`, cerberus runs a cheap
+**capability canary** that stamps the experimental setting on a trivial query
+over the always-present `default` database (independent of whether the
+configured database exists yet). The verdict is tri-state:
+
+- **available** — the server accepted the setting; the native family resolves
+  per its version floor.
+- **forbidden** — the server answered with a typed rejection (constrained /
+  readonly profile); the native family is **dropped to the fan-out path**.
+- **unreachable** — the canary got no server verdict (a transport failure);
+  treated conservatively like *forbidden* (native stays off until a restart
+  re-probes), matching the version probe's connectivity fallback.
+
+How a non-`available` verdict is handled depends on how the feature was
+selected, mirroring the version-floor semantics exactly:
+
+- under **`auto`** — the native features are **silently dropped** and a boot
+  `WARN` is logged (`native ts_grid disabled: server forbids
+  allow_experimental_time_series_aggregate_functions; falling back to
+  fan-out`). The deployment serves the fan-out path successfully.
+- under an **explicit list** — a listed `ts_grid_*` (or the legacy alias
+  force-enable) on a forbidden server is **FATAL under `enforcing`** (the
+  operator required a feature the server will not run) and a `WARN` + skip
+  under `permissive` — identical to listing a feature the server is too old
+  for.
+
+The canary runs **once** at boot, like the version probe; a profile change that
+later permits the setting needs a restart to re-probe.
+
+**Escape hatch.** To run a forbidden server without any boot warnings, pin an
+explicit `CERBERUS_CH_OPTIMIZATIONS` list that omits the `ts_grid_*` ids (e.g.
+`aggregation_in_order,condition_cache`), or set `CERBERUS_CH_OPTIMIZATIONS=off`.
+Conversely, permitting the setting in the ClickHouse profile (or using a
+non-readonly user) lets `auto` pick the native family back up on the next boot.
 
 ## Legacy alias: `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
 
