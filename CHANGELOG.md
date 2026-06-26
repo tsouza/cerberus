@@ -4,6 +4,24 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.8.1] — 2026-06-26
+
+### Added
+
+- **optimizer:** fail-closed scan-time-bound invariant for instant windowed scans (#1100)
+
+### Fixed
+
+- **release:** preflight ignores empty check-suites (e.g. GitGuardian) in the CI wait (#1097)
+
+### Performance
+
+- **chsql:** bound instant windowed-array scans to the eval window (#1098)
+
+### Documentation
+
+- swap CI/mutation badges for Ask DeepWiki in README (#1099)
+
 ## [v1.8.0] — 2026-06-26
 
 ### Added
