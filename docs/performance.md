@@ -418,7 +418,7 @@ wrapping outer aggregate (`sum by (...)`) is byte-identical, so only the
 windowed-rate subquery changes, and pinning the fan-out restores the
 established, Prometheus-exact path. The full env-var contract and CH-version
 constraint live in
-[`operations.md`](operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-256).
+[`operations.md`](operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259).
 
 ### The lesson
 

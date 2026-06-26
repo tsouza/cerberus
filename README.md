@@ -109,7 +109,7 @@ opt-in-only feature is `columnar_result_decode` (a perf tradeoff `auto` never
 selects). See
 [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) for the
 auto-picker and
-[`docs/operations.md`](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-256)
+[`docs/operations.md`](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259)
 for the runtime contract and the experimental-setting details.
 
 **OTel schema — the shape, not the exporter.** Cerberus reads the
