@@ -357,11 +357,18 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	// nowAnchored is true when the request supplies no explicit upper bound,
+	// so the effective window's end is "now or open" — the case where the
+	// metric-name enumeration can answer exactly from the max(TimeUnix)
+	// aggregating projection (max(TimeUnix) >= start ⇔ a sample exists in
+	// [start, now], since samples are never future-dated). A user-supplied
+	// finite end stays on the exact WHERE-bounded scan.
+	nowAnchored := endT.IsZero()
 	startT, endT = boundMetadataWindow(startT, endT)
 
 	var values []string
 	if len(matchers) == 0 {
-		values, err = h.fetchLabelValues(r.Context(), name, startT, endT)
+		values, err = h.fetchLabelValues(r.Context(), name, startT, endT, nowAnchored)
 	} else {
 		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT)
 	}
@@ -702,9 +709,9 @@ func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.T
 	return out, nil
 }
 
-func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end time.Time) ([]string, error) {
+func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end time.Time, nowAnchored bool) ([]string, error) {
 	if name == model.MetricNameLabel {
-		return h.fetchMetricNameValues(ctx, start, end)
+		return h.fetchMetricNameValues(ctx, start, end, nowAnchored)
 	}
 	sql, args := h.unionLabelValuesSQL(name, start, end)
 	values, err := timeCH(ctx, func() ([]string, error) {
@@ -750,11 +757,11 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end 
 // the summary table has no lowering at all), and advertising names the
 // query surface can't serve is exactly the bug this function's split
 // shape exists to prevent.
-func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Time) ([]string, error) {
+func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
 	bareTables, histogramTable := h.catalogNameTables()
 	var values []string
 	if len(bareTables) > 0 {
-		sql := h.metricNamesSQL(bareTables, start, end)
+		sql := h.metricNamesSQL(bareTables, start, end, nowAnchored)
 		bare, err := timeCH(ctx, func() ([]string, error) {
 			return h.Client.QueryStrings(ctx, sql)
 		})
@@ -768,7 +775,7 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 		values = normalizeMetricValues(bare)
 	}
 	if histogramTable != "" {
-		sql := h.metricNamesSQL([]string{histogramTable}, start, end)
+		sql := h.metricNamesSQL([]string{histogramTable}, start, end, nowAnchored)
 		hist, err := timeCH(ctx, func() ([]string, error) {
 			return h.Client.QueryStrings(ctx, sql)
 		})
@@ -1395,21 +1402,54 @@ func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
 // metricNamesSQL returns the distinct MetricName values across the
 // given tables. Callers group tables by how their names surface in the
 // catalog (see fetchMetricNameValues) — the SQL shape itself is the
-// same UNION-of-DISTINCT-arms for any group size. A non-zero start/end
-// pushes the closed metadata window onto each arm so the leading-key
-// DISTINCT prunes by partition instead of scanning the whole table.
-func (h *Handler) metricNamesSQL(tables []string, start, end time.Time) string {
+// same UNION-of-per-table-arms for any group size.
+//
+// Two arm shapes, picked by nowAnchored:
+//
+//   - nowAnchored (the Grafana metric-picker case: no explicit end, so the
+//     window ends "now" or is open-ended): each arm is
+//     `SELECT MetricName AS value FROM <t> GROUP BY MetricName
+//     HAVING max(TimeUnix) >= <start>`. Because samples are never
+//     future-dated, max(TimeUnix) >= start ⇔ the name has a sample in
+//     [start, now] — byte-for-byte the same name set as the WHERE-bounded
+//     DISTINCT, but the aggregate-only predicate is served from the
+//     `proj_metric_name` aggregating projection (GROUP BY MetricName,
+//     max(TimeUnix)) instead of full-scanning the fact table. On prod this
+//     turns the ~4.2B-row / ~139 GiB windowless enumeration into a
+//     sub-megabyte projection read.
+//
+//   - !nowAnchored (a user-supplied finite [start,end]): the exact
+//     WHERE-bounded DISTINCT is kept — a closed historical window cannot be
+//     answered exactly from per-name min/max alone (a name whose samples
+//     straddle but skip the window would be a false positive), and the
+//     request's own range is where MergeTree partition pruning already bounds
+//     the scan.
+func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAnchored bool) string {
 	metricCol := h.Schema.MetricNameColumn
-	pred := h.metadataWindowPred(start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
-	for _, t := range tables {
-		arm := chsql.NewQuery().
-			Select(chsql.As(distinctIdent(metricCol), "value")).
-			From(chsql.Col(t))
-		if pred != nil {
-			arm = arm.Where(pred)
+	if nowAnchored {
+		tsCol := h.Schema.TimestampColumn
+		for _, t := range tables {
+			arm := chsql.NewQuery().
+				Select(chsql.As(chsql.Col(metricCol), "value")).
+				From(chsql.Col(t)).
+				GroupBy(chsql.Col(metricCol))
+			if !start.IsZero() {
+				arm = arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
+			}
+			parts = append(parts, arm.Frag())
 		}
-		parts = append(parts, arm.Frag())
+	} else {
+		pred := h.metadataWindowPred(start, end)
+		for _, t := range tables {
+			arm := chsql.NewQuery().
+				Select(chsql.As(distinctIdent(metricCol), "value")).
+				From(chsql.Col(t))
+			if pred != nil {
+				arm = arm.Where(pred)
+			}
+			parts = append(parts, arm.Frag())
+		}
 	}
 	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("value"), "")).

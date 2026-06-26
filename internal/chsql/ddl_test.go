@@ -137,6 +137,89 @@ func TestCreateDatabase(t *testing.T) {
 	}
 }
 
+// metricNameProjectionBody is the aggregating projection body the metric-name
+// catalog enumeration is served from: one row per MetricName carrying its
+// max(TimeUnix). Built with the same typed QueryBuilder used for reads.
+func metricNameProjectionBody() *QueryBuilder {
+	return NewQuery().
+		Select(Col("MetricName"), Call("max", Col("TimeUnix"))).
+		GroupBy(Col("MetricName"))
+}
+
+// TestAlterTableAddProjection pins the ADD PROJECTION statement: the
+// fully-qualified <db>.<table>, the idempotent IF NOT EXISTS guard, the
+// projection body wrapped in exactly one pair of parentheses, and the
+// optional ON CLUSTER clause. The statement carries no positional args.
+func TestAlterTableAddProjection(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *AddProjectionBuilder
+		want string
+	}{
+		{
+			"plain",
+			AlterTableAddProjection("otel", "otel_metrics_gauge", "proj_metric_name", metricNameProjectionBody()),
+			"ALTER TABLE otel.otel_metrics_gauge ADD PROJECTION IF NOT EXISTS proj_metric_name " +
+				"(SELECT `MetricName`, max(`TimeUnix`) GROUP BY `MetricName`)",
+		},
+		{
+			"default_db",
+			AlterTableAddProjection("default", "otel_metrics_sum", "proj_metric_name", metricNameProjectionBody()),
+			"ALTER TABLE default.otel_metrics_sum ADD PROJECTION IF NOT EXISTS proj_metric_name " +
+				"(SELECT `MetricName`, max(`TimeUnix`) GROUP BY `MetricName`)",
+		},
+		{
+			"on_cluster",
+			AlterTableAddProjection("otel", "otel_metrics_histogram", "proj_metric_name", metricNameProjectionBody()).OnCluster("prod"),
+			"ALTER TABLE otel.otel_metrics_histogram ON CLUSTER `prod` ADD PROJECTION IF NOT EXISTS proj_metric_name " +
+				"(SELECT `MetricName`, max(`TimeUnix`) GROUP BY `MetricName`)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestQueryBuilderHaving pins the HAVING clause render: it follows GROUP BY,
+// precedes ORDER BY, and AND-joins multiple conditions. HAVING (not WHERE) is
+// what lets the metric-name enumeration route to the aggregating projection.
+func TestQueryBuilderHaving(t *testing.T) {
+	sql, args := NewQuery().
+		Select(As(Col("MetricName"), "value")).
+		From(Col("otel_metrics_gauge")).
+		GroupBy(Col("MetricName")).
+		Having(Gte(Call("max", Col("TimeUnix")), InlineLit(int64(1700000000)))).
+		OrderBy(Col("value"), false).
+		Build()
+	want := "SELECT `MetricName` AS `value` FROM `otel_metrics_gauge` GROUP BY `MetricName` " +
+		"HAVING max(`TimeUnix`) >= 1700000000 ORDER BY `value`"
+	if sql != want {
+		t.Errorf("Build() = %q; want %q", sql, want)
+	}
+	if len(args) != 0 {
+		t.Errorf("inline HAVING must bind no args, got %v", args)
+	}
+
+	multi, _ := NewQuery().
+		Select(Col("MetricName")).
+		From(Col("t")).
+		GroupBy(Col("MetricName")).
+		Having(
+			Gte(Call("max", Col("TimeUnix")), InlineLit(int64(1))),
+			Lte(Call("min", Col("TimeUnix")), InlineLit(int64(2))),
+		).
+		Build()
+	wantMulti := "SELECT `MetricName` FROM `t` GROUP BY `MetricName` " +
+		"HAVING max(`TimeUnix`) >= 1 AND min(`TimeUnix`) <= 2"
+	if multi != wantMulti {
+		t.Errorf("multi-HAVING Build() = %q; want %q", multi, wantMulti)
+	}
+}
+
 // TestRenderDDL_PanicsOnBoundArg locks the DDL no-bindings invariant: a
 // fragment that binds a positional `?` (here via Lit) must panic rather
 // than silently drop the binding and emit an unfillable `?` into the DDL.
