@@ -4,6 +4,13 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.7.1] — 2026-06-26
+
+### Fixed
+
+- **tempo:** bound windowless tag/attribute discovery to recent window (#1089)
+- **prom:** push request window into no-match metadata discovery scans (#1088)
+
 ## [v1.7.0] — 2026-06-25
 
 ### Added
