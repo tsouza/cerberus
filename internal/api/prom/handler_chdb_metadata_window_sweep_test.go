@@ -3,8 +3,8 @@
 // Exploratory window-vs-freshness sweep for the Prometheus metadata
 // endpoints (/series, /labels, /label/<name>/values). This is the
 // metadata analogue of the rc.9 eval-instant sweep
-// (test/spec/eval_instant_sweep.go): it seeds series at FIXED sample
-// times anchored well in the past, then varies the REQUEST window
+// (test/spec/eval_instant_sweep.go): it seeds series at sample times
+// anchored a couple of hours in the past, then varies the REQUEST window
 // [start,end] independently of wall-clock and asserts each endpoint
 // returns exactly the series/labels/values whose sample falls in the
 // window.
@@ -15,10 +15,12 @@
 // window (/series, /labels pre-fix) or clamping to an instant window at
 // `end` (/label_values pre-fix) — still passed. Those exact defects are
 // the rc.9 /series empty-window bug and its /labels + /label/<name>/values
-// siblings. Anchoring the seed ~37 days before wall-clock means a
-// now()-anchored handler returns EMPTY for every window here, so the
-// sweep is red pre-fix and green only once all three endpoints honour the
-// full closed [start,end] window (promql.LowerMetadataRange).
+// siblings. Anchoring every sample older than the 5m staleness window (but
+// within the windowless metadata default-lookback retention horizon, so the
+// no-bounds W5 case still returns the full catalog) means a now()-anchored
+// handler returns EMPTY for every windowed case here, so the sweep is red
+// pre-fix and green only once all three endpoints honour the full closed
+// [start,end] window (promql.LowerMetadataRange).
 
 package prom_test
 
@@ -32,12 +34,16 @@ import (
 	"time"
 )
 
-// metaWindowSeedBase anchors the sweep's sample times. It is deliberately
-// weeks before any plausible test wall-clock so a handler that evaluates a
-// metadata request at `now` (the pre-fix /series + /labels behaviour)
-// returns empty for EVERY window below — making the window-drop bug fail
-// the sweep instead of hiding behind a now-aligned seed.
-var metaWindowSeedBase = time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+// metaWindowSeedBase anchors the sweep's sample times in the recent past:
+// far enough back (2h) that every sample is older than the 5m instant
+// staleness window — so a handler that evaluates a metadata request at
+// `now` (the pre-fix /series + /labels behaviour) STILL returns empty for
+// the windowed cases, making the window-drop bug fail the sweep — yet
+// inside the windowless metadata default-lookback retention horizon
+// (boundMetadataWindow) so the W5_omitted whole-catalog case returns every
+// series. A fixed calendar anchor would fall outside that horizon as the
+// wall clock advances and spuriously empty the windowless case.
+var metaWindowSeedBase = time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
 
 // metaWindowSeed builds the gauge/sum/histogram tables plus four `m`
 // series (one per `job`), each with a single sample at a distinct time

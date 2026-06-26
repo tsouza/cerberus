@@ -238,6 +238,48 @@ func parseMetadataWindow(r *http.Request) (start, end time.Time, err error) {
 	return start, end, nil
 }
 
+// defaultMetadataLookback bounds the absent-window metadata-discovery scan
+// to the data-retention horizon rather than to a short recent window.
+//
+// Reference Prometheus answers a windowless /api/v1/label/<l>/values,
+// /labels and /series over the ENTIRE queryable range (web/api/v1/api.go
+// defaults start to MinTime and end to MaxTime) — every name / value /
+// series still inside retention. Grafana's metric / label pickers send no
+// start/end under the common "On dashboard load" variable refresh, so
+// without a default the discovery arms emit a WHERE-less scan over every
+// toDate(TimeUnix) partition (the prod full-column scan this fix targets).
+//
+// Defaulting the absent window to the retention horizon — the OTel-CH
+// metric tables' TTL, two weeks — keeps the answer byte-identical to
+// Prometheus's: anything older than the TTL has already been
+// ttl_only_drop_parts-dropped and is absent from both backends, so no
+// name/value/series that Prometheus would return is dropped. It still
+// emits a closed TimeUnix bound, so ClickHouse partition-prunes whenever
+// the table physically spans more than the horizon (a request-supplied
+// narrower range, honored verbatim, is where the real pruning comes from).
+//
+// A SHORTER default (1h/6h/24h) prunes harder but silently drops metrics
+// that went quiet within retention — the no-silent-drop divergence the
+// windowless-completeness guards forbid.
+const defaultMetadataLookback = 14 * 24 * time.Hour
+
+// boundMetadataWindow applies the default retention-horizon lookback when a
+// metadata request carries NO window (both bounds zero) — the Grafana
+// variable-query case. A request that supplies either bound is honored
+// verbatim: a one-sided window stays deliberately open-ended, matching
+// reference Prometheus's MinTime/MaxTime default and the matched-path
+// semantics in promql.wrapMetadataFullRange. Both the no-match arms
+// (metadataWindowPred) and the matched path (promql.LowerMetadataRange)
+// consume the returned [start,end], so wiring this once at the handler
+// covers every discovery shape.
+func boundMetadataWindow(start, end time.Time) (time.Time, time.Time) {
+	if start.IsZero() && end.IsZero() {
+		end = time.Now().UTC()
+		start = end.Add(-defaultMetadataLookback)
+	}
+	return start, end
+}
+
 func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
@@ -250,6 +292,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	startT, endT = boundMetadataWindow(startT, endT)
 
 	var names []string
 	if len(matchers) == 0 {
@@ -314,6 +357,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	startT, endT = boundMetadataWindow(startT, endT)
 
 	var values []string
 	if len(matchers) == 0 {
@@ -362,7 +406,13 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	metricName := r.URL.Query().Get("metric")
 	limitStr := r.URL.Query().Get("limit")
 
-	rows, err := h.fetchMetricMeta(r.Context(), metricName)
+	// /api/v1/metadata takes no time params (upstream Prometheus accepts
+	// only `metric` + `limit`), so it would otherwise GROUP BY MetricName
+	// over every partition on every call. Bound it to the same default
+	// retention-horizon window the discovery handlers use so the per-table
+	// metadata fan-out partition-prunes too.
+	startT, endT := boundMetadataWindow(time.Time{}, time.Time{})
+	rows, err := h.fetchMetricMeta(r.Context(), metricName, startT, endT)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -409,7 +459,7 @@ type metricMetaSpec struct {
 	monotonic *bool
 }
 
-func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chclient.MetricMetaRow, error) {
+func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start, end time.Time) ([]chclient.MetricMetaRow, error) {
 	monotonic, nonMonotonic := true, false
 	specs := []metricMetaSpec{
 		{table: h.Schema.GaugeTable, kind: "gauge"},
@@ -436,7 +486,7 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chc
 
 	var out []chclient.MetricMetaRow
 	for _, spec := range specs {
-		sql, args := h.metricMetaSQL(spec.table, metricName, spec.monotonic)
+		sql, args := h.metricMetaSQL(spec.table, metricName, spec.monotonic, start, end)
 		rows, err := h.Client.QueryMetricMeta(ctx, sql, spec.kind, args...)
 		if err != nil {
 			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -451,7 +501,11 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chc
 // we list all distinct metrics; otherwise we filter to the named one.
 // A non-nil monotonic adds a `IsMonotonic` / `NOT IsMonotonic` predicate
 // (combined via AND with the metric-name filter when both are present).
-func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool) (string, []any) {
+// A non-zero start/end pushes the closed metadata window onto the GROUP BY
+// arm so the per-table fan-out partition-prunes by toDate(TimeUnix) instead
+// of grouping the whole table; the window literals are inlined
+// (dateTime64Frag), so the metric-name filter keeps its positional slot.
+func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start, end time.Time) (string, []any) {
 	nameCol := h.Schema.MetricNameColumn
 	descCol := h.Schema.MetricDescriptionColumn
 	unitCol := h.Schema.MetricUnitColumn
@@ -464,6 +518,10 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool) (stri
 		Select(chsql.Col(nameCol), anyCall(descCol), anyCall(unitCol)).
 		From(chsql.Col(table)).
 		GroupBy(chsql.Col(nameCol))
+
+	if pred := h.metadataWindowPred(start, end); pred != nil {
+		sb.Where(pred)
+	}
 
 	if monotonic != nil {
 		// Bare boolean-column predicate (`IsMonotonic` / `NOT
@@ -539,6 +597,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	startT, endT = boundMetadataWindow(startT, endT)
 
 	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
 	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
