@@ -1,0 +1,17 @@
+# ct / helm-template fixture: bundled ClickHouse, replicas > 1 — exercises the
+# auto-enabled Keeper ensemble, ReplicatedMergeTree + zero-copy config, and the
+# defaulted cerberus schema.replicated env wiring. S3/MinIO backend with
+# THROWAWAY render-only credentials.
+clickhouse:
+  bundled:
+    enabled: true
+    replicas: 2
+    objectStorage:
+      backend: s3
+      bucket: cerberus-bwc
+      path: data
+      s3:
+        endpoint: http://minio:9000
+        forcePathStyle: true
+        accessKeyId: minioadmin
+        secretAccessKey: minioadmin

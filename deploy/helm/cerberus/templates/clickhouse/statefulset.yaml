@@ -1,0 +1,132 @@
+{{- if .Values.clickhouse.bundled.enabled }}
+{{- $ch := .Values.clickhouse }}
+{{- $b := $ch.bundled }}
+{{- $hasPassword := or (eq (include "cerberus.createSecret" .) "true") $ch.existingSecret }}
+{{- $passwordSecret := "" }}
+{{- if eq (include "cerberus.createSecret" .) "true" }}{{- $passwordSecret = include "cerberus.secretName" . }}{{- else }}{{- $passwordSecret = $ch.existingSecret }}{{- end }}
+{{- $osEnv := include "cerberus.clickhouse.objectStoreEnv" . | trim }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cerberus.clickhouse.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "cerberus.clickhouse.headlessName" . }}
+  replicas: {{ $b.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "cerberus.clickhouse.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll pods when the rendered CH config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/clickhouse/configmap-config.yaml") . | sha256sum }}
+        checksum/users: {{ include (print $.Template.BasePath "/clickhouse/configmap-users.yaml") . | sha256sum }}
+      labels:
+        {{- include "cerberus.clickhouse.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cerberus.clickhouse.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if $b.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "cerberus.clickhouse.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      containers:
+        - name: clickhouse
+          image: {{ $b.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: native
+              containerPort: 9000
+              protocol: TCP
+            - name: http
+              containerPort: 8123
+              protocol: TCP
+            - name: interserver
+              containerPort: 9009
+              protocol: TCP
+          {{- if or $hasPassword $osEnv }}
+          env:
+            {{- if $hasPassword }}
+            - name: CH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $passwordSecret }}
+                  key: {{ $ch.passwordKey }}
+            {{- end }}
+            {{- with $osEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          {{- with $b.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: metadata
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d
+              readOnly: true
+            - name: users
+              mountPath: /etc/clickhouse-server/users.d
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cerberus.clickhouse.fullname" . }}-config
+        - name: users
+          configMap:
+            name: {{ include "cerberus.clickhouse.fullname" . }}-users
+  volumeClaimTemplates:
+    - metadata:
+        name: metadata
+        labels:
+          {{- include "cerberus.clickhouse.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with $b.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.persistence.size | quote }}
+{{- end }}

@@ -196,6 +196,10 @@ Returns YAML key: "value" pairs (one per line). Mutually-exclusive ordering is:
 typed clickhouse -> otlp -> autoCreate -> admit -> schema -> http/log -> config.
 */}}
 {{- define "cerberus.nonSecretEnv" -}}
+{{- /* Bundled-ClickHouse defaulting: a no-op unless clickhouse.bundled.enabled,
+       so a non-bundled render stays byte-identical. Mutates .Values in place
+       (dicts are references) to point cerberus at the bundled data tier. */ -}}
+{{- include "cerberus.bundled.apply" . -}}
 {{- $ch := .Values.clickhouse -}}
 {{- /* ClickHouse connection */ -}}
 CERBERUS_CH_ADDR: {{ join "," $ch.addr | quote }}

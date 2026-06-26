@@ -1,0 +1,68 @@
+{{- if .Values.clickhouse.bundled.enabled }}
+{{- $b := .Values.clickhouse.bundled }}
+{{- $keeper := eq (include "cerberus.clickhouse.keeperEnabled" .) "true" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cerberus.clickhouse.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
+data:
+  storage.xml: |
+    {{- include "cerberus.clickhouse.storageXML" . | nindent 4 }}
+  tuning.xml: |
+    <clickhouse>
+      <!-- Accept in-cluster connections (the image default binds localhost). -->
+      <listen_host>0.0.0.0</listen_host>
+      <merge_tree>
+        <!-- TTL drops whole parts (cheap on object storage) rather than rewriting. -->
+        <ttl_only_drop_parts>1</ttl_only_drop_parts>
+        {{- if $keeper }}
+        <!-- Replicas share object-store data; copy metadata only, not blobs. -->
+        <allow_remote_fs_zero_copy_replication>1</allow_remote_fs_zero_copy_replication>
+        {{- end }}
+        {{- range $k := (keys (default (dict) $b.settings) | sortAlpha) }}
+        <{{ $k }}>{{ index $b.settings $k }}</{{ $k }}>
+        {{- end }}
+      </merge_tree>
+    </clickhouse>
+  {{- if $keeper }}
+  cluster.xml: |
+    <clickhouse>
+      <macros>
+        <shard>01</shard>
+        <!-- pod name is unique per replica -> distinct {replica} macro. -->
+        <replica from_env="HOSTNAME" />
+        <cluster>bwc_cluster</cluster>
+      </macros>
+      <zookeeper>
+        {{- range $i := until (int $b.keeper.replicas) }}
+        <node>
+          <host>{{ include "cerberus.keeper.fullname" $ }}-{{ $i }}.{{ include "cerberus.keeper.headlessName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local</host>
+          <port>9181</port>
+        </node>
+        {{- end }}
+      </zookeeper>
+      <remote_servers>
+        <bwc_cluster>
+          <shard>
+            <internal_replication>true</internal_replication>
+            {{- range $i := until (int $b.replicas) }}
+            <replica>
+              <host>{{ include "cerberus.clickhouse.fullname" $ }}-{{ $i }}.{{ include "cerberus.clickhouse.headlessName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local</host>
+              <port>9000</port>
+            </replica>
+            {{- end }}
+          </shard>
+        </bwc_cluster>
+      </remote_servers>
+    </clickhouse>
+  {{- end }}
+  {{- with $b.configOverrides }}
+  overrides.xml: |
+    <clickhouse>
+    {{- tpl . $ | nindent 6 }}
+    </clickhouse>
+  {{- end }}
+{{- end }}

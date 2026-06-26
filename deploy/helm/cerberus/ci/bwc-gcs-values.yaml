@@ -1,0 +1,13 @@
+# ct / helm-template fixture: bundled ClickHouse on GCS (via its S3-compatible
+# endpoint with HMAC credentials). Inline HMAC keys are THROWAWAY render-only
+# values; real installs use objectStorage.gcs.credentialsSecret.
+clickhouse:
+  bundled:
+    enabled: true
+    objectStorage:
+      backend: gcs
+      bucket: cerberus-bwc
+      path: data
+      gcs:
+        accessKeyId: GOOG1EXAMPLETHROWAWAY
+        secretAccessKey: throwaway-hmac-secret-value

@@ -1,0 +1,103 @@
+{{- if and .Values.clickhouse.bundled.enabled (eq (include "cerberus.clickhouse.keeperEnabled" .) "true") }}
+{{- $b := .Values.clickhouse.bundled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cerberus.keeper.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.keeper.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "cerberus.keeper.headlessName" . }}
+  replicas: {{ $b.keeper.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "cerberus.keeper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/clickhouse/keeper-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "cerberus.keeper.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cerberus.clickhouse.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "cerberus.keeper.selectorLabels" . | nindent 20 }}
+      containers:
+        - name: keeper
+          image: {{ $b.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - bash
+            - -c
+            - |
+              # server_id must be unique per ensemble member; derive it from the
+              # StatefulSet pod ordinal (raft ids are 1-based).
+              export KEEPER_SERVER_ID=$(( ${HOSTNAME##*-} + 1 ))
+              exec clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml
+          ports:
+            - name: client
+              containerPort: 9181
+              protocol: TCP
+            - name: raft
+              containerPort: 9234
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse-keeper
+            - name: config
+              mountPath: /etc/clickhouse-keeper
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cerberus.keeper.fullname" . }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "cerberus.keeper.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with $b.keeper.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.keeper.persistence.size | quote }}
+{{- end }}

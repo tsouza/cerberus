@@ -1,0 +1,13 @@
+# ct / helm-template fixture: bundled ClickHouse on Azure Blob storage with a
+# static account key. Inline account name/key are THROWAWAY render-only values;
+# real installs use objectStorage.azure.credentialsSecret or useManagedIdentity.
+clickhouse:
+  bundled:
+    enabled: true
+    objectStorage:
+      backend: azure
+      azure:
+        storageAccountUrl: https://example.blob.core.windows.net
+        container: cerberus-bwc
+        accountName: exampleacct
+        accountKey: dGhyb3dhd2F5LWFjY291bnQta2V5

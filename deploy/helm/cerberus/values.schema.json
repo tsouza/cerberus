@@ -74,6 +74,113 @@
             "certFileKey": { "type": "string" },
             "keyFileKey": { "type": "string" }
           }
+        },
+        "bundled": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": { "type": "string" },
+            "replicas": { "type": "integer", "minimum": 1 },
+            "storagePolicyName": { "type": "string" },
+            "resources": { "type": "object" },
+            "persistence": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "size": { "type": "string" },
+                "storageClass": { "type": "string" }
+              }
+            },
+            "cache": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "size": { "type": "string" }
+              }
+            },
+            "serviceAccount": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "create": { "type": "boolean" },
+                "annotations": { "type": "object" }
+              }
+            },
+            "keeper": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": ["boolean", "null"] },
+                "replicas": { "type": "integer", "minimum": 1 },
+                "persistence": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "size": { "type": "string" },
+                    "storageClass": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "objectStorage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "backend": { "type": "string", "enum": ["s3", "gcs", "azure"] },
+                "bucket": { "type": "string" },
+                "path": { "type": "string" },
+                "s3": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "endpoint": { "type": "string" },
+                    "region": { "type": "string" },
+                    "forcePathStyle": { "type": "boolean" },
+                    "useEnvironmentCredentials": { "type": "boolean" },
+                    "credentialsSecret": { "type": "string" },
+                    "accessKeyId": { "type": "string" },
+                    "secretAccessKey": { "type": "string" }
+                  }
+                },
+                "gcs": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "credentialsSecret": { "type": "string" },
+                    "accessKeyId": { "type": "string" },
+                    "secretAccessKey": { "type": "string" }
+                  }
+                },
+                "azure": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "storageAccountUrl": { "type": "string" },
+                    "container": { "type": "string" },
+                    "useManagedIdentity": { "type": "boolean" },
+                    "credentialsSecret": { "type": "string" },
+                    "accountName": { "type": "string" },
+                    "accountKey": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "podDisruptionBudget": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "minAvailable": { "type": ["integer", "string"] }
+              }
+            },
+            "podAntiAffinity": { "type": "boolean" },
+            "configOverrides": { "type": "string" },
+            "settings": {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "number", "boolean"] }
+            }
+          }
         }
       },
       "required": ["addr"]
