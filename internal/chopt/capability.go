@@ -4,7 +4,7 @@ package chopt
 // server will actually RUN the experimental timeSeries*ToGrid aggregate family
 // when cerberus stamps `allow_experimental_time_series_aggregate_functions=1`.
 // It is a SECOND axis the resolver gates the native ts_grid features on, layered
-// on top of the version floor: a server can be new enough (>= 25.6 / 25.9) yet
+// on top of the version floor: a server can be new enough (>= 25.9) yet
 // still REFUSE the experimental setting (a hardened profile that pins/constrains
 // it, or a readonly user), in which case auto-selecting the native node would
 // only earn a SETTING_CONSTRAINT_VIOLATION / READONLY rejection at query time.
@@ -49,6 +49,21 @@ const (
 // (Unknown / Forbidden / Unreachable) is conservative.
 func (c Capability) PermitsExperimentalTSGrid() bool {
 	return c == CapabilityAvailable
+}
+
+// Inconclusive reports whether the canary failed to reach a DEFINITIVE verdict:
+// Unreachable (a dial / timeout / breaker-open transport failure) or Unknown
+// (the probe never ran). It is the opposite axis from a definitive answer --
+// Available definitively permits, Forbidden definitively refuses.
+//
+// The resolver uses it to mirror the version probe's connectivity fallback: an
+// inconclusive verdict degrades the native family to fan-out with a WARN and is
+// NEVER fatal, even for an explicitly-requested feature under enforcing mode. A
+// probe that could not get an answer must not take a deployment down -- only a
+// definitive Forbidden (the server reachably refused the setting) keeps the
+// enforcing "I require this" contract fatal.
+func (c Capability) Inconclusive() bool {
+	return c == CapabilityUnreachable || c == CapabilityUnknown
 }
 
 // String renders the capability for boot logging.

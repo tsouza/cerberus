@@ -97,7 +97,7 @@ func TestInfo_OptimizationsEnabled(t *testing.T) {
 	snap.OptEnabled = []string{"columnar_result_decode", "ts_grid_range"}
 	snap.OptSelection = "auto,columnar_result_decode"
 	snap.OptMode = "permissive"
-	snap.OptResolvedAgainstVersion = "25.6"
+	snap.OptResolvedAgainstVersion = "25.9"
 
 	h := New(Options{Snapshot: snap})
 	got, _ := decodeInfo(t, h)
@@ -108,8 +108,8 @@ func TestInfo_OptimizationsEnabled(t *testing.T) {
 	if got.Optimizations.Mode != "permissive" {
 		t.Errorf("optimizations.mode = %q; want permissive", got.Optimizations.Mode)
 	}
-	if got.Optimizations.ResolvedAgainstVersion != "25.6" {
-		t.Errorf("optimizations.resolvedAgainstVersion = %q; want 25.6", got.Optimizations.ResolvedAgainstVersion)
+	if got.Optimizations.ResolvedAgainstVersion != "25.9" {
+		t.Errorf("optimizations.resolvedAgainstVersion = %q; want 25.9", got.Optimizations.ResolvedAgainstVersion)
 	}
 	want := []string{"columnar_result_decode", "ts_grid_range"}
 	if len(got.Optimizations.Enabled) != len(want) {

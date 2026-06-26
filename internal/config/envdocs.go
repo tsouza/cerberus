@@ -182,7 +182,7 @@ var envDocGroups = []envDocGroup{
 			"optimization resolver and remains honoured for backward compatibility:\n" +
 			"explicit `true` force-enables `ts_grid_range` (subject to version + mode),\n" +
 			"explicit `false` force-disables it, unset has no effect. It **requires\n" +
-			"ClickHouse >= 25.6**. See\n" +
+			"ClickHouse >= 25.9** (the left-open window fix, PR #86588). See\n" +
 			"[`clickhouse-optimizations.md`](clickhouse-optimizations.md#legacy-alias-cerberus_experimental_ts_grid_range).",
 	},
 	{
@@ -305,7 +305,7 @@ var envDocs = []EnvDoc{
 	{envCHOptCorpusSinkMode, "string", "ClickHouse optimizations", "Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis)."},
 
 	// --- Experimental flags ---
-	{envExperimentalTSGrid, "bool", "Experimental flags", "Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.6."},
+	{envExperimentalTSGrid, "bool", "Experimental flags", "Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.9."},
 
 	// --- Loki streaming ---
 	{envLokiTailWriteTO, "duration", "Loki streaming", "Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`."},

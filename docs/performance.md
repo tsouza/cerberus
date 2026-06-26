@@ -310,7 +310,7 @@ when you might pin it off.
 
 `ts_grid_range` keeps an **experimental maturity** label, but it is
 **auto-selected by version**: under `CERBERUS_CH_OPTIMIZATIONS=auto` (the
-default) the auto-picker enables it on any server `>= 25.6`, alongside the
+default) the auto-picker enables it on any server `>= 25.9`, alongside the
 result-equivalent stable wins `aggregation_in_order` (24.8+) and
 `condition_cache` (25.3+). A prod-data validation proved the native path
 result-correct — for `rate` it is in fact *more* correct than the fan-out (which
@@ -319,9 +319,9 @@ rather than leaving it as an opt-in. To go back to the fan-out, pin an explicit
 list that omits it (or set `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=false`). See
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the auto-picker.
 
-### The fan-out path (servers below 25.6, or pinned off): exact, Prometheus-identical, sub-second at realistic scale
+### The fan-out path (servers below 25.9, or pinned off): exact, Prometheus-identical, sub-second at realistic scale
 
-On a server below 25.6 — or when you pin the native path off — cerberus computes
+On a server below 25.9 — or when you pin the native path off — cerberus computes
 the rate the way it always has: the
 `arrayJoin` fan-out described above, applying Prometheus's own
 `extrapolatedRate` to each `(series, anchor)` window. This is the path the
@@ -351,9 +351,11 @@ rejected rather than served. That is exactly the wall this flag exists to move.
 
 ### The durable answer
 
-The native path — the default on a 25.6+ server — moves the arithmetic floor
+The native path — the default on a 25.9+ server — moves the arithmetic floor
 *down* instead of
-working around it: ClickHouse ≥ 25.6 ships **`timeSeriesRateToGrid`**, which
+working around it: ClickHouse ≥ 25.9 ships a Prometheus-correct
+**`timeSeriesRateToGrid`** (the aggregate landed at 25.6, but its membership
+window only became left-open — matching PromQL — at 25.9, the auto floor), which
 ClickHouse ported from Prometheus's rate code essentially verbatim, so it
 computes the *same* `extrapolatedRate`, but *inside the engine* in a single
 pass. There is no
@@ -363,8 +365,8 @@ the memory — stays **flat** instead of growing with the grid. On the canonical
 
 | path                       | how the rate is computed         | wall    | modeled peak memory |
 | -------------------------- | -------------------------------- | ------- | ------------------- |
-| fan-out (pinned / < 25.6)  | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
-| native (default on 25.6+)  | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
+| fan-out (pinned / < 25.9)  | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
+| native (default on 25.9+)  | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
 
 (Measured on the 500k-row seed; full methodology and the three rate-range
 strategies are in [benchmarks.md](benchmarks.md#the-expensive-shape-rate-range-query--three-strategies).)
@@ -392,7 +394,7 @@ not because the rounding matters: it rides ClickHouse's own experimental
 ClickHouse's confidence signal, not cerberus's. A prod-data validation has since
 exercised it against a real (non-chDB) server with that setting enforced and
 found it result-correct at flat memory — which is why `auto` now selects it on
-`>= 25.6` rather than leaving it opt-in. Scope is still **`rate` only** for this
+`>= 25.9` rather than leaving it opt-in. Scope is still **`rate` only** for this
 particular fan-out story — `increase` / `delta` / `deriv` / `predict_linear`
 stay on the fan-out until each native sibling is differentially proven against
 Prometheus (the `staleness` / `changes` / `resets` shapes have their own native
@@ -402,8 +404,8 @@ aggregates and are likewise auto-enabled).
 
 | Your situation                                                             | Use                                                                |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| ClickHouse `>= 25.6`, default `auto`                                       | **Native** (auto-selected for you)                                 |
-| Your ClickHouse is older than 25.6                                         | **Fan-out** (the only path)                                        |
+| ClickHouse `>= 25.9`, default `auto`                                       | **Native** (auto-selected for you)                                 |
+| Your ClickHouse is older than 25.9                                         | **Fan-out** (the only path)                                        |
 | You need bit-for-bit-stable parity for a specific panel and want to pin it | **Pin fan-out** (omit `ts_grid_range` / set the legacy flag false) |
 
 The native path is the default on a capable server; you only need to act to opt

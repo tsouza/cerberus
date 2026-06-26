@@ -6,7 +6,7 @@
 #
 # PER-FEATURE VERSION FLOORS LIVE ELSEWHERE. The minimum ClickHouse version
 # each optimization needs (aggregation_in_order 24.8, condition_cache 25.3,
-# ts_grid_range / ts_grid_resample 25.6, columnar_result_decode none) is owned
+# ts_grid_range / ts_grid_resample 25.9, columnar_result_decode none) is owned
 # by internal/chopt/registry.go and MUST NOT be duplicated here - that registry
 # stays the source of truth for feature floors. The version-consistency check
 # (.github/scripts/clickhouse-version-sync.mjs) DERIVES the highest enabled
@@ -30,14 +30,14 @@ min_clickhouse: "24.8"
 # introduced at. Only applies when an experimental native-rate feature is
 # enabled, which raises the effective preflight floor to max(min_clickhouse,
 # min_native_rate). MUST equal internal/preflight minCHNativeRate. Informational
-# here; the registry (ts_grid_range / ts_grid_resample = 25.6) is its SoT for
+# here; the registry (ts_grid_range / ts_grid_resample = 25.9) is its SoT for
 # the per-feature gate.
-min_native_rate: "25.6"
+min_native_rate: "25.9"
 
 # quickstart_clickhouse - the ClickHouse image tag the root docker-compose.yml
 # quickstart ships. It MUST be new enough to actually demo every optimization
 # the quickstart enables via CERBERUS_CH_OPTIMIZATIONS (today:
-# aggregation_in_order, condition_cache, ts_grid_range -> highest floor 25.6).
+# aggregation_in_order, condition_cache, ts_grid_range -> highest floor 25.9).
 # The check asserts quickstart_clickhouse >= that derived highest floor.
 quickstart_clickhouse: "26.5"
 

@@ -84,7 +84,7 @@ in.
 
 | Component            | Minimum                        | Notes                                                                                                                               |
 | -------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. Enabling the experimental native rate requires 25.6 (below).    |
+| ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. Enabling the experimental native rate requires 25.9 (below).    |
 | OTel exporter schema | **clickhouseexporter 0.152.0** | A **schema shape**, not a binary version — see below.                                                                               |
 
 **ClickHouse.** 24.8 is the lowest version cerberus's emitted SQL is correct on:
@@ -96,13 +96,14 @@ the floor as well. The ClickHouse-optimization auto-picker
 (`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes the connected server's
 version once at startup and enables the result-equivalent optimizations it
 supports — `aggregation_in_order` (24.8+) and `condition_cache` (25.3+), plus the
-native `timeSeries*ToGrid` aggregates on capable servers (`ts_grid_range` /
-`ts_grid_resample` at 25.6+, `ts_grid_changes` / `ts_grid_resets` at 25.9+).
-Those native aggregates keep an "experimental" maturity label but are
-auto-selected by version, because they are validated result-correct at flat
-memory. So on modern ClickHouse the auto-picker **raises** the effective floor
-to **25.6** for eligible `rate(<counter>[range])` range queries, lowering them to
-the compiled `timeSeriesRateToGrid` aggregate. On a 24.8 server none of the
+native `timeSeries*ToGrid` aggregates on capable servers (the whole family at
+25.9+ — the rate/resample aggregates first shipped at 25.6 but used a closed
+membership window that diverged from PromQL until the 25.9 left-open fix, so
+25.9 is the auto floor for all four). Those native aggregates keep an
+"experimental" maturity label but are auto-selected by version, because they are
+validated result-correct at flat memory. So on modern ClickHouse the auto-picker
+**raises** the effective floor to **25.9** for eligible `rate(<counter>[range])`
+range queries, lowering them to the compiled `timeSeriesRateToGrid` aggregate. On a 24.8 server none of the
 native aggregates engage and the 24.8-safe SQL is emitted unchanged. The lone
 opt-in-only feature is `columnar_result_decode` (a perf tradeoff `auto` never
 selects). See
