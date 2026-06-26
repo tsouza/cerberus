@@ -125,6 +125,27 @@ func TestSearchTagValues_DynamicAttribute(t *testing.T) {
 	}
 }
 
+// TestSearchTagValues_WindowlessDefaultsToRecentBound — a values lookup
+// with no `start`/`end` must default to the recent DefaultSearchLookback
+// window so the per-key scan part-prunes otel_traces by partition rather
+// than full-scanning the fact table. The bound shows up as a `Timestamp`
+// predicate in the inner SELECT.
+func TestSearchTagValues_WindowlessDefaultsToRecentBound(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"frontend"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tag/service.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if !strings.Contains(q.lastSQL, "`Timestamp`") || !strings.Contains(q.lastSQL, "toDateTime64") {
+		t.Errorf("windowless tag-values lookup must bound on Timestamp, got: %s", q.lastSQL)
+	}
+}
+
 // TestSearchTagValues_EmptyName — bare `/api/search/tag//values` URL
 // (empty name segment) returns 400.
 //
