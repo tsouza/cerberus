@@ -106,6 +106,10 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
+	// Bound a windowless tag-value lookup to the recent window so the
+	// per-key scan part-prunes otel_traces instead of full-scanning the
+	// fact table (same map-explosion failure as /search/tags).
+	start, end = BoundDiscoveryWindow(start, end)
 
 	resolved, _ := resolveTagName(name, h.Schema)
 	var (

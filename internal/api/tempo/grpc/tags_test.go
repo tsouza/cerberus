@@ -256,6 +256,38 @@ func TestSearchTagsV2_ScopeFilter(t *testing.T) {
 	}
 }
 
+// TestSearchTags_WindowlessDefaultsToRecentBound asserts the gRPC tag
+// path applies the same recent-window default as the HTTP handler when
+// a request carries no Start/End: the emitted SQL must carry a
+// `Timestamp` bound so the mapKeys scan part-prunes otel_traces rather
+// than full-scanning + exploding the attribute Map.
+func TestSearchTags_WindowlessDefaultsToRecentBound(t *testing.T) {
+	t.Parallel()
+	q := &fakeQuerier{strings: []string{"service.name"}}
+	client := newTagsTestServer(t, q)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{})
+	if err != nil {
+		t.Fatalf("open SearchTags stream: %v", err)
+	}
+	if _, err := recvAll[tempopb.SearchTagsResponse](t, stream); err != nil {
+		t.Fatalf("recvAll: %v", err)
+	}
+	q.mu.Lock()
+	sqls := append([]string(nil), q.lastSQLs...)
+	q.mu.Unlock()
+	if len(sqls) == 0 {
+		t.Fatal("no CH lookup fired for windowless SearchTags")
+	}
+	for _, sql := range sqls {
+		if !strings.Contains(sql, "`Timestamp`") || !strings.Contains(sql, "toDateTime64") {
+			t.Errorf("windowless gRPC tags lookup must bound on Timestamp, got: %s", sql)
+		}
+	}
+}
+
 // TestSearchTags_InvalidScope_GRPCStatus asserts the V1 RPC rejects
 // unrecognised scope values with codes.InvalidArgument. The status
 // code matters because Grafana's Tempo datasource maps 4xx-equivalent

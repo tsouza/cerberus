@@ -32,6 +32,33 @@ func parseTempoStartEnd(r *http.Request) (time.Time, time.Time, error) {
 	return start, end, nil
 }
 
+// boundDiscoveryWindow defaults a windowless tag / tag-value discovery
+// request to the most recent DefaultSearchLookback. The discovery SQL
+// (`SELECT DISTINCT arrayJoin(mapKeys(ResourceAttributes))` and the
+// tag-value `mapContains` lookups) only emits a `Timestamp` predicate
+// when start/end are non-zero; with no predicate the scan reads every
+// row of otel_traces and explodes the Map column, running for minutes
+// and dying on the per-query max_execution_time (CH code 159) — so the
+// drilldown "never loads". otel_traces is `PARTITION BY toDate(Timestamp)`,
+// so bounding to the last hour part-prunes the read dramatically (prod
+// 814M-row table: ~839M rows / 30s+ timeout → ~8M rows / ~1s, the
+// bounded query then completing well inside the existing deadline).
+//
+// Only the fully-windowless case is defaulted: a one-sided window is a
+// deliberate open-ended bound and is left as-is, mirroring handleSearch.
+// Returning [now-DefaultSearchLookback, now] also matches reference
+// Tempo, which restricts windowless tag discovery to recent data.
+//
+// Exported so the gRPC tag endpoints (internal/api/tempo/grpc) apply the
+// identical default after decoding their uint32 Start/End fields.
+func BoundDiscoveryWindow(start, end time.Time) (time.Time, time.Time) {
+	if start.IsZero() && end.IsZero() {
+		end = time.Now().UTC()
+		start = end.Add(-DefaultSearchLookback)
+	}
+	return start, end
+}
+
 // parseTempoTime decodes a single timestamp string. Tempo accepts
 // integers in three magnitudes plus float-seconds and RFC3339:
 //
