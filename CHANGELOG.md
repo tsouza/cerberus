@@ -4,6 +4,17 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.8.0] — 2026-06-26
+
+### Added
+
+- **chopt:** auto-enable native time-series aggregates on capable servers (#1091)
+
+### Fixed
+
+- **chsql:** dedup duplicate-timestamp samples in row-path rate/increase/delta (#1092)
+- **chopt:** ts_grid capability probe falsely disabled native aggregates on healthy servers (#1094)
+
 ## [v1.7.1] — 2026-06-26
 
 ### Fixed
