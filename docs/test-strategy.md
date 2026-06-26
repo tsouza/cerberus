@@ -311,7 +311,10 @@ for the strategy):
   `cardinality-baseline.json` / `scale-wall-baseline.json` and fail on an
   upward regression, a new unbounded shape, or a deeper recursion. A
   decrease never blocks; the ceiling tightens only on a deliberate
-  `just update-cardinality-baseline`.
+  `just update-cardinality-baseline` — which `just update-golden` now
+  chains automatically, so adding a TXTAR fixture records its ratchet
+  entry in the same pass that fills the goldens (closing the recurring
+  "unrecorded fixture → red `perf-guards` on main" miss).
 - **Solver-decision ratchet** (`test/perf/solver_decision_ratchet_test.go`,
   chDB-free, in `check`) — pins the per-fixture route A/B classification
   against `solver-decision-baseline.json` so a routing-heuristic change
