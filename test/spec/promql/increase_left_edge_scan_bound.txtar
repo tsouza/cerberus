@@ -1,11 +1,30 @@
-# expected_rows is intentionally empty: the @-anchor pins the eval at
-# 1970-01-01 00:30:00 and the [5m] window covers 00:25:00..00:30:00,
-# but the seed samples are at 00:00:00 / 00:05:00. With no samples in
-# the window cerberus correctly drops the series (post-PR #287). This
-# fixture exercises the empty-window path.
-
 -- query.promql --
 increase(http_requests_total[5m] @ 1800)
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Window is (1800s - 5m, 1800s] = (00:25:00, 00:30:00], left-open.
+-- The first two rows are decoys that the innermost scan bound AND the
+-- arrayFilter must both exclude: a pre-window sample (00:24:50) and a
+-- sample at exactly the left edge 00:25:00 (left-open => excluded).
+-- Both carry large values that, if erroneously read, would become
+-- first_val/first_ts and trip counter-reset handling, changing the
+-- result. Only the 3 in-window samples (100 -> 300 -> 500) drive the
+-- counter_delta=400, sampled_interval=200s increase.
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:24:50', 9), 1000.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:25:00', 9), 2000.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:25:50', 9), 100.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:27:30', 9), 300.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:29:10', 9), 500.0);
+-- expected_rows --
+[
+  [{"job": "api"}, 600]
+]
 -- args --
 [0] string = "service.name"
 [1] string = "service_name"
@@ -18,18 +37,6 @@ increase(http_requests_total[5m] @ 1800)
 [8] string = "http/requests/total"
 [9] string = "http/requests_total"
 [10] string = "http_requests.total"
--- seed --
-CREATE TABLE otel_metrics_sum (
-    MetricName String,
-    Attributes Map(String, String),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_sum VALUES
-    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:00:00', 9), 0.0),
-    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:05:00', 9), 300.0);
--- expected_rows --
-[]
 -- chplan --
 RangeWindow func=increase range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=1970-01-01T00:30:00Z
   Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
