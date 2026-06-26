@@ -28,6 +28,11 @@ type stubQuerier struct {
 	exemplarsErr error
 	lastSQL      string
 	lastArgs     []any
+	// allSQL records every SQL statement issued through this stub, in
+	// order. lastSQL only keeps the final statement; the batched metadata
+	// endpoints issue several (per table group / per metadata arm), so a
+	// scan-bound assertion that must hold for EVERY arm reads allSQL.
+	allSQL []string
 
 	// metaCalls records every QueryMetricMeta invocation in order so
 	// metadata tests can assert the per-table fan-out (which SQL was
@@ -48,6 +53,7 @@ type metaCall struct {
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
 	s.lastSQL = sql
+	s.allSQL = append(s.allSQL, sql)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -57,6 +63,7 @@ func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chcli
 
 func (s *stubQuerier) QueryCursor(_ context.Context, sql string, args ...any) (chclient.Cursor, error) {
 	s.lastSQL = sql
+	s.allSQL = append(s.allSQL, sql)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -66,6 +73,7 @@ func (s *stubQuerier) QueryCursor(_ context.Context, sql string, args ...any) (c
 
 func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
 	s.lastSQL = sql
+	s.allSQL = append(s.allSQL, sql)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -75,6 +83,7 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) (
 
 func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any) ([]map[string]string, error) {
 	s.lastSQL = sql
+	s.allSQL = append(s.allSQL, sql)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -84,6 +93,7 @@ func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any)
 
 func (s *stubQuerier) QueryMetricMeta(_ context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error) {
 	s.lastSQL = sql
+	s.allSQL = append(s.allSQL, sql)
 	s.lastArgs = args
 	call := metaCall{sql: sql, kind: metricType, args: args}
 	s.metaCalls = append(s.metaCalls, call)
