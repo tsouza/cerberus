@@ -1140,11 +1140,13 @@ const (
 	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
 	defaultLogCommentShape    = false
-	// defaultCHOptimizations is "auto": enable every stable feature the
-	// connected server supports, never an experimental one. This preserves the
-	// historical experimental-off-by-default posture while turning on the
-	// 24.8-safe stable wins (aggregation_in_order) and any newer stable feature
-	// (condition_cache on >= 25.3) automatically.
+	// defaultCHOptimizations is "auto": enable every auto-eligible feature the
+	// connected server supports. Auto-eligibility (Feature.AutoSelect) is a
+	// separate axis from maturity (Feature.Stability) — `auto` turns on the
+	// 24.8-safe stable wins (aggregation_in_order), newer stable features
+	// (condition_cache on >= 25.3), AND the experimental-maturity native
+	// timeSeries*ToGrid aggregates on a capable server, while the deliberate
+	// perf-tradeoff feature (columnar_result_decode) stays opt-in only.
 	defaultCHOptimizations = "auto"
 	// defaultCHOptimizationsMode is "enforcing": an explicitly-requested but
 	// unsupported feature ABORTS startup (FATAL). `auto`/`off` already cover the
