@@ -535,11 +535,17 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 	innermost.From(innerSub)
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	innermost.GroupBy(groupFrags...)
-	// Bound the raw MergeTree scan to the single eval window so CH prunes
-	// granules instead of groupArray-ing the full per-series retention
-	// (the arrayFilter below stays as the precise post-groupArray gate).
-	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
-	innermost.Where(scanLo, scanHi)
+	// Bound the innermost groupArray to the single eval window so CH prunes
+	// granules instead of groupArray-ing the full per-series retention (the
+	// arrayFilter below stays as the precise post-groupArray gate). The
+	// bound is rendered byte-identically by instantWindowScanBoundsFrags;
+	// pushInstantScanBound fail-closes if the IR scan-time bound
+	// (RangeWindow.InstantScanBounded, established by
+	// chplan.AttachInstantScanTimeBounds) was never set, so a future
+	// windowed-array shape cannot silently regress to an unbounded scan.
+	if err := pushInstantScanBound(innermost, r, end, rangeNS); err != nil {
+		return err
+	}
 
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
 	innerSb := NewQuery().From(innermost.Frag())
@@ -1611,26 +1617,65 @@ func innerScanTsBoundsFrags(tsCol string, start, end time.Time, offsetNS, rangeN
 //	<tsCol> >  <end> - toIntervalNanosecond(<rangeNS>)
 //	<tsCol> <= <end>
 //
-// Unlike innerScanTsBoundsFrags (matrix path, anchored on the
-// Start/End grid and gated on rw.Start being set), the instant shape
-// is lowered with Start ZERO, so the bound is anchored entirely off the
-// single `end` Frag (endExprFrag, which already carries r.Offset) and
-// the window `rangeNS`. The lower bound is byte-identical to the
-// arrayFilter window lower bound (RangeWindowFilter / windowFilterPairsFrag
-// both use the same `end - toIntervalNanosecond(rangeNS)`), so the scan
-// reads exactly the rows the subsequent arrayFilter would keep — the
-// arrayFilter stays as the precise post-groupArray gate, this WHERE
-// just shrinks what the groupArray sees so CH can prune granules.
+// Unlike innerScanTsBoundsFrags (matrix path, anchored on the Start/End grid
+// and gated on rw.Start being set), the instant shape is lowered with Start
+// ZERO, so the bound is anchored entirely off the single `end` Frag
+// (endExprFrag, which already carries r.Offset) and the window `rangeNS`. The
+// lower bound is byte-identical to the arrayFilter window lower bound
+// (RangeWindowFilter / windowFilterPairsFrag both use the same
+// `end - toIntervalNanosecond(rangeNS)`), so the scan reads exactly the rows
+// the subsequent arrayFilter would keep — the arrayFilter stays as the precise
+// post-groupArray gate, this WHERE just shrinks what the groupArray sees so CH
+// can prune granules.
 //
 // No extrapolation margin is added (margin == 0): Prom's extrapolatedRate
-// consults only IN-window samples — durationToStart measures from
-// rangeStart to the first in-window sample, and counter-reset detection
-// runs over the in-window value array — so a sample at or before the
-// window start never participates in the result. Widening the scan past
-// rangeStart would read rows the arrayFilter immediately discards,
-// changing nothing but the bytes read.
+// consults only IN-window samples — durationToStart measures from rangeStart to
+// the first in-window sample, and counter-reset detection runs over the
+// in-window value array — so a sample at or before the window start never
+// participates in the result. Widening the scan past rangeStart would read rows
+// the arrayFilter immediately discards, changing nothing but the bytes read.
 func instantWindowScanBoundsFrags(tsCol string, end Frag, rangeNS int64) (Frag, Frag) {
 	return Gt(Col(tsCol), rangeStartFrag(end, rangeNS)), Lte(Col(tsCol), end)
+}
+
+// pushInstantScanBound bounds the innermost groupArray of an instant
+// (OuterRange == 0) windowed-array emitter to the single eval window, and
+// fail-closes when the RangeWindow has not had its scan-time bound established
+// in the IR (RangeWindow.InstantScanBounded). The flag is established once, in
+// the IR, by chplan.AttachInstantScanTimeBounds (run at the top of Emit and by
+// the optimizer's NormalizeScanTimeBound analyzer rule). The predicate text is
+// rendered here via instantWindowScanBoundsFrags — byte-identical to #1098 —
+// the flag is only the contract gate.
+//
+// This guard is the emit-time complement to the optimizer's fail-closed
+// RequireScanTimeBound analyzer: it guarantees that a future instant
+// windowed-array shape that reaches this emitter without an established bound
+// surfaces as a loud error rather than silently regressing to an unbounded
+// full-retention groupArray (the #1027 / #1048 / #1056 / #1059 / #1080 /
+// #1088 / #1089 / #1098 bug class).
+func pushInstantScanBound(innermost *QueryBuilder, r *chplan.RangeWindow, end Frag, rangeNS int64) error {
+	if err := requireInstantScanBound(r); err != nil {
+		return err
+	}
+	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	innermost.Where(scanLo, scanHi)
+	return nil
+}
+
+// requireInstantScanBound fail-closes when an instant windowed-array leaf
+// RangeWindow reaches an emitter without its IR scan-time bound established. It
+// is the shared gate for every instant-leaf emit path — the windowed-array
+// emitters (via pushInstantScanBound) and the OverTimeDirect instant path —
+// so no instant-leaf emitter can render an unbounded innermost scan.
+func requireInstantScanBound(r *chplan.RangeWindow) error {
+	if !r.InstantScanBounded {
+		return fmt.Errorf(
+			"%w: instant windowed-array RangeWindow (Func=%q) reached emit without an established scan time bound; "+
+				"chplan.AttachInstantScanTimeBounds (or the optimizer's NormalizeScanTimeBound rule) must establish it before emit",
+			ErrUnsupported, r.Func,
+		)
+	}
+	return nil
 }
 
 // offsetShiftedTimeFrag renders `<t>` shifted left by Offset:
@@ -2323,7 +2368,13 @@ func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag)
 	sb.Select(As(agg, r.ValueColumn))
 	// The (end - range, end] window predicate the array path applied via
 	// arrayFilter over the (ts, value) tuples becomes a row-level WHERE:
-	// left-open / right-closed, identical bounds.
+	// left-open / right-closed, identical bounds. This direct path is an
+	// instant windowed-array leaf too (IsInstantWindowedLeaf), so it shares
+	// the fail-closed contract — refuse to emit an unbounded scan unless the
+	// IR scan-time bound was established.
+	if err := requireInstantScanBound(r); err != nil {
+		return err
+	}
 	winStart := Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
 	sb.Where(
 		Gt(Col(r.TimestampColumn), winStart),
@@ -2792,11 +2843,17 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	innermost.From(innerSub)
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	innermost.GroupBy(groupFrags...)
-	// Bound the raw MergeTree scan to the single eval window so CH prunes
-	// granules instead of groupArray-ing the full per-series retention
-	// (the arrayFilter below stays as the precise post-groupArray gate).
-	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
-	innermost.Where(scanLo, scanHi)
+	// Bound the innermost groupArray to the single eval window so CH prunes
+	// granules instead of groupArray-ing the full per-series retention (the
+	// arrayFilter below stays as the precise post-groupArray gate). The
+	// bound is rendered byte-identically by instantWindowScanBoundsFrags;
+	// pushInstantScanBound fail-closes if the IR scan-time bound
+	// (RangeWindow.InstantScanBounded, established by
+	// chplan.AttachInstantScanTimeBounds) was never set, so a future
+	// windowed-array shape cannot silently regress to an unbounded scan.
+	if err := pushInstantScanBound(innermost, r, end, rangeNS); err != nil {
+		return err
+	}
 
 	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
@@ -3229,11 +3286,17 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 	innermost.From(innerSub)
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	innermost.GroupBy(groupFrags...)
-	// Bound the raw MergeTree scan to the single eval window so CH prunes
-	// granules instead of groupArray-ing the full per-series retention
-	// (the arrayFilter below stays as the precise post-groupArray gate).
-	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
-	innermost.Where(scanLo, scanHi)
+	// Bound the innermost groupArray to the single eval window so CH prunes
+	// granules instead of groupArray-ing the full per-series retention (the
+	// arrayFilter below stays as the precise post-groupArray gate). The
+	// bound is rendered byte-identically by instantWindowScanBoundsFrags;
+	// pushInstantScanBound fail-closes if the IR scan-time bound
+	// (RangeWindow.InstantScanBounded, established by
+	// chplan.AttachInstantScanTimeBounds) was never set, so a future
+	// windowed-array shape cannot silently regress to an unbounded scan.
+	if err := pushInstantScanBound(innermost, r, end, rangeNS); err != nil {
+		return err
+	}
 
 	// Inner-middle SELECT — arrayFilter to the [end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())

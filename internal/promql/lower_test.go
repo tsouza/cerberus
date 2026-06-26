@@ -144,6 +144,13 @@ func TestLower(t *testing.T) {
 			"args":   formatArgs(args),
 			"chplan": spec.PrintChplan(plan),
 		})
+
+		// Every real lowered plan must pass the fail-closed
+		// scan-time-bound invariant: the optimizer's
+		// NormalizeScanTimeBound establishes the instant windowed-array
+		// leaf scan bound and RequireScanTimeBound verifies it. A panic
+		// here would mean this query shape reaches production unbounded.
+		spec.AssertScanTimeBoundAccepts(t, plan)
 	})
 }
 

@@ -2276,6 +2276,10 @@ func TestEmitWindowedArrayPairsAnchored_MinWindowZero(t *testing.T) {
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 	}
+	// The instant windowed-array emitter fail-closes unless the inner scan
+	// carries the IR-level time bound that Emit establishes; attach it here
+	// the same way Emit does so the emitter sees a production-shaped plan.
+	r = chplan.AttachInstantScanTimeBounds(r).(*chplan.RangeWindow)
 	writer := func(_ Frag) Frag { return verbatim("0") }
 	if err := e.emitWindowedArrayPairsAnchored(r, writer, 0); err != nil {
 		t.Fatalf("emitWindowedArrayPairsAnchored: %v", err)
@@ -2557,6 +2561,9 @@ func TestEmitWindowedArray_MinWindowZeroBoundary(t *testing.T) {
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 	}
+	// Attach the IR-level scan time bound the instant emitter now requires
+	// (Emit does this in production).
+	r = chplan.AttachInstantScanTimeBounds(r).(*chplan.RangeWindow)
 	if err := e.emitWindowedArray(r, verbatim("0"), 0); err != nil {
 		t.Fatalf("emitWindowedArray: %v", err)
 	}
