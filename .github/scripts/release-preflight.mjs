@@ -139,10 +139,18 @@ const pollIntervalMs = 30 * 1000; // 30 s between check-suite polls
 // `status === "completed"`, and `pending` lists the names of the suites still
 // running. The suite name is best-effort (`app.slug` / `app.name` / id) — only
 // used for the abort/notice message, never for the gate decision.
+//
+// A suite with NO check-runs (`latest_check_runs_count === 0`) is ignored: an
+// app can register a check-suite yet never post a run (e.g. GitGuardian leaves a
+// perpetually-`queued` empty suite on commits it doesn't scan). Such a suite
+// never reaches `completed`, so waiting on it would hang the preflight until
+// timeout — and it contributes zero check-runs to the green-gate (`evaluate`),
+// so it is irrelevant to settledness. Treat empty suites as already settled.
 export function allSuitesSettled(suites, ownSuiteId) {
   const pending = [];
   for (const s of suites ?? []) {
     if (ownSuiteId != null && s.id === ownSuiteId) continue;
+    if ((s.latest_check_runs_count ?? 0) === 0) continue;
     if (s.status !== 'completed') {
       pending.push(s.app?.slug ?? s.app?.name ?? `suite#${s.id}`);
     }
@@ -346,7 +354,9 @@ function selfTest() {
   // --- wait phase: allSuitesSettled ----------------------------------------
   // A suite is settled when status === "completed"; the release run's own suite
   // (ownId) is ignored — it is necessarily in-progress while preflight polls.
-  const suite = (id, status, slug) => ({ id, status, app: { slug } });
+  // runs defaults to 1 (a real suite that posts check-runs); pass 0 for an
+  // empty suite an app registered but never populated (the GitGuardian case).
+  const suite = (id, status, slug, runs = 1) => ({ id, status, app: { slug }, latest_check_runs_count: runs });
   const ownId = 99;
 
   // All non-own suites completed (own suite still in_progress) -> done.
@@ -375,6 +385,11 @@ function selfTest() {
   // Multiple pending suites are all named.
   s = allSuitesSettled([suite(1, 'queued', 'ci'), suite(2, 'in_progress', 'e2e')], ownId);
   assert(s.done === false && s.pending.length === 2, 'multiple pending suites -> all named');
+
+  // An empty suite (0 check-runs) that never completes is ignored -> done.
+  // (GitGuardian's perpetually-queued empty suite hung the maintenance preflight.)
+  s = allSuitesSettled([suite(1, 'completed', 'ci', 1), suite(2, 'queued', 'gitguardian', 0)], ownId);
+  assert(s.done === true && s.pending.length === 0, 'empty (0-run) non-completing suite is ignored -> done');
 
   // No own suite id (e.g. off-runner) -> every non-completed suite counts.
   s = allSuitesSettled([suite(1, 'completed', 'ci')], null);
