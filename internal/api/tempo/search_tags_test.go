@@ -118,6 +118,32 @@ func TestSearchTags_TimeBounds(t *testing.T) {
 	}
 }
 
+// TestSearchTags_WindowlessDefaultsToRecentBound — a request with no
+// `start`/`end` must NOT emit a windowless `SELECT DISTINCT
+// arrayJoin(mapKeys(...)) FROM otel_traces`: that full-scans the fact
+// table and explodes the attribute Map, the multi-minute / timeout
+// failure observed in prod. The handler defaults to the recent
+// DefaultSearchLookback window so the scan part-prunes by partition,
+// which shows up as a `Timestamp` WHERE bound in the emitted SQL.
+func TestSearchTags_WindowlessDefaultsToRecentBound(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"a"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tags")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if !strings.Contains(q.lastSQL, "WHERE") {
+		t.Errorf("windowless tags request must default to a bounded scan, got no WHERE: %s", q.lastSQL)
+	}
+	if !strings.Contains(q.lastSQL, "`Timestamp`") || !strings.Contains(q.lastSQL, "toDateTime64") {
+		t.Errorf("windowless tags request must bound on Timestamp, got: %s", q.lastSQL)
+	}
+}
+
 // TestSearchTags_BadTimeBound — non-numeric, non-RFC3339 input yields
 // a 400 with the Tempo error envelope.
 func TestSearchTags_BadTimeBound(t *testing.T) {

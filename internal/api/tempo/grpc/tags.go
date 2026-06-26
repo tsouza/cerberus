@@ -211,6 +211,11 @@ func (s *Service) lookupTagValues(ctx context.Context, name string, startSec, en
 // the time.Time pair the SQL builder consumes. A zero uint32 maps to
 // the zero time.Time, which the QueryBuilder treats as "predicate
 // omitted" (see internal/api/tempo/search_tags.go buildSearchTagsSQL).
+//
+// A fully-windowless request is then defaulted to the recent window via
+// tempo.BoundDiscoveryWindow, identically to the HTTP tag endpoints, so
+// the gRPC discovery path part-prunes otel_traces instead of full-
+// scanning + exploding the attribute Map.
 func tempoTagsBounds(start, end uint32) (time.Time, time.Time) {
 	var s, e time.Time
 	if start != 0 {
@@ -219,5 +224,5 @@ func tempoTagsBounds(start, end uint32) (time.Time, time.Time) {
 	if end != 0 {
 		e = time.Unix(int64(end), 0).UTC()
 	}
-	return s, e
+	return tempo.BoundDiscoveryWindow(s, e)
 }
