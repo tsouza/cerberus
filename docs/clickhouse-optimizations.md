@@ -139,8 +139,8 @@ described as "opt-in" in the effect prose.
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                             |
 | `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                               |
-| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.6 (experimental maturity).                                  |
-| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.6.                     |
+| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.9 (experimental maturity).                                  |
+| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.9.                     |
 | `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Opt-in only (never auto).            |
 | `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.     |
 | `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9. |
@@ -157,7 +157,7 @@ Notes:
   below 25.3 it is a no-op. The query condition cache is result-equivalent,
   so it is safe to ship under `auto` for supporting servers.
 - **`ts_grid_range`** is `experimental` in maturity but **auto-enabled** on a
-  capable server (`>= 25.6`): a prod-data validation proved the native path
+  capable server (`>= 25.9`): a prod-data validation proved the native path
   result-correct (more correct than the buggy fan-out for `rate`) at flat
   memory, so `auto` picks it by version. It is also reachable by the legacy
   alias (below). Its native aggregate requires the experimental setting to be
@@ -166,7 +166,7 @@ Notes:
   feature was reached via `auto` or explicit listing.
 - **`ts_grid_resample`** is `experimental` in maturity but **auto-enabled** on
   a capable server (no legacy alias). It shares
-  the `timeSeries*ToGrid` family floor (25.6) and the same experimental setting
+  the `timeSeries*ToGrid` family floor (25.9) and the same experimental setting
   as `ts_grid_range`, co-stamped on exactly the queries that emit the native
   resample node. The two features are independent (either can be on without the
   other): the PromQL lowering wires each as a separate boot-decided strategy.
@@ -287,13 +287,13 @@ any explicit `CERBERUS_CH_OPTIMIZATIONS` choice (a feature list **or** the
 `off` kill-switch) overrides it.
 
 - **explicitly `true`** (under `auto`) — force-enable `ts_grid_range` (as if
-  it were listed), still subject to version gating and mode. On a `>= 25.6`
+  it were listed), still subject to version gating and mode. On a `>= 25.9`
   server `auto` already enables it, so this is now mostly redundant.
 - **explicitly `false`** (under `auto`) — force-disable `ts_grid_range`, even
   though `auto` now selects it on a capable server. This is the operator's
   escape hatch back to the fan-out rate path.
 - **unset** — no effect. The framework resolves normally; under `auto`,
-  `ts_grid_range` is enabled on a `>= 25.6` server (auto-selected by version,
+  `ts_grid_range` is enabled on a `>= 25.9` server (auto-selected by version,
   not by this flag).
 - **legacy set AND any explicit `CERBERUS_CH_OPTIMIZATIONS` choice** (a feature
   list **or** `off`) — the new `CERBERUS_CH_OPTIMIZATIONS` **wins**. The legacy
@@ -436,8 +436,8 @@ Nothing in this suite can break ClickHouse 24.8:
 - `aggregation_in_order` and `log_comment` are 24.8-safe (long-standing
   result-equivalent / free-form knobs).
 - `condition_cache` activates only on `>= 25.3`; below that it is a no-op.
-- `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.6`
-  (experimental maturity, auto-enabled there); below 25.6 they are absent from
+- `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.9`
+  (experimental maturity, auto-enabled there); below 25.9 they are absent from
   the resolved set.
 - `ts_grid_changes` and `ts_grid_resets` activate only on `>= 25.9`
   (experimental maturity, auto-enabled there); below 25.9 they are absent from
