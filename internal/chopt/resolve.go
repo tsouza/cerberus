@@ -113,13 +113,15 @@ const (
 //
 //   - "off"  -> the empty set. "off" is absolute and may NOT be combined with
 //     any other token (off + anything -> FATAL).
-//   - "auto" -> unions in every STABLE feature whose MinVersion <= server.
-//     Experimental / opt-in features are NEVER pulled in by "auto" (they
-//     require explicit listing), preserving the historical experimental-off
-//     default. "auto" may sit alongside explicit ids, so
-//     "auto,columnar_result_decode" means the auto-set PLUS columnar_result_decode
-//     -- the way to add an opt-in feature without giving up version-aware
-//     auto-selection of the rest.
+//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server.
+//     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
+//     (Feature.Stability): the native timeSeries*ToGrid aggregates are
+//     Experimental in maturity yet AutoSelect=true, so auto picks them on a
+//     capable server. The lone opt-in-only feature is columnar_result_decode
+//     (AutoSelect=false) -- a perf tradeoff, never auto. "auto" may sit
+//     alongside explicit ids, so "auto,columnar_result_decode" means the
+//     auto-set PLUS columnar_result_decode -- the way to add the opt-in feature
+//     without giving up version-aware auto-selection of the rest.
 //   - a feature id -> an explicit request: supported -> enable; unsupported
 //     under Enforcing -> err (FATAL); unsupported under Permissive -> WARN +
 //     skip. An explicit id keeps its "I require this" semantics even next to
@@ -182,17 +184,18 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in
-// the auto-set (every STABLE feature the server supports); every other token is
-// an explicit feature request, enabled if supported and otherwise handled per
-// mode (Enforcing -> fatal, Permissive -> WARN + skip). An unknown id is always
-// fatal. Tokens compose, so "auto,columnar_result_decode" yields the auto-set
-// plus that one opt-in feature. Returns the permissive WARN strings.
+// the auto-set (every AUTO-SELECT feature the server supports, regardless of
+// maturity); every other token is an explicit feature request, enabled if
+// supported and otherwise handled per mode (Enforcing -> fatal, Permissive ->
+// WARN + skip). An unknown id is always fatal. Tokens compose, so
+// "auto,columnar_result_decode" yields the auto-set plus that one opt-in
+// feature. Returns the permissive WARN strings.
 func resolveTokens(tokens []string, mode Mode, server Version, enabled map[string]struct{}) ([]string, error) {
 	var warnings []string
 	for _, id := range tokens {
 		if id == selectionAuto {
 			for _, f := range registry {
-				if f.Stability == Stable && server.AtLeast(f.MinVersion) {
+				if f.AutoSelect && server.AtLeast(f.MinVersion) {
 					enabled[f.ID] = struct{}{}
 				}
 			}
@@ -284,8 +287,9 @@ func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[
 	}
 
 	// Explicit legacy false force-disables ts_grid_range even if otherwise
-	// selected (it cannot be auto-selected since it is experimental, but a
-	// belt-and-braces delete keeps the contract exact).
+	// selected — and under the default "auto" it now IS otherwise selected on a
+	// capable server (AutoSelect=true), so this delete is the operator's escape
+	// hatch back to the fan-out rate path, not merely belt-and-braces.
 	delete(enabled, f.ID)
 	return warnings, nil
 }

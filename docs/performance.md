@@ -299,33 +299,35 @@ default until the arithmetic floor itself moves.
 
 ## Native rate: exactness vs. scale (should I enable it?)
 
-There is one optional knob in the rate-range story — `ts_grid_range`, listed in
-`CERBERUS_CH_OPTIMIZATIONS` (or the deprecated `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
-alias, re-routed through the same resolver) — and it asks you a single, honest
-question: **do you want results that are identical to Prometheus down to the
-last bit, or results that scale to millions of rows on flat memory?** You only
-have to think about it for `rate(...)` range queries (the `sum(rate(...[5m]))`
-panel shape); everything else is unaffected. For almost every deployment the
-default — *off* — is the right answer, and you can stop reading here. The rest
-of this section is for the case where a query is large enough that "scales to
-millions of rows" starts to matter.
+The rate-range story has two implementations — the `arrayJoin` fan-out and the
+native `timeSeriesRateToGrid` aggregate (`ts_grid_range`) — and on a modern
+ClickHouse the auto-picker now picks the native one for you. You only have to
+think about it for `rate(...)` range queries (the `sum(rate(...[5m]))` panel
+shape); everything else is unaffected. For almost every deployment the default
+behaviour is the right answer and you can stop reading here. The rest of this
+section explains *why* the native path is the default on capable servers, and
+when you might pin it off.
 
-`ts_grid_range` is **experimental**, so the optimization auto-picker
-(`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) never turns it on for you — it
-must be listed explicitly. The auto-picker DOES, however, enable the stable,
-result-equivalent wins for your server automatically: `aggregation_in_order`
-(24.8+) and `condition_cache` (25.3+). Those need no thought; this knob is the
-one deliberate trade-off you opt into. See
+`ts_grid_range` keeps an **experimental maturity** label, but it is
+**auto-selected by version**: under `CERBERUS_CH_OPTIMIZATIONS=auto` (the
+default) the auto-picker enables it on any server `>= 25.6`, alongside the
+result-equivalent stable wins `aggregation_in_order` (24.8+) and
+`condition_cache` (25.3+). A prod-data validation proved the native path
+result-correct — for `rate` it is in fact *more* correct than the fan-out (which
+carries a known extrapolation bug) — at flat memory, which is why auto picks it
+rather than leaving it as an opt-in. To go back to the fan-out, pin an explicit
+list that omits it (or set `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=false`). See
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the auto-picker.
 
-### Default (off): exact, Prometheus-identical, sub-second at realistic scale
+### The fan-out path (servers below 25.6, or pinned off): exact, Prometheus-identical, sub-second at realistic scale
 
-With the flag off, cerberus computes the rate the way it always has: the
+On a server below 25.6 — or when you pin the native path off — cerberus computes
+the rate the way it always has: the
 `arrayJoin` fan-out described above, applying Prometheus's own
 `extrapolatedRate` to each `(series, anchor)` window. This is the path the
 differential compatibility suite proves against a *reference Prometheus engine*
 on the same seeded data — the `compatibility/prometheus` gate, a required check
-on every merge. **The default path is the one that gate signs off on, so its
+on every merge. **The fan-out path is the one that gate signs off on, so its
 results match Prometheus exactly.**
 
 It is also fast at the scale real dashboards run. A normal 1h panel
@@ -349,7 +351,8 @@ rejected rather than served. That is exactly the wall this flag exists to move.
 
 ### The durable answer
 
-Enabling the flag is the path that moves the arithmetic floor *down* instead of
+The native path — the default on a 25.6+ server — moves the arithmetic floor
+*down* instead of
 working around it: ClickHouse ≥ 25.6 ships **`timeSeriesRateToGrid`**, which
 ClickHouse ported from Prometheus's rate code essentially verbatim, so it
 computes the *same* `extrapolatedRate`, but *inside the engine* in a single
@@ -358,10 +361,10 @@ pass. There is no
 the memory — stays **flat** instead of growing with the grid. On the canonical
 500k-row rate-range query the difference is stark:
 
-| flag                  | how the rate is computed         | wall    | modeled peak memory |
-| --------------------- | -------------------------------- | ------- | ------------------- |
-| **off** (default)     | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
-| **on** (experimental) | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
+| path                       | how the rate is computed         | wall    | modeled peak memory |
+| -------------------------- | -------------------------------- | ------- | ------------------- |
+| fan-out (pinned / < 25.6)  | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
+| native (default on 25.6+)  | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
 
 (Measured on the 500k-row seed; full methodology and the three rate-range
 strategies are in [benchmarks.md](benchmarks.md#the-expensive-shape-rate-range-query--three-strategies).)
@@ -383,35 +386,35 @@ format and Grafana both render `0.12` either way. The test pins this exactly
 (every cell within 1 ULP, no more than the documented two cells diverging, none
 by more than 1 ULP) rather than papering over it with a tolerance.
 
-The native path is **experimental and off by default** for two honest reasons,
-not because the rounding matters: it requires ClickHouse **≥ 25.6** (older
-servers reject the unknown function), and it rides ClickHouse's experimental
-`allow_experimental_time_series_aggregate_functions` setting, so it has not yet
-been swept against a real (non-chDB) server where that setting is enforced.
-Scope is **`rate` only** — `increase` / `delta` / `deriv` / `predict_linear`
+The native path keeps an **experimental maturity** label for one honest reason,
+not because the rounding matters: it rides ClickHouse's own experimental
+`allow_experimental_time_series_aggregate_functions` setting, which is
+ClickHouse's confidence signal, not cerberus's. A prod-data validation has since
+exercised it against a real (non-chDB) server with that setting enforced and
+found it result-correct at flat memory — which is why `auto` now selects it on
+`>= 25.6` rather than leaving it opt-in. Scope is still **`rate` only** for this
+particular fan-out story — `increase` / `delta` / `deriv` / `predict_linear`
 stay on the fan-out until each native sibling is differentially proven against
-Prometheus.
+Prometheus (the `staleness` / `changes` / `resets` shapes have their own native
+aggregates and are likewise auto-enabled).
 
 ### The decision rule
 
-| Your situation                                                       | Use                          |
-| -------------------------------------------------------------------- | ---------------------------- |
-| Normal dashboards / alerting — exact Prometheus parity matters       | **Default (off)**            |
-| Your ClickHouse is older than 25.6                                   | **Default (off)** (required) |
-| Large `rate(...)` range queries that hit the memory cap or feel slow | **Enable native (on)**       |
+| Your situation                                                             | Use                                                                |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| ClickHouse `>= 25.6`, default `auto`                                       | **Native** (auto-selected for you)                                 |
+| Your ClickHouse is older than 25.6                                         | **Fan-out** (the only path)                                        |
+| You need bit-for-bit-stable parity for a specific panel and want to pin it | **Pin fan-out** (omit `ts_grid_range` / set the legacy flag false) |
 
-Enable native only when **all three** hold: the slow/large query is a
-`rate(...)` range query over millions of rows, your ClickHouse is ≥ 25.6, and an
-imperceptible last-bit rounding difference is acceptable for that panel.
+The native path is the default on a capable server; you only need to act to opt
+*out* of it. To pin the fan-out, set `CERBERUS_CH_OPTIMIZATIONS` to an explicit
+list that omits `ts_grid_range` (or set `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=false`).
 
-In short: **leave it off** unless you are specifically running large
-`rate(...)` range queries, you are on ClickHouse ≥ 25.6, and you would trade a
-sub-observable rounding difference for an order-of-magnitude drop in memory and
-latency. When the flag is on, an eligible `rate(<counter>[<range>])` query_range
+Under `auto`, an eligible `rate(<counter>[<range>])` query_range
 lowers to a `chplan.RangeWindowNative` node that emits the native aggregate; the
 wrapping outer aggregate (`sum by (...)`) is byte-identical, so only the
-windowed-rate subquery changes, and turning the flag back off restores the
-established, Prometheus-exact fan-out. The full env-var contract and CH-version
+windowed-rate subquery changes, and pinning the fan-out restores the
+established, Prometheus-exact path. The full env-var contract and CH-version
 constraint live in
 [`operations.md`](operations.md#experimental-native-rate-timeseriesratetogrid).
 
