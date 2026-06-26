@@ -19,9 +19,9 @@ server supports them. Each lowering is version-floored and feature-gated,
 so an older or differently-configured server transparently falls back to
 the portable SQL path. What it currently exploits:
 
-- **`timeSeriesRateToGrid`** (`rate`, ClickHouse 25.6) — computes a whole
-  PromQL grid in one columnar pass per series instead of exploding each
-  sample into per-anchor copies.
+- **`timeSeriesRateToGrid`** (`rate`, ClickHouse 25.6; auto-enabled at 25.9,
+  the left-open window fix) — computes a whole PromQL grid in one columnar pass
+  per series instead of exploding each sample into per-anchor copies.
 - **`timeSeriesChangesToGrid` / `timeSeriesResetsToGrid`**
   (`changes` / `resets`, ClickHouse 25.9) — same one-pass shape for the
   adjacent-pair counters.

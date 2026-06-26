@@ -21,7 +21,7 @@ const nativeResampleFn = "timeSeriesResampleToGridWithStaleness"
 // unaffected by the substitution:
 //
 //	SELECT MetricName, Attributes, anchor_ts AS TimeUnix,
-//	       toFloat64(grid_val) AS Value
+//	       toFloat64(assumeNotNull(grid_val)) AS Value
 //	FROM (
 //	  SELECT MetricName, Attributes,
 //	         timeSeriesResampleToGridWithStaleness(<start>, <end>, <step_s>, <stale_s>)(<ts>, <val>) AS grid,
@@ -42,10 +42,13 @@ const nativeResampleFn = "timeSeriesResampleToGridWithStaleness"
 //     the staleness window — the aggregate returns Array(Nullable(Float64)))
 //     into ABSENT rows, exactly the staleness gap RangeLWR produces when no
 //     fanned sample reaches an anchor.
-//   - `toFloat64(grid_val)` strips the Nullable so Value is a non-nullable
-//     Float64 (load-bearing for prod clickhouse-go strictness; chDB tolerates
-//     Nullable but prod 502s). The IS NOT NULL filter has already removed every
-//     NULL, so the cast never sees one.
+//   - `toFloat64(assumeNotNull(grid_val))` strips the Nullable so Value is a
+//     non-nullable Float64 (load-bearing for prod clickhouse-go strictness; chDB
+//     tolerates Nullable but prod 502s — e.g. count_values lifting Value into a
+//     Map(String, Nullable(String)) label). `toFloat64` alone keeps the Nullable
+//     (toFloat64(Nullable(Float64)) is still Nullable), so assumeNotNull is
+//     required; the IS NOT NULL filter has already removed every NULL, so it
+//     never drops a real value.
 //   - anchor_ts is surfaced under the schema TimestampColumn name so the
 //     canonical 4-column contract holds for downstream consumers.
 //
@@ -90,12 +93,19 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 		Col(r.ValueCol),
 	)
 	// timeSeriesRange(start, end, step_s) — the parallel anchor-timestamp axis,
-	// exploded 1:1 with gridAgg in the ARRAY JOIN below. It uses the SHIFTED
-	// bounds too so the per-row index alignment matches gridAgg; the emitted
-	// anchor still reads the unshifted grid because Offset shifts only the
-	// membership window, and offsetShiftedTimeFrag returns the bare literal when
-	// Offset is zero (the byte-stable common case).
-	gridTS := Call("timeSeriesRange", startFrag, endFrag, InlineLit(stepSeconds))
+	// exploded 1:1 with gridAgg in the ARRAY JOIN below. It MUST render the
+	// UNSHIFTED query grid [Start, End]: the anchor axis is surfaced as the
+	// emitted Timestamp column, and Offset must NOT move the reported
+	// timestamps — it shifts only the aggregate's membership window (gridAgg's
+	// start/end). This mirrors the fan-out, which reports the query-grid anchor
+	// while selecting from the (anchor-Offset-lookback, anchor-Offset] span.
+	// Both arrays have identical length (same step, same span width), so the
+	// i-th offset-shifted aggregate value lands on the i-th unshifted anchor.
+	// offsetShiftedTimeFrag(_, 0) renders the bare literal, so the offset-zero
+	// common case stays byte-identical to the shifted frags.
+	gridStartFrag := offsetShiftedTimeFrag(r.Start, 0)
+	gridEndFrag := offsetShiftedTimeFrag(r.End, 0)
+	gridTS := Call("timeSeriesRange", gridStartFrag, gridEndFrag, InlineLit(stepSeconds))
 
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -124,7 +134,7 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 	outer.Select(Col(r.MetricNameCol))
 	outer.Select(Col(r.AttributesCol))
 	outer.Select(As(Col(RangeWindowAnchorAlias), r.TimestampCol))
-	outer.Select(As(Call("toFloat64", Col(nativeGridValAlias)), r.ValueCol))
+	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueCol))
 	outer.ArrayJoin(
 		As(Col(nativeGridArrayAlias), nativeGridValAlias),
 		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),

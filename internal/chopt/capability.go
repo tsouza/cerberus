@@ -4,7 +4,7 @@ package chopt
 // server will actually RUN the experimental timeSeries*ToGrid aggregate family
 // when cerberus stamps `allow_experimental_time_series_aggregate_functions=1`.
 // It is a SECOND axis the resolver gates the native ts_grid features on, layered
-// on top of the version floor: a server can be new enough (>= 25.6 / 25.9) yet
+// on top of the version floor: a server can be new enough (>= 25.9) yet
 // still REFUSE the experimental setting (a hardened profile that pins/constrains
 // it, or a readonly user), in which case auto-selecting the native node would
 // only earn a SETTING_CONSTRAINT_VIOLATION / READONLY rejection at query time.

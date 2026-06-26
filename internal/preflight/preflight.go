@@ -82,12 +82,16 @@ import (
 // are all emitted unconditionally.
 var minCHBase = chopt.Version{Major: 24, Minor: 8}
 
-// minCHNativeRate is the ClickHouse floor the native timeSeriesRateToGrid
-// family was introduced at (v25.6.0). It only applies when the
+// minCHNativeRate is the ClickHouse floor at which the native
+// timeSeriesRateToGrid family is Prometheus-correct. The aggregates first
+// shipped in v25.6.0 but used a CLOSED membership window until v25.9 (PR
+// #86588 made it left-open / right-closed to match PromQL's range selector);
+// below 25.9 the native path diverges from the fan-out on grid-aligned data,
+// so 25.9 is the floor the native path requires. It only applies when the
 // experimental native-rate path is enabled; the effective requirement is
 // max(minCHBase, minCHNativeRate) so enabling a feature whose floor sits
 // above the base raises the requirement, and the base wins otherwise.
-var minCHNativeRate = chopt.Version{Major: 25, Minor: 6}
+var minCHNativeRate = chopt.Version{Major: 25, Minor: 9}
 
 // attrMapType is the ClickHouse type the OTel-CH attribute-map columns
 // (Attributes / ResourceAttributes / ScopeAttributes) must carry. Stored

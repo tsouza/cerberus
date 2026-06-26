@@ -118,8 +118,8 @@ table.
 | ------------------------ | ---------- | ------------ | ---------- |
 | `aggregation_in_order`   | 24.8       | stable       | yes        |
 | `condition_cache`        | 25.3       | stable       | yes        |
-| `ts_grid_range`          | 25.6       | experimental | yes        |
-| `ts_grid_resample`       | 25.6       | experimental | yes        |
+| `ts_grid_range`          | 25.9       | experimental | yes        |
+| `ts_grid_resample`       | 25.9       | experimental | yes        |
 | `columnar_result_decode` | none       | experimental | no         |
 | `ts_grid_changes`        | 25.9       | experimental | yes        |
 | `ts_grid_resets`         | 25.9       | experimental | yes        |

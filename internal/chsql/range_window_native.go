@@ -38,16 +38,18 @@ const (
 // signature. The per-func difference is purely the aggregate NAME and the
 // ClickHouse version floor at which it first shipped:
 //
-//   - rate    -> timeSeriesRateToGrid    (family floor v25.6, >= 2 samples/window)
+//   - rate    -> timeSeriesRateToGrid    (shipped v25.6, >= 2 samples/window)
 //   - changes -> timeSeriesChangesToGrid (v25.9 — PR #86010, >= 1 sample/window)
 //   - resets  -> timeSeriesResetsToGrid  (v25.9 — PR #86010, >= 1 sample/window)
 //
 // changes/resets are COUNT functions (Array(Nullable(Float64)) one count per
 // grid point, NULL where no in-window sample), so the same
 // `WHERE grid_val IS NOT NULL` filter and `toFloat64` cast apply verbatim. The
-// 25.9 floor is enforced upstream by the chopt feature gate (FeatureTSGridChanges
-// / FeatureTSGridResets, MinVersion 25.9) — the emitter is version-agnostic and
-// only needs the name.
+// whole family is gated to a 25.9 floor by the chopt registry: changes/resets
+// because the aggregates only ship at 25.9, rate because its membership window
+// was CLOSED until 25.9 (PR #86588 made it left-open / right-closed to match
+// PromQL — see internal/chopt FeatureTSGridRange). The emitter is
+// version-agnostic and only needs the name.
 var nativeTSGridFn = map[string]string{
 	"rate":    "timeSeriesRateToGrid",
 	"changes": "timeSeriesChangesToGrid",
@@ -67,7 +69,7 @@ var nativeTSGridFn = map[string]string{
 // COUNT rather than an extrapolated rate):
 //
 //	SELECT <group cols>, anchor_ts, anchor_ts AS <TimestampColumn>,
-//	       toFloat64(grid_val) AS <ValueColumn>
+//	       toFloat64(assumeNotNull(grid_val)) AS <ValueColumn>
 //	FROM (
 //	  SELECT <group cols>,
 //	         timeSeriesRateToGrid(<start>, <end>, <step_s>, <window_s>)(<ts>, <val>) AS grid,
@@ -93,10 +95,13 @@ var nativeTSGridFn = map[string]string{
 //     fan-out's `>= 1`), so a single-sample window emits a 0 count rather
 //     than NULL. Without this filter, NULLs would flow into the outer
 //     aggregate and diverge from Prom's drop-series semantics.
-//   - `toFloat64(grid_val)` strips the Nullable so the Value column is a
-//     non-nullable Float64 — load-bearing for prod clickhouse-go
-//     strictness (chDB tolerates Nullable; prod 502s). The IS NOT NULL
-//     filter has already removed every NULL, so the cast never sees one.
+//   - `toFloat64(assumeNotNull(grid_val))` strips the Nullable so the Value
+//     column is a non-nullable Float64 — load-bearing for prod clickhouse-go
+//     strictness (chDB tolerates Nullable; prod 502s, including when a wrapper
+//     like count_values lifts Value into a Map(String, Nullable(String)) label).
+//     `toFloat64` ALONE does NOT strip Nullable — toFloat64(Nullable(Float64))
+//     is still Nullable(Float64) — so assumeNotNull is required; the IS NOT NULL
+//     filter has already removed every NULL, so it never drops a real value.
 //   - anchor_ts is surfaced BOTH bare (RangeWindowAnchorAlias) and under
 //     the schema TimestampColumn name, mirroring
 //     emitWindowedArrayExtrapolatedMatrix so the wrapping Aggregate's
@@ -149,8 +154,17 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	)
 	// timeSeriesRange(start, end, step_s) — the parallel anchor-timestamp
 	// axis. Its i-th element is the anchor of gridAgg's i-th value, so the
-	// ARRAY JOIN below pairs them 1:1.
-	gridTS := Call("timeSeriesRange", startFrag, endFrag, InlineLit(stepSeconds))
+	// ARRAY JOIN below pairs them 1:1. It MUST render the UNSHIFTED query grid
+	// [Start, End]: the anchor axis becomes the emitted Timestamp column, and
+	// Offset must NOT move the reported timestamps — it shifts only the
+	// aggregate's membership window (gridAgg's start/end), mirroring the
+	// fan-out, which reports the query-grid anchor while selecting from the
+	// (anchor-Offset-Range, anchor-Offset] span. offsetShiftedTimeFrag(_, 0)
+	// renders the bare literal, so the offset-zero common case stays
+	// byte-identical to the shifted frags.
+	gridStartFrag := offsetShiftedTimeFrag(r.Start, 0)
+	gridEndFrag := offsetShiftedTimeFrag(r.End, 0)
+	gridTS := Call("timeSeriesRange", gridStartFrag, gridEndFrag, InlineLit(stepSeconds))
 
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -185,7 +199,7 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	if r.TimestampColumn != RangeWindowAnchorAlias {
 		outer.Select(As(Col(RangeWindowAnchorAlias), r.TimestampColumn))
 	}
-	outer.Select(As(Call("toFloat64", Col(nativeGridValAlias)), r.ValueColumn))
+	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueColumn))
 	outer.ArrayJoin(
 		As(Col(nativeGridArrayAlias), nativeGridValAlias),
 		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),

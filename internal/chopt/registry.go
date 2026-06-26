@@ -24,11 +24,24 @@ const (
 
 	// FeatureTSGridRange opts eligible rate(<counter>[<range>]) query_range
 	// shapes onto the native timeSeriesRateToGrid aggregate. Its maturity is
-	// Experimental, but it is AUTO-SELECTED on capable servers (>= 25.6): the
-	// native path is result-correct (more correct than the buggy fan-out for
-	// rate) and runs at flat memory, so auto picks it whenever the server can run
-	// it. It is also reachable by the legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE
-	// alias.
+	// Experimental, but it is AUTO-SELECTED on capable servers: the native path
+	// is result-correct and runs at flat memory, so auto picks it whenever the
+	// server can run it. It is also reachable by the legacy
+	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias.
+	//
+	// IMPORTANT — the floor is 25.9, NOT the 25.6 the aggregate first shipped in.
+	// timeSeriesRateToGrid was introduced in 25.6, but it used a CLOSED
+	// [anchor-window, anchor] membership window until ClickHouse 25.9 (PR #86588,
+	// merged 2025-09-08, "Make the staleness window in timeSeries*() functions
+	// left-open and right-closed"). PromQL's range selector is half-open
+	// (anchor-window, anchor], matching the fan-out. On a grid-aligned corpus
+	// (scrape interval == range) the closed left edge is NOT measure-zero: it
+	// admits the sample sitting exactly on anchor-window, so the native path
+	// emits a rate at every grid point where reference Prometheus (and the
+	// fan-out) emit nothing (< 2 in-window samples). Empirically confirmed wrong
+	// on the 25.8 chDB substrate. A 25.6 floor would auto-enable a path that
+	// systematically diverges from Prometheus on 25.6-25.8; 25.9 is the first
+	// release whose window is Prometheus-equivalent.
 	FeatureTSGridRange = "ts_grid_range"
 
 	// FeatureTSGridResample opts the eligible range-mode instant-vector
@@ -37,8 +50,11 @@ const (
 	// argMax sample-fan-out (internal/chsql.emitRangeLWR). Like ts_grid_range its
 	// maturity is Experimental but it is AUTO-SELECTED on capable servers (no
 	// legacy env alias — auto picks it, or list it in CERBERUS_CH_OPTIMIZATIONS).
-	// It shares the timeSeries*ToGrid family floor (25.6) and the same
-	// experimental allow_experimental_time_series_aggregate_functions gate.
+	// It shares the timeSeries*ToGrid family's 25.9 floor (the left-open window
+	// fix, PR #86588 — see FeatureTSGridRange) and the same experimental
+	// allow_experimental_time_series_aggregate_functions gate. Below 25.9 the
+	// closed-left staleness window admits a sample landing exactly on
+	// anchor-lookback, diverging from the fan-out's half-open membership.
 	FeatureTSGridResample = "ts_grid_resample"
 
 	// FeatureColumnarResultDecode routes the four-column query_range matrix
@@ -62,13 +78,15 @@ const (
 	// servers (no legacy env alias — auto picks it once the server is >= 25.9, or
 	// list it in CERBERUS_CH_OPTIMIZATIONS).
 	//
-	// IMPORTANT — the floor is 25.9, NOT the 25.6 of rate/resample.
-	// timeSeriesChangesToGrid/ResetsToGrid shipped a full quarter later (PR
-	// #86010, merged 2025-09-08, ClickHouse 25.9), empirically confirmed ABSENT
-	// on the 25.8 chDB substrate. A 25.6 floor here would mis-advertise support
-	// on 25.6-25.8 servers and 502 with UNKNOWN_AGGREGATE_FUNCTION. The
-	// experimental allow_experimental_time_series_aggregate_functions gate is
-	// shared with the rest of the family.
+	// IMPORTANT — the floor is 25.9, shared with the rest of the family.
+	// timeSeriesChangesToGrid/ResetsToGrid shipped a full quarter after the
+	// 25.6 rate/resample aggregates (PR #86010, merged 2025-09-08, ClickHouse
+	// 25.9), empirically confirmed ABSENT on the 25.8 chDB substrate. A 25.6
+	// floor here would mis-advertise support on 25.6-25.8 servers and 502 with
+	// UNKNOWN_AGGREGATE_FUNCTION. (rate/resample share the 25.9 floor for a
+	// different reason — the left-open window fix, PR #86588; both PRs landed in
+	// 25.9.) The experimental allow_experimental_time_series_aggregate_functions
+	// gate is shared with the rest of the family.
 	FeatureTSGridChanges = "ts_grid_changes"
 
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
@@ -169,19 +187,19 @@ var registry = []Feature{
 	},
 	{
 		ID:                         FeatureTSGridRange,
-		MinVersion:                 Version{Major: 25, Minor: 6},
+		MinVersion:                 Version{Major: 25, Minor: 9},
 		Stability:                  Experimental,
 		AutoSelect:                 true,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.6)",
+		Doc:                        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)",
 	},
 	{
 		ID:                         FeatureTSGridResample,
-		MinVersion:                 Version{Major: 25, Minor: 6},
+		MinVersion:                 Version{Major: 25, Minor: 9},
 		Stability:                  Experimental,
 		AutoSelect:                 true,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.6)",
+		Doc:                        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)",
 	},
 	{
 		ID:         FeatureColumnarResultDecode,
