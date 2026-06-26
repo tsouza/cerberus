@@ -23,19 +23,22 @@ const (
 	FeatureConditionCache = "condition_cache"
 
 	// FeatureTSGridRange opts eligible rate(<counter>[<range>]) query_range
-	// shapes onto the native timeSeriesRateToGrid aggregate. Experimental and
-	// explicit-only: NEVER enabled by auto, reachable only by listing it or by
-	// the legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias.
+	// shapes onto the native timeSeriesRateToGrid aggregate. Its maturity is
+	// Experimental, but it is AUTO-SELECTED on capable servers (>= 25.6): the
+	// native path is result-correct (more correct than the buggy fan-out for
+	// rate) and runs at flat memory, so auto picks it whenever the server can run
+	// it. It is also reachable by the legacy CERBERUS_EXPERIMENTAL_TS_GRID_RANGE
+	// alias.
 	FeatureTSGridRange = "ts_grid_range"
 
 	// FeatureTSGridResample opts the eligible range-mode instant-vector
 	// selection / staleness shape (the query_range bare-selector LWR) onto the
 	// native timeSeriesResampleToGridWithStaleness aggregate, retiring the
-	// argMax sample-fan-out (internal/chsql.emitRangeLWR). Like ts_grid_range it
-	// is Experimental and explicit-only (NEVER enabled by auto; no legacy env
-	// alias — list it in CERBERUS_CH_OPTIMIZATIONS to enable). It shares the
-	// timeSeries*ToGrid family floor (25.6) and the same experimental
-	// allow_experimental_time_series_aggregate_functions gate.
+	// argMax sample-fan-out (internal/chsql.emitRangeLWR). Like ts_grid_range its
+	// maturity is Experimental but it is AUTO-SELECTED on capable servers (no
+	// legacy env alias — auto picks it, or list it in CERBERUS_CH_OPTIMIZATIONS).
+	// It shares the timeSeries*ToGrid family floor (25.6) and the same
+	// experimental allow_experimental_time_series_aggregate_functions gate.
 	FeatureTSGridResample = "ts_grid_resample"
 
 	// FeatureColumnarResultDecode routes the four-column query_range matrix
@@ -44,18 +47,20 @@ const (
 	// label map once per contiguous run rather than once per row. It is a
 	// CLIENT-SIDE decode optimization: it touches no server setting and works
 	// on any native-protocol server, so it carries NO version floor
-	// (AlwaysAvailable). It is opt-in-only (Experimental stability): a perf
-	// tradeoff (a second ch-go dial), so auto never selects it; it engages only
-	// when listed explicitly in CERBERUS_CH_OPTIMIZATIONS — typically alongside
-	// auto (`auto,columnar_result_decode`) to keep the version-gated picks.
+	// (AlwaysAvailable). It is opt-in-only (AutoSelect=false): a perf TRADEOFF (a
+	// second ch-go dial, not a version-gated win), so auto MUST NEVER select it;
+	// it engages only when listed explicitly in CERBERUS_CH_OPTIMIZATIONS —
+	// typically alongside auto (`auto,columnar_result_decode`) to keep the
+	// version-gated picks. This is the one feature auto leaves to the operator.
 	FeatureColumnarResultDecode = "columnar_result_decode"
 
 	// FeatureTSGridChanges opts eligible changes(<v>[<range>]) query_range
 	// shapes onto the native timeSeriesChangesToGrid aggregate (the per-window
 	// value-change count), retiring the arrayPopBack/arrayPopFront `c != p`
 	// fan-out (internal/chsql.emitRangeWindowChanges). Like the rest of the
-	// family it is Experimental and explicit-only (NEVER enabled by auto; no
-	// legacy env alias — list it in CERBERUS_CH_OPTIMIZATIONS to enable).
+	// family its maturity is Experimental but it is AUTO-SELECTED on capable
+	// servers (no legacy env alias — auto picks it once the server is >= 25.9, or
+	// list it in CERBERUS_CH_OPTIMIZATIONS).
 	//
 	// IMPORTANT — the floor is 25.9, NOT the 25.6 of rate/resample.
 	// timeSeriesChangesToGrid/ResetsToGrid shipped a full quarter later (PR
@@ -69,9 +74,9 @@ const (
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
 	// shapes onto the native timeSeriesResetsToGrid aggregate (the per-window
 	// counter-reset count), retiring the arrayPopBack/arrayPopFront `c < p`
-	// fan-out (internal/chsql.emitRangeWindowResets). Experimental and
-	// explicit-only, same 25.9 floor and same experimental gate as
-	// FeatureTSGridChanges (the two are siblings from PR #86010).
+	// fan-out (internal/chsql.emitRangeWindowResets). Experimental maturity but
+	// AUTO-SELECTED on capable servers, same 25.9 floor and same experimental
+	// gate as FeatureTSGridChanges (the two are siblings from PR #86010).
 	FeatureTSGridResets = "ts_grid_resets"
 )
 
@@ -85,24 +90,35 @@ const (
 // version requirement" rather than a forgotten / zero-valued field.
 var AlwaysAvailable = Version{Major: 0, Minor: 0}
 
-// Stability classifies a registry feature. Auto enables stable features only;
-// experimental features require explicit listing (preserving cerberus's
-// historical "experimental paths off out of the box" default).
+// Stability classifies a registry feature's MATURITY (operator-facing docs /
+// support expectations) — it is deliberately DECOUPLED from auto-eligibility,
+// which lives on the separate Feature.AutoSelect axis. A feature can be
+// Experimental in maturity yet auto-selected by version (the native
+// timeSeries*ToGrid aggregates: validated result-correct + flat-memory, so auto
+// picks them on capable servers while their docs stay honestly "experimental").
 type Stability int
 
 const (
-	// Stable features are auto-enabled when the server supports them.
+	// Stable features are mature and documented as production-ready.
 	Stable Stability = iota
-	// Experimental features are never auto-enabled; they require explicit
-	// listing (or the legacy alias for ts_grid_range).
+	// Experimental features are honestly young in maturity. This says nothing
+	// about whether auto picks them — that is Feature.AutoSelect.
 	Experimental
 )
 
 // Feature is one registry entry: a stable id, the minimum major.minor server
-// version that supports it, its stability class, and a one-line operator-facing
-// description.
+// version that supports it, its stability class, an auto-eligibility flag, and a
+// one-line operator-facing description.
 //
-// Note: the per-feature ClickHouse allow_experimental_* setting is NOT a
+// AutoSelect is the auto-eligibility axis, kept distinct from Stability
+// (maturity): under the default `auto` selection a feature is enabled iff
+// AutoSelect is true AND the probed server satisfies MinVersion. This lets an
+// Experimental-maturity feature still be auto-enabled by version (the native
+// timeSeries*ToGrid aggregates), while a feature that is a deliberate perf
+// TRADEOFF rather than a version-gated win (columnar_result_decode) stays
+// AutoSelect=false and is reachable only by explicit listing.
+//
+// Note: the per-feature ClickHouse allow_experimental_* setting NAME is NOT a
 // registry field. Stamping that setting lives in the engine plan path: the
 // engine inspects the post-optimize plan (planHasTSGridNative) and co-stamps
 // allow_experimental_time_series_aggregate_functions=1 via
@@ -110,11 +126,27 @@ const (
 // rather than on every query merely because the feature is enabled. Carrying a
 // setting name on the registry entry as well would be a dead second source of
 // truth, so it is intentionally absent here.
+//
+// RequiresExperimentalTSGrid DOES record, data-driven rather than by hardcoded
+// id, WHICH features need that experimental setting stamped — the four native
+// timeSeries*ToGrid aggregates. The resolver reads this flag to gate those
+// features on the boot capability verdict (Config.Capability): a feature with
+// RequiresExperimentalTSGrid is enabled only when the server both meets its
+// version floor AND permits the experimental setting. Features that touch no
+// experimental setting (aggregation_in_order, condition_cache,
+// columnar_result_decode) leave it false and are never capability-gated.
 type Feature struct {
 	ID         string
 	MinVersion Version
 	Stability  Stability
-	Doc        string
+	AutoSelect bool
+	// RequiresExperimentalTSGrid marks a feature whose native node makes the
+	// engine stamp allow_experimental_time_series_aggregate_functions=1. Such a
+	// feature is additionally gated on the boot capability verdict: a server that
+	// forbids the setting (constrained profile / readonly user) drops it to the
+	// fan-out path even when the version floor is met.
+	RequiresExperimentalTSGrid bool
+	Doc                        string
 }
 
 // registry is the seeded feature table. It is value data (no init-time
@@ -125,43 +157,54 @@ var registry = []Feature{
 		ID:         FeatureAggregationInOrder,
 		MinVersion: Version{Major: 24, Minor: 8},
 		Stability:  Stable,
+		AutoSelect: true,
 		Doc:        "stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)",
 	},
 	{
 		ID:         FeatureConditionCache,
 		MinVersion: Version{Major: 25, Minor: 3},
 		Stability:  Stable,
+		AutoSelect: true,
 		Doc:        "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)",
 	},
 	{
-		ID:         FeatureTSGridRange,
-		MinVersion: Version{Major: 25, Minor: 6},
-		Stability:  Experimental,
-		Doc:        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental, explicit-only)",
+		ID:                         FeatureTSGridRange,
+		MinVersion:                 Version{Major: 25, Minor: 6},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.6)",
 	},
 	{
-		ID:         FeatureTSGridResample,
-		MinVersion: Version{Major: 25, Minor: 6},
-		Stability:  Experimental,
-		Doc:        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental, explicit-only)",
+		ID:                         FeatureTSGridResample,
+		MinVersion:                 Version{Major: 25, Minor: 6},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.6)",
 	},
 	{
 		ID:         FeatureColumnarResultDecode,
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
-		Doc:        "decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only)",
+		AutoSelect: false,
+		Doc:        "decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only — never auto)",
 	},
 	{
-		ID:         FeatureTSGridChanges,
-		MinVersion: Version{Major: 25, Minor: 9},
-		Stability:  Experimental,
-		Doc:        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental, explicit-only, server >= 25.9)",
+		ID:                         FeatureTSGridChanges,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental maturity, auto-enabled on server >= 25.9)",
 	},
 	{
-		ID:         FeatureTSGridResets,
-		MinVersion: Version{Major: 25, Minor: 9},
-		Stability:  Experimental,
-		Doc:        "opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental, explicit-only, server >= 25.9)",
+		ID:                         FeatureTSGridResets,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental maturity, auto-enabled on server >= 25.9)",
 	},
 }
 
