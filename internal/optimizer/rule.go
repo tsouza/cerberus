@@ -128,6 +128,19 @@ func NewWithBatches(batches ...Batch) *Driver {
 func Default() *Driver {
 	return NewWithBatches(
 		AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{}),
+		// analyzer.scan-time-bound (Analyzer, must-run): NormalizeScanTimeBound
+		// records the IR-level instant scan time bound, then
+		// RequireScanTimeBound fail-closes if any instant windowed-array leaf
+		// Scan would still reach emit unbounded. Establishing + verifying the
+		// "bound the scan" contract here makes the recurring unbounded-scan
+		// bug class an enforced plan-build invariant rather than a per-emitter
+		// memory. Runs before the heuristic batches; the verification rule
+		// never mutates, so the batch is idempotent.
+		AnalyzerBatch(
+			"analyzer.scan-time-bound",
+			NormalizeScanTimeBound{},
+			RequireScanTimeBound{},
+		),
 		Batch{
 			Name:     "optimizer.constant-fold-heuristic",
 			Strategy: Once(),

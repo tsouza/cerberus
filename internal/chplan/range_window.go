@@ -117,6 +117,39 @@ type RangeWindow struct {
 	// parameter the reference engine computes per evaluation. Mutually
 	// exclusive with Scalars: a lowering populates one or the other.
 	ScalarExprs []Expr
+
+	// InstantScanBounded records, as an IR-level property, that this
+	// INSTANT (OuterRange == 0) windowed-array leaf RangeWindow has had
+	// its scan-prune bound established: the innermost groupArray read is
+	// constrained to `TimestampColumn > End - range AND
+	// TimestampColumn <= End` (offset-shifted, End-or-now anchored). The
+	// predicate text itself is rendered at emit time by the windowed-array
+	// emitters (instantWindowScanBoundsFrags / the OverTimeDirect WHERE);
+	// this flag is the contract object the optimizer and emit guard verify.
+	//
+	// Without the bound ClickHouse cannot prune granules: the innermost
+	// groupArray materialises the full per-series retention before the
+	// post-groupArray arrayFilter discards out-of-window samples.
+	//
+	// The flag lives on the RangeWindow (not the Scan) because the bound is
+	// pushed at the innermost groupArray level — over whatever the windowed
+	// Input renders to (a bare Scan, a Filter(Scan), a UnionAll of
+	// per-table scans, or another window's per-anchor output) — so it is
+	// Input-shape-independent.
+	//
+	// Established once by AttachInstantScanTimeBounds (and the optimizer's
+	// NormalizeScanTimeBound analyzer rule) for the instant windowed-array
+	// LEAF shape only (Input is not a MetricsAggregate /
+	// MetricsHistogramOverTime / MetricsCompare — those carry their own
+	// emit-time bound; the matrix OuterRange>0 paths bound via
+	// maybePushInnerScanTimeBounds). false means "not an instant
+	// windowed-array leaf, or not yet established". The fail-closed
+	// RequireScanTimeBound analyzer rejects an instant windowed-array leaf
+	// whose flag is still false, and the emitters fail closed too, turning
+	// the recurring unbounded-scan bug class
+	// (#1027 / #1048 / #1056 / #1059 / #1080 / #1088 / #1089 / #1098) into
+	// an enforced plan-build invariant rather than a per-emitter memory.
+	InstantScanBounded bool
 }
 
 func (*RangeWindow) planNode() {}
@@ -166,6 +199,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		if !r.ScalarExprs[i].Equal(o.ScalarExprs[i]) {
 			return false
 		}
+	}
+	if r.InstantScanBounded != o.InstantScanBounded {
+		return false
 	}
 	return r.Input.Equal(o.Input)
 }

@@ -78,6 +78,12 @@ func TestLower(t *testing.T) {
 			"args":   formatArgs(args),
 			"chplan": spec.PrintChplan(plan),
 		})
+
+		// Every real lowered plan must pass the fail-closed
+		// scan-time-bound invariant (see AssertScanTimeBoundAccepts):
+		// the LogQL unwrap / *_over_time leaves are instant
+		// windowed-array leaves too.
+		spec.AssertScanTimeBoundAccepts(t, plan)
 	})
 }
 

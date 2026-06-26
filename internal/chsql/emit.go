@@ -53,6 +53,14 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 		span.RecordError(err)
 		return "", nil, err
 	}
+	// Establish the IR-level scan time bound on any instant windowed-array
+	// leaf Scan that lacks one. In production the optimizer's
+	// NormalizeScanTimeBound analyzer rule has already done this (so this is
+	// a no-op read-only walk); on the test/spec lower→emit lane, which skips
+	// the optimizer, this is where the bound is established so the emitted
+	// SQL still prunes granules. Single mechanism, derived once in
+	// chplan — emitters no longer remember it.
+	n = chplan.AttachInstantScanTimeBounds(n)
 	e := &emitter{}
 	if err := e.emitNode(n); err != nil {
 		span.RecordError(err)
