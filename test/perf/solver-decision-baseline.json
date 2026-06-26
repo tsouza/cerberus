@@ -1110,6 +1110,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "increase_left_edge_scan_bound",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "info_target_info_enrichment",
     "routed": false,
     "k": 0,

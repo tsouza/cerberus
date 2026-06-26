@@ -535,6 +535,11 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 	innermost.From(innerSub)
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	innermost.GroupBy(groupFrags...)
+	// Bound the raw MergeTree scan to the single eval window so CH prunes
+	// granules instead of groupArray-ing the full per-series retention
+	// (the arrayFilter below stays as the precise post-groupArray gate).
+	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	innermost.Where(scanLo, scanHi)
 
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
 	innerSb := NewQuery().From(innermost.Frag())
@@ -1597,6 +1602,35 @@ func innerScanTsBoundsFrags(tsCol string, start, end time.Time, offsetNS, rangeN
 	)
 	upper := Lte(Col(tsCol), endFrag)
 	return lower, upper
+}
+
+// instantWindowScanBoundsFrags returns the two scan-prune predicates that
+// bound the innermost MergeTree read of an instant (OuterRange == 0)
+// windowed-array emitter to the single eval window (end-range, end]:
+//
+//	<tsCol> >  <end> - toIntervalNanosecond(<rangeNS>)
+//	<tsCol> <= <end>
+//
+// Unlike innerScanTsBoundsFrags (matrix path, anchored on the
+// Start/End grid and gated on rw.Start being set), the instant shape
+// is lowered with Start ZERO, so the bound is anchored entirely off the
+// single `end` Frag (endExprFrag, which already carries r.Offset) and
+// the window `rangeNS`. The lower bound is byte-identical to the
+// arrayFilter window lower bound (RangeWindowFilter / windowFilterPairsFrag
+// both use the same `end - toIntervalNanosecond(rangeNS)`), so the scan
+// reads exactly the rows the subsequent arrayFilter would keep — the
+// arrayFilter stays as the precise post-groupArray gate, this WHERE
+// just shrinks what the groupArray sees so CH can prune granules.
+//
+// No extrapolation margin is added (margin == 0): Prom's extrapolatedRate
+// consults only IN-window samples — durationToStart measures from
+// rangeStart to the first in-window sample, and counter-reset detection
+// runs over the in-window value array — so a sample at or before the
+// window start never participates in the result. Widening the scan past
+// rangeStart would read rows the arrayFilter immediately discards,
+// changing nothing but the bytes read.
+func instantWindowScanBoundsFrags(tsCol string, end Frag, rangeNS int64) (Frag, Frag) {
+	return Gt(Col(tsCol), rangeStartFrag(end, rangeNS)), Lte(Col(tsCol), end)
 }
 
 // offsetShiftedTimeFrag renders `<t>` shifted left by Offset:
@@ -2758,6 +2792,11 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	innermost.From(innerSub)
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	innermost.GroupBy(groupFrags...)
+	// Bound the raw MergeTree scan to the single eval window so CH prunes
+	// granules instead of groupArray-ing the full per-series retention
+	// (the arrayFilter below stays as the precise post-groupArray gate).
+	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	innermost.Where(scanLo, scanHi)
 
 	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
@@ -3190,6 +3229,11 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 	innermost.From(innerSub)
 	// GroupBy is a no-op on an empty slice, so no length guard is needed.
 	innermost.GroupBy(groupFrags...)
+	// Bound the raw MergeTree scan to the single eval window so CH prunes
+	// granules instead of groupArray-ing the full per-series retention
+	// (the arrayFilter below stays as the precise post-groupArray gate).
+	scanLo, scanHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	innermost.Where(scanLo, scanHi)
 
 	// Inner-middle SELECT — arrayFilter to the [end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
