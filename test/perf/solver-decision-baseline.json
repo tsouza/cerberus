@@ -1098,6 +1098,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "increase_duplicate_timestamp_dedup",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "increase_empty_window",
     "routed": false,
     "k": 0,
