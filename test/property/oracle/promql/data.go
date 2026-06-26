@@ -82,15 +82,59 @@ func FromDataset(d property.Dataset) *Model {
 		for _, p := range s.Points {
 			samples = append(samples, Sample{T: p.TimestampMs, V: p.Value})
 		}
+		// Sort by (timestamp asc, value asc) so dedupSamplesByTimestamp's
+		// last-of-equal-ts-run is the max-valued sample at that timestamp.
 		sort.Slice(samples, func(i, j int) bool {
-			return samples[i].T < samples[j].T
+			if samples[i].T != samples[j].T {
+				return samples[i].T < samples[j].T
+			}
+			return samples[i].V < samples[j].V
 		})
-		out = append(out, &Series{Labels: lbls, Samples: samples})
+		out = append(out, &Series{Labels: lbls, Samples: dedupSamplesByTimestamp(samples)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return labelKey(out[i].Labels) < labelKey(out[j].Labels)
 	})
 	return &Model{Series: out}
+}
+
+// dedupSamplesByTimestamp collapses a (timestamp asc, value asc)-sorted
+// sample slice to one sample per distinct timestamp, keeping the LAST
+// sample of each equal-timestamp run — i.e. the max-valued sample at that
+// timestamp.
+//
+// This models Prometheus's single-sample-per-timestamp invariant: a
+// Prometheus series carries exactly one sample at any given timestamp, so
+// the from-scratch oracle must too. OTel/ClickHouse ingestion, by
+// contrast, can write two rows sharing an (Attributes, TimeUnix); the
+// dataset mirror faithfully carries that duplicate so the DDL reproduces
+// it, but the oracle's Prometheus-correct view of the series must drop it.
+// Keeping the max value matches BOTH cerberus rate-family paths on the
+// same duplicate data: the row path's arraySort+dedup keeps the
+// sorted-last (max) tuple, and the native timeSeriesRateToGrid aggregate
+// makes the same insertion-order-independent choice. Production
+// duplicates are same-valued, so only the sample COUNT actually differs —
+// the bug class this dedup pins is the inflated count that shrinks the
+// extrapolation interval.
+//
+// For every dataset whose series already carry unique timestamps (the
+// random generator's 15s-spaced points), this is a no-op.
+func dedupSamplesByTimestamp(in []Sample) []Sample {
+	if len(in) < 2 {
+		return in
+	}
+	out := make([]Sample, 0, len(in))
+	for i, s := range in {
+		if i > 0 && s.T == in[i-1].T {
+			// Same timestamp as the previous (already appended) sample;
+			// the input is value-ascending within an equal-ts run, so this
+			// sample's value is >= the one we appended. Keep the max.
+			out[len(out)-1] = s
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // CopyLabels returns a shallow copy of the input label map. The

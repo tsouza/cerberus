@@ -1625,6 +1625,67 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 		Call("groupArray", Tuple(Col(tsCol), Col(valCol))))
 }
 
+// dedupWindowPairsByTsFrag collapses a `arraySort`-ordered
+// `Array(Tuple(ts, value))` down to one tuple per distinct timestamp,
+// keeping the LAST tuple of each equal-ts run. Because the input is
+// sorted ascending by (ts, value), that last-of-run tuple is the
+// max-valued sample at the timestamp — byte-for-byte the choice the
+// ClickHouse-native `timeSeries*ToGrid` aggregates make (verified
+// insertion-order-independent against `timeSeriesRateToGrid`), and the
+// single-sample-per-timestamp invariant Prometheus assumes.
+//
+// OTel/ClickHouse ingestion can write two rows with the same
+// (Attributes, TimeUnix); without this collapse `length(window_vals)`
+// over-counts samples, shrinking the count-derived average sampling
+// interval that feeds Prom's extrapolation cap (extend to the window
+// boundary only when the gap < 1.1 × average interval). The deflated
+// interval trips the cap when it should not, corrupting the
+// extrapolated rate / increase / delta. Deduplicating here makes every
+// downstream quantity (length, counter_delta, first/last_ts, first_val)
+// count distinct timestamps.
+//
+// Collapse strategy: `arrayCompact(p -> ts(p), …)` drops every element
+// equal (by ts) to its predecessor, keeping the FIRST of each run in a
+// single linear pass that never captures `arr` itself — so, unlike an
+// `arrayFilter` whose lambda reads `arr[i + 1]`, ClickHouse does not
+// replicate the whole window array once per element (that O(n²) blow-up
+// per window OOM'd `rate(…[5m])` query_range past the per-query memory
+// cap). To keep the LAST (max-valued) tuple of each run rather than the
+// first while staying linear, the array is reversed into ts-descending
+// order before the compact and reversed back after: arrayCompact then
+// keeps the max-valued tuple of each run, and the outer reverse restores
+// the ts-ascending order the downstream layers assume — byte-identical
+// membership and ordering to the prior arrayFilter form.
+func dedupWindowPairsByTsFrag(arr Frag) Frag {
+	tsOf := func(t Frag) Frag { return Call("tupleElement", t, InlineLit(int64(1))) }
+	return Call(
+		"arrayReverse",
+		Call(
+			"arrayCompact",
+			Lambda1("p", tsOf(BareIdent("p"))),
+			Call("arrayReverse", arr),
+		),
+	)
+}
+
+// dedupWindowPairsLayer interposes a projection that replaces the
+// upstream `window_pairs` column with its timestamp-deduplicated form
+// (see dedupWindowPairsByTsFrag), re-projecting the group columns (and
+// the per-anchor `anchor_ts` column in the matrix shape) unchanged so
+// the downstream mid / extrap / outer layers consume a window array
+// that holds one sample per distinct timestamp.
+func dedupWindowPairsLayer(upstream Frag, groupFrags []Frag, withAnchor bool) Frag {
+	q := NewQuery().From(upstream)
+	for _, g := range groupFrags {
+		q.Select(g)
+	}
+	if withAnchor {
+		q.Select(Col("anchor_ts"))
+	}
+	q.Select(As(dedupWindowPairsByTsFrag(BareIdent("window_pairs")), "window_pairs"))
+	return q.Frag()
+}
+
 // windowFilterPairsFrag returns a Frag rendering the per-series
 // arrayFilter clamp to the (end-range, end] window over the
 // `series_array` alias. The interval is left-open / right-closed to
@@ -2708,8 +2769,11 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// Mid SELECT — derives the per-window scalars the extrap layer
 	// consumes. window_vals + counter_delta cover the standard shape;
 	// first_ts / last_ts / first_val are the extra columns Prom's
-	// extrapolatedRate needs to compute the boundary correction.
-	mid := NewQuery().From(innerMid.Frag())
+	// extrapolatedRate needs to compute the boundary correction. The
+	// window_pairs feeding it is timestamp-deduplicated first so a
+	// duplicate (series, ts) sample does not inflate the sample count and
+	// corrupt the extrapolation (see dedupWindowPairsByTsFrag).
+	mid := NewQuery().From(dedupWindowPairsLayer(innerMid.Frag(), groupFrags, false))
 	for _, g := range groupFrags {
 		mid.Select(g)
 	}
@@ -2814,7 +2878,10 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	regroup.GroupBy(regroupKeys...)
 
 	// Mid SELECT — window_vals + counter_delta + first/last_ts + first_val.
-	mid := NewQuery().From(regroup.Frag())
+	// window_pairs is timestamp-deduplicated first so a duplicate
+	// (series, ts) sample does not inflate the per-anchor sample count and
+	// corrupt the extrapolation (see dedupWindowPairsByTsFrag).
+	mid := NewQuery().From(dedupWindowPairsLayer(regroup.Frag(), groupFrags, true))
 	for _, g := range groupFrags {
 		mid.Select(g)
 	}

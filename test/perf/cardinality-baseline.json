@@ -3390,6 +3390,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/increase_duplicate_timestamp_dedup",
+    "fan_factor": 1,
+    "scan_rows": 5,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/increase_empty_window",
     "fan_factor": 1,
     "scan_rows": 2,
