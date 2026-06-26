@@ -94,17 +94,21 @@ The differential compatibility harnesses — the source of truth for all three
 heads — execute on ClickHouse 25.8, so the validated SQL is exercised forward of
 the floor as well. The ClickHouse-optimization auto-picker
 (`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes the connected server's
-version once at startup and enables the stable, result-equivalent optimizations
-it supports — `aggregation_in_order` (24.8+) and `condition_cache` (25.3+) —
-while never auto-enabling experimental paths. Enabling the experimental
-native-rate path (list `ts_grid_range`, or the deprecated
-`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` alias, **default off**) **raises** the
-floor to **25.6**: it lowers eligible `rate(<counter>[range])` range queries to
-the compiled `timeSeriesRateToGrid` aggregate, which exists only from ClickHouse
-25.6. With it off, 24.8 is sufficient. See
+version once at startup and enables the result-equivalent optimizations it
+supports — `aggregation_in_order` (24.8+) and `condition_cache` (25.3+), plus the
+native `timeSeries*ToGrid` aggregates on capable servers (`ts_grid_range` /
+`ts_grid_resample` at 25.6+, `ts_grid_changes` / `ts_grid_resets` at 25.9+).
+Those native aggregates keep an "experimental" maturity label but are
+auto-selected by version, because they are validated result-correct at flat
+memory. So on modern ClickHouse the auto-picker **raises** the effective floor
+to **25.6** for eligible `rate(<counter>[range])` range queries, lowering them to
+the compiled `timeSeriesRateToGrid` aggregate. On a 24.8 server none of the
+native aggregates engage and the 24.8-safe SQL is emitted unchanged. The lone
+opt-in-only feature is `columnar_result_decode` (a perf tradeoff `auto` never
+selects). See
 [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) for the
 auto-picker and
-[`docs/operations.md`](docs/operations.md#experimental-native-rate-timeseriesratetogrid)
+[`docs/operations.md`](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-256)
 for the runtime contract and the experimental-setting details.
 
 **OTel schema — the shape, not the exporter.** Cerberus reads the

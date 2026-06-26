@@ -199,20 +199,27 @@ services:
       # 27277793810).
       CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
       # CERBERUS_CH_OPTIMIZATIONS   ClickHouse query-optimization selection.
-      # The demo names every optimization explicitly so it dogfoods the full
-      # suite against the real server above:
+      # `auto` dogfoods the full auto-eligible suite against the real server
+      # above: it probes the server version + the experimental-setting
+      # capability once at boot and enables every auto-eligible optimization the
+      # server supports —
       #   - aggregation_in_order (>= 24.8): optimize_aggregation_in_order=1
       #     when GROUP BY is a sorting-key prefix.
       #   - condition_cache (>= 25.3): use_query_condition_cache=1 on
       #     predicate-stable read paths.
-      #   - ts_grid_range (>= 25.6, experimental): routes rate()-over-range
-      #     onto ClickHouse's native timeSeriesRateToGrid aggregate instead
-      #     of the per-anchor array fan-out.
-      # An explicit list (not `auto`) is used because `auto` enables stable
-      # features only — ts_grid_range is experimental, so it must be named.
-      # The default enforcing mode is fine here: the pinned server supports
-      # all three, so nothing is rejected.
-      CERBERUS_CH_OPTIMIZATIONS: "aggregation_in_order,condition_cache,ts_grid_range"
+      #   - the native timeSeries*ToGrid aggregates (ts_grid_range /
+      #     ts_grid_resample >= 25.6, ts_grid_changes / ts_grid_resets >= 25.9,
+      #     experimental maturity but auto-eligible): route the matching shapes
+      #     onto ClickHouse's native aggregate instead of the per-anchor array
+      #     fan-out, on a server that permits the experimental setting.
+      # `auto` is the right knob now that auto-eligibility is a separate axis
+      # from maturity: a server that meets the version floor but cannot run the
+      # experimental setting (or whose boot capability probe is inconclusive)
+      # gracefully falls back to the fan-out path with a WARN rather than
+      # failing startup — exactly the resilient default a demo should show. The
+      # lone opt-in-only feature `columnar_result_decode` (a perf tradeoff,
+      # never auto) would be added as `auto,columnar_result_decode`.
+      CERBERUS_CH_OPTIMIZATIONS: "auto"
       # CERBERUS_LOG_COMMENT_SHAPE   stamp each ClickHouse query with a
       # compact, literal-free cerberus shape id in `log_comment`. Combined
       # with the always-on `query_id` (derived from the cerberus trace id),

@@ -73,6 +73,14 @@ type Config struct {
 	// LegacyTSGrid carries the deprecated CERBERUS_EXPERIMENTAL_TS_GRID_RANGE:
 	// Set=false means unset (no effect); Set=true means Value applies.
 	LegacyTSGrid LegacyFlag
+	// Capability is the boot canary's verdict on whether the connected server
+	// will run the experimental timeSeries*ToGrid family (see Capability). It
+	// gates the four RequiresExperimentalTSGrid features as a SECOND axis
+	// alongside the version floor: only CapabilityAvailable lets them resolve.
+	// The zero value (CapabilityUnknown) is conservative — those features stay on
+	// the fan-out path — so a caller that does not run the canary never silently
+	// enables the experimental path.
+	Capability Capability
 }
 
 // EnabledSet is the immutable resolved result: the set of feature ids the
@@ -113,13 +121,15 @@ const (
 //
 //   - "off"  -> the empty set. "off" is absolute and may NOT be combined with
 //     any other token (off + anything -> FATAL).
-//   - "auto" -> unions in every STABLE feature whose MinVersion <= server.
-//     Experimental / opt-in features are NEVER pulled in by "auto" (they
-//     require explicit listing), preserving the historical experimental-off
-//     default. "auto" may sit alongside explicit ids, so
-//     "auto,columnar_result_decode" means the auto-set PLUS columnar_result_decode
-//     -- the way to add an opt-in feature without giving up version-aware
-//     auto-selection of the rest.
+//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server.
+//     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
+//     (Feature.Stability): the native timeSeries*ToGrid aggregates are
+//     Experimental in maturity yet AutoSelect=true, so auto picks them on a
+//     capable server. The lone opt-in-only feature is columnar_result_decode
+//     (AutoSelect=false) -- a perf tradeoff, never auto. "auto" may sit
+//     alongside explicit ids, so "auto,columnar_result_decode" means the
+//     auto-set PLUS columnar_result_decode -- the way to add the opt-in feature
+//     without giving up version-aware auto-selection of the rest.
 //   - a feature id -> an explicit request: supported -> enable; unsupported
 //     under Enforcing -> err (FATAL); unsupported under Permissive -> WARN +
 //     skip. An explicit id keeps its "I require this" semantics even next to
@@ -159,7 +169,7 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 		// "auto" tokens union in the auto-set; every other token is an explicit
 		// feature request. They compose, so "auto,columnar_result_decode" is the
 		// auto-set plus that one opt-in feature.
-		warns, err := resolveTokens(tokens, cfg.Mode, server, enabled)
+		warns, err := resolveTokens(tokens, cfg.Mode, server, cfg.Capability, enabled)
 		if err != nil {
 			return EnabledSet{}, nil, err
 		}
@@ -182,19 +192,41 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in
-// the auto-set (every STABLE feature the server supports); every other token is
-// an explicit feature request, enabled if supported and otherwise handled per
-// mode (Enforcing -> fatal, Permissive -> WARN + skip). An unknown id is always
-// fatal. Tokens compose, so "auto,columnar_result_decode" yields the auto-set
-// plus that one opt-in feature. Returns the permissive WARN strings.
-func resolveTokens(tokens []string, mode Mode, server Version, enabled map[string]struct{}) ([]string, error) {
+// the auto-set (every AUTO-SELECT feature the server supports, regardless of
+// maturity); every other token is an explicit feature request, enabled if
+// supported and otherwise handled per mode (Enforcing -> fatal, Permissive ->
+// WARN + skip). An unknown id is always fatal. Tokens compose, so
+// "auto,columnar_result_decode" yields the auto-set plus that one opt-in
+// feature. Returns the permissive WARN strings.
+//
+// "Supported" now folds in TWO gates: the version floor AND, for the native
+// timeSeries*ToGrid features (Feature.RequiresExperimentalTSGrid), the boot
+// capability verdict. featureBlockReason returns the human-readable reason a
+// feature is blocked (or "" when supported), so a capability-forbidden feature
+// flows through the IDENTICAL auto-skip / enforcing-fatal / permissive-warn
+// paths a version-too-old feature does -- just with a reason that names the
+// experimental setting instead of a version.
+func resolveTokens(tokens []string, mode Mode, server Version, capability Capability, enabled map[string]struct{}) ([]string, error) {
 	var warnings []string
 	for _, id := range tokens {
 		if id == selectionAuto {
 			for _, f := range registry {
-				if f.Stability == Stable && server.AtLeast(f.MinVersion) {
-					enabled[f.ID] = struct{}{}
+				if !f.AutoSelect {
+					continue
 				}
+				if !server.AtLeast(f.MinVersion) {
+					// Version too old: silent skip, auto is "best available".
+					continue
+				}
+				if f.RequiresExperimentalTSGrid && !capability.PermitsExperimentalTSGrid() {
+					// Version is fine, but the server will not run the
+					// experimental setting. Unlike a version skip, this is WARNed
+					// at boot so the operator sees the fan-out fallback (a working
+					// deployment that lost the native path, not a too-old server).
+					warnings = append(warnings, autoCapabilityWarn(f, capability))
+					continue
+				}
+				enabled[f.ID] = struct{}{}
 			}
 			continue
 		}
@@ -203,18 +235,58 @@ func resolveTokens(tokens []string, mode Mode, server Version, enabled map[strin
 			// Typo guard: unknown id is fatal in BOTH modes.
 			return nil, fmt.Errorf("unknown ch_opt feature %q (valid: %s, or %q/%q)", id, strings.Join(allFeatureIDs(), ", "), selectionAuto, selectionOff)
 		}
-		if server.AtLeast(f.MinVersion) {
+		reason := featureBlockReason(f, server, capability)
+		if reason == "" {
 			enabled[f.ID] = struct{}{}
 			continue
 		}
-		// Explicitly requested but unsupported by the connected server. The
-		// "I require this" contract holds even alongside "auto".
+		// Explicitly requested but unsupported by the connected server (too old,
+		// or the server forbids the experimental setting). The "I require this"
+		// contract holds even alongside "auto".
 		if mode == Enforcing {
-			return nil, fmt.Errorf("ch_opt %q requires ClickHouse >=%s, server is %s", f.ID, f.MinVersion, server)
+			return nil, fmt.Errorf("ch_opt %q disabled: %s", f.ID, reason)
 		}
-		warnings = append(warnings, fmt.Sprintf("ch_opt %q disabled: needs ClickHouse >=%s, server is %s", f.ID, f.MinVersion, server))
+		warnings = append(warnings, fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason))
 	}
 	return warnings, nil
+}
+
+// featureBlockReason reports why feature f cannot be enabled on this server, or
+// "" when it can. It folds the two supportedness gates the resolver applies:
+// the version floor first, then -- for the native timeSeries*ToGrid features --
+// the boot capability verdict. A capability block is reported only AFTER the
+// version floor passes, so the operator-facing message names the most specific
+// cause (a too-old server is reported as a version problem, never masked as a
+// capability one).
+func featureBlockReason(f Feature, server Version, capability Capability) string {
+	if !server.AtLeast(f.MinVersion) {
+		return fmt.Sprintf("needs ClickHouse >=%s, server is %s", f.MinVersion, server)
+	}
+	if f.RequiresExperimentalTSGrid && !capability.PermitsExperimentalTSGrid() {
+		return capabilityBlockReason(capability)
+	}
+	return ""
+}
+
+// capabilityBlockReason renders the reason a native ts_grid feature is blocked
+// by the boot capability verdict (the server meets the version floor but will
+// not run the experimental setting). Forbidden names the rejected setting;
+// Unreachable / Unknown report the inconclusive probe. Both end at the fan-out
+// fallback.
+func capabilityBlockReason(capability Capability) string {
+	const setting = "allow_experimental_time_series_aggregate_functions"
+	if capability == CapabilityForbidden {
+		return "server forbids " + setting + " (constrained or readonly profile); falling back to fan-out"
+	}
+	return "experimental-setting capability probe was inconclusive (" + capability.String() + "); falling back to fan-out"
+}
+
+// autoCapabilityWarn is the boot WARN emitted when auto would have selected a
+// native ts_grid feature on a version-capable server, but the boot capability
+// verdict blocks it. It names the feature and the capability reason so the
+// fan-out fallback is visible in the logs.
+func autoCapabilityWarn(f Feature, capability Capability) string {
+	return fmt.Sprintf("ch_opt %q disabled: %s", f.ID, capabilityBlockReason(capability))
 }
 
 // splitSelection comma-splits a selection string into trimmed, non-empty tokens.
@@ -272,20 +344,25 @@ func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[
 
 	f, _ := featureByID(FeatureTSGridRange)
 	if cfg.LegacyTSGrid.Value {
-		// Force-enable, subject to version + mode.
-		if server.AtLeast(f.MinVersion) {
+		// Force-enable, subject to version + capability + mode. ts_grid_range is
+		// a RequiresExperimentalTSGrid feature, so a server that forbids the
+		// experimental setting blocks the legacy force-enable exactly as a
+		// too-old server does.
+		reason := featureBlockReason(f, server, cfg.Capability)
+		if reason == "" {
 			enabled[f.ID] = struct{}{}
 			return warnings, nil
 		}
 		if cfg.Mode == Enforcing {
-			return nil, fmt.Errorf("ch_opt %q (via CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) requires ClickHouse >=%s, server is %s", f.ID, f.MinVersion, server)
+			return nil, fmt.Errorf("ch_opt %q (via CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) disabled: %s", f.ID, reason)
 		}
-		return append(warnings, fmt.Sprintf("ch_opt %q disabled: needs ClickHouse >=%s, server is %s", f.ID, f.MinVersion, server)), nil
+		return append(warnings, fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason)), nil
 	}
 
 	// Explicit legacy false force-disables ts_grid_range even if otherwise
-	// selected (it cannot be auto-selected since it is experimental, but a
-	// belt-and-braces delete keeps the contract exact).
+	// selected — and under the default "auto" it now IS otherwise selected on a
+	// capable server (AutoSelect=true), so this delete is the operator's escape
+	// hatch back to the fan-out rate path, not merely belt-and-braces.
 	delete(enabled, f.ID)
 	return warnings, nil
 }

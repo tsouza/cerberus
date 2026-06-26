@@ -162,8 +162,11 @@ var envDocGroups = []envDocGroup{
 	},
 	{
 		Name: "ClickHouse optimizations",
-		Intro: "The ClickHouse-optimization suite: an auto-picker that enables the stable,\n" +
-			"server-supported optimizations for the connected ClickHouse version, an\n" +
+		Intro: "The ClickHouse-optimization suite: an auto-picker that enables the\n" +
+			"server-supported, auto-eligible optimizations for the connected ClickHouse\n" +
+			"version (including the native `timeSeries*ToGrid` aggregates on a capable\n" +
+			"server — their maturity stays \"experimental\", but auto-eligibility is a\n" +
+			"separate axis), an\n" +
 			"enforcing/permissive policy for explicitly-requested features, a per-query\n" +
 			"instrumentation layer, and an async performance-corpus reconciler. The\n" +
 			"canonical spec lives in\n" +
@@ -292,7 +295,7 @@ var envDocs = []EnvDoc{
 	{envRequirementsCheck, "bool", "Schema provisioning", "Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes."},
 
 	// --- ClickHouse optimizations ---
-	{envCHOptimizations, "string", "ClickHouse optimizations", "`auto` (enable every **stable** feature the probed server supports), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add an opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined."},
+	{envCHOptimizations, "string", "ClickHouse optimizations", "`auto` (enable every **auto-eligible** feature the probed server supports — including the experimental-maturity native `timeSeries*ToGrid` aggregates; `columnar_result_decode` is the lone opt-in-only feature `auto` skips), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add the opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined."},
 	{envCHOptimizationsMode, "string", "ClickHouse optimizations", "`enforcing` (an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`."},
 	{envLogCommentShape, "bool", "ClickHouse optimizations", "Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`."},
 	{envCHOptCorpusEnabled, "bool", "ClickHouse optimizations", "Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none)."},

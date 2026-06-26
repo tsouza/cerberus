@@ -12,8 +12,19 @@ construction: cerberus's supported ClickHouse floor is 24.8, and a feature
 whose minimum version sits above the connected server is simply not
 enabled, so the binary keeps emitting its 24.8-safe SQL unchanged. There is
 no behaviour an operator must "turn off" to stay safe on 24.8 — the default
-posture (`auto`) only ever enables stable features the server actually
-supports, and never an experimental one.
+posture (`auto`) only ever enables features the connected server actually
+supports.
+
+Auto-eligibility is a separate axis from maturity. A feature carries a
+`stability` class (operator-facing maturity) **and** an `autoSelect` flag
+(whether `auto` picks it by version). The two are decoupled: the native
+`timeSeries*ToGrid` aggregates are `experimental` in maturity yet
+auto-enabled on capable servers, because they are validated result-correct
+and run at flat memory — auto picks them once the server meets their floor
+**and** the server permits the experimental setting they need (see
+[Boot capability probe](#boot-capability-probe-experimental-ts_grid-setting)).
+The lone opt-in-only feature is `columnar_result_decode` (`autoSelect: no`),
+a perf tradeoff that auto never selects.
 
 ## The two configuration knobs
 
@@ -31,13 +42,18 @@ cerberus config idiom (per-key viper `BindEnv`, fail-fast parse, env > file
 The value is a comma-separated list of tokens; each is `auto`, `off`, or a
 feature id, and they **compose**:
 
-- **`auto`** (default) — enable every **stable** feature whose minimum
-  version is `<=` the connected server's version. Experimental / opt-in
-  features are **never** auto-enabled; they require explicit listing. This
-  preserves the historical "experimental paths off out of the box" default.
+- **`auto`** (default) — enable every **auto-select** feature (`autoSelect:
+  yes`) whose minimum version is `<=` the connected server's version.
+  Auto-eligibility is independent of maturity, so this includes the
+  `experimental` native `timeSeries*ToGrid` aggregates on a capable server —
+  provided that server also **permits the experimental setting** they require;
+  a server that forbids it silently keeps the native family on the fan-out path
+  (see [Boot capability probe](#boot-capability-probe-experimental-ts_grid-setting)).
+  The only feature `auto` never picks is `columnar_result_decode`
+  (`autoSelect: no`, a perf tradeoff), which requires explicit listing.
   `auto` may appear **alongside** explicit ids, so
   `auto,columnar_result_decode` means "the auto-selected set **plus**
-  `columnar_result_decode`" — the way to add an opt-in feature without giving
+  `columnar_result_decode`" — the way to add the opt-in feature without giving
   up version-aware auto-selection of the rest.
 - **`off`** — enable nothing. The empty set. Every optimization stays dark.
   `off` is **absolute** and may not be combined with any other token.
@@ -73,11 +89,11 @@ produces an immutable `EnabledSet` that is logged at boot. It is the single
 source of truth every consumer reads from; nothing downstream re-reads the
 raw env.
 
-| `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `off`                         | Empty set.                                                                                                                      |
-| `auto`                        | Every stable feature with `minVersion <= server`. Experimental features excluded.                                               |
-| explicit list                 | Per id: supported -> enable; unsupported -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes).   |
+| `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                                        |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `off`                         | Empty set.                                                                                                                                    |
+| `auto`                        | Every `autoSelect: yes` feature with `minVersion <= server` (includes the experimental native aggregates; excludes `columnar_result_decode`). |
+| explicit list                 | Per id: supported -> enable; unsupported -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes).                 |
 
 The boot log records the resolved set, the server version it resolved
 against, and any skips or the deprecation notice (below).
@@ -98,15 +114,15 @@ registry therefore lands here automatically; it can never go missing from the
 table.
 
 <!-- BEGIN GENERATED: chopt-feature-table (do not edit; regenerate with `just gen-opt-docs`) -->
-| id                       | minVersion | stability    |
-| ------------------------ | ---------- | ------------ |
-| `aggregation_in_order`   | 24.8       | stable       |
-| `condition_cache`        | 25.3       | stable       |
-| `ts_grid_range`          | 25.6       | experimental |
-| `ts_grid_resample`       | 25.6       | experimental |
-| `columnar_result_decode` | none       | experimental |
-| `ts_grid_changes`        | 25.9       | experimental |
-| `ts_grid_resets`         | 25.9       | experimental |
+| id                       | minVersion | stability    | autoSelect |
+| ------------------------ | ---------- | ------------ | ---------- |
+| `aggregation_in_order`   | 24.8       | stable       | yes        |
+| `condition_cache`        | 25.3       | stable       | yes        |
+| `ts_grid_range`          | 25.6       | experimental | yes        |
+| `ts_grid_resample`       | 25.6       | experimental | yes        |
+| `columnar_result_decode` | none       | experimental | no         |
+| `ts_grid_changes`        | 25.9       | experimental | yes        |
+| `ts_grid_resets`         | 25.9       | experimental | yes        |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they
@@ -114,19 +130,20 @@ carry operator judgement the registry cannot derive. The "experimental setting"
 column is informational -- where a feature needs an `allow_experimental_*`
 setting, that setting is co-stamped by the **engine plan path** (it inspects the
 post-optimize plan and stamps the setting on exactly the queries that use the
-native node), not carried as a registry field. `columnar_result_decode` is the
-`experimental`-class opt-in feature whose perf-tradeoff framing is described as
-"opt-in" in the effect prose.
+native node), not carried as a registry field — so the co-stamp fires whether
+the feature was reached via `auto` or by explicit listing. `columnar_result_decode`
+is the lone `autoSelect: no` opt-in feature whose perf-tradeoff framing is
+described as "opt-in" in the effect prose.
 
-| id                       | experimental setting                                 | effect                                                                                                                                                                                             |
-| ------------------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                         |
-| `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                           |
-| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Explicit-only (never auto).                                                          |
-| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Explicit-only (never auto).                     |
-| `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Explicit-only (never auto).      |
-| `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Explicit-only (never auto).     |
-| `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Explicit-only (never auto). |
+| id                       | experimental setting                                 | effect                                                                                                                                                                                                 |
+| ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                             |
+| `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                               |
+| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.6 (experimental maturity).                                  |
+| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.6.                     |
+| `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Opt-in only (never auto).            |
+| `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.     |
+| `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9. |
 
 Notes:
 
@@ -139,12 +156,16 @@ Notes:
   predicate-stable read path, gated conservatively (it needs the analyzer);
   below 25.3 it is a no-op. The query condition cache is result-equivalent,
   so it is safe to ship under `auto` for supporting servers.
-- **`ts_grid_range`** is experimental: it is **never** enabled by `auto`. It
-  is reachable only by explicit listing or by the legacy alias (below). Its
-  native aggregate requires the experimental setting to be co-stamped on
-  exactly the queries that emit the native node.
-- **`ts_grid_resample`** is experimental: **never** enabled by `auto`, no
-  legacy alias — list it in `CERBERUS_CH_OPTIMIZATIONS` to enable. It shares
+- **`ts_grid_range`** is `experimental` in maturity but **auto-enabled** on a
+  capable server (`>= 25.6`): a prod-data validation proved the native path
+  result-correct (more correct than the buggy fan-out for `rate`) at flat
+  memory, so `auto` picks it by version. It is also reachable by the legacy
+  alias (below). Its native aggregate requires the experimental setting to be
+  co-stamped on exactly the queries that emit the native node — and the engine
+  co-stamps off the post-optimize plan, so the setting fires whether the
+  feature was reached via `auto` or explicit listing.
+- **`ts_grid_resample`** is `experimental` in maturity but **auto-enabled** on
+  a capable server (no legacy alias). It shares
   the `timeSeries*ToGrid` family floor (25.6) and the same experimental setting
   as `ts_grid_range`, co-stamped on exactly the queries that emit the native
   resample node. The two features are independent (either can be on without the
@@ -163,15 +184,17 @@ Notes:
   (`CERBERUS_CH_OPTIMIZATIONS=columnar_result_decode`) to engage it. The decode
   is byte-parity-verified against the row path (`TestColumnarMatrixParity_E2E`).
   It is the registry's example of a non-version-gated opt-in feature.
-- **`ts_grid_changes`** is experimental and explicit-only (**never** `auto`,
-  no legacy alias). Its floor is **25.9**, NOT the 25.6 of rate/resample:
-  `timeSeriesChangesToGrid`/`timeSeriesResetsToGrid` shipped a full quarter
-  later (ClickHouse 25.9). A 25.6 floor would mis-advertise support on
-  25.6-25.8 servers and 502 with `UNKNOWN_AGGREGATE_FUNCTION`. It shares the
-  family's experimental setting, co-stamped on exactly the queries that emit
-  the native changes node.
+- **`ts_grid_changes`** is `experimental` in maturity but **auto-enabled** on
+  a capable server (no legacy alias). Its floor is **25.9**, NOT the 25.6 of
+  rate/resample: `timeSeriesChangesToGrid`/`timeSeriesResetsToGrid` shipped a
+  full quarter later (ClickHouse 25.9). A 25.6 floor would mis-advertise
+  support on 25.6-25.8 servers and 502 with `UNKNOWN_AGGREGATE_FUNCTION`, so
+  `auto` only picks it once the server is `>= 25.9`. It shares the family's
+  experimental setting, co-stamped on exactly the queries that emit the native
+  changes node.
 - **`ts_grid_resets`** is the sibling of `ts_grid_changes` (same PR upstream):
-  experimental, explicit-only, same **25.9** floor, same experimental setting.
+  experimental maturity, auto-enabled on a capable server, same **25.9** floor,
+  same experimental setting.
   It opts eligible `resets(<counter>[<range>])` shapes onto the native
   `timeSeriesResetsToGrid` aggregate, retiring the per-window counter-reset
   fan-out.
@@ -191,6 +214,54 @@ The probe runs **once**. A rolling ClickHouse upgrade that crosses a feature
 floor needs a cerberus **restart/reconnect** to re-probe and re-resolve.
 This is the documented v1 behaviour.
 
+## Boot capability probe (experimental ts_grid setting)
+
+The native `timeSeries*ToGrid` features (`ts_grid_range`, `ts_grid_resample`,
+`ts_grid_changes`, `ts_grid_resets`) need the server to run with
+`allow_experimental_time_series_aggregate_functions=1`, which cerberus
+co-stamps on exactly the queries that emit the native node. A server can be
+**new enough** for the version floor yet still **forbid** that setting — a
+hardened profile that pins or constrains it, or a readonly user. Auto-selecting
+the native node there would only earn a `SETTING_CONSTRAINT_VIOLATION` (or
+`READONLY`) rejection at query time, turning a deployment that worked on the
+fan-out path into a 5xx.
+
+So auto-selection of the native family is gated on **two** axes, not just the
+version floor: at boot, alongside `SELECT version()`, cerberus runs a cheap
+**capability canary** that stamps the experimental setting on a trivial query
+over the always-present `default` database (independent of whether the
+configured database exists yet). The verdict is tri-state:
+
+- **available** — the server accepted the setting; the native family resolves
+  per its version floor.
+- **forbidden** — the server answered with a typed rejection (constrained /
+  readonly profile); the native family is **dropped to the fan-out path**.
+- **unreachable** — the canary got no server verdict (a transport failure);
+  treated conservatively like *forbidden* (native stays off until a restart
+  re-probes), matching the version probe's connectivity fallback.
+
+How a non-`available` verdict is handled depends on how the feature was
+selected, mirroring the version-floor semantics exactly:
+
+- under **`auto`** — the native features are **silently dropped** and a boot
+  `WARN` is logged (`native ts_grid disabled: server forbids
+  allow_experimental_time_series_aggregate_functions; falling back to
+  fan-out`). The deployment serves the fan-out path successfully.
+- under an **explicit list** — a listed `ts_grid_*` (or the legacy alias
+  force-enable) on a forbidden server is **FATAL under `enforcing`** (the
+  operator required a feature the server will not run) and a `WARN` + skip
+  under `permissive` — identical to listing a feature the server is too old
+  for.
+
+The canary runs **once** at boot, like the version probe; a profile change that
+later permits the setting needs a restart to re-probe.
+
+**Escape hatch.** To run a forbidden server without any boot warnings, pin an
+explicit `CERBERUS_CH_OPTIMIZATIONS` list that omits the `ts_grid_*` ids (e.g.
+`aggregation_in_order,condition_cache`), or set `CERBERUS_CH_OPTIMIZATIONS=off`.
+Conversely, permitting the setting in the ClickHouse profile (or using a
+non-readonly user) lets `auto` pick the native family back up on the next boot.
+
 ## Legacy alias: `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
 
 The legacy boolean `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` keeps working and
@@ -202,11 +273,14 @@ any explicit `CERBERUS_CH_OPTIMIZATIONS` choice (a feature list **or** the
 `off` kill-switch) overrides it.
 
 - **explicitly `true`** (under `auto`) — force-enable `ts_grid_range` (as if
-  it were listed), still subject to version gating and mode.
+  it were listed), still subject to version gating and mode. On a `>= 25.6`
+  server `auto` already enables it, so this is now mostly redundant.
 - **explicitly `false`** (under `auto`) — force-disable `ts_grid_range`, even
-  if it would otherwise be selected.
+  though `auto` now selects it on a capable server. This is the operator's
+  escape hatch back to the fan-out rate path.
 - **unset** — no effect. The framework resolves normally; under `auto`,
-  `ts_grid_range` stays off because it is experimental.
+  `ts_grid_range` is enabled on a `>= 25.6` server (auto-selected by version,
+  not by this flag).
 - **legacy set AND any explicit `CERBERUS_CH_OPTIMIZATIONS` choice** (a feature
   list **or** `off`) — the new `CERBERUS_CH_OPTIMIZATIONS` **wins**. The legacy
   flag is ignored with a `WARN` (or FATAL under `enforcing`). In particular
@@ -348,14 +422,16 @@ Nothing in this suite can break ClickHouse 24.8:
 - `aggregation_in_order` and `log_comment` are 24.8-safe (long-standing
   result-equivalent / free-form knobs).
 - `condition_cache` activates only on `>= 25.3`; below that it is a no-op.
-- `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.6` and are
-  experimental (explicit-only).
-- `ts_grid_changes` and `ts_grid_resets` activate only on `>= 25.9` and are
-  experimental (explicit-only); below 25.9 they are absent from the resolved
-  set.
+- `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.6`
+  (experimental maturity, auto-enabled there); below 25.6 they are absent from
+  the resolved set.
+- `ts_grid_changes` and `ts_grid_resets` activate only on `>= 25.9`
+  (experimental maturity, auto-enabled there); below 25.9 they are absent from
+  the resolved set.
 - `columnar_result_decode` is client-side and version-agnostic (no server
-  setting); it is explicit-only, so `auto` never engages it.
-- Under `auto`, an unsupported feature is simply not enabled.
+  setting); it is opt-in only, so `auto` never engages it.
+- Under `auto`, an unsupported feature is simply not enabled, so a deployment
+  on ClickHouse 24.8 sees identical behaviour regardless of this change.
 
 ---
 
@@ -385,7 +461,8 @@ func ParseVersion(s string) (Version, bool)
 func (v Version) AtLeast(min Version) bool
 func (v Version) String() string // "Major.Minor"
 
-// Stability classifies a feature.
+// Stability classifies a feature's MATURITY, decoupled from auto-eligibility
+// (Feature.AutoSelect). An Experimental feature can still be auto-selected.
 type Stability int
 
 const (
@@ -397,10 +474,16 @@ const (
 // is NOT a field: stamping it lives in the engine plan path (planHasTSGridNative
 // -> chclient.WithTSGridSetting), so it fires on exactly the queries that use
 // the native node rather than on every query the feature is enabled for.
+//
+// AutoSelect is the auto-eligibility axis, distinct from Stability (maturity):
+// `auto` picks a feature iff AutoSelect && server >= MinVersion. The native
+// timeSeries*ToGrid aggregates are Experimental yet AutoSelect=true;
+// columnar_result_decode is the lone AutoSelect=false opt-in.
 type Feature struct {
   ID         string    // stable id, e.g. "aggregation_in_order"
   MinVersion Version   // minimum supporting CH version
-  Stability  Stability // Stable | Experimental
+  Stability  Stability // Stable | Experimental (maturity)
+  AutoSelect bool      // auto picks it by version, regardless of maturity
   Doc        string    // one-line operator-facing description
 }
 
@@ -463,11 +546,11 @@ const (
 
 Seeded `Registry()` entries (verbatim):
 
-| ID                       | MinVersion   | Stability        |
-| ------------------------ | ------------ | ---------------- |
-| `aggregation_in_order`   | `{24, 8}`    | `Stable`         |
-| `condition_cache`        | `{25, 3}`    | `Stable`         |
-| `ts_grid_range`          | `{25, 6}`    | `Experimental`   |
+| ID                       | MinVersion   | Stability        | AutoSelect |
+| ------------------------ | ------------ | ---------------- | ---------- |
+| `aggregation_in_order`   | `{24, 8}`    | `Stable`         | `true`     |
+| `condition_cache`        | `{25, 3}`    | `Stable`         | `true`     |
+| `ts_grid_range`          | `{25, 6}`    | `Experimental`   | `true`     |
 
 ### New config field names + env consts (`internal/config`)
 

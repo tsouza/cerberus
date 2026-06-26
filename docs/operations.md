@@ -174,12 +174,17 @@ against over-routing (Grafana's auto-step makes `rate[5m] @ 15s` hit `F=20`,
 which must NOT route at the default thresholds unless the total expansion is
 spike-class).
 
-### Experimental: native rate (`timeSeriesRateToGrid`)
+### Native rate (`timeSeriesRateToGrid`) — auto-enabled on 25.6+
 
-`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (**default `false`**, **deprecated -> use
-`CERBERUS_CH_OPTIMIZATIONS`** with `ts_grid_range` listed) opts the eligible
+The `ts_grid_range` optimization opts the eligible
 `rate(<counter>[<range>])` query_range shape into ClickHouse's compiled
-`timeSeriesRateToGrid` aggregate instead of the default arrayJoin fan-out. The
+`timeSeriesRateToGrid` aggregate instead of the arrayJoin fan-out. Its maturity
+label stays experimental, but it is **auto-selected** under the default
+`CERBERUS_CH_OPTIMIZATIONS=auto` on any server `>= 25.6`. The deprecated
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` boolean (**default `false`**) still works
+as an override under `auto` — `true` force-enables, `false` force-disables (the
+escape hatch back to the fan-out) — but new deployments should rely on `auto` or
+list `ts_grid_range` explicitly in `CERBERUS_CH_OPTIMIZATIONS`. The
 native operator computes the same Prometheus `extrapolatedRate` *inside the
 engine* — CH ported the calculation verbatim — closing the execution-layer gap
 the SQL array machinery leaves at high cardinality. See
@@ -189,22 +194,37 @@ the SQL array machinery leaves at high cardinality. See
 
 - **ClickHouse ≥ 25.6.** The `timeSeries*ToGrid` family was introduced in CH
   v25.6.0. The compose / e2e / compatibility deployment runs **25.8**
-  (matching the chDB test substrate), so the function exists everywhere — but
-  on any older server a native-path query still errors with `UNKNOWN_FUNCTION`,
-  so the flag **must stay OFF** unless the target CH is ≥ 25.6. The experimental
-  ClickHouse setting
+  (matching the chDB test substrate), so the function exists everywhere. The
+  auto-picker gates on this floor automatically — it enables `ts_grid_range`
+  only when the probed server is ≥ 25.6, so a connected older server keeps the
+  fan-out and never sees `UNKNOWN_FUNCTION`. (Force-enabling via the legacy
+  `=true` flag against a < 25.6 server is still rejected at startup per mode.)
+  The experimental ClickHouse setting
   `allow_experimental_time_series_aggregate_functions=1` is sent **only on the
   queries that actually use the native node** (cerberus detects a
   `RangeWindowNative` in the emitted plan and stamps the setting per-query), so
   enabling the flag never adds an unknown setting to unrelated queries.
+- **The server must permit that experimental setting.** Meeting the 25.6 floor
+  is necessary but not sufficient: a hardened ClickHouse profile that
+  constrains/pins `allow_experimental_time_series_aggregate_functions`, or a
+  readonly user, will reject the per-query stamp with
+  `SETTING_CONSTRAINT_VIOLATION` / `READONLY`. cerberus **probes this at boot**
+  (a one-shot capability canary alongside the version probe) and gates the
+  native family on the verdict: under `auto` a forbidden server silently falls
+  back to the fan-out with a boot `WARN`; an explicit `ts_grid_*` (or the legacy
+  force-enable) on a forbidden server is FATAL under `enforcing` and WARN+skip
+  under `permissive` — exactly the version-floor semantics. See
+  [`clickhouse-optimizations.md`](clickhouse-optimizations.md#boot-capability-probe-experimental-ts_grid-setting).
 - **Scope: `rate` only.** `increase` / `delta` / `deriv` / `predict_linear`
   stay on the fan-out — there is no `timeSeriesIncreaseToGrid`, and the
   `timeSeriesDeltaToGrid` mapping is not yet differentially proven against
   Prometheus. Those functions, instant queries, and every non-PromQL head are
   unaffected by the flag.
-- **Default OFF is byte-for-byte the established fan-out.** Every existing
-  golden, the compat 574/574 corpus, and the compose / e2e lanes are
-  structurally untouched when the flag is unset.
+- **The fan-out remains byte-for-byte available.** Pinning `ts_grid_range` off
+  (an explicit list omitting it, or the legacy `=false`) restores the
+  established fan-out exactly; on a < 25.6 server it is the only path. Every
+  existing golden, the compat 574/574 corpus, and the compose / e2e lanes are
+  structurally the fan-out shape.
 
 **Parity.** Validated on the chDB substrate (25.8) by a dual-emit test
 (`internal/chsql/range_window_native_chdb_test.go`) that runs the fan-out and
@@ -215,11 +235,11 @@ fan-out value — a sub-observable float-order difference, both render `0.12`).
 The test enforces a tight bound rather than the raw fixture count: **at most two
 cells may diverge, each by no more than 1 ULP** (`maxDualEmitUlpDivergentCells
 = 2`); any cell off by more than 1 ULP, or a third divergent cell, fails the
-test as an arithmetic regression. Treat this as experimental: the compose / e2e
-CH substrate is 25.8 (past the ≥ 25.6 introduction point, so the flag is
-exercisable there), but the path still rides the experimental setting and has not
-yet been differentially swept against a real (non-chDB) server where that setting
-is actually enforced.
+test as an arithmetic regression. The maturity label stays experimental because
+the path rides ClickHouse's experimental setting, but it has since been
+validated against a real (non-chDB) server with that setting enforced — found
+result-correct at flat memory — which is why `auto` now selects it on ≥ 25.6
+rather than leaving it opt-in.
 
 ### Prometheus resource-attribute labels
 

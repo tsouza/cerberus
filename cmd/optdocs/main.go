@@ -1,8 +1,8 @@
 // Command optdocs regenerates the structurally-derivable feature table in
 // docs/clickhouse-optimizations.md from the single source of truth,
 // chopt.Registry(). It renders ONLY the columns that can be derived from a
-// registry entry without human judgement -- id, minVersion, stability -- into
-// a marked-off block:
+// registry entry without human judgement -- id, minVersion, stability,
+// autoSelect -- into a marked-off block:
 //
 //	<!-- BEGIN GENERATED: chopt-feature-table (do not edit; ...) -->
 //	... generated table ...
@@ -41,18 +41,19 @@ const (
 // .markdownlint.yaml pins table-column-style: aligned); widthsFor computes the
 // padding from the actual rows so the block stays lint-clean as ids grow.
 const tableBody = "{{.Begin}}\n" +
-	"| {{pad \"id\" .W.ID}} | {{pad \"minVersion\" .W.MinVersion}} | {{pad \"stability\" .W.Stability}} |\n" +
-	"| {{dash .W.ID}} | {{dash .W.MinVersion}} | {{dash .W.Stability}} |\n" +
-	"{{range .Rows}}| {{pad .ID $.W.ID}} | {{pad .MinVersion $.W.MinVersion}} | {{pad .Stability $.W.Stability}} |\n{{end}}" +
+	"| {{pad \"id\" .W.ID}} | {{pad \"minVersion\" .W.MinVersion}} | {{pad \"stability\" .W.Stability}} | {{pad \"autoSelect\" .W.AutoSelect}} |\n" +
+	"| {{dash .W.ID}} | {{dash .W.MinVersion}} | {{dash .W.Stability}} | {{dash .W.AutoSelect}} |\n" +
+	"{{range .Rows}}| {{pad .ID $.W.ID}} | {{pad .MinVersion $.W.MinVersion}} | {{pad .Stability $.W.Stability}} | {{pad .AutoSelect $.W.AutoSelect}} |\n{{end}}" +
 	"{{.End}}"
 
 // row is the rendered, structurally-derived view of a registry Feature: only
-// the three columns a Feature determines on its own, already stringified by the
+// the columns a Feature determines on its own, already stringified by the
 // render rules below.
 type row struct {
 	ID         string
 	MinVersion string
 	Stability  string
+	AutoSelect string
 }
 
 // widths holds the per-column render width (header included).
@@ -60,6 +61,7 @@ type widths struct {
 	ID         int
 	MinVersion int
 	Stability  int
+	AutoSelect int
 }
 
 func main() {
@@ -111,6 +113,7 @@ func renderBlock() (string, error) {
 			ID:         "`" + f.ID + "`",
 			MinVersion: renderMinVersion(f.MinVersion),
 			Stability:  renderStability(f.Stability),
+			AutoSelect: renderAutoSelect(f.AutoSelect),
 		})
 	}
 
@@ -163,6 +166,17 @@ func renderStability(s chopt.Stability) string {
 	return "experimental"
 }
 
+// renderAutoSelect stringifies a feature's auto-eligibility. This is the column
+// that makes the decoupling visible: an `experimental` feature can still read
+// `yes` here (the native timeSeries*ToGrid aggregates), and the lone `no` is the
+// opt-in-only columnar_result_decode perf tradeoff.
+func renderAutoSelect(auto bool) string {
+	if auto {
+		return "yes"
+	}
+	return "no"
+}
+
 // replaceBlock swaps the content between the BEGIN/END markers for block. It is
 // an error for the markers to be missing or out of order: the generator owns an
 // existing block, it does not invent the surrounding section.
@@ -190,7 +204,7 @@ func replaceBlock(doc []byte, block string) ([]byte, error) {
 // widthsFor computes per-column render widths as the max of the header label
 // and every cell, so columns align under MD060.
 func widthsFor(rows []row) widths {
-	w := widths{ID: len("id"), MinVersion: len("minVersion"), Stability: len("stability")}
+	w := widths{ID: len("id"), MinVersion: len("minVersion"), Stability: len("stability"), AutoSelect: len("autoSelect")}
 	for _, r := range rows {
 		if n := len(r.ID); n > w.ID {
 			w.ID = n
@@ -200,6 +214,9 @@ func widthsFor(rows []row) widths {
 		}
 		if n := len(r.Stability); n > w.Stability {
 			w.Stability = n
+		}
+		if n := len(r.AutoSelect); n > w.AutoSelect {
+			w.AutoSelect = n
 		}
 	}
 	return w
