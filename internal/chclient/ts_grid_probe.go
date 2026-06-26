@@ -10,18 +10,30 @@ import (
 )
 
 // tsGridCapabilityProbeSQL is the canary body. It is deliberately a trivial
-// `SELECT 1` and NOT a call to a native timeSeries*ToGrid aggregate: the canary
-// only needs to learn whether the server will ACCEPT the experimental setting
-// cerberus stamps on native queries, and that verdict is decided when ClickHouse
-// applies the per-query settings map (constraint / readonly enforcement), BEFORE
-// the query body is analysed. Stamping the setting over `SELECT 1` therefore
-// isolates exactly the FORBIDDEN signal with zero dependence on getting an
-// aggregate's argument types right -- a type slip in a real-aggregate canary
-// would misclassify a permitting server as not-capable and silently lose the
-// optimization. The setting itself is added via WithTSGridSetting, the SAME
-// production carrier the engine uses, so the probe rides the identical
-// settings-map path a real native query does.
-const tsGridCapabilityProbeSQL = "SELECT 1"
+// constant SELECT and NOT a call to a native timeSeries*ToGrid aggregate: the
+// canary only needs to learn whether the server will ACCEPT the experimental
+// setting cerberus stamps on native queries, and that verdict is decided when
+// ClickHouse applies the per-query settings map (constraint / readonly
+// enforcement), BEFORE the query body is analysed. Stamping the setting over a
+// trivial SELECT therefore isolates exactly the FORBIDDEN signal with zero
+// dependence on getting an aggregate's argument types right -- a type slip in a
+// real-aggregate canary would misclassify a permitting server as not-capable
+// and silently lose the optimization. The setting itself is added via
+// WithTSGridSetting, the SAME production carrier the engine uses, so the probe
+// rides the identical settings-map path a real native query does.
+//
+// The projected value MUST be a STRING column (`'1'`, not `1`). The probe runs
+// over ProbeVersion's proven path -- Client.QueryStrings -- which decodes a
+// single String-typed column by scanning each row into a Go string. A bare
+// `SELECT 1` yields a UInt8 column, and clickhouse-go's strict scanner rejects
+// `converting UInt8 to *string is unsupported` CLIENT-SIDE. That scan error is
+// not a *clickhouse.Exception, so classifyTSGridCapability would map a perfectly
+// healthy, capable server to CapabilityUnreachable -- silently disabling the
+// native aggregates on every server (the bug this constant fixes). `SELECT '1'`
+// returns a String column QueryStrings decodes cleanly, exactly like
+// `SELECT version()`, so a success is read as the Available verdict it is while
+// a forbidden setting still surfaces as the typed exception -> Forbidden.
+const tsGridCapabilityProbeSQL = "SELECT '1'"
 
 // ProbeTSGridCapability runs the boot-time capability canary once and classifies
 // whether the connected ClickHouse server will run the experimental

@@ -190,7 +190,7 @@ func TestMinVersionMaxOfApplicable(t *testing.T) {
 	if got := off.minVersion(); got != minCHBase {
 		t.Errorf("native-rate off: min=%v, want base %v", got, minCHBase)
 	}
-	// Native rate enabled → max(base, native). Native (25.6) > base (24.8),
+	// Native rate enabled → max(base, native). Native (25.9) > base (24.8),
 	// so enabling native rate raises the effective floor to the native one.
 	on := Requirements{NativeRateEnabled: true}
 	got := on.minVersion()
@@ -235,23 +235,24 @@ func TestRunVersionExactlyAtFloor(t *testing.T) {
 
 func TestRunNativeRateRaisesMin(t *testing.T) {
 	t.Parallel()
-	// Native rate raises the effective floor from base 24.8 to native 25.6.
-	// 25.6 meets the raised floor and passes; a 25.0 that clears the base
-	// floor must now fail because native rate is on.
+	// Native rate raises the effective floor from base 24.8 to native 25.9.
+	// 25.9 meets the raised floor and passes; a 25.6 that clears the base
+	// floor (and even has the aggregate) must now fail because native rate is
+	// on and the Prometheus-correct window only lands at 25.9.
 	req := defaultReq()
 	req.NativeRateEnabled = true
 
-	atNative := &stubQuerier{Version: "25.6.0.0", Columns: healthyColumns()}
+	atNative := &stubQuerier{Version: "25.9.0.0", Columns: healthyColumns()}
 	if err := Run(context.Background(), atNative, req).Fatal; err != nil {
-		t.Fatalf("native-rate on: 25.6 meets the raised floor and must pass, got: %v", err)
+		t.Fatalf("native-rate on: 25.9 meets the raised floor and must pass, got: %v", err)
 	}
 
-	belowNative := &stubQuerier{Version: "25.0.0.0", Columns: healthyColumns()}
+	belowNative := &stubQuerier{Version: "25.6.0.0", Columns: healthyColumns()}
 	err := Run(context.Background(), belowNative, req).Fatal
 	if err == nil {
-		t.Fatal("native-rate on: 25.0 (above base 24.8 but below native 25.6) must fail")
+		t.Fatal("native-rate on: 25.6 (above base 24.8 but below native 25.9) must fail")
 	}
-	if !strings.Contains(err.Error(), "below the required minimum 25.6") {
+	if !strings.Contains(err.Error(), "below the required minimum 25.9") {
 		t.Errorf("message missing raised-floor diff: %v", err)
 	}
 	if !strings.Contains(err.Error(), "native rate enabled") {

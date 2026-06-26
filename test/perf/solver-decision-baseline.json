@@ -1332,6 +1332,12 @@
     "reason": "routed"
   },
   {
+    "query": "native_resample_offset",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "native_resample_range_step",
     "routed": true,
     "k": 8,

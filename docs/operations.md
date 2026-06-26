@@ -174,13 +174,13 @@ against over-routing (Grafana's auto-step makes `rate[5m] @ 15s` hit `F=20`,
 which must NOT route at the default thresholds unless the total expansion is
 spike-class).
 
-### Native rate (`timeSeriesRateToGrid`) — auto-enabled on 25.6+
+### Native rate (`timeSeriesRateToGrid`) — auto-enabled on 25.9+
 
 The `ts_grid_range` optimization opts the eligible
 `rate(<counter>[<range>])` query_range shape into ClickHouse's compiled
 `timeSeriesRateToGrid` aggregate instead of the arrayJoin fan-out. Its maturity
 label stays experimental, but it is **auto-selected** under the default
-`CERBERUS_CH_OPTIMIZATIONS=auto` on any server `>= 25.6`. The deprecated
+`CERBERUS_CH_OPTIMIZATIONS=auto` on any server `>= 25.9`. The deprecated
 `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` boolean (**default `false`**) still works
 as an override under `auto` — `true` force-enables, `false` force-disables (the
 escape hatch back to the fan-out) — but new deployments should rely on `auto` or
@@ -192,19 +192,26 @@ the SQL array machinery leaves at high cardinality. See
 
 **Requirements and hard constraints:**
 
-- **ClickHouse ≥ 25.6.** The `timeSeries*ToGrid` family was introduced in CH
-  v25.6.0. The compose / e2e / compatibility deployment runs **25.8**
-  (matching the chDB test substrate), so the function exists everywhere. The
-  auto-picker gates on this floor automatically — it enables `ts_grid_range`
-  only when the probed server is ≥ 25.6, so a connected older server keeps the
-  fan-out and never sees `UNKNOWN_FUNCTION`. (Force-enabling via the legacy
-  `=true` flag against a < 25.6 server is still rejected at startup per mode.)
+- **ClickHouse ≥ 25.9.** The `timeSeriesRateToGrid` / `…ResampleToGrid…`
+  aggregates first shipped in CH v25.6.0, but they used a **closed**
+  `[anchor-window, anchor]` membership window until **v25.9** (PR #86588 made it
+  left-open / right-closed to match PromQL's half-open range selector). On a
+  grid-aligned corpus (scrape interval == range) the closed left edge admits the
+  sample sitting exactly on `anchor-window`, so 25.6–25.8 emit a rate at grid
+  points where reference Prometheus emits nothing — a systematic divergence, not
+  a measure-zero edge. So the auto floor for the whole family is **25.9**. The
+  compose / e2e / compatibility deployment runs **25.8** (matching the chDB test
+  substrate), which is BELOW that floor, so the native path stays on the fan-out
+  there. The auto-picker gates on this floor automatically — it enables
+  `ts_grid_range` only when the probed server is ≥ 25.9, so a connected older
+  server keeps the fan-out and never diverges. (Force-enabling via the legacy
+  `=true` flag against a < 25.9 server is still rejected at startup per mode.)
   The experimental ClickHouse setting
   `allow_experimental_time_series_aggregate_functions=1` is sent **only on the
   queries that actually use the native node** (cerberus detects a
   `RangeWindowNative` in the emitted plan and stamps the setting per-query), so
   enabling the flag never adds an unknown setting to unrelated queries.
-- **The server must permit that experimental setting.** Meeting the 25.6 floor
+- **The server must permit that experimental setting.** Meeting the 25.9 floor
   is necessary but not sufficient: a hardened ClickHouse profile that
   constrains/pins `allow_experimental_time_series_aggregate_functions`, or a
   readonly user, will reject the per-query stamp with
@@ -222,23 +229,28 @@ the SQL array machinery leaves at high cardinality. See
   unaffected by the flag.
 - **The fan-out remains byte-for-byte available.** Pinning `ts_grid_range` off
   (an explicit list omitting it, or the legacy `=false`) restores the
-  established fan-out exactly; on a < 25.6 server it is the only path. Every
+  established fan-out exactly; on a < 25.9 server it is the only path. Every
   existing golden, the compat 574/574 corpus, and the compose / e2e lanes are
   structurally the fan-out shape.
 
 **Parity.** Validated on the chDB substrate (25.8) by a dual-emit test
 (`internal/chsql/range_window_native_chdb_test.go`) that runs the fan-out and
-the native path on the same seed and compares decoded float64 grids. On the
-pinned 12-sample ramp 8 of 9 grid cells are bit-identical and 1 diverges by
-exactly 1 ULP (the native value is the next double up from the correctly-rounded
-fan-out value — a sub-observable float-order difference, both render `0.12`).
+the native path on the same seed and compares decoded float64 grids. The seed is
+a linear ramp with samples away from the window edges, so the closed-vs-left-open
+boundary difference of the 25.8 substrate (fixed at 25.9, the auto floor) does
+not affect the compared values — the test pins the emit shape and the
+extrapolation arithmetic, while the boundary correctness is what the 25.9 floor
+guarantees. On the pinned 12-sample ramp 8 of 9 grid cells are bit-identical and
+1 diverges by exactly 1 ULP (the native value is the next double up from the
+correctly-rounded fan-out value — a sub-observable float-order difference, both
+render `0.12`).
 The test enforces a tight bound rather than the raw fixture count: **at most two
 cells may diverge, each by no more than 1 ULP** (`maxDualEmitUlpDivergentCells
 = 2`); any cell off by more than 1 ULP, or a third divergent cell, fails the
 test as an arithmetic regression. The maturity label stays experimental because
 the path rides ClickHouse's experimental setting, but it has since been
 validated against a real (non-chDB) server with that setting enforced — found
-result-correct at flat memory — which is why `auto` now selects it on ≥ 25.6
+result-correct at flat memory — which is why `auto` now selects it on ≥ 25.9
 rather than leaving it opt-in.
 
 ### Prometheus resource-attribute labels
@@ -574,7 +586,7 @@ opaque query-time errors into a precise, fail-fast boot error:
 
 - **ClickHouse too old.** The connected server's `version()` is compared
   against `max(base, applicable-feature-floors)` — base **24.8**, raised to
-  **25.6** by the native-rate floor when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
+  **25.9** by the native-rate floor when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
   on. A version below the floor (or an unparseable one) **fails startup
   fast** — a too-old server is a hard incompatibility that never self-heals.
 - **Wrong-shape schema.** A configured table that **exists** but whose shape

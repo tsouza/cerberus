@@ -327,12 +327,12 @@ are reached only through the `CERBERUS_CH_OPTIMIZATIONS` list.
 optimization resolver and remains honoured for backward compatibility:
 explicit `true` force-enables `ts_grid_range` (subject to version + mode),
 explicit `false` force-disables it, unset has no effect. It **requires
-ClickHouse >= 25.6**. See
+ClickHouse >= 25.9** (the left-open window fix, PR #86588). See
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md#legacy-alias-cerberus_experimental_ts_grid_range).
 
 | Variable                              | Type | Default | Description                                                                                                                                                                                                                                 |
 | ------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` | bool | `false` | Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.6. |
+| `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` | bool | `false` | Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.9. |
 
 ## Loki streaming
 

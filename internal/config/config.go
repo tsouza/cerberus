@@ -116,10 +116,13 @@ type Config struct {
 	// cardinality.
 	//
 	// Default is false — and MUST stay false out of the box. The family
-	// was introduced in ClickHouse v25.6.0; the compose / e2e /
-	// compatibility lanes now all run ClickHouse 25.8 (matching the chDB
-	// test substrate, chdb-go v1.11.0 = 25.8.2.1-lts), so the function
-	// exists everywhere — but the path stays experimental because it
+	// was introduced in ClickHouse v25.6.0 but used a CLOSED membership
+	// window until v25.9 (PR #86588 made it left-open / right-closed to
+	// match PromQL), so the auto floor is 25.9; the compose / e2e /
+	// compatibility lanes run ClickHouse 25.8 (matching the chDB test
+	// substrate, chdb-go v1.11.0 = 25.8.2.1-lts), BELOW that floor, so the
+	// native path stays on the fan-out there — but the path stays
+	// experimental even on 25.9+ because it
 	// depends on the experimental setting
 	// `allow_experimental_time_series_aggregate_functions=1`, sent only
 	// on the queries that actually use the native node (see
@@ -688,8 +691,10 @@ const configFileBaseName = "cerberus"
 //	    Set to "false" to skip both gates.
 //	CERBERUS_EXPERIMENTAL_TS_GRID_RANGE default "false" — emit ClickHouse-native
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
-//	    >= 25.6 (prod / compose / e2e are on 25.8, so this floor is met by
-//	    default); on older servers the native query 500s with UNKNOWN_FUNCTION
+//	    >= 25.9 (the left-open window fix, PR #86588; the 25.6 aggregate used a
+//	    closed window that diverges from PromQL on grid-aligned data). compose /
+//	    e2e run 25.8, BELOW this floor, so the native path stays on fan-out
+//	    there; on servers below 25.6 the native query 500s with UNKNOWN_FUNCTION
 //	CERBERUS_LOG_COMMENT_SHAPE     default "false" — stamp a compact, literal-
 //	    free cerberus shape id into ClickHouse log_comment so query_log rows
 //	    cluster by normalized_query_hash + log_comment. Result-neutral, safe
