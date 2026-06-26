@@ -222,9 +222,28 @@ coverage:
 # under that build tag. Requires libchdb.so (`just chdb-install`) — the
 # recipe fails fast without it rather than leaving stale expected_rows
 # behind (the PR #758 failure mode).
-# Review `git diff test/spec/` before committing.
-update-golden:
-    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; without it the chdb-tagged -- expected_rows -- sections cannot regenerate and go stale" >&2; exit 1; }
+#
+# It first runs the two perf-assessment ratchet baselines as PRIOR
+# dependencies so a SINGLE `just update-golden` records every fixture-derived
+# artefact in one shot: the solver routing-DECISION baseline, the cardinality
+# fan-factor baseline, and the text/expected_rows goldens (this body). This
+# closes the recurring miss where a new TXTAR fixture regenerated its goldens
+# but left `cardinality-baseline.json` unrecorded, turning the non-required
+# `perf-guards` TestCardinalityRatchet red on main after merge (hit by #1096
+# native_resample_offset and #1098 increase_left_edge_scan_bound).
+#
+# Why PRIOR deps, not subsequent (`&&`): the body's default-tag
+# `GOLDEN_UPDATE=1 go test ./...` lane runs TestSolverDecisionRatchet in
+# ASSERT mode, which fails on a brand-new fixture not yet in the routing
+# baseline — aborting before any subsequent dependency could record it.
+# Recording both baselines FIRST means the body's asserting lanes pass for
+# the new fixture. The baselines re-derive from each fixture's input query
+# (not the regenerated `-- sql --` / `-- expected_rows --` cells), so running
+# them before the golden rewrite is order-safe; all three are no-ops on a
+# corpus already in sync (zero diff).
+# Review `git diff test/spec/ test/perf/*-baseline.json` before committing.
+update-golden: update-solver-decision-baseline update-cardinality-baseline
+    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; without it the chdb-tagged -- expected_rows -- sections (and the cardinality baseline) cannot regenerate and go stale" >&2; exit 1; }
     GOLDEN_UPDATE=1 go test ./...
     GOLDEN_UPDATE=1 go test -tags chdb -count=1 ./test/spec/...
     @echo
