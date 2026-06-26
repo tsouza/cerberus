@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,7 +115,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := rewriteMapProjections(query)
+	rewritten := withQuerySettings(ctx, rewriteMapProjections(query))
 	rows, err := c.db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -460,6 +462,46 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
+}
+
+// withQuerySettings appends a `SETTINGS k=v, …` clause for any per-query
+// ClickHouse settings the engine stamped onto ctx via
+// chclient.WithQuerySetting — most notably
+// allow_experimental_time_series_aggregate_functions=1, which the engine
+// attaches whenever the optimized plan carries a chplan.RangeWindowNative
+// node (the native timeSeriesRateToGrid family).
+//
+// Production's *chclient.Client applies these through the clickhouse-go
+// protocol settings map; the chdb-go database/sql driver has no protocol
+// settings hook, so the faithful equivalent is the SQL-level SETTINGS
+// clause chDB honours identically. Without it a native-rate plan fails in
+// chDB with "Aggregate function timeSeriesRateToGrid is experimental and
+// disabled by default" (UNKNOWN_AGGREGATE_FUNCTION) — the exact gate
+// production satisfies via the protocol setting. The clause is a no-op for
+// every query that carries no stamped setting (the common case), so the
+// non-native paths are byte-unchanged.
+func withQuerySettings(ctx context.Context, sql string) string {
+	settings := chclient.QuerySettingsFromContext(ctx)
+	if len(settings) == 0 {
+		return sql
+	}
+	keys := make([]string, 0, len(settings))
+	for k := range settings {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(sql)
+	b.WriteString(" SETTINGS ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		fmt.Fprintf(&b, "%v", settings[k])
+	}
+	return b.String()
 }
 
 // decodeMapJSON unmarshals the toJSONString(…) output. An empty
