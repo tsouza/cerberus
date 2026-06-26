@@ -51,6 +51,21 @@ func (c Capability) PermitsExperimentalTSGrid() bool {
 	return c == CapabilityAvailable
 }
 
+// Inconclusive reports whether the canary failed to reach a DEFINITIVE verdict:
+// Unreachable (a dial / timeout / breaker-open transport failure) or Unknown
+// (the probe never ran). It is the opposite axis from a definitive answer --
+// Available definitively permits, Forbidden definitively refuses.
+//
+// The resolver uses it to mirror the version probe's connectivity fallback: an
+// inconclusive verdict degrades the native family to fan-out with a WARN and is
+// NEVER fatal, even for an explicitly-requested feature under enforcing mode. A
+// probe that could not get an answer must not take a deployment down -- only a
+// definitive Forbidden (the server reachably refused the setting) keeps the
+// enforcing "I require this" contract fatal.
+func (c Capability) Inconclusive() bool {
+	return c == CapabilityUnreachable || c == CapabilityUnknown
+}
+
 // String renders the capability for boot logging.
 func (c Capability) String() string {
 	switch c {

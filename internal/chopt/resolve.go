@@ -240,10 +240,15 @@ func resolveTokens(tokens []string, mode Mode, server Version, capability Capabi
 			enabled[f.ID] = struct{}{}
 			continue
 		}
-		// Explicitly requested but unsupported by the connected server (too old,
-		// or the server forbids the experimental setting). The "I require this"
-		// contract holds even alongside "auto".
-		if mode == Enforcing {
+		// Explicitly requested but blocked by the connected server. A DEFINITIVE
+		// block -- too old, or a FORBIDDEN capability verdict (the server is
+		// reachable and reachably refused the experimental setting) -- keeps the
+		// enforcing "I require this" contract fatal, even alongside "auto". An
+		// INCONCLUSIVE capability probe (Unreachable / Unknown) is NOT fatal: the
+		// canary could not reach a verdict, so cerberus degrades to fan-out with a
+		// WARN exactly like the version probe's connectivity fallback rather than
+		// crashing a deployment that may well be capable.
+		if mode == Enforcing && !blockIsInconclusive(f, server, capability) {
 			return nil, fmt.Errorf("ch_opt %q disabled: %s", f.ID, reason)
 		}
 		warnings = append(warnings, fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason))
@@ -266,6 +271,19 @@ func featureBlockReason(f Feature, server Version, capability Capability) string
 		return capabilityBlockReason(capability)
 	}
 	return ""
+}
+
+// blockIsInconclusive reports whether feature f's block stems from an
+// INCONCLUSIVE capability probe (Unreachable / Unknown) rather than a definitive
+// refusal. It is true only once the version floor passes (a too-old server is a
+// definitive, fatal-eligible block) AND the feature requires the experimental
+// setting AND the capability verdict is inconclusive. An inconclusive block
+// degrades to fan-out with a WARN and is NEVER fatal -- even for an explicit
+// request under enforcing -- mirroring the version probe's connectivity
+// fallback; a definitive block (too old, or Forbidden) stays fatal under
+// enforcing.
+func blockIsInconclusive(f Feature, server Version, capability Capability) bool {
+	return f.RequiresExperimentalTSGrid && server.AtLeast(f.MinVersion) && capability.Inconclusive()
 }
 
 // capabilityBlockReason renders the reason a native ts_grid feature is blocked
@@ -353,7 +371,12 @@ func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[
 			enabled[f.ID] = struct{}{}
 			return warnings, nil
 		}
-		if cfg.Mode == Enforcing {
+		// Same inconclusive-is-not-fatal rule as an explicit list (see
+		// resolveTokens): a definitive block (too old, or a Forbidden verdict)
+		// stays fatal under enforcing, but an inconclusive capability probe
+		// (Unreachable / Unknown) degrades to fan-out with a WARN rather than
+		// crashing boot.
+		if cfg.Mode == Enforcing && !blockIsInconclusive(f, server, cfg.Capability) {
 			return nil, fmt.Errorf("ch_opt %q (via CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) disabled: %s", f.ID, reason)
 		}
 		return append(warnings, fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason)), nil

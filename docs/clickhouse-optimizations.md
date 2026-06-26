@@ -235,23 +235,37 @@ configured database exists yet). The verdict is tri-state:
 - **available** — the server accepted the setting; the native family resolves
   per its version floor.
 - **forbidden** — the server answered with a typed rejection (constrained /
-  readonly profile); the native family is **dropped to the fan-out path**.
-- **unreachable** — the canary got no server verdict (a transport failure);
-  treated conservatively like *forbidden* (native stays off until a restart
-  re-probes), matching the version probe's connectivity fallback.
+  readonly profile); a *definitive* "no". The native family is **dropped to the
+  fan-out path**.
+- **unreachable** — the canary got no server verdict (a transport failure); an
+  *inconclusive* result. Native stays off until a restart re-probes, matching
+  the version probe's connectivity fallback.
 
-How a non-`available` verdict is handled depends on how the feature was
-selected, mirroring the version-floor semantics exactly:
+A verdict is therefore either **definitive** (`available` permits, `forbidden`
+refuses) or **inconclusive** (`unreachable`, or `unknown` when the probe never
+ran). How a non-`available` verdict is handled depends on both the verdict class
+and how the feature was selected:
 
-- under **`auto`** — the native features are **silently dropped** and a boot
-  `WARN` is logged (`native ts_grid disabled: server forbids
-  allow_experimental_time_series_aggregate_functions; falling back to
-  fan-out`). The deployment serves the fan-out path successfully.
-- under an **explicit list** — a listed `ts_grid_*` (or the legacy alias
-  force-enable) on a forbidden server is **FATAL under `enforcing`** (the
-  operator required a feature the server will not run) and a `WARN` + skip
-  under `permissive` — identical to listing a feature the server is too old
-  for.
+- under **`auto`** — the native features are **silently dropped** for *any*
+  non-`available` verdict and a boot `WARN` is logged (`ch_opt "ts_grid_range"
+  disabled: server forbids allow_experimental_time_series_aggregate_functions;
+  falling back to fan-out`, or `... probe was inconclusive (unreachable);
+  falling back to fan-out`). The deployment serves the fan-out path
+  successfully.
+- under an **explicit list** (or the legacy alias force-enable) — the handling
+  splits on the verdict class:
+  - **forbidden** is **FATAL under `enforcing`** (the operator required a
+    feature the reachable server definitively will not run) and a `WARN` + skip
+    under `permissive` — identical to listing a feature the server is too old
+    for.
+  - **inconclusive** (`unreachable` / `unknown`) is **never fatal** — under
+    `enforcing` *and* `permissive` it degrades to the fan-out path with a
+    `WARN`, mirroring the version probe's connectivity fallback. A probe that
+    could not reach a verdict must not crash a deployment that may well be
+    capable; the operator's "I require this" contract only fails loudly against
+    a *definitive* refusal. (The version floor itself stays definitive: an
+    explicitly-listed feature on a too-old server is still FATAL under
+    `enforcing`.)
 
 The canary runs **once** at boot, like the version probe; a profile change that
 later permits the setting needs a restart to re-probe.

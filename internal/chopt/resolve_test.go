@@ -574,6 +574,71 @@ func TestResolve_ExplicitTSGrid_CapabilityForbidden_EnforcingFatal(t *testing.T)
 	}
 }
 
+func TestResolve_ExplicitTSGrid_CapabilityUnreachable_EnforcingDegradesNotFatal(t *testing.T) {
+	// An explicit ts_grid_range on a version-capable (25.6) server whose boot
+	// canary was INCONCLUSIVE (Unreachable) must NOT be fatal under enforcing --
+	// unlike a FORBIDDEN verdict. The probe could not reach a verdict, so cerberus
+	// mirrors the version probe's connectivity fallback: degrade to fan-out with a
+	// WARN, never crash. (Before this fix the canary itself spuriously returned
+	// Unreachable on every healthy server, and this enforcing+explicit path turned
+	// that into a fatal that crashed boot.)
+	set, warns, err := Resolve(Config{
+		Optimizations: "ts_grid_range",
+		Mode:          Enforcing,
+		Capability:    CapabilityUnreachable,
+	}, v(25, 6))
+	if err != nil {
+		t.Fatalf("explicit ts_grid_range + Unreachable under enforcing must degrade, not fatal; got err %v", err)
+	}
+	if set.Has(FeatureTSGridRange) {
+		t.Error("inconclusive verdict must drop ts_grid_range to fan-out, not enable it")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "ts_grid_range") || !strings.Contains(warns[0], "inconclusive") {
+		t.Errorf("warns = %v; want one naming ts_grid_range + the inconclusive probe", warns)
+	}
+}
+
+func TestResolve_ExplicitTSGrid_CapabilityUnknown_EnforcingDegradesNotFatal(t *testing.T) {
+	// The zero-value verdict (canary never ran / not threaded in) is inconclusive
+	// too: an explicit request under enforcing degrades with a WARN rather than a
+	// fatal, exactly like Unreachable.
+	set, warns, err := Resolve(Config{
+		Optimizations: "ts_grid_range",
+		Mode:          Enforcing,
+		Capability:    CapabilityUnknown,
+	}, v(25, 6))
+	if err != nil {
+		t.Fatalf("explicit ts_grid_range + Unknown under enforcing must degrade, not fatal; got err %v", err)
+	}
+	if set.Has(FeatureTSGridRange) {
+		t.Error("unknown verdict must drop ts_grid_range to fan-out, not enable it")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "inconclusive") {
+		t.Errorf("warns = %v; want one naming the inconclusive probe", warns)
+	}
+}
+
+func TestResolve_LegacyTrue_CapabilityUnreachable_EnforcingDegradesNotFatal(t *testing.T) {
+	// The legacy force-enable follows the same inconclusive-is-not-fatal rule as
+	// an explicit list: a 25.6-capable server with an Unreachable canary degrades
+	// to fan-out with a WARN under enforcing, not a fatal.
+	set, warns, err := Resolve(Config{
+		Optimizations: "auto",
+		Mode:          Enforcing,
+		Capability:    CapabilityUnreachable,
+		LegacyTSGrid:  LegacyFlag{Set: true, Value: true},
+	}, v(25, 6))
+	if err != nil {
+		t.Fatalf("legacy true + Unreachable under enforcing must degrade, not fatal; got err %v", err)
+	}
+	if set.Has(FeatureTSGridRange) {
+		t.Error("inconclusive verdict must drop the legacy force-enable to fan-out")
+	}
+	if !anyContains(warns, "inconclusive") {
+		t.Errorf("warns = %v; want one naming the inconclusive probe", warns)
+	}
+}
+
 func TestResolve_ExplicitTSGrid_CapabilityForbidden_PermissiveWarns(t *testing.T) {
 	// Same shape under permissive: WARN + skip, no error, feature absent.
 	set, warns, err := Resolve(Config{
