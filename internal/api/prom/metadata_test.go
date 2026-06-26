@@ -227,8 +227,15 @@ func TestMetadataDiscovery_WindowPrune(t *testing.T) {
 					tc.path, qw.lastSQL)
 			}
 
-			// Without a window: SQL stays unbounded (no time predicate),
-			// byte-for-byte the prior emit.
+			// Without a window: the scan must STILL be bounded by a default
+			// lookback so a Grafana variable query that sends no start/end
+			// (the common "On dashboard load" refresh) does not stream every
+			// toDate(TimeUnix) partition — the ~30B-row prod scan. REPRO:
+			// metadataWindowPred returns nil for the zero/zero case, so on
+			// current main this arm emits a WHERE-less full scan and the
+			// assertion below is RED. The companion result-identity guard
+			// (the windowless scan must still return the full catalog) lives
+			// in metadata_scan_bound_guard_chdb_test.go.
 			qn := &stubQuerier{strings: []string{"up"}}
 			srvN := newServer(qn)
 			t.Cleanup(srvN.Close)
@@ -237,8 +244,9 @@ func TestMetadataDiscovery_WindowPrune(t *testing.T) {
 				t.Fatalf("GET unbounded: %v", err)
 			}
 			resp.Body.Close()
-			if strings.Contains(qn.lastSQL, "TimeUnix") {
-				t.Errorf("unbounded %s must not emit a TimeUnix bound; got %q",
+			if !strings.Contains(qn.lastSQL, "toDateTime64(") ||
+				!strings.Contains(qn.lastSQL, "TimeUnix") {
+				t.Errorf("windowless %s must push a default TimeUnix partition bound; got %q",
 					tc.path, qn.lastSQL)
 			}
 		})

@@ -92,7 +92,11 @@ const catalogSummaryDDL = `CREATE TABLE otel_metrics_summary (
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
 func TestCatalog_AdvertisedNamesAreQueryable_ChDB(t *testing.T) {
-	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// Step 1 enumerates __name__ windowless; seed within the default-lookback
+	// retention horizon (boundMetadataWindow) so the bounded discovery scan
+	// still advertises every name. Step 2's instant queries anchor at
+	// seedTime, whose 5m staleness window covers these rows.
+	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
 
 	seed := catalogGaugeDDL + catalogSumDDL + catalogHistogramDDL +

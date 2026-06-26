@@ -320,7 +320,10 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 // metric typed "counter", which made Grafana's Metrics Drilldown wrap
 // UpDownCounters in rate() and render a flat-0 preview.
 func TestMetadata_NonMonotonicSumIsGauge_ChDB(t *testing.T) {
-	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// /api/v1/metadata is windowless; seed inside the default-lookback
+	// retention horizon (boundMetadataWindow) so the bounded metadata scan
+	// still lists the metric — beyond-horizon data is TTL-gone in prod too.
+	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
 	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value, IsMonotonic) VALUES
@@ -391,7 +394,8 @@ INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attribu
 // found check). The seed creates all three; only the gauge table
 // carries rows.
 func TestMetadata_TruncateAtLimit_ChDB(t *testing.T) {
-	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// Windowless /api/v1/metadata — seed within the default-lookback horizon.
+	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
 	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
@@ -448,7 +452,8 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 // in truncateMetadata against chDB: limit exceeds the seeded count, so
 // the handler must return every row untouched.
 func TestMetadata_LimitAboveCount_ChDB(t *testing.T) {
-	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// Windowless /api/v1/metadata — seed within the default-lookback horizon.
+	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
 	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
@@ -515,7 +520,10 @@ func keysOf(m map[string][]prom.MetricMetaEntry) []string {
 // for the unrelated sanity check (`route` carries no internal
 // underscore so it hits the byte-stable single-arm path).
 func TestLabelValues_DottedSource_ChDB(t *testing.T) {
-	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// Pin 1 is windowless; seed within the default-lookback retention
+	// horizon (boundMetadataWindow) so the bounded scan still lists the
+	// dotted-source values. Pin 2 derives its window from seedTime.
+	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
 	// Seed into otel_metrics_sum: `cerberus_queries_total` carries the
 	// `_total` suffix so Metrics.TableFor routes the matched-listing
