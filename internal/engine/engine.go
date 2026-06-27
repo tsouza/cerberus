@@ -152,9 +152,9 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
-	// Always-on, result-equivalent: let the compare() GROUP BY spill to disk
+	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
-	ctx = applyCompareSpill(ctx, plan, e.queryMemoryCap())
+	ctx = applySpillSettings(ctx, e.queryMemoryCap())
 	ctx = e.Settings.apply(ctx, plan)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the
@@ -414,7 +414,7 @@ type memoryCapQuerier interface {
 
 // queryMemoryCap returns the engine Client's per-query memory cap in bytes, or
 // 0 when the Client doesn't expose one. A 0 cap means "no max_memory_usage
-// configured", which compareSpillThreshold treats as "use the fixed spill
+// configured", which spillThreshold treats as "use the fixed spill
 // threshold" (never min against a non-positive value).
 func (e *Engine) queryMemoryCap() int64 {
 	if mc, ok := e.Client.(memoryCapQuerier); ok {
