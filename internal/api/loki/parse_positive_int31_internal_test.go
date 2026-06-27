@@ -38,3 +38,37 @@ func TestParsePositiveInt31(t *testing.T) {
 		})
 	}
 }
+
+// TestParseTailLimit pins /tail's limit clamp: /tail buffers the whole cursor
+// result into a []Sample and re-issues it every poll, so an unclamped limit is
+// the same raw-row drain OOM as the metadata peeks. parseTailLimit coerces
+// (never errors on out-of-range): empty/non-positive -> default; valid ->
+// itself; above maxLogQueryLimit -> clamped DOWN; non-numeric -> rejected.
+func TestParseTailLimit(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		raw     string
+		want    int
+		wantErr bool
+	}{
+		{"empty_returns_default", "", defaultTailLimit, false},
+		{"within_range_passthrough", "200", 200, false},
+		{"at_max_passthrough", "5000", maxLogQueryLimit, false},
+		{"above_max_clamped", "2000000000", maxLogQueryLimit, false},
+		{"zero_returns_default", "0", defaultTailLimit, false},
+		{"negative_returns_default", "-5", defaultTailLimit, false},
+		{"non_numeric_rejected", "abc", 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseTailLimit(c.raw)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("parseTailLimit(%q) err=%v, wantErr=%v", c.raw, err, c.wantErr)
+			}
+			if !c.wantErr && got != c.want {
+				t.Errorf("parseTailLimit(%q) = %d, want %d", c.raw, got, c.want)
+			}
+		})
+	}
+}

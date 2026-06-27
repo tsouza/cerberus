@@ -38,12 +38,12 @@ const defaultDetectedFieldsLimit = 1000
 // LIMIT line_limit` and the whole result is buffered into a Go slice with no
 // streaming, so an unclamped `line_limit` (the param accepts up to 2^31-1)
 // lets a single request OOM the process — max_memory_usage bounds ClickHouse,
-// not the cerberus heap. This clamp IS the bound: the SQL LIMIT caps the
-// result set, which caps the buffered slice. 10k newest lines is 10x the
-// default and ample for a field/pattern heuristic while keeping the buffer to
-// ~tens of MiB worst case. Mirrors the parseLogLimit/maxLogQueryLimit clamp on
-// the log path. (A uniform per-drain maxSamples backstop across ALL metadata
-// drains is the broader "complete the net" follow-up.)
+// not the cerberus heap. This clamp caps the row COUNT the SQL LIMIT returns
+// (and thus the buffered slice): 10k newest lines is 10x the default and ample
+// for a field/pattern heuristic. It removes the unbounded-row OOM; the
+// absolute heap still scales with line SIZE × concurrency, which the deferred
+// uniform per-drain maxSamples backstop (the "complete the net" follow-up)
+// bounds hard. Mirrors the parseLogLimit/maxLogQueryLimit clamp on the log path.
 const maxLogPeekLineLimit = 10_000
 
 // maxDetectedFieldsLimit hard-caps the returned-field count. Each tracked
