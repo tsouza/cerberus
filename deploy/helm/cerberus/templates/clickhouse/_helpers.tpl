@@ -210,9 +210,15 @@ use_managed_identity instead. Input is the root context.
         {{- if eq $os.backend "s3" }}
         <type>s3</type>
         {{- if $os.s3.endpoint }}
+        {{- /* custom endpoint (MinIO / localstack / non-AWS): always path-style
+               — the bucket rides in the URL path: <endpoint>/<bucket>/<path>/. */}}
         <endpoint>{{ printf "%s/%s/%s/" (trimSuffix "/" $os.s3.endpoint) $os.bucket (trimSuffix "/" $os.path) }}</endpoint>
-        {{- else }}
+        {{- else if $os.s3.forcePathStyle }}
+        {{- /* AWS, path-style (legacy): https://s3.<region>.amazonaws.com/<bucket>/<path>/. */}}
         <endpoint>{{ printf "https://s3.%s.amazonaws.com/%s/%s/" $os.s3.region $os.bucket (trimSuffix "/" $os.path) }}</endpoint>
+        {{- else }}
+        {{- /* AWS, virtual-hosted (default): https://<bucket>.s3.<region>.amazonaws.com/<path>/. */}}
+        <endpoint>{{ printf "https://%s.s3.%s.amazonaws.com/%s/" $os.bucket $os.s3.region (trimSuffix "/" $os.path) }}</endpoint>
         {{- end }}
         {{- with $os.s3.region }}
         <region>{{ . }}</region>
@@ -222,9 +228,6 @@ use_managed_identity instead. Input is the root context.
         {{- else }}
         <access_key_id from_env="S3_ACCESS_KEY_ID" />
         <secret_access_key from_env="S3_SECRET_ACCESS_KEY" />
-        {{- end }}
-        {{- if $os.s3.forcePathStyle }}
-        <!-- path-style addressing: bucket carried in the URL path -->
         {{- end }}
         {{- else if eq $os.backend "gcs" }}
         <type>s3</type>
@@ -285,11 +288,13 @@ is disabled, so non-bundled renders are byte-identical.
 {{- if not .Values.schema.storagePolicy -}}
 {{- $_ := set .Values.schema "storagePolicy" $b.storagePolicyName -}}
 {{- end -}}
-{{- /* a fresh bundled CH is empty: auto-create the database + schema. (Override
-       an individual toggle via config.CERBERUS_AUTO_CREATE_* if you provision
-       externally — config env wins over the typed default in the ConfigMap.) */ -}}
-{{- if not .Values.autoCreate.schema -}}{{- $_ := set .Values.autoCreate "schema" true -}}{{- end -}}
-{{- if not .Values.autoCreate.database -}}{{- $_ := set .Values.autoCreate "database" true -}}{{- end -}}
+{{- /* a fresh bundled CH is empty: auto-create the database + schema. autoCreate
+       is tri-state (null/true/false) — only an UNSET (null) toggle is promoted
+       to true here, so an operator who explicitly set `autoCreate.schema=false`
+       (or database=false) keeps that false even under bundled. Mirrors the
+       keeper.enabled:null tri-state above. */ -}}
+{{- if kindIs "invalid" .Values.autoCreate.schema -}}{{- $_ := set .Values.autoCreate "schema" true -}}{{- end -}}
+{{- if kindIs "invalid" .Values.autoCreate.database -}}{{- $_ := set .Values.autoCreate "database" true -}}{{- end -}}
 {{- /* replicas > 1 -> Replicated schema, REUSING cerberus's existing
        schema.replicated env wiring. */ -}}
 {{- if gt (int $b.replicas) 1 -}}

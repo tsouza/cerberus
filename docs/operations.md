@@ -482,6 +482,48 @@ does **not** guarantee a node-local query path. True node-local CH preference �
 a headless Service or per-pod endpoint with client-side replica locality — is a
 deferred, app-side concern, not something the scheduling preset can deliver.
 
+### Helm: bundled ClickHouse on object storage (bwc data tier)
+
+`clickhouse.bundled.enabled` renders a self-contained ClickHouse StatefulSet
+(plus its Services, plus a Keeper ensemble once `replicas > 1`) backed by an
+object store (S3 / GCS / Azure) and defaults cerberus to point at it. This is
+the **data tier** and is orthogonal to `mode` (monolith / split) — the gateway
+topology is unchanged. With the default `enabled: false` the chart renders
+byte-for-byte as if the block did not exist.
+
+**Support / validation matrix.** Backends differ in how far they have been
+exercised. Treat anything below "runtime-proven" as needing a real-cloud
+validation pass against your own bucket/credentials before production use:
+
+| Configuration                                | Status                         | How it is validated                                                         |
+| -------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
+| S3 / MinIO, single-node                      | **Runtime-proven**             | k3d e2e (`bwc-minio` lane): live MinIO, real read/write, placement asserted |
+| S3 on real AWS (virtual-hosted + IRSA)       | Render / kubeconform-validated | `ci/bwc-aws-values.yaml` renders; no live-AWS run                           |
+| GCS (S3-compat HMAC endpoint)                | Render / kubeconform-validated | `ci/bwc-gcs-values.yaml` renders; no live-GCS run                           |
+| Azure Blob (account key or managed identity) | Render / kubeconform-validated | `ci/bwc-azure-values.yaml` renders; no live-Azure run                       |
+| IRSA / GKE / AKS workload identity           | Render / kubeconform-validated | env / SA annotations render; no live cloud-identity run                     |
+| Multi-replica + Keeper (ReplicatedMergeTree) | Render / kubeconform-validated | `ci/bwc-replicated-values.yaml` renders; no live multi-node run             |
+
+Only **S3/MinIO single-node** is proven end to end on the CI substrate (the k3d
+e2e brings up real MinIO and writes/reads through the object disk). Every other
+row is rendered and schema-validated only; the XML wiring is correct by
+construction but the cloud round-trip has not been exercised in CI.
+
+**Pre-requisites that the chart does NOT handle for you:**
+
+- **The bucket / container MUST be pre-created.** ClickHouse object disks (S3
+  *and* Azure) do not create the bucket/container — point `objectStorage.bucket`
+  (or `azure.container`) at one that already exists, or the disk fails on first
+  write.
+- **GCS** is reached over its S3-compatible (interop) endpoint with HMAC keys; a
+  region/location hint on the bucket that matches your workload's region avoids
+  cross-region egress. GCS rejects multi-object delete, so the chart already
+  emits `<support_batch_delete>false</support_batch_delete>`.
+- **S3 addressing** follows `s3.forcePathStyle`: a custom `endpoint`
+  (MinIO/localstack) is always path-style; on real AWS, `false` (default) builds
+  a virtual-hosted endpoint (`https://<bucket>.s3.<region>.amazonaws.com/`) and
+  `true` builds the legacy path-style form.
+
 ## Lifecycle
 
 ### Startup

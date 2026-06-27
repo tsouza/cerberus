@@ -189,8 +189,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "schema": { "type": "boolean" },
-        "database": { "type": "boolean" }
+        "schema": { "type": ["boolean", "null"] },
+        "database": { "type": ["boolean", "null"] }
       }
     },
     "admit": {

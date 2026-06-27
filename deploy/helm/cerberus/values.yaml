@@ -183,7 +183,12 @@ clickhouse:
   # `enabled: false` the chart renders byte-for-byte as if this block did not
   # exist. Secrets (the ClickHouse user password + static object-store
   # credentials) NEVER land in a ConfigMap — they ride a Secret injected as env
-  # and are referenced from the ClickHouse XML via `from_env`.
+  # and are referenced from the ClickHouse XML via `from_env`. NOT every backend
+  # is equally proven: only S3/MinIO single-node is runtime-proven (k3d e2e);
+  # GCS, Azure, cloud workload-identity and multi-replica+Keeper are
+  # render/kubeconform-validated only and need a real-cloud validation pass
+  # before production. See the support/validation matrix in docs/operations.md
+  # ("Helm: bundled ClickHouse on object storage").
   bundled:
     # -- Render the bundled ClickHouse data tier and default cerberus at it.
     enabled: false
@@ -253,8 +258,12 @@ clickhouse:
         endpoint: ""
         # -- AWS region (used to build the AWS endpoint, and as the disk region).
         region: us-east-1
-        # -- Use path-style addressing (host/bucket/key) — required for MinIO /
-        # localstack and most non-AWS S3 implementations.
+        # -- S3 addressing style for the AWS backend (ignored when a custom
+        # `endpoint` is set — those are ALWAYS path-style). `false` (default,
+        # real AWS) builds a virtual-hosted endpoint
+        # `https://<bucket>.s3.<region>.amazonaws.com/<path>/`; `true` (legacy)
+        # builds path-style `https://s3.<region>.amazonaws.com/<bucket>/<path>/`.
+        # MinIO / localstack / non-AWS endpoints stay path-style regardless.
         forcePathStyle: false
         # -- Use the pod's ambient credentials (IRSA / instance role) instead of
         # static keys. When true, no static-credential Secret is rendered/used.
@@ -271,7 +280,8 @@ clickhouse:
       gcs:
         # -- Name of an existing Secret holding GCS HMAC credentials (keys
         # `access-key-id` / `secret-access-key`). GCS is reached via its
-        # S3-compatible endpoint.
+        # S3-compatible (interop) endpoint; give the bucket a region/location
+        # that matches your workload to avoid cross-region egress.
         credentialsSecret: ""
         # -- Inline GCS HMAC access key id. Renders a chart-managed Secret.
         accessKeyId: ""
@@ -281,7 +291,8 @@ clickhouse:
         # -- Azure Blob storage account URL, e.g.
         # `https://<account>.blob.core.windows.net`.
         storageAccountUrl: ""
-        # -- Blob container name.
+        # -- Blob container name. MUST be pre-created — the object disk does NOT
+        # create the container.
         container: ""
         # -- Use Azure managed identity instead of an account key. When true, no
         # static-credential Secret is rendered/used.
@@ -314,9 +325,15 @@ clickhouse:
 # -- Auto-create toggles (lowered to CERBERUS_AUTO_CREATE_* env). See fields below.
 autoCreate:
   # -- Apply the OTel-CH schema DDL at boot (CERBERUS_AUTO_CREATE_SCHEMA).
-  schema: true
+  # Tri-state: `null` (default) renders `true`; with `clickhouse.bundled.enabled`
+  # a fresh bundled CH also resolves unset to `true`. An explicit `false` always
+  # WINS — even under bundled — so you can drive it externally.
+  schema: null
   # -- Create the target database if absent (CERBERUS_AUTO_CREATE_DATABASE).
-  database: false
+  # Tri-state: `null` (default) renders `false`; with `clickhouse.bundled.enabled`
+  # a fresh bundled CH resolves unset to `true` (the empty bundled CH has no
+  # database yet). An explicit `false` always WINS — even under bundled.
+  database: null
 
 # Per-head admission control (in-flight concurrency caps). prom / loki / tempo
 # each accept EITHER an explicit integer cap OR a boolean: `true` enables the
