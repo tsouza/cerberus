@@ -81,6 +81,18 @@ type NestedSetAnnotate struct {
 	// traceql.lowerSelect's inputGuaranteesRootInResult gate); for every
 	// other shape it stays 0 and the numbering is byte-identical to today.
 	TraceLimit int64
+
+	// WindowStartNano / WindowEndNano (when non-zero, set alongside TraceLimit
+	// on the search path) restrict the TraceLimit top-N root ranking to roots
+	// whose start time falls in the request window — so the numbering scope is
+	// the newest-N roots IN the window, not the newest-N ever. They must match
+	// the sibling BoundedTraceScope.Window* (the leaf gate) exactly, because
+	// boundedRootScopeFrag emits both and a divergence strands kept rows at the
+	// 0/0/0 LEFT-JOIN default. Note this windows the SELECTION of which traces
+	// to number, NOT the numbering walk itself, which still reads whole traces
+	// (Tempo numbers at ingest regardless of the search window).
+	WindowStartNano int64
+	WindowEndNano   int64
 }
 
 func (*NestedSetAnnotate) planNode() {}
@@ -97,7 +109,9 @@ func (n *NestedSetAnnotate) Equal(other Node) bool {
 		n.SpanIDColumn != o.SpanIDColumn ||
 		n.ParentSpanIDColumn != o.ParentSpanIDColumn ||
 		n.TimestampColumn != o.TimestampColumn ||
-		n.TraceLimit != o.TraceLimit {
+		n.TraceLimit != o.TraceLimit ||
+		n.WindowStartNano != o.WindowStartNano ||
+		n.WindowEndNano != o.WindowEndNano {
 		return false
 	}
 	return n.Input.Equal(o.Input)

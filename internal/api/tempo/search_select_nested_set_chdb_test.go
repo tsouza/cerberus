@@ -87,7 +87,7 @@ func TestSearch_DrilldownStructureTab_ChDB(t *testing.T) {
 	// filter expression.
 	drilldownQuery := `({nestedSetParent<0} &>> { kind = server }) || ({nestedSetParent<0}) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)`
 
-	resp, err := http.Get(srv.URL + "/api/search?q=" + url.QueryEscape(drilldownQuery) + "&limit=200&spss=20")
+	resp, err := http.Get(srv.URL + "/api/search?q=" + url.QueryEscape(drilldownQuery) + "&start=1777593600&end=1777680000&limit=200&spss=20")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
