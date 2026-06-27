@@ -137,12 +137,22 @@ func TestCreateDatabase(t *testing.T) {
 	}
 }
 
-// metricNameProjectionBody is the aggregating projection body the metric-name
-// catalog enumeration is served from: one row per MetricName carrying its
-// max(TimeUnix). Built with the same typed QueryBuilder used for reads.
-func metricNameProjectionBody() *QueryBuilder {
+// seriesProjectionBody is the curated proj_series body: one row per
+// (MetricName, Attributes) carrying max(TimeUnix). It serves every windowless
+// enumeration shape (label_values, label-names, __name__, cardinality). Built
+// with the same typed QueryBuilder used for reads.
+func seriesProjectionBody() *QueryBuilder {
 	return NewQuery().
-		Select(Col("MetricName"), Call("max", Col("TimeUnix"))).
+		Select(Col("MetricName"), Col("Attributes"), Call("max", Col("TimeUnix"))).
+		GroupBy(Col("MetricName"), Col("Attributes"))
+}
+
+// metadataProjectionBody is the curated proj_metric_metadata body: one row per
+// MetricName carrying any(MetricDescription)/any(MetricUnit) + max(TimeUnix),
+// serving the windowless /api/v1/metadata listing.
+func metadataProjectionBody() *QueryBuilder {
+	return NewQuery().
+		Select(Col("MetricName"), Call("any", Col("MetricDescription")), Call("any", Col("MetricUnit")), Call("max", Col("TimeUnix"))).
 		GroupBy(Col("MetricName"))
 }
 
@@ -157,22 +167,22 @@ func TestAlterTableAddProjection(t *testing.T) {
 		want string
 	}{
 		{
-			"plain",
-			AlterTableAddProjection("otel", "otel_metrics_gauge", "proj_metric_name", metricNameProjectionBody()),
-			"ALTER TABLE otel.otel_metrics_gauge ADD PROJECTION IF NOT EXISTS proj_metric_name " +
-				"(SELECT `MetricName`, max(`TimeUnix`) GROUP BY `MetricName`)",
+			"series_plain",
+			AlterTableAddProjection("otel", "otel_metrics_gauge", "proj_series", seriesProjectionBody()),
+			"ALTER TABLE otel.otel_metrics_gauge ADD PROJECTION IF NOT EXISTS proj_series " +
+				"(SELECT `MetricName`, `Attributes`, max(`TimeUnix`) GROUP BY `MetricName`, `Attributes`)",
 		},
 		{
-			"default_db",
-			AlterTableAddProjection("default", "otel_metrics_sum", "proj_metric_name", metricNameProjectionBody()),
-			"ALTER TABLE default.otel_metrics_sum ADD PROJECTION IF NOT EXISTS proj_metric_name " +
-				"(SELECT `MetricName`, max(`TimeUnix`) GROUP BY `MetricName`)",
+			"series_default_db",
+			AlterTableAddProjection("default", "otel_metrics_sum", "proj_series", seriesProjectionBody()),
+			"ALTER TABLE default.otel_metrics_sum ADD PROJECTION IF NOT EXISTS proj_series " +
+				"(SELECT `MetricName`, `Attributes`, max(`TimeUnix`) GROUP BY `MetricName`, `Attributes`)",
 		},
 		{
-			"on_cluster",
-			AlterTableAddProjection("otel", "otel_metrics_histogram", "proj_metric_name", metricNameProjectionBody()).OnCluster("prod"),
-			"ALTER TABLE otel.otel_metrics_histogram ON CLUSTER `prod` ADD PROJECTION IF NOT EXISTS proj_metric_name " +
-				"(SELECT `MetricName`, max(`TimeUnix`) GROUP BY `MetricName`)",
+			"metadata_on_cluster",
+			AlterTableAddProjection("otel", "otel_metrics_histogram", "proj_metric_metadata", metadataProjectionBody()).OnCluster("prod"),
+			"ALTER TABLE otel.otel_metrics_histogram ON CLUSTER `prod` ADD PROJECTION IF NOT EXISTS proj_metric_metadata " +
+				"(SELECT `MetricName`, any(`MetricDescription`), any(`MetricUnit`), max(`TimeUnix`) GROUP BY `MetricName`)",
 		},
 	}
 	for _, tc := range cases {

@@ -33,6 +33,10 @@ type stubQuerier struct {
 	// endpoints issue several (per table group / per metadata arm), so a
 	// scan-bound assertion that must hold for EVERY arm reads allSQL.
 	allSQL []string
+	// allArgs records the positional args bound by each allSQL statement, in
+	// lock-step order — so a test that needs to EXPLAIN a captured arm can
+	// inline the `?` placeholders the projection-routing emit binds.
+	allArgs [][]any
 
 	// metaCalls records every QueryMetricMeta invocation in order so
 	// metadata tests can assert the per-table fan-out (which SQL was
@@ -54,6 +58,7 @@ type metaCall struct {
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
 	s.lastSQL = sql
 	s.allSQL = append(s.allSQL, sql)
+	s.allArgs = append(s.allArgs, args)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -64,6 +69,7 @@ func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chcli
 func (s *stubQuerier) QueryCursor(_ context.Context, sql string, args ...any) (chclient.Cursor, error) {
 	s.lastSQL = sql
 	s.allSQL = append(s.allSQL, sql)
+	s.allArgs = append(s.allArgs, args)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -74,6 +80,7 @@ func (s *stubQuerier) QueryCursor(_ context.Context, sql string, args ...any) (c
 func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
 	s.lastSQL = sql
 	s.allSQL = append(s.allSQL, sql)
+	s.allArgs = append(s.allArgs, args)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -84,6 +91,7 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) (
 func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any) ([]map[string]string, error) {
 	s.lastSQL = sql
 	s.allSQL = append(s.allSQL, sql)
+	s.allArgs = append(s.allArgs, args)
 	s.lastArgs = args
 	if s.err != nil {
 		return nil, s.err
@@ -94,6 +102,7 @@ func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any)
 func (s *stubQuerier) QueryMetricMeta(_ context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error) {
 	s.lastSQL = sql
 	s.allSQL = append(s.allSQL, sql)
+	s.allArgs = append(s.allArgs, args)
 	s.lastArgs = args
 	call := metaCall{sql: sql, kind: metricType, args: args}
 	s.metaCalls = append(s.metaCalls, call)

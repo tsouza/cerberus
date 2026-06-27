@@ -577,50 +577,140 @@ Auto-create also reuses the **same** table names the query heads read
 (`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
 consistently rather than silently diverging onto the upstream defaults.
 
-### Metric-name catalog projection (`label_values(__name__)`)
+### Metadata-enumeration projections (curated registry)
 
-Auto-create installs a small **aggregating projection** named
-`proj_metric_name` on the gauge / sum / histogram fact tables:
+Auto-create installs a small **curated registry** of aggregating projections
+on the gauge / sum / histogram fact tables. The registry lives in
+`internal/schema/ddl` as a `(projectionName, body)` slice; each entry is
+emitted as an idempotent `ADD PROJECTION IF NOT EXISTS` against every catalog
+table at boot. Two projections ship:
 
 ```sql
-ALTER TABLE <db>.<table> ADD PROJECTION IF NOT EXISTS proj_metric_name
-  (SELECT MetricName, max(TimeUnix) GROUP BY MetricName)
+-- proj_series: serves every windowless metadata-enumeration shape
+ALTER TABLE <db>.<table> ADD PROJECTION IF NOT EXISTS proj_series
+  (SELECT MetricName, Attributes, max(TimeUnix) GROUP BY MetricName, Attributes)
+
+-- proj_metric_metadata: serves the windowless /api/v1/metadata listing
+ALTER TABLE <db>.<table> ADD PROJECTION IF NOT EXISTS proj_metric_metadata
+  (SELECT MetricName, any(MetricDescription), any(MetricUnit), max(TimeUnix)
+   GROUP BY MetricName)
 ```
 
-A windowless `/api/v1/label/__name__/values` (the query a Grafana metric
-picker sends on dashboard load — by far the heaviest metadata shape on a
-busy datasource) enumerates the distinct metric names. Without the
-projection that enumeration full-scans the metrics tables — on a real
-deployment ~4 billion rows / ~140 GiB / ~10 s for a single refresh. The
-handler emits the enumeration as
-`SELECT MetricName … GROUP BY MetricName HAVING max(TimeUnix) >= <lookback>`
-(an aggregate-only predicate — a raw `WHERE TimeUnix >= …` column filter
-cannot use the projection), which ClickHouse 26.x routes to
-`proj_metric_name`, reading the one-row-per-name projection (sub-megabyte,
-sub-100 ms) instead of the fact table. The result set is identical: because
-samples are never future-dated, `max(TimeUnix) >= lookback` is true for
-exactly the names with a sample in `[lookback, now]`.
+`proj_series` is the workhorse. The four windowless metadata shapes a Grafana
+datasource sends on dashboard load — by far the heaviest metadata calls on a
+busy backend — all route onto it:
+
+- `label_values(__name__)` — distinct metric names. ClickHouse re-aggregates
+  the finer `(MetricName, Attributes)` projection up to the coarser
+  `GROUP BY MetricName` via **max-of-maxes**, so one projection serves both
+  the per-name enumeration and the per-series shapes below;
+- `label_values(<label>)` — distinct values of a label
+  (`DISTINCT Attributes['k']` over the grouped form);
+- label names (`/api/v1/labels`) —
+  `arrayJoin(mapKeys(Attributes))` over the grouped form;
+- series cardinality (`count()` over the grouped form).
+
+`proj_series` deliberately **supersedes** the narrower per-name projection
+(`proj_metric_name`) that earlier releases shipped: because `__name__` routes
+onto it via re-aggregation with byte-identical results, a dedicated per-name
+projection buys nothing and is no longer installed. The projection omits any
+`Value` aggregate — the histogram catalog table has no top-level `Value`
+column (it lives only inside the `Exemplars` Nested block) and none of the
+routed shapes read a value, so a uniform `(MetricName, Attributes,
+max(TimeUnix))` body stays valid across all three catalog tables. Note the
+**Attributes** map is wide, so `proj_series` is the larger of the two
+projections (measured storage overhead ~0.4 % of the catalog table at
+realistic per-series row counts); `proj_metric_metadata` is tiny.
+
+**Ongoing ingest cost (the honest part).** An aggregating projection is not
+free at write time: ClickHouse re-sorts and writes a projection part for every
+insert, so the projections levy a per-insert CPU + write-amplification tax for
+as long as they exist — distinct from the one-time `MATERIALIZE` back-fill
+below and from the (negligible) storage overhead above. A measured 3-way A/B on
+a representative scrape workload:
+
+| Configuration                          | Insert throughput | p50 insert latency | Storage |
+| -------------------------------------- | ----------------- | ------------------ | ------- |
+| no projection (baseline)               | —                 | —                  | —       |
+| `proj_metric_metadata` only            | ~ −18 %           | ~ +33 %            | tiny    |
+| `proj_series` + `proj_metric_metadata` | ~ −36 %           | ~ +70 %            | +~0.4 % |
+
+The `proj_series` tax is roughly double the metric-name-only case because each
+scrape batch's distinct `(MetricName, Attributes)` series collapse very little
+under the grouping key, so the projection re-sorts and writes nearly as many
+rows as the batch carries. Background **merge** cost is flat — the tax is paid
+at insert, not at merge.
+
+**Why this is acceptable here, with the number that makes it so.** This is a
+real per-insert tax, but it is operationally immaterial at current production
+scale: sustained ingest runs ~**2,824 rows/s**, against a measured
+~**178k rows/s** sustained write ceiling on 4 cores — about **60× headroom**.
+A 36 % throughput haircut consumes a sliver of that margin. Treat it as: real
+tax, negligible given the headroom, revisit only if ingest headroom tightens
+(an instance under genuine write pressure can install `proj_metric_metadata`
+alone — it still covers the `__name__` enumeration at roughly half the tax, at
+the cost of the per-series shapes `proj_series` adds). No caching or buffering
+is involved; this is purely the write-path cost of maintaining the projections.
+
+The handler emits each enumeration as the grouped
+`… GROUP BY MetricName[, Attributes] HAVING max(TimeUnix) >= <lookback>`
+shape (an aggregate-only predicate — a raw `WHERE TimeUnix >= …` column
+filter cannot use a projection), which ClickHouse 26.x routes to the
+matching projection, reading a sub-megabyte pre-aggregated part instead of
+the fact table. Without the projection these enumerations full-scan the
+metrics tables — on a real deployment ~4 billion rows / ~140 GiB / ~10 s for
+a single refresh. The result set is identical: because samples are never
+future-dated, `max(TimeUnix) >= lookback` is true for exactly the
+names / values with a sample in `[lookback, now]`. A routing regression on a
+ClickHouse upgrade is caught by the EXPLAIN + `read_rows` guard in
+`internal/api/prom/metadata_scan_bound_explain_chdb_test.go` (the routed read
+must stay orders below the unprojected baseline), so a silent fall-back to
+full scans fails CI rather than degrading prod.
 
 `ADD PROJECTION IF NOT EXISTS` is metadata-only and idempotent, so the
-auto-create hook (re)applies it safely on every boot, covering both
-freshly-created and pre-existing tables. **New parts written after the ALTER
-carry the projection automatically; existing parts are not back-filled by
-`ADD PROJECTION` alone.** Until existing parts roll over (under the metrics
-TTL) or are back-filled, ClickHouse transparently serves those parts from
-the base table — results stay correct, the prune ratio ramps in as
-projected parts replace un-projected ones. To back-fill immediately on an
-existing deployment, run the one-time materialize (a background mutation,
-non-blocking for reads):
+auto-create hook (re)applies the whole registry safely on every boot,
+covering both freshly-created and pre-existing tables. **New parts written
+after the ALTER carry the projections automatically; existing parts are not
+back-filled by `ADD PROJECTION` alone.** Until existing parts roll over
+(under the metrics TTL) or are back-filled, ClickHouse transparently serves
+those parts from the base table — results stay correct, the prune ratio
+ramps in as projected parts replace un-projected ones.
+
+#### One-time `MATERIALIZE PROJECTION` back-fill runbook
+
+To back-fill existing parts immediately on a deployment that predates the
+projections, run the one-time materialize **per projection, per catalog
+table** (a background mutation, non-blocking for reads):
 
 ```sql
-ALTER TABLE <db>.otel_metrics_gauge      MATERIALIZE PROJECTION proj_metric_name;
-ALTER TABLE <db>.otel_metrics_sum        MATERIALIZE PROJECTION proj_metric_name;
-ALTER TABLE <db>.otel_metrics_histogram  MATERIALIZE PROJECTION proj_metric_name;
+-- proj_series
+ALTER TABLE <db>.otel_metrics_gauge      MATERIALIZE PROJECTION proj_series;
+ALTER TABLE <db>.otel_metrics_sum        MATERIALIZE PROJECTION proj_series;
+ALTER TABLE <db>.otel_metrics_histogram  MATERIALIZE PROJECTION proj_series;
+-- proj_metric_metadata
+ALTER TABLE <db>.otel_metrics_gauge      MATERIALIZE PROJECTION proj_metric_metadata;
+ALTER TABLE <db>.otel_metrics_sum        MATERIALIZE PROJECTION proj_metric_metadata;
+ALTER TABLE <db>.otel_metrics_histogram  MATERIALIZE PROJECTION proj_metric_metadata;
 ```
 
 `MATERIALIZE` is intentionally **not** issued by the auto-create hook — it
 rewrites every existing part and belongs in a deliberate maintenance window,
-not the boot path. Track its progress in `system.mutations`.
+not the boot path. Track progress in `system.mutations` (the
+`is_done` / `parts_to_do` columns).
+
+**Cost / caveat.** Each `MATERIALIZE` reads only the projection's source
+columns (`MetricName`, `Attributes`, `TimeUnix` for `proj_series`) and writes
+a small aggregated part per source part. On a production gauge table
+(~2.9 billion rows / ~108 parts) the `proj_series` source columns are on the
+order of **~9 GiB compressed**; the mutation is I/O-bound on that read.
+Single-stream throughput measured ~1.4 M rows/s, but the background pool
+parallelises across parts, so realistic wall time is **~3–8 minutes**. On a
+ClickHouse cluster backed by object storage (S3 / GCS) the mutation **reads
+and rewrites those parts through the object store**, so budget for the column
+read + the projection-part write against your bucket's throughput and request
+costs — on a wide-`Attributes` table the read side dominates. Materialize one
+projection at a time and watch `system.mutations` before starting the next so
+a maintenance window isn't saturated by both at once.
 
 ### Startup requirements preflight
 
