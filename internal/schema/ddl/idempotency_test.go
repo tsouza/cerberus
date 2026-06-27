@@ -271,16 +271,18 @@ func TestRenderSignal_TracesOnlySubset(t *testing.T) {
 	}
 }
 
-// TestRenderSignal_MetricsOnlySubset confirms the five metrics statements
-// render without leaking logs or traces tables.
+// TestRenderSignal_MetricsOnlySubset confirms the five metrics CREATE
+// statements (plus the three metric-name ADD PROJECTION ALTERs) render
+// without leaking logs or traces tables.
 func TestRenderSignal_MetricsOnlySubset(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Metrics)
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	if len(stmts) != 5 {
-		t.Fatalf("metrics subset: got %d statements; want 5", len(stmts))
+	// 5 CREATE TABLE + 3 ADD PROJECTION (gauge/sum/histogram).
+	if len(stmts) != 8 {
+		t.Fatalf("metrics subset: got %d statements; want 8", len(stmts))
 	}
 	for i, stmt := range stmts {
 		if strings.Contains(stmt, "otel_logs") || strings.Contains(stmt, "otel_traces") {
@@ -447,6 +449,10 @@ func TestRenderSignal_TTLAppliesCorrectTimeFieldPerSignal(t *testing.T) {
 	}
 	metrics, _ := renderSignal(cfg, Metrics)
 	for i, stmt := range metrics {
+		// ADD PROJECTION ALTERs inherit retention from the table; no TTL clause.
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
 		if !strings.Contains(stmt, "TTL toDateTime(TimeUnix)") {
 			t.Errorf("metrics[%d] TTL: missing toDateTime(TimeUnix):\n%s", i, stmt)
 		}

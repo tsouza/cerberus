@@ -619,6 +619,51 @@ Auto-create also reuses the **same** table names the query heads read
 (`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
 consistently rather than silently diverging onto the upstream defaults.
 
+### Metric-name catalog projection (`label_values(__name__)`)
+
+Auto-create installs a small **aggregating projection** named
+`proj_metric_name` on the gauge / sum / histogram fact tables:
+
+```sql
+ALTER TABLE <db>.<table> ADD PROJECTION IF NOT EXISTS proj_metric_name
+  (SELECT MetricName, max(TimeUnix) GROUP BY MetricName)
+```
+
+A windowless `/api/v1/label/__name__/values` (the query a Grafana metric
+picker sends on dashboard load — by far the heaviest metadata shape on a
+busy datasource) enumerates the distinct metric names. Without the
+projection that enumeration full-scans the metrics tables — on a real
+deployment ~4 billion rows / ~140 GiB / ~10 s for a single refresh. The
+handler emits the enumeration as
+`SELECT MetricName … GROUP BY MetricName HAVING max(TimeUnix) >= <lookback>`
+(an aggregate-only predicate — a raw `WHERE TimeUnix >= …` column filter
+cannot use the projection), which ClickHouse 26.x routes to
+`proj_metric_name`, reading the one-row-per-name projection (sub-megabyte,
+sub-100 ms) instead of the fact table. The result set is identical: because
+samples are never future-dated, `max(TimeUnix) >= lookback` is true for
+exactly the names with a sample in `[lookback, now]`.
+
+`ADD PROJECTION IF NOT EXISTS` is metadata-only and idempotent, so the
+auto-create hook (re)applies it safely on every boot, covering both
+freshly-created and pre-existing tables. **New parts written after the ALTER
+carry the projection automatically; existing parts are not back-filled by
+`ADD PROJECTION` alone.** Until existing parts roll over (under the metrics
+TTL) or are back-filled, ClickHouse transparently serves those parts from
+the base table — results stay correct, the prune ratio ramps in as
+projected parts replace un-projected ones. To back-fill immediately on an
+existing deployment, run the one-time materialize (a background mutation,
+non-blocking for reads):
+
+```sql
+ALTER TABLE <db>.otel_metrics_gauge      MATERIALIZE PROJECTION proj_metric_name;
+ALTER TABLE <db>.otel_metrics_sum        MATERIALIZE PROJECTION proj_metric_name;
+ALTER TABLE <db>.otel_metrics_histogram  MATERIALIZE PROJECTION proj_metric_name;
+```
+
+`MATERIALIZE` is intentionally **not** issued by the auto-create hook — it
+rewrites every existing part and belongs in a deliberate maintenance window,
+not the boot path. Track its progress in `system.mutations`.
+
 ### Startup requirements preflight
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time

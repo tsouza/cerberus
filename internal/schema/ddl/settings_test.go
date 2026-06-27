@@ -18,7 +18,14 @@ func mergeTreeStmts(t *testing.T, cfg Config) []string {
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	out = append(out, m...)
+	// The metric-name ADD PROJECTION ALTERs carry no SETTINGS tail (they
+	// inherit the table's settings); only the CREATE TABLE statements do.
+	for _, stmt := range m {
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
+		out = append(out, stmt)
+	}
 	l, err := renderSignal(cfg, Logs)
 	if err != nil {
 		t.Fatalf("renderSignal(Logs): %v", err)

@@ -1845,6 +1845,7 @@ type QueryBuilder struct {
 	where      []Frag
 	prewhere   []Frag
 	groupBy    []Frag
+	having     []Frag
 	orderBy    []orderKey
 	limit      int64
 	hasLimit   bool
@@ -1974,6 +1975,16 @@ func (s *QueryBuilder) Prewhere(conds ...Frag) *QueryBuilder {
 // GroupBy appends grouping expressions.
 func (s *QueryBuilder) GroupBy(keys ...Frag) *QueryBuilder {
 	s.groupBy = append(s.groupBy, keys...)
+	return s
+}
+
+// Having appends a post-aggregation predicate (multiple conditions are
+// AND-joined). HAVING filters on aggregate results — `max(TimeUnix) >= ?`
+// over a `GROUP BY MetricName` — so unlike WHERE it can be served from an
+// aggregating projection that pre-computes the aggregate, which a raw
+// `WHERE TimeUnix >= ?` on the same column cannot.
+func (s *QueryBuilder) Having(conds ...Frag) *QueryBuilder {
+	s.having = append(s.having, conds...)
 	return s
 }
 
@@ -2156,6 +2167,10 @@ func (s *QueryBuilder) writeInto(b *Builder) {
 			}
 			f(b)
 		}
+	}
+	if len(s.having) > 0 {
+		b.sb.WriteString(" HAVING ")
+		And(s.having...)(b)
 	}
 	if len(s.orderBy) > 0 {
 		b.sb.WriteString(" ORDER BY ")

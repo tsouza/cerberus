@@ -396,3 +396,71 @@ func (c *CreateTableBuilder) frag() Frag {
 func (c *CreateTableBuilder) SQL() string {
 	return RenderDDL(c.frag())
 }
+
+// --- ALTER TABLE ... ADD PROJECTION surface ---
+//
+// AddProjectionBuilder renders `ALTER TABLE <db>.<table> ADD PROJECTION IF
+// NOT EXISTS <name> (<body>)`, where <body> is a SELECT/GROUP BY query the
+// caller composes with the same typed QueryBuilder used for read queries.
+// The merge engine maintains the projection automatically; cerberus uses it
+// to make the metric-name catalog enumeration (`GROUP BY MetricName`) read
+// an aggregating projection instead of full-scanning the metrics fact table.
+//
+// IF NOT EXISTS makes ADD PROJECTION metadata-only and idempotent, so the
+// same DDL Apply path covers both freshly-created and pre-existing tables.
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// AddProjectionBuilder builds an ALTER TABLE ADD PROJECTION statement.
+type AddProjectionBuilder struct {
+	database string
+	table    string
+	name     string
+	cluster  string // "" => no ON CLUSTER clause
+	body     *QueryBuilder
+}
+
+// AlterTableAddProjection starts an ADD PROJECTION builder for the named
+// projection on <database>.<table>. body is the projection definition — a
+// QueryBuilder carrying the SELECT (+ optional GROUP BY) shape the engine
+// pre-aggregates; it must bind no positional args (DDL invariant).
+func AlterTableAddProjection(database, table, name string, body *QueryBuilder) *AddProjectionBuilder {
+	return &AddProjectionBuilder{database: database, table: table, name: name, body: body}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *AddProjectionBuilder) OnCluster(name string) *AddProjectionBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table/projection identifiers via BareIdent, the
+// optional ON CLUSTER clause via the typed constructor, and the projection
+// body via the QueryBuilder's own Frag — no raw token is written here.
+func (a *AddProjectionBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		BareIdent(a.database)(b)
+		ddlToken(".")(b)
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" ADD PROJECTION IF NOT EXISTS ")(b)
+		BareIdent(a.name)(b)
+		ddlToken(" ")(b)
+		// QueryBuilder.Frag already wraps the body in the single pair of
+		// parentheses the projection-definition grammar requires.
+		a.body.Frag()(b)
+	}
+}
+
+// SQL renders the ALTER TABLE ADD PROJECTION statement to ClickHouse text
+// via RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (a *AddProjectionBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
