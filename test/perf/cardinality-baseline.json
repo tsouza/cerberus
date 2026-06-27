@@ -6682,12 +6682,12 @@
   {
     "fixture": "traceql/select_nested_set_drilldown_limited",
     "fan_factor": 1,
-    "scan_rows": 12,
-    "peak_intermediate": 12,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": true,
-    "max_recursion_depth": 8
+    "max_recursion_depth": 4
   },
   {
     "fixture": "traceql/select_nested_set_drilldown_structure",
@@ -6698,6 +6698,16 @@
     "has_array_join": true,
     "has_recursive_cte": true,
     "max_recursion_depth": 2
+  },
+  {
+    "fixture": "traceql/select_nested_set_drilldown_unbounded_noop",
+    "fan_factor": 1,
+    "scan_rows": 12,
+    "peak_intermediate": 12,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": true,
+    "max_recursion_depth": 8
   },
   {
     "fixture": "traceql/select_nested_set_structural",

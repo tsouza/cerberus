@@ -613,6 +613,11 @@ func printExpr(e chplan.Expr) string {
 		flat := strings.TrimRight(sb.String(), "\n")
 		flat = strings.Join(strings.Fields(strings.ReplaceAll(flat, "\n", " ; ")), " ")
 		return fmt.Sprintf("scalarSubquery{%s}", flat)
+	case *chplan.BoundedTraceScope:
+		// One-line greppable form: the gate shows on each leaf Filter of a
+		// bounded structure-tab row source so the IR snapshot proves the
+		// closures are seeded from the top-N set, not the whole window.
+		return fmt.Sprintf("(%s IN topNewestRootTraces(%d))", v.TraceIDColumn, v.TraceLimit)
 	default:
 		return fmt.Sprintf("<unknown:%T>", e)
 	}

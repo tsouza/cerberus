@@ -326,6 +326,11 @@ func cloneExpr(e Expr) Expr {
 		// Expr, not a Node child), so a node-only copy walk would miss the
 		// embedded plan subtree entirely. Copy it explicitly here.
 		return &ScalarSubquery{Input: CloneNode(v.Input)}
+	case *BoundedTraceScope:
+		// Pure leaf (column names + limit, no embedded Node) — a flat value
+		// copy, like the literals above.
+		c := *v
+		return &c
 	default:
 		panic(fmt.Sprintf("chplan.cloneExpr: unhandled Expr type %T — extend the switch in clone.go", e))
 	}

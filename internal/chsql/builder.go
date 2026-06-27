@@ -374,9 +374,25 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return b.exprSubscript(v)
 	case *chplan.ScalarSubquery:
 		return b.exprScalarSubquery(v)
+	case *chplan.BoundedTraceScope:
+		return b.exprBoundedTraceScope(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+// exprBoundedTraceScope renders `<TraceId> IN (<top-N newest root traces>)` by
+// reusing boundedRootScopeFrag — the SAME self-contained top-N subquery the
+// NestedSetAnnotate numbering anchor uses (nested_set_annotate.go), so a
+// leaf-scan gate and the numbering scope see a byte-identical trace set. The
+// subquery self-parenthesises (QueryBuilder.Frag) and InSubquery adds none, so
+// the result is the CH-idiomatic `<TraceId> IN (SELECT …)` with one paren pair.
+func (b *Builder) exprBoundedTraceScope(s *chplan.BoundedTraceScope) error {
+	InSubquery(
+		Col(s.TraceIDColumn),
+		boundedRootScopeFrag(s.SpansTable, s.TraceIDColumn, s.ParentSpanIDColumn, s.TimestampColumn, s.TraceLimit),
+	)(b)
+	return nil
 }
 
 // exprScalarSubquery renders chplan.ScalarSubquery as `(<SELECT ...>)`
