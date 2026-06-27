@@ -241,6 +241,54 @@ func TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate(t *testing.T) {
 	}
 }
 
+// TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate extends the
+// byte-identity invariant to the WINDOWED top-N (#1109 GAP-3 rank-in-window):
+// when WindowStartNano/EndNano are set, BOTH the numbering scope and the leaf
+// gate must emit the SAME windowed top-N subquery (`... WHERE ParentSpanId=”
+// AND Timestamp >= ... AND Timestamp <= ... GROUP BY ...`). A divergence here
+// would rank the numbering and the row source over different windows and strand
+// kept rows at 0/0/0.
+func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testing.T) {
+	t.Parallel()
+	const (
+		startNano int64 = 1767225600000000000
+		endNano   int64 = 1767225602000000000
+	)
+	const topN = "(SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `Timestamp` >= fromUnixTimestamp64Nano(1767225600000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1767225602000000000) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+
+	n := nsAnnotateOver(drilldownUnionInput())
+	n.TraceLimit = 200
+	n.WindowStartNano = startNano
+	n.WindowEndNano = endNano
+	nsSQL, _, err := chsql.Emit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Emit numbering: %v", err)
+	}
+	if !strings.Contains(nsSQL, "`TraceId` IN "+topN) {
+		t.Errorf("windowed numbering scope does not emit the expected windowed top-N %s\ngot:\n%s", topN, nsSQL)
+	}
+
+	gated := &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Predicate: &chplan.BoundedTraceScope{
+			SpansTable:         "otel_traces",
+			TraceIDColumn:      "TraceId",
+			ParentSpanIDColumn: "ParentSpanId",
+			TimestampColumn:    "Timestamp",
+			TraceLimit:         200,
+			WindowStartNano:    startNano,
+			WindowEndNano:      endNano,
+		},
+	}
+	gateSQL, _, err := chsql.Emit(context.Background(), gated)
+	if err != nil {
+		t.Fatalf("Emit gate: %v", err)
+	}
+	if !strings.Contains(gateSQL, "`TraceId` IN "+topN) {
+		t.Errorf("windowed leaf gate does not emit the expected windowed top-N %s\ngot:\n%s", topN, gateSQL)
+	}
+}
+
 // TestNestedSetAnnotate_TraceLimit_ZeroUnbounded pins the no-churn
 // invariant: TraceLimit == 0 (every non-search caller — metrics, tests,
 // property harness) emits the exact unbounded SQL, with no LIMIT / GROUP BY
