@@ -6,6 +6,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.8.2] — 2026-06-27
 
+### Added
+
+- **chart:** bwc mode — bundled production ClickHouse on object storage (S3/GCS/Azure), no operator (#1106)
+
+## [v1.8.2] — 2026-06-27
+
 ### Fixed
 
 - **prom:** bound metadata enumeration to retention + cover always-unbounded metricMetaSQL (#1104)
