@@ -388,5 +388,14 @@ func parseTailLimit(raw string) (int, error) {
 	if n <= 0 {
 		return defaultTailLimit, nil
 	}
+	// Clamp DOWN, mirroring parseLogLimit. /tail buffers the WHOLE cursor
+	// result into a []Sample (chclient.Query) and re-issues the query every
+	// poll interval, so an unclamped limit (Atoi accepts billions) is the same
+	// raw-row drain OOM as the metadata peeks — re-incurred every second. The
+	// tail default is 100; maxLogQueryLimit (5000) is ample for a live-stream
+	// chunk and keeps it consistent with the log-query path.
+	if n > maxLogQueryLimit {
+		n = maxLogQueryLimit
+	}
 	return n, nil
 }

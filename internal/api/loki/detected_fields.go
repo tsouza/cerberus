@@ -33,6 +33,25 @@ const defaultDetectedFieldsLineLimit = 1000
 // payload exposing thousands of unique keys.
 const defaultDetectedFieldsLimit = 1000
 
+// maxLogPeekLineLimit hard-caps `line_limit` on the metadata peek endpoints
+// (/detected_fields, /patterns). The peek SQL is `... ORDER BY Timestamp DESC
+// LIMIT line_limit` and the whole result is buffered into a Go slice with no
+// streaming, so an unclamped `line_limit` (the param accepts up to 2^31-1)
+// lets a single request OOM the process — max_memory_usage bounds ClickHouse,
+// not the cerberus heap. This clamp caps the row COUNT the SQL LIMIT returns
+// (and thus the buffered slice): 10k newest lines is 10x the default and ample
+// for a field/pattern heuristic. It removes the unbounded-row OOM; the
+// absolute heap still scales with line SIZE × concurrency, which the deferred
+// uniform per-drain maxSamples backstop (the "complete the net" follow-up)
+// bounds hard. Mirrors the parseLogLimit/maxLogQueryLimit clamp on the log path.
+const maxLogPeekLineLimit = 10_000
+
+// maxDetectedFieldsLimit hard-caps the returned-field count. Each tracked
+// field holds a HyperLogLog sketch (~16 KiB), so an unclamped field limit over
+// a pathological many-key payload grows the parsedField map without bound.
+// 10k fields is far above any real log schema and bounds the sketch memory.
+const maxDetectedFieldsLimit = 10_000
+
 // DetectedField is one entry in the /detected_fields response. The
 // JSON tags mirror upstream Loki's logproto.DetectedField exactly
 // (pkg/logproto/logproto.pb.go): label / type / cardinality are
@@ -104,12 +123,12 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lineLimit, err := parsePositiveInt31(r.FormValue("line_limit"), defaultDetectedFieldsLineLimit)
+	lineLimit, err := parsePositiveInt31(r.FormValue("line_limit"), defaultDetectedFieldsLineLimit, maxLogPeekLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	limit, err := parsePositiveInt31(r.FormValue("limit"), defaultDetectedFieldsLimit)
+	limit, err := parsePositiveInt31(r.FormValue("limit"), defaultDetectedFieldsLimit, maxDetectedFieldsLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -379,14 +398,18 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// parsePositiveInt31 parses an optional integer query parameter.
-// Empty input returns the default; non-numeric, non-positive, or
-// out-of-range input is rejected with a 400. ParseUint with bitSize
-// 31 bounds the value to MaxInt32, which fits int on every
-// architecture AND uint32 on the wire (the echoed `limit` is
-// logproto.DetectedFieldsResponse.limit), so every downstream
-// conversion is provably in range.
-func parsePositiveInt31(raw string, def int) (int, error) {
+// parsePositiveInt31 parses an optional integer query parameter and clamps it
+// to max. Empty input returns the default; non-numeric, non-positive, or
+// out-of-range (>2^31-1) input is rejected with a 400; a value above max is
+// silently clamped DOWN to max (mirroring parseLogLimit/maxLogQueryLimit on
+// the log path — a request that asks for too much gets the most we'll serve,
+// not an error). ParseUint with bitSize 31 bounds the parsed value to
+// MaxInt32, which fits int on every architecture AND uint32 on the wire (the
+// echoed `limit` is logproto.DetectedFieldsResponse.limit), so every
+// downstream conversion is provably in range. Callers pass a finite max so the
+// peek SQL's LIMIT — and the Go slice that buffers its whole result — stays
+// bounded (see maxLogPeekLineLimit / maxDetectedFieldsLimit).
+func parsePositiveInt31(raw string, def, max int) (int, error) {
 	if raw == "" {
 		return def, nil
 	}
@@ -394,5 +417,9 @@ func parsePositiveInt31(raw string, def int) (int, error) {
 	if err != nil || n == 0 {
 		return 0, errors.New("parameter must be a positive integer no larger than 2147483647")
 	}
-	return int(n), nil
+	v := int(n)
+	if v > max {
+		v = max
+	}
+	return v, nil
 }
