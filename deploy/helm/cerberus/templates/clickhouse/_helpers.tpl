@@ -34,10 +34,17 @@ StatefulSet + its headless Service (only rendered when keeper is enabled).
 
 {{/*
 cerberus.clickhouse.selectorLabels — IMMUTABLE selector for the bundled CH
-StatefulSet / Services. Base selector + a clickhouse component discriminator.
+StatefulSet / Services. Uses a DISTINCT app.kubernetes.io/name
+(`<name>-clickhouse`) rather than the gateway's bare name so the gateway
+Service's selector (cerberus.selectorLabels = name + instance) does NOT
+over-select the ClickHouse pods. (k8s Service selectors match any pod whose
+labels are a superset of the selector, so a CH pod carrying the gateway's
+name+instance would otherwise land in the gateway's Endpoints and serve HTTP
+404s from ClickHouse to gateway clients.) Component discriminator retained.
 */}}
 {{- define "cerberus.clickhouse.selectorLabels" -}}
-{{ include "cerberus.selectorLabels" . }}
+app.kubernetes.io/name: {{ include "cerberus.name" . }}-clickhouse
+app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: clickhouse
 {{- end }}
 
@@ -63,7 +70,8 @@ cerberus.keeper.selectorLabels / cerberus.keeper.labels — same shape, with the
 clickhouse-keeper component.
 */}}
 {{- define "cerberus.keeper.selectorLabels" -}}
-{{ include "cerberus.selectorLabels" . }}
+app.kubernetes.io/name: {{ include "cerberus.name" . }}-keeper
+app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: clickhouse-keeper
 {{- end }}
 {{- define "cerberus.keeper.labels" -}}

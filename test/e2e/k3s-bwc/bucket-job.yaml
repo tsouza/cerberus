@@ -1,0 +1,46 @@
+# Pre-create the object-store bucket BEFORE ClickHouse starts.
+#
+# Gotcha (spike-proven): a ClickHouse `s3` disk does NOT create its bucket — it
+# assumes the bucket already exists and fails opaquely if it doesn't. So this
+# Job must run to completion before the bundled ClickHouse StatefulSet is
+# installed; `just e2e-bwc-up` applies this manifest, waits for the Job to
+# Complete, and only THEN runs `helm install` (which brings up ClickHouse).
+#
+# The Job retries `mc alias set` in a loop so it tolerates MinIO not being
+# reachable yet, then `mc mb --ignore-existing` makes it idempotent across
+# re-runs (the bucket may already exist from a prior bring-up on a reused
+# cluster).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-bucket
+  namespace: cerberus
+  labels:
+    app: minio-create-bucket
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: minio-create-bucket
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "waiting for MinIO to become reachable..."
+              until mc alias set bwc http://minio:9000 minioadmin minioadmin >/dev/null 2>&1; do
+                echo "  minio not ready yet, retrying in 2s"
+                sleep 2
+              done
+              echo "creating bucket cerberus-bwc (idempotent)"
+              mc mb --ignore-existing bwc/cerberus-bwc
+              mc ls bwc/
+              echo "bucket ready"

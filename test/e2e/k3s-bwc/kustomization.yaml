@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+
+# Bundled-ClickHouse ("bwc") e2e fixtures. This is the standalone-ClickHouse
+# kustomization (test/e2e/k3s) MINUS clickhouse.yaml, PLUS the object-store
+# substrate (MinIO + a bucket-create Job) and a `clickhouse` Service alias onto
+# the chart-managed bundled CH StatefulSet.
+#
+# ClickHouse itself is NOT a resource here: in this lane it is rendered by the
+# Helm chart with `clickhouse.bundled.enabled: true`, deployed by
+# `just e2e-bwc-up` (so the lane dogfoods the chart's bundled data tier on
+# object storage), exactly as cerberus itself is deployed via the chart and is
+# absent from test/e2e/k3s/kustomization.yaml.
+#
+# The grafana / collector / sample-app fixtures are REUSED verbatim from
+# test/e2e/k3s via relative-path resources. kustomize's default
+# LoadRestrictionsRootOnly rejects out-of-root file refs, so `just e2e-bwc-up`
+# builds this with `kubectl kustomize --load-restrictor=LoadRestrictionsNone`.
+resources:
+  # Reused, unchanged, from the standalone-CH lane (NOT clickhouse.yaml):
+  - ../k3s/namespace.yaml
+  - ../k3s/grafana.yaml
+  - ../k3s/grafana-dashboards.yaml
+  - ../k3s/otel-collector.yaml
+  - ../k3s/sample-app.yaml
+  # bwc-specific object-store substrate + bundled-CH Service alias:
+  - minio.yaml
+  - bucket-job.yaml
+  - clickhouse-alias.yaml
+
+# `labels` (not `commonLabels`) with includeSelectors:false: tag every object
+# with part-of WITHOUT touching immutable Service/Deployment selectors. The
+# recipe applies MinIO + the bucket Job up front (via `kubectl apply -f`, before
+# ClickHouse exists) and then this whole kustomization after `helm install`, so
+# a selector-mutating label would make the second apply collide with the
+# already-created objects' immutable selectors.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: cerberus

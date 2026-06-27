@@ -61,8 +61,17 @@ spec:
             - name: interserver
               containerPort: 9009
               protocol: TCP
-          {{- if or $hasPassword $osEnv }}
           env:
+            # The users config is mounted from a (read-only) ConfigMap at
+            # /etc/clickhouse-server/users.d. The server image entrypoint
+            # otherwise tries to WRITE default-user.xml there to lock the
+            # default user to localhost; on the read-only mount that write
+            # aborts startup (fatal on 26.x). Skip the image's default-user
+            # setup: the mounted cerberus-user.xml already defines the only user
+            # cerberus uses, and the image's built-in default-user.xml keeps
+            # `default` localhost-only without the entrypoint rewriting it.
+            - name: CLICKHOUSE_SKIP_USER_SETUP
+              value: "1"
             {{- if $hasPassword }}
             - name: CH_PASSWORD
               valueFrom:
@@ -73,7 +82,6 @@ spec:
             {{- with $osEnv }}
             {{- . | nindent 12 }}
             {{- end }}
-          {{- end }}
           readinessProbe:
             httpGet:
               path: /ping
