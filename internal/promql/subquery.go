@@ -703,8 +703,8 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 	if e.Timestamp != nil {
 		a.End = time.UnixMilli(*e.Timestamp).UTC()
 	}
-	// Instant eval (step == 0): with no `@`/offset pin, anchor the subquery on
-	// the query's eval timestamp (ctx.end) — the same fill the non-subquery
+	// Instant eval (step == 0): with no `@` pin (offset alone doesn't set End),
+	// anchor the subquery on the query's eval timestamp (ctx.end) — the same fill the non-subquery
 	// instant path does in anchorFromSelector. Leaving End zero anchors the
 	// grid on now64(9) at execution time (silently ignoring `?time=`) AND
 	// leaves the inner scan unbounded, since maybePushInnerScanTimeBounds
