@@ -4,6 +4,17 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.8.2] — 2026-06-27
+
+### Fixed
+
+- **prom:** bound metadata enumeration to retention + cover always-unbounded metricMetaSQL (#1104)
+
+### Performance
+
+- **prom:** per-series projection (proj_series) retires the metrics enumeration tier + curated projection registry (#1107)
+- **prom:** serve windowless metric-name enumeration from an aggregating projection (#1105)
+
 ## [v1.8.1] — 2026-06-26
 
 ### Added
