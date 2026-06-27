@@ -3,12 +3,105 @@ package traceql
 import (
 	"context"
 	"testing"
+	"time"
 
 	tempoql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// countWindowBounds walks the plan and counts Filter predicates that carry a
+// time-window bound (a fromUnixTimestamp64Nano call — what tsBound emits). Used
+// to assert stampSearchWindow folds the window onto the right leaves and never
+// double-folds.
+func countWindowBounds(n chplan.Node) int {
+	if n == nil {
+		return 0
+	}
+	count := 0
+	if f, ok := n.(*chplan.Filter); ok {
+		chplan.InspectExpr(f.Predicate, func(e chplan.Expr) bool {
+			if c, ok := e.(*chplan.FuncCall); ok && c.Name == "fromUnixTimestamp64Nano" {
+				count++
+			}
+			return true
+		})
+	}
+	for _, c := range n.Children() {
+		count += countWindowBounds(c)
+	}
+	return count
+}
+
+// lowerSearchWindowed lowers a TraceQL query with both the /api/search limit
+// AND the request window threaded through ctx, mirroring the handler path.
+func lowerSearchWindowed(t *testing.T, query string, limit int, start, end time.Time) chplan.Node {
+	t.Helper()
+	expr, err := tempoql.Parse(query)
+	if err != nil {
+		t.Fatalf("parse %q: %v", query, err)
+	}
+	ctx := WithSearchTraceLimit(context.Background(), limit)
+	ctx = WithSearchWindow(ctx, start, end)
+	plan, err := Lower(ctx, expr, schema.DefaultOTelTraces())
+	if err != nil {
+		t.Fatalf("lower %q: %v", query, err)
+	}
+	return plan
+}
+
+var (
+	winStart = time.Unix(1782571392, 0).UTC()
+	winEnd   = time.Unix(1782573192, 0).UTC()
+)
+
+// TestSearchWindow_CompoundLeavesWindowed — a `&&` compound search, which
+// stampSearchTraceLimit leaves untouched, gets the window folded onto BOTH leaf
+// scans (2 leaves × the >= and <= bounds = 4 fromUnixTimestamp64Nano calls).
+func TestSearchWindow_CompoundLeavesWindowed(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" } && { span.http.status_code = 500 }`, 20, winStart, winEnd)
+	if got := countWindowBounds(plan); got != 4 {
+		t.Fatalf("compound && window bounds = %d, want 4 (both leaves, >= and <=)", got)
+	}
+}
+
+// TestSearchWindow_MetricsGuard — stampSearchWindow is gated on limit > 0 (the
+// search-not-metrics discriminator). A query lowered WITHOUT a search limit (the
+// metrics / test path) must get NO window fold, even when a window is in ctx,
+// so the metrics pipeline's own RangeWindow time bound is the sole authority.
+func TestSearchWindow_MetricsGuard(t *testing.T) {
+	t.Parallel()
+	expr, err := tempoql.Parse(`{ resource.service.name = "a" } && { span.http.status_code = 500 }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Window in ctx but NO search limit ⇒ stampSearchWindow must no-op.
+	ctx := WithSearchWindow(context.Background(), winStart, winEnd)
+	plan, err := Lower(ctx, expr, schema.DefaultOTelTraces())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countWindowBounds(plan); got != 0 {
+		t.Fatalf("no-limit (metrics-path) window bounds = %d, want 0 (stampSearchWindow must gate on limit>0)", got)
+	}
+}
+
+// TestSearchWindow_PlainNotDoubleFolded — plain search is already windowed by
+// stampSearchTraceLimit, which folds the window into its single Filter(Scan)
+// predicate (2 bounds at the PLAN level; the SearchTraceLimit node re-emits it
+// into the inner ranking subquery only at SQL-emit time, not in the plan).
+// stampSearchWindow runs after it and must NOT descend SearchTraceLimit, so the
+// plan count stays 2 — not 4 (a double-fold would conjoin a second window onto
+// the same leaf and regress the #1109/#1110 plain-search goldens).
+func TestSearchWindow_PlainNotDoubleFolded(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" }`, 20, winStart, winEnd)
+	if got := countWindowBounds(plan); got != 2 {
+		t.Fatalf("plain search window bounds = %d, want 2 (stampSearchTraceLimit fold only, no double-fold)", got)
+	}
+}
 
 // lowerSearch parses + lowers a TraceQL query with the given /api/search
 // limit threaded through the context, mirroring the handler path.

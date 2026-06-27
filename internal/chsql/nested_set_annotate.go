@@ -143,7 +143,7 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 	// union arm puts every root trace in that scope).
 	var scope Frag
 	if n.TraceLimit > 0 {
-		scope = boundedRootScopeFrag(n.SpansTable, n.TraceIDColumn, n.ParentSpanIDColumn, n.TimestampColumn, n.TraceLimit)
+		scope = boundedRootScopeFrag(n.SpansTable, n.TraceIDColumn, n.ParentSpanIDColumn, n.TimestampColumn, n.TraceLimit, n.WindowStartNano, n.WindowEndNano)
 	} else {
 		scope, err = e.traceScopeFrag(n.Input, n.TraceIDColumn)
 		if err != nil {
@@ -428,11 +428,26 @@ func (e *emitter) traceScopeFrag(n chplan.Node, traceIDCol string) (Frag, error)
 // independently by ClickHouse and must yield the same N-boundary. QueryBuilder.Frag
 // already parenthesises the SELECT, so each `TraceId IN (...)` stays a single
 // subquery.
-func boundedRootScopeFrag(spansTable, traceIDCol, parentCol, tsCol string, limit int64) Frag {
+// startNano / endNano (when non-zero) restrict the ranking to roots whose start
+// time falls in the request window, so the result is the newest-N roots IN the
+// window rather than the newest-N ever — without this a historical-window
+// search gates the row source to globally-newest roots outside the window and
+// returns nothing (#1109 GAP-3 / structure-tab rank-in-window). The window
+// conjuncts mirror tsBound on the traceql side (`Timestamp >=/<=
+// fromUnixTimestamp64Nano(nano)`), and because both call sites pass the SAME
+// nanos the numbering scope and leaf gate stay byte-identical.
+func boundedRootScopeFrag(spansTable, traceIDCol, parentCol, tsCol string, limit, startNano, endNano int64) Frag {
+	where := []Frag{Eq(Col(parentCol), InlineLit(""))}
+	if startNano != 0 {
+		where = append(where, Gte(Col(tsCol), Call("fromUnixTimestamp64Nano", InlineLit(startNano))))
+	}
+	if endNano != 0 {
+		where = append(where, Lte(Col(tsCol), Call("fromUnixTimestamp64Nano", InlineLit(endNano))))
+	}
 	return NewQuery().
 		Select(Col(traceIDCol)).
 		From(Col(spansTable)).
-		Where(Eq(Col(parentCol), InlineLit(""))).
+		Where(where...).
 		GroupBy(Col(traceIDCol)).
 		OrderBy(Call("min", Col(tsCol)), true).
 		OrderBy(Col(traceIDCol), false).

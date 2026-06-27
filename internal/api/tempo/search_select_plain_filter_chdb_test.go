@@ -55,7 +55,7 @@ func newPlainFilterChDBServer(t *testing.T) *httptest.Server {
 // surfaced as a 502 wrapping ClickHouse error 47).
 func runSelectSearch(t *testing.T, srv *httptest.Server, query string) tempo.TraceSummary {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/api/search?q=" + url.QueryEscape(query) + "&limit=20&spss=20")
+	resp, err := http.Get(srv.URL + "/api/search?q=" + url.QueryEscape(query) + "&start=1777593600&end=1777680000&limit=20&spss=20")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

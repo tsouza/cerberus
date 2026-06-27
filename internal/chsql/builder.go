@@ -390,7 +390,7 @@ func (b *Builder) Expr(x chplan.Expr) error {
 func (b *Builder) exprBoundedTraceScope(s *chplan.BoundedTraceScope) error {
 	InSubquery(
 		Col(s.TraceIDColumn),
-		boundedRootScopeFrag(s.SpansTable, s.TraceIDColumn, s.ParentSpanIDColumn, s.TimestampColumn, s.TraceLimit),
+		boundedRootScopeFrag(s.SpansTable, s.TraceIDColumn, s.ParentSpanIDColumn, s.TimestampColumn, s.TraceLimit, s.WindowStartNano, s.WindowEndNano),
 	)(b)
 	return nil
 }
