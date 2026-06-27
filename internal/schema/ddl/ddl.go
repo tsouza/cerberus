@@ -429,14 +429,16 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 			renderMetricsTable(sqltemplates.MetricsExpHistogramCreateTable, cfg, cfg.Tables.MetricsExpHistogram, ttl),
 			renderMetricsTable(sqltemplates.MetricsSummaryCreateTable, cfg, cfg.Tables.MetricsSummary, ttl),
 		}
-		// Each CREATE is immediately followed by the idempotent
-		// ADD PROJECTION ALTER for the same table — CREATE precedes ALTER in
-		// the slice and applySignal executes sequentially, so the ALTER never
-		// races a missing table. Only the catalog tables the metric-name
+		// Each CREATE is immediately followed by the curated registry's
+		// idempotent ADD PROJECTION ALTERs on the same table — CREATE precedes
+		// ALTER in the slice and applySignal executes sequentially, so an ALTER
+		// never races a missing table. Only the catalog tables the metadata
 		// enumeration reads (gauge/sum/histogram, see metricTables() in
-		// internal/api/prom/metadata.go) carry the projection.
+		// internal/api/prom/metadata.go) carry the projections.
 		for _, table := range []string{cfg.Tables.MetricsGauge, cfg.Tables.MetricsSum, cfg.Tables.MetricsHistogram} {
-			stmts = append(stmts, renderAddMetricNameProjection(cfg, table))
+			for _, p := range metricCatalogProjections {
+				stmts = append(stmts, renderAddMetricProjection(cfg, table, p))
+			}
 		}
 		return stmts, nil
 	case Logs:
@@ -467,33 +469,87 @@ func renderMetricsTable(tmpl string, cfg Config, table, ttl string) string {
 }
 
 const (
-	// metricNameProjection is the aggregating projection that lets the
-	// windowless metric-name catalog enumeration (label_values(__name__))
-	// read an aggregating-projection part instead of full-scanning the
-	// metrics fact table — see metricNamesSQL in internal/api/prom/metadata.go.
-	metricNameProjection = "proj_metric_name"
-	// metricNameColumn / metricTimeColumn are the OTel-CH metric-table columns
-	// the projection aggregates over; fixed by the upstream exporter schema,
-	// not configurable in this package.
-	metricNameColumn = "MetricName"
-	metricTimeColumn = "TimeUnix"
+	// seriesProjection is the curated aggregating projection over
+	// (MetricName, Attributes) carrying max(TimeUnix). It serves every
+	// windowless metadata-enumeration shape the catalog tables answer —
+	// label_values(<label>), label-names, label_values(__name__), and series
+	// cardinality — from a tiny pre-aggregated part instead of full-scanning
+	// the metrics fact table (see internal/api/prom/metadata.go). The coarser
+	// __name__ enumeration (`GROUP BY MetricName`) is served from this finer
+	// (MetricName, Attributes) projection by ClickHouse's max-of-maxes
+	// re-aggregation, so it subsumes the narrower per-name projection #1105
+	// shipped — one projection covers all four shapes.
+	seriesProjection = "proj_series"
+	// metadataProjection carries any(MetricDescription)/any(MetricUnit) per
+	// MetricName so the windowless /api/v1/metadata listing reads a
+	// pre-aggregated part instead of grouping the whole fact table. It also
+	// carries max(TimeUnix) so the same windowless HAVING-bounded shape the
+	// enumeration emits routes here too.
+	metadataProjection = "proj_metric_metadata"
+	// The OTel-CH metric-table columns the projections aggregate over; fixed
+	// by the upstream exporter schema, not configurable in this package. The
+	// histogram table has no top-level Value column (Value lives only inside
+	// the Exemplars Nested block), so the series projection deliberately omits
+	// any Value aggregate — none of the routed enumeration shapes read it, and
+	// a uniform body keeps one registry entry valid across gauge/sum/histogram.
+	metricNameColumn        = "MetricName"
+	metricTimeColumn        = "TimeUnix"
+	metricAttributesColumn  = "Attributes"
+	metricDescriptionColumn = "MetricDescription"
+	metricUnitColumn        = "MetricUnit"
 )
 
-// renderAddMetricNameProjection builds the idempotent ADD PROJECTION ALTER
-// for one metrics fact table: an aggregating projection over MetricName
-// carrying max(TimeUnix), which serves the metric-name catalog query
-// (`GROUP BY MetricName HAVING max(TimeUnix) >= …`) from a tiny pre-aggregated
-// part rather than the full column. ON CLUSTER is threaded so the ALTER
-// replicates the same way the CREATE statements do. ADD PROJECTION IF NOT
-// EXISTS is metadata-only and idempotent, so the same Apply path covers both
-// freshly-created and pre-existing tables; backfilling existing parts is a
-// separate MATERIALIZE PROJECTION runbook (see docs/operations.md), kept out
-// of the hot DDL path.
-func renderAddMetricNameProjection(cfg Config, table string) string {
-	body := chsql.NewQuery().
-		Select(chsql.Col(metricNameColumn), chsql.Call("max", chsql.Col(metricTimeColumn))).
-		GroupBy(chsql.Col(metricNameColumn))
-	stmt := chsql.AlterTableAddProjection(cfg.Database, table, metricNameProjection, body)
+// metricProjection is one curated aggregating projection the DDL apply path
+// installs on each metrics catalog table. body is built fresh per call so each
+// rendered ALTER owns its QueryBuilder (no shared mutable state across tables).
+type metricProjection struct {
+	name string
+	body func() *chsql.QueryBuilder
+}
+
+// metricCatalogProjections is the curated registry of aggregating projections
+// installed (idempotently, ADD PROJECTION IF NOT EXISTS) on each of the
+// gauge/sum/histogram catalog tables at boot. Adding a projection here adds it
+// to every catalog table; the read-side emitters in internal/api/prom decide
+// which enumeration shapes route onto which projection (ClickHouse picks the
+// projection at plan time). Backfilling existing parts is a separate
+// MATERIALIZE PROJECTION runbook (see docs/operations.md), kept out of the hot
+// DDL path so boot stays metadata-only.
+var metricCatalogProjections = []metricProjection{
+	{
+		name: seriesProjection,
+		body: func() *chsql.QueryBuilder {
+			return chsql.NewQuery().
+				Select(
+					chsql.Col(metricNameColumn),
+					chsql.Col(metricAttributesColumn),
+					chsql.Call("max", chsql.Col(metricTimeColumn)),
+				).
+				GroupBy(chsql.Col(metricNameColumn), chsql.Col(metricAttributesColumn))
+		},
+	},
+	{
+		name: metadataProjection,
+		body: func() *chsql.QueryBuilder {
+			return chsql.NewQuery().
+				Select(
+					chsql.Col(metricNameColumn),
+					chsql.Call("any", chsql.Col(metricDescriptionColumn)),
+					chsql.Call("any", chsql.Col(metricUnitColumn)),
+					chsql.Call("max", chsql.Col(metricTimeColumn)),
+				).
+				GroupBy(chsql.Col(metricNameColumn))
+		},
+	},
+}
+
+// renderAddMetricProjection builds the idempotent ADD PROJECTION ALTER for one
+// curated projection on one metrics fact table. ON CLUSTER is threaded so the
+// ALTER replicates the same way the CREATE statements do. ADD PROJECTION IF
+// NOT EXISTS is metadata-only and idempotent, so the same Apply path covers
+// both freshly-created and pre-existing tables.
+func renderAddMetricProjection(cfg Config, table string, p metricProjection) string {
+	stmt := chsql.AlterTableAddProjection(cfg.Database, table, p.name, p.body())
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)
 	}

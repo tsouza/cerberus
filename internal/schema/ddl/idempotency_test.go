@@ -272,17 +272,18 @@ func TestRenderSignal_TracesOnlySubset(t *testing.T) {
 }
 
 // TestRenderSignal_MetricsOnlySubset confirms the five metrics CREATE
-// statements (plus the three metric-name ADD PROJECTION ALTERs) render
-// without leaking logs or traces tables.
+// statements (plus the curated registry's ADD PROJECTION ALTERs on the three
+// catalog tables) render without leaking logs or traces tables.
 func TestRenderSignal_MetricsOnlySubset(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Metrics)
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	// 5 CREATE TABLE + 3 ADD PROJECTION (gauge/sum/histogram).
-	if len(stmts) != 8 {
-		t.Fatalf("metrics subset: got %d statements; want 8", len(stmts))
+	// 5 CREATE TABLE + (3 catalog tables × len(registry)) ADD PROJECTION.
+	wantStmts := 5 + 3*len(metricCatalogProjections)
+	if len(stmts) != wantStmts {
+		t.Fatalf("metrics subset: got %d statements; want %d", len(stmts), wantStmts)
 	}
 	for i, stmt := range stmts {
 		if strings.Contains(stmt, "otel_logs") || strings.Contains(stmt, "otel_traces") {

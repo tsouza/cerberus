@@ -8,7 +8,8 @@ import (
 
 // TestRenderSignal_Metrics checks all five metrics templates render with
 // the right table names + engine + database substituted in, followed by the
-// three idempotent metric-name ADD PROJECTION ALTERs.
+// curated registry's idempotent ADD PROJECTION ALTERs — proj_series +
+// proj_metric_metadata on each of the gauge/sum/histogram catalog tables.
 func TestRenderSignal_Metrics(t *testing.T) {
 	cfg := Config{}.withDefaults()
 
@@ -16,9 +17,10 @@ func TestRenderSignal_Metrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	// 5 CREATE TABLE + 3 ADD PROJECTION (gauge/sum/histogram catalog tables).
+	// 5 CREATE TABLE + (3 catalog tables × 2 curated projections) ADD PROJECTION.
 	const wantCreates = 5
-	if got, want := len(stmts), wantCreates+3; got != want {
+	wantProj := 3 * len(metricCatalogProjections)
+	if got, want := len(stmts), wantCreates+wantProj; got != want {
 		t.Fatalf("metrics: got %d statements, want %d", got, want)
 	}
 	wantTables := []string{
@@ -45,22 +47,40 @@ func TestRenderSignal_Metrics(t *testing.T) {
 			t.Errorf("metrics[%d]: zero TTL should not render TTL clause", i)
 		}
 	}
-	// The projection ALTERs follow the CREATEs, one per catalog table, in
-	// gauge/sum/histogram order. CREATE precedes ALTER so the ALTER never
-	// races a missing table.
-	wantProjTables := []string{"otel_metrics_gauge", "otel_metrics_sum", "otel_metrics_histogram"}
-	for i, stmt := range stmts[wantCreates:] {
-		wantPrefix := "ALTER TABLE default." + wantProjTables[i] +
-			" ADD PROJECTION IF NOT EXISTS proj_metric_name "
-		if !strings.HasPrefix(stmt, wantPrefix) {
-			t.Errorf("metrics projection[%d]: got %q, want prefix %q", i, stmt, wantPrefix)
+	// The projection ALTERs follow the CREATEs, grouped per catalog table in
+	// gauge/sum/histogram order, each table carrying every registry entry in
+	// registry order. CREATE precedes ALTER so the ALTER never races a missing
+	// table.
+	catalogTables := []string{"otel_metrics_gauge", "otel_metrics_sum", "otel_metrics_histogram"}
+	proj := stmts[wantCreates:]
+	idx := 0
+	for _, table := range catalogTables {
+		for _, p := range metricCatalogProjections {
+			stmt := proj[idx]
+			wantPrefix := "ALTER TABLE default." + table +
+				" ADD PROJECTION IF NOT EXISTS " + p.name + " "
+			if !strings.HasPrefix(stmt, wantPrefix) {
+				t.Errorf("metrics projection[%d]: got %q, want prefix %q", idx, stmt, wantPrefix)
+			}
+			if !strings.Contains(stmt, "max(`TimeUnix`)") {
+				t.Errorf("metrics projection[%d]: missing max(TimeUnix) aggregate in:\n%s", idx, stmt)
+			}
+			if strings.Contains(stmt, "ON CLUSTER") {
+				t.Errorf("metrics projection[%d]: empty cluster should not render ON CLUSTER", idx)
+			}
+			idx++
 		}
-		if !strings.Contains(stmt, "max(`TimeUnix`) GROUP BY `MetricName`") {
-			t.Errorf("metrics projection[%d]: missing aggregating body in:\n%s", i, stmt)
-		}
-		if strings.Contains(stmt, "ON CLUSTER") {
-			t.Errorf("metrics projection[%d]: empty cluster should not render ON CLUSTER", i)
-		}
+	}
+	// Pin the two distinct projection bodies so a registry shape regression is
+	// caught here, not only at routing time.
+	all := strings.Join(proj, "\n")
+	if !strings.Contains(all, "ADD PROJECTION IF NOT EXISTS proj_series "+
+		"(SELECT `MetricName`, `Attributes`, max(`TimeUnix`) GROUP BY `MetricName`, `Attributes`)") {
+		t.Errorf("missing proj_series body in:\n%s", all)
+	}
+	if !strings.Contains(all, "ADD PROJECTION IF NOT EXISTS proj_metric_metadata "+
+		"(SELECT `MetricName`, any(`MetricDescription`), any(`MetricUnit`), max(`TimeUnix`) GROUP BY `MetricName`)") {
+		t.Errorf("missing proj_metric_metadata body in:\n%s", all)
 	}
 }
 
