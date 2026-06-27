@@ -622,6 +622,36 @@ max(TimeUnix))` body stays valid across all three catalog tables. Note the
 projections (measured storage overhead ~0.4 % of the catalog table at
 realistic per-series row counts); `proj_metric_metadata` is tiny.
 
+**Ongoing ingest cost (the honest part).** An aggregating projection is not
+free at write time: ClickHouse re-sorts and writes a projection part for every
+insert, so the projections levy a per-insert CPU + write-amplification tax for
+as long as they exist — distinct from the one-time `MATERIALIZE` back-fill
+below and from the (negligible) storage overhead above. A measured 3-way A/B on
+a representative scrape workload:
+
+| Configuration                          | Insert throughput | p50 insert latency | Storage |
+| -------------------------------------- | ----------------- | ------------------ | ------- |
+| no projection (baseline)               | —                 | —                  | —       |
+| `proj_metric_metadata` only            | ~ −18 %           | ~ +33 %            | tiny    |
+| `proj_series` + `proj_metric_metadata` | ~ −36 %           | ~ +70 %            | +~0.4 % |
+
+The `proj_series` tax is roughly double the metric-name-only case because each
+scrape batch's distinct `(MetricName, Attributes)` series collapse very little
+under the grouping key, so the projection re-sorts and writes nearly as many
+rows as the batch carries. Background **merge** cost is flat — the tax is paid
+at insert, not at merge.
+
+**Why this is acceptable here, with the number that makes it so.** This is a
+real per-insert tax, but it is operationally immaterial at current production
+scale: sustained ingest runs ~**2,824 rows/s**, against a measured
+~**178k rows/s** sustained write ceiling on 4 cores — about **60× headroom**.
+A 36 % throughput haircut consumes a sliver of that margin. Treat it as: real
+tax, negligible given the headroom, revisit only if ingest headroom tightens
+(an instance under genuine write pressure can install `proj_metric_metadata`
+alone — it still covers the `__name__` enumeration at roughly half the tax, at
+the cost of the per-series shapes `proj_series` adds). No caching or buffering
+is involved; this is purely the write-path cost of maintaining the projections.
+
 The handler emits each enumeration as the grouped
 `… GROUP BY MetricName[, Attributes] HAVING max(TimeUnix) >= <lookback>`
 shape (an aggregate-only predicate — a raw `WHERE TimeUnix >= …` column

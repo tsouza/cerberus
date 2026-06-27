@@ -9,9 +9,11 @@ package prom_test
 // full-scanning the metrics fact table. It drives the SQL the HANDLER ACTUALLY
 // emits (captured through a recording stub) for:
 //
-//   - /api/v1/label/__name__/values  → routes onto proj_series (max-of-maxes
-//     re-aggregation of the finer (MetricName, Attributes) projection to the
-//     coarser GROUP BY MetricName);
+//   - /api/v1/label/__name__/values  → routes onto an aggregating projection
+//     (proj_series via max-of-maxes re-aggregation of the finer
+//     (MetricName, Attributes) projection to the coarser GROUP BY MetricName, OR
+//     the exact-match proj_metric_metadata — CH's cost model picks per substrate,
+//     so the guard accepts either);
 //   - /api/v1/label/<label>/values   → routes onto proj_series;
 //   - /api/v1/labels (label names)   → routes onto proj_series;
 //   - /api/v1/metadata               → routes onto proj_metric_metadata.
@@ -122,17 +124,21 @@ func scanBoundProjections(table string) []string {
 }
 
 // projectionGranules returns (selected, total) granules from the EXPLAIN
-// indexes=1 read of the named aggregating projection — proof the emit routes to
-// that projection rather than scanning the fact table. It returns ok=false if
-// no read of that projection appears in the plan.
-func projectionGranules(t *testing.T, db *sql.DB, query, projName string) (selected, total int, ok bool) {
+// indexes=1 read of an accepted aggregating projection — proof the emit routes
+// to a projection rather than scanning the fact table. projNames lists the
+// acceptable projections (more than one when the shape can legitimately route to
+// either, e.g. __name__ which CH's cost model may serve from proj_series or the
+// exact-match proj_metric_metadata depending on substrate). It returns the
+// matched projection name, or ok=false if no read of ANY listed projection
+// appears in the plan (a full fact-table scan).
+func projectionGranules(t *testing.T, db *sql.DB, query string, projNames ...string) (selected, total int, matched string, ok bool) {
 	t.Helper()
 	rows, err := db.Query("EXPLAIN indexes=1 " + query)
 	if err != nil {
 		t.Fatalf("EXPLAIN: %v\nquery: %s", err, query)
 	}
 	defer rows.Close()
-	inProjection := false
+	cur := ""
 	for rows.Next() {
 		var line string
 		if err := rows.Scan(&line); err != nil {
@@ -141,16 +147,22 @@ func projectionGranules(t *testing.T, db *sql.DB, query, projName string) (selec
 		trim := strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(trim, "ReadFromMergeTree"):
-			inProjection = strings.Contains(trim, projName)
-		case inProjection && strings.HasPrefix(trim, "Granules:"):
+			cur = ""
+			for _, name := range projNames {
+				if strings.Contains(trim, name) {
+					cur = name
+					break
+				}
+			}
+		case cur != "" && strings.HasPrefix(trim, "Granules:"):
 			frac := strings.TrimSpace(strings.TrimPrefix(trim, "Granules:"))
 			if _, err := fmt.Sscanf(frac, "%d/%d", &selected, &total); err != nil {
 				t.Fatalf("parse Granules line %q: %v", trim, err)
 			}
-			return selected, total, true
+			return selected, total, cur, true
 		}
 	}
-	return 0, 0, false
+	return 0, 0, "", false
 }
 
 // explainEstimateRows returns the total estimated rows EXPLAIN ESTIMATE reports
@@ -177,15 +189,21 @@ func explainEstimateRows(t *testing.T, db *sql.DB, query string) int64 {
 }
 
 // assertRoutesAndPrunes pins both halves of the projection-routing guard for
-// one captured emit: it routes to projName and prunes granules, and its
+// one captured emit: it routes to one of projNames and prunes granules, and its
 // read_rows is far below the unprojected baseline and under the absolute
-// ceiling.
-func assertRoutesAndPrunes(t *testing.T, db *sql.DB, label, query, projName string) {
+// ceiling. Passing more than one projName accepts routing onto ANY of them —
+// for shapes (like __name__) that CH may legitimately serve from either an
+// (MetricName, Attributes) or an exact-match (MetricName) projection depending
+// on its cost model / substrate. The read_rows half is projection-agnostic
+// (routed vs optimize_use_projections=0 baseline), so the guard stays
+// non-vacuous regardless of which listed projection wins: if NONE routes, the
+// granules half fatals on the full scan.
+func assertRoutesAndPrunes(t *testing.T, db *sql.DB, label, query string, projNames ...string) {
 	t.Helper()
 	t.Logf("%s emit:\n%s", label, query)
-	sel, tot, ok := projectionGranules(t, db, query, projName)
+	sel, tot, projName, ok := projectionGranules(t, db, query, projNames...)
 	if !ok {
-		t.Fatalf("%s did not route to %s — it full-scans the fact table. emit:\n%s", label, projName, query)
+		t.Fatalf("%s did not route to any of %v — it full-scans the fact table. emit:\n%s", label, projNames, query)
 	}
 	t.Logf("%s %s granules: %d/%d", label, projName, sel, tot)
 	if tot < scanBoundDays {
@@ -309,8 +327,16 @@ func openScanBoundDB(t *testing.T) *sql.DB {
 }
 
 // TestMetadataScanBound_MetricNamesExplain_Repro pins that the windowless
-// /api/v1/label/__name__/values emit routes onto proj_series (re-aggregated
-// max-of-maxes to the coarser GROUP BY MetricName) and prunes.
+// /api/v1/label/__name__/values emit routes onto an aggregating projection and
+// prunes — either proj_series (re-aggregated max-of-maxes to the coarser GROUP
+// BY MetricName) or the exact-match proj_metric_metadata. The __name__ emit
+// groups by MetricName only and reads just MetricName + max(TimeUnix), which
+// BOTH curated projections can serve; CH's cost model picks the cheaper one and
+// that choice varies by substrate (chDB CI vs prod CH 26.x may disagree), so
+// pinning a single projection name here would be substrate-fragile. The guard
+// is what matters and what we assert: a projection routes (not a full scan) and
+// it prunes. The Attributes-grouped shapes below (label_values / label names /
+// metadata desc-unit) genuinely require a specific projection and stay pinned.
 func TestMetadataScanBound_MetricNamesExplain_Repro(t *testing.T) {
 	db := openScanBoundDB(t)
 	for _, table := range []string{"otel_metrics_gauge", "otel_metrics_sum"} {
@@ -322,7 +348,7 @@ func TestMetadataScanBound_MetricNamesExplain_Repro(t *testing.T) {
 		return strings.Contains(sql, "GROUP BY `MetricName`") &&
 			!strings.Contains(sql, "`MetricName`, `Attributes`")
 	})
-	assertRoutesAndPrunes(t, db, "windowless __name__", emit, "proj_series")
+	assertRoutesAndPrunes(t, db, "windowless __name__", emit, "proj_series", "proj_metric_metadata")
 }
 
 // TestMetadataScanBound_LabelValuesExplain_Repro pins that the generic

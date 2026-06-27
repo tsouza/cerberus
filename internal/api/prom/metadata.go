@@ -522,14 +522,23 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 //
 //   - nowAnchored (the /api/v1/metadata listing, which takes no time params, so
 //     its window always ends "now"): the bound is an aggregate-only
-//     `HAVING max(TimeUnix) >= <start>`. Because samples are never future-dated
-//     and MetricDescription/MetricUnit are metric-level (constant across a
-//     metric's rows), this returns the byte-identical name/description/unit set
-//     the WHERE-bounded form did, but the pure `GROUP BY MetricName` + aggregate
-//     HAVING routes to the proj_metric_metadata aggregating projection — turning
-//     the whole-table group into a tiny projection read. A raw WHERE
-//     (metric-name filter or IsMonotonic predicate) keeps that arm off the
-//     projection, so only the unfiltered list-all shape — the hot Grafana
+//     `HAVING max(TimeUnix) >= <start>`. Because samples are never future-dated,
+//     the metric-NAME set this returns is exactly the WHERE-bounded form's — a
+//     name passes iff it has a sample in [start, now]. The description/unit pick
+//     is the honest caveat: unlike the WHERE-bounded form, this `GROUP BY
+//     MetricName` carries no time filter (the HAVING gates which names pass, not
+//     which rows the aggregate sees), so any(MetricDescription) / any(MetricUnit)
+//     draw from the metric's ALL-TIME rows rather than just the window's. For a
+//     metric whose description/unit is constant (the overwhelmingly common case)
+//     the pick is identical either way; for one whose metadata varied over time
+//     the arbitrary pick can differ from the windowed form's. This is not new
+//     nondeterminism — any() was already an arbitrary pick on main — only its
+//     row pool widened from the window to all-time (arguably more correct for
+//     metric-level metadata). The payoff: the pure `GROUP BY MetricName` +
+//     aggregate HAVING routes to the proj_metric_metadata aggregating
+//     projection — turning the whole-table group into a tiny projection read. A
+//     raw WHERE (metric-name filter or IsMonotonic predicate) keeps that arm off
+//     the projection, so only the unfiltered list-all shape — the hot Grafana
 //     call — routes; the filtered arms fall back to the bounded scan, which is
 //     already cheap.
 //   - !nowAnchored (a user-supplied finite [start,end]): the closed
