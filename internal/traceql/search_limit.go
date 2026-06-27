@@ -60,16 +60,32 @@ func searchTraceLimit(ctx context.Context) int64 {
 // emits, and any chained second select()'s Project. NestedSetAnnotate never
 // appears under a metrics pipeline (select is span-shaped, not metric), so
 // the metric node families are deliberately not traversed.
-func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) chplan.Node {
+func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
 	if limit <= 0 || plan == nil {
 		return plan
 	}
+	// Window the top-N root RANKING to [start, end] so the structure tab ranks
+	// the newest-N roots IN the window, not the newest-N ever. Without this a
+	// historical-window search gates the row source to globally-newest roots
+	// outside the window and returns an empty result (#1109 GAP-3). The same
+	// nanos go onto BOTH the numbering scope (NestedSetAnnotate.Window*) and the
+	// leaf gate (BoundedTraceScope.Window*) so boundedRootScopeFrag emits a
+	// byte-identical subquery for each — a mismatch would strand kept rows.
+	var startNano, endNano int64
+	if !start.IsZero() {
+		startNano = start.UnixNano()
+	}
+	if !end.IsZero() {
+		endNano = end.UnixNano()
+	}
 	switch v := plan.(type) {
 	case *chplan.Project:
-		v.Input = stampNestedSetTraceLimit(v.Input, limit, s)
+		v.Input = stampNestedSetTraceLimit(v.Input, limit, start, end, s)
 	case *chplan.NestedSetAnnotate:
 		if inputGuaranteesRootInResult(v.Input, s.ParentSpanIDColumn) {
 			v.TraceLimit = limit
+			v.WindowStartNano = startNano
+			v.WindowEndNano = endNano
 			// Bound the row source too, not just the numbering. The numbering
 			// walk is bounded by TraceLimit (boundedRootScopeFrag), but the
 			// structural-union row source (v.Input) is otherwise computed over
@@ -88,6 +104,8 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) ch
 				ParentSpanIDColumn: v.ParentSpanIDColumn,
 				TimestampColumn:    v.TimestampColumn,
 				TraceLimit:         limit,
+				WindowStartNano:    startNano,
+				WindowEndNano:      endNano,
 			}
 			v.Input = pushLeafPredicate(v.Input, gate)
 		}

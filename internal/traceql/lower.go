@@ -41,17 +41,18 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 		span.RecordError(err)
 		return nil, err
 	}
+	start, end := searchWindowFromCtx(ctx)
 	// Bound the nested-set numbering walk to the N traces /api/search will
-	// return (no-op unless the request set a limit AND the plan is a
-	// select() over the Drilldown structure shape — see search_limit.go).
-	plan = stampNestedSetTraceLimit(plan, searchTraceLimit(ctx), s)
+	// return, ranked within the request window (no-op unless the request set a
+	// limit AND the plan is a select() over the Drilldown structure shape — see
+	// search_limit.go).
+	plan = stampNestedSetTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
 	// Push the response trace limit + request window into the plain-search
 	// row source (a bare Scan or Filter(Scan)) so /api/search drains only the
 	// N newest traces in the window instead of buffering every matching span
 	// (the summaries-drain OOM). No-op unless the request set a limit AND the
 	// plan is a plain search — metrics / structural / set-op plans are left
 	// unchanged.
-	start, end := searchWindowFromCtx(ctx)
 	plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
 	// Fold the request window into the leaf scans of the COMPOUND search shapes
 	// (&&/||, structural, select(nestedSet*)) that stampSearchTraceLimit leaves
