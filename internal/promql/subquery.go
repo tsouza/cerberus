@@ -433,6 +433,20 @@ func lowerOuterRangeFnOverSubquery(
 		// (and the stddev / quantile / nested-irate siblings) returned
 		// [] on query_range while instant answers were correct.
 		widenSubquerySpine(inner, ctx.start.Add(-sub.Range), ctx.end)
+	default:
+		// Instant eval (no query_range grid): the outer reducer collapses to a
+		// single anchor at anchor.End (now concrete via subqueryAnchor's eval-ts
+		// fill). Bound the inner subquery scan to the grid window
+		// [anchor.End - sub.Range, anchor.End] — symmetric with the range-mode
+		// widenSubquerySpine above. Without it the inner leaf reads FULL
+		// RETENTION (#1109 GAP-2 axis-1: max_over_time(rate(m[1m])[90d:1s])
+		// scanned the whole table). Reuses the same spine walk + the existing
+		// maybePushInnerScanTimeBounds emit path; anchoring rw.End on the eval
+		// ts keeps the outer reducer and the widened inner grid on one base.
+		if !anchor.End.IsZero() {
+			rw.End = anchor.End
+			widenSubquerySpine(inner, anchor.End.Add(-sub.Range), anchor.End)
+		}
 	}
 	return rw, nil
 }
@@ -688,6 +702,18 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 	}
 	if e.Timestamp != nil {
 		a.End = time.UnixMilli(*e.Timestamp).UTC()
+	}
+	// Instant eval (step == 0): with no `@`/offset pin, anchor the subquery on
+	// the query's eval timestamp (ctx.end) — the same fill the non-subquery
+	// instant path does in anchorFromSelector. Leaving End zero anchors the
+	// grid on now64(9) at execution time (silently ignoring `?time=`) AND
+	// leaves the inner scan unbounded, since maybePushInnerScanTimeBounds
+	// no-ops on a zero End — the #1109 GAP-2 instant-subquery full-retention
+	// read. Range mode (step > 0) sets rw.End/rw.Start + widens the inner spine
+	// itself (lowerOuterRangeFnOverSubquery), so the fill is gated off there to
+	// keep range-mode lowering byte-identical.
+	if ctx.step == 0 && a.End.IsZero() && !ctx.end.IsZero() {
+		a.End = ctx.end.UTC()
 	}
 	return a, nil
 }
