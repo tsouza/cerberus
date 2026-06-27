@@ -1,0 +1,50 @@
+{{- if .Values.clickhouse.bundled.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.clickhouse.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: native
+      port: 9000
+      targetPort: native
+      protocol: TCP
+    - name: http
+      port: 8123
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "cerberus.clickhouse.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.clickhouse.headlessName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # Pods get stable DNS before they are Ready (needed for replica discovery).
+  publishNotReadyAddresses: true
+  ports:
+    - name: native
+      port: 9000
+      targetPort: native
+      protocol: TCP
+    - name: http
+      port: 8123
+      targetPort: http
+      protocol: TCP
+    - name: interserver
+      port: 9009
+      targetPort: interserver
+      protocol: TCP
+  selector:
+    {{- include "cerberus.clickhouse.selectorLabels" . | nindent 4 }}
+{{- end }}

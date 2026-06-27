@@ -1,0 +1,30 @@
+# `clickhouse` Service alias -> the bundled ClickHouse StatefulSet pods.
+#
+# The bundled data tier names its Service `<release>-clickhouse`
+# (`cerberus-clickhouse`) and cerberus is auto-wired to it by the chart's
+# `cerberus.bundled.apply` defaulting. But the e2e seeder
+# (`just e2e-seed-rolling`) port-forwards `svc/clickhouse:9000` by name, and the
+# whole point of this lane is to REUSE that recipe unchanged. This alias gives
+# the seeder the `clickhouse` name it expects, pointing at the same bundled CH
+# pods. The selector matches the chart's immutable bundled-CH selector labels
+# (release name = `cerberus`).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: cerberus
+  labels:
+    app: clickhouse
+spec:
+  ports:
+    - name: native
+      port: 9000
+      targetPort: 9000
+    - name: http
+      port: 8123
+      targetPort: 8123
+  selector:
+    app.kubernetes.io/name: cerberus-clickhouse
+    app.kubernetes.io/instance: cerberus
+    app.kubernetes.io/component: clickhouse

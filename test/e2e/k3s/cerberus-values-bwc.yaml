@@ -1,0 +1,82 @@
+# Helm values OVERLAY for the bundled-ClickHouse ("bwc") e2e lane. Layered ON
+# TOP of cerberus-values.yaml by `just e2e-bwc-up`:
+#
+#   helm upgrade --install cerberus deploy/helm/cerberus \
+#     --values test/e2e/k3s/cerberus-values.yaml \
+#     --values test/e2e/k3s/cerberus-values-bwc.yaml
+#
+# cerberus-values.yaml already supplies username/password (cerberus/cerberus),
+# autoCreate.schema, the OTLP self-observability endpoint, the NodePort Service,
+# HPA, PDB and probes. This overlay ONLY flips on the bundled ClickHouse data
+# tier and points it at the in-cluster MinIO. Turning bundled on triggers the
+# chart's `cerberus.bundled.apply` defaulting, which (because cerberus-values
+# leaves them at the chart defaults) rewires cerberus automatically:
+#   - clickhouse.addr            -> cerberus-clickhouse:9000 (the bundled Service)
+#   - schema.storagePolicy       -> bwc_object_store
+#   - autoCreate.schema/database -> true
+# So cerberus, at startup and BEFORE serving, runs the OTel-CH DDL stamping
+# `storage_policy='bwc_object_store'` on every table. `helm --wait` blocks until
+# that has happened, so by the time the seeder runs the tables already live on
+# object storage (the seeder's CREATE ... IF NOT EXISTS is then a no-op insert
+# path). This is the dogfood: the chart, not the test harness, puts the data on
+# object storage.
+
+clickhouse:
+  bundled:
+    enabled: true
+
+    # CH 26.x to exercise GOTCHA #1: the 26.x image's default-user.xml restricts
+    # the `default` user to 127.0.0.1. The chart's resolution is the "dedicated
+    # user" branch of that gotcha — its users.d ConfigMap defines the `cerberus`
+    # user open to the in-cluster network (<networks><ip>::/0</ip></networks>)
+    # and sets <listen_host>0.0.0.0</listen_host> in config.d. cerberus, the
+    # seeder, and the placement-verify clickhouse-client all connect as
+    # `cerberus`, never `default`, so the localhost restriction never bites.
+    # This is the TEST-ONLY open-access posture gotcha #1 calls for, delivered
+    # by a dedicated user rather than loosening `default` — and it is
+    # version-independent, so the lane is correct on 25.x and 26.x alike.
+    image: clickhouse/clickhouse-server:26.3
+    # Air-gap-safe: the image is imported into k3d by `just e2e-bwc-up`; the
+    # chart maps the CH container's pullPolicy to .Values.image.pullPolicy,
+    # which cerberus-values.yaml pins to Never — so this exact tag MUST be in
+    # the cluster's containerd (the import list in the Justfile carries it).
+
+    replicas: 1
+    storagePolicyName: bwc_object_store
+
+    # Sized down for a single throwaway k3d node sharing the box with cerberus,
+    # Grafana, the collector and the sample apps.
+    resources:
+      requests:
+        cpu: 200m
+        memory: 768Mi
+      limits:
+        memory: 2Gi
+    persistence:
+      # Metadata PVC: holds the Atomic DB metadata, the s3-disk metadata, AND
+      # the local filesystem cache. MUST persist across restart for the data on
+      # object storage to stay readable (gotcha #2) — k3d's local-path
+      # provisioner backs it.
+      size: 5Gi
+    cache:
+      size: 2Gi
+
+    objectStorage:
+      backend: s3
+      # Pre-created by the minio-create-bucket Job before CH starts (gotcha #3).
+      bucket: cerberus-bwc
+      path: data
+      s3:
+        # path-style + static creds for the MinIO endpoint, yielding
+        # http://minio:9000/cerberus-bwc/data/ (gotcha #4).
+        endpoint: http://minio:9000
+        region: us-east-1
+        forcePathStyle: true
+        # Static keys, NOT cloud identity — the chart renders its own object-store
+        # Secret from these inline (throwaway MinIO defaults) and injects them as
+        # container env (S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY), referenced from
+        # the storage XML via `from_env` so the credentials never land in a
+        # ConfigMap.
+        useEnvironmentCredentials: false
+        accessKeyId: minioadmin
+        secretAccessKey: minioadmin

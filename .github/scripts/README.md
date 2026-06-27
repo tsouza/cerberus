@@ -333,6 +333,19 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `CHAOS_MANIFESTS` (default `test/e2e/chaos/manifests`).
   - Exit: `0` all selected scenarios passed (or recorded not-applicable
     with a `::notice::`), `1` on any contract-assertion failure.
+- **`e2e-bwc-verify-placement.mjs`** — `e2e.yml`, the `bwc-minio` job
+  (bundled-ClickHouse-on-object-storage lane), invoked via
+  `just e2e-bwc-verify`. Asserts the bundled CH data tier physically lives on
+  object storage: `storage_policy='bwc_object_store'` stamped on every
+  cerberus-managed OTel MergeTree table, all active `system.parts` on the
+  object/cache disk (never the local `default` disk), and the MinIO bucket
+  non-empty after the seed (polled; placement object writes lag the insert).
+  INFORMATIONAL — never a PR gate.
+  - Env: `NAMESPACE` (default `cerberus`), `DATABASE` (default `otel`),
+    `CH_USER`/`CH_PASSWORD` (default `cerberus`/`cerberus`), `BUCKET` (default
+    `cerberus-bwc`), `STORAGE_POLICY` (default `bwc_object_store`), `MC_IMAGE`
+    (default the pinned `minio/mc` RELEASE), `POLL_SECONDS` (default `30`).
+  - Exit: `0` all assertions passed, `1` on any placement-assertion failure.
 - **`e2e-cerberus-restart-gate.mjs`** — `e2e.yml`, the `Assert zero
   cerberus restarts` step on the k3d dashboard/crawl shards. Sums
   `restartCount` across the cerberus pods; on any restart dumps the

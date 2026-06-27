@@ -1414,3 +1414,114 @@ jobs:
       - name: Tear down
         if: always()
         run: just e2e-down
+
+  # ---------------------------------------------------------------------------
+  # bwc-minio — bundled-ClickHouse-on-object-storage lane. Brings up k3d +
+  # MinIO + a bucket-create Job + the Helm chart with
+  # `clickhouse.bundled.enabled=true` pointed at MinIO, seeds the deterministic
+  # OTel rows, and PROVES the data tier lives on object storage: storage_policy
+  # stamped on every table, active parts on the object/cache disk (not the local
+  # `default` disk), and the bucket non-empty after the seed. Then runs the Go
+  # e2e suite to confirm cerberus serves the seeded data from the MinIO-backed
+  # ClickHouse.
+  #
+  # INFORMATIONAL, never a PR gate. SAME trigger posture as `dashboard` /
+  # `chaos`: push-to-main + nightly + manual dispatch ONLY (never on
+  # pull_request, so NOT a branch-protection check). Own concurrency + timeout;
+  # deliberately NOT added to the dashboard/compose disjoint-cover shard
+  # matrices — it is a separate single-cluster lane, not a Playwright shard.
+  bwc-minio:
+    name: bwc-minio
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      # Never cancel-in-progress — a half-killed k3d teardown leaks Docker
+      # volumes (same posture as dashboard / chaos).
+      group: e2e-bwc-minio-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      # ---- free runner disk BEFORE k3d + the stack boot (infra-flake fix) ----
+      # The bundled CH image + cerberus image build + MinIO + Grafana + collector
+      # share the runner's single / filesystem (kubelet ephemeral-storage). Same
+      # rationale as dashboard-shard: reclaim ~25-30 GB of unused toolchains so
+      # the stack can't trip DiskPressure. KEEP Docker images. Pinned to a commit
+      # SHA (action only ships @main).
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # node for .github/scripts/e2e-bwc-verify-placement.mjs (node: builtins
+      # only — no npm install).
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      # cerberus + the bundled ClickHouse data tier are deployed via the Helm
+      # chart in `just e2e-bwc-up` (dogfooding the chart), so the runner needs
+      # helm.
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.21.1
+
+      - name: Install k3d
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - name: Bring up k3d + MinIO + bundled-ClickHouse stack
+        run: just e2e-bwc-up
+
+      - name: Seed OTel data (deterministic synthetic rows; rolling)
+        run: just e2e-seed-rolling
+
+      - name: Assert object-storage placement (storage_policy + parts + bucket)
+        run: just e2e-bwc-verify
+
+      - name: Run Go E2E tests (cerberus serves seeded data from MinIO-backed CH)
+        run: just e2e-run
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h || true
+          echo "=== pods ==="
+          kubectl -n cerberus get pods -o wide | tee /tmp/cluster-state.log || true
+          echo "=== events (last 50) ==="
+          kubectl -n cerberus get events --sort-by=.lastTimestamp 2>&1 | tee -a /tmp/cluster-state.log | tail -50 || true
+          echo "=== cerberus logs ==="
+          kubectl -n cerberus logs deploy/cerberus --tail 200 || true
+          echo "=== bundled clickhouse logs ==="
+          kubectl -n cerberus logs statefulset/cerberus-clickhouse --tail 200 || true
+          echo "=== minio logs ==="
+          kubectl -n cerberus logs deploy/minio --tail 100 || true
+          echo "=== bucket-create job logs ==="
+          kubectl -n cerberus logs job/minio-create-bucket --tail 100 || true
+          echo "=== rolling seeder log (tail 200) ==="
+          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
+          if grep -qiE 'no space left on device|DiskPressure +True|KubeletHasDiskPressure|NodeHasDiskPressure|Evicted' /tmp/cluster-state.log 2>/dev/null \
+             || [ "$(df --output=pcent / | tail -1 | tr -dc '0-9')" -ge 90 ]; then
+            echo "::notice::infra: real DiskPressure/ephemeral-storage eviction detected (node condition flipped or root >=90% full) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
+      - name: Tear down
+        if: always()
+        run: just e2e-bwc-down

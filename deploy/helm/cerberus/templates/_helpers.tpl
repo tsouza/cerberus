@@ -196,6 +196,10 @@ Returns YAML key: "value" pairs (one per line). Mutually-exclusive ordering is:
 typed clickhouse -> otlp -> autoCreate -> admit -> schema -> http/log -> config.
 */}}
 {{- define "cerberus.nonSecretEnv" -}}
+{{- /* Bundled-ClickHouse defaulting: a no-op unless clickhouse.bundled.enabled,
+       so a non-bundled render stays byte-identical. Mutates .Values in place
+       (dicts are references) to point cerberus at the bundled data tier. */ -}}
+{{- include "cerberus.bundled.apply" . -}}
 {{- $ch := .Values.clickhouse -}}
 {{- /* ClickHouse connection */ -}}
 CERBERUS_CH_ADDR: {{ join "," $ch.addr | quote }}
@@ -255,8 +259,13 @@ CERBERUS_OTLP_EXPORT_INTERVAL: {{ . | quote }}
 CERBERUS_OTLP_TIMEOUT: {{ . | quote }}
 {{- end }}
 {{- end }}
-CERBERUS_AUTO_CREATE_SCHEMA: {{ .Values.autoCreate.schema | quote }}
-CERBERUS_AUTO_CREATE_DATABASE: {{ .Values.autoCreate.database | quote }}
+{{- /* autoCreate is tri-state (null/true/false). Unset (null) resolves to the
+       documented default — schema true, database false — so an EXPLICIT false
+       wins (it is a concrete bool, never coerced) and renders exactly one key.
+       Under clickhouse.bundled.enabled, cerberus.bundled.apply has already
+       promoted any unset toggle to true before this renders. */}}
+CERBERUS_AUTO_CREATE_SCHEMA: {{ if kindIs "invalid" .Values.autoCreate.schema }}{{ true | quote }}{{ else }}{{ .Values.autoCreate.schema | quote }}{{ end }}
+CERBERUS_AUTO_CREATE_DATABASE: {{ if kindIs "invalid" .Values.autoCreate.database }}{{ false | quote }}{{ else }}{{ .Values.autoCreate.database | quote }}{{ end }}
 CERBERUS_ADMIT_PROM: {{ .Values.admit.prom | quote }}
 CERBERUS_ADMIT_LOKI: {{ .Values.admit.loki | quote }}
 CERBERUS_ADMIT_TEMPO: {{ .Values.admit.tempo | quote }}

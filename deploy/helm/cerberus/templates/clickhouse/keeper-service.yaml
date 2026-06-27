@@ -1,0 +1,24 @@
+{{- if and .Values.clickhouse.bundled.enabled (eq (include "cerberus.clickhouse.keeperEnabled" .) "true") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.keeper.headlessName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.keeper.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: client
+      port: 9181
+      targetPort: client
+      protocol: TCP
+    - name: raft
+      port: 9234
+      targetPort: raft
+      protocol: TCP
+  selector:
+    {{- include "cerberus.keeper.selectorLabels" . | nindent 4 }}
+{{- end }}

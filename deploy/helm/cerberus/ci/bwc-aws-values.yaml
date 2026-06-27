@@ -1,0 +1,15 @@
+# ct / helm-template fixture: bundled ClickHouse on real AWS S3 — virtual-hosted
+# addressing (forcePathStyle: false, the default) with no custom endpoint, and
+# IRSA / instance-role credentials (useEnvironmentCredentials, no static Secret).
+# Confirms the AWS form renders https://<bucket>.s3.<region>.amazonaws.com/<path>/.
+clickhouse:
+  bundled:
+    enabled: true
+    objectStorage:
+      backend: s3
+      bucket: cerberus-bwc
+      path: data
+      s3:
+        region: us-east-1
+        forcePathStyle: false
+        useEnvironmentCredentials: true

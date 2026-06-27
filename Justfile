@@ -494,6 +494,16 @@ CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
 # start-up (no pre-pull, no import, full Docker-Hub-flake exposure).
 E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:25.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
 
+# Extra images the bundled-ClickHouse ("bwc") object-storage lane needs on top
+# of E2E_EXTERNAL_IMAGES: the MinIO object store + its `mc` client (the
+# bucket-create Job) and the bundled ClickHouse image the Helm chart deploys.
+# Same pre-pull+import rationale as E2E_EXTERNAL_IMAGES. MUST stay in lock-step
+# with the pins in test/e2e/k3s-bwc/*.yaml (minio + mc) and
+# test/e2e/k3s/cerberus-values-bwc.yaml (clickhouse.bundled.image) — the chart
+# maps the CH container's pullPolicy to .Values.image.pullPolicy (Never in the
+# e2e values), so the exact bundled-CH tag MUST be imported here.
+E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
+
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
 # default (CI uses none). Interpolated unquoted, so the value is shell-parsed:
 # wrap any single arg containing shell metacharacters (`<`, `%`, `,`) in
@@ -947,6 +957,110 @@ e2e-down:
 # real OTel data, then run the test matrix. `e2e-down` stops the rolling
 # seeder on teardown.
 e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
+
+# === E2E BWC (bundled ClickHouse on object storage, MinIO-backed) ===
+#
+# Additive sibling of the `e2e-up` lane that proves the Helm chart's
+# `clickhouse.bundled.enabled=true` data tier on REAL object storage:
+# cerberus + a chart-deployed ClickHouse StatefulSet whose MergeTree storage
+# policy targets an in-cluster MinIO bucket. Same k3d cluster name, same
+# cerberus:e2e image, same otel.* tables on clickhouse:9000 — so the seed +
+# Go-test recipes (`e2e-seed-rolling`, `e2e-run`) are REUSED UNCHANGED.
+#
+# Ordering is load-bearing:
+#   1. MinIO + the bucket-create Job come up FIRST — a ClickHouse `s3` disk does
+#      not create its bucket, so it must exist before CH starts (gotcha #3).
+#   2. `helm install` then brings up the bundled CH + cerberus. cerberus runs
+#      its auto-create DDL stamping storage_policy=bwc_object_store BEFORE
+#      serving, and `--wait` blocks until that is done.
+#   3. ONLY THEN do the otel collector / grafana / sample-app fixtures land — so
+#      the collector's clickhouseexporter (create_schema=true) can never win a
+#      race to create the otel tables UNSTAMPED on the local disk; it finds
+#      cerberus's stamped tables already present and its CREATE … IF NOT EXISTS
+#      is a no-op.
+e2e-bwc-up: e2e-down
+    @echo "==> [bwc] creating k3d cluster {{K3D_CLUSTER}}"
+    k3d cluster create {{K3D_CLUSTER}} \
+        --port "3000:30030@loadbalancer" \
+        --port "8080:30080@loadbalancer" \
+        --no-lb=false \
+        --k3s-arg "--disable=traefik@server:0" \
+        {{K3D_EXTRA_ARGS}} \
+        --wait
+    @echo "==> [bwc] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
+    docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
+    @echo "==> [bwc] pre-pulling external + bwc images on host docker"
+    @# The standalone-CH image (the *-alpine tag in E2E_EXTERNAL_IMAGES) backs
+    @# test/e2e/k3s/clickhouse.yaml, which the bwc kustomization EXCLUDES — this
+    @# lane runs the chart's BUNDLED ClickHouse (the non-alpine tag in
+    @# E2E_BWC_IMAGES) instead, so skip importing the unused standalone image.
+    @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
+        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
+        echo "    docker pull $img"; \
+        docker pull "$img" >/dev/null || { echo "ERROR: docker pull $img failed" >&2; exit 1; }; \
+    done
+    @# Import each image individually + VERIFY it landed in the node's
+    @# containerd (k3d image import can print success while the node import
+    @# silently failed -> ImagePullBackOff with pullPolicy:Never). Same robust
+    @# loop as `e2e-up`, extended with the bwc image set.
+    @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
+        case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
+        ref="$img"; \
+        case "$ref" in \
+            *.*/*|*:*/*) ;; \
+            */*) ref="docker.io/$ref" ;; \
+            *) ref="docker.io/library/$ref" ;; \
+        esac; \
+        landed=0; \
+        for attempt in 1 2 3 4 5; do \
+            k3d image import "$img" -c {{K3D_CLUSTER}} || true; \
+            if docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
+                landed=1; break; \
+            fi; \
+            echo "  import attempt $attempt: $ref not in containerd yet, retrying with backoff" >&2; \
+            sleep $((attempt * 2)); \
+        done; \
+        if [ "$landed" != "1" ]; then \
+            echo "ERROR: $ref missing from k3d node containerd after 5 import attempts" >&2; \
+            exit 1; \
+        fi; \
+    done
+    @echo "==> [bwc] phase 1: namespace + MinIO + bucket-create Job (before ClickHouse)"
+    kubectl apply -f test/e2e/k3s/namespace.yaml
+    kubectl apply -f test/e2e/k3s-bwc/minio.yaml -f test/e2e/k3s-bwc/bucket-job.yaml
+    @echo "==> [bwc] waiting for MinIO"
+    kubectl -n cerberus rollout status deployment/minio --timeout=120s
+    @echo "==> [bwc] waiting for the bucket-create Job to complete"
+    kubectl -n cerberus wait --for=condition=complete job/minio-create-bucket --timeout=120s
+    @echo "==> [bwc] phase 2: installing cerberus + bundled ClickHouse via Helm (object storage)"
+    helm upgrade --install cerberus deploy/helm/cerberus \
+        --namespace cerberus \
+        --values test/e2e/k3s/cerberus-values.yaml \
+        --values test/e2e/k3s/cerberus-values-bwc.yaml \
+        --wait --timeout 360s
+    @echo "==> [bwc] waiting for bundled ClickHouse StatefulSet + cerberus"
+    kubectl -n cerberus rollout status statefulset/cerberus-clickhouse --timeout=300s
+    kubectl -n cerberus rollout status deployment/cerberus --timeout=180s
+    @echo "==> [bwc] phase 3: applying grafana / collector / sample-app fixtures + clickhouse alias"
+    kubectl kustomize --load-restrictor=LoadRestrictionsNone test/e2e/k3s-bwc | kubectl apply -f -
+    @echo "==> [bwc] waiting for grafana"
+    kubectl -n cerberus rollout status deployment/grafana --timeout=180s
+    @echo "==> e2e-bwc-up done (bundled ClickHouse on MinIO object storage)"
+
+# Assert the data tier actually lives on object storage: storage_policy stamped
+# on every MergeTree table, active parts on the object/cache disk (not the local
+# `default` disk), and the MinIO bucket non-empty after the seed. Run AFTER
+# `just e2e-seed-rolling`. Logic lives in the env-driven Node module (per the
+# CLAUDE.md "non-trivial step logic in .github/scripts/*.mjs" rule), invoked
+# with the pinned mc image so the in-cluster bucket-ls pod matches the lane.
+e2e-bwc-verify:
+    @echo "==> [bwc] verifying object-storage placement"
+    MC_IMAGE="minio/mc:RELEASE.2025-08-13T08-35-41Z" \
+        node .github/scripts/e2e-bwc-verify-placement.mjs
+
+# Tear down the bwc lane. Same cluster name + rolling seeder as the standard
+# lane, so the standard teardown covers it exactly.
+e2e-bwc-down: e2e-down
 
 # Run the compose-stack Grafana catch-net spec locally. Assumes the
 # quickstart compose stack is already up (`docker compose up --wait`).

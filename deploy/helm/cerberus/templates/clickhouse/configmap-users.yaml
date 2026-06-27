@@ -1,0 +1,40 @@
+{{- if .Values.clickhouse.bundled.enabled }}
+{{- $ch := .Values.clickhouse }}
+{{- $user := $ch.username }}
+{{- $hasPassword := or (eq (include "cerberus.createSecret" .) "true") $ch.existingSecret }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cerberus.clickhouse.fullname" . }}-users
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cerberus.clickhouse.labels" . | nindent 4 }}
+data:
+  # The CH 26.x image ships default-user.xml restricting the default user to
+  # 127.0.0.1; this users.d entry defines the cerberus user reachable in-cluster.
+  cerberus-user.xml: |
+    <clickhouse>
+      <profiles>
+        <cerberus>
+          <!-- batch small inserts server-side to cut part churn on object storage. -->
+          <async_insert>1</async_insert>
+          <wait_for_async_insert>1</wait_for_async_insert>
+        </cerberus>
+      </profiles>
+      <users>
+        <{{ $user }}>
+          {{- if $hasPassword }}
+          <password from_env="CH_PASSWORD" />
+          {{- else }}
+          <password></password>
+          {{- end }}
+          <profile>cerberus</profile>
+          <quota>default</quota>
+          <access_management>1</access_management>
+          <networks>
+            <ip>::/0</ip>
+          </networks>
+        </{{ $user }}>
+      </users>
+    </clickhouse>
+{{- end }}
