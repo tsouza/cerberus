@@ -70,9 +70,72 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) ch
 	case *chplan.NestedSetAnnotate:
 		if inputGuaranteesRootInResult(v.Input, s.ParentSpanIDColumn) {
 			v.TraceLimit = limit
+			// Bound the row source too, not just the numbering. The numbering
+			// walk is bounded by TraceLimit (boundedRootScopeFrag), but the
+			// structural-union row source (v.Input) is otherwise computed over
+			// every trace in the window — two recursive closures + a wide-row
+			// UNION DISTINCT — and only truncated to N afterward, peaking past
+			// the per-query memory cap (#1109 prod OOM). Push one shared
+			// BoundedTraceScope gate into every leaf so the closures (seeded
+			// via the #77 seed re-render of those leaves) scan only the top-N
+			// traces — the IDENTICAL set the numbering uses, so no kept row is
+			// stranded at the 0/0/0 LEFT-JOIN default. Gating here, inside the
+			// same precondition that sets TraceLimit, keeps the two bounds in
+			// lock-step (they can never fire on different shapes).
+			gate := &chplan.BoundedTraceScope{
+				SpansTable:         v.SpansTable,
+				TraceIDColumn:      v.TraceIDColumn,
+				ParentSpanIDColumn: v.ParentSpanIDColumn,
+				TimestampColumn:    v.TimestampColumn,
+				TraceLimit:         limit,
+			}
+			v.Input = pushBoundedTraceGate(v.Input, gate)
 		}
 	}
 	return plan
+}
+
+// pushBoundedTraceGate ANDs gate into every leaf Filter/Scan of a
+// NestedSetAnnotate row source. The bare-root union arm and both structural
+// arms (whose recursive closures are seeded by the #77 seed re-render of their
+// leaf subtree) each become `... AND TraceId IN (topN)`, bounding the closures
+// to the top-N traces instead of the whole window. The same immutable gate
+// pointer is shared across all leaves, so every leaf emits identical SQL.
+//
+// The recursion mirrors the node families a select()-with-nested-set row
+// source can produce (the union/structural/project/limit spine over
+// Filter(Scan) / Scan leaves); isRootSpanFilter looks through a passthrough
+// Project, so recursing Project.Input here gates the re-projected bare-root arm
+// too. Any other node is left untouched (the gate only needs to reach the
+// scans that seed the closures).
+func pushBoundedTraceGate(n chplan.Node, gate chplan.Expr) chplan.Node {
+	switch v := n.(type) {
+	case *chplan.Filter:
+		if _, ok := v.Input.(*chplan.Scan); ok {
+			v.Predicate = conjoin(v.Predicate, gate)
+			return v
+		}
+		v.Input = pushBoundedTraceGate(v.Input, gate)
+		return v
+	case *chplan.Scan:
+		return &chplan.Filter{Input: v, Predicate: gate}
+	case *chplan.StructuralJoin:
+		v.Left = pushBoundedTraceGate(v.Left, gate)
+		v.Right = pushBoundedTraceGate(v.Right, gate)
+		return v
+	case *chplan.SetOperation:
+		v.Left = pushBoundedTraceGate(v.Left, gate)
+		v.Right = pushBoundedTraceGate(v.Right, gate)
+		return v
+	case *chplan.Project:
+		v.Input = pushBoundedTraceGate(v.Input, gate)
+		return v
+	case *chplan.Limit:
+		v.Input = pushBoundedTraceGate(v.Input, gate)
+		return v
+	default:
+		return n
+	}
 }
 
 // inputGuaranteesRootInResult reports whether every trace n emits is
@@ -80,18 +143,64 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) ch
 // the precondition for bounding the numbering walk by root-span Timestamp.
 //
 // The recognised shape is the Grafana Traces Drilldown structure-tab input:
-// a `||` SetOperation one of whose arms is a bare root-span filter
+// a `||` SetOperation where (1) one arm is a bare root-span filter
 // (`{ nestedSetParent < 0 }`, lowered to Filter(ParentSpanId = "") over a
-// Scan, optionally re-projected). The union re-adds every matched trace's
-// root, so result-min(Timestamp) per trace == root.Timestamp. This is the
-// only OOM-prone shape; gating on it keeps the bound exact-parity-safe by
-// construction and leaves all other selects unbounded.
+// Scan, optionally re-projected) — which re-adds every trace's root — and
+// (2) BOTH arms emit only spans belonging to root-bearing traces, so every
+// trace in the result carries its root.
+//
+// Requirement (2) is load-bearing for the bound's correctness, not just its
+// optimality: the bound (numbering scope + the BoundedTraceScope row-source
+// gate) ranks/keeps traces by their ROOT span, so any trace admitted to the
+// result WITHOUT a root span (e.g. a `{ kind = server }` arm matching a
+// rootless trace under sampling / ingest lag) would be silently dropped by
+// the gate — a wrong result, not a boundary reorder. Gating on (2) keeps the
+// result set faithful: every admitted trace has a root, and the only residual
+// approximation is the start-time RANKING (root-span vs result-min Timestamp;
+// see boundedRootScopeFrag), which only shuffles the kept set at the N-th
+// boundary under intra-trace clock skew.
+//
+// A non-bare-root arm is root-bearing-only when it is a POSITIVE
+// descendant/child structural join seeded from a root filter
+// (`{ root } &>> { x }` / `>>` / `&>` / `>`): every span it emits descends
+// from a root, so its trace is root-bearing. Negated / ancestor / parent /
+// sibling arms make no such guarantee and leave the select unbounded.
 func inputGuaranteesRootInResult(n chplan.Node, parentSpanIDCol string) bool {
 	set, ok := n.(*chplan.SetOperation)
 	if !ok || set.Op != chplan.SetUnion {
 		return false
 	}
-	return isRootSpanFilter(set.Left, parentSpanIDCol) || isRootSpanFilter(set.Right, parentSpanIDCol)
+	leftRoot := isRootSpanFilter(set.Left, parentSpanIDCol)
+	rightRoot := isRootSpanFilter(set.Right, parentSpanIDCol)
+	if !leftRoot && !rightRoot {
+		return false // no arm re-adds the roots
+	}
+	return armEmitsOnlyRootBearingTraces(set.Left, parentSpanIDCol) &&
+		armEmitsOnlyRootBearingTraces(set.Right, parentSpanIDCol)
+}
+
+// armEmitsOnlyRootBearingTraces reports whether every span n emits belongs to
+// a trace that carries a root span (ParentSpanId = "") — the per-arm half of
+// inputGuaranteesRootInResult. Two shapes qualify: a bare root-span filter
+// (it emits roots), and a positive descendant/child structural join whose
+// ANCESTOR side (Left) is a root filter (every emitted span descends from a
+// root, and union forms also re-emit those roots). Any other shape — a bare
+// non-root filter, a negated/ancestor/parent/sibling structural join, a
+// nested set-op — is conservatively rejected.
+func armEmitsOnlyRootBearingTraces(n chplan.Node, parentSpanIDCol string) bool {
+	if isRootSpanFilter(n, parentSpanIDCol) {
+		return true
+	}
+	sj, ok := n.(*chplan.StructuralJoin)
+	if !ok || sj.Op.IsNegated() {
+		return false
+	}
+	switch sj.Op.Positive() {
+	case chplan.StructuralDescendant, chplan.StructuralChild:
+		return isRootSpanFilter(sj.Left, parentSpanIDCol)
+	default:
+		return false
+	}
 }
 
 // isRootSpanFilter reports whether n is a root-span filter
