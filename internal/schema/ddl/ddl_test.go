@@ -7,7 +7,8 @@ import (
 )
 
 // TestRenderSignal_Metrics checks all five metrics templates render with
-// the right table names + engine + database substituted in.
+// the right table names + engine + database substituted in, followed by the
+// three idempotent metric-name ADD PROJECTION ALTERs.
 func TestRenderSignal_Metrics(t *testing.T) {
 	cfg := Config{}.withDefaults()
 
@@ -15,7 +16,9 @@ func TestRenderSignal_Metrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	if got, want := len(stmts), 5; got != want {
+	// 5 CREATE TABLE + 3 ADD PROJECTION (gauge/sum/histogram catalog tables).
+	const wantCreates = 5
+	if got, want := len(stmts), wantCreates+3; got != want {
 		t.Fatalf("metrics: got %d statements, want %d", got, want)
 	}
 	wantTables := []string{
@@ -25,7 +28,7 @@ func TestRenderSignal_Metrics(t *testing.T) {
 		"otel_metrics_exp_histogram",
 		"otel_metrics_summary",
 	}
-	for i, stmt := range stmts {
+	for i, stmt := range stmts[:wantCreates] {
 		if !strings.Contains(stmt, "CREATE TABLE IF NOT EXISTS") {
 			t.Errorf("metrics[%d]: missing IF NOT EXISTS:\n%s", i, stmt)
 		}
@@ -40,6 +43,23 @@ func TestRenderSignal_Metrics(t *testing.T) {
 		}
 		if strings.Contains(stmt, "TTL toDateTime") {
 			t.Errorf("metrics[%d]: zero TTL should not render TTL clause", i)
+		}
+	}
+	// The projection ALTERs follow the CREATEs, one per catalog table, in
+	// gauge/sum/histogram order. CREATE precedes ALTER so the ALTER never
+	// races a missing table.
+	wantProjTables := []string{"otel_metrics_gauge", "otel_metrics_sum", "otel_metrics_histogram"}
+	for i, stmt := range stmts[wantCreates:] {
+		wantPrefix := "ALTER TABLE default." + wantProjTables[i] +
+			" ADD PROJECTION IF NOT EXISTS proj_metric_name "
+		if !strings.HasPrefix(stmt, wantPrefix) {
+			t.Errorf("metrics projection[%d]: got %q, want prefix %q", i, stmt, wantPrefix)
+		}
+		if !strings.Contains(stmt, "max(`TimeUnix`) GROUP BY `MetricName`") {
+			t.Errorf("metrics projection[%d]: missing aggregating body in:\n%s", i, stmt)
+		}
+		if strings.Contains(stmt, "ON CLUSTER") {
+			t.Errorf("metrics projection[%d]: empty cluster should not render ON CLUSTER", i)
 		}
 	}
 }
@@ -171,6 +191,11 @@ func TestRenderSignal_CustomConfig(t *testing.T) {
 	// engine + a 48-hour TTL expression.
 	metrics, _ := renderSignal(cfg, Metrics)
 	for i, stmt := range metrics {
+		// ADD PROJECTION ALTERs carry neither engine nor TTL — those live on
+		// the CREATE TABLE statements only.
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
 		if !strings.Contains(stmt, "ReplicatedMergeTree") {
 			t.Errorf("metrics[%d]: custom engine not rendered", i)
 		}
@@ -215,6 +240,10 @@ func TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree(t *testing
 			if sig == Traces && i == 2 {
 				continue
 			}
+			// ADD PROJECTION ALTERs inherit the table engine; they name none.
+			if strings.HasPrefix(stmt, "ALTER TABLE") {
+				continue
+			}
 			if !strings.Contains(stmt, "ReplicatedMergeTree") {
 				t.Errorf("%s[%d]: want bare ReplicatedMergeTree engine in:\n%s", sig, i, stmt)
 			}
@@ -241,6 +270,10 @@ func TestRenderSignal_ExplicitEngineWinsOverReplicated(t *testing.T) {
 
 	metrics, _ := renderSignal(cfg, Metrics)
 	for i, stmt := range metrics {
+		// ADD PROJECTION ALTERs inherit the table engine; they name none.
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
 		if !strings.Contains(stmt, "ReplicatedReplacingMergeTree('/x/{shard}', '{replica}')") {
 			t.Errorf("metrics[%d]: explicit engine override not honoured:\n%s", i, stmt)
 		}
@@ -297,6 +330,10 @@ func TestRenderSignal_PerSignalTTL(t *testing.T) {
 
 	metrics, _ := renderSignal(cfg, Metrics)
 	for i, stmt := range metrics {
+		// ADD PROJECTION ALTERs inherit retention from the table; no TTL clause.
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
 		if !strings.Contains(stmt, "TTL toDateTime(TimeUnix) + toIntervalDay(90)") {
 			t.Errorf("metrics[%d]: want 90d TTL:\n%s", i, stmt)
 		}

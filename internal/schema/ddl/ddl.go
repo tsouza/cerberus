@@ -422,13 +422,23 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 	switch s {
 	case Metrics:
 		ttl := ttlExpr("TimeUnix", cfg.TTL.Metrics)
-		return []string{
+		stmts := []string{
 			renderMetricsTable(sqltemplates.MetricsGaugeCreateTable, cfg, cfg.Tables.MetricsGauge, ttl),
 			renderMetricsTable(sqltemplates.MetricsSumCreateTable, cfg, cfg.Tables.MetricsSum, ttl),
 			renderMetricsTable(sqltemplates.MetricsHistogramCreateTable, cfg, cfg.Tables.MetricsHistogram, ttl),
 			renderMetricsTable(sqltemplates.MetricsExpHistogramCreateTable, cfg, cfg.Tables.MetricsExpHistogram, ttl),
 			renderMetricsTable(sqltemplates.MetricsSummaryCreateTable, cfg, cfg.Tables.MetricsSummary, ttl),
-		}, nil
+		}
+		// Each CREATE is immediately followed by the idempotent
+		// ADD PROJECTION ALTER for the same table — CREATE precedes ALTER in
+		// the slice and applySignal executes sequentially, so the ALTER never
+		// races a missing table. Only the catalog tables the metric-name
+		// enumeration reads (gauge/sum/histogram, see metricTables() in
+		// internal/api/prom/metadata.go) carry the projection.
+		for _, table := range []string{cfg.Tables.MetricsGauge, cfg.Tables.MetricsSum, cfg.Tables.MetricsHistogram} {
+			stmts = append(stmts, renderAddMetricNameProjection(cfg, table))
+		}
+		return stmts, nil
 	case Logs:
 		logs, err := renderLogsTable(cfg)
 		if err != nil {
@@ -454,6 +464,40 @@ func renderMetricsTable(tmpl string, cfg Config, table, ttl string) string {
 	return cfg.appendSettings(
 		fmt.Sprintf(tmpl, cfg.Database, table, cfg.clusterClause(), cfg.Engine, ttl),
 	)
+}
+
+const (
+	// metricNameProjection is the aggregating projection that lets the
+	// windowless metric-name catalog enumeration (label_values(__name__))
+	// read an aggregating-projection part instead of full-scanning the
+	// metrics fact table — see metricNamesSQL in internal/api/prom/metadata.go.
+	metricNameProjection = "proj_metric_name"
+	// metricNameColumn / metricTimeColumn are the OTel-CH metric-table columns
+	// the projection aggregates over; fixed by the upstream exporter schema,
+	// not configurable in this package.
+	metricNameColumn = "MetricName"
+	metricTimeColumn = "TimeUnix"
+)
+
+// renderAddMetricNameProjection builds the idempotent ADD PROJECTION ALTER
+// for one metrics fact table: an aggregating projection over MetricName
+// carrying max(TimeUnix), which serves the metric-name catalog query
+// (`GROUP BY MetricName HAVING max(TimeUnix) >= …`) from a tiny pre-aggregated
+// part rather than the full column. ON CLUSTER is threaded so the ALTER
+// replicates the same way the CREATE statements do. ADD PROJECTION IF NOT
+// EXISTS is metadata-only and idempotent, so the same Apply path covers both
+// freshly-created and pre-existing tables; backfilling existing parts is a
+// separate MATERIALIZE PROJECTION runbook (see docs/operations.md), kept out
+// of the hot DDL path.
+func renderAddMetricNameProjection(cfg Config, table string) string {
+	body := chsql.NewQuery().
+		Select(chsql.Col(metricNameColumn), chsql.Call("max", chsql.Col(metricTimeColumn))).
+		GroupBy(chsql.Col(metricNameColumn))
+	stmt := chsql.AlterTableAddProjection(cfg.Database, table, metricNameProjection, body)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
 }
 
 // renderLogsTable renders the logs DDL. The logs template became a

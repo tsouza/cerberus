@@ -4,39 +4,37 @@ package prom_test
 
 // REPRO (Layer 12 — compute fan-out / scan-volume, chDB EXPLAIN indexes=1).
 //
-// The empirical proof that the windowless `__name__` enumeration is an
-// O(all-partitions) full-column scan. This drives the SQL the HANDLER
-// ACTUALLY emits for a no-start/end `/api/v1/label/__name__/values`
-// request (captured through a recording stub), then runs it against a
-// production-shaped gauge+sum table — PARTITION BY toDate(TimeUnix), the
-// OTel-CH exporter's own layout — seeded across many day-partitions, and
-// inspects the MergeTree MinMax/partition stage via EXPLAIN indexes=1.
+// The empirical proof that the windowless `__name__` enumeration reads the
+// `proj_metric_name` aggregating projection instead of full-scanning the
+// metrics fact table. This drives the SQL the HANDLER ACTUALLY emits for a
+// no-start/end `/api/v1/label/__name__/values` request (captured through a
+// recording stub), then runs it against a production-shaped gauge+sum table —
+// PARTITION BY toDate(TimeUnix), the OTel-CH exporter's own layout — that
+// carries the aggregating projection the cerberus DDL apply path installs
+// (internal/schema/ddl), and inspects the read source via EXPLAIN indexes=1.
 //
-//   - On current main the handler emits a WHERE-less DISTINCT, so the
-//     first `Parts:` line reads N/N — every partition selected. The
-//     assertion (the windowless emit must Partition-prune to a strict
-//     subset) is RED.
-//   - Once a default lookback bounds the windowless path, the captured SQL
-//     carries the `toDateTime64('…', 9)` TimeUnix predicate and the same
-//     EXPLAIN reads k/N with k < N — GREEN.
+//   - A bare `DISTINCT ... WHERE TimeUnix >= …` emit (the pre-projection
+//     shape) keeps a raw column filter that no aggregating projection can
+//     serve, so the read streams every granule of the fact table.
+//   - The handler's windowless emit is `GROUP BY MetricName HAVING
+//     max(TimeUnix) >= <lookback>` — an aggregate-only predicate that routes
+//     to proj_metric_name, so EXPLAIN reads the projection with a strict
+//     granule subset. The assertion (the read must route to the projection
+//     and prune) is the flip this test pins.
 //
-// This complements (does not duplicate) the existing hand-written
-// test/perf/metric_names_window_prune_chdb_test.go: that file pins the
-// *baseline* (a hand-written unbounded SQL scans all parts) and that a
-// hand-written *windowed* SQL prunes. This file closes the gap between
-// them — it asserts the property on the SQL cerberus's handler emits for a
-// windowless request, so it auto-flips when the handler is fixed rather
-// than tracking a hand-copied string.
+// This complements the hand-written
+// test/perf/metric_names_window_prune_chdb_test.go: that file recorded that
+// no exact column-DISTINCT shape can be marks-bounded; the projection is the
+// exact, marks-bounded shape, and this file asserts the property on the SQL
+// cerberus's handler actually emits, so it tracks the handler rather than a
+// hand-copied string.
 //
-// Honest scope note: partition pruning a windowless request narrows the
-// scan ONLY because the default window is narrower than the seeded span.
-// That narrowing is correctness-preserving ONLY if the default is the
-// table's retention horizon (data older than retention is gone from a real
-// Prometheus too) — a short recent default would silently drop
-// recently-quiet metric names and DIVERGE from reference Prometheus. The
-// result-identity guard that the windowless catalog stays complete lives
-// in metadata_scan_bound_guard_chdb_test.go and W5_omitted in
-// handler_chdb_metadata_window_sweep_test.go; both halves must hold.
+// Honest scope note: the projection answers "names with a sample in
+// [lookback, now]" exactly because samples are never future-dated
+// (max(TimeUnix) >= lookback ⇔ a sample in the window), so the windowless
+// catalog stays COMPLETE over the retention horizon — the result-identity
+// guard for that lives in metadata_scan_bound_guard_chdb_test.go and
+// W5_omitted in handler_chdb_metadata_window_sweep_test.go; both halves hold.
 
 import (
 	"database/sql"
@@ -54,9 +52,8 @@ const (
 	// N == scanBoundDays and a bounded scan can prune to a strict subset.
 	scanBoundDays = 10
 	// scanBoundRows seeds a dense corpus so OPTIMIZE FINAL yields one part
-	// per day-partition (real parts for the MinMax stage to prune).
-	scanBoundRows  = 200_000
-	scanBoundEpoch = "2026-01-01"
+	// per day-partition (real parts for the projection to collapse).
+	scanBoundRows = 200_000
 )
 
 // scanBoundPartitionedDDL is the production OTel-CH metric table trimmed to
@@ -74,44 +71,60 @@ PARTITION BY toDate(TimeUnix)
 ORDER BY (MetricName, TimeUnix);`, table)
 }
 
-// scanBoundInsert scatters rows across scanBoundDays day-partitions.
+// scanBoundInsert scatters rows across scanBoundDays day-partitions. The
+// rows are now-relative (newest sample seconds ago, oldest scanBoundDays ago)
+// so they land inside the windowless emit's default retention lookback and
+// the HAVING max(TimeUnix) >= start predicate selects them.
 func scanBoundInsert(table string) string {
 	return fmt.Sprintf(`INSERT INTO %s
 SELECT
     concat('m_', toString(number %% 50)) AS MetricName,
     map('job', 'j') AS Attributes,
-    toDateTime64('%s 00:00:00', 9) + INTERVAL (number %% %d) DAY AS TimeUnix,
+    now64(9) - INTERVAL (number %% %d) DAY AS TimeUnix,
     toFloat64(number) AS Value
-FROM numbers(%d);`, table, scanBoundEpoch, scanBoundDays, scanBoundRows)
+FROM numbers(%d);`, table, scanBoundDays, scanBoundRows)
 }
 
-// firstPartsFraction returns (selected, total) from the FIRST `Parts: N/M`
-// line of an EXPLAIN indexes=1 plan — the MinMax/partition stage of the
-// MergeTree scan.
-func firstPartsFraction(t *testing.T, db *sql.DB, query string) (selected, total int) {
+// scanBoundAddProjection mirrors the cerberus DDL apply path
+// (internal/schema/ddl): the aggregating projection over MetricName carrying
+// max(TimeUnix) that the windowless metric-name emit routes to.
+func scanBoundAddProjection(table string) string {
+	return fmt.Sprintf(
+		`ALTER TABLE %s ADD PROJECTION proj_metric_name `+
+			`(SELECT MetricName, max(TimeUnix) GROUP BY MetricName);`, table,
+	)
+}
+
+// projectionGranules returns (selected, total) granules from the
+// EXPLAIN indexes=1 read of the `proj_metric_name` aggregating projection —
+// proof the windowless emit routes to the projection rather than scanning the
+// fact table. It returns ok=false if no projection read appears in the plan.
+func projectionGranules(t *testing.T, db *sql.DB, query string) (selected, total int, ok bool) {
 	t.Helper()
 	rows, err := db.Query("EXPLAIN indexes=1 " + query)
 	if err != nil {
 		t.Fatalf("EXPLAIN: %v\nquery: %s", err, query)
 	}
 	defer rows.Close()
+	inProjection := false
 	for rows.Next() {
 		var line string
 		if err := rows.Scan(&line); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		trim := strings.TrimSpace(line)
-		if !strings.HasPrefix(trim, "Parts:") {
-			continue
+		switch {
+		case strings.HasPrefix(trim, "ReadFromMergeTree"):
+			inProjection = strings.Contains(trim, "proj_metric_name")
+		case inProjection && strings.HasPrefix(trim, "Granules:"):
+			frac := strings.TrimSpace(strings.TrimPrefix(trim, "Granules:"))
+			if _, err := fmt.Sscanf(frac, "%d/%d", &selected, &total); err != nil {
+				t.Fatalf("parse Granules line %q: %v", trim, err)
+			}
+			return selected, total, true
 		}
-		frac := strings.TrimSpace(strings.TrimPrefix(trim, "Parts:"))
-		if _, err := fmt.Sscanf(frac, "%d/%d", &selected, &total); err != nil {
-			t.Fatalf("parse Parts line %q: %v", trim, err)
-		}
-		return selected, total
 	}
-	t.Fatalf("EXPLAIN produced no Parts line for:\n%s", query)
-	return 0, 0
+	return 0, 0, false
 }
 
 // captureWindowlessMetricNamesSQL returns the gauge/sum-arm SQL the handler
@@ -140,10 +153,14 @@ func captureWindowlessMetricNamesSQL(t *testing.T) string {
 	return ""
 }
 
-// TestMetadataScanBound_MetricNamesExplain_Repro pins the partition-prune
-// property on the handler's actual windowless `__name__` emit. RED on main
-// (Parts: N/N, the unbounded full-partition scan); green once a default
-// lookback bounds the windowless path.
+// TestMetadataScanBound_MetricNamesExplain_Repro pins the projection-routing
+// property on the handler's actual windowless `__name__` emit. The windowless
+// enumeration (`GROUP BY MetricName HAVING max(TimeUnix) >= <lookback>`) must
+// read the `proj_metric_name` aggregating projection — a tiny one-row-per-name
+// part — instead of full-scanning the metrics fact table. Without the
+// projection (or with the pre-projection `DISTINCT ... WHERE TimeUnix` emit
+// that a column filter keeps off any projection) this read streams every
+// granule of the fact table; the assertion below catches that regression.
 func TestMetadataScanBound_MetricNamesExplain_Repro(t *testing.T) {
 	db, err := sql.Open("chdb", "")
 	if err != nil {
@@ -155,12 +172,18 @@ func TestMetadataScanBound_MetricNamesExplain_Repro(t *testing.T) {
 	}
 
 	for _, table := range []string{"otel_metrics_gauge", "otel_metrics_sum"} {
-		for _, stmt := range []string{scanBoundPartitionedDDL(table), scanBoundInsert(table)} {
+		stmts := []string{
+			scanBoundPartitionedDDL(table),
+			scanBoundInsert(table),
+			scanBoundAddProjection(table),
+			"ALTER TABLE " + table + " MATERIALIZE PROJECTION proj_metric_name",
+		}
+		for _, stmt := range stmts {
 			if _, err := db.Exec(stmt); err != nil {
 				t.Fatalf("setup %s: %v", stmt, err)
 			}
 		}
-		// One dense part per day-partition so the MinMax stage prunes real
+		// One dense part per day-partition so the projection collapses real
 		// parts, not inflated unmerged insert parts.
 		if _, err := db.Exec("OPTIMIZE TABLE " + table + " FINAL"); err != nil {
 			t.Fatalf("optimize %s: %v", table, err)
@@ -170,16 +193,18 @@ func TestMetadataScanBound_MetricNamesExplain_Repro(t *testing.T) {
 	captured := captureWindowlessMetricNamesSQL(t)
 	t.Logf("windowless __name__ emit:\n%s", captured)
 
-	sel, tot := firstPartsFraction(t, db, captured)
-	t.Logf("windowless __name__ MinMax parts: %d/%d", sel, tot)
-
+	sel, tot, ok := projectionGranules(t, db, captured)
+	if !ok {
+		t.Fatalf("windowless /api/v1/label/__name__/values did not route to proj_metric_name — "+
+			"it full-scans the fact table. emit:\n%s", captured)
+	}
+	t.Logf("windowless __name__ projection granules: %d/%d", sel, tot)
 	if tot < scanBoundDays {
-		t.Fatalf("scan saw %d parts total, want >= %d day-partitions — corpus not dense enough to prove pruning",
+		t.Fatalf("projection read saw %d granules total, want >= %d — corpus not dense enough to prove pruning",
 			tot, scanBoundDays)
 	}
 	if sel >= tot {
-		t.Errorf("windowless /api/v1/label/__name__/values selected %d of %d parts — the full-partition scan "+
-			"that is the bug; a default lookback must bound the windowless emit so it Partition-prunes (k < N).",
-			sel, tot)
+		t.Errorf("windowless /api/v1/label/__name__/values read %d of %d projection granules — no pruning; "+
+			"the aggregating projection must collapse the metric-name scan (selected < total).", sel, tot)
 	}
 }
