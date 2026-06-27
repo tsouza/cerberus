@@ -89,53 +89,100 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) ch
 				TimestampColumn:    v.TimestampColumn,
 				TraceLimit:         limit,
 			}
-			v.Input = pushBoundedTraceGate(v.Input, gate)
+			v.Input = pushLeafPredicate(v.Input, gate)
 		}
 	}
 	return plan
 }
 
-// pushBoundedTraceGate ANDs gate into every leaf Filter/Scan of a
-// NestedSetAnnotate row source. The bare-root union arm and both structural
-// arms (whose recursive closures are seeded by the #77 seed re-render of their
-// leaf subtree) each become `... AND TraceId IN (topN)`, bounding the closures
-// to the top-N traces instead of the whole window. The same immutable gate
-// pointer is shared across all leaves, so every leaf emits identical SQL.
+// pushLeafPredicate ANDs pred into every leaf Filter/Scan of a search row
+// source, descending the node families a TraceQL search plan can produce (the
+// union / structural / project / limit / nested-set spine over Filter(Scan) /
+// Scan leaves). A bare Scan is wrapped in a Filter; a Filter(Scan) gets pred
+// conjoined onto its predicate. Any other node (Aggregate, RangeWindow,
+// SearchTraceLimit, …) is left untouched — the default case is what keeps the
+// pass off the metrics families and off the already-windowed plain-search
+// SearchTraceLimit node.
 //
-// The recursion mirrors the node families a select()-with-nested-set row
-// source can produce (the union/structural/project/limit spine over
-// Filter(Scan) / Scan leaves); isRootSpanFilter looks through a passthrough
-// Project, so recursing Project.Input here gates the re-projected bare-root arm
-// too. Any other node is left untouched (the gate only needs to reach the
-// scans that seed the closures).
-func pushBoundedTraceGate(n chplan.Node, gate chplan.Expr) chplan.Node {
+// Two callers share it, both pushing an immutable shared Expr into the leaves
+// so every leaf emits identical SQL:
+//   - the #1109/#1110 BoundedTraceScope gate (`TraceId IN topN`), which bounds
+//     the structural closures (seeded via the #77 seed re-render of their leaf
+//     subtree) to the top-N traces; and
+//   - the #1109 stampSearchWindow fold (`Timestamp BETWEEN start AND end`),
+//     which bounds every compound/structural/nested-set search leaf to the
+//     request window instead of scanning full retention.
+//
+// The NestedSetAnnotate case descends into its Input (the row source) so a
+// `select(nestedSet*)` compound search gets its leaves gated/windowed; the
+// numbering CTE the emitter synthesises from NestedSetAnnotate is NOT a chplan
+// child here, so it is correctly never reached (Tempo numbers whole traces
+// regardless of the window). isRootSpanFilter looks through a passthrough
+// Project, so recursing Project.Input reaches the re-projected bare-root arm.
+func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 	switch v := n.(type) {
 	case *chplan.Filter:
 		if _, ok := v.Input.(*chplan.Scan); ok {
-			v.Predicate = conjoin(v.Predicate, gate)
+			v.Predicate = conjoin(v.Predicate, pred)
 			return v
 		}
-		v.Input = pushBoundedTraceGate(v.Input, gate)
+		v.Input = pushLeafPredicate(v.Input, pred)
 		return v
 	case *chplan.Scan:
-		return &chplan.Filter{Input: v, Predicate: gate}
+		return &chplan.Filter{Input: v, Predicate: pred}
 	case *chplan.StructuralJoin:
-		v.Left = pushBoundedTraceGate(v.Left, gate)
-		v.Right = pushBoundedTraceGate(v.Right, gate)
+		v.Left = pushLeafPredicate(v.Left, pred)
+		v.Right = pushLeafPredicate(v.Right, pred)
 		return v
 	case *chplan.SetOperation:
-		v.Left = pushBoundedTraceGate(v.Left, gate)
-		v.Right = pushBoundedTraceGate(v.Right, gate)
+		v.Left = pushLeafPredicate(v.Left, pred)
+		v.Right = pushLeafPredicate(v.Right, pred)
 		return v
 	case *chplan.Project:
-		v.Input = pushBoundedTraceGate(v.Input, gate)
+		v.Input = pushLeafPredicate(v.Input, pred)
 		return v
 	case *chplan.Limit:
-		v.Input = pushBoundedTraceGate(v.Input, gate)
+		v.Input = pushLeafPredicate(v.Input, pred)
+		return v
+	case *chplan.NestedSetAnnotate:
+		v.Input = pushLeafPredicate(v.Input, pred)
 		return v
 	default:
 		return n
 	}
+}
+
+// stampSearchWindow folds the /api/search request window into every leaf
+// Filter/Scan of a compound search row source (`&&` / `||`, structural
+// >>/<</&>>, select(nestedSet*)) so it scans only [start, end] instead of full
+// retention. The plain-search shape is ALREADY windowed by stampSearchTraceLimit
+// (which wraps it in a SearchTraceLimit node), and this pass runs AFTER it and
+// does not descend SearchTraceLimit, so plain search stays byte-identical (no
+// double-fold).
+//
+// Gated on limit > 0 — the exact "this is /api/search, not a metrics pipeline"
+// discriminator (only the HTTP + gRPC search handlers set WithSearchTraceLimit;
+// the metrics handlers lower with a bare ctx). A metrics plan therefore never
+// reaches this pass, and even if it did the recursion's default case skips the
+// Aggregate/RangeWindow families. A zero/absent window yields a nil predicate
+// and the plan is returned unchanged (the search handlers clamp a windowless
+// request to DefaultSearchLookback, so on the search path the window is always
+// present).
+//
+// The window predicate reaches only chplan leaf scans. The structural closures'
+// recursive `t`-scan and the nested-set numbering CTE are emitter-synthetic
+// (not chplan children), so they correctly stay unwindowed: the closure inherits
+// the window via the #77 seed re-render of its (now-windowed) leaf, and the
+// numbering must number whole traces regardless of the window.
+func stampSearchWindow(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
+	if limit <= 0 || plan == nil {
+		return plan
+	}
+	window := andWindow(nil, start, end, s.TimestampColumn)
+	if window == nil {
+		return plan
+	}
+	return pushLeafPredicate(plan, window)
 }
 
 // inputGuaranteesRootInResult reports whether every trace n emits is

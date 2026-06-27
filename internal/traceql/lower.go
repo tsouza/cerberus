@@ -53,6 +53,12 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 	// unchanged.
 	start, end := searchWindowFromCtx(ctx)
 	plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
+	// Fold the request window into the leaf scans of the COMPOUND search shapes
+	// (&&/||, structural, select(nestedSet*)) that stampSearchTraceLimit leaves
+	// untouched, so they scan only [start, end] instead of full retention. Runs
+	// last so it skips the already-windowed plain-search SearchTraceLimit node
+	// (no double-fold). No-op unless the request set a limit (search-not-metrics).
+	plan = stampSearchWindow(plan, searchTraceLimit(ctx), start, end, s)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }
