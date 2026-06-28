@@ -138,31 +138,25 @@ jobs:
           # gremlins gains an incremental-test-binary mode or the
           # lane moves to a larger runner class.
           #
-          # Round 10 also confirmed `phase4-logql-aggregation`
-          # completes cleanly (~1m52s in job 77211633323) with 5
-          # LIVED mutants — efficacy 93.81%. The survivors are
-          # equivalent-mutant patterns that cannot reasonably be
-          # killed:
-          #   - `make([]chplan.Expr, 0, len(e.Grouping.Groups)*2)`
-          #     slice-capacity hints (range_aggregation.go:515,
-          #     vector_aggregation.go:290) — ARITHMETIC_BASE on
-          #     a `*2` capacity literal does not change function
-          #     output, only allocator behaviour.
-          #   - `e.Grouping != nil && !e.Grouping.Without &&
-          #     len(e.Grouping.Groups) > 0` (vector_aggregation.go:39)
-          #     belt-and-braces guard on a code path the upstream
-          #     parser only reaches with a non-nil Grouping, so
-          #     INVERT_LOGICAL on the nil-check / `>= 0`
-          #     CONDITIONALS_BOUNDARY produce behaviour-equivalent
-          #     mutants.
-          # The aggregation bar drops to 93 with this PR; the
-          # other four logql slices stay at 95. Raising
-          # `phase4-logql-aggregation` back to 95 requires either
-          # surgically refactoring the guard at vector_aggregation.go:39
-          # so the inverted form has observable behaviour, or
-          # gremlins gaining an equivalent-mutant filter. Tracked
-          # as a quality follow-up; the mutation lane stays
-          # informational on PRs.
+          # phase4-logql-aggregation was historically relaxed to 93
+          # (94.83%, 18 LIVED) citing equivalent mutants. The KILLABLE
+          # survivors are now pinned by range_aggregation_mutation_test.go
+          # + vector_aggregation_mutation_test.go (10 killed: absent-window
+          # Interval+Offset arithmetic, the absent synth-label conjunction,
+          # the post-filter error-mark return gate, the topk/quantile
+          # outer-by threading + ungrouped-partition guards — each verified
+          # by hand-applying the mutation). The remaining survivors are
+          # GENUINELY EQUIVALENT and can't be killed:
+          #   - `make([]Expr, 0, len(Groups)*2 (+1))` slice-CAPACITY hints
+          #     (range_aggregation.go, vector_aggregation.go, duration.go)
+          #     — a cap literal changes only allocator behaviour, not
+          #     output (CLAUDE.md: capacity hints out of scope).
+          #   - empty-group CONDITIONALS_BOUNDARY guards (`len(...) > 0` vs
+          #     `>= 0`) whose only distinguishing input (`by ()`) threads a
+          #     len-0 label slice the lowering collapses to nil — a
+          #     byte-identical no-op.
+          # With the killable set covered the bar is RAISED BACK TO 95; the
+          # equivalents sit comfortably under it (~97.7%).
           - phase: phase4-logql-lower
             scope: ./internal/logql
             efficacy: 95
@@ -172,7 +166,7 @@ jobs:
             exclude_files: '(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\.go$'
           - phase: phase4-logql-aggregation
             scope: ./internal/logql
-            efficacy: 93
+            efficacy: 95
             workers: 1
             # Mutate range_aggregation.go + vector_aggregation.go +
             # lang.go (~54 KB total). Excludes everything else.
