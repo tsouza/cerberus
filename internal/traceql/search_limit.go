@@ -114,13 +114,16 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 }
 
 // pushLeafPredicate ANDs pred into every leaf Filter/Scan of a search row
-// source, descending the node families a TraceQL search plan can produce (the
-// union / structural / project / limit / nested-set spine over Filter(Scan) /
-// Scan leaves). A bare Scan is wrapped in a Filter; a Filter(Scan) gets pred
-// conjoined onto its predicate. Any other node (Aggregate, RangeWindow,
-// SearchTraceLimit, …) is left untouched — the default case is what keeps the
-// pass off the metrics families and off the already-windowed plain-search
-// SearchTraceLimit node.
+// source, descending the full node spine a TraceQL search plan can produce (the
+// union / structural / project / limit / nested-set / AGGREGATE spine over
+// Filter(Scan) / Scan leaves). A bare Scan is wrapped in a Filter; a Filter(Scan)
+// gets pred conjoined; every interior node recurses into all children via the
+// exhaustively-tested chplan.RewriteChildren. The pass is kept off the metrics
+// families NOT by node-type filtering but by its single gate: stampSearchWindow
+// (and the BoundedTraceScope caller) early-return when searchTraceLimit(ctx) <= 0,
+// which is exactly the metrics path — so this only ever runs on span search
+// plans, and an Aggregate-topped search (`| count() > N`) gets its leaf scan
+// windowed instead of silently scanning all retention (GAP-3).
 //
 // Two callers share it, both pushing an immutable shared Expr into the leaves
 // so every leaf emits identical SQL:
@@ -131,42 +134,45 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 //     which bounds every compound/structural/nested-set search leaf to the
 //     request window instead of scanning full retention.
 //
-// The NestedSetAnnotate case descends into its Input (the row source) so a
+// The generic recurse descends NestedSetAnnotate.Input (the row source) so a
 // `select(nestedSet*)` compound search gets its leaves gated/windowed; the
 // numbering CTE the emitter synthesises from NestedSetAnnotate is NOT a chplan
-// child here, so it is correctly never reached (Tempo numbers whole traces
+// child, so it is correctly never reached (Tempo numbers whole traces
 // regardless of the window). isRootSpanFilter looks through a passthrough
 // Project, so recursing Project.Input reaches the re-projected bare-root arm.
 func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 	switch v := n.(type) {
+	case *chplan.Scan:
+		// Leaf: wrap in a Filter carrying the predicate.
+		return &chplan.Filter{Input: v, Predicate: pred}
 	case *chplan.Filter:
+		// A Filter directly on a Scan conjoins (one Filter); otherwise recurse.
 		if _, ok := v.Input.(*chplan.Scan); ok {
 			v.Predicate = conjoin(v.Predicate, pred)
 			return v
 		}
 		v.Input = pushLeafPredicate(v.Input, pred)
 		return v
-	case *chplan.Scan:
-		return &chplan.Filter{Input: v, Predicate: pred}
-	case *chplan.StructuralJoin:
-		v.Left = pushLeafPredicate(v.Left, pred)
-		v.Right = pushLeafPredicate(v.Right, pred)
-		return v
-	case *chplan.SetOperation:
-		v.Left = pushLeafPredicate(v.Left, pred)
-		v.Right = pushLeafPredicate(v.Right, pred)
-		return v
-	case *chplan.Project:
-		v.Input = pushLeafPredicate(v.Input, pred)
-		return v
-	case *chplan.Limit:
-		v.Input = pushLeafPredicate(v.Input, pred)
-		return v
-	case *chplan.NestedSetAnnotate:
-		v.Input = pushLeafPredicate(v.Input, pred)
-		return v
-	default:
+	case *chplan.SearchTraceLimit:
+		// Already fully windowed: stampSearchTraceLimit creates this node and
+		// folds the window onto its plain-search leaves at lower.go:56, before
+		// stampSearchWindow runs at :62. Recursing here would double-fold the
+		// predicate (TestSearchWindow_PlainNotDoubleFolded). This is an explicit
+		// "already handled", not a silent drop — every OTHER node still recurses.
 		return n
+	default:
+		// Every interior node recurses into ALL its children via the
+		// exhaustively-tested generic rewrite, so no node type — Aggregate
+		// (a `| count() > N` search), joins, unions, or a future addition —
+		// can hit a silent default that drops the window onto an all-time
+		// scan (GAP-3). This pass only runs for searchTraceLimit(ctx) > 0
+		// (stampSearchWindow early-returns otherwise), i.e. only on span
+		// search plans, so every child it reaches is a span row source whose
+		// leaves correctly take the window.
+		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
+			return pushLeafPredicate(c, pred), true
+		})
+		return out
 	}
 }
 
