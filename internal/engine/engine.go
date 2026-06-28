@@ -460,6 +460,14 @@ type Engine struct {
 	// query_id (trace id on ctx) and shape-id (planShapeID) are already
 	// computed; the reconciler later joins those ids back to system.query_log.
 	QueryObserver QueryObserver
+
+	// MaxQuerySamples mirrors chclient.Config.MaxQuerySamples (wired from the
+	// same CERBERUS_QUERY_MAX_SAMPLES in cmd/cerberus). The chclient enforces it
+	// on the Go-side RESULT drain; the engine enforces it on the post-optimize
+	// PLAN — rejecting a subquery whose anchor grid alone (RangeWindow.NumAnchors)
+	// would exceed the budget, which the result drain never sees (resource-bound
+	// audit GAP-2, see requireSubquerySampleBudget). 0 disables the gate.
+	MaxQuerySamples int64
 }
 
 // QueryObserver is the narrow seam the corpus reconciler registers on the
@@ -682,6 +690,13 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		optT := telemetry.ObserveStage(telemetry.StageOptimize)
 		plan = e.Optimizer.Run(ctx, plan)
 		optT.Done(ctx)
+	}
+
+	// Resource-bound gate: reject a subquery whose anchor grid alone busts the
+	// per-query sample budget before any SQL is sent (GAP-2). Honest 422, never
+	// an OOM.
+	if err := requireSubquerySampleBudget(plan, e.MaxQuerySamples); err != nil {
+		return Result{}, err
 	}
 
 	// Solver classification (DARK). When the Solver is wired it classifies
@@ -913,6 +928,12 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		optT := telemetry.ObserveStage(telemetry.StageOptimize)
 		plan = e.Optimizer.Run(ctx, plan)
 		optT.Done(ctx)
+	}
+
+	// Resource-bound gate (symmetrical with QueryPlan): reject a subquery whose
+	// anchor grid alone busts the per-query sample budget before any SQL is sent.
+	if err := requireSubquerySampleBudget(plan, e.MaxQuerySamples); err != nil {
+		return CursorResult{}, err
 	}
 
 	// Solver classification (DARK) — symmetrical with QueryPlan. Under

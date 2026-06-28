@@ -1135,6 +1135,14 @@ func (c *Client) MaxQueryMemoryBytes() int64 {
 	return c.maxMemory
 }
 
+// MaxQuerySamples is Config.MaxQuerySamples — the per-query sample budget.
+// The Client enforces it on the Go-side result drain; the engine reads it
+// (via this accessor at wiring time) to also fail-close a subquery whose
+// anchor grid alone would exceed it before any SQL is sent. 0 = unlimited.
+func (c *Client) MaxQuerySamples() int64 {
+	return c.maxSamples
+}
+
 // Exec runs sql with positional args against ClickHouse and returns any
 // error. Use for DDL (CREATE TABLE, ...) and DML (INSERT, ...) that don't
 // produce a result set.

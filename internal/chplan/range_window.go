@@ -156,6 +156,21 @@ func (*RangeWindow) planNode() {}
 
 func (r *RangeWindow) Children() []Node { return []Node{r.Input} }
 
+// NumAnchors is the number of subquery anchor points this RangeWindow
+// materialises: one row per Step across (End - OuterRange, End], i.e.
+// OuterRange/Step + 1. It is the per-series intermediate row count of a
+// PromQL subquery grid (the dominant resource axis for a fine-step/long-range
+// subquery like `[90d:1s]` = 7.78M). Zero for a non-subquery instant leaf
+// (OuterRange == 0) or an unstepped window (Step <= 0). Mirrors the emitter's
+// own `OuterRange.Nanoseconds()/stepNS + 1` so the budget gate and the emit
+// agree on the count.
+func (r *RangeWindow) NumAnchors() int64 {
+	if r.OuterRange <= 0 || r.Step <= 0 {
+		return 0
+	}
+	return r.OuterRange.Nanoseconds()/r.Step.Nanoseconds() + 1
+}
+
 func (r *RangeWindow) Equal(other Node) bool {
 	o, ok := other.(*RangeWindow)
 	if !ok {
