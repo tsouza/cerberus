@@ -499,6 +499,22 @@ func classifyEngineErr(err error) error {
 	// for a single query" message — NOT a 5xx, ClickHouse is healthy
 	// when it enforces a cap (the chclient breaker treats code 241 as
 	// a success for the same reason).
+	// Line-peek byte budget: a /detected_fields or /patterns drain buffered
+	// more raw log bytes than maxLogPeekBytes (a handful of pathologically
+	// large lines that slipped under the row-count budget). Same Loki-style
+	// limit rejection as the sample budget — HTTP 400, the query asked for
+	// more than cerberus will buffer; ClickHouse is healthy.
+	var bytesLimit *chclient.LogPeekBytesError
+	if errors.As(err, &bytesLimit) {
+		return &apiError{
+			Kind: ErrBadData,
+			Err: fmt.Errorf(
+				"maximum number of bytes (%d) reached for a single query; consider reducing the query range or line_limit",
+				bytesLimit.Limit,
+			),
+			Status: http.StatusBadRequest,
+		}
+	}
 	var memLimit *chclient.MemoryLimitError
 	if errors.As(err, &memLimit) {
 		msg := "maximum memory usage reached for a single query; consider reducing the query range or resolution"
@@ -554,13 +570,15 @@ func classifyEngineErr(err error) error {
 // error vocabulary. The metadata endpoints don't run through the engine
 // stage-prefixed path, so a generic ClickHouse failure stays a 502; but a
 // resource-limit rejection — the per-query sample budget (now enforced on the
-// metadata drains too, see chclient.drainBudgetExceeded) or the CH memory cap —
-// gets Loki's "maximum ... reached for a single query" 400, the same as the
-// query path, instead of being mislabelled as a transport fault.
+// metadata drains too, see chclient.drainBudgetExceeded), the line-peek byte
+// budget (chclient.maxLogPeekBytes), or the CH memory cap — gets Loki's
+// "maximum ... reached for a single query" 400, the same as the query path,
+// instead of being mislabelled as a transport fault.
 func classifyMetadataErr(err error) error {
 	var tooMany *chclient.TooManySamplesError
 	var memLimit *chclient.MemoryLimitError
-	if errors.As(err, &tooMany) || errors.As(err, &memLimit) {
+	var bytesLimit *chclient.LogPeekBytesError
+	if errors.As(err, &tooMany) || errors.As(err, &memLimit) || errors.As(err, &bytesLimit) {
 		return classifyEngineErr(err)
 	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
