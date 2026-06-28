@@ -5700,6 +5700,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/duration_gt_compound_unit",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/duration_lt",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -6250,6 +6260,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/kind_eq_internal",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/kind_eq_server",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -6321,6 +6341,36 @@
   },
   {
     "fixture": "traceql/max_duration",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/metrics_avg_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/metrics_avg_over_time_attr",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/metrics_avg_over_time_by",
     "fan_factor": 1,
     "scan_rows": 3,
     "peak_intermediate": 3,
@@ -6470,6 +6520,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/metrics_quantile_over_time_by",
+    "fan_factor": 1,
+    "scan_rows": 5,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/metrics_rate",
     "fan_factor": 1,
     "scan_rows": 4,
@@ -6490,7 +6550,27 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/metrics_rate_filtered_by",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/metrics_sum_over_time",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/metrics_sum_over_time_by",
     "fan_factor": 1,
     "scan_rows": 3,
     "peak_intermediate": 3,
@@ -6720,6 +6800,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/select_duration",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/select_intrinsics",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/select_nested_set",
     "fan_factor": 1,
     "scan_rows": 3,
@@ -6871,6 +6971,16 @@
   },
   {
     "fixture": "traceql/span_attr_in_or_fold",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/span_attr_not_in_and_fold",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
@@ -7051,6 +7161,26 @@
   },
   {
     "fixture": "traceql/structural_union_child",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/structural_union_descendant",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": true,
+    "max_recursion_depth": 2
+  },
+  {
+    "fixture": "traceql/structural_union_sibling",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
