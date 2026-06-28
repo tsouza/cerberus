@@ -624,7 +624,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_KEEPALIVE_IDLE     default "10s"  (idle before the first keepalive probe)
 //	CERBERUS_CH_KEEPALIVE_INTERVAL default "5s"   (gap between keepalive probes)
 //	CERBERUS_CH_KEEPALIVE_COUNT    default 3      (unanswered probes before the socket is declared dead)
-//	CERBERUS_QUERY_MAX_SAMPLES     default 5000000 (0 disables the budget)
+//	CERBERUS_QUERY_MAX_SAMPLES     default 5000000 (0 coerces to default; -1 disables, loudly)
 //	CERBERUS_QUERY_TIMEOUT         default "2m" — per-query wall-clock cap stamped
 //	    as ClickHouse max_execution_time (timeout_overflow_mode=throw); the
 //	    standard Prometheus ?timeout= param min's with it per request; 0 disables
@@ -801,8 +801,9 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if maxSamples < 0 {
-		return Config{}, fmt.Errorf("%s: must be >= 0, got %d", envQueryMaxSamples, maxSamples)
+	maxSamples, err = resolveQueryMaxSamples(maxSamples)
+	if err != nil {
+		return Config{}, err
 	}
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
@@ -1299,8 +1300,58 @@ const defaultCHOptCorpusInterval time.Duration = 60 * time.Second
 // Prometheus's 50M default here: parity on the rejection *contract*
 // (the 422 + exact message) is what matters; parity on a default sized
 // for 16-byte in-memory samples does not. Set CERBERUS_QUERY_MAX_SAMPLES
-// to raise it for big deployments, or 0 to disable the budget entirely.
+// to raise it for big deployments; `0` is coerced back to this default
+// (it never disables — see resolveQueryMaxSamples), and only an explicit
+// `-1` disables the budget, loudly.
 const defaultQueryMaxSamples int64 = 5_000_000
+
+// querySamplesDisableSentinel is the ONLY value that disables the
+// per-query sample budget. It is deliberately a negative, never-typed-by-
+// accident value: the budget is the process-side OOM backstop for the
+// matrixFromCursor drain, so a plain `0` — the env zero-value, and the
+// easiest operator typo — must NOT silently turn it off (see
+// resolveQueryMaxSamples). Disabling requires opting in to this sentinel
+// AND surfaces a loud startup warning.
+const querySamplesDisableSentinel int64 = -1
+
+// resolveQueryMaxSamples maps the raw CERBERUS_QUERY_MAX_SAMPLES value to
+// the budget the cursor enforces, closing the "0 = unlimited" trap that
+// would re-open the matrixFromCursor OOM door the resource-bound audit
+// closed. Semantics:
+//
+//   - n  > 0 : that exact budget.
+//   - n == 0 : coerced to the default (the env zero-value can never
+//     accidentally disable the backstop); a warning notes the coercion.
+//   - n == -1 (querySamplesDisableSentinel): budget DISABLED — a loud
+//     warning makes the off state impossible to ship silently.
+//   - n  < -1 : rejected.
+//
+// The unlike-its-siblings asymmetry (CERBERUS_CH_QUERY_MAX_MEMORY /
+// CERBERUS_QUERY_TIMEOUT both treat 0 as "unset/disabled") is deliberate:
+// those caps are enforced server-side by ClickHouse, while the sample
+// budget is the only bound on cerberus-process heap, so losing it
+// accidentally is the one that OOMs the pod.
+func resolveQueryMaxSamples(n int64) (int64, error) {
+	switch {
+	case n > 0:
+		return n, nil
+	case n == 0:
+		slog.Default().Warn(
+			"CERBERUS_QUERY_MAX_SAMPLES=0 does not disable the per-query sample budget; coercing to the default. Set -1 to deliberately disable (not recommended — removes the process-OOM backstop).",
+			"env", envQueryMaxSamples,
+			"applied", defaultQueryMaxSamples,
+		)
+		return defaultQueryMaxSamples, nil
+	case n == querySamplesDisableSentinel:
+		slog.Default().Warn(
+			"CERBERUS_QUERY_MAX_SAMPLES=-1: the per-query sample budget is DISABLED. The process-OOM backstop is OFF; a runaway result-set drain can OOM the pod.",
+			"env", envQueryMaxSamples,
+		)
+		return querySamplesDisableSentinel, nil
+	default:
+		return 0, fmt.Errorf("%s: must be > 0, 0 (use default), or -1 (disable); got %d", envQueryMaxSamples, n)
+	}
+}
 
 // defaultQueryTimeout is the default per-query wall-clock execution cap:
 // 2 minutes, mirroring upstream Prometheus's `--query.timeout` default
