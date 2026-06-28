@@ -13,8 +13,8 @@ import (
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/log/jsonexpr"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 

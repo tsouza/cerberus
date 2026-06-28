@@ -8,9 +8,9 @@ import (
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/prometheus/model/labels"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // postProcessExtract walks the parsed LogQL expression and pulls out
