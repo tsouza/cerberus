@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"go4.org/netipx"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -211,7 +210,7 @@ func ipLabelFilterExpr(f *syntax.IPLabelFilter, labelsExpr chplan.Expr) (chplan.
 
 	hasErr := &chplan.FuncCall{
 		Name: "mapContains",
-		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: logqlmodel.ErrorLabel}},
+		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: syntax.ErrorLabel}},
 	}
 	exists := &chplan.FuncCall{
 		Name: "mapContains",

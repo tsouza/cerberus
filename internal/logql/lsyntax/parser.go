@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
@@ -619,8 +618,8 @@ func (p *parser) parseLabelsFormat() []LabelFmt {
 	return fmts
 }
 
-func (p *parser) parseNamedMatchers() []loglib.NamedLabelMatcher {
-	var out []loglib.NamedLabelMatcher
+func (p *parser) parseNamedMatchers() []NamedLabelMatcher {
+	var out []NamedLabelMatcher
 	for {
 		id := p.expect(tkIdentifier, "label name").str
 		switch p.cur().kind {
@@ -638,9 +637,9 @@ func (p *parser) parseNamedMatchers() []loglib.NamedLabelMatcher {
 			}
 			p.advance()
 			val := p.expect(tkString, "string").str
-			out = append(out, loglib.NewNamedLabelMatcher(mustNewMatcher(mt, id, val), ""))
+			out = append(out, NewNamedLabelMatcher(mustNewMatcher(mt, id, val), ""))
 		default:
-			out = append(out, loglib.NewNamedLabelMatcher(nil, id))
+			out = append(out, NewNamedLabelMatcher(nil, id))
 		}
 		if p.at(tkComma) {
 			p.advance()

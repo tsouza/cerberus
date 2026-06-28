@@ -20,6 +20,29 @@ import (
 // methods are byte-for-byte faithful to upstream's so the
 // `/loki/api/v1/format_query` round-trip is unchanged.
 
+// Magic label-name constants, reimplemented from Loki's logqlmodel.
+// These are part of the LogQL wire contract — surfaced verbatim as label
+// keys/values in query responses (the `__error__` family) or as the
+// special unpacked-entry key.
+const (
+	ErrorLabel         = "__error__"
+	ErrorDetailsLabel  = "__error_details__"
+	PreserveErrorLabel = "__preserve_error__"
+	PackedEntryKey     = "_entry"
+)
+
+// NamedLabelMatcher is one entry of a `| drop` / `| keep` stage: either a
+// bare label Name (Matcher nil) or a value Matcher.
+type NamedLabelMatcher struct {
+	Matcher *labels.Matcher
+	Name    string
+}
+
+// NewNamedLabelMatcher builds a drop/keep entry.
+func NewNamedLabelMatcher(m *labels.Matcher, n string) NamedLabelMatcher {
+	return NamedLabelMatcher{Matcher: m, Name: n}
+}
+
 // LineMatchType enumerates the line-filter operators (`|=`, `!=`, `|~`,
 // `!~`, `|>`, `!>`).
 type LineMatchType int

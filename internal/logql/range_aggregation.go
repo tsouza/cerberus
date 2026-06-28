@@ -3,7 +3,6 @@ package logql
 import (
 	"fmt"
 
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
@@ -463,7 +462,7 @@ func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity chplan.Expr) ch
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
 				Name: "mapContains",
-				Args: []chplan.Expr{fullLabels, &chplan.LitString{V: logqlmodel.ErrorLabel}},
+				Args: []chplan.Expr{fullLabels, &chplan.LitString{V: syntax.ErrorLabel}},
 			},
 			withDetectedLevel(s, fullLabels),
 			identity,

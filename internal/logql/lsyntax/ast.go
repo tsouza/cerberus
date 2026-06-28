@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/logql/logpattern"
@@ -41,31 +39,23 @@ type SampleExpr interface {
 	isSampleExpr()
 }
 
-// StageExpr is one stage of a log pipeline.
+// StageExpr is one stage of a log pipeline. The label-projection stages
+// (`| drop` / `| keep`) expose their matchers via accessors on the
+// concrete types; every other stage builds its SQL shape directly in the
+// lowering, so the interface carries only the marker.
 type StageExpr interface {
 	Expr
-	// Stage returns the runtime stage implementation for this AST
-	// stage. Only the label-projection stages (`| drop` / `| keep`)
-	// are consumed through this method by cerberus; the others build
-	// their SQL shape directly in the lowering and return the default
-	// "not a runtime stage" error here.
-	Stage() (loglib.Stage, error)
 	isStageExpr()
 }
 
 // MultiStageExpr is an ordered log pipeline.
 type MultiStageExpr []StageExpr
 
-// stageBase supplies the StageExpr marker methods and a default Stage
-// implementation for the stages whose runtime behaviour cerberus lowers
-// to SQL rather than running through the upstream log.Stage machinery.
+// stageBase supplies the StageExpr marker methods.
 type stageBase struct{}
 
 func (stageBase) isExpr()      {}
 func (stageBase) isStageExpr() {}
-func (stageBase) Stage() (loglib.Stage, error) {
-	return nil, NewParseError("expression is not a runtime stage", 0, 0)
-}
 
 // -------------------------------------------------------------------
 // Stream selector
@@ -318,18 +308,16 @@ func newLabelFmtExpr(fmts []LabelFmt) *LabelFmtExpr { return &LabelFmtExpr{Forma
 // DropLabelsExpr is a `| drop a, b="v"` stage.
 type DropLabelsExpr struct {
 	stageBase
-	dropLabels []loglib.NamedLabelMatcher
+	dropLabels []NamedLabelMatcher
 }
 
-func newDropLabelsExpr(dropLabels []loglib.NamedLabelMatcher) *DropLabelsExpr {
+func newDropLabelsExpr(dropLabels []NamedLabelMatcher) *DropLabelsExpr {
 	return &DropLabelsExpr{dropLabels: dropLabels}
 }
 
-// Stage runs the `| drop` projection through the upstream log runtime,
-// matching its exact bare-name vs matcher-form semantics.
-func (e *DropLabelsExpr) Stage() (loglib.Stage, error) {
-	return loglib.NewDropLabels(e.dropLabels), nil
-}
+// Matchers returns the drop entries (bare names + value matchers) so the
+// Go-side post-processing can apply the projection over a row's label map.
+func (e *DropLabelsExpr) Matchers() []NamedLabelMatcher { return e.dropLabels }
 
 // HasNamedMatchers reports whether any drop entry is a value matcher
 // (`| drop env="prod"`) rather than a bare label name.
@@ -358,17 +346,16 @@ func (e *DropLabelsExpr) Names() []string {
 // KeepLabelsExpr is a `| keep a, b="v"` stage.
 type KeepLabelsExpr struct {
 	stageBase
-	keepLabels []loglib.NamedLabelMatcher
+	keepLabels []NamedLabelMatcher
 }
 
-func newKeepLabelsExpr(keepLabels []loglib.NamedLabelMatcher) *KeepLabelsExpr {
+func newKeepLabelsExpr(keepLabels []NamedLabelMatcher) *KeepLabelsExpr {
 	return &KeepLabelsExpr{keepLabels: keepLabels}
 }
 
-// Stage runs the `| keep` projection through the upstream log runtime.
-func (e *KeepLabelsExpr) Stage() (loglib.Stage, error) {
-	return loglib.NewKeepLabels(e.keepLabels), nil
-}
+// Matchers returns the keep entries so the Go-side post-processing can
+// apply the projection over a row's label map.
+func (e *KeepLabelsExpr) Matchers() []NamedLabelMatcher { return e.keepLabels }
 
 // -------------------------------------------------------------------
 // Unwrap / log range / offset

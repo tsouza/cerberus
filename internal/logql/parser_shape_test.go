@@ -277,11 +277,10 @@ func TestParserShape_DropStage(t *testing.T) {
 
 // TestParserShape_KeepStage pins `*KeepLabelsExpr` as the
 // post-fetch projection sibling of DropLabelsExpr. The
-// KeepLabelsExpr type carries no exported field accessors; cerberus
-// relies on `Stage()` to obtain the upstream `log.KeepLabels`
-// processor. The shape check here also confirms `Stage()` returns
-// a non-nil stage (catching upstream regressions where the parser
-// emits a malformed KeepLabelsExpr).
+// KeepLabelsExpr exposes its keep entries via Matchers(); cerberus's
+// post-process applies them as map operations. The shape check confirms
+// the parser surfaces the two bare keep names (catching regressions
+// where the parser emits a malformed KeepLabelsExpr).
 func TestParserShape_KeepStage(t *testing.T) {
 	t.Parallel()
 	expr := mustParseLogQL(t, `{app="api"} | keep job, env`)
@@ -296,12 +295,14 @@ func TestParserShape_KeepStage(t *testing.T) {
 	if !ok {
 		t.Fatalf("stage[0] = %T; want *KeepLabelsExpr", pe.MultiStages[0])
 	}
-	stg, err := kl.Stage()
-	if err != nil {
-		t.Fatalf("Stage(): %v", err)
+	matchers := kl.Matchers()
+	if len(matchers) != 2 {
+		t.Fatalf("Matchers() len = %d; want 2", len(matchers))
 	}
-	if stg == nil {
-		t.Errorf("Stage() returned nil; cerberus's post-process needs the upstream stage")
+	for _, m := range matchers {
+		if m.Matcher != nil || (m.Name != "job" && m.Name != "env") {
+			t.Errorf("unexpected keep entry %+v; want bare job/env", m)
+		}
 	}
 }
 
