@@ -44,6 +44,13 @@ func searchTraceLimit(ctx context.Context) int64 {
 	return 0
 }
 
+// SearchTraceLimit exposes the /api/search trace limit (WithSearchTraceLimit)
+// to adapters that finalise the plan outside this package — the Tempo Lang's
+// ProjectSamples wrap reads it to cap a spanset-aggregation search to the
+// newest N traces server-side, the parity counterpart to the SearchTraceLimit
+// node plain search already gets. 0 = unbounded.
+func SearchTraceLimit(ctx context.Context) int64 { return searchTraceLimit(ctx) }
+
 // stampNestedSetTraceLimit walks the lowered plan and sets TraceLimit on
 // every NestedSetAnnotate whose input plan guarantees each returned trace's
 // root span is in the result set — the precondition under which ranking the
