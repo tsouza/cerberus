@@ -16,9 +16,10 @@ import (
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
 	"github.com/grafana/tempo/pkg/tempopb"
-	"github.com/grafana/tempo/pkg/traceql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"

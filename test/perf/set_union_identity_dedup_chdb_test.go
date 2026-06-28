@@ -48,7 +48,7 @@ import (
 	"testing"
 	"time"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -100,7 +100,7 @@ func setUnionExec(t *testing.T, db *sql.DB, s string) {
 // through the real chain (the showcase "Spanset ||" panel query).
 func emitSpansetUnionSQL(t *testing.T, ql string) (string, []any) {
 	t.Helper()
-	expr, err := tempo.Parse(ql)
+	expr, err := traceqlast.Parse(ql)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
