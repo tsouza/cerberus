@@ -1,0 +1,36 @@
+-- query.promql --
+min_over_time(increase(http_requests_total[5m])[1h:5m])
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "http_requests_total"
+[5] string = "http.requests.total"
+[6] string = "http.requests/total"
+[7] string = "http.requests_total"
+[8] string = "http/requests/total"
+[9] string = "http/requests_total"
+[10] string = "http_requests.total"
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:30', 9), 0.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:30', 9), 30.0);
+-- expected_rows --
+[
+  [{"job": "api"}, 33.75]
+]
+-- sql --
+SELECT `Attributes`, arrayReduce('min', vals) AS `Value` FROM (SELECT `Attributes`, arrayMap(t -> tupleElement(t, 2), arrayFilter(t -> tupleElement(t, 1), arrayMap(a -> arrayMap(s -> (a > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(3600000000000) AND a <= toDateTime64('2026-01-01 00:00:01.000000000', 9) AND length(s) >= 2, if((toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) > 0, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), s)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), s)))) * ((toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) + if(arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), s)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), s)))) > 0 AND tupleElement(s[1], 2) >= 0, least(if((toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(300000000000), tupleElement(s[1], 1))) / 1e9) >= 1.1 * (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1) / 2, (toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(300000000000), tupleElement(s[1], 1))) / 1e9)), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) * tupleElement(s[1], 2) / arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), s)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), s))))), if((toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(300000000000), tupleElement(s[1], 1))) / 1e9) >= 1.1 * (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1) / 2, (toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(300000000000), tupleElement(s[1], 1))) / 1e9))) + if((toFloat64(dateDiff('nanosecond', tupleElement(s[length(s)], 1), a)) / 1e9) >= 1.1 * (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1) / 2, (toFloat64(dateDiff('nanosecond', tupleElement(s[length(s)], 1), a)) / 1e9))) / (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9), nan)), [arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(arrayFilter(p -> tupleElement(p, 1) > a - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= a, samples))))])[1], arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000) - toIntervalNanosecond(i * 300000000000), range(13))))) AS `vals` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `samples` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`)) WHERE length(vals) > 0
+-- chplan --
+RangeWindow func=min_over_time range=1h0m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  RangeWindow func=increase range=5m0s step=5m0s outerRange=1h0m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:00:01Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+        Scan(otel_metrics_sum)

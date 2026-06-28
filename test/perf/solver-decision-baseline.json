@@ -1830,6 +1830,12 @@
     "reason": "instant"
   },
   {
+    "query": "subquery_count_over_time_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D"
+  },
+  {
     "query": "subquery_irate_nested",
     "routed": true,
     "k": 3,
@@ -1842,7 +1848,19 @@
     "reason": "routed"
   },
   {
+    "query": "subquery_max_over_time_delta",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D"
+  },
+  {
     "query": "subquery_max_over_time_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D"
+  },
+  {
+    "query": "subquery_min_over_time_increase",
     "routed": false,
     "k": 0,
     "reason": "high-D"
