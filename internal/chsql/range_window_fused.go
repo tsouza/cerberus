@@ -84,6 +84,13 @@ func extrapolatingKindForFunc(fn string) (extrapolationKind, bool) {
 // fused shape, and handled=false when the shape is not fusible and the caller
 // must fall through to the existing materialized path unchanged.
 func (e *emitter) tryEmitFusedInstantSubquery(r *chplan.RangeWindow) (handled bool, err error) {
+	// Instant outer reducer only: OuterRange>0 is the range-query/matrix shape
+	// (handled before this call) and would make the fused single-anchor collapse
+	// wrong. The caller already routes OuterRange>0 away, but assert it here so
+	// the fused entry is self-guarding rather than relying on a caller invariant.
+	if r.OuterRange != 0 || r.Step != 0 {
+		return false, nil
+	}
 	inner, ok := r.Input.(*chplan.RangeWindow)
 	if !ok {
 		return false, nil
@@ -206,43 +213,60 @@ func (e *emitter) emitFusedInstantSubquery(
 		)
 	}
 
-	// qualifyPred(a): outer anchor-window AND the inner length>=2 gate
-	// (replaces the materialized inner `WHERE length(window_vals) >= 2`).
-	qualifyPred := func(a Frag) Frag {
-		return And(
-			outerWindowPred(a),
-			Gte(Call("length", sliceOf(a)), InlineLit(int64(2))),
+	// letSlice binds an anchor's window slice to `s`, evaluated ONCE: ClickHouse
+	// has no LET, so `array(<slice>)` materialises the slice a single time and
+	// the wrapping `arrayMap(s -> body, …)[1]` binds it. Without this, every
+	// reference to the slice inside `body` (~50 in the extrapolation arithmetic)
+	// re-renders the O(samples) arrayFilter+dedup — recomputed per anchor that is
+	// quadratic for a dense grid (the #1109 GAP-2 review's CPU-blowup finding).
+	// The slice itself never escapes into a carried array, so peak memory stays
+	// O(samples-in-window) per series — the whole point of the fused path.
+	letSlice := func(a Frag, body func(s Frag) Frag) Frag {
+		return Subscript(
+			Call("arrayMap", Lambda1("s", body(BareIdent("s"))), Array(sliceOf(a))),
+			InlineLit(int64(1)),
 		)
 	}
 
-	// Layer 2 — qualifying anchors, carrying the samples array forward so the
-	// reduce layer can re-derive each anchor's slice.
-	qualQ := NewQuery().From(samplesQ.Frag())
+	// Per-anchor (qualifies, extrapolated_value) over the full grid, slice bound
+	// once. qualifies = outer anchor-window ∧ length(slice)>=2 (replaces the
+	// materialized inner `WHERE length(window_vals) >= 2`). The value is computed
+	// for every anchor (cheap scalars) and the non-qualifying ones are dropped
+	// next — CH array-index OOB on a short/empty slice yields 0, never an error.
+	perAnchor := Call(
+		"arrayMap",
+		Lambda1("a", letSlice(BareIdent("a"), func(s Frag) Frag {
+			return Tuple(
+				And(outerWindowPred(BareIdent("a")), Gte(Call("length", s), InlineLit(int64(2)))),
+				e.fusedExtrapolatedValueFrag(s, BareIdent("a"), kind, rangeNS, rangeSeconds),
+			)
+		})),
+		anchors,
+	)
+
+	// Layer 2 — the qualifying anchors' values, materialised once as `vals`
+	// (O(numAnchors) scalars, not slices).
+	valsQ := NewQuery().From(samplesQ.Frag())
 	for _, g := range groupFrags {
-		qualQ.Select(g)
+		valsQ.Select(g)
 	}
-	qualQ.Select(Col("samples"))
-	qualQ.Select(As(
-		Call("arrayFilter", Lambda1("a", qualifyPred(BareIdent("a"))), anchors),
-		"qualified_anchors",
+	valsQ.Select(As(
+		Call("arrayMap",
+			Lambda1("t", tupleElemFrag(BareIdent("t"), 2)),
+			Call("arrayFilter", Lambda1("t", tupleElemFrag(BareIdent("t"), 1)), perAnchor)),
+		"vals",
 	))
 
-	// Layer 3 — per-anchor extrapolated value array, reduced by the outer
-	// aggregate. arrayReduce('<agg>', …) invokes the same CH aggregate the
-	// materialized outer GROUP BY would, so NaN/empty semantics match.
-	perAnchorVals := Call(
-		"arrayMap",
-		Lambda1("a", e.fusedExtrapolatedValueFrag(sliceOf(BareIdent("a")), BareIdent("a"), kind, rangeNS, rangeSeconds)),
-		BareIdent("qualified_anchors"),
-	)
-	outerQ := NewQuery().From(qualQ.Frag())
+	// Layer 3 — reduce by the outer aggregate. arrayReduce('<agg>', …) invokes
+	// the same CH aggregate the materialized outer GROUP BY would, so NaN/empty
+	// semantics match by construction. A series with zero qualifying anchors
+	// emits no row — matching the materialized path producing no group for it.
+	outerQ := NewQuery().From(valsQ.Frag())
 	for _, g := range groupFrags {
 		outerQ.Select(g)
 	}
-	outerQ.Select(As(reduce(perAnchorVals), r.ValueColumn))
-	// A series with zero qualifying anchors emits no row — matching the
-	// materialized path producing no group for such a series.
-	outerQ.Where(Gt(Call("length", BareIdent("qualified_anchors")), InlineLit(int64(0))))
+	outerQ.Select(As(reduce(BareIdent("vals")), r.ValueColumn))
+	outerQ.Where(Gt(Call("length", BareIdent("vals")), InlineLit(int64(0))))
 
 	e.emitSelect(outerQ)
 	return nil
