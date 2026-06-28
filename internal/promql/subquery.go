@@ -339,8 +339,7 @@ func lowerSubqueryOverVectorSelector(
 // The inner matrix uses `anchor_ts` for the per-row anchor and emits
 // the per-window value under `s.ValueColumn` (the schema's canonical
 // PascalCase `Value` — the windowed-array emitter projects `r.ValueColumn`
-// at every outer SELECT site since the fix to chsql.range_window in
-// commit 1 of this PR).
+// at every outer SELECT site).
 func lowerOuterRangeFnOverSubquery(
 	outer *parser.Call,
 	sub *parser.SubqueryExpr,

@@ -4,12 +4,11 @@ This note records two things and nothing more: the native ClickHouse
 capability cerberus exploits **today**, and where cerberus sits relative
 to ClickHouse's own observability tracks (the upstream positioning).
 
-It used to be a speculative roadmap for shipping cerberus's heavy
-lowerings as new `timeSeries*ToGrid` aggregates upstream. That roadmap is
-gone: most candidate aggregates are already shipped or in-flight by
-ClickHouse staff, the one cerberus-adjacent gap lives in an engine
-cerberus does not use, and cerberus's actual job sits in the gap both of
-ClickHouse's tracks leave. See **Upstream positioning** below.
+The `timeSeries*ToGrid` aggregates cerberus's heavy lowerings would push
+upstream are largely already shipped or in-flight by ClickHouse staff; the
+one cerberus-adjacent gap lives in an engine cerberus does not use. cerberus's
+actual job sits in the gap both of ClickHouse's observability tracks leave. See
+**Upstream positioning** below.
 
 ## A. What cerberus uses today
 

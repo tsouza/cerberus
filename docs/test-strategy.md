@@ -599,14 +599,13 @@ under a **hard page cap that fails the run when exceeded**, so
 surface growth forces a deliberate cap bump in `stacks.ts`.
 
 **The `compose-smoke` matrix-shard split.** `compose-smoke` is the
-slowest required PR gate. Historically it was one runner booting one
-compose stack and running one `npx playwright test` over all 10 specs
-*serially* (`playwright.config.ts` pins `workers: 1` in CI). The three
+slowest required PR gate, so it shards across a matrix of jobs. The three
 heaviest specs — `iterate-panel-kiosk`, `compose_grafana_smoke`, and
 `crawl/crawl` — are each a *single* async `test()` that loops
 internally over every dashboard/panel/surface, so Playwright's native
-`--shard` (which partitions at `test()` granularity) leaves them whole
-and buys nothing. The split is therefore **logical**: the spec FILES
+`--shard` (which partitions at `test()` granularity, and CI pins
+`workers: 1` in `playwright.config.ts`) leaves them whole and buys
+nothing. The split is therefore **logical**: the spec FILES
 are partitioned across a matrix of jobs, each booting its OWN isolated
 compose stack, balanced by measured wall-clock weight. The partition,
 the explicit non-compose-smoke exclude list, and the coverage
