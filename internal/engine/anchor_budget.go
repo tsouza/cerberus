@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"math"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -30,49 +32,79 @@ import (
 // semantics), so the gate is inert by default in tests that don't wire it.
 //
 // Scope. NumAnchors is non-zero for ANY RangeWindow with OuterRange>0 && Step>0
-// — which includes a plain query_range matrix, not only a subquery. That is
-// harmless: the query_range OUTER grid is already capped at
-// format.MaxResolutionPoints (11000) in the head handlers before lowering, far
-// below any sane budget, so a range query can never reach this gate. SUBQUERY
-// inner grids have no such cap (the [range:step] resolution is unbounded) — so
-// in practice this budget is the subquery counterpart to MaxResolutionPoints,
-// the one place an OuterRange grid that the handler did not pre-bound gets
-// bounded.
+// — a subquery [range:step] grid, OR a plain query_range matrix's outer step
+// grid. A plain query_range alone is already capped at format.MaxResolutionPoints
+// (11000) in the head handlers, far below any sane budget; SUBQUERY inner grids
+// have no such cap, so this budget is the subquery counterpart to
+// MaxResolutionPoints. The two compose: a query_range OVER a subquery stacks the
+// 11000-point outer grid above the subquery grid, and subqueryAnchorLoad
+// MULTIPLIES them — so the gate can be reached by a range query whose subquery
+// inner grid pushes the product past the budget (the intermediate it materialises
+// really is that product).
 //
-// The bound is per-series and conservative on two axes, by design:
-//   - cardinality: it counts a single series' anchor grid, not anchors x
-//     series; the cardinality axis is bounded elsewhere (#1112 spill + the
-//     result-drain SampleBudget). So a sub-budget grid at high cardinality is
-//     backstopped at runtime, not here.
-//   - nesting: for stacked subqueries it takes the MAX anchor grid in the tree,
-//     not the product the emitter fans out. An undercount, never an
-//     over-reject; the runtime nets catch a product that no single level busts.
+// The bound is per-series and conservative on the cardinality axis by design: it
+// counts a single series' anchor grid, not anchors x series; the cardinality
+// axis is bounded elsewhere (#1112 spill + the result-drain SampleBudget). So a
+// sub-budget grid at high cardinality is backstopped at runtime, not here.
+//
+// Nesting IS counted (GAP-C): subqueryAnchorLoad takes the PRODUCT of stacked
+// OuterRange>0 grids — each outer anchor re-evaluates the inner grid — not the
+// max, which under-rejected nested subqueries.
 func requireSubquerySampleBudget(plan chplan.Node, maxSamples int64) error {
 	if maxSamples <= 0 || plan == nil {
 		return nil
 	}
-	worst := worstAnchorCount(plan)
+	worst := subqueryAnchorLoad(plan)
 	if worst > maxSamples {
 		return &chclient.TooManySamplesError{Limit: maxSamples}
 	}
 	return nil
 }
 
-// worstAnchorCount returns the largest RangeWindow.NumAnchors anywhere in the
-// plan (0 if none) — the per-series intermediate row count of the heaviest
-// subquery grid the plan will materialise.
-func worstAnchorCount(n chplan.Node) int64 {
+// subqueryAnchorLoad returns the largest per-series intermediate anchor-row
+// count the plan will materialise. A single subquery RangeWindow contributes
+// its NumAnchors; NESTED subqueries multiply, because each outer anchor
+// re-evaluates the inner grid — `max_over_time(max_over_time(rate(m[1m])
+// [5m:30s])[1h:5m])` materialises (1h/5m)·(5m/30s) anchor rows, not the larger
+// of the two. (The earlier max-only count under-rejected this product shape —
+// GAP-C.) Sibling subqueries (e.g. the two arms of a binary op) do NOT multiply;
+// only a RangeWindow stacked over another OuterRange>0 RangeWindow in its own
+// input subtree does. Saturates at math.MaxInt64 so a deeply nested product can
+// never wrap negative and slip under the budget.
+func subqueryAnchorLoad(n chplan.Node) int64 {
 	if n == nil {
 		return 0
 	}
-	var worst int64
+	var self int64
 	if rw, ok := n.(*chplan.RangeWindow); ok {
-		worst = rw.NumAnchors()
+		self = rw.NumAnchors()
 	}
+	// The heaviest nested load among the input subtree(s).
+	var childLoad int64
 	for _, c := range n.Children() {
-		if a := worstAnchorCount(c); a > worst {
-			worst = a
+		if l := subqueryAnchorLoad(c); l > childLoad {
+			childLoad = l
 		}
 	}
-	return worst
+	// A subquery grid (self>0) stacked over a nested grid (childLoad>0)
+	// multiplies; otherwise the load is whichever side carries it.
+	if self > 0 && childLoad > 0 {
+		return satMulInt64(self, childLoad)
+	}
+	if self > childLoad {
+		return self
+	}
+	return childLoad
+}
+
+// satMulInt64 multiplies two non-negative int64s, saturating at math.MaxInt64
+// instead of overflowing (a nested anchor product can exceed 1e18).
+func satMulInt64(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > math.MaxInt64/b {
+		return math.MaxInt64
+	}
+	return a * b
 }
