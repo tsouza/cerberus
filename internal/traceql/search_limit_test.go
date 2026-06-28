@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tempoql "github.com/grafana/tempo/pkg/traceql"
+	tempoql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"

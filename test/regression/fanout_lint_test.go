@@ -29,7 +29,7 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -265,7 +265,7 @@ func lowerTraceQL(t *testing.T, ctx context.Context, c *spec.Case) (chplan.Node,
 	query = strings.TrimSpace(query)
 
 	s := schema.DefaultOTelTraces()
-	expr, err := tempo.Parse(query)
+	expr, err := traceqlast.Parse(query)
 	if err != nil {
 		t.Fatalf("traceql Parse(%q): %v", query, err)
 	}

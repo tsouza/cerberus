@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	tempotraceql "github.com/grafana/tempo/pkg/traceql"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -14,6 +13,7 @@ import (
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // probeStart / probeEnd anchor the instant/range window used when
@@ -64,9 +64,9 @@ func cerberusVerdictLogQL(query string) (Verdict, string) {
 }
 
 // cerberusVerdictTraceQL runs one TraceQL probe through the path the
-// tempo handler uses — traceql.Parse → lower → optimize → emit.
+// tempo handler uses — the in-house ast.Parse → lower → optimize → emit.
 func cerberusVerdictTraceQL(query string) (Verdict, string) {
-	expr, err := tempotraceql.Parse(query)
+	expr, err := traceqlast.Parse(query)
 	if err != nil {
 		return VerdictReject, "probe-parse: " + err.Error()
 	}
