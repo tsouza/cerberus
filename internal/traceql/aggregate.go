@@ -7,7 +7,7 @@ package traceql
 import (
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
