@@ -171,7 +171,25 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 	case *parser.BinaryExpr:
 		return lowerBinary(e, s, ctx)
 	case *parser.SubqueryExpr:
-		return lowerSubquery(e, s, ctx)
+		plan, err := lowerSubquery(e, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Instant bare subquery (no outer range-vector fn wrapping it): bound
+		// the inner scan to the eval window, the same way
+		// lowerOuterRangeFnOverSubquery does for `<fn>(<subquery>)`. Bare
+		// subqueries route here, not through that path, so without this
+		// `rate(m[5m])[90d:1s]` / `up[5m:1m]` on /api/v1/query read FULL
+		// RETENTION (#1109 GAP-2 axis-1, bare shape). Gated on instant
+		// (step == 0); range mode widens via widenSubquerySpine inside
+		// lowerOuterRangeFnOverSubquery and never reaches a bare top-level
+		// subquery (a range query over a matrix-typed expr is rejected upstream).
+		if ctx.step == 0 {
+			if a, aerr := subqueryAnchor(e, ctx); aerr == nil && !a.End.IsZero() {
+				widenSubquerySpine(plan, a.End.Add(-e.Range), a.End)
+			}
+		}
+		return plan, nil
 	case *parser.MatrixSelector:
 		return lowerMatrixSelector(e, s, ctx)
 	case *parser.UnaryExpr:
