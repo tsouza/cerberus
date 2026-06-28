@@ -549,6 +549,23 @@ func classifyEngineErr(err error) error {
 	}
 }
 
+// classifyMetadataErr maps an error from a metadata drain (labels / series /
+// label-values / detected-labels / index-volume / patterns) onto the Loki
+// error vocabulary. The metadata endpoints don't run through the engine
+// stage-prefixed path, so a generic ClickHouse failure stays a 502; but a
+// resource-limit rejection — the per-query sample budget (now enforced on the
+// metadata drains too, see chclient.drainBudgetExceeded) or the CH memory cap —
+// gets Loki's "maximum ... reached for a single query" 400, the same as the
+// query path, instead of being mislabelled as a transport fault.
+func classifyMetadataErr(err error) error {
+	var tooMany *chclient.TooManySamplesError
+	var memLimit *chclient.MemoryLimitError
+	if errors.As(err, &tooMany) || errors.As(err, &memLimit) {
+		return classifyEngineErr(err)
+	}
+	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+}
+
 // buildInstantData turns the sample stream into a Loki instant-query
 // data body. Metric queries produce a vector; log queries produce
 // streams. The limit + direction control how many log entries to

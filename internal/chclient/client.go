@@ -1206,6 +1206,23 @@ func flushProgress(ctx context.Context) {
 	}
 }
 
+// drainBudgetExceeded reports the per-query sample-budget overage for a
+// metadata/string drain that buffers its whole result into a Go slice. The
+// matrix path bounds Go-side memory through the cursor's SampleBudget; the
+// metadata drains (labels / series / label-values / metadata / index-volume)
+// had no equivalent, so a high-cardinality DISTINCT over a wide window could
+// buffer unbounded rows and OOM the cerberus process (all three heads) with no
+// 422 net. This mirrors that budget: once a drain has buffered more rows than
+// Config.MaxQuerySamples, it aborts with the same TooManySamplesError the
+// matrix path raises, which maps to a Prom/Loki/Tempo resource-rejection. Pass
+// len(out) after each append. maxSamples <= 0 disables the budget.
+func (c *Client) drainBudgetExceeded(n int) error {
+	if c.maxSamples > 0 && int64(n) > c.maxSamples {
+		return &TooManySamplesError{Limit: c.maxSamples}
+	}
+	return nil
+}
+
 // QueryStrings runs sql and decodes a single-string-column result into a
 // flat slice. Used by metadata endpoints (/api/v1/labels, label values,
 // metadata) that return a list of names.
@@ -1237,6 +1254,9 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
 		out = append(out, s)
+		if err := c.drainBudgetExceeded(len(out)); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
@@ -1393,6 +1413,9 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
 		out = append(out, r)
+		if err := c.drainBudgetExceeded(len(out)); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
@@ -1488,6 +1511,9 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 		}
 		r.Labels = labels
 		out = append(out, r)
+		if err := c.drainBudgetExceeded(len(out)); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
@@ -1559,6 +1585,9 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
 		out = append(out, r)
+		if err := c.drainBudgetExceeded(len(out)); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
@@ -1595,6 +1624,9 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
 		out = append(out, m)
+		if err := c.drainBudgetExceeded(len(out)); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))

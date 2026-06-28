@@ -1231,6 +1231,23 @@ func (h *Handler) respondError(w http.ResponseWriter, err error) {
 		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}
+	// A bare per-query resource-limit rejection — the sample budget (now
+	// enforced on metadata drains too, chclient.drainBudgetExceeded) or the CH
+	// memory cap — maps to the same Prom 422 the matrix path gives via
+	// classifyDrainError, rather than the generic 500 below. A callsite that
+	// pre-wrapped its own *apiError already returned above, so this only
+	// reclassifies the raw sentinels.
+	if errors.Is(err, chclient.ErrTooManySamples) {
+		ae := tooManySamplesAPIError()
+		writeError(w, ae.Status, ae.Kind, ae.Err)
+		return
+	}
+	var memLimit *chclient.MemoryLimitError
+	if errors.As(err, &memLimit) {
+		ae := memoryLimitAPIError(memLimit)
+		writeError(w, ae.Status, ae.Kind, ae.Err)
+		return
+	}
 	writeError(w, http.StatusInternalServerError, ErrInternal, err)
 }
 

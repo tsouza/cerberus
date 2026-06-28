@@ -450,6 +450,20 @@ func classifySearchErr(err error) int {
 	return http.StatusInternalServerError
 }
 
+// tagsErrStatus maps a /search/tags and /search/tag/.../values metadata-drain
+// error to its HTTP status. These endpoints buffer their whole result into a Go
+// slice; the per-query sample budget now bounds that drain (chclient
+// .drainBudgetExceeded), so a high-cardinality tag/value DISTINCT over a wide
+// window aborts with a resource-limit rejection (422, like the search path)
+// rather than OOMing the process. Any other failure stays a 502 transport
+// fault — the default these endpoints already returned.
+func tagsErrStatus(err error) int {
+	if errors.Is(err, chclient.ErrTooManySamples) || errors.Is(err, chclient.ErrMemoryLimitExceeded) {
+		return http.StatusUnprocessableEntity
+	}
+	return http.StatusBadGateway
+}
+
 // search/recent page-size bounds: the Tempo Search UI's first-page
 // trace list. defaultSearchRecentLimit is one screen's worth when the
 // client sends no `?limit`; maxSearchRecentLimit caps a client-supplied
