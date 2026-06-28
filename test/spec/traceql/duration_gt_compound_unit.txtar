@@ -1,0 +1,22 @@
+-- query.traceql --
+{ duration > 1h30m }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('aaaa', 7200000000000),
+    ('bbbb', 3600000000000),
+    ('cccc', 5400000000000);
+-- expected_rows --
+[
+  ["aaaa", 7200000000000]
+]
+-- args --
+[0] int64 = 5400000000000
+-- chplan --
+Filter predicate=(Duration > 5400000000000)
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`Duration` > ?)

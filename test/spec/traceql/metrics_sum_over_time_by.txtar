@@ -1,0 +1,27 @@
+-- query.traceql --
+{} | sum_over_time(duration) by (resource.service.name)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (50000000, map('service.name', 'frontend')),
+    (100000000, map('service.name', 'frontend')),
+    (200000000, map('service.name', 'backend'));
+-- expected_rows --
+[
+  ["backend", 0.2],
+  ["frontend", 0.15]
+]
+-- args --
+[0] string = "service.name"
+[1] float64 = 1e+09
+[2] bool = true
+[3] string = "service.name"
+-- chplan --
+MetricsAggregate op=sum_over_time attr=(Duration / 1e+09) groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)
+-- sql --
+SELECT `ResourceAttributes`[?] AS `service.name`, sum((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?]

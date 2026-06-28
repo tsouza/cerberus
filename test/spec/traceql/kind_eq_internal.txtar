@@ -1,0 +1,21 @@
+-- query.traceql --
+{ kind = internal }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanKind String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('Server'),
+    ('Internal'),
+    ('Client');
+-- expected_rows --
+[
+  ["Internal"]
+]
+-- args --
+[0] string = "Internal"
+-- chplan --
+Filter predicate=(SpanKind = "Internal")
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
