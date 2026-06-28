@@ -5,8 +5,8 @@ import (
 	"net/netip"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"go4.org/netipx"
 
 	"github.com/tsouza/cerberus/internal/chplan"

@@ -88,6 +88,7 @@ components:
   chplan:    { in: chplan }
   promql:    { in: promql }
   logql:     { in: logql }
+  lsyntax:   { in: logql/lsyntax }
   traceql:   { in: traceql }
   traceql-ast: { in: traceql/ast }
   optimizer: { in: optimizer }
@@ -174,6 +175,12 @@ deps:
     mayDependOn:
       - chplan
       - engine
+      - lsyntax
+  # The clean-room in-house LogQL parser (replaces the AGPL
+  # grafana/loki pkg/logql/syntax parser) is a leaf: it depends on no
+  # internal cerberus component, only external upstream leaf types (the
+  # grafana/loki pkg/logql/log eval package + prometheus labels) it
+  # constructs the AST out of. Leaf components omit a mayDependOn block.
   traceql:
     mayDependOn:
       - chplan
@@ -252,6 +259,7 @@ deps:
       - engine
       - optimizer
       - logql
+      - lsyntax
   api-prom:
     mayDependOn:
       - chplan

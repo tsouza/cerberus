@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // TestUnpack_ExtractsLabelsAndEntry — the canonical Promtail `pack`
