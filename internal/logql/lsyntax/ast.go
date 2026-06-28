@@ -1,13 +1,17 @@
 package lsyntax
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"time"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
+
 	"github.com/prometheus/prometheus/model/labels"
+
+	"github.com/tsouza/cerberus/internal/logql/logpattern"
 )
 
 // Expr is the root LogQL expression interface. Every AST node satisfies
@@ -190,17 +194,53 @@ type LineParserExpr struct {
 	Param string
 }
 
+// errMissingCapture mirrors upstream's parse-time rejection of a
+// `| regexp` stage that carries no named captures.
+var errMissingCapture = errors.New("at least one named capture must be supplied")
+
+// validateRegexpParser reimplements the parse-time validation upstream's
+// log.NewRegexpParser performs: the pattern must compile, carry at least
+// one named capture, and have no duplicate capture names. (Upstream also
+// checks each name is a valid label name; Go's regexp grammar already
+// constrains named groups to `[A-Za-z_][A-Za-z0-9_]*`, which is always a
+// valid label name, so that check is a no-op here.)
+func validateRegexpParser(re string) error {
+	regex, err := regexp.Compile(re)
+	if err != nil {
+		return err
+	}
+	if regex.NumSubexp() == 0 {
+		return errMissingCapture
+	}
+	seen := map[string]struct{}{}
+	named := 0
+	for _, n := range regex.SubexpNames() {
+		if n == "" {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			return fmt.Errorf("duplicate extracted label name '%s'", n)
+		}
+		seen[n] = struct{}{}
+		named++
+	}
+	if named == 0 {
+		return errMissingCapture
+	}
+	return nil
+}
+
 func newLabelParserExpr(op, param string) *LineParserExpr {
 	// Validate the regexp / pattern argument at parse time, matching the
 	// upstream parser's eager validation. A bad pattern panics with a
 	// ParseError that ParseExprWithoutValidation recovers into an error.
 	switch op {
 	case OpParserTypeRegexp:
-		if _, err := loglib.NewRegexpParser(param); err != nil {
+		if err := validateRegexpParser(param); err != nil {
 			panic(NewParseError(fmt.Sprintf("invalid regexp parser: %s", err.Error()), 0, 0))
 		}
 	case OpParserTypePattern:
-		if _, err := loglib.NewPatternParser(param); err != nil {
+		if _, err := logpattern.New(param); err != nil {
 			panic(NewParseError(fmt.Sprintf("invalid pattern parser: %s", err.Error()), 0, 0))
 		}
 	}

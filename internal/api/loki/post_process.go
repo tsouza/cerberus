@@ -7,9 +7,10 @@ import (
 	"text/template"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/prometheus/model/labels"
+
+	logpattern "github.com/tsouza/cerberus/internal/logql/logpattern"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
@@ -357,7 +358,7 @@ const duplicateSuffix = "_extracted"
 // A pattern that fails to match (Matches returns nil) leaves the line
 // and labels unchanged — Loki's silent-fallback semantics.
 func newPatternStep(p string) (lineTransform, error) {
-	m, err := pattern.New(p)
+	m, err := logpattern.New(p)
 	if err != nil {
 		return nil, err
 	}
