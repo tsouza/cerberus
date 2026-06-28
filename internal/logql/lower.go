@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logql/log/jsonexpr"
 	"github.com/prometheus/prometheus/model/labels"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -779,7 +778,7 @@ func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
 // stitches in only the named JSON extractions (identifier => extracted
 // value). Each expression is `<identifier>="<json-path>"`. The lowering
-// parses each JSON path via Loki's own jsonexpr parser (matching Loki's
+// parses each JSON path via the in-house jsonPathParse (matching Loki's
 // supported syntax: dot-notation, `[index]` bracket, quoted keys) and
 // renders `JSONExtractString(Body, <segment...>)` with one variadic
 // argument per path segment — CH treats string segments as object keys
@@ -824,11 +823,11 @@ func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax.L
 
 // jsonExtractStringExpr renders `JSONExtractString(Body, segment1,
 // segment2, ...)` for a Loki JSON path string. Segments come from the
-// jsonexpr parser as `[]interface{}` — strings for object keys, ints
+// jsonPathParse as `[]any` — strings for object keys, ints
 // for array indexes. CH's JSONExtractString accepts that exact variadic
 // shape natively.
 func jsonExtractStringExpr(s schema.Logs, path string) (chplan.Expr, error) {
-	segments, err := jsonexpr.Parse(path, false)
+	segments, err := jsonPathParse(path)
 	if err != nil {
 		return nil, fmt.Errorf("logql: invalid `| json` path %q: %w", path, err)
 	}
