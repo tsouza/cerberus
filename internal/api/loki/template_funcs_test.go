@@ -5,7 +5,6 @@ import (
 	"testing"
 	"text/template"
 	"time"
-
 )
 
 // renderInline evaluates the template body against the dot value and
