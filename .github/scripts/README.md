@@ -24,6 +24,20 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 
 ## Modules
 
+- **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
+  licence gate: runs `go list -deps ./cmd/cerberus` and reports any AGPLv3
+  package the Apache-2.0 binary links (`github.com/grafana/loki/*`, or
+  `github.com/grafana/tempo/*` except the Apache-licensed `pkg/tempopb`). The
+  test-only AGPL importers are quarantined into the `test/oracle` nested module
+  (a hard module boundary `go list -deps` does not cross), so only production
+  imports can surface here.
+  - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`);
+    `AGPL_CLEAN_WARN_ONLY=1` downgrades a violation to a `::warning::` + exit 0
+    (tracking mode), used now because prod parsers still import AGPL until the
+    rewrites land; unset = enforcing mode (`::error::` + exit 1).
+  - Exit: `0` clean (or warn-only tracking); `1` on a violation in enforcing
+    mode. NOT a required check yet — flip by dropping `AGPL_CLEAN_WARN_ONLY` +
+    `continue-on-error` and adding to branch protection once it goes green.
 - **`forbid-skip.mjs`** — `ci.yml`, the five `forbid-skip` discipline scans.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`.
