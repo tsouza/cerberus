@@ -102,7 +102,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	lines, err := h.Client.QueryTimestampedLines(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki patterns CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
+		h.respondError(w, classifyMetadataErr(err))
 		return
 	}
 

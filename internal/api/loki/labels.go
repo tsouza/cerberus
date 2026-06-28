@@ -51,7 +51,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki labels CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
+		h.respondError(w, classifyMetadataErr(err))
 		return
 	}
 

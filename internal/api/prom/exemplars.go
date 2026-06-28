@@ -146,7 +146,10 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.Client.QueryExemplars(r.Context(), sql, args...)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
+		// Bare err so respondError reclassifies a drain sample-budget overage
+		// (chclient.drainBudgetExceeded) to the 422 limit rejection, like the
+		// other metadata drains; a generic CH fault falls through to 500.
+		h.respondError(w, err)
 		return
 	}
 
