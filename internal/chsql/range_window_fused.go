@@ -25,10 +25,12 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // SAME scan-time bound (maybePushInnerScanTimeBounds) limits which samples
 // enter the per-series array, and the SAME outer anchor-window filter
 // (endOuter-outerRange, endOuter] the existing direct path applies. The
-// per-anchor extrapolation arithmetic replicates extrapolatedValueFrag &
-// friends inline (no aliases, so subexpressions repeat). `arrayReduce('max',…)`
-// invokes the identical CH aggregate the materialized `max(Value)` does, so
-// NaN/empty semantics match by construction.
+// per-anchor extrapolation arithmetic drives the SAME shared helpers the
+// materialized path does (extrapolatedValueExpr / extrapThresholdClampExpr /
+// secondsBetweenFrag in range_window.go), passing inline slice-derived operands
+// instead of mid-layer aliases — one source of truth, no clone to drift.
+// `arrayReduce('max',…)` invokes the identical CH aggregate the materialized
+// `max(Value)` does, so NaN/empty semantics match by construction.
 
 // fusedReduce maps the per-(qualifying-anchor) value array to the final
 // per-series scalar Value frag, replicating what the materialized outer
@@ -278,100 +280,39 @@ func tupleElemFrag(t Frag, idx int64) Frag {
 	return Call("tupleElement", t, InlineLit(idx))
 }
 
-// fusedExtrapolatedValueFrag replicates the materialized extrapolation
-// arithmetic (sampledIntervalFrag / durationToStartFrag / durationToEndFrag /
-// extrapolatedValueFrag, range_window.go:3069-3231) operating directly on the
-// per-anchor dedup'd slice `w` and anchor `a` — no mid-layer aliases, so
-// shared subexpressions (sampled_interval, counter_delta, first_ts, …) repeat
-// inline. Result is byte-identical numerically to the materialized per-anchor
-// Value.
+// fusedExtrapolatedValueFrag computes the per-anchor extrapolated Value over the
+// dedup'd slice `w` and anchor `a` by feeding inline, slice-derived operands to
+// the SHARED extrapolation arithmetic (extrapThresholdClampExpr +
+// extrapolatedValueExpr in range_window.go) — the same helpers the materialized
+// path drives with its mid-layer column aliases. Only the operands differ
+// (inline exprs here, aliases there); the arithmetic shape is single-sourced, so
+// the two paths cannot drift. The inline operands are Paren-wrapped where the
+// materialized aliases are bare single tokens, so `… / sampled_interval` doesn't
+// re-associate a trailing `/ 1e9` once inlined.
 func (e *emitter) fusedExtrapolatedValueFrag(
 	w, a Frag, kind extrapolationKind, rangeNS int64, rangeSeconds float64,
 ) Frag {
-	lenW := func() Frag { return Call("length", w) }
-	firstTs := func() Frag { return tupleElemFrag(Subscript(w, InlineLit(int64(1))), 1) }
-	lastTs := func() Frag { return tupleElemFrag(Subscript(w, lenW()), 1) }
-	firstVal := func() Frag { return tupleElemFrag(Subscript(w, InlineLit(int64(1))), 2) }
-	lastVal := func() Frag { return tupleElemFrag(Subscript(w, lenW()), 2) }
+	lenW := Call("length", w)
+	firstTs := tupleElemFrag(Subscript(w, InlineLit(int64(1))), 1)
+	lastTs := tupleElemFrag(Subscript(w, lenW), 1)
+	firstVal := tupleElemFrag(Subscript(w, InlineLit(int64(1))), 2)
+	lastVal := tupleElemFrag(Subscript(w, lenW), 2)
+	counterDelta := Call("arraySum", CounterDelta(w))
 
-	// counter_delta = arraySum(CounterDelta(w)) — counter-reset-aware delta.
-	counterDelta := func() Frag { return Call("arraySum", CounterDelta(w)) }
+	// sampled_interval and the duration-to-edge raws share secondsBetweenFrag
+	// with the materialized path (Paren-wrapped here because, unlike the
+	// materialized column aliases, the inlined form must not let a trailing
+	// `/ 1e9` re-associate when this divides a larger expression).
+	sampledInterval := Paren(secondsBetweenFrag(firstTs, lastTs))
+	// numSamplesMinusOne = (length(w) - 1); the length>=2 qualifying gate keeps
+	// it non-zero.
+	nm1 := numSamplesMinusOneFrag(w)
 
-	// sampled_interval = (toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9)
-	//
-	// Paren-wrapped because the materialized path carries this as a named
-	// alias (a single token), so `… / sampled_interval` divides by the whole
-	// quantity. Inlined without parens, `value / toFloat64(dateDiff(…)) / 1e9`
-	// would re-associate the `/ 1e9` as an extra division of the result (the
-	// 1e18 result skew). Wrapping makes the inlined form compose identically
-	// in every position (denominator, addend, comparison operand).
-	sampledInterval := func() Frag {
-		return Paren(Div(
-			Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), firstTs(), lastTs())),
-			BareIdent("1e9"),
-		))
-	}
+	durToStartRaw := Paren(secondsBetweenFrag(rangeStartFrag(a, rangeNS), firstTs))
+	durToEndRaw := Paren(secondsBetweenFrag(lastTs, a))
+	durToStart := extrapThresholdClampExpr(durToStartRaw, sampledInterval, nm1)
+	durToEnd := extrapThresholdClampExpr(durToEndRaw, sampledInterval, nm1)
 
-	// numSamplesMinusOne = (length(w) - 1). The length>=2 qualifying gate
-	// keeps this non-zero.
-	nm1 := func() Frag { return Paren(Sub(lenW(), InlineLit(int64(1)))) }
-
-	// Prom's extrapolation-threshold clamp:
-	//   if(raw >= 1.1 * sampled_interval / nm1, sampled_interval / nm1 / 2, raw)
-	clamp := func(raw Frag) Frag {
-		threshold := Div(Mul(InlineLit(1.1), sampledInterval()), nm1())
-		halfAvg := Div(Div(sampledInterval(), nm1()), InlineLit(int64(2)))
-		return Call("if", Gte(raw, threshold), halfAvg, raw)
-	}
-
-	// duration_to_start raw = (toFloat64(dateDiff('nanosecond', a-range, first_ts)) / 1e9)
-	// Paren-wrapped for the same compose-safely reason as sampledInterval.
-	durToStartRaw := func() Frag {
-		return Paren(Div(
-			Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), rangeStartFrag(a, rangeNS), firstTs())),
-			BareIdent("1e9"),
-		))
-	}
-	// duration_to_end raw = (toFloat64(dateDiff('nanosecond', last_ts, a)) / 1e9)
-	durToEndRaw := func() Frag {
-		return Paren(Div(
-			Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), lastTs(), a)),
-			BareIdent("1e9"),
-		))
-	}
-	durToStart := func() Frag { return clamp(durToStartRaw()) }
-	durToEnd := func() Frag { return clamp(durToEndRaw()) }
-
-	// raw result: counter_delta for rate/increase, (last - first) for delta.
-	rawResult := counterDelta()
-	if kind == extrapolationKindDelta {
-		rawResult = Paren(Sub(lastVal(), firstVal()))
-	}
-
-	// duration_to_start, optionally clamped to the counter zero-crossing:
-	//   if(counter_delta > 0 AND first_val >= 0,
-	//      least(duration_to_start, sampled_interval * first_val / counter_delta),
-	//      duration_to_start)
-	durStart := durToStart()
-	if kind.isCounter() {
-		durStart = Call(
-			"if",
-			And(
-				Gt(counterDelta(), InlineLit(int64(0))),
-				Gte(firstVal(), InlineLit(int64(0))),
-			),
-			Call("least", durToStart(),
-				Div(Mul(sampledInterval(), firstVal()), counterDelta())),
-			durToStart(),
-		)
-	}
-
-	// factor numerator: sampled_interval + <durStart> + duration_to_end
-	factorNum := Add(Add(sampledInterval(), durStart), durToEnd())
-	// <rawResult> * (sampled_interval + … + duration_to_end) / sampled_interval
-	value := Div(Mul(rawResult, Paren(factorNum)), sampledInterval())
-	if kind.isRate() {
-		value = Div(value, InlineLit(rangeSeconds))
-	}
-	return Call("if", Gt(sampledInterval(), InlineLit(int64(0))), value, BareIdent("nan"))
+	return extrapolatedValueExpr(kind, rangeSeconds,
+		counterDelta, sampledInterval, firstVal, lastVal, durToStart, durToEnd)
 }

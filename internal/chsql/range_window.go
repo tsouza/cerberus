@@ -3040,17 +3040,16 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 // sample's timestamp (DateTime64(9)) extracted from the per-window
 // pair array. Mirrors Prom's `samples.Floats[0].T`.
 func firstTsFrag() Frag {
-	return Call("tupleElement",
-		Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), InlineLit(int64(1)))
+	return tupleElemFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), 1)
 }
 
 // lastTsFrag renders `tupleElement(window_pairs[length(window_pairs)], 1)`
 // — the last sample's timestamp. Mirrors Prom's
 // `samples.Floats[numSamplesMinusOne].T`.
 func lastTsFrag() Frag {
-	return Call("tupleElement",
-		Subscript(BareIdent("window_pairs"), Call("length", BareIdent("window_pairs"))),
-		InlineLit(int64(1)))
+	return tupleElemFrag(
+		Subscript(BareIdent("window_pairs"), Call("length", BareIdent("window_pairs"))), 1,
+	)
 }
 
 // firstValFrag renders `tupleElement(window_pairs[1], 2)` — the first
@@ -3058,8 +3057,7 @@ func lastTsFrag() Frag {
 // extrapolated rate doesn't dip below zero when the counter started
 // inside the window.
 func firstValFrag() Frag {
-	return Call("tupleElement",
-		Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), InlineLit(int64(2)))
+	return tupleElemFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), 2)
 }
 
 // rangeStartFrag renders `<end> - toIntervalNanosecond(<rangeNS>)` —
@@ -3070,16 +3068,26 @@ func rangeStartFrag(end Frag, rangeNS int64) Frag {
 	return Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
 }
 
+// secondsBetweenFrag renders `toFloat64(dateDiff('nanosecond', <from>, <to>)) / 1e9`
+// — a nanosecond span in seconds (Float64). The single source for the
+// sampled-interval and both duration-to-edge raw computations, shared by the
+// materialized path (operands = aliases / window-edge Frags) and the fused path
+// (operands = inline slice-derived ts). The `1e9` divisor stays in scientific
+// (BareIdent) form to be byte-stable against the pinned goldens.
+func secondsBetweenFrag(from, to Frag) Frag {
+	return Div(
+		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), from, to)),
+		BareIdent("1e9"),
+	)
+}
+
 // sampledIntervalFrag renders the per-window sampled interval in
 // seconds (Float64): `dateDiff('nanosecond', first_ts, last_ts) / 1e9`.
 // Mirrors Prom's `sampledInterval := float64(lastT-firstT) / 1000`
 // (functions.go:258), substituting nanosecond precision for the
 // millisecond timebase Prom carries.
 func sampledIntervalFrag() Frag {
-	return Div(
-		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), BareIdent("first_ts"), BareIdent("last_ts"))),
-		BareIdent("1e9"),
-	)
+	return secondsBetweenFrag(BareIdent("first_ts"), BareIdent("last_ts"))
 }
 
 // durationToStartFrag renders the per-window distance from the left
@@ -3114,24 +3122,35 @@ func durationToStartFrag(rangeStart Frag) Frag {
 // numSamplesMinusOneFrag renders `(length(window_vals) - 1)` — the
 // sample-interval count the extrapolation arithmetic divides by; the
 // outer WHERE `length >= 2` gate keeps it non-zero.
-func numSamplesMinusOneFrag() Frag {
-	return Paren(Sub(Call("length", BareIdent("window_vals")), InlineLit(int64(1))))
+func numSamplesMinusOneFrag(arr Frag) Frag {
+	return Paren(Sub(Call("length", arr), InlineLit(int64(1))))
 }
 
-// extrapThresholdClampFrag wraps a raw per-edge duration in Prom's
-// extrapolation-threshold clamp:
+// extrapolationThresholdFactor is Prom's `extrapolationThreshold =
+// averageDurationBetweenSamples * 1.1` cutoff (functions.go): when the gap to a
+// window edge exceeds it, the gap is replaced with half the average interval.
+const extrapolationThresholdFactor = 1.1
+
+// extrapThresholdClampExpr renders Prom's extrapolation-threshold clamp over
+// operand Frags:
 //
-//	if(<raw> >= 1.1 * sampled_interval / (length(window_vals) - 1),
-//	   sampled_interval / (length(window_vals) - 1) / 2,
-//	   <raw>)
+//	if(<raw> >= 1.1 * <sampledInterval> / <nm1>, <sampledInterval> / <nm1> / 2, <raw>)
 //
-// When the gap to the window edge exceeds 1.1× the average inter-sample
-// interval, Prom replaces it with half that average (functions.go).
-func extrapThresholdClampFrag(raw Frag) Frag {
-	nm1 := numSamplesMinusOneFrag()
-	threshold := Div(Mul(InlineLit(1.1), BareIdent("sampled_interval")), nm1)
-	halfAvg := Div(Div(BareIdent("sampled_interval"), nm1), InlineLit(int64(2)))
+// Shared by the materialized path (operands = mid-layer column aliases, single
+// tokens) and the fused path (operands = inline slice-derived exprs); the
+// arithmetic shape is identical, the caller supplies aliased-or-inline operands,
+// so the rendered SQL is byte-identical for each path.
+func extrapThresholdClampExpr(raw, sampledInterval, nm1 Frag) Frag {
+	threshold := Div(Mul(InlineLit(extrapolationThresholdFactor), sampledInterval), nm1)
+	halfAvg := Div(Div(sampledInterval, nm1), InlineLit(int64(2)))
 	return Call("if", Gte(raw, threshold), halfAvg, raw)
+}
+
+// extrapThresholdClampFrag is the materialized-path adapter: it clamps `raw`
+// against the `sampled_interval` mid-layer alias and the inline
+// `length(window_vals) - 1`.
+func extrapThresholdClampFrag(raw Frag) Frag {
+	return extrapThresholdClampExpr(raw, BareIdent("sampled_interval"), numSamplesMinusOneFrag(BareIdent("window_vals")))
 }
 
 // durationToStartRawFrag renders the un-clamped duration-to-start in
@@ -3140,10 +3159,7 @@ func extrapThresholdClampFrag(raw Frag) Frag {
 // is an emitter-controlled query-shape constant kept in scientific form
 // (BareIdent) to stay byte-stable against the pinned goldens.
 func durationToStartRawFrag(rangeStart Frag) Frag {
-	return Div(
-		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), rangeStart, BareIdent("first_ts"))),
-		BareIdent("1e9"),
-	)
+	return secondsBetweenFrag(rangeStart, BareIdent("first_ts"))
 }
 
 // durationToEndFrag renders the per-window distance from the last
@@ -3169,10 +3185,7 @@ func durationToEndFrag(rangeEnd Frag) Frag {
 // seconds: `toFloat64(dateDiff('nanosecond', last_ts, rangeEnd)) / 1e9`.
 // Mirrors Prom's `float64(rangeEnd-lastT) / 1000`.
 func durationToEndRawFrag(rangeEnd Frag) Frag {
-	return Div(
-		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), BareIdent("last_ts"), rangeEnd)),
-		BareIdent("1e9"),
-	)
+	return secondsBetweenFrag(BareIdent("last_ts"), rangeEnd)
 }
 
 // extrapolatedValueFrag renders the per-window final value:
@@ -3193,14 +3206,22 @@ func durationToEndRawFrag(rangeEnd Frag) Frag {
 //
 // The optional `/ <range_seconds>` only applies to rate (Prom's
 // `isRate` branch at functions.go:305-307).
-func extrapolatedValueFrag(kind extrapolationKind, rangeSeconds float64) Frag {
+// extrapolatedValueExpr renders Prom's per-window extrapolated value over
+// operand Frags. Shared by the materialized path (operands = mid-layer column
+// aliases) and the fused path (operands = inline slice-derived exprs) — the
+// arithmetic shape (counter-reset raw delta, the counter zero-crossing clamp,
+// the `(sampled_interval + durStart + durEnd) / sampled_interval` factor, the
+// rate `/ range_seconds`, the `sampled_interval > 0 ? … : nan` guard) is
+// identical; the caller supplies aliased-or-inline operands so each path's SQL
+// is byte-identical. `lastVal` is consumed only by the delta raw result.
+func extrapolatedValueExpr(
+	kind extrapolationKind, rangeSeconds float64,
+	counterDelta, sampledInterval, firstVal, lastVal, durToStart, durToEnd Frag,
+) Frag {
 	// raw result: counter_delta for rate/increase, (last - first) for delta.
-	rawResult := BareIdent("counter_delta")
+	rawResult := counterDelta
 	if kind == extrapolationKindDelta {
-		rawResult = Paren(Sub(
-			Subscript(BareIdent("window_vals"), Call("length", BareIdent("window_vals"))),
-			BareIdent("first_val"),
-		))
+		rawResult = Paren(Sub(lastVal, firstVal))
 	}
 
 	// duration_to_start, optionally clamped to the counter zero-crossing.
@@ -3209,32 +3230,40 @@ func extrapolatedValueFrag(kind extrapolationKind, rangeSeconds float64) Frag {
 	//   if(counter_delta > 0 AND first_val >= 0,
 	//      least(duration_to_start, sampled_interval * first_val / counter_delta),
 	//      duration_to_start)
-	durToStart := BareIdent("duration_to_start")
+	durStart := durToStart
 	if kind.isCounter() {
-		durToStart = Call(
+		durStart = Call(
 			"if",
 			And(
-				Gt(BareIdent("counter_delta"), InlineLit(int64(0))),
-				Gte(BareIdent("first_val"), InlineLit(int64(0))),
+				Gt(counterDelta, InlineLit(int64(0))),
+				Gte(firstVal, InlineLit(int64(0))),
 			),
-			Call("least", BareIdent("duration_to_start"),
-				Div(Mul(BareIdent("sampled_interval"), BareIdent("first_val")), BareIdent("counter_delta"))),
-			BareIdent("duration_to_start"),
+			Call("least", durToStart,
+				Div(Mul(sampledInterval, firstVal), counterDelta)),
+			durToStart,
 		)
 	}
 
-	// factor numerator: sampled_interval + <durToStart> + duration_to_end
-	factorNum := Add(
-		Add(BareIdent("sampled_interval"), durToStart),
-		BareIdent("duration_to_end"),
-	)
+	// factor numerator: sampled_interval + <durStart> + duration_to_end
+	factorNum := Add(Add(sampledInterval, durStart), durToEnd)
 	// <rawResult> * (sampled_interval + … + duration_to_end) / sampled_interval
-	value := Div(Mul(rawResult, Paren(factorNum)), BareIdent("sampled_interval"))
+	value := Div(Mul(rawResult, Paren(factorNum)), sampledInterval)
 	if kind.isRate() {
 		value = Div(value, InlineLit(rangeSeconds))
 	}
 
-	return Call("if", Gt(BareIdent("sampled_interval"), InlineLit(int64(0))), value, BareIdent("nan"))
+	return Call("if", Gt(sampledInterval, InlineLit(int64(0))), value, BareIdent("nan"))
+}
+
+// extrapolatedValueFrag is the materialized-path adapter: it binds the operands
+// to the mid/extrap-layer column aliases. delta references
+// `window_vals[length(window_vals)]` for last_val (no separate alias projected).
+func extrapolatedValueFrag(kind extrapolationKind, rangeSeconds float64) Frag {
+	lastVal := Subscript(BareIdent("window_vals"), Call("length", BareIdent("window_vals")))
+	return extrapolatedValueExpr(kind, rangeSeconds,
+		BareIdent("counter_delta"), BareIdent("sampled_interval"),
+		BareIdent("first_val"), lastVal,
+		BareIdent("duration_to_start"), BareIdent("duration_to_end"))
 }
 
 // emitWindowedArray writes the windowed-array SQL skeleton with the
