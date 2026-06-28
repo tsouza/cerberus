@@ -3,7 +3,6 @@ package logql
 import (
 	"fmt"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -484,7 +483,7 @@ func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity chplan.Expr) ch
 // postFilter stage runs against the extractor's LabelsBuilder, so its
 // error stamps surface on the sample's labels exactly like pipeline-
 // stage filters). hasMarks reports whether any mark was folded in.
-func applyUnwrapPostFilters(inner chplan.Node, filters []loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Node, chplan.Expr, bool, error) {
+func applyUnwrapPostFilters(inner chplan.Node, filters []syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Node, chplan.Expr, bool, error) {
 	pred := chplan.Expr(nil)
 	if f, ok := inner.(*chplan.Filter); ok {
 		pred = f.Predicate

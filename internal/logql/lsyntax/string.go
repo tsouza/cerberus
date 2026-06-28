@@ -83,7 +83,7 @@ func (e *JSONExpressionParserExpr) String() string {
 	return fmt.Sprintf("%s %s %s", OpPipe, OpParserTypeJSON, extractionList(e.Expressions))
 }
 
-func extractionList(exprs []loglib.LabelExtractionExpr) string {
+func extractionList(exprs []LabelExtractionExpr) string {
 	parts := make([]string, 0, len(exprs))
 	for _, ext := range exprs {
 		if ext.Expression == ext.Identifier {

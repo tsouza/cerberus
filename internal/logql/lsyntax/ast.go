@@ -100,7 +100,7 @@ func (e *PipelineExpr) Matchers() []*labels.Matcher { return e.Left.Matchers() }
 
 // LineFilter is a single line-filter clause.
 type LineFilter struct {
-	Ty    loglib.LineMatchType
+	Ty    LineMatchType
 	Match string
 	Op    string
 }
@@ -116,7 +116,7 @@ type LineFilterExpr struct {
 	IsOrChild bool
 }
 
-func newLineFilterExpr(ty loglib.LineMatchType, op, match string) *LineFilterExpr {
+func newLineFilterExpr(ty LineMatchType, op, match string) *LineFilterExpr {
 	return &LineFilterExpr{
 		LineFilter: LineFilter{Ty: ty, Match: match, Op: op},
 	}
@@ -137,9 +137,9 @@ func newOrLineFilterExpr(left, right *LineFilterExpr) *LineFilterExpr {
 		tmp.Or.Ty = left.Ty
 		tmp = tmp.Or
 	}
-	if left.Ty == loglib.LineMatchEqual ||
-		left.Ty == loglib.LineMatchRegexp ||
-		left.Ty == loglib.LineMatchPattern {
+	if left.Ty == LineMatchEqual ||
+		left.Ty == LineMatchRegexp ||
+		left.Ty == LineMatchPattern {
 		left.Or = right
 		right.IsOrChild = true
 		return left
@@ -210,21 +210,21 @@ func newLabelParserExpr(op, param string) *LineParserExpr {
 // JSONExpressionParserExpr is a typed `| json a="x.y", b="z"` parser.
 type JSONExpressionParserExpr struct {
 	stageBase
-	Expressions []loglib.LabelExtractionExpr
+	Expressions []LabelExtractionExpr
 }
 
-func newJSONExpressionParser(expressions []loglib.LabelExtractionExpr) *JSONExpressionParserExpr {
+func newJSONExpressionParser(expressions []LabelExtractionExpr) *JSONExpressionParserExpr {
 	return &JSONExpressionParserExpr{Expressions: expressions}
 }
 
 // LogfmtExpressionParserExpr is a typed `| logfmt a="x", b="y"` parser.
 type LogfmtExpressionParserExpr struct {
 	stageBase
-	Expressions       []loglib.LabelExtractionExpr
+	Expressions       []LabelExtractionExpr
 	Strict, KeepEmpty bool
 }
 
-func newLogfmtExpressionParser(expressions []loglib.LabelExtractionExpr, flags []string) *LogfmtExpressionParserExpr {
+func newLogfmtExpressionParser(expressions []LabelExtractionExpr, flags []string) *LogfmtExpressionParserExpr {
 	e := &LogfmtExpressionParserExpr{Expressions: expressions}
 	for _, f := range flags {
 		switch f {
@@ -245,10 +245,10 @@ func newLogfmtExpressionParser(expressions []loglib.LabelExtractionExpr, flags [
 // runtime filterer so cerberus reads it as `expr.LabelFilterer`.
 type LabelFilterExpr struct {
 	stageBase
-	loglib.LabelFilterer
+	LabelFilterer
 }
 
-func newLabelFilterExpr(filterer loglib.LabelFilterer) *LabelFilterExpr {
+func newLabelFilterExpr(filterer LabelFilterer) *LabelFilterExpr {
 	return &LabelFilterExpr{LabelFilterer: filterer}
 }
 
@@ -270,10 +270,10 @@ func newDecolorizeExpr() *DecolorizeExpr { return &DecolorizeExpr{} }
 // LabelFmtExpr is a `| label_format new=old, x="{{.y}}"` stage.
 type LabelFmtExpr struct {
 	stageBase
-	Formats []loglib.LabelFmt
+	Formats []LabelFmt
 }
 
-func newLabelFmtExpr(fmts []loglib.LabelFmt) *LabelFmtExpr { return &LabelFmtExpr{Formats: fmts} }
+func newLabelFmtExpr(fmts []LabelFmt) *LabelFmtExpr { return &LabelFmtExpr{Formats: fmts} }
 
 // DropLabelsExpr is a `| drop a, b="v"` stage.
 type DropLabelsExpr struct {
@@ -339,14 +339,14 @@ func (e *KeepLabelsExpr) Stage() (loglib.Stage, error) {
 type UnwrapExpr struct {
 	Identifier  string
 	Operation   string
-	PostFilters []loglib.LabelFilterer
+	PostFilters []LabelFilterer
 }
 
 func newUnwrapExpr(id, operation string) *UnwrapExpr {
 	return &UnwrapExpr{Identifier: id, Operation: operation}
 }
 
-func (u *UnwrapExpr) addPostFilter(f loglib.LabelFilterer) *UnwrapExpr {
+func (u *UnwrapExpr) addPostFilter(f LabelFilterer) *UnwrapExpr {
 	u.PostFilters = append(u.PostFilters, f)
 	return u
 }

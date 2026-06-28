@@ -214,7 +214,7 @@ var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 // Returns a FRESH labels map per row so callers can safely treat the
 // original sample's labels as immutable (a shared reference from a
 // previous step is also fine — we always allocate).
-func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
+func newLabelFormatStep(formats []syntax.LabelFmt) (lineTransform, error) {
 	// Pre-parse all template Formats so per-row execution is cheap.
 	type compiled struct {
 		dst    string

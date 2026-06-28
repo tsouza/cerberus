@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/prometheus/model/labels"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -76,7 +75,7 @@ func TestParserShape_LineFilter(t *testing.T) {
 	if lf.Match != "error" {
 		t.Errorf("LineFilter.Match = %q; want %q", lf.Match, "error")
 	}
-	if lf.Ty != loglib.LineMatchEqual {
+	if lf.Ty != syntax.LineMatchEqual {
 		t.Errorf("LineFilter.Ty = %v; want LineMatchEqual", lf.Ty)
 	}
 }
@@ -117,7 +116,7 @@ func TestParserShape_RegexLineFilter(t *testing.T) {
 	if !ok {
 		t.Fatalf("stage[0] = %T; want *LineFilterExpr", pe.MultiStages[0])
 	}
-	if lf.Ty != loglib.LineMatchRegexp {
+	if lf.Ty != syntax.LineMatchRegexp {
 		t.Errorf("LineFilter.Ty = %v; want LineMatchRegexp", lf.Ty)
 	}
 	if lf.Match != "(?i)error" {
