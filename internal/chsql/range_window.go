@@ -2349,6 +2349,15 @@ func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag)
 		return e.emitRangeWindowOverTimeDirectMatrix(r, agg)
 	}
 
+	// Memory-bounded fused path for instant PromQL subqueries
+	// `<reducer>(rate|increase|delta(m[range])[outer:step])`: collapse the
+	// inner matrix regroup + outer reducer regroup into a single
+	// `GROUP BY <series>` over one per-series samples array (see
+	// range_window_fused.go). Non-fusible shapes fall through unchanged.
+	if handled, err := e.tryEmitFusedInstantSubquery(r); handled || err != nil {
+		return err
+	}
+
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
