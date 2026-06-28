@@ -41,25 +41,34 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 		span.RecordError(err)
 		return nil, err
 	}
-	start, end := searchWindowFromCtx(ctx)
-	// Bound the nested-set numbering walk to the N traces /api/search will
-	// return, ranked within the request window (no-op unless the request set a
-	// limit AND the plan is a select() over the Drilldown structure shape — see
-	// search_limit.go).
-	plan = stampNestedSetTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
-	// Push the response trace limit + request window into the plain-search
-	// row source (a bare Scan or Filter(Scan)) so /api/search drains only the
-	// N newest traces in the window instead of buffering every matching span
-	// (the summaries-drain OOM). No-op unless the request set a limit AND the
-	// plan is a plain search — metrics / structural / set-op plans are left
-	// unchanged.
-	plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
-	// Fold the request window into the leaf scans of the COMPOUND search shapes
-	// (&&/||, structural, select(nestedSet*)) that stampSearchTraceLimit leaves
-	// untouched, so they scan only [start, end] instead of full retention. Runs
-	// last so it skips the already-windowed plain-search SearchTraceLimit node
-	// (no double-fold). No-op unless the request set a limit (search-not-metrics).
-	plan = stampSearchWindow(plan, searchTraceLimit(ctx), start, end, s)
+	// The /api/search trace-limit + window folds apply only to SPAN search
+	// plans. A metrics query (MetricsPipeline / MetricsSecondStage) gets its
+	// time bound from the /api/metrics/query_range handler's RangeWindow wrap,
+	// never from these stamps — and its leaves must NOT take the request window
+	// even if the query is (mis)routed through /api/search with a limit. Gating
+	// here keeps the "only span plans reach pushLeafPredicate" invariant
+	// enforced rather than conventional, so the generic leaf recurse can never
+	// fold a window onto a metrics-pipeline leaf.
+	if expr.MetricsPipeline == nil && expr.MetricsSecondStage == nil {
+		start, end := searchWindowFromCtx(ctx)
+		// Bound the nested-set numbering walk to the N traces /api/search will
+		// return, ranked within the request window (no-op unless the request set
+		// a limit AND the plan is a select() over the Drilldown structure shape
+		// — see search_limit.go).
+		plan = stampNestedSetTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
+		// Push the response trace limit + request window into the plain-search
+		// row source (a bare Scan or Filter(Scan)) so /api/search drains only the
+		// N newest traces in the window instead of buffering every matching span
+		// (the summaries-drain OOM). No-op unless the request set a limit AND the
+		// plan is a plain search — structural / set-op plans are left unchanged.
+		plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
+		// Fold the request window into the leaf scans of the COMPOUND search
+		// shapes (&&/||, structural, select(nestedSet*), AGGREGATE) that
+		// stampSearchTraceLimit leaves untouched, so they scan only [start, end]
+		// instead of full retention. Runs last so it skips the already-windowed
+		// plain-search SearchTraceLimit node (no double-fold).
+		plan = stampSearchWindow(plan, searchTraceLimit(ctx), start, end, s)
+	}
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }
