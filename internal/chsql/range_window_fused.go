@@ -148,7 +148,7 @@ func (e *emitter) emitFusedInstantSubquery(
 	}
 
 	// Inner subquery grid quantities (same derivation as
-	// emitWindowedArrayExtrapolatedMatrix:2926-2932).
+	// emitWindowedArrayExtrapolatedMatrix).
 	endInner := endExprFrag(inner)
 	rangeNS := inner.Range.Nanoseconds()
 	stepNS := inner.Step.Nanoseconds()

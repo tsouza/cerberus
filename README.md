@@ -273,7 +273,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md)   | The ClickHouse-optimization suite: feature registry, version gating, the runtime probe, and the query_log corpus reconciler.  |
 | [`docs/solver.md`](docs/solver.md)                                       | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.                                  |
 | [`docs/router-rules.md`](docs/router-rules.md)                           | The offline router-rules catalog: generic drivers in the repo, per-deployment thresholds resolved from the corpus at runtime. |
-| [`docs/native-clickhouse-roadmap.md`](docs/native-clickhouse-roadmap.md) | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates (the upstream positioning).       |
+| [`docs/native-clickhouse.md`](docs/native-clickhouse.md)                 | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates (the upstream positioning).       |
 | [`docs/benchmarks.md`](docs/benchmarks.md)                               | Benchmark methodology and the recorded numbers (regenerable).                                                                 |
 | [`docs/compatibility.md`](docs/compatibility.md)                         | The differential-harness playbook for all three heads.                                                                        |
 | [`docs/test-strategy.md`](docs/test-strategy.md)                         | The 13-layer test map and CI-gate inventory.                                                                                  |

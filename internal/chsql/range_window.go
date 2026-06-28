@@ -1995,7 +1995,7 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// values; first/last_over_time keep the array's deterministic
 	// duplicate-ts tie-break (window_vals[1] / window_vals[N] over the
 	// arraySort-by-(ts, value) order) that argMin/argMax don't replicate.
-	if agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn, r.TimestampColumn); ok {
+	if agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn); ok {
 		return e.emitRangeWindowOverTimeDirect(r, agg)
 	}
 	// Two-pass population variance: μ = arrayAvg(vals); Σ(x - μ)² / N.
@@ -2304,7 +2304,7 @@ func tsOfExtremeFrag(wantMax bool) Frag {
 //
 // quantile/stddev/stdvar/first/last_over_time also return ok=false and
 // stay on the array path (see emitRangeWindowOverTime for why).
-func overTimeDirectAggFrag(fn, valueCol, _ string) (Frag, bool) {
+func overTimeDirectAggFrag(fn, valueCol string) (Frag, bool) {
 	switch fn {
 	case "min_over_time":
 		return Call("min", Col(valueCol)), true
@@ -2901,7 +2901,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	extrap.Select(Col("counter_delta"))
 	extrap.Select(Col("first_val"))
 	extrap.Select(As(sampledIntervalFrag(), "sampled_interval"))
-	extrap.Select(As(durationToStartFrag(rangeStart, kind.isCounter()), "duration_to_start"))
+	extrap.Select(As(durationToStartFrag(rangeStart), "duration_to_start"))
 	extrap.Select(As(durationToEndFrag(end), "duration_to_end"))
 
 	// Outer SELECT — final value per series.
@@ -3007,7 +3007,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	extrap.Select(Col("counter_delta"))
 	extrap.Select(Col("first_val"))
 	extrap.Select(As(sampledIntervalFrag(), "sampled_interval"))
-	extrap.Select(As(durationToStartFrag(rangeStart, kind.isCounter()), "duration_to_start"))
+	extrap.Select(As(durationToStartFrag(rangeStart), "duration_to_start"))
 	extrap.Select(As(durationToEndFrag(anchor), "duration_to_end"))
 
 	// Outer SELECT — per-(series, anchor) row.
@@ -3105,11 +3105,8 @@ func sampledIntervalFrag() Frag {
 // gate guarantees the divisor is non-zero). rangeStart is supplied as
 // a Frag so the instant + matrix paths can pin the appropriate
 // window-left expression (instant: `end - range`; matrix:
-// `anchor_ts - range`). The `isCounter` flag is kept for parity with
-// the durationToEndFrag signature even though it has no effect at the
-// duration_to_start layer — leaving the parameter in place keeps the
-// emit call sites symmetric.
-func durationToStartFrag(rangeStart Frag, _ bool) Frag {
+// `anchor_ts - range`).
+func durationToStartFrag(rangeStart Frag) Frag {
 	raw := durationToStartRawFrag(rangeStart)
 	return extrapThresholdClampFrag(raw)
 }

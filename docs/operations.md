@@ -652,10 +652,9 @@ busy backend — all route onto it:
   `arrayJoin(mapKeys(Attributes))` over the grouped form;
 - series cardinality (`count()` over the grouped form).
 
-`proj_series` deliberately **supersedes** the narrower per-name projection
-(`proj_metric_name`) that earlier releases shipped: because `__name__` routes
-onto it via re-aggregation with byte-identical results, a dedicated per-name
-projection buys nothing and is no longer installed. The projection omits any
+`proj_series` also covers per-name access: `__name__` routes onto it via
+re-aggregation with byte-identical results, so no dedicated per-name projection
+is needed. The projection omits any
 `Value` aggregate — the histogram catalog table has no top-level `Value`
 column (it lives only inside the `Exemplars` Nested block) and none of the
 routed shapes read a value, so a uniform `(MetricName, Attributes,

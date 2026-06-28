@@ -14,7 +14,7 @@ package chplan
 // BoundedTraceScope into every LEAF Filter of a structure-tab row source so
 // the structural recursive closures — seeded via the #77 seed re-render of
 // those leaves — scan only the top-N traces instead of the whole window. See
-// internal/traceql/search_limit.go (pushBoundedTraceGate) and
+// internal/traceql/search_limit.go (pushLeafPredicate) and
 // internal/chsql/nested_set_annotate.go (boundedRootScopeFrag).
 //
 // WindowStartNano / WindowEndNano (when non-zero) restrict the top-N root
