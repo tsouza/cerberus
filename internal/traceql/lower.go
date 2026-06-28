@@ -1319,7 +1319,34 @@ func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.
 	if isComparisonOp(op) && (isNumericExpr(lhs) || isNumericExpr(rhs)) {
 		return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
 	}
+	// Two bare attribute accesses under an ORDERING comparison (`span.a > span.b`,
+	// `a <= b`) carry numeric intent: Tempo compares them by their typed value,
+	// but OTel-CH stores every attribute as String, so a raw compare is
+	// lexicographic — `'10' > '5'` is false. Coerce both via toFloat64OrNull, the
+	// same path the literal-hint branch above takes. Equality (`=` / `!=`) stays a
+	// string compare (the common attribute-equality / label-matcher case); a
+	// legitimately-string ordering compare coerces to NULL and drops — the
+	// identical trade-off the literal-hint path already accepts.
+	if isOrderingComparisonOp(op) {
+		_, lhsField := lhs.(*chplan.FieldAccess)
+		_, rhsField := rhs.(*chplan.FieldAccess)
+		if lhsField && rhsField {
+			return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
+		}
+	}
 	return lhs, rhs
+}
+
+// isOrderingComparisonOp reports whether op is an ordering comparison
+// (`<` `<=` `>` `>=`) — the comparison subset that implies numeric intent on two
+// attribute operands. Equality (`=` `!=`) is excluded: attribute equality is
+// string-valued (label-matcher semantics).
+func isOrderingComparisonOp(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
+		return true
+	}
+	return false
 }
 
 // coerceFieldAccess wraps every FieldAccess inside expr in
