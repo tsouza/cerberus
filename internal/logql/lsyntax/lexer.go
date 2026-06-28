@@ -241,9 +241,30 @@ func (l *lexer) peekByteAt(off int) byte {
 	return 0
 }
 
+// singleCharTokens maps punctuation bytes that always stand alone (no
+// multi-byte operator can start with them) to their token kind.
+var singleCharTokens = map[byte]tokenKind{
+	'{': tkOpenBrace,
+	'}': tkCloseBrace,
+	'(': tkOpenParen,
+	')': tkCloseParen,
+	']': tkCloseBracket,
+	',': tkComma,
+	'+': tkAdd,
+	'*': tkMul,
+	'/': tkDiv,
+	'%': tkMod,
+	'^': tkPow,
+}
+
 func (l *lexer) run() {
 	for l.pos < len(l.src) && l.err == nil {
 		c := l.src[l.pos]
+		if k, ok := singleCharTokens[c]; ok {
+			l.toks = append(l.toks, token{kind: k, pos: l.pos})
+			l.pos++
+			continue
+		}
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			l.pos++
@@ -251,24 +272,6 @@ func (l *lexer) run() {
 			for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 				l.pos++
 			}
-		case c == '{':
-			l.toks = append(l.toks, token{kind: tkOpenBrace, pos: l.pos})
-			l.pos++
-		case c == '}':
-			l.toks = append(l.toks, token{kind: tkCloseBrace, pos: l.pos})
-			l.pos++
-		case c == '(':
-			l.toks = append(l.toks, token{kind: tkOpenParen, pos: l.pos})
-			l.pos++
-		case c == ')':
-			l.toks = append(l.toks, token{kind: tkCloseParen, pos: l.pos})
-			l.pos++
-		case c == ']':
-			l.toks = append(l.toks, token{kind: tkCloseBracket, pos: l.pos})
-			l.pos++
-		case c == ',':
-			l.toks = append(l.toks, token{kind: tkComma, pos: l.pos})
-			l.pos++
 		case c == '.' && !isDigit(l.peekByteAt(1)):
 			l.toks = append(l.toks, token{kind: tkDot, pos: l.pos})
 			l.pos++
@@ -286,23 +289,8 @@ func (l *lexer) run() {
 			l.scanFrom1('=', tkGte, tkGt)
 		case c == '<':
 			l.scanFrom1('=', tkLte, tkLt)
-		case c == '+':
-			l.toks = append(l.toks, token{kind: tkAdd, pos: l.pos})
-			l.pos++
 		case c == '-':
 			l.scanMinus()
-		case c == '*':
-			l.toks = append(l.toks, token{kind: tkMul, pos: l.pos})
-			l.pos++
-		case c == '/':
-			l.toks = append(l.toks, token{kind: tkDiv, pos: l.pos})
-			l.pos++
-		case c == '%':
-			l.toks = append(l.toks, token{kind: tkMod, pos: l.pos})
-			l.pos++
-		case c == '^':
-			l.toks = append(l.toks, token{kind: tkPow, pos: l.pos})
-			l.pos++
 		case isDigit(c) || (c == '.' && isDigit(l.peekByteAt(1))):
 			l.scanNumber()
 		case isIdentStart(c):
@@ -480,37 +468,58 @@ func (l *lexer) scanString() {
 	l.toks = append(l.toks, token{kind: tkString, str: v, pos: start})
 }
 
-func (l *lexer) scanNumber() {
-	start := l.pos
-	j := l.pos
-	// Hex.
-	if l.src[j] == '0' && j+1 < len(l.src) && (l.src[j+1] == 'x' || l.src[j+1] == 'X') {
-		j += 2
-		for j < len(l.src) && isHexDigit(l.src[j]) {
-			j++
-		}
-	} else {
+// scanHexRun consumes a `0x`/`0X`-prefixed run of hex digits starting at j,
+// returning the index just past the last consumed byte.
+func (l *lexer) scanHexRun(j int) int {
+	j += 2
+	for j < len(l.src) && isHexDigit(l.src[j]) {
+		j++
+	}
+	return j
+}
+
+// scanExponent consumes an `e`/`E` exponent (with optional sign) starting at
+// j, returning the index just past it. If no valid exponent follows, j is
+// returned unchanged.
+func (l *lexer) scanExponent(j int) int {
+	k := j + 1
+	if k < len(l.src) && (l.src[k] == '+' || l.src[k] == '-') {
+		k++
+	}
+	if k < len(l.src) && isDigit(l.src[k]) {
+		j = k
 		for j < len(l.src) && isDigit(l.src[j]) {
 			j++
 		}
-		if j < len(l.src) && l.src[j] == '.' {
+	}
+	return j
+}
+
+// scanDecimalRun consumes a decimal mantissa (integer part, optional
+// fraction, optional exponent) starting at j.
+func (l *lexer) scanDecimalRun(j int) int {
+	for j < len(l.src) && isDigit(l.src[j]) {
+		j++
+	}
+	if j < len(l.src) && l.src[j] == '.' {
+		j++
+		for j < len(l.src) && isDigit(l.src[j]) {
 			j++
-			for j < len(l.src) && isDigit(l.src[j]) {
-				j++
-			}
 		}
-		if j < len(l.src) && (l.src[j] == 'e' || l.src[j] == 'E') {
-			k := j + 1
-			if k < len(l.src) && (l.src[k] == '+' || l.src[k] == '-') {
-				k++
-			}
-			if k < len(l.src) && isDigit(l.src[k]) {
-				j = k
-				for j < len(l.src) && isDigit(l.src[j]) {
-					j++
-				}
-			}
-		}
+	}
+	if j < len(l.src) && (l.src[j] == 'e' || l.src[j] == 'E') {
+		j = l.scanExponent(j)
+	}
+	return j
+}
+
+func (l *lexer) scanNumber() {
+	start := l.pos
+	j := l.pos
+	if l.src[j] == '0' && j+1 < len(l.src) && (l.src[j+1] == 'x' || l.src[j+1] == 'X') {
+		j = l.scanHexRun(j)
+	} else {
+		j = l.scanDecimalRun(j)
 	}
 	numText := l.src[start:j]
 	l.pos = j
@@ -710,9 +719,12 @@ func isLetter(b byte) bool {
 }
 func isIdentStart(b byte) bool { return isLetter(b) || b == '_' }
 func isIdentPart(r rune) bool {
-	if r < utf8.RuneSelf {
-		b := byte(r)
-		return isLetter(b) || isDigit(b) || b == '_'
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+		return true
+	case r < utf8.RuneSelf:
+		return false
+	default:
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
 	}
-	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }

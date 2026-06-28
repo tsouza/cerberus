@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/grafana/loki/v3/pkg/util/constants"
+
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"

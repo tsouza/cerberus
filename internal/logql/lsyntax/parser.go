@@ -345,23 +345,30 @@ func (p *parser) parseBinOpModifier() *BinOpOptions {
 		opts.VectorMatching.MatchingLabels = p.parseLabelList()
 		p.expect(tkCloseParen, "')'")
 		opts.VectorMatching.On = on
-
-		if p.at(tkGroupLeft) || p.at(tkGroupRight) {
-			right := p.at(tkGroupRight)
-			p.advance()
-			if right {
-				opts.VectorMatching.Card = CardOneToMany
-			} else {
-				opts.VectorMatching.Card = CardManyToOne
-			}
-			if p.at(tkOpenParen) {
-				p.advance()
-				opts.VectorMatching.Include = p.parseLabelList()
-				p.expect(tkCloseParen, "')'")
-			}
-		}
+		p.parseGroupModifier(opts.VectorMatching)
 	}
 	return opts
+}
+
+// parseGroupModifier parses the optional `group_left(...)|group_right(...)`
+// clause that may follow an on/ignoring matcher, populating the cardinality
+// and the include-label list on vm.
+func (p *parser) parseGroupModifier(vm *VectorMatching) {
+	if !p.at(tkGroupLeft) && !p.at(tkGroupRight) {
+		return
+	}
+	right := p.at(tkGroupRight)
+	p.advance()
+	if right {
+		vm.Card = CardOneToMany
+	} else {
+		vm.Card = CardManyToOne
+	}
+	if p.at(tkOpenParen) {
+		p.advance()
+		vm.Include = p.parseLabelList()
+		p.expect(tkCloseParen, "')'")
+	}
 }
 
 // parseLabelList parses a possibly-empty comma-separated list of label
