@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	upstreamTraceql "github.com/grafana/tempo/pkg/traceql"
-
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -216,7 +214,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// issue-detector query omits step entirely.
 	var step time.Duration
 	if stepStr := r.URL.Query().Get("step"); stepStr == "" {
-		ns := upstreamTraceql.DefaultQueryRangeStep(
+		ns := defaultQueryRangeStep(
 			uint64(start.UnixNano()), uint64(end.UnixNano()),
 		)
 		// DefaultQueryRangeStep targets ~240 points across the window,
@@ -813,12 +811,12 @@ func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggr
 		sort.Slice(g.buckets, func(i, j int) bool {
 			return g.buckets[i].max < g.buckets[j].max
 		})
-		buckets := make([]upstreamTraceql.HistogramBucket, len(g.buckets))
+		buckets := make([]histogramBucket, len(g.buckets))
 		for i, b := range g.buckets {
-			buckets[i] = upstreamTraceql.HistogramBucket{Max: b.max, Count: b.count}
+			buckets[i] = histogramBucket{Max: b.max, Count: b.count}
 		}
 		for _, phi := range m.Quantiles {
-			value, _ := upstreamTraceql.Log2QuantileWithBucket(phi, buckets)
+			value, _ := log2QuantileWithBucket(phi, buckets)
 			labels := make(map[string]string, len(g.labels)+1)
 			for k, v := range g.labels {
 				labels[k] = v

@@ -89,6 +89,7 @@ components:
   promql:    { in: promql }
   logql:     { in: logql }
   traceql:   { in: traceql }
+  traceql-ast: { in: traceql/ast }
   optimizer: { in: optimizer }
   chsql:     { in: chsql }
   chclient:  { in: chclient }
@@ -176,6 +177,7 @@ deps:
   traceql:
     mayDependOn:
       - chplan
+      - traceql-ast
 
   # The optimizer rewrites plans in place. It must not know about SQL
   # emission, the CH driver, or HTTP handlers. (It may read schema via
@@ -266,6 +268,7 @@ deps:
       - engine
       - optimizer
       - traceql
+      - traceql-ast
   api-tempo-grpc:
     mayDependOn:
       - api-tempo
