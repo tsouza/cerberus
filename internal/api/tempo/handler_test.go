@@ -1559,3 +1559,37 @@ func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
 		}
 	})
 }
+
+// TestSearch_SpansetAggregate_ResultLimitPushedToSQL — the /api/search limit is
+// now pushed server-side as ORDER BY TraceStartNs DESC LIMIT N for a spanset
+// aggregation, instead of draining every qualifying group and truncating in Go
+// (which trips the per-query sample budget → spurious 422 on busy windows). The
+// aggregate is untouched (the SpansetAggregate_* correctness tests still pass);
+// only the emitted output set is bounded to the newest N traces.
+func TestSearch_SpansetAggregate_ResultLimitPushedToSQL(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	// `{ resource.service.name = "frontend" } | count() > 0` with limit=7.
+	resp, err := http.Get(srv.URL + "/api/search?limit=7&q=%7B%20resource.service.name%20%3D%20%22frontend%22%20%7D%20%7C%20count%28%29%20%3E%200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if !strings.Contains(q.lastSQL, "TraceStartNs` DESC") {
+		t.Errorf("aggregate search SQL must ORDER BY TraceStartNs DESC; got %s", q.lastSQL)
+	}
+	// Secondary TraceId key — the deterministic tie-break matching the Go-side
+	// sortSummariesStartDesc (start DESC, then TraceId ASC).
+	if !strings.Contains(q.lastSQL, "DESC, `TraceId`") {
+		t.Errorf("aggregate search SQL must tie-break on TraceId; got %s", q.lastSQL)
+	}
+	if !strings.Contains(q.lastSQL, "LIMIT 7") {
+		t.Errorf("aggregate search SQL must push the request LIMIT 7 server-side; got %s", q.lastSQL)
+	}
+}

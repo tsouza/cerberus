@@ -82,6 +82,10 @@ func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 		IsMetric:      false,
 		IsTraceByID:   false,
 		ResponseShape: "tempo-trace",
+		// Carry the /api/search trace limit so ProjectSamples can cap a
+		// spanset-aggregation search to the newest N traces server-side
+		// (the parity counterpart to plain search's SearchTraceLimit node).
+		Extra: map[string]any{metaKeySearchTraceLimit: traceql_lower.SearchTraceLimit(ctx)},
 	}, nil
 }
 
