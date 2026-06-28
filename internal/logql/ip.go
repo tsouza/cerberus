@@ -6,8 +6,9 @@ import (
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
-	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"go4.org/netipx"
+
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )

@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"go.opentelemetry.io/otel/trace"
+
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/cerbtrace"

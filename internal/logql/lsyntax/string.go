@@ -48,7 +48,7 @@ func (e *LineFilterExpr) String() string {
 		sb.WriteString(e.Ty.String())
 		sb.WriteString(" ")
 	}
-	if e.LineFilter.Op == OpFilterIP {
+	if e.Op == OpFilterIP {
 		fmt.Fprintf(&sb, "%s(%q)", OpFilterIP, e.Match)
 	} else {
 		fmt.Fprintf(&sb, "%q", e.Match)

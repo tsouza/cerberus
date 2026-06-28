@@ -10,6 +10,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/prometheus/model/labels"
+
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 

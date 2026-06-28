@@ -6,6 +6,7 @@ import (
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/prometheus/model/labels"
+
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
