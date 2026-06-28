@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -70,5 +71,64 @@ func TestRangeWindowNumAnchors(t *testing.T) {
 		if got != c.want {
 			t.Errorf("NumAnchors(outer=%s step=%s): got %d, want %d", c.outer, c.step, got, c.want)
 		}
+	}
+}
+
+// TestSubqueryAnchorLoad_NestedProduct pins GAP-C: nested subquery grids
+// multiply (each outer anchor re-evaluates the inner grid), siblings don't, and
+// the product saturates rather than overflowing.
+func TestSubqueryAnchorLoad_NestedProduct(t *testing.T) {
+	t.Parallel()
+	scan := &chplan.Scan{Table: "otel_metrics_sum"}
+	// 1h/1m + 1 = 61 anchors per grid.
+	grid := func(in chplan.Node) *chplan.RangeWindow {
+		return &chplan.RangeWindow{Func: "rate", Range: time.Minute, OuterRange: time.Hour, Step: time.Minute, Input: in}
+	}
+	single := grid(scan)
+	nested := &chplan.RangeWindow{Func: "max_over_time", Range: time.Hour, OuterRange: time.Hour, Step: time.Minute, Input: grid(scan)}
+
+	if got := subqueryAnchorLoad(single); got != 61 {
+		t.Fatalf("single: got %d, want 61", got)
+	}
+	// Nested multiplies: 61 * 61 = 3721 — the max-only count would have seen 61.
+	if got := subqueryAnchorLoad(nested); got != 61*61 {
+		t.Fatalf("nested product: got %d, want %d", got, 61*61)
+	}
+	// Siblings (two arms of a join) do NOT multiply — only the deepest chain.
+	siblings := &chplan.CrossJoin{Left: grid(scan), Right: grid(scan)}
+	if got := subqueryAnchorLoad(siblings); got != 61 {
+		t.Fatalf("siblings: got %d, want 61 (max, not product)", got)
+	}
+	// The product propagates THROUGH a wrapper (Project) between the two grids —
+	// the real lowered shape, where the outer reducer sits over a Project over
+	// the inner subquery matrix.
+	throughWrapper := &chplan.RangeWindow{
+		Func: "max_over_time", Range: time.Hour, OuterRange: time.Hour, Step: time.Minute,
+		Input: &chplan.Project{Input: grid(scan)},
+	}
+	if got := subqueryAnchorLoad(throughWrapper); got != 61*61 {
+		t.Fatalf("product through wrapper: got %d, want %d", got, 61*61)
+	}
+	// The budget rejects the nested product but passes either level alone.
+	if err := requireSubquerySampleBudget(nested, 1000); !errors.Is(err, chclient.ErrTooManySamples) {
+		t.Fatalf("nested over budget 1000: want reject, got %v", err)
+	}
+	if err := requireSubquerySampleBudget(single, 1000); err != nil {
+		t.Fatalf("single under budget 1000: want pass, got %v", err)
+	}
+}
+
+func TestSatMulInt64_Saturates(t *testing.T) {
+	t.Parallel()
+	if got := satMulInt64(0, 1<<40); got != 0 {
+		t.Fatalf("0*x: got %d, want 0", got)
+	}
+	if got := satMulInt64(3, 4); got != 12 {
+		t.Fatalf("3*4: got %d, want 12", got)
+	}
+	// 7.78M ^ 3 overflows int64 — must saturate, never wrap negative.
+	big := int64(7_776_001)
+	if got := satMulInt64(satMulInt64(big, big), big); got != math.MaxInt64 {
+		t.Fatalf("triple-nested product: got %d, want MaxInt64", got)
 	}
 }
