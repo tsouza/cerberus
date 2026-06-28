@@ -1,0 +1,16 @@
+Two bare attribute operands under an ORDERING comparison (`span.a > span.b`)
+numeric-coerce BOTH sides via toFloat64OrNull. Before the fix this fell through
+to a raw Map(String,String) compare — lexicographic, so `'10' > '5'` was false.
+Equality (`=`/`!=`) deliberately stays a string compare; only ordering implies
+numeric intent on two attributes.
+
+-- query.traceql --
+{ span.a > span.b }
+-- sql --
+SELECT * FROM `otel_traces` WHERE (toFloat64OrNull(`SpanAttributes`[?]) > toFloat64OrNull(`SpanAttributes`[?]))
+-- chplan --
+Filter predicate=(toFloat64OrNull(SpanAttributes["a"]) > toFloat64OrNull(SpanAttributes["b"]))
+  Scan(otel_traces)
+-- args --
+[0] string = "a"
+[1] string = "b"
