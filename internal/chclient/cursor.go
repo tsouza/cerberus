@@ -44,6 +44,37 @@ func (e *TooManySamplesError) Error() string {
 
 func (e *TooManySamplesError) Unwrap() error { return ErrTooManySamples }
 
+// ErrLogPeekBytesExceeded is the sentinel matched (via errors.Is) when a
+// line-peek metadata drain (/loki/api/v1/detected_fields, /patterns)
+// buffers more raw log bytes than maxLogPeekBytes. It is the BYTE-axis
+// sibling of ErrTooManySamples: the row-count budget bounds how MANY rows
+// a drain buffers, but the line-peek endpoints are SQL-LIMIT capped at a
+// small row count (maxLogPeekLineLimit) while each row's Body is an
+// unbounded ClickHouse String — so a handful of pathologically large lines
+// slip under the row budget yet still heap the process. This bound caps
+// the cumulative byte footprint instead.
+var ErrLogPeekBytesExceeded = errors.New("log peek byte budget exceeded")
+
+// LogPeekBytesError is the concrete error a line-peek drain returns once
+// its buffered raw-byte total crosses maxLogPeekBytes. It wraps
+// [ErrLogPeekBytesExceeded] (errors.Is matches) and carries the cap so API
+// handlers can render a head-idiomatic over-limit message — the same
+// resource-rejection family as [TooManySamplesError].
+type LogPeekBytesError struct {
+	// Limit is the cumulative-byte cap (maxLogPeekBytes) the drain
+	// crossed.
+	Limit int64
+}
+
+func (e *LogPeekBytesError) Error() string {
+	return fmt.Sprintf(
+		"chclient: log peek byte budget exceeded: buffered log lines exceed %d bytes",
+		e.Limit,
+	)
+}
+
+func (e *LogPeekBytesError) Unwrap() error { return ErrLogPeekBytesExceeded }
+
 // Cursor is a forward-only iterator over a Sample result set. Use it to
 // stream rows out of ClickHouse without materialising the full slice in
 // process memory — the canonical pattern for `query_range` matrix

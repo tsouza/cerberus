@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -58,16 +60,23 @@ func TestQueryMaxSamples_DefaultIsEnforcedAndSane(t *testing.T) {
 }
 
 // TestFromEnv_QueryMaxSamples_Override confirms the env var threads
-// through to chclient.Config, including the documented 0 = disabled
-// opt-out.
+// through to chclient.Config, and pins the zero-floor trap fix: `0` is
+// coerced to the default (it never disables the budget), while `-1` is
+// the single explicit disable sentinel that threads through as-is (the
+// cursor treats <=0 as unlimited).
 func TestFromEnv_QueryMaxSamples_Override(t *testing.T) {
 	cases := []struct {
 		val  string
 		want int64
 	}{
 		{"5000000", 5_000_000},
-		{"0", 0},
 		{"1", 1},
+		// 0 is the env zero-value / easy typo: it must NOT disable the
+		// process-OOM backstop — it is coerced back to the default.
+		{"0", defaultQueryMaxSamples},
+		// -1 is the deliberate, loud opt-out: it threads through so the
+		// cursor's <=0 "unlimited" branch disables the budget.
+		{"-1", querySamplesDisableSentinel},
 	}
 	for _, tc := range cases {
 		t.Run(tc.val, func(t *testing.T) {
@@ -83,10 +92,11 @@ func TestFromEnv_QueryMaxSamples_Override(t *testing.T) {
 	}
 }
 
-// TestFromEnv_QueryMaxSamples_Invalid confirms non-integer and negative
-// values fail fast at startup rather than silently defaulting.
+// TestFromEnv_QueryMaxSamples_Invalid confirms non-integer values and
+// negatives other than the -1 disable sentinel fail fast at startup
+// rather than silently defaulting.
 func TestFromEnv_QueryMaxSamples_Invalid(t *testing.T) {
-	for _, val := range []string{"lots", "1.5", "-1"} {
+	for _, val := range []string{"lots", "1.5", "-2", "-5000000"} {
 		t.Run(val, func(t *testing.T) {
 			t.Setenv("CERBERUS_QUERY_MAX_SAMPLES", val)
 			_, err := FromEnv()
@@ -95,6 +105,64 @@ func TestFromEnv_QueryMaxSamples_Invalid(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "CERBERUS_QUERY_MAX_SAMPLES") {
 				t.Errorf("error %q does not name the env var", err)
+			}
+		})
+	}
+}
+
+// TestResolveQueryMaxSamples_ZeroFloorAndLoudDisable is the focused pin
+// for the zero-floor trap fix: 0 -> bounded (default, never unlimited)
+// with a warning, and the explicit -1 opt-out -> unbounded sentinel with
+// a loud warning. Both warnings are asserted so a disabled or silently-
+// re-bounded budget can never ship without a startup log line.
+func TestResolveQueryMaxSamples_ZeroFloorAndLoudDisable(t *testing.T) {
+	type want struct {
+		budget   int64
+		warnSubs string // substring the warning must contain (empty = expect no warning)
+		isErr    bool
+	}
+	cases := []struct {
+		name string
+		in   int64
+		want want
+	}{
+		{"positive passes through", 123, want{budget: 123}},
+		{"zero coerces to default + warns", 0, want{budget: defaultQueryMaxSamples, warnSubs: "does not disable"}},
+		{"minus-one disables + warns loudly", -1, want{budget: querySamplesDisableSentinel, warnSubs: "DISABLED"}},
+		{"below sentinel rejected", -2, want{isErr: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			got, err := resolveQueryMaxSamples(tc.in)
+			if tc.want.isErr {
+				if err == nil {
+					t.Fatalf("resolveQueryMaxSamples(%d) = (%d, nil); want error", tc.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveQueryMaxSamples(%d): %v", tc.in, err)
+			}
+			if got != tc.want.budget {
+				t.Errorf("budget = %d; want %d", got, tc.want.budget)
+			}
+			logged := buf.String()
+			if tc.want.warnSubs == "" {
+				if strings.Contains(logged, "level=WARN") {
+					t.Errorf("unexpected warning for input %d: %q", tc.in, logged)
+				}
+				return
+			}
+			if !strings.Contains(logged, "level=WARN") {
+				t.Errorf("input %d: expected a WARN startup log, got %q", tc.in, logged)
+			}
+			if !strings.Contains(logged, tc.want.warnSubs) {
+				t.Errorf("input %d: warning %q does not contain %q", tc.in, logged, tc.want.warnSubs)
 			}
 		})
 	}
