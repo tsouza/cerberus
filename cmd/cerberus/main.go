@@ -484,10 +484,11 @@ const gracefulShutdownTimeout = 10 * time.Second
 func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	h.Engine = &engine.Engine{
-		Optimizer: h.Optimizer,
-		Client:    client,
-		Solver:    evalSolver,
-		Settings:  settingsRules(cfg, optSet),
+		Optimizer:       h.Optimizer,
+		Client:          client,
+		Solver:          evalSolver,
+		Settings:        settingsRules(cfg, optSet),
+		MaxQuerySamples: client.MaxQuerySamples(),
 	}
 	h.Limiter = limiter
 	h.Version = Version
