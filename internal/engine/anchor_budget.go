@@ -28,6 +28,25 @@ import (
 //
 // maxSamples <= 0 disables the budget (matching the cursor's per-query budget
 // semantics), so the gate is inert by default in tests that don't wire it.
+//
+// Scope. NumAnchors is non-zero for ANY RangeWindow with OuterRange>0 && Step>0
+// — which includes a plain query_range matrix, not only a subquery. That is
+// harmless: the query_range OUTER grid is already capped at
+// format.MaxResolutionPoints (11000) in the head handlers before lowering, far
+// below any sane budget, so a range query can never reach this gate. SUBQUERY
+// inner grids have no such cap (the [range:step] resolution is unbounded) — so
+// in practice this budget is the subquery counterpart to MaxResolutionPoints,
+// the one place an OuterRange grid that the handler did not pre-bound gets
+// bounded.
+//
+// The bound is per-series and conservative on two axes, by design:
+//   - cardinality: it counts a single series' anchor grid, not anchors x
+//     series; the cardinality axis is bounded elsewhere (#1112 spill + the
+//     result-drain SampleBudget). So a sub-budget grid at high cardinality is
+//     backstopped at runtime, not here.
+//   - nesting: for stacked subqueries it takes the MAX anchor grid in the tree,
+//     not the product the emitter fans out. An undercount, never an
+//     over-reject; the runtime nets catch a product that no single level busts.
 func requireSubquerySampleBudget(plan chplan.Node, maxSamples int64) error {
 	if maxSamples <= 0 || plan == nil {
 		return nil
