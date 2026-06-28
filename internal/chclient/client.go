@@ -1223,6 +1223,42 @@ func (c *Client) drainBudgetExceeded(n int) error {
 	return nil
 }
 
+// maxLogPeekBytes hard-caps the cumulative raw-log bytes a line-peek drain
+// (/loki/api/v1/detected_fields, /patterns) buffers into a Go slice before
+// aborting. The row-count budget (drainBudgetExceeded) bounds how MANY rows
+// a drain holds, but these endpoints are SQL-LIMIT capped at a small row
+// count (maxLogPeekLineLimit, 10k) while each row's Body is an unbounded CH
+// String — so a handful of multi-megabyte lines stay under the row budget
+// yet still heap the process (the doc-comment on detected_fields.go notes
+// the heap "scales with line SIZE x concurrency"). This is the byte-axis
+// backstop: a fixed process-safety bound, not a tunable. 256 MiB sits far
+// above any realistic peek (10k lines of a few KB each is tens of MB) while
+// rejecting the pathological case before it OOMs the gateway.
+const maxLogPeekBytes = 256 << 20
+
+// logPeekBytesExceeded reports whether a line-peek drain has buffered more
+// than maxLogPeekBytes of raw log data so far. Pass the running byte total
+// after each appended row; a non-nil return aborts the drain with a
+// *LogPeekBytesError, which maps to the same Loki "maximum … reached for a
+// single query" 400 the sample budget uses (see classifyMetadataErr).
+func logPeekBytesExceeded(buffered int64) error {
+	if buffered > maxLogPeekBytes {
+		return &LogPeekBytesError{Limit: maxLogPeekBytes}
+	}
+	return nil
+}
+
+// mapBytes sums the key + value byte lengths of an attribute map so a
+// line-peek drain's byte budget accounts for the structured-metadata and
+// stream-label maps it buffers alongside each Body, not just the line text.
+func mapBytes(m map[string]string) int64 {
+	var n int64
+	for k, v := range m {
+		n += int64(len(k)) + int64(len(v))
+	}
+	return n
+}
+
 // QueryStrings runs sql and decodes a single-string-column result into a
 // flat slice. Used by metadata endpoints (/api/v1/labels, label values,
 // metadata) that return a list of names.
@@ -1305,6 +1341,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 	}()
 
 	var out []DetectedFieldRow
+	var buffered int64
 	for rows.Next() {
 		var (
 			line     string
@@ -1315,6 +1352,10 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
 		out = append(out, DetectedFieldRow{Line: line, Attributes: attrs, Resource: resource})
+		buffered += int64(len(line)) + mapBytes(attrs) + mapBytes(resource)
+		if err := logPeekBytesExceeded(buffered); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
@@ -1357,6 +1398,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	}()
 
 	var out []TimestampedLine
+	var buffered int64
 	for rows.Next() {
 		var ts time.Time
 		var body string
@@ -1364,6 +1406,10 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
 		out = append(out, TimestampedLine{Timestamp: ts, Body: body})
+		buffered += int64(len(body))
+		if err := logPeekBytesExceeded(buffered); err != nil {
+			return nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))
