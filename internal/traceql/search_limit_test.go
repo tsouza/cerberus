@@ -266,3 +266,49 @@ func TestWithSearchTraceLimit_NonPositiveNoOp(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchWindow_AggregateLeavesWindowed — GAP-3 regression. A spanset
+// aggregation search (`| count() > N`) lowers to Aggregate over the span row
+// source. Pre-fix, pushLeafPredicate hit `default: return n` on Aggregate and
+// dropped the window → all-time scan + unbounded GROUP BY. Now the generic
+// recurse folds the window onto the leaf below the aggregate: 1 leaf × (>=, <=).
+func TestSearchWindow_AggregateLeavesWindowed(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" } | count() > 1`, 200, winStart, winEnd)
+	if got := countWindowBounds(plan); got != 2 {
+		t.Fatalf("aggregate window bounds = %d, want 2 (pre-fix 0 = all-time scan)", got)
+	}
+}
+
+// TestSearchWindow_StructuralAggregateWindowed — the structural + aggregate
+// combo: two leaves under the join, both windowed below the GROUP BY → 4.
+func TestSearchWindow_StructuralAggregateWindowed(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" } >> { span.http.status_code = 500 } | count() > 1`, 200, winStart, winEnd)
+	if got := countWindowBounds(plan); got != 4 {
+		t.Fatalf("structural-aggregate window bounds = %d, want 4", got)
+	}
+}
+
+// TestSearchWindow_MetricsNotFolded — a metrics-pipeline query must NOT get the
+// request window folded onto its leaves even when routed with a search limit;
+// metrics get their time bound from the /api/metrics/query_range RangeWindow
+// wrap. The lower.go gate skips the search stamps for MetricsPipeline so the
+// generic leaf recurse never touches a metrics leaf.
+func TestSearchWindow_MetricsNotFolded(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" } | rate()`, 200, winStart, winEnd)
+	if got := countWindowBounds(plan); got != 0 {
+		t.Fatalf("metrics query window bounds = %d, want 0 (metrics carries its own bound)", got)
+	}
+}
+
+// TestSearchWindow_GroupByAggregateWindowed — a by(...) grouping aggregate is
+// windowed like the bare aggregate (same chplan.Aggregate node, same recurse).
+func TestSearchWindow_GroupByAggregateWindowed(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" } | by(name)`, 200, winStart, winEnd)
+	if got := countWindowBounds(plan); got != 2 {
+		t.Fatalf("group-by aggregate window bounds = %d, want 2", got)
+	}
+}

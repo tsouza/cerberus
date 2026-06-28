@@ -1,0 +1,26 @@
+GAP-3: a spanset-aggregation search (`| count() > N`) lowers to Aggregate over
+the span row source. Before the fold, pushLeafPredicate hit `default: return n`
+on Aggregate and dropped the request window — the leaf Scan read full retention
+(wrong count + unbounded GROUP BY). Now the generic recurse folds the window
+onto the leaf below the aggregate, so it scans only [start, end].
+
+-- search_limit --
+20
+-- search_window --
+1782571392 1782573192
+-- query.traceql --
+{ resource.service.name = "a" } | count() > 1
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- args --
+[0] int64 = 1
+[1] int64 = 1782571392000000000
+[2] int64 = 1782573192000000000
+[3] string = "service.name"
+[4] string = "a"
+[5] int64 = 1
+-- chplan --
+Filter predicate=(Value > 1)
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+    Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+      Scan(otel_traces)
