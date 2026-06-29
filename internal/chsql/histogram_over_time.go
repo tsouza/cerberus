@@ -205,6 +205,12 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	if m.Inner == nil {
 		return fmt.Errorf("%w: MetricsHistogramOverTime.Inner is nil", ErrUnsupported)
 	}
+	// Fail closed if the inner is a spans scan with no request window: the
+	// shared maybePushInnerScanTimeBounds (here and in the zero-fill arm)
+	// silently no-ops on a zero window, scanning otel_traces full retention.
+	if err := requireInnerSpansScanBound(r, m.Inner, e.spansTable); err != nil {
+		return err
+	}
 
 	// Pre-flight expressions so chplan errors surface synchronously.
 	if err := (&Builder{}).Expr(m.Attr); err != nil {

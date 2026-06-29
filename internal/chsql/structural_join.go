@@ -495,6 +495,10 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	if table == "" {
 		return fmt.Errorf("%w: recursive StructuralJoin needs a Scan in L subtree", ErrUnsupported)
 	}
+	// The recursive arm scans the spans table directly. Put it under the
+	// resource-bound invariant so the step FROM is gated by fromSpansScan even
+	// when the caller did not thread WithSpansTable onto the emit context.
+	e.spansTable = table
 
 	leftSub, err := e.subqueryFrag(j.Left)
 	if err != nil {
@@ -536,6 +540,10 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// INNER JOIN _struct_closure AS c ON <stepOn>
 	// WHERE c._depth < <cap> [AND t.TraceId IN (SELECT TraceId FROM (<L>) AS _seed_ids)].
 	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
+	stepFrom, err := e.fromSpansScan(table, structuralStepBound(j.Left, j.TraceIDColumn, leftSub))
+	if err != nil {
+		return err
+	}
 	step := NewQuery().
 		Select(
 			Distinct(qualColFrag("t", j.TraceIDColumn)),
@@ -543,7 +551,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			qualColFrag("t", j.ParentSpanIDColumn),
 			verbatim("c._depth + 1"),
 		).
-		From(aliasedFrag(Col(table), "t")).
+		From(aliasedFrag(stepFrom, "t")).
 		Join(
 			InnerJoin,
 			aliasedFrag(verbatim(cteName), "c"),
@@ -595,7 +603,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// subquery on the upward-walked SpanIds. We rebuild the
 		// closure with R as the seed and step direction inverted.
 		invCTEName := "_struct_closure_inv_" + strconv.Itoa(e.nextStructSeq())
-		inverseClosure, err := buildStructuralInverseClosure(j, j.Right, rightSub, table, invCTEName)
+		inverseClosure, err := e.buildStructuralInverseClosure(j, j.Right, rightSub, table, invCTEName)
 		if err != nil {
 			return err
 		}
@@ -629,7 +637,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 // (`t.SpanId = c.ParentSpanId`). The two arms of the UNION DISTINCT
 // thus cover both projection directions, mirroring upstream's
 // `union=true` Span.DescendantOf semantics.
-func buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Node, rightSub Frag, table, cteName string) (*QueryBuilder, error) {
+func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Node, rightSub Frag, table, cteName string) (*QueryBuilder, error) {
 	var stepRel Frag
 	switch j.Op.Positive() {
 	case chplan.StructuralDescendant:
@@ -656,6 +664,10 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Nod
 		From(aliasedFrag(rightSub, "_seed"))
 
 	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
+	stepFrom, err := e.fromSpansScan(table, structuralStepBound(seedNode, j.TraceIDColumn, rightSub))
+	if err != nil {
+		return nil, err
+	}
 	step := NewQuery().
 		Select(
 			Distinct(qualColFrag("t", j.TraceIDColumn)),
@@ -663,7 +675,7 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Nod
 			qualColFrag("t", j.ParentSpanIDColumn),
 			verbatim("c._depth + 1"),
 		).
-		From(aliasedFrag(Col(table), "t")).
+		From(aliasedFrag(stepFrom, "t")).
 		Join(
 			InnerJoin,
 			aliasedFrag(verbatim(cteName), "c"),
@@ -703,6 +715,21 @@ func structuralStepWhere(j *chplan.StructuralJoin, seedNode chplan.Node, seedSub
 		conds = append(conds, structuralSeedTraceFilter(j.TraceIDColumn, seedSub))
 	}
 	return conds
+}
+
+// structuralStepBound classifies the resource bound on a recursive structural
+// step's spans scan, mirroring structuralStepWhere's pushdown decision. When
+// the seed subtree is NOT itself recursive, the step carries the seed-trace-id
+// IN pushdown (`t.TraceId IN (SELECT TraceId FROM (<seed>))`) — a finite
+// trace-id set (form-b). When the seed IS recursive the pushdown is dropped to
+// avoid CH error 49 (a recursive subquery nested in a recursive arm), so the
+// step is bounded only by the recursion depth cap + the finite recursive
+// working set — honestly classified as memory-streaming, not a partition claim.
+func structuralStepBound(seedNode chplan.Node, traceIDCol string, seedSub Frag) scanResourceBound {
+	if subtreeHasRecursiveStructural(seedNode) {
+		return memoryStreamingBound()
+	}
+	return traceIDSetBound(structuralSeedTraceFilter(traceIDCol, seedSub))
 }
 
 // subtreeHasRecursiveStructural reports whether n (or any descendant)
