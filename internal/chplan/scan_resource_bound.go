@@ -277,11 +277,24 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 			// recognised as windowed.
 			descend(v.Input, conjoinScanPred(pred, v.Predicate), underLimit)
 		case *Limit:
-			// A `LIMIT N` (Count > 0) bounds the output to a top-N: with an
-			// ORDER BY it is a bounded-N priority queue (O(N) memory), the
-			// /search/recent shape. The scan still reads partitions but cannot
-			// buffer full retention into memory — a memory-streaming bound.
+			// A `LIMIT N` (Count > 0) bounds the output to a top-N: over an
+			// ORDER BY / Filter / Project chain it is a bounded-N priority queue
+			// (O(N) memory), the /search/recent shape. The scan still reads
+			// partitions but cannot buffer full retention into memory — a
+			// memory-streaming bound. It does NOT survive an intervening
+			// Aggregate (handled below).
 			descend(v.Input, pred, underLimit || v.Count > 0)
+		case *Aggregate:
+			// A GROUP BY hash table is materialised in full before an outer
+			// LIMIT applies, so a top-N Limit above an Aggregate does NOT bound
+			// the inner scan — drop the underLimit context when crossing it.
+			// The scan-level window / trace-id bound, if any, lives in the
+			// Aggregate's input and re-accumulates below (e.g. boundNewestTraces'
+			// `| count() > N` leaf is bounded by its own stampSearchWindow,
+			// not the outer top-N Limit).
+			for _, c := range n.Children() {
+				descend(c, pred, false)
+			}
 		case *Scan:
 			if v.Table != spansTable {
 				return

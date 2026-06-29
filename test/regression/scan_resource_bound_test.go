@@ -113,6 +113,42 @@ func TestRequireSpansScansBounded_LimitTopNIsBounded(t *testing.T) {
 	}
 }
 
+func TestRequireSpansScansBounded_LimitDoesNotCrossAggregate(t *testing.T) {
+	// A top-N Limit does NOT bound a scan beneath an Aggregate (the GROUP BY
+	// hash table is materialised in full before the LIMIT applies), so an
+	// unwindowed spans scan under Limit(Aggregate(...)) must be rejected — the
+	// underLimit recognition stops at the Aggregate boundary.
+	plan := &chplan.Limit{
+		Count: 20,
+		Input: &chplan.Aggregate{
+			Input:          &chplan.Scan{Table: spansTable},
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+			GroupByAliases: []string{"TraceId"},
+		},
+	}
+	var v *chplan.ScanResourceBoundViolation
+	if !errors.As(chplan.RequireSpansScansBounded(spansTable, plan), &v) {
+		t.Fatalf("Limit(Aggregate(bare Scan)) must be rejected — LIMIT does not bound a GROUP-BY scan")
+	}
+
+	// But the same Limit(Aggregate(...)) with a WINDOWED leaf (the
+	// boundNewestTraces `| count() > N` shape) is accepted via the window.
+	windowed := &chplan.Limit{
+		Count: 20,
+		Input: &chplan.Aggregate{
+			Input: &chplan.Filter{
+				Input:     &chplan.Scan{Table: spansTable},
+				Predicate: tsWindowPred(),
+			},
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+			GroupByAliases: []string{"TraceId"},
+		},
+	}
+	if err := chplan.RequireSpansScansBounded(spansTable, windowed); err != nil {
+		t.Fatalf("Limit(Aggregate(Filter_window(Scan))) must be accepted via the window, got %v", err)
+	}
+}
+
 func TestRequireSpansScansBounded_SkipsMetricsEmitterInner(t *testing.T) {
 	// A metrics-emitter inner scan is bounded at emit time (per-site gate), so
 	// the IR descent must skip it rather than false-reject the (IR-unwindowed)

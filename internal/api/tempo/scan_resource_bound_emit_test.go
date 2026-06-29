@@ -129,6 +129,67 @@ func TestScanResourceBound_RootLookupRealEntry(t *testing.T) {
 	}
 }
 
+// TestScanResourceBound_RootLookupChokepointPins independently pins the
+// chokepoint's coverage of the root-lookup shape (not the wiring line): a
+// root-lookup-shaped plan — Aggregate grouping by TraceId — with the TraceId
+// InList bound STRIPPED must be rejected under the spans scope, while the
+// InList-present plan is accepted. This catches a regression where the gate
+// stops covering the root-lookup table, even though the InList-present path
+// stays output-equivalent.
+func TestScanResourceBound_RootLookupChokepointPins(t *testing.T) {
+	t.Parallel()
+	s := tracesSchema()
+	ctx := chsql.WithSpansTable(context.Background(), s.SpansTable)
+	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}
+	groupAliases := []string{"TraceId"}
+
+	// Stripped: Aggregate(bare spans Scan) — no TraceId bound -> rejected.
+	stripped := chplan.Node(&chplan.Aggregate{
+		Input:          &chplan.Scan{Table: s.SpansTable},
+		GroupBy:        groupBy,
+		GroupByAliases: groupAliases,
+	})
+	if _, _, err := chsql.Emit(ctx, stripped); err == nil {
+		t.Fatalf("stripped root-lookup shape (no TraceId IN) must be rejected under WithSpansTable")
+	}
+
+	// Bound: the same aggregate over a TraceId IN set -> accepted.
+	bounded := chplan.Node(&chplan.Aggregate{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: s.SpansTable},
+			Predicate: &chplan.InList{
+				Left: &chplan.ColumnRef{Name: s.TraceIDColumn},
+				List: []chplan.Expr{&chplan.LitString{V: "abc"}},
+			},
+		},
+		GroupBy:        groupBy,
+		GroupByAliases: groupAliases,
+	})
+	if _, _, err := chsql.Emit(ctx, bounded); err != nil {
+		t.Fatalf("bounded root-lookup shape (TraceId IN) must be accepted, got %v", err)
+	}
+}
+
+// TestScanResourceBound_HistogramFailClosed pins the 5th gate
+// (emitRangeWindowHistogram): a zero-window spans inner under the spans scope
+// must fail closed.
+func TestScanResourceBound_HistogramFailClosed(t *testing.T) {
+	t.Parallel()
+	s := tracesSchema()
+	m := &chplan.MetricsHistogramOverTime{
+		Attr:       &chplan.ColumnRef{Name: "Duration"},
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: s.SpansTable},
+	}
+	rw := &chplan.RangeWindow{
+		Input: m, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",
+	}
+	ctx := chsql.WithSpansTable(context.Background(), s.SpansTable)
+	if _, _, err := chsql.Emit(ctx, rw); !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+		t.Fatalf("zero-window histogram_over_time over spans inner must fail closed, got %v", err)
+	}
+}
+
 func TestScanResourceBound_StructureTabBounded(t *testing.T) {
 	t.Parallel()
 	s := tracesSchema()
