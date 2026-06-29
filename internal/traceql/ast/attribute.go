@@ -2,8 +2,6 @@ package ast
 
 import (
 	"strings"
-	"text/scanner"
-	"unicode"
 )
 
 // Attribute is a reference to a span/resource/trace field or an intrinsic.
@@ -95,15 +93,12 @@ func (a Attribute) String() string {
 }
 
 // containsNonAttributeRune reports whether s holds any rune that cannot
-// appear in a bare attribute name and therefore forces quoting. The
-// disallowed set is the lexer's structural punctuation plus whitespace.
+// appear in a bare attribute name and therefore forces quoting. It is the
+// exact inverse of the lexer's isAttributeRune, so the disallowed set (the
+// structural punctuation plus whitespace) is defined in one place only.
 func containsNonAttributeRune(s string) bool {
 	for _, r := range s {
-		if unicode.IsSpace(r) {
-			return true
-		}
-		switch r {
-		case scanner.EOF, '{', '}', '(', ')', '=', '~', '!', '<', '>', '&', '|', '^', ',':
+		if !isAttributeRune(r) {
 			return true
 		}
 	}

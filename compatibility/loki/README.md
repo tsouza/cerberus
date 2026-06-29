@@ -55,9 +55,10 @@ compatibility/loki/
 
 ## Upstream corpus
 
-The snapshot pins `grafana/loki` directly: the `tsouza/loki` fork
-tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel/`,
-so `pkg/logql/bench/` is outside the fork's watch boundary.
+The snapshot pins `grafana/loki` directly. This vendored
+`pkg/logql/bench/` corpus is reference test material only — it is never
+linked into `cmd/cerberus`; the shipped LogQL parser is cerberus's own
+in-house reimplementation (`internal/logql/lsyntax`).
 
 Vendored paths (the authoritative inventory is in
 `upstream/loki-bench/VERSION`):
@@ -307,6 +308,6 @@ $EDITOR compatibility/loki/upstream/loki-bench/VERSION
 ## Related docs
 
 - [`docs/compatibility.md`](../../docs/compatibility.md) — cross-head playbook
-- [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/loki` fork is wired (and why the bench corpus is outside it)
+- [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — the in-house LogQL parser and the remaining watch-boundary forks
 - [`compatibility/prometheus/`](../prometheus/) — sibling Prom harness
 - [`compatibility/tempo/`](../tempo/) — sibling Tempo harness

@@ -12,10 +12,12 @@ In-house clean-room parsers (LogQL, TraceQL)
 
 Cerberus's LogQL parser (internal/logql/lsyntax, internal/logql/logpattern,
 internal/drain) and TraceQL parser (internal/traceql/ast) are original,
-clean-room implementations written by the Cerberus authors from the published
-LogQL and TraceQL language grammars and HTTP API documentation. They are NOT
-derived from, and contain no source code copied from, Grafana Loki or Grafana
-Tempo.
+independent reimplementations written by the Cerberus authors from the
+published LogQL and TraceQL language grammars and HTTP API documentation. They
+are not derived from, and do not copy source code from, Grafana Loki or Grafana
+Tempo, with one narrow exception: a small set of error-message strings is
+deliberately reproduced verbatim so that Cerberus returns wire-compatible error
+text to clients (each such string is documented at its definition site).
 
 These parsers are API-compatible with Grafana Loki and Grafana Tempo so that
 Cerberus can act as a drop-in datasource. "Loki", "Tempo", "Grafana",
