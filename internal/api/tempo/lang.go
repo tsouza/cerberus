@@ -58,6 +58,12 @@ type traceqlLang struct {
 
 func (l *traceqlLang) Name() string { return "traceql" }
 
+// SpansTable exposes the spans table so the engine threads it onto the emit
+// context (chsql.WithSpansTable), letting RequireSpansScansBounded verify every
+// otel_traces scan in the search / structural / nested-set / trace-by-id plans
+// is resource-bounded.
+func (l *traceqlLang) SpansTable() string { return l.schema.SpansTable }
+
 func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
 	// Parse pipeline-stage stopwatch — mirrors the inlined handler so
 	// cerberus.queries.parse_duration_ms keeps its per-head label.

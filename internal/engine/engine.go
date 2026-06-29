@@ -96,6 +96,22 @@ func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, 
 	return chsql.Emit(ctx, plan)
 }
 
+// spansTabler is implemented by a Lang whose plans scan a spans table (the
+// Tempo head). The engine threads that table name onto the emit context so
+// chsql.Emit's RequireSpansScansBounded chokepoint runs over the whole plan.
+type spansTabler interface{ SpansTable() string }
+
+// emitForHead lowers plan to SQL, threading the spans-table scope onto the emit
+// context for a head that exposes one (Tempo). Heads without a spans table
+// (PromQL / LogQL) emit unchanged — RequireSpansScansBounded is a table-scoped
+// no-op for them.
+func emitForHead(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
+	if st, ok := lang.(spansTabler); ok {
+		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
+	}
+	return chsql.Emit(ctx, plan)
+}
+
 // routeDecisionValue composes the shadow-header value from a solver Decision.
 // The grammar is an ordered, semicolon-delimited list so a future composite
 // strategy (e.g. "sharded-timeslice;k=4;reason=routed") never loses a signal.
@@ -710,7 +726,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sql, args, err := chsql.Emit(ctx, plan)
+	sql, args, err := emitForHead(ctx, lang, plan)
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -944,7 +960,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sql, args, err := chsql.Emit(ctx, plan)
+	sql, args, err := emitForHead(ctx, lang, plan)
 	emitT.Done(ctx)
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: emit: %w", err)

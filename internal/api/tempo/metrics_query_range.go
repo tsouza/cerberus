@@ -150,9 +150,16 @@ type MetricsSample struct {
 // lower + wrap) before calling engine.QueryPlan, so Parse is unused
 // and ProjectSamples is a passthrough (the matrix-shape Project is
 // already on top of the plan).
-type metricsLang struct{}
+type metricsLang struct{ spansTable string }
 
 func (metricsLang) Name() string { return "traceql" }
+
+// SpansTable exposes the spans table so the engine threads it onto the emit
+// context. The metrics matrix inner scan is bounded at emit time and gated by
+// the per-site requireInnerSpansScanBound (RequireSpansScansBounded skips the
+// metrics-emitter subtree), but threading it means the chokepoint still runs
+// over the rest of a metrics plan.
+func (l metricsLang) SpansTable() string { return l.spansTable }
 
 func (metricsLang) Parse(_ context.Context, _ string) (chplan.Node, engine.Meta, error) {
 	// Engine.QueryPlan never calls Parse; the error keeps the adapter
@@ -317,7 +324,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// metricsLang.ProjectSamples is a passthrough (we already wrapped
 	// with the Sample projection above) so engine.QueryPlan runs
 	// optimize → emit → execute without re-wrapping the matrix shape.
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: "tempo-metrics-matrix",
 	})
@@ -355,7 +362,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	series := toMetricsSeries(samples, metrics)
 
 	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
-		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1)
+		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1, h.Schema.SpansTable)
 	if exErr != nil {
 		// Emit failure: the matrix response still ships with an empty
 		// `Exemplars` array per Tempo's wire shape. Warn so production

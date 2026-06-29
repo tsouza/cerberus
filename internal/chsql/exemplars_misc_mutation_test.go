@@ -2,6 +2,7 @@ package chsql_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 	}
 
 	// maxPerSeries == 0 -> uncapped -> no LIMIT clause.
-	sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0)
+	sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 
 	// Sanity counter-case: a positive cap DOES emit the LIMIT BY, proving
 	// the assertion above is discriminating (not vacuously true).
-	sqlCapped, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 3)
+	sqlCapped, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 3, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars capped: %v", err)
 	}
@@ -107,26 +108,27 @@ func TestRangeBucketFanoutEmptyGroupBy(t *testing.T) {
 	}
 }
 
-// TestMetricsCompareScanBoundRequiresBothEnds kills the INVERT_LOGICAL
-// mutant at metrics_compare.go:299
-// (`if !r.Start.IsZero() && !r.End.IsZero()` -> `|| `).
+// TestMetricsCompareScanBoundRequiresBothEnds pins the fail-closed
+// spans-scan resource-bound contract on the matrix-compare inner scan.
 //
-// The matrix-compare inner-scan time bound is gated on BOTH Start and
-// End being set (a half-open grid cannot anchor the (Start-range, End]
-// pushdown). With Start set but End zero, the original keeps `bound`
-// nil — no `toDateTime64(...)` scan predicate is emitted, and the anchor
-// `end` resolves to `now64()` (no toDateTime64). Flip `&&` to `||` and a
-// single set endpoint satisfies the guard, so the mutant computes the
-// bound and emits a `toDateTime64(...)` Timestamp predicate. We pin the
-// original by asserting NO `toDateTime64` appears, then prove the
-// assertion is discriminating by checking the both-ends case DOES emit
-// it.
+// A compare over the spans table whose request window is half-open (only
+// Start or only End set) cannot partition-prune the inner MergeTree legs:
+// the (Start-range, End] pushdown needs both endpoints. requireInnerSpansScanBound
+// rejects that shape with ErrUnboundedSpansScan rather than silently
+// emitting a full-retention scan. This kills the INVERT_LOGICAL mutant on
+// the guard's `rw.Start.IsZero() || rw.End.IsZero()` (flip to `&&` and a
+// half-open window would slip through). The both-ends case proves the
+// guard is non-vacuous: it passes and DOES push the toDateTime64 bound.
 func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 
-	// Start set, End zero -> original emits no scan bound at all.
+	// The spans-scoped emit context (as the engine threads for the Tempo head)
+	// is what arms the resource-bound invariant; an isolated emit is a no-op.
+	ctx := chsql.WithSpansTable(context.Background(), "otel_traces")
+
+	// Start set, End zero over a spans inner -> fail closed.
 	rwOneEnd := &chplan.RangeWindow{
 		Input:           compareNode(),
 		Range:           time.Minute,
@@ -135,12 +137,9 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 		End:             time.Time{}, // zero
 		TimestampColumn: "Timestamp",
 	}
-	sql, _, err := chsql.Emit(context.Background(), rwOneEnd)
-	if err != nil {
-		t.Fatalf("Emit (Start-only): %v", err)
-	}
-	if strings.Contains(sql, "toDateTime64") {
-		t.Errorf("scan bound must NOT be pushed with only Start set (mutant `||` would push it):\n%s", sql)
+	_, _, err := chsql.Emit(ctx, rwOneEnd)
+	if !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+		t.Fatalf("Start-only window over spans inner must fail closed with ErrUnboundedSpansScan, got %v", err)
 	}
 
 	// Both ends set -> bound IS pushed (toDateTime64 present). Proves the
@@ -153,7 +152,7 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 		End:             start.Add(3 * time.Minute),
 		TimestampColumn: "Timestamp",
 	}
-	sqlBoth, _, err := chsql.Emit(context.Background(), rwBoth)
+	sqlBoth, _, err := chsql.Emit(ctx, rwBoth)
 	if err != nil {
 		t.Fatalf("Emit (both ends): %v", err)
 	}

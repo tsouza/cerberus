@@ -116,6 +116,11 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		n.ParentSpanIDColumn == "" || n.TimestampColumn == "" {
 		return fmt.Errorf("%w: NestedSetAnnotate column names unset", ErrUnsupported)
 	}
+	// The numbering walk reads the spans table directly (anchor + recursive
+	// step). Put that table under the resource-bound invariant so the synthetic
+	// recursive scans are gated by fromSpansScan even when the caller did not
+	// thread WithSpansTable onto the emit context.
+	e.spansTable = n.SpansTable
 
 	inputSub, err := e.subqueryFrag(n.Input)
 	if err != nil {
@@ -151,7 +156,10 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		}
 	}
 
-	numbering := buildNestedSetNumbering(n, scope)
+	numbering, err := e.buildNestedSetNumbering(n, scope)
+	if err != nil {
+		return err
+	}
 
 	aliasedNS := func(nsCol, outCol string) Frag {
 		// The `ns` qualifier is backtick-quoted (Qual/QualIdent), matching
@@ -182,7 +190,7 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 // sorted DFS paths into (SpanId, left, right, parent) rows. scope is
 // a parenthesised single-column SELECT (from traceScopeFrag) bounding
 // which traces the walk numbers.
-func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuilder {
+func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) (*QueryBuilder, error) {
 	// One fixed-width path element for the span row `qual` qualifies
 	// (empty qual = bare column references in the anchor SELECT).
 	pathElem := func(qual string) Frag {
@@ -207,6 +215,24 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 	// recursive step bounds it (`c._depth < <cap>`) so a span-id cycle
 	// degrades to a partial numbering instead of erroring with CH code
 	// 306 (see structuralDepthBoundFrag / defaultStructuralRecursionDepth).
+	// Anchor and step both scan the spans table under the resource-bound
+	// invariant. The anchor is form-b bounded by `TraceId IN (scope)`; the
+	// step is form-b bounded by the same scope re-embedded as a NON-recursive
+	// `t.TraceId IN (SELECT TraceId FROM scope)` prune (delta N1) — scope is
+	// boundedRootScopeFrag / traceScopeFrag, neither recursive, so the prune
+	// cannot trip CH error 49 yet gives the step genuine partition pruning
+	// instead of relying on the per-iteration closure join.
+	anchorTraceIn := InSubquery(Col(n.TraceIDColumn), scope)
+	stepTraceIn := InSubquery(qualColFrag("t", n.TraceIDColumn), scope)
+	anchorFrom, err := e.fromSpansScan(n.SpansTable, traceIDSetBound(anchorTraceIn))
+	if err != nil {
+		return nil, err
+	}
+	stepFrom, err := e.fromSpansScan(n.SpansTable, traceIDSetBound(stepTraceIn))
+	if err != nil {
+		return nil, err
+	}
+
 	anchor := NewQuery().
 		Select(
 			Col(n.TraceIDColumn),
@@ -215,12 +241,12 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			As(pathElem(""), "_path"),
 			verbatim("0 AS `_depth`"),
 		).
-		From(Col(n.SpansTable)).
+		From(anchorFrom).
 		Where(
 			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
 			// scope already carries its own parens; InSubquery adds none,
 			// giving `<TraceId> IN (SELECT …)` with a single paren pair.
-			InSubquery(Col(n.TraceIDColumn), scope),
+			anchorTraceIn,
 		)
 
 	// Recursive step: append one path element per child level and carry
@@ -244,7 +270,7 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			Call("concat", verbatim("c.`_path`"), pathElem("t")),
 			verbatim("c.`_depth` + 1 AS `_depth`"),
 		).
-		From(aliasedFrag(Col(n.SpansTable), "t")).
+		From(aliasedFrag(stepFrom, "t")).
 		Join(
 			InnerJoin,
 			aliasedFrag(verbatim("`_cerberus_ns_paths`"), "c"),
@@ -253,7 +279,10 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 				Eq(qualColFrag("t", n.ParentSpanIDColumn), qualColFrag("c", n.SpanIDColumn)),
 			),
 		).
-		Where(structuralDepthBoundFrag(0))
+		// structuralDepthBoundFrag caps the recursion; stepTraceIn (delta N1)
+		// adds a genuine partition prune so each iteration's `t` scan reads
+		// only the scoped traces' rows, not the whole table.
+		Where(structuralDepthBoundFrag(0), stepTraceIn)
 
 	w := strconv.Itoa(nestedSetPathElemWidth)
 
@@ -336,7 +365,7 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			verbatim("if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent`"),
 		).
 		From(keyed.Frag()).
-		GroupBy(Col(n.TraceIDColumn), Col(n.SpanIDColumn))
+		GroupBy(Col(n.TraceIDColumn), Col(n.SpanIDColumn)), nil
 }
 
 // traceScopeFrag derives the numbering walk's trace-id scope from the

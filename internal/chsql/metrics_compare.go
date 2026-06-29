@@ -295,6 +295,14 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	// compare join (the 's' span scan + the seeded root leg) rather than
 	// above the join where CH 24.12 cannot prune it. Gated on both Start
 	// and End being set, matching maybePushInnerScanTimeBounds' contract.
+	// Fail closed if the compare inner is a spans scan with no request window:
+	// without Start/End the bound is nil and each MergeTree leg scans full
+	// retention. Scoped to e.spansTable (threaded onto the emit context for the
+	// Tempo head), so it enforces in prod but is a no-op for an isolated emit
+	// that did not set a spans table.
+	if err := requireInnerSpansScanBound(r, m.Inner, e.spansTable); err != nil {
+		return err
+	}
 	var bound *compareScanBound
 	if !r.Start.IsZero() && !r.End.IsZero() {
 		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, r.Offset.Nanoseconds(), rangeNS)

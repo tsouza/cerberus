@@ -159,6 +159,18 @@ strict-scan-test:
 router-corpus-integration:
     go test -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
 
+# Run the TraceQL spans-scan resource-bound real-CH guard (PR #1154): lowers +
+# emits the Grafana Traces Drilldown Structure + Comparison queries through the
+# real cerberus path and executes them against a REAL ClickHouse
+# (testcontainers-go) seeded with a multi-partition otel_traces. Proves the
+# bounded recursive-CTE drilldown SQL runs WITHOUT error 49 (the seam chDB
+# cannot validate), that partition pruning fires at runtime, and that the
+# compare matrix scan fails closed on an absent window. Requires Docker; gated
+# behind the `integration` build tag. See
+# test/spec/traces_scan_resource_bound_integration_test.go and strict-scan.yml.
+traces-scan-bound-integration:
+    go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
