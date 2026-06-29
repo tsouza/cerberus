@@ -98,9 +98,8 @@ func (l MetricsLabel) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON parses the tempopb KeyValue + AnyValue wire shape.
-// Also tolerates the legacy flat `{"key":"k","value":"v"}` shape that
-// cerberus used to emit (pre-EF #398), so handler tests + any consumer
-// that bound to the old shape keep round-tripping.
+// Also tolerates a flat `{"key":"k","value":"v"}` shape, so handler
+// tests + any consumer bound to that shape keep round-tripping.
 func (l *MetricsLabel) UnmarshalJSON(data []byte) error {
 	// Probe the raw `value` field first — its JSON shape decides which
 	// path to take. A flat-string value can't be decoded into the typed

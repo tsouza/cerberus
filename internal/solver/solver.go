@@ -15,10 +15,10 @@ import (
 // Decision (the shadow-header signal). A nil *Solver means the feature
 // is fully off and every existing call path is byte-unchanged.
 //
-// Under the phase-1 default (Config.Mode == ModeSingle) the Planner
+// Under the dark default (Config.Mode == ModeSingle) the Planner
 // classifies but NEVER routes, so Classify always returns routed=false
-// and the engine stays on route A. The Executor is wired (so the
-// phase-2 flip is a config change, not a code change) but dormant: the
+// and the engine stays on route A. The Executor is wired (so enabling
+// routing is a config change, not a code change) but dormant: the
 // engine only reaches Executor.Execute when Classify reports routed,
 // which never happens under ModeSingle.
 type Solver struct {
@@ -96,7 +96,7 @@ func (s *Solver) Classify(plan chplan.Node, meta RequestMeta) (*Decision, bool) 
 	return s.Planner.Plan(plan, meta)
 }
 
-// LangPromQL is the head name the solver classifies. Phase 1 routes the
+// LangPromQL is the head name the solver classifies. The solver routes the
 // PromQL query_range matrix family only; the other heads skip the solver
 // entirely (Classify returns not-classified for them). It mirrors the
 // engine's Lang.Name() string for the Prom head.

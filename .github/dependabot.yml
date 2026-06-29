@@ -54,6 +54,14 @@ updates:
           - minor
     # Major bumps stay one-per-PR — they almost always need code
     # changes and benefit from individual review.
+    ignore:
+      # grafana/loki is a TEST-ONLY A/B oracle reference (build-tag
+      # agpl_oracle), never in the shipped binary — the agpl-clean gate
+      # enforces 0 AGPL in cmd/cerberus. Pin it at a known-good baseline:
+      # chasing upstream parser releases can only break the equivalence
+      # oracle, never improve the product (the in-house parser is what
+      # ships; compatibility/loki is the real parity source-of-truth).
+      - dependency-name: "github.com/grafana/loki/*"
 
   - package-ecosystem: github-actions
     directory: /

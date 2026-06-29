@@ -29,7 +29,7 @@ type Planner struct {
 //   - "auto": route iff eligible AND F >= MinFanout AND N x F >= MinAnchorPairs
 //     AND K >= 2.
 func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
-	// (2)-prefix: instant queries are never time-slice routed in phase 1.
+	// (2)-prefix: instant queries are never time-slice routed.
 	// Step == 0 means an instant evaluation; there is no anchor grid. The
 	// analyze pass below derives the cost grid (N/F/D/OuterRange); it has not
 	// run yet here, so the only meaningful scalar is Step (zero on an instant
@@ -45,8 +45,8 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
 	}
 	// (1b) Routable-spine restriction: the routable spine families are the
-	// *RangeWindow matrix family (phase 1) and the *RangeLWR bare-selector
-	// last-with-respect-to family (phase 3) — ReanchorRange re-grids both. A
+	// *RangeWindow matrix family and the *RangeLWR bare-selector
+	// last-with-respect-to family — ReanchorRange re-grids both. A
 	// RangeBucketFanout / StepGrid spine bound-carrier is still left at
 	// zero/stale bounds (ReanchorRange CloneNode's their grid verbatim), so
 	// those fail closed to route A. Widening to those families extends
@@ -199,7 +199,7 @@ type signals struct {
 	// grid ReanchorRange does NOT re-anchor — a RangeBucketFanout or StepGrid,
 	// which ReanchorRange CloneNode's verbatim (every shard would emit
 	// stale bounds). The routable set is the *RangeWindow matrix family
-	// (phase 1) plus the *RangeLWR bare-selector family (phase 3): both are
+	// plus the *RangeLWR bare-selector family: both are
 	// re-gridded by ReanchorRange and zeroed/re-filled by unpinSpine, so
 	// neither sets this flag. RangeBucketFanout / StepGrid fail closed to
 	// route A until ReanchorRange learns their grids.
@@ -316,8 +316,8 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// StepGrid carries an eval grid (Start/End/Step) that ReanchorRange
 		// clones VERBATIM — the grid-prediction guard cannot see it and the
 		// slicer would leave every shard on the original full-grid bounds.
-		// Phase 1 routes the *RangeWindow matrix family only; a StepGrid
-		// spine carrier fails closed to route A.
+		// A StepGrid spine carrier is not in the routable set, so it
+		// fails closed to route A.
 		if v.Step > 0 {
 			sig.sawNonRangeWindowSpine = true
 		}
@@ -401,14 +401,14 @@ func (p *Planner) recordRangeWindow(v *chplan.RangeWindow, predStart, predEnd ti
 // recordRangeLWR gathers signals for a bare-selector last-with-respect-to
 // node — the leaf of the safe-set range family.
 func (p *Planner) recordRangeLWR(v *chplan.RangeLWR, predStart, predEnd time.Time, depth int, sig *signals) {
-	// Phase 3 widens the routable set to the RangeLWR matrix family: a
-	// grid-carrying RangeLWR (Step > 0) is now re-anchored by ReanchorRange
+	// The RangeLWR matrix family is in the routable set: a
+	// grid-carrying RangeLWR (Step > 0) is re-anchored by ReanchorRange
 	// (its Start/End re-gridded, the input spine widened by the offset-aware
 	// Offset+Lookback membership window) and zeroed/re-filled by the slicer's
-	// unpinSpine, so it no longer sets sawNonRangeWindowSpine. The deriv /
+	// unpinSpine, so it does not set sawNonRangeWindowSpine. The deriv /
 	// idelta / irate / instant-LWR / negative-offset families that lower to a
-	// bare RangeLWR spine now route B. RangeBucketFanout / StepGrid stay
-	// rejected — their grids are still CloneNode'd verbatim by ReanchorRange.
+	// bare RangeLWR spine route B. RangeBucketFanout / StepGrid stay
+	// rejected — their grids are CloneNode'd verbatim by ReanchorRange.
 	if v.Step <= 0 || (depth == 0 && v.End.Sub(v.Start) <= 0) {
 		sig.sawInstantWindow = true
 	}
@@ -561,10 +561,10 @@ func (p *Planner) scanExprForNow64(e chplan.Expr, sig *signals) {
 
 // checkScalarHeavy implements signal (6): a ScalarSubquery whose interior
 // scan-span × fan-out exceeds a configured fraction of the outer plan cannot
-// be cheaply replicated. In phase 1 the hoist (execute the scalar once,
-// bind the literal) is a later PR, so any scalar interior carrying its own
-// windowed spine is conservatively treated as heavy — replicating it K× is
-// the cost the hoist exists to avoid. A purely row-wise scalar (no windowed
+// be cheaply replicated. The scalar is not hoisted (executed once with the
+// literal bound), so any scalar interior carrying its own windowed spine is
+// conservatively treated as heavy — replicating it K× is the cost a hoist
+// would avoid. A purely row-wise scalar (no windowed
 // node inside) is cheap and admissible.
 func (p *Planner) checkScalarHeavy(inner chplan.Node, sig *signals) {
 	hasWindowedInterior := false

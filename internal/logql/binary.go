@@ -394,7 +394,7 @@ func isComparison(op chplan.BinaryOp) bool {
 // layer that re-projects an inner plan (vector-scalar binops, the
 // vector-join leg shaping, label_replace) and mirrored by
 // [Lang.ProjectSamples] — keeping the resolution in one place is what
-// stops the layers drifting (the pre-#757 drift surfaced as 502
+// stops the layers drifting (drift surfaces as a 502
 // `Unknown expression identifier 'anchor_ts' / 'ResourceAttributes'`
 // for every range-mode LogQL binop).
 //

@@ -1155,13 +1155,13 @@ func expandSeriesMatchers(parser promparser.Parser, matchers []string, histogram
 // Scan+Filter, UNION-ALLs the arms into ONE combined query, runs it as a
 // single CH round-trip, and dedupes the resulting label sets.
 //
-// Fan-in batching (task #71): the pre-#71 shape issued one `Client.Query`
-// per variant (V×H fan-out — up to 32 sequential round-trips for a
-// histogram-base request, ~330ms on the demo dataset). Each variant's
-// lowered Sample-shape SELECT is now a UNION-ALL arm of a single query;
-// the Go dedup below folds the combined row stream into distinct label
-// sets exactly as the per-arm loop did, so the returned series are
-// identical — only the round-trip count drops to 1.
+// Fan-in batching: issuing one `Client.Query` per variant would be a
+// V×H fan-out (up to 32 sequential round-trips for a histogram-base
+// request, ~330ms on the demo dataset). Instead each variant's lowered
+// Sample-shape SELECT is a UNION-ALL arm of a single query; the Go dedup
+// below folds the combined row stream into distinct label sets, so the
+// returned series are identical to the per-arm result — at one
+// round-trip instead of V×H.
 //
 // Bounded-batch-or-fallback: the variant set is arm-capped into ⌈N/K⌉
 // chunks (chunkMatcherVariants) and the rendered-size guard
@@ -1209,7 +1209,7 @@ func (h *Handler) fetchSeries(ctx context.Context, matchers []string, start, end
 func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, start, end time.Time) ([]chclient.Sample, error) {
 	// Single-matcher fast path: run the lowered Sample-shape SELECT
 	// directly as the top-level statement — byte-identical to the
-	// pre-#71 per-arm query (the engine ran this same SQL). Avoids
+	// per-arm query a single variant would produce. Avoids
 	// wrapping the Map-typed Attributes column in an extra `SELECT * FROM
 	// (…)` boundary, which some CH drivers (chdb) refuse to cast back to
 	// MAP.
@@ -1605,8 +1605,8 @@ func (h *Handler) unionLabelValuesSQL(name string, start, end time.Time, nowAnch
 // labelValueCandidates returns the candidate Attributes-map keys for a
 // /api/v1/label/<name>/values lookup. Names that don't carry any
 // rewritable underscore (`job`, `__name__`, ...) short-circuit to the
-// single-element list — preserves the pre-#663 byte-stable SQL for
-// keys that never needed dot↔underscore aliasing. Names with at least
+// single-element list — keeping the SQL byte-stable for keys that never
+// need dot↔underscore aliasing. Names with at least
 // one rewritable underscore (`cerberus_ql`, `http_request_method`)
 // expand via [format.PromLabelToOTelCandidates] so the lookup hits
 // both the underscored and dotted storage forms.

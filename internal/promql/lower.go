@@ -476,9 +476,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// inflate Attributes with one synthesised key per such column so
 	// the downstream LWR / RangeWindow groups partition over the
 	// effective series identity. Without this, rows with distinct
-	// ServiceName collapse into a single Attributes bucket — the
-	// `sum by (service_name) (rate({__name__=~".+"}[5m]))` task-#232
-	// bug. The Project lands between the Scan/Filter and the per-mode
+	// ServiceName collapse into a single Attributes bucket, breaking
+	// `sum by (service_name) (rate({__name__=~".+"}[5m]))`.
+	// The Project lands between the Scan/Filter and the per-mode
 	// wraps so PREWHERE-eligible matchers stay on the raw Scan
 	// (the optimizer's promotion path is untouched).
 	//
@@ -487,13 +487,12 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// (MetricName, Attributes, TimeUnix, Value) on its output side —
 	// any raw scan column the matcher predicate references
 	// (`ServiceName` in particular, via the `service_name` coalesce
-	// chain from PR #679 / task #232) goes out of scope above the
+	// chain) goes out of scope above the
 	// Project. The downstream LWR / range-vector wrappers would then
 	// apply the matcher Filter ON TOP of the augmented Project and CH
 	// rejects the query with `Unknown expression or function
-	// identifier 'ServiceName'` (HTTP 502, error 47 — caught by PR
-	// #681's Phase-3 filter-drill sweep on
-	// `topk(10, sum by (service_name) (rate({__name__=~".+",service_name="api"}[5m])))`).
+	// identifier 'ServiceName'` (HTTP 502, error 47) on shapes like
+	// `topk(10, sum by (service_name) (rate({__name__=~".+",service_name="api"}[5m])))`.
 	// The fix sinks `pred` to a Filter immediately above the raw
 	// scan-side input BEFORE augmenting — at that layer every raw
 	// column (including ServiceName) is still in scope and the
@@ -1603,8 +1602,7 @@ func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 // attributeLookup returns the chplan.Expr that resolves a Prom matcher
 // name `key` against the CH Map column `col`. For names with no
 // rewritable underscore (e.g. `job`, `__name__`) it returns a plain
-// MapAccess — byte-stable with the pre-#658 emit shape so the existing
-// fixtures keep matching.
+// MapAccess — the byte-stable emit shape the fixtures match.
 //
 // For names with at least one rewritable underscore (e.g. `cerberus_ql`)
 // it emits a left-associative `if(mapContains(col, k1), col[k1],
