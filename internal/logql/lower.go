@@ -11,8 +11,6 @@ import (
 	"regexp"
 	"time"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logql/log/jsonexpr"
 	"github.com/prometheus/prometheus/model/labels"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -424,11 +422,11 @@ func HasLabelMutatingStage(expr syntax.Expr) bool {
 // labelFiltererHasDuration walks a label-filterer tree for duration
 // filters — the only filter kind whose lowering currently produces
 // `__error__` marks.
-func labelFiltererHasDuration(lf loglib.LabelFilterer) bool {
+func labelFiltererHasDuration(lf syntax.LabelFilterer) bool {
 	switch v := lf.(type) {
-	case *loglib.DurationLabelFilter:
+	case *syntax.DurationLabelFilter:
 		return true
-	case *loglib.BinaryLabelFilter:
+	case *syntax.BinaryLabelFilter:
 		return labelFiltererHasDuration(v.Left) || labelFiltererHasDuration(v.Right)
 	}
 	return false
@@ -612,7 +610,7 @@ func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 // '<id>')` — same conflict-resolution contract as [logfmtMergeLabels],
 // applied at SQL-emit time for each user-chosen identifier since the
 // identifier set is known statically.
-func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.LabelExtractionExpr) (chplan.Expr, error) {
+func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax.LabelExtractionExpr) (chplan.Expr, error) {
 	if len(exprs) == 0 {
 		// Defensive: a parser-emitted empty list is shaped like the
 		// bare `| logfmt` form. Treat it as such so we don't drop the
@@ -780,13 +778,13 @@ func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
 // stitches in only the named JSON extractions (identifier => extracted
 // value). Each expression is `<identifier>="<json-path>"`. The lowering
-// parses each JSON path via Loki's own jsonexpr parser (matching Loki's
+// parses each JSON path via the in-house jsonPathParse (matching Loki's
 // supported syntax: dot-notation, `[index]` bracket, quoted keys) and
 // renders `JSONExtractString(Body, <segment...>)` with one variadic
 // argument per path segment — CH treats string segments as object keys
 // and integer segments as array indexes, the same shape Loki's runtime
 // expects.
-func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.LabelExtractionExpr) (chplan.Expr, error) {
+func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax.LabelExtractionExpr) (chplan.Expr, error) {
 	if len(exprs) == 0 {
 		// Defensive: a parser-emitted empty list is shaped like the
 		// bare `| json` form. Treat it as such so we don't drop the
@@ -825,11 +823,11 @@ func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.L
 
 // jsonExtractStringExpr renders `JSONExtractString(Body, segment1,
 // segment2, ...)` for a Loki JSON path string. Segments come from the
-// jsonexpr parser as `[]interface{}` — strings for object keys, ints
+// jsonPathParse as `[]any` — strings for object keys, ints
 // for array indexes. CH's JSONExtractString accepts that exact variadic
 // shape natively.
 func jsonExtractStringExpr(s schema.Logs, path string) (chplan.Expr, error) {
-	segments, err := jsonexpr.Parse(path, false)
+	segments, err := jsonPathParse(path)
 	if err != nil {
 		return nil, fmt.Errorf("logql: invalid `| json` path %q: %w", path, err)
 	}
@@ -950,16 +948,11 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 // humanize.ParseBytes — see durationLabelFilterExpr /
 // numericLabelFilterExpr / bytesLabelFilterExpr). String filters never
 // error in reference Loki, so they contribute no mark.
-func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, []labelFilterMark, error) {
+func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, []labelFilterMark, error) {
 	switch v := lf.(type) {
-	case *loglib.StringLabelFilter:
+	case *syntax.StringLabelFilter:
 		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil, nil
-	case *loglib.LineFilterLabelFilter:
-		// Loki may wrap a string label filter in this when a line-filter
-		// short-circuit is also possible. Both embed *labels.Matcher and
-		// behave identically for our query-rewrite purposes.
-		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil, nil
-	case *loglib.BinaryLabelFilter:
+	case *syntax.BinaryLabelFilter:
 		left, leftMarks, err := labelFiltererLower(v.Left, s, labelsExpr)
 		if err != nil {
 			return nil, nil, err
@@ -982,16 +975,16 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 		}
 		return &chplan.Binary{Op: op, Left: left, Right: right},
 			append(leftMarks, rightMarks...), nil
-	case *loglib.NumericLabelFilter:
+	case *syntax.NumericLabelFilter:
 		pred, mark := numericLabelFilterExpr(v, s, labelsExpr)
 		return pred, []labelFilterMark{mark}, nil
-	case *loglib.DurationLabelFilter:
+	case *syntax.DurationLabelFilter:
 		pred, mark := durationLabelFilterExpr(v, s, labelsExpr)
 		return pred, []labelFilterMark{mark}, nil
-	case *loglib.BytesLabelFilter:
+	case *syntax.BytesLabelFilter:
 		pred, mark := bytesLabelFilterExpr(v, s, labelsExpr)
 		return pred, []labelFilterMark{mark}, nil
-	case *loglib.IPLabelFilter:
+	case *syntax.IPLabelFilter:
 		// `| addr = ip("...")` / `!= ip("...")` — no marks: reference
 		// Loki's IPLabelFilter never stamps `__error__` itself (its
 		// only failure mode is an invalid pattern, rejected at
@@ -1021,7 +1014,7 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 // unparseable value keeps-and-marks the row instead of silently
 // falling through as 0 (the prior `toFloat64OrZero` behaviour diverged
 // from reference, which stamps LabelFilterErr).
-func numericLabelFilterExpr(f *loglib.NumericLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+func numericLabelFilterExpr(f *syntax.NumericLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
 	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
 	parse := newNumericParse(access)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
@@ -1069,7 +1062,7 @@ func numericLabelFilterExpr(f *loglib.NumericLabelFilter, s schema.Logs, labelsE
 // the first row it can't parse — including Go-valid shapes like
 // `291.792µs` on CH 24.8 — aborting the whole query where reference
 // Loki degrades per-row.
-func durationLabelFilterExpr(f *loglib.DurationLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
 	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
 	parse := newDurationParse(access)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
@@ -1119,7 +1112,7 @@ func durationLabelFilterExpr(f *loglib.DurationLabelFilter, s schema.Logs, label
 // prior bare `parseReadableSize` behaviour diverged from reference,
 // which stamps LabelFilterErr). The value branch still reads through
 // `parseReadableSize`, which understands "1KB", "1MiB", "1.5G", etc.
-func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+func bytesLabelFilterExpr(f *syntax.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
 	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
 	parse := newBytesParse(access)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
@@ -1149,19 +1142,19 @@ func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, s schema.Logs, labelsExpr 
 
 // labelFilterOp maps a LogQL LabelFilterType (the value-comparison enum
 // for numeric / duration / bytes filters) onto a chplan BinaryOp.
-func labelFilterOp(t loglib.LabelFilterType) chplan.BinaryOp {
+func labelFilterOp(t syntax.LabelFilterType) chplan.BinaryOp {
 	switch t {
-	case loglib.LabelFilterEqual:
+	case syntax.LabelFilterEqual:
 		return chplan.OpEq
-	case loglib.LabelFilterNotEqual:
+	case syntax.LabelFilterNotEqual:
 		return chplan.OpNe
-	case loglib.LabelFilterGreaterThan:
+	case syntax.LabelFilterGreaterThan:
 		return chplan.OpGt
-	case loglib.LabelFilterGreaterThanOrEqual:
+	case syntax.LabelFilterGreaterThanOrEqual:
 		return chplan.OpGe
-	case loglib.LabelFilterLesserThan:
+	case syntax.LabelFilterLesserThan:
 		return chplan.OpLt
-	case loglib.LabelFilterLesserThanOrEqual:
+	case syntax.LabelFilterLesserThanOrEqual:
 		return chplan.OpLe
 	}
 	return chplan.OpEq
@@ -1493,9 +1486,9 @@ func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error
 	// (literals + `<_>` wildcards) — see internal/logql/
 	// pattern_filter.go for the reference-semantics walk-through.
 	switch lf.Ty {
-	case loglib.LineMatchPattern:
+	case syntax.LineMatchPattern:
 		return patternLineFilterExpr(lf.Match, false, body)
-	case loglib.LineMatchNotPattern:
+	case syntax.LineMatchNotPattern:
 		return patternLineFilterExpr(lf.Match, true, body)
 	}
 	isRegex, negated, err := lineFilterOp(lf.Ty)
@@ -1510,15 +1503,15 @@ func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error
 	}, nil
 }
 
-func lineFilterOp(t loglib.LineMatchType) (isRegex, negated bool, err error) {
+func lineFilterOp(t syntax.LineMatchType) (isRegex, negated bool, err error) {
 	switch t {
-	case loglib.LineMatchEqual:
+	case syntax.LineMatchEqual:
 		return false, false, nil
-	case loglib.LineMatchNotEqual:
+	case syntax.LineMatchNotEqual:
 		return false, true, nil
-	case loglib.LineMatchRegexp:
+	case syntax.LineMatchRegexp:
 		return true, false, nil
-	case loglib.LineMatchNotRegexp:
+	case syntax.LineMatchNotRegexp:
 		return true, true, nil
 	}
 	return false, false, fmt.Errorf("logql: unknown line-filter match type %s", t)

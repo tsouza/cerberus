@@ -14,9 +14,14 @@
 // The structural comparison normalizes each AST to a canonical string by
 // reflecting over the exported field names (which the two ASTs share by
 // design) plus a handful of accessor-backed nodes whose payload lives in
-// unexported fields. Leaf values that belong to the shared upstream
-// `pkg/logql/log` package (label filterers, formatters, …) are compared
-// by value because both parsers construct the very same types.
+// unexported fields. The label-filter / extraction / format leaf values
+// are now in-house lsyntax types (no longer shared with upstream's
+// `pkg/logql/log`); they have byte-identical String()/field shapes, so
+// they normalise to the same text. The one cosmetic difference —
+// upstream's NewStringLabelFilter returns a LineFilterLabelFilter that
+// renders regex matchers with backticks, while the in-house parser keeps
+// a StringLabelFilter (matcher promotion, double quotes) — is normalised
+// by rendering the string/line-filter leaves via their embedded matcher.
 package lsyntax
 
 import (
@@ -28,6 +33,7 @@ import (
 	"testing"
 
 	lokisyntax "github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/prometheus/prometheus/model/labels"
 )
 
 // corpus covers every LogQL construct the in-house parser implements.
@@ -176,11 +182,16 @@ func normalize(v reflect.Value) string {
 		if v.IsNil() {
 			return "nil"
 		}
-		// Shared leaf types (labels.Matcher, log.* filterers) have
-		// pointer-receiver String() methods — stringify the pointer.
-		if pp := v.Elem().Type().PkgPath(); strings.Contains(pp, "logql/log") || strings.Contains(pp, "prometheus/model/labels") {
+		// Leaf value types (labels.Matcher, upstream log.* filterers, and
+		// their in-house lsyntax equivalents) are compared by their
+		// normalised String(). BinaryLabelFilter is excluded so it is
+		// walked structurally on both sides — that way its Left/Right
+		// leaves get normalised individually (avoiding upstream's
+		// LineFilterLabelFilter backtick rendering leaking into the parent).
+		et := v.Elem().Type()
+		if isStringifiedLeaf(et) {
 			if v.CanInterface() {
-				return stringify(v.Interface())
+				return leafString(v.Interface())
 			}
 		}
 		return normalize(v.Elem())
@@ -209,12 +220,12 @@ func normalizeStruct(v reflect.Value) string {
 	t := v.Type()
 	name := t.Name()
 
-	// Leaf types from the shared upstream log package (or prometheus
-	// labels): both parsers build the identical type, so compare by value.
-	if strings.Contains(t.PkgPath(), "logql/log") ||
-		strings.Contains(t.PkgPath(), "prometheus/model/labels") {
+	// Leaf value types (upstream log.* types, prometheus labels, and their
+	// in-house lsyntax equivalents) compare by value/String(): both parsers
+	// build semantically identical leaves that render the same text.
+	if isStringifiedLeaf(t) {
 		if v.CanInterface() {
-			return stringify(v.Interface())
+			return leafString(v.Interface())
 		}
 	}
 
@@ -238,6 +249,81 @@ func normalizeStruct(v reflect.Value) string {
 	}
 	sort.Strings(fields)
 	return name + "{" + strings.Join(fields, ",") + "}"
+}
+
+// isLeafLabelType reports whether a type name is one of the label-filter /
+// extraction / format leaf value types (in-house lsyntax or upstream
+// log.*). These are compared by their normalised String()/value rather
+// than walked structurally. BinaryLabelFilter is intentionally absent: it
+// is walked so its Left/Right leaves get normalised individually.
+// isStringifiedLeaf reports whether a type should be rendered by its
+// (normalised) String() rather than walked structurally. The upstream
+// log.* leaf types, prometheus labels, and the in-house leaf equivalents
+// qualify — except BinaryLabelFilter, which is always walked so its
+// children get normalised one by one.
+func isStringifiedLeaf(t reflect.Type) bool {
+	if t.Name() == "BinaryLabelFilter" {
+		return false
+	}
+	return strings.Contains(t.PkgPath(), "logql/log") ||
+		strings.Contains(t.PkgPath(), "prometheus/model/labels") ||
+		isLeafLabelType(t.Name())
+}
+
+func isLeafLabelType(name string) bool {
+	switch name {
+	case "StringLabelFilter", "LineFilterLabelFilter", "NumericLabelFilter",
+		"DurationLabelFilter", "BytesLabelFilter", "IPLabelFilter",
+		"LabelExtractionExpr", "LabelFmt":
+		return true
+	}
+	return false
+}
+
+// leafString renders a label-filter leaf to a canonical string. For the
+// string/line-filter family it renders via the embedded *labels.Matcher
+// (double-quoted) rather than the type's own String(): upstream's
+// NewStringLabelFilter returns a LineFilterLabelFilter whose String()
+// renders regex matchers with backticks, while the in-house parser keeps
+// a StringLabelFilter (matcher promotion). Both are valid, equivalent
+// LogQL; normalising via the matcher makes the structural comparison
+// ignore that purely cosmetic rendering choice.
+func leafString(i interface{}) string {
+	rv := reflect.ValueOf(i)
+	name := rv.Type().Name()
+	if rv.Kind() == reflect.Ptr && rv.Elem().Kind() == reflect.Struct {
+		name = rv.Elem().Type().Name()
+	}
+	if name == "StringLabelFilter" || name == "LineFilterLabelFilter" {
+		if m := embeddedMatcher(rv); m != nil {
+			return m.String()
+		}
+	}
+	return stringify(i)
+}
+
+// embeddedMatcher returns the *labels.Matcher field embedded in a leaf
+// label-filter value, or nil.
+func embeddedMatcher(rv reflect.Value) *labels.Matcher {
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil
+	}
+	matcherPtrType := reflect.TypeOf((*labels.Matcher)(nil))
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if f.Type() == matcherPtrType && f.CanInterface() {
+			if m, ok := f.Interface().(*labels.Matcher); ok {
+				return m
+			}
+		}
+	}
+	return nil
 }
 
 func stringify(i interface{}) string {

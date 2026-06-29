@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/common/model"
 )
 
@@ -83,7 +82,7 @@ func (e *JSONExpressionParserExpr) String() string {
 	return fmt.Sprintf("%s %s %s", OpPipe, OpParserTypeJSON, extractionList(e.Expressions))
 }
 
-func extractionList(exprs []loglib.LabelExtractionExpr) string {
+func extractionList(exprs []LabelExtractionExpr) string {
 	parts := make([]string, 0, len(exprs))
 	for _, ext := range exprs {
 		if ext.Expression == ext.Identifier {
@@ -140,7 +139,7 @@ func (e *LabelFmtExpr) String() string {
 func (e *DropLabelsExpr) String() string { return namedMatcherStage(OpDrop, e.dropLabels) }
 func (e *KeepLabelsExpr) String() string { return namedMatcherStage(OpKeep, e.keepLabels) }
 
-func namedMatcherStage(op string, names []loglib.NamedLabelMatcher) string {
+func namedMatcherStage(op string, names []NamedLabelMatcher) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s %s ", OpPipe, op)
 	for i, n := range names {

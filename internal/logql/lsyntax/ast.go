@@ -1,13 +1,15 @@
 package lsyntax
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"time"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/prometheus/model/labels"
+
+	"github.com/tsouza/cerberus/internal/logql/logpattern"
 )
 
 // Expr is the root LogQL expression interface. Every AST node satisfies
@@ -37,31 +39,23 @@ type SampleExpr interface {
 	isSampleExpr()
 }
 
-// StageExpr is one stage of a log pipeline.
+// StageExpr is one stage of a log pipeline. The label-projection stages
+// (`| drop` / `| keep`) expose their matchers via accessors on the
+// concrete types; every other stage builds its SQL shape directly in the
+// lowering, so the interface carries only the marker.
 type StageExpr interface {
 	Expr
-	// Stage returns the runtime stage implementation for this AST
-	// stage. Only the label-projection stages (`| drop` / `| keep`)
-	// are consumed through this method by cerberus; the others build
-	// their SQL shape directly in the lowering and return the default
-	// "not a runtime stage" error here.
-	Stage() (loglib.Stage, error)
 	isStageExpr()
 }
 
 // MultiStageExpr is an ordered log pipeline.
 type MultiStageExpr []StageExpr
 
-// stageBase supplies the StageExpr marker methods and a default Stage
-// implementation for the stages whose runtime behaviour cerberus lowers
-// to SQL rather than running through the upstream log.Stage machinery.
+// stageBase supplies the StageExpr marker methods.
 type stageBase struct{}
 
 func (stageBase) isExpr()      {}
 func (stageBase) isStageExpr() {}
-func (stageBase) Stage() (loglib.Stage, error) {
-	return nil, NewParseError("expression is not a runtime stage", 0, 0)
-}
 
 // -------------------------------------------------------------------
 // Stream selector
@@ -100,7 +94,7 @@ func (e *PipelineExpr) Matchers() []*labels.Matcher { return e.Left.Matchers() }
 
 // LineFilter is a single line-filter clause.
 type LineFilter struct {
-	Ty    loglib.LineMatchType
+	Ty    LineMatchType
 	Match string
 	Op    string
 }
@@ -116,7 +110,7 @@ type LineFilterExpr struct {
 	IsOrChild bool
 }
 
-func newLineFilterExpr(ty loglib.LineMatchType, op, match string) *LineFilterExpr {
+func newLineFilterExpr(ty LineMatchType, op, match string) *LineFilterExpr {
 	return &LineFilterExpr{
 		LineFilter: LineFilter{Ty: ty, Match: match, Op: op},
 	}
@@ -137,9 +131,9 @@ func newOrLineFilterExpr(left, right *LineFilterExpr) *LineFilterExpr {
 		tmp.Or.Ty = left.Ty
 		tmp = tmp.Or
 	}
-	if left.Ty == loglib.LineMatchEqual ||
-		left.Ty == loglib.LineMatchRegexp ||
-		left.Ty == loglib.LineMatchPattern {
+	if left.Ty == LineMatchEqual ||
+		left.Ty == LineMatchRegexp ||
+		left.Ty == LineMatchPattern {
 		left.Or = right
 		right.IsOrChild = true
 		return left
@@ -190,17 +184,53 @@ type LineParserExpr struct {
 	Param string
 }
 
+// errMissingCapture mirrors upstream's parse-time rejection of a
+// `| regexp` stage that carries no named captures.
+var errMissingCapture = errors.New("at least one named capture must be supplied")
+
+// validateRegexpParser reimplements the parse-time validation upstream's
+// log.NewRegexpParser performs: the pattern must compile, carry at least
+// one named capture, and have no duplicate capture names. (Upstream also
+// checks each name is a valid label name; Go's regexp grammar already
+// constrains named groups to `[A-Za-z_][A-Za-z0-9_]*`, which is always a
+// valid label name, so that check is a no-op here.)
+func validateRegexpParser(re string) error {
+	regex, err := regexp.Compile(re)
+	if err != nil {
+		return err
+	}
+	if regex.NumSubexp() == 0 {
+		return errMissingCapture
+	}
+	seen := map[string]struct{}{}
+	named := 0
+	for _, n := range regex.SubexpNames() {
+		if n == "" {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			return fmt.Errorf("duplicate extracted label name '%s'", n)
+		}
+		seen[n] = struct{}{}
+		named++
+	}
+	if named == 0 {
+		return errMissingCapture
+	}
+	return nil
+}
+
 func newLabelParserExpr(op, param string) *LineParserExpr {
 	// Validate the regexp / pattern argument at parse time, matching the
 	// upstream parser's eager validation. A bad pattern panics with a
 	// ParseError that ParseExprWithoutValidation recovers into an error.
 	switch op {
 	case OpParserTypeRegexp:
-		if _, err := loglib.NewRegexpParser(param); err != nil {
+		if err := validateRegexpParser(param); err != nil {
 			panic(NewParseError(fmt.Sprintf("invalid regexp parser: %s", err.Error()), 0, 0))
 		}
 	case OpParserTypePattern:
-		if _, err := loglib.NewPatternParser(param); err != nil {
+		if _, err := logpattern.New(param); err != nil {
 			panic(NewParseError(fmt.Sprintf("invalid pattern parser: %s", err.Error()), 0, 0))
 		}
 	}
@@ -210,21 +240,21 @@ func newLabelParserExpr(op, param string) *LineParserExpr {
 // JSONExpressionParserExpr is a typed `| json a="x.y", b="z"` parser.
 type JSONExpressionParserExpr struct {
 	stageBase
-	Expressions []loglib.LabelExtractionExpr
+	Expressions []LabelExtractionExpr
 }
 
-func newJSONExpressionParser(expressions []loglib.LabelExtractionExpr) *JSONExpressionParserExpr {
+func newJSONExpressionParser(expressions []LabelExtractionExpr) *JSONExpressionParserExpr {
 	return &JSONExpressionParserExpr{Expressions: expressions}
 }
 
 // LogfmtExpressionParserExpr is a typed `| logfmt a="x", b="y"` parser.
 type LogfmtExpressionParserExpr struct {
 	stageBase
-	Expressions       []loglib.LabelExtractionExpr
+	Expressions       []LabelExtractionExpr
 	Strict, KeepEmpty bool
 }
 
-func newLogfmtExpressionParser(expressions []loglib.LabelExtractionExpr, flags []string) *LogfmtExpressionParserExpr {
+func newLogfmtExpressionParser(expressions []LabelExtractionExpr, flags []string) *LogfmtExpressionParserExpr {
 	e := &LogfmtExpressionParserExpr{Expressions: expressions}
 	for _, f := range flags {
 		switch f {
@@ -245,10 +275,10 @@ func newLogfmtExpressionParser(expressions []loglib.LabelExtractionExpr, flags [
 // runtime filterer so cerberus reads it as `expr.LabelFilterer`.
 type LabelFilterExpr struct {
 	stageBase
-	loglib.LabelFilterer
+	LabelFilterer
 }
 
-func newLabelFilterExpr(filterer loglib.LabelFilterer) *LabelFilterExpr {
+func newLabelFilterExpr(filterer LabelFilterer) *LabelFilterExpr {
 	return &LabelFilterExpr{LabelFilterer: filterer}
 }
 
@@ -270,26 +300,24 @@ func newDecolorizeExpr() *DecolorizeExpr { return &DecolorizeExpr{} }
 // LabelFmtExpr is a `| label_format new=old, x="{{.y}}"` stage.
 type LabelFmtExpr struct {
 	stageBase
-	Formats []loglib.LabelFmt
+	Formats []LabelFmt
 }
 
-func newLabelFmtExpr(fmts []loglib.LabelFmt) *LabelFmtExpr { return &LabelFmtExpr{Formats: fmts} }
+func newLabelFmtExpr(fmts []LabelFmt) *LabelFmtExpr { return &LabelFmtExpr{Formats: fmts} }
 
 // DropLabelsExpr is a `| drop a, b="v"` stage.
 type DropLabelsExpr struct {
 	stageBase
-	dropLabels []loglib.NamedLabelMatcher
+	dropLabels []NamedLabelMatcher
 }
 
-func newDropLabelsExpr(dropLabels []loglib.NamedLabelMatcher) *DropLabelsExpr {
+func newDropLabelsExpr(dropLabels []NamedLabelMatcher) *DropLabelsExpr {
 	return &DropLabelsExpr{dropLabels: dropLabels}
 }
 
-// Stage runs the `| drop` projection through the upstream log runtime,
-// matching its exact bare-name vs matcher-form semantics.
-func (e *DropLabelsExpr) Stage() (loglib.Stage, error) {
-	return loglib.NewDropLabels(e.dropLabels), nil
-}
+// Matchers returns the drop entries (bare names + value matchers) so the
+// Go-side post-processing can apply the projection over a row's label map.
+func (e *DropLabelsExpr) Matchers() []NamedLabelMatcher { return e.dropLabels }
 
 // HasNamedMatchers reports whether any drop entry is a value matcher
 // (`| drop env="prod"`) rather than a bare label name.
@@ -318,17 +346,16 @@ func (e *DropLabelsExpr) Names() []string {
 // KeepLabelsExpr is a `| keep a, b="v"` stage.
 type KeepLabelsExpr struct {
 	stageBase
-	keepLabels []loglib.NamedLabelMatcher
+	keepLabels []NamedLabelMatcher
 }
 
-func newKeepLabelsExpr(keepLabels []loglib.NamedLabelMatcher) *KeepLabelsExpr {
+func newKeepLabelsExpr(keepLabels []NamedLabelMatcher) *KeepLabelsExpr {
 	return &KeepLabelsExpr{keepLabels: keepLabels}
 }
 
-// Stage runs the `| keep` projection through the upstream log runtime.
-func (e *KeepLabelsExpr) Stage() (loglib.Stage, error) {
-	return loglib.NewKeepLabels(e.keepLabels), nil
-}
+// Matchers returns the keep entries so the Go-side post-processing can
+// apply the projection over a row's label map.
+func (e *KeepLabelsExpr) Matchers() []NamedLabelMatcher { return e.keepLabels }
 
 // -------------------------------------------------------------------
 // Unwrap / log range / offset
@@ -339,14 +366,14 @@ func (e *KeepLabelsExpr) Stage() (loglib.Stage, error) {
 type UnwrapExpr struct {
 	Identifier  string
 	Operation   string
-	PostFilters []loglib.LabelFilterer
+	PostFilters []LabelFilterer
 }
 
 func newUnwrapExpr(id, operation string) *UnwrapExpr {
 	return &UnwrapExpr{Identifier: id, Operation: operation}
 }
 
-func (u *UnwrapExpr) addPostFilter(f loglib.LabelFilterer) *UnwrapExpr {
+func (u *UnwrapExpr) addPostFilter(f LabelFilterer) *UnwrapExpr {
 	u.PostFilters = append(u.PostFilters, f)
 	return u
 }

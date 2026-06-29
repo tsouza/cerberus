@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
@@ -575,16 +574,16 @@ func (p *parser) parseFlags() []string {
 	return flags
 }
 
-func (p *parser) parseExtractionList() []loglib.LabelExtractionExpr {
-	var exprs []loglib.LabelExtractionExpr
+func (p *parser) parseExtractionList() []LabelExtractionExpr {
+	var exprs []LabelExtractionExpr
 	for {
 		id := p.expect(tkIdentifier, "label name").str
 		if p.at(tkEq) {
 			p.advance()
 			val := p.expect(tkString, "extraction expression").str
-			exprs = append(exprs, loglib.NewLabelExtractionExpr(id, val))
+			exprs = append(exprs, NewLabelExtractionExpr(id, val))
 		} else {
-			exprs = append(exprs, loglib.NewLabelExtractionExpr(id, id))
+			exprs = append(exprs, NewLabelExtractionExpr(id, id))
 		}
 		if p.at(tkComma) {
 			p.advance()
@@ -595,18 +594,18 @@ func (p *parser) parseExtractionList() []loglib.LabelExtractionExpr {
 	return exprs
 }
 
-func (p *parser) parseLabelsFormat() []loglib.LabelFmt {
-	var fmts []loglib.LabelFmt
+func (p *parser) parseLabelsFormat() []LabelFmt {
+	var fmts []LabelFmt
 	for {
 		dst := p.expect(tkIdentifier, "label name").str
 		p.expect(tkEq, "'='")
 		switch p.cur().kind {
 		case tkIdentifier:
 			src := p.advance().str
-			fmts = append(fmts, loglib.NewRenameLabelFmt(dst, src))
+			fmts = append(fmts, NewRenameLabelFmt(dst, src))
 		case tkString:
 			tmpl := p.advance().str
-			fmts = append(fmts, loglib.NewTemplateLabelFmt(dst, tmpl))
+			fmts = append(fmts, NewTemplateLabelFmt(dst, tmpl))
 		default:
 			p.errf("syntax error: expected identifier or string in label_format")
 		}
@@ -619,8 +618,8 @@ func (p *parser) parseLabelsFormat() []loglib.LabelFmt {
 	return fmts
 }
 
-func (p *parser) parseNamedMatchers() []loglib.NamedLabelMatcher {
-	var out []loglib.NamedLabelMatcher
+func (p *parser) parseNamedMatchers() []NamedLabelMatcher {
+	var out []NamedLabelMatcher
 	for {
 		id := p.expect(tkIdentifier, "label name").str
 		switch p.cur().kind {
@@ -638,9 +637,9 @@ func (p *parser) parseNamedMatchers() []loglib.NamedLabelMatcher {
 			}
 			p.advance()
 			val := p.expect(tkString, "string").str
-			out = append(out, loglib.NewNamedLabelMatcher(mustNewMatcher(mt, id, val), ""))
+			out = append(out, NewNamedLabelMatcher(mustNewMatcher(mt, id, val), ""))
 		default:
-			out = append(out, loglib.NewNamedLabelMatcher(nil, id))
+			out = append(out, NewNamedLabelMatcher(nil, id))
 		}
 		if p.at(tkComma) {
 			p.advance()
@@ -655,22 +654,22 @@ func (p *parser) parseNamedMatchers() []loglib.NamedLabelMatcher {
 // line filters
 // ------------------------------------------------------------------
 
-func lineMatchType(k tokenKind) loglib.LineMatchType {
+func lineMatchType(k tokenKind) LineMatchType {
 	switch k {
 	case tkPipeExact:
-		return loglib.LineMatchEqual
+		return LineMatchEqual
 	case tkNeq:
-		return loglib.LineMatchNotEqual
+		return LineMatchNotEqual
 	case tkPipeMatch:
-		return loglib.LineMatchRegexp
+		return LineMatchRegexp
 	case tkNre:
-		return loglib.LineMatchNotRegexp
+		return LineMatchNotRegexp
 	case tkPipePattern:
-		return loglib.LineMatchPattern
+		return LineMatchPattern
 	case tkNpa:
-		return loglib.LineMatchNotPattern
+		return LineMatchNotPattern
 	}
-	return loglib.LineMatchEqual
+	return LineMatchEqual
 }
 
 func (p *parser) parseLineFilters() *LineFilterExpr {
@@ -709,10 +708,10 @@ func (p *parser) parseOrFilter() *LineFilterExpr {
 		p.expect(tkOpenParen, "'('")
 		s := p.expect(tkString, "string").str
 		p.expect(tkCloseParen, "')'")
-		return newLineFilterExpr(loglib.LineMatchEqual, OpFilterIP, s)
+		return newLineFilterExpr(LineMatchEqual, OpFilterIP, s)
 	}
 	s := p.expect(tkString, "string").str
-	node := newLineFilterExpr(loglib.LineMatchEqual, "", s)
+	node := newLineFilterExpr(LineMatchEqual, "", s)
 	if p.at(tkOr) {
 		p.advance()
 		return newOrLineFilterExpr(node, p.parseOrFilter())
@@ -724,33 +723,33 @@ func (p *parser) parseOrFilter() *LineFilterExpr {
 // label filters
 // ------------------------------------------------------------------
 
-func (p *parser) parseLabelFilter() loglib.LabelFilterer {
+func (p *parser) parseLabelFilter() LabelFilterer {
 	left := p.parseLabelFilterAnd()
 	for p.at(tkOr) {
 		p.advance()
 		right := p.parseLabelFilterAnd()
-		left = loglib.NewOrLabelFilter(left, right)
+		left = NewOrLabelFilter(left, right)
 	}
 	return left
 }
 
-func (p *parser) parseLabelFilterAnd() loglib.LabelFilterer {
+func (p *parser) parseLabelFilterAnd() LabelFilterer {
 	left := p.parseLabelFilterAtom()
 	for {
 		switch {
 		case p.at(tkAnd) || p.at(tkComma):
 			p.advance()
-			left = loglib.NewAndLabelFilter(left, p.parseLabelFilterAtom())
+			left = NewAndLabelFilter(left, p.parseLabelFilterAtom())
 		case p.at(tkIdentifier) || p.at(tkOpenParen):
 			// juxtaposition is implicit AND
-			left = loglib.NewAndLabelFilter(left, p.parseLabelFilterAtom())
+			left = NewAndLabelFilter(left, p.parseLabelFilterAtom())
 		default:
 			return left
 		}
 	}
 }
 
-func (p *parser) parseLabelFilterAtom() loglib.LabelFilterer {
+func (p *parser) parseLabelFilterAtom() LabelFilterer {
 	if p.at(tkOpenParen) {
 		p.advance()
 		f := p.parseLabelFilter()
@@ -765,39 +764,39 @@ func (p *parser) parseLabelFilterAtom() loglib.LabelFilterer {
 		switch p.cur().kind {
 		case tkString:
 			val := p.advance().str
-			return loglib.NewStringLabelFilter(mustNewMatcher(stringMatchType(opk), id, val))
+			return NewStringLabelFilter(mustNewMatcher(stringMatchType(opk), id, val))
 		case tkIP:
 			p.advance()
 			p.expect(tkOpenParen, "'('")
 			s := p.expect(tkString, "string").str
 			p.expect(tkCloseParen, "')'")
-			return loglib.NewIPLabelFilter(s, id, ipFilterType(opk))
+			return NewIPLabelFilter(s, id, ipFilterType(opk))
 		case tkDuration:
 			d := p.advance().dur
-			return loglib.NewDurationLabelFilter(labelFilterType(opk), id, d)
+			return NewDurationLabelFilter(labelFilterType(opk), id, d)
 		case tkBytes:
 			b := p.advance().bytes
-			return loglib.NewBytesLabelFilter(labelFilterType(opk), id, b)
+			return NewBytesLabelFilter(labelFilterType(opk), id, b)
 		case tkNumber, tkAdd, tkSub:
-			return loglib.NewNumericLabelFilter(labelFilterType(opk), id, p.parseSignedFloat())
+			return NewNumericLabelFilter(labelFilterType(opk), id, p.parseSignedFloat())
 		default:
 			p.errf("syntax error: unexpected value in label filter for %q", id)
 		}
 	case tkRe, tkNre:
 		p.advance()
 		val := p.expect(tkString, "string").str
-		return loglib.NewStringLabelFilter(mustNewMatcher(stringMatchType(opk), id, val))
+		return NewStringLabelFilter(mustNewMatcher(stringMatchType(opk), id, val))
 	case tkGt, tkGte, tkLt, tkLte, tkCmpEq:
 		p.advance()
 		switch p.cur().kind {
 		case tkDuration:
 			d := p.advance().dur
-			return loglib.NewDurationLabelFilter(labelFilterType(opk), id, d)
+			return NewDurationLabelFilter(labelFilterType(opk), id, d)
 		case tkBytes:
 			b := p.advance().bytes
-			return loglib.NewBytesLabelFilter(labelFilterType(opk), id, b)
+			return NewBytesLabelFilter(labelFilterType(opk), id, b)
 		case tkNumber, tkAdd, tkSub:
-			return loglib.NewNumericLabelFilter(labelFilterType(opk), id, p.parseSignedFloat())
+			return NewNumericLabelFilter(labelFilterType(opk), id, p.parseSignedFloat())
 		default:
 			p.errf("syntax error: unexpected value in label filter for %q", id)
 		}
@@ -836,29 +835,29 @@ func stringMatchType(k tokenKind) labels.MatchType {
 	return labels.MatchEqual
 }
 
-func ipFilterType(k tokenKind) loglib.LabelFilterType {
+func ipFilterType(k tokenKind) LabelFilterType {
 	if k == tkNeq {
-		return loglib.LabelFilterNotEqual
+		return LabelFilterNotEqual
 	}
-	return loglib.LabelFilterEqual
+	return LabelFilterEqual
 }
 
-func labelFilterType(k tokenKind) loglib.LabelFilterType {
+func labelFilterType(k tokenKind) LabelFilterType {
 	switch k {
 	case tkGt:
-		return loglib.LabelFilterGreaterThan
+		return LabelFilterGreaterThan
 	case tkGte:
-		return loglib.LabelFilterGreaterThanOrEqual
+		return LabelFilterGreaterThanOrEqual
 	case tkLt:
-		return loglib.LabelFilterLesserThan
+		return LabelFilterLesserThan
 	case tkLte:
-		return loglib.LabelFilterLesserThanOrEqual
+		return LabelFilterLesserThanOrEqual
 	case tkNeq:
-		return loglib.LabelFilterNotEqual
+		return LabelFilterNotEqual
 	case tkEq, tkCmpEq:
-		return loglib.LabelFilterEqual
+		return LabelFilterEqual
 	}
-	return loglib.LabelFilterEqual
+	return LabelFilterEqual
 }
 
 // ------------------------------------------------------------------
