@@ -1,6 +1,6 @@
 # Cerberus — agent context
 
-Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses each upstream query language with its reference parser, lowers into a shared plan IR (`internal/chplan`), applies a small rule-based optimizer, and emits parameterised ClickHouse SQL. The HTTP layer speaks the upstream Prom / Loki / Tempo wire format so Grafana sees cerberus as three drop-in datasources.
+Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses each query language (PromQL with the upstream Apache prometheus parser; LogQL and TraceQL with cerberus's own in-house Apache reimplementations), lowers into a shared plan IR (`internal/chplan`), applies a small rule-based optimizer, and emits parameterised ClickHouse SQL. The HTTP layer speaks the upstream Prom / Loki / Tempo wire format so Grafana sees cerberus as three drop-in datasources.
 
 ## Hard rules (non-negotiable)
 
@@ -76,26 +76,30 @@ Top-level reading order for any new contributor (human or agent):
 - **CGO** — left at the platform default so `go test -race` works. Goreleaser pins `CGO_ENABLED=0` for release builds independently.
 - **`golangci-lint` v2** — the config in `.golangci.yml` uses the v2 schema. `gofumpt` + `goimports` are configured under `formatters`, not `linters`. The v2 install path is `github.com/golangci/golangci-lint/v2/cmd/golangci-lint` (note the `/v2/`).
 
-## Upstream parser deps — all four flow through tsouza/* forks
+## Parser deps — in-house LogQL/TraceQL, two upstream forks for the rest
 
-All four upstream parser / schema deps in `go.mod` are routed through `github.com/tsouza/*` forks pinned to **semver tags** (not pseudo-versions):
+Cerberus parses its three query languages with a mix of an upstream parser and two in-house ones, and links **no AGPL code** into `cmd/cerberus`:
+
+- **PromQL** — the upstream Apache `prometheus/promql/parser`, consumed through the `tsouza/prometheus` fork (a pure Dependabot watch boundary, zero patches).
+- **LogQL** — cerberus's own clean-room Apache reimplementation: `internal/logql/lsyntax` (parser), `internal/logql/logpattern` (`pattern` parser), `internal/drain` (Drain miner). No upstream parser dep.
+- **TraceQL** — cerberus's own clean-room Apache reimplementation: `internal/traceql/ast`. No upstream parser dep.
+
+The upstream **LogQL** (`grafana/loki/v3/pkg/logql`) and **TraceQL** (`grafana/tempo/pkg/traceql`) parsers are **AGPLv3**; the in-house reimplementations exist so the Apache-2.0 binary never links them. They survive only as test-only oracles (`agpl_oracle`-tagged tests + the `compatibility/{loki,tempo}` harnesses), quarantined in the `test/oracle` nested module. The `agpl-clean` CI gate (`.github/scripts/agpl-clean.mjs`) fails the build if any AGPL package reaches `cmd/cerberus`; it is enforcing. The binary does link the **Apache** `grafana/tempo/pkg/tempopb` wire types.
+
+Two `go.mod` deps still route through `github.com/tsouza/*` forks pinned to **semver tags** (not pseudo-versions); `grafana/loki/v3` and `grafana/tempo` are now plain upstream requires (no fork):
 
 ```text
-replace github.com/prometheus/prometheus                                                                => github.com/tsouza/prometheus                                                                v0.0.1-cerberus-parser
-replace github.com/grafana/loki/v3                                                                      => github.com/tsouza/loki/v3                                                                    v3.0.0-cerberus-parser
-replace github.com/grafana/tempo                                                                        => github.com/tsouza/tempo                                                                      v0.0.1-cerberus-accessors
-replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter            => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter                v0.0.2-cerberus-ddl
+replace github.com/prometheus/prometheus                                                       => github.com/tsouza/prometheus                                                       v0.0.1-cerberus-parser
+replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter  => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter      v0.0.3-cerberus-ddl
 # (plus three sibling submodule replaces under the same fork)
 ```
 
 The fork repos exist primarily as a **Dependabot watch boundary**: cerberus consumes only a narrow subtree of each upstream, so we don't want a Dependabot PR every time upstream cuts a release. Instead, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) runs a daily cron that rebases each `cerberus-*` branch onto `upstream/main`, runs subtree tests, and **only mints a new patch tag if commits touched the watched paths**. Dependabot in cerberus then sees a clean stream of "this is a change cerberus actually cares about" tags. See [`docs/upstream-forks.md`](docs/upstream-forks.md) for the full flow.
 
-Two of the four forks carry actual patches:
+- **`tsouza/opentelemetry-collector-contrib:cerberus-ddl`** carries the one real patch — it hoists the `sqltemplates` package out of `internal/` so cerberus's `internal/schema/ddl/` can consume the OTel-CH exporter's DDL templates directly.
+- **`tsouza/prometheus:cerberus-parser`** is unpatched — it exists solely as the Dependabot boundary.
 
-- **`tsouza/tempo:cerberus-accessors`** — ~6 accessor methods on top of `pkg/traceql` to replace the `unsafe.Pointer` + `reflect.FieldByName` shims cerberus needed for `internal/traceql/`.
-- **`tsouza/opentelemetry-collector-contrib:cerberus-ddl`** — hoists the `sqltemplates` package out of `internal/` so cerberus's `internal/schema/ddl/` can consume the OTel-CH exporter's DDL templates directly.
-
-The other two (`tsouza/prometheus:cerberus-parser`, `tsouza/loki:cerberus-parser`) are unpatched — they exist solely as the Dependabot boundary.
+The `tsouza/loki` and `tsouza/tempo` parser forks were **retired** when the in-house parsers landed; `go.mod` no longer references them.
 
 ## Tooling fork — gremlins (mutation testing)
 

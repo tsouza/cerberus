@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	ast "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 const (
@@ -85,7 +85,7 @@ func TestTraceQLExclusionsAreSound(t *testing.T) {
 // non-excluded inventory row must be exercised by at least one Tempo
 // panel target across the provisioned dashboard directories, and every
 // excluded row must NOT be exercised. Matching is AST-level via
-// CollectTraceQLFeatureIDs over the pinned parser.
+// CollectTraceQLFeatureIDs over cerberus's in-house parser.
 func TestTraceQLShowcaseCoversInventory(t *testing.T) {
 	t.Parallel()
 
@@ -113,7 +113,7 @@ func TestTraceQLShowcaseCoversInventory(t *testing.T) {
 			isShowcase := strings.HasPrefix(entry.Name(), "showcase-")
 			for _, q := range tempoTargetQueries(t, path) {
 				targets++
-				parsed, err := traceql.Parse(q)
+				parsed, err := ast.Parse(q)
 				if err != nil {
 					if isShowcase {
 						// Showcase targets must be plain TraceQL — a

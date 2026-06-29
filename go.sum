@@ -362,6 +362,8 @@ github.com/grafana/jsonparser v0.0.0-20241004153430-023329977675 h1:U94jQ2TQr1m3
 github.com/grafana/jsonparser v0.0.0-20241004153430-023329977675/go.mod h1:796sq+UcONnSlzA3RtlBZ+b/hrerkZXiEmO8oMjyRwY=
 github.com/grafana/loki/pkg/push v0.0.0-20250630054201-94c0ba7b0952 h1:rLzoJGDnoXsZV2j/2atL6OVk9AHluTbDOD8Ls9trtIA=
 github.com/grafana/loki/pkg/push v0.0.0-20250630054201-94c0ba7b0952/go.mod h1:ny/0bFitf8KNZkZfweaI4hmwb5XPhaFD2d0kVcyKmjo=
+github.com/grafana/loki/v3 v3.7.1 h1:Nw1TV8uHtiB6bkO9210kvHjewtgCyZtSippj7X42+O4=
+github.com/grafana/loki/v3 v3.7.1/go.mod h1:PSxKUN/jECwG9TXInjnX8Kh8wbUvM280ncwtE7ATTR4=
 github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db h1:3PCT+MeCIDgBbjXo6VLB9S6IKlWKGPjGM6w88t2M8nA=
 github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db/go.mod h1:h60o12SZn/ua/j0B6iKAZezA4eDaGsIuPO70eOaJ6WE=
 github.com/grafana/otel-profiling-go v0.5.1 h1:stVPKAFZSa7eGiqbYuG25VcqYksR6iWvF3YH66t4qL8=
@@ -370,6 +372,8 @@ github.com/grafana/pyroscope-go/godeltaprof v0.1.9 h1:c1Us8i6eSmkW+Ez05d3co8kasn
 github.com/grafana/pyroscope-go/godeltaprof v0.1.9/go.mod h1:2+l7K7twW49Ct4wFluZD3tZ6e0SjanjcUUBPVD/UuGU=
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 h1:cLN4IBkmkYZNnk7EAJ0BHIethd+J6LqxFNw5mSiI2bM=
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853/go.mod h1:+JKpmjMGhpgPL+rXZ5nsZieVzvarn86asRlBg4uNGnk=
+github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1 h1:FXjxV1CDCrpRaSEwuCC8XyybzzpbXj+RAwNsSFf6nQk=
+github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3 h1:B+8ClL/kCQkRiU82d9xajRPKYMrB7E0MbtzWVi1K4ns=
 github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3/go.mod h1:NbCUVmiS4foBGBHOYlCT25+YmGpJ32dZPi75pGEUpj4=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF28c5ZQfqCBQ5g2xfk=
@@ -627,6 +631,8 @@ github.com/prometheus/common v0.10.0/go.mod h1:Tlit/dnDKsSWFlCLTWaA1cyBgKHSMdTB8
 github.com/prometheus/common v0.26.0/go.mod h1:M7rCNAaPfAosfx8veZJCuw84e35h3Cfd9VFqTh1DIvc=
 github.com/prometheus/common v0.69.0 h1:OA85nJQS/T/MaYh/Q2CcgDKSGWqNIgrBDvDH85CuiNk=
 github.com/prometheus/common v0.69.0/go.mod h1:ZzL3f6u94qUxh9p+tJTrF+FvBS1XXbbRAZCQkytAL0Y=
+github.com/prometheus/common/sigv4 v0.1.0 h1:qoVebwtwwEhS85Czm2dSROY5fTo2PAPEVdDeppTwGX4=
+github.com/prometheus/common/sigv4 v0.1.0/go.mod h1:2Jkxxk9yYvCkE5G1sQT7GuEXm57JrvHu9k5YwTjsNtI=
 github.com/prometheus/exporter-toolkit v0.16.0 h1:xT/j7L2XKF+VJd6B4fpUw6xWabHrSmsUf6mYmFqyu0s=
 github.com/prometheus/exporter-toolkit v0.16.0/go.mod h1:d1EL8Z9674xQe/iWhwP2wDyCEoBPbXVeqDbqAUsgJWY=
 github.com/prometheus/otlptranslator v1.0.0 h1:s0LJW/iN9dkIH+EnhiD3BlkkP5QVIUVEoIwkU+A6qos=
@@ -716,8 +722,6 @@ github.com/tklauser/go-sysconf v0.3.16 h1:frioLaCQSsF5Cy1jgRBrzr6t502KIIwQ0MArYI
 github.com/tklauser/go-sysconf v0.3.16/go.mod h1:/qNL9xxDhc7tx3HSRsLWNnuzbVfh3e7gh/BmM179nYI=
 github.com/tklauser/numcpus v0.11.0 h1:nSTwhKH5e1dMNsCdVBukSZrURJRoHbSEQjdEbY+9RXw=
 github.com/tklauser/numcpus v0.11.0/go.mod h1:z+LwcLq54uWZTX0u/bGobaV34u6V7KNlTZejzM6/3MQ=
-github.com/tsouza/loki/v3 v3.0.0-cerberus-parser h1:kyqlt6AlG2s59kDQxDFMLtUIJ66md/6mYlzSDYEqvog=
-github.com/tsouza/loki/v3 v3.0.0-cerberus-parser/go.mod h1:6Q0rM0zDrTet6eGyRTHwa8UsCTCTWSysedZ/1gZAiwM=
 github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.3-cerberus-ddl h1:bAVHorD2gVkTx+JnI7/LfS6X6proHtXBRjz55uG1MWk=
 github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.3-cerberus-ddl/go.mod h1:8BAQX041SKSw2LRKUHIMeXLN8gOTJrPVFi+Mae4syUQ=
 github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.3-cerberus-ddl h1:skVjSj8Q6g2zacXEhoDCI/5deBZ5hmpeBXYdm3ylsSc=
@@ -728,8 +732,6 @@ github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-c
 github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl/go.mod h1:UetIxoLmE+X0io7ookhE9J/6KoJSdmFzLFmcUiW/XzM=
 github.com/tsouza/prometheus v0.0.1-cerberus-parser h1:RjX9HKGVHPxLbtGKSbzWJ3bGFsmOEORWG2DX2Spg6oY=
 github.com/tsouza/prometheus v0.0.1-cerberus-parser/go.mod h1:orN7+39ySpDpDwh+EbN7UYpMHYNXrl0rabkpVMfMN4g=
-github.com/tsouza/tempo v0.0.4-cerberus-accessors h1:aaZdzRwoH2N0j6dLgJmlUqD8TMxAq6dKjq3iivaj2T4=
-github.com/tsouza/tempo v0.0.4-cerberus-accessors/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/ttacon/chalk v0.0.0-20160626202418-22c06c80ed31/go.mod h1:onvgF043R+lC5RZ8IT9rBXDaEDnpnw/Cl+HFiw+v/7Q=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/twmb/franz-go v1.21.0 h1:J3uB/poWgHD6VIilER2uCPFAZHDRXVFT+11pBgRKod4=
