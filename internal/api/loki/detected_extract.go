@@ -83,7 +83,7 @@ func (j *jsonExtractor) labelValue(key, value []byte, dataType jsonparser.ValueT
 		// Top-level scalar: sanitise the bare key. The JSON path is the
 		// single RAW key (matching upstream, which records the unsanitised
 		// key under the sanitised label name).
-		sk := sanitizeLabelKey(string(key), true)
+		sk := sanitizeLabelKey(string(key))
 		if sk == "" {
 			return
 		}
@@ -124,7 +124,7 @@ func extractLogfmt(line []byte, stream map[string]string) map[string]string {
 		if !dec.scanKeyval() {
 			continue
 		}
-		key := sanitizeLabelKey(string(dec.Key()), true)
+		key := sanitizeLabelKey(string(dec.Key()))
 		if key == "" {
 			continue
 		}
@@ -176,14 +176,14 @@ func unescapeJSONString(b []byte) string {
 }
 
 // sanitizeLabelKey replaces every non-`[A-Za-z0-9_]` byte with `_`,
-// trims surrounding space, and (for the prefix form) prepends `_` when
-// the key starts with a digit. Matches upstream sanitizeLabelKey.
-func sanitizeLabelKey(key string, isPrefix bool) string {
+// trims surrounding space, and prepends `_` when the key starts with a
+// digit. Matches upstream sanitizeLabelKey.
+func sanitizeLabelKey(key string) string {
 	key = strings.TrimSpace(key)
 	if len(key) == 0 {
 		return key
 	}
-	if isPrefix && key[0] >= '0' && key[0] <= '9' {
+	if key[0] >= '0' && key[0] <= '9' {
 		key = "_" + key
 	}
 	return strings.Map(func(r rune) rune {
