@@ -4,6 +4,42 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.8.3] — 2026-06-29
+
+### Added
+
+- **engine:** nested-subquery anchor product (GAP-C) + plan-node bound registry (#1120)
+- **engine:** reject subqueries whose anchor grid busts the sample budget (GAP-2) (#1115)
+- **chart:** bwc mode — bundled production ClickHouse on object storage (S3/GCS/Azure), no operator (#1106)
+
+### Fixed
+
+- **license:** de-AGPL audit cleanup (#1136)
+- **logql:** clean-room Apache LogQL parser (remove AGPL pkg/logql/syntax) (#1130)
+- **traceql:** clean-room Apache TraceQL parser (remove AGPL pkg/traceql) (#1131)
+- **traceql:** numeric-coerce attribute-vs-attribute ordering comparisons (#1127)
+- **chclient:** enforce the drain budget — 0 no longer disables it + cap line-peek bytes (#1123)
+- **tempo:** push /api/search limit into spanset-aggregation as server-side ORDER BY+LIMIT (#1122)
+- **traceql:** window spanset-aggregation searches (GAP-3) via generic leaf recurse (#1121)
+- **chclient:** bound metadata drains with the per-query sample budget (GAP-A) (#1119)
+- **api/loki:** clamp metadata-peek line_limit to bound the result drain (#1111)
+
+### Performance
+
+- **chsql:** memory-bounded fused emit for instant reducer-over-subquery (GAP-2) (#1116)
+- **promql:** bound instant-subquery inner scan to the eval window (GAP-2 axis-1) (#1114)
+- **traceql:** fold the search window into every compound search shape (GAP-3) (#1113)
+- **engine:** spill GROUP BY + sort to disk on every query, not just compare() (#1112)
+- **traceql:** bound structure-tab row source to the search trace limit (#1109) (#1110)
+
+### Changed
+
+- **chsql:** single-source the extrapolation arithmetic (audit M1) (#1118)
+
+### CI
+
+- **chdb:** disable async preemption to kill the purego SIGABRT flake (#1133)
+
 ## [chart-v0.9.0] — 2026-06-27
 
 Chart-only release (appVersion stays 1.8.2 — no binary/image change).
