@@ -29,15 +29,20 @@ import (
 // plan that would read full retention.
 var ErrUnboundedSpansScan = fmt.Errorf("%w: unbounded spans scan", ErrUnsupported)
 
-// spansResourceBoundKind mirrors chplan.ScanBoundKind on the emit side. An emit
-// site declares which of the three legitimate shapes proves its spans FROM is
-// resource-dominated; spansBoundNone is the rejected zero value.
+// spansResourceBoundKind mirrors chplan.ScanBoundKind on the emit side, minus
+// the form-a (window) variant. An emit-site witness is only ever constructed for
+// an emitter-synthetic spans scan — the recursive structural / nested-set arms —
+// and those can never be bounded by a window alone: a recursive arm walks a
+// closure across iterations, so it must be scoped by a finite TraceId set
+// (form-b) or fall back to the depth-cap memory-streaming bound. The form-a
+// window classification lives where it can actually apply: chplan's IR descent
+// (chplan.RequireSpansScansBounded) over Node-tree scans, and the matrix-inner
+// guard requireInnerSpansScanBound (which checks rw.Start/End directly, building
+// no witness). spansBoundNone is the rejected zero value.
 type spansResourceBoundKind int
 
 const (
 	spansBoundNone spansResourceBoundKind = iota
-	// spansBoundWindow: the FROM carries a request-window Timestamp predicate.
-	spansBoundWindow
 	// spansBoundTraceIDSet: the FROM carries a finite TraceId membership (a
 	// literal InList or a `TraceId IN (<bounded subquery>)`).
 	spansBoundTraceIDSet
@@ -54,11 +59,6 @@ const (
 type scanResourceBound struct {
 	kind      spansResourceBoundKind
 	conjuncts []Frag
-}
-
-// windowBound declares a form-a (request-window Timestamp) bound.
-func windowBound(conjuncts ...Frag) scanResourceBound {
-	return scanResourceBound{kind: spansBoundWindow, conjuncts: conjuncts}
 }
 
 // traceIDSetBound declares a form-b (finite TraceId set) bound.

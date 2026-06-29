@@ -88,6 +88,24 @@ func EmitMetricsExemplars(
 	return sql, e.args, nil
 }
 
+// exemplarNumAnchors computes the count of per-step anchors the exemplar
+// fanout materialises: from OuterRange when set, else from the [Start, End]
+// span, else a single instant anchor. A Start > End span is rejected.
+func exemplarNumAnchors(rw *chplan.RangeWindow, stepNS int64) (int64, error) {
+	switch {
+	case rw.OuterRange > 0:
+		return rw.OuterRange.Nanoseconds()/stepNS + 1, nil
+	case !rw.Start.IsZero() && !rw.End.IsZero():
+		span := rw.End.Sub(rw.Start).Nanoseconds()
+		if span < 0 {
+			return 0, fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
+		}
+		return span/stepNS + 1, nil
+	default:
+		return 1, nil
+	}
+}
+
 func (e *emitter) emitMetricsExemplars(
 	rw *chplan.RangeWindow,
 	m *chplan.MetricsAggregate,
@@ -109,18 +127,9 @@ func (e *emitter) emitMetricsExemplars(
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	var numAnchors int64
-	switch {
-	case rw.OuterRange > 0:
-		numAnchors = rw.OuterRange.Nanoseconds()/stepNS + 1
-	case !rw.Start.IsZero() && !rw.End.IsZero():
-		span := rw.End.Sub(rw.Start).Nanoseconds()
-		if span < 0 {
-			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
-		}
-		numAnchors = span/stepNS + 1
-	default:
-		numAnchors = 1
+	numAnchors, err := exemplarNumAnchors(rw, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(m.Inner)
