@@ -1,0 +1,26 @@
+-- query.traceql --
+{ status = error } | select(name, status, kind, span:id)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanName String,
+    StatusCode String,
+    SpanKind String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), 'checkout', 'Error', 'Server'),
+    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), 'healthz', 'Ok', 'Client');
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "checkout", "Error", "Server", "0000000000000001"]
+]
+-- args --
+[0] string = "Error"
+-- chplan --
+Project [TraceId, SpanId, Timestamp, SpanName AS name, StatusCode AS status, SpanKind AS kind, SpanId AS span:id]
+  Filter predicate=(StatusCode = "Error")
+    Scan(otel_traces)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanName` AS `name`, `StatusCode` AS `status`, `SpanKind` AS `kind`, `SpanId` AS `span:id` FROM (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?))
