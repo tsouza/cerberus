@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.8.4] — 2026-06-29
+
+### Fixed
+
+- **traceql:** enforce resource-bound invariant on every spans scan (traces drilldown OOM) (#1154)
+
 ## [v1.8.3] — 2026-06-29
 
 ### Added
