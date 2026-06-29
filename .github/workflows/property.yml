@@ -53,6 +53,13 @@ on:
     # runners stagger and a libchdb cache primed here can be reused.
     - cron: '45 3 * * *'
 
+# See chdb.yml: chDB's purego FFI can abort with "signal arrived during cgo
+# execution" when Go's async preemption (SIGURG) interrupts a libchdb.so
+# downcall. Disable async preemption for these chDB-tagged test processes;
+# cooperative preemption still applies and the production binary is unaffected.
+env:
+  GODEBUG: asyncpreemptoff=1
+
 permissions:
   contents: read
 

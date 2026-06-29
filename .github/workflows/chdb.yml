@@ -53,6 +53,17 @@ on:
     # nightly at 04:00 UTC
     - cron: '0 4 * * *'
 
+# chDB is loaded as a shared library and called over purego (a cgo-free
+# FFI). Go's signal-based async preemption (SIGURG, on since 1.14) can fire
+# while a goroutine is parked inside a libchdb.so downcall, and the foreign
+# frame aborts with "signal arrived during cgo execution" (SIGABRT) — an
+# infrastructure flake unrelated to the query under test. Disabling async
+# preemption for the chDB test processes removes the interrupt; cooperative
+# preemption still applies, and the production binary (built and run without
+# this env) is unaffected.
+env:
+  GODEBUG: asyncpreemptoff=1
+
 permissions:
   contents: read
 
