@@ -314,7 +314,7 @@ jobs:
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
       - name: Sync Docker Hub overview
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         continue-on-error: true
         with:
           username: tsouza

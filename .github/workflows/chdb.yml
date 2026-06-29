@@ -165,7 +165,7 @@ jobs:
       # key is pinned to the recipe's CHDB_VERSION so a version bump busts
       # the cache automatically.
       - name: Cache libchdb.so
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /usr/local/lib/libchdb.so
           key: libchdb-${{ runner.os }}-${{ runner.arch }}-v4.0.2
@@ -347,7 +347,7 @@ jobs:
           tool: just
 
       - name: Cache libchdb.so
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /usr/local/lib/libchdb.so
           key: libchdb-${{ runner.os }}-${{ runner.arch }}-v4.0.2
