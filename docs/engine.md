@@ -313,11 +313,11 @@ An instant windowed range aggregation (`rate` / `increase` /
 post-`groupArray` `arrayFilter` discards out-of-window samples. If that
 innermost read carries no time predicate, ClickHouse cannot prune
 granules and materialises the full per-series retention — tens of
-millions of rows on a prod instant query. The bound used to live only in
-the emitter, so it was repeatedly forgotten as new `groupArray` emitters
-landed.
+millions of rows on a prod instant query. A bound that lived only in the
+emitter would be easy to forget as new `groupArray` emitters land, so it
+is an IR-level property instead.
 
-It is now an IR-level property: an instant windowed-array **leaf**
+An instant windowed-array **leaf**
 RangeWindow (`OuterRange == 0`, and `Input` is **not** a
 `MetricsAggregate` / `MetricsHistogramOverTime` / `MetricsCompare`)
 carries `RangeWindow.InstantScanBounded`, established once by

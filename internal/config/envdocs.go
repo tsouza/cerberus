@@ -193,11 +193,10 @@ var envDocGroups = []envDocGroup{
 
 // envDocs is the hand-authored metadata for every CERBERUS_* key the viper
 // loader resolves. There is exactly one entry per allEnvKeys member (enforced
-// by TestEnvDocsCoverAllKeys). The Type/Group/Desc are migrated from the
-// previously hand-written docs/configuration.md so the generated document
-// reads as well as the hand-maintained one did; the Default column and the
-// table structure are generated, so the documented default can never drift
-// from the runtime default.
+// by TestEnvDocsCoverAllKeys). The Type/Group/Desc are hand-authored so the
+// generated document reads well; the Default column and the table structure
+// are generated, so the documented default can never drift from the runtime
+// default.
 var envDocs = []EnvDoc{
 	// --- HTTP server ---
 	{envHTTPAddr, "string", "HTTP server", "HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes."},

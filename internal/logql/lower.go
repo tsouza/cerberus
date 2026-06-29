@@ -1187,8 +1187,8 @@ func labelMatcherToExpr(m *labels.Matcher, s schema.Logs, labelsExpr chplan.Expr
 // underscored Loki label `key` against the live `labelsMap` (the
 // schema's ResourceAttributes column or a `mapConcat(...)` wrapping it
 // after a parser stage). For names with no rewritable underscore (e.g.
-// `job`, `__error__`) it returns a plain MapAccess — byte-stable with
-// the pre-#658 emit shape so the existing fixtures keep matching.
+// `job`, `__error__`) it returns a plain MapAccess — the byte-stable
+// emit shape the fixtures match.
 //
 // For names with at least one rewritable underscore (e.g.
 // `cerberus_ql`) it emits a left-associative `if(mapContains(m, k1),
