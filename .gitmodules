@@ -1,3 +1,8 @@
 [submodule "compatibility/prometheus/upstream"]
 	path = compatibility/prometheus/upstream
 	url = https://github.com/prometheus/compliance.git
+	# The harness builds promql-compliance-tester inside this tree; that binary
+	# is an untracked artifact git can't ignore from the superproject. We pin
+	# this submodule purely by gitlink commit, so suppress in-tree dirt and
+	# still surface an actual commit-pin change.
+	ignore = dirty
