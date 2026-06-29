@@ -3,7 +3,7 @@ package traceql
 import (
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -103,8 +103,8 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		if len(qs) == 0 {
 			return nil, fmt.Errorf("traceql: quantile_over_time requires at least one quantile")
 		}
-		// Multi-quantile is accepted at the lowering layer (v0.0.3
-		// fork accessors expose the full slice via Quantiles()); the
+		// Multi-quantile is accepted at the lowering layer (the in-house
+		// ast exposes the full slice via Quantiles()); the
 		// emitted plan carries all phi values on
 		// chplan.MetricsAggregate.Quantiles. The chsql emitter
 		// (internal/chsql/range_window.go::metricsAggregateCH plus
@@ -117,8 +117,8 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 	// IsDuration drives the bucketise divisor in the chsql matrix-path
 	// quantile emitter (and the post-processor in
 	// internal/api/tempo/metrics_query_range.go) so the bucket edges fed
-	// into Tempo's Log2QuantileWithBucket match what
-	// pkg/traceql.bucketizeDuration produces upstream — Log2Bucketize(d)
+	// into the in-house log2QuantileWithBucket match what Tempo's
+	// bucketizeDuration produces upstream — Log2Bucketize(d)
 	// in nanos, divided by 1e9 so the bucket reads in seconds. Only
 	// quantile_over_time consults IsDuration today; the rest of the
 	// matrix path emits the same SQL whether or not the operand was
@@ -138,11 +138,10 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 	}, nil
 }
 
-// lowerAverageOverTime lowers Tempo's dedicated
-// *traceql.AverageOverTimeAggregator (the unexported
-// averageOverTimeAggregator surfaced via the exported type alias in the
-// cerberus-accessors fork) into a chplan.MetricsAggregate with
-// Op=MetricsOpAvgOverTime.
+// lowerAverageOverTime lowers the dedicated
+// *traceql.AverageOverTimeAggregator node (cerberus's in-house ast type,
+// modelled on Tempo's separate averageOverTimeAggregator) into a
+// chplan.MetricsAggregate with Op=MetricsOpAvgOverTime.
 //
 // Tempo parses `| avg_over_time(attr)` into
 // *averageOverTimeAggregator rather than *MetricsAggregate because

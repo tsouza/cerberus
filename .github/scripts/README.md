@@ -24,6 +24,18 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 
 ## Modules
 
+- **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
+  licence gate: runs `go list -deps ./cmd/cerberus` and reports any AGPLv3
+  package the Apache-2.0 binary links (`github.com/grafana/loki/*`, or
+  `github.com/grafana/tempo/*` except the Apache-licensed `pkg/tempopb`). The
+  test-only AGPL importers are quarantined into the `test/oracle` nested module
+  (a hard module boundary `go list -deps` does not cross), so only production
+  imports can surface here. The binary is licence-clean: LogQL / TraceQL parse
+  with in-house Apache reimplementations and PromQL with the upstream Apache
+  prometheus parser.
+  - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`).
+  - Exit: `0` clean; `1` on a violation. ENFORCING (a violation fails CI) and a
+    required status check on `main`.
 - **`forbid-skip.mjs`** — `ci.yml`, the five `forbid-skip` discipline scans.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`.

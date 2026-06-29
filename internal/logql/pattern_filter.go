@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
+	logpattern "github.com/tsouza/cerberus/internal/logql/logpattern"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -15,7 +15,7 @@ import (
 // via filter.go::newPatternFilterer): the pattern is an alternating
 // sequence of literal runs and `<_>` wildcards (named captures and
 // consecutive wildcards are parse errors for the FILTER form —
-// pattern.ParseLineFilter enforces both; reference rejects the query
+// logpattern.ParseLineFilter enforces both; reference rejects the query
 // with a 400, cerberus with a 422). Test walks the line left-to-right:
 //
 //  1. each literal must be found (bytes.Index) at-or-after the cursor;
@@ -71,17 +71,17 @@ type patternLineFilter struct {
 // Structure derivation: after ParseLineFilter validation the only
 // capture form left in the pattern is the literal token `<_>` —
 // upstream's grammar merges adjacent literal runes into one run and
-// alternates them with captures — so pattern.ParseLiterals supplies
+// alternates them with captures — so logpattern.ParseLiterals supplies
 // the ordered literal runs and a prefix / suffix probe against the
 // original string classifies the first / last node.
 func parsePatternLineFilter(match string) (patternLineFilter, error) {
-	if _, err := pattern.ParseLineFilter([]byte(match)); err != nil {
+	if _, err := logpattern.ParseLineFilter([]byte(match)); err != nil {
 		return patternLineFilter{}, fmt.Errorf("logql: invalid pattern line filter %q: %w", match, err)
 	}
 	if match == "" {
 		return patternLineFilter{Empty: true}, nil
 	}
-	rawLits, err := pattern.ParseLiterals(match)
+	rawLits, err := logpattern.ParseLiterals(match)
 	if err != nil {
 		return patternLineFilter{}, fmt.Errorf("logql: invalid pattern line filter %q: %w", match, err)
 	}

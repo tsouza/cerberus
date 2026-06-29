@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	tempo "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"

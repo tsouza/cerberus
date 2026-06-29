@@ -3,7 +3,7 @@ package logql
 import (
 	"testing"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // TestParserSmoke pins that the upstream LogQL parser accepts every

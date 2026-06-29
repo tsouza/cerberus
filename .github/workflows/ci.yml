@@ -114,6 +114,18 @@ jobs:
           just test
           just build
 
+      # The test/oracle nested module quarantines cerberus's test-only
+      # consumers of the AGPLv3 grafana/loki / grafana/tempo parsers out
+      # of the root module graph (so they never reach the Apache-2.0
+      # `cmd/cerberus` binary — see the agpl-clean job below). Its tests
+      # still have to RUN, so exercise the module here from the check job
+      # rather than silently dropping coverage. `just test` / root
+      # `go test ./...` stop at the nested go.mod, so this is a separate
+      # invocation.
+      - name: test oracle module
+        run: go test ./...
+        working-directory: test/oracle
+
   # `lint` consolidates ALL linting in one job:
   #   - Go (golangci-lint v2 = formatters + linters from .golangci.yml)
   #   - Commit messages (commitlint, PR-only)
@@ -435,3 +447,34 @@ jobs:
             --exclude-path compatibility/loki/upstream
             --exclude-path node_modules
             "**/*.md"
+
+  # `agpl-clean` is the provably-clean-build licence gate. Cerberus ships
+  # under Apache-2.0. Its LogQL / TraceQL parsers are in-house clean-room
+  # Apache reimplementations (internal/logql/lsyntax, internal/logql/logpattern,
+  # internal/drain, internal/traceql/ast), and PromQL uses the upstream Apache
+  # prometheus parser — so no AGPLv3 grafana/loki or grafana/tempo code reaches
+  # the binary. The only grafana/tempo subtree the binary may link is the
+  # Apache-licensed pkg/tempopb wire types. Test-only AGPL oracles + the
+  # compatibility harnesses are quarantined in the test/oracle nested module
+  # and never enter the binary graph.
+  #
+  # ENFORCING: the gate runs `go list -deps ./cmd/cerberus` and FAILS (exit 1)
+  # if any AGPL package is reachable from the binary (grafana/loki/* or
+  # grafana/tempo/* except pkg/tempopb). Logic lives in
+  # .github/scripts/agpl-clean.mjs (node: builtins only). Add to branch
+  # protection as a required status check.
+  agpl-clean:
+    name: agpl-clean
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: AGPL clean-build gate
+        run: node .github/scripts/agpl-clean.mjs

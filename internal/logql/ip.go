@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"net/netip"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"go4.org/netipx"
+
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -160,7 +159,7 @@ func ipSubjectMatchExpr(subject chplan.Expr, r ipPatternRange) chplan.Expr {
 // ErrIPFilterInvalidOperation (HTTP 400); cerberus mirrors with a 422.
 func ipLineFilterExpr(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error) {
 	switch lf.Ty {
-	case loglib.LineMatchEqual, loglib.LineMatchNotEqual:
+	case syntax.LineMatchEqual, syntax.LineMatchNotEqual:
 	default:
 		return nil, fmt.Errorf("logql: ip: invalid operation for line filter (only |= and != support ip())")
 	}
@@ -169,7 +168,7 @@ func ipLineFilterExpr(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, err
 		return nil, err
 	}
 	pred := ipSubjectMatchExpr(body, r)
-	if lf.Ty == loglib.LineMatchNotEqual {
+	if lf.Ty == syntax.LineMatchNotEqual {
 		pred = notExpr(pred)
 	}
 	return pred, nil
@@ -190,9 +189,9 @@ func ipLineFilterExpr(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, err
 // The grammar only produces the two equality types for ip() label
 // filters, and an invalid pattern is rejected like the line filter
 // (reference parks it in IPLabelFilter.patError → 400 at stage-build).
-func ipLabelFilterExpr(f *loglib.IPLabelFilter, labelsExpr chplan.Expr) (chplan.Expr, error) {
+func ipLabelFilterExpr(f *syntax.IPLabelFilter, labelsExpr chplan.Expr) (chplan.Expr, error) {
 	switch f.Ty {
-	case loglib.LabelFilterEqual, loglib.LabelFilterNotEqual:
+	case syntax.LabelFilterEqual, syntax.LabelFilterNotEqual:
 	default:
 		return nil, fmt.Errorf("logql: ip: invalid operation for label filter (only = and != support ip())")
 	}
@@ -205,13 +204,13 @@ func ipLabelFilterExpr(f *loglib.IPLabelFilter, labelsExpr chplan.Expr) (chplan.
 		Map: labelsExpr,
 		Key: &chplan.LitString{V: f.Label},
 	}, r)
-	if f.Ty == loglib.LabelFilterNotEqual {
+	if f.Ty == syntax.LabelFilterNotEqual {
 		scan = notExpr(scan)
 	}
 
 	hasErr := &chplan.FuncCall{
 		Name: "mapContains",
-		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: logqlmodel.ErrorLabel}},
+		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: syntax.ErrorLabel}},
 	}
 	exists := &chplan.FuncCall{
 		Name: "mapContains",

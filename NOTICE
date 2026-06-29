@@ -1,0 +1,61 @@
+Cerberus
+Copyright Thiago Souza and the Cerberus contributors
+
+This product is licensed under the Apache License, Version 2.0 (the
+"License"); see the LICENSE file. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+================================================================================
+In-house clean-room parsers (LogQL, TraceQL)
+================================================================================
+
+Cerberus's LogQL parser (internal/logql/lsyntax, internal/logql/logpattern,
+internal/drain) and TraceQL parser (internal/traceql/ast) are original,
+independent reimplementations written by the Cerberus authors from the
+published LogQL and TraceQL language grammars and HTTP API documentation. They
+are not derived from, and do not copy source code from, Grafana Loki or Grafana
+Tempo, with one narrow exception: a small set of error-message strings is
+deliberately reproduced verbatim so that Cerberus returns wire-compatible error
+text to clients (each such string is documented at its definition site).
+
+These parsers are API-compatible with Grafana Loki and Grafana Tempo so that
+Cerberus can act as a drop-in datasource. "Loki", "Tempo", "Grafana",
+"Prometheus", "PromQL", "LogQL", and "TraceQL" are used here nominatively, only
+to identify the query languages and wire formats Cerberus is compatible with.
+Cerberus is not affiliated with, sponsored by, or endorsed by Grafana Labs, the
+Prometheus project, or the OpenTelemetry project.
+
+The reference Grafana Loki (github.com/grafana/loki) and Grafana Tempo
+(github.com/grafana/tempo) query parsers are licensed under the GNU Affero
+General Public License v3.0 (AGPLv3). Cerberus does NOT link or distribute those
+parsers in its binary. They are referenced only by build-tagged, test-only
+fidelity oracles and the differential compatibility harnesses, which are
+isolated in the test/oracle nested Go module and never compiled into the
+shipped cmd/cerberus binary. The agpl-clean CI gate
+(.github/scripts/agpl-clean.mjs) enforces this.
+
+================================================================================
+Third-party components (Apache License 2.0)
+================================================================================
+
+This product includes software developed by third parties and distributed
+under the Apache License, Version 2.0:
+
+  * Prometheus (github.com/prometheus/prometheus)
+    Copyright The Prometheus Authors.
+    Used for the PromQL parser and label/histogram model types.
+
+  * Grafana Tempo — pkg/tempopb (github.com/grafana/tempo/pkg/tempopb)
+    Copyright Grafana Labs.
+    The Apache-2.0 protobuf wire types for the Tempo HTTP API. (Only this
+    subtree of grafana/tempo is linked into the binary; the AGPLv3 query
+    parser is not — see above.)
+
+  * OpenTelemetry Collector Contrib — ClickHouse exporter sqltemplates
+    (github.com/open-telemetry/opentelemetry-collector-contrib)
+    Copyright The OpenTelemetry Authors.
+    Used as the source of the ClickHouse schema DDL templates.
+
+These components retain their own copyright notices and license terms. See the
+respective module sources and the Go module cache for full license texts.

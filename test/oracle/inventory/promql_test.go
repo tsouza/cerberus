@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	inventoryDir   = "../e2e/grafana/ql-inventory"
+	inventoryDir   = "../../e2e/grafana/ql-inventory"
 	inventoryFile  = "promql-feature-inventory.json"
 	exclusionsFile = "promql-feature-exclusions.json"
 )
@@ -20,8 +20,8 @@ const (
 // the showcase family's home; the k3d dir is enumerated too so a
 // future k3d-side showcase contributes coverage without an edit here.
 var dashboardDirs = []string{
-	"../e2e/grafana/compose/dashboards",
-	"../e2e/grafana/dashboards",
+	"../../e2e/grafana/compose/dashboards",
+	"../../e2e/grafana/dashboards",
 }
 
 // TestPromQLInventoryIsRegenerable regenerates the inventory from the

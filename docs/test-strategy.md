@@ -25,7 +25,7 @@ inside each layer.
 | 6a    | PromQL chDB roundtrip                | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                 | Optimizer/emitter rewrites that change the row set                                                                                                                                                                            | Behaviour outside the seeded corpus                                                                             |
 | 6b    | LogQL chDB roundtrip                 | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                                                                                                                          | Same as 6a                                                                                                      |
 | 6c    | TraceQL chDB roundtrip               | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                                                                                                                                        | Same as 6a                                                                                                      |
-| 6d    | Function-surface parity ledger       | `test/surface-parity/`, `test/rejection-parity/`, `test/inventory/`                               | A symbol cerberus fails to lower (wrong-reject) or answers when the reference rejects (wrong-accept)                                                                                                                          | Whether an accepted symbol returns the *right rows* (Layer 6a-c)                                                |
+| 6d    | Function-surface parity ledger       | `test/surface-parity/`, `test/rejection-parity/`, `test/oracle/inventory/`                        | A symbol cerberus fails to lower (wrong-reject) or answers when the reference rejects (wrong-accept)                                                                                                                          | Whether an accepted symbol returns the *right rows* (Layer 6a-c)                                                |
 | 6e    | Strict-scan differential (real CH)   | `test/spec/strictscan_integration_test.go` + `internal/routerrules/realch_integration_test.go`    | Emit-type bugs where chDB coerces a column (UInt8/UInt64 -> `*float64`) but prod clickhouse-go strict-scans and 502s. The router-corpus arm extends this to the OFFLINE corpus WRITE + READ seams e2e never touch (#1064)     | Non-matrix decoders (label-values, Tempo search rows, index stats); rows that scan but are *wrong* (Layer 6a-c) |
 | 7     | HTTP handler conformance             | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                                                                                                                                  | Real-network failure modes (Layer 10) and UX flows (Layer 9)                                                    |
 | 7b    | Consumer-corpus replay               | `test/consumer-corpus/`                                                                           | Consumer-decode drift on captured Grafana request shapes (proto envelopes, bare JSON, drilldown queries)                                                                                                                      | Shapes Grafana hasn't been observed sending — crawler mines captures                                            |
@@ -90,7 +90,7 @@ promoted to branch-protection gates — they stay informational until each has
 held a green soak streak (the same flip discipline the three
 `compatibility/<head>` heads went through). The chdb-free half of the
 function-surface ledger (`test/surface-parity/`, `test/rejection-parity/`,
-`test/inventory/` regenerability ratchets) DOES gate on every PR through the
+`test/oracle/inventory/` regenerability ratchets) DOES gate on every PR through the
 required `check` job, so a wrong-reject / wrong-accept regression fails red
 regardless of the live-reference lane's gate status.
 
@@ -204,7 +204,7 @@ gating on every PR through `check`:
   the reference is caught even when the accept/reject verdict agrees.
   `catalogue.json` + `catalogue_test.go` ratchet it the same way.
 
-- **`test/inventory/`** — per-head capability inventories
+- **`test/oracle/inventory/`** — per-head capability inventories
   (`{promql,logql,traceql}_test.go`), regenerable under the same
   `CERBERUS_UPDATE_INVENTORY=1` convention.
 
@@ -628,7 +628,7 @@ one.
 
 **The surface-inventory ratchet.**
 `crawl/grafana-surface-inventory.<stack>.json` pins each stack's
-canonical visited set (mirroring `test/inventory/`'s regenerability
+canonical visited set (mirroring `test/oracle/inventory/`'s regenerability
 convention). A newly discovered surface — e.g. a Grafana bump adding
 an app page — fails the crawl until the inventory is regenerated
 deliberately:

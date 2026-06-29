@@ -11,7 +11,7 @@ PromQL parity, but the Tempo / TraceQL surface has **no upstream
 "tempo-compliance" repo**. The closest analogue is
 `cmd/tempo-vulture`, Grafana's deterministic seed + read-back canary.
 This harness vendors `cmd/tempo-vulture/` and `pkg/httpclient/` from
-the `tsouza/tempo` fork as reference material under `upstream/`,
+`grafana/tempo` as reference material under `upstream/`,
 drives both backends from a cerberus-owned driver
 (`driver/`), and writes JSON + markdown reports whose envelope matches
 the Prom harness's so one downstream analyser handles both.
@@ -113,28 +113,25 @@ The tag endpoints pin three classes of subset assertion:
 ## What's in `upstream/`
 
 A pure, unmodified snapshot of two paths from
-`github.com/grafana/tempo`, brought in via the `github.com/tsouza/tempo`
-fork that already gates cerberus's tempo dependency (see
-[`docs/upstream-forks.md`](../../docs/upstream-forks.md)). The
-`cerberus-accessors` branch only patches `pkg/traceql/`; the two paths
-vendored here (`cmd/tempo-vulture/` and `pkg/httpclient/`) are
-byte-identical between the fork tag and the upstream commit it tracks.
+`github.com/grafana/tempo` (`cmd/tempo-vulture/` and `pkg/httpclient/`),
+taken directly from the upstream commit `go.mod` pins for the Apache
+`pkg/tempopb` wire types.
 
 Exact coordinates live in [`upstream/VERSION`](upstream/VERSION).
 
 ### Why vendor, not import via `go.mod`
 
-`github.com/grafana/tempo` is already in `go.mod` via the replace
-directive that points at `github.com/tsouza/tempo`, so we **could**
-just import `pkg/httpclient` directly. We vendor instead because:
+`github.com/grafana/tempo` is already a direct require in `go.mod` (for
+the Apache `pkg/tempopb` wire types), so we **could** just import
+`pkg/httpclient` directly. We vendor instead because:
 
 1. **Reference material, not a build dependency.** The driver imports
    only a narrow subset of this code; vendoring lets reviewers read
    the seeder pattern in the diff without grepping `~/go/pkg/mod/`.
 2. **`cmd/tempo-vulture` is a `package main`**, not importable.
    Vendoring it keeps the source visible for the driver to adapt.
-3. **Snapshot stability.** A future bump of the tsouza/tempo replace
-   tag won't silently move the seeder pattern under our feet; the
+3. **Snapshot stability.** A future bump of the grafana/tempo version
+   in go.mod won't silently move the seeder pattern under our feet; the
    snapshot here is pinned and explicit.
 
 ### Why the vendor isn't compiled
@@ -159,8 +156,8 @@ With it in place:
 ## Bump procedure
 
 The vendor is **not** automatically refreshed when `go.mod`'s
-`tsouza/tempo` tag bumps — the cerberus-accessors branch only patches
-`pkg/traceql/`, so a fork-tag bump rarely touches vendored paths. Do a
+`grafana/tempo` version bumps — a version bump rarely touches the
+vendored `cmd/tempo-vulture/` and `pkg/httpclient/` paths. Do a
 manual re-snapshot only when:
 
 1. Upstream Grafana adds a meaningful capability to `cmd/tempo-vulture`
@@ -171,12 +168,13 @@ manual re-snapshot only when:
 To re-snapshot:
 
 ```sh
-# 1. Read the current replace target in go.mod.
-grep '^replace github.com/grafana/tempo' go.mod
-#    => replace github.com/grafana/tempo => github.com/tsouza/tempo vX.Y.Z
+# 1. Read the current grafana/tempo version in go.mod.
+grep '^\s*github.com/grafana/tempo ' go.mod
+#    => github.com/grafana/tempo vX.Y.Z-0.<timestamp>-<commit>
 
-# 2. Clone the fork at that tag.
-git clone --depth=1 -b vX.Y.Z https://github.com/tsouza/tempo /tmp/tempo-upstream
+# 2. Clone grafana/tempo at that commit.
+git clone --depth=1 https://github.com/grafana/tempo /tmp/tempo-upstream
+git -C /tmp/tempo-upstream fetch --depth=1 origin <commit> && git -C /tmp/tempo-upstream checkout <commit>
 
 # 3. Wipe the existing snapshot and re-copy.
 rm -rf compatibility/tempo/upstream/{cmd,pkg,LICENSE}
@@ -185,8 +183,8 @@ cp -r /tmp/tempo-upstream/cmd/tempo-vulture  compatibility/tempo/upstream/cmd/
 cp -r /tmp/tempo-upstream/pkg/httpclient     compatibility/tempo/upstream/pkg/
 cp    /tmp/tempo-upstream/LICENSE            compatibility/tempo/upstream/LICENSE
 
-# 4. Update upstream/VERSION with the new fork tag + commit SHA and
-#    the matching upstream/main base commit.
+# 4. Update upstream/VERSION with the new grafana/tempo commit SHA and
+#    describe.
 $EDITOR compatibility/tempo/upstream/VERSION
 
 # 5. PR the diff. Reviewer checks the bump procedure was followed
@@ -208,6 +206,6 @@ lives OUTSIDE `upstream/` and is cerberus-licensed.
 ## Related docs
 
 - [`docs/compatibility.md`](../../docs/compatibility.md) — cross-head playbook
-- [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/tempo` fork is wired
+- [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — the in-house TraceQL parser and the remaining watch-boundary forks
 - [`compatibility/prometheus/`](../prometheus/) — sibling Prom harness
 - [`compatibility/loki/`](../loki/) — sibling Loki harness

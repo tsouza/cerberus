@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	upstreamTraceql "github.com/grafana/tempo/pkg/traceql"
-
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -216,7 +214,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// issue-detector query omits step entirely.
 	var step time.Duration
 	if stepStr := r.URL.Query().Get("step"); stepStr == "" {
-		ns := upstreamTraceql.DefaultQueryRangeStep(
+		ns := defaultQueryRangeStep(
 			uint64(start.UnixNano()), uint64(end.UnixNano()),
 		)
 		// DefaultQueryRangeStep targets ~240 points across the window,
@@ -713,20 +711,18 @@ func formatPhi(v float64) string {
 // anchor) wire shape Tempo's HistogramAggregator emits.
 //
 // For each (group_labels_minus_bucket, anchor) pair, the per-bucket
-// counts feed `pkg/traceql.Log2QuantileWithBucket(phi, buckets)` from
-// the cerberus-accessors Tempo fork — the same power-of-two
-// bucket-interpolation routine `HistogramAggregator.Results` runs
-// upstream. The post-processor then emits one `chclient.Sample` per
-// (group_labels_minus_bucket, phi, anchor) with a synthetic
-// `p="<phi>"` label.
+// counts feed the in-house `log2QuantileWithBucket(phi, buckets)`
+// (metrics_histogram.go) — cerberus's own clean-room reimplementation
+// of the same power-of-two bucket-interpolation routine
+// `HistogramAggregator.Results` runs upstream. The post-processor then
+// emits one `chclient.Sample` per (group_labels_minus_bucket, phi,
+// anchor) with a synthetic `p="<phi>"` label.
 //
 // Why a post-processor rather than rendering the algorithm as CH SQL:
-// the upstream algorithm is non-trivial (boundary handling for
-// p100, exponential interpolation between bucket maxima, plus an
-// edge-case sample-count rounding rule) and is being tweaked over
-// time in Tempo upstream. Reusing the upstream function via the
-// cerberus-accessors fork keeps the two backends bit-for-bit aligned
-// even as Tempo refines the algorithm.
+// the algorithm is non-trivial (boundary handling for p100, exponential
+// interpolation between bucket maxima, plus an edge-case sample-count
+// rounding rule). Keeping it as a small Go reimplementation keeps the
+// two backends aligned while staying independent of the AGPL upstream.
 //
 // Returns a fresh `[]chclient.Sample`; the input slice is read-only.
 func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggregate) []chclient.Sample {
@@ -813,12 +809,12 @@ func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggr
 		sort.Slice(g.buckets, func(i, j int) bool {
 			return g.buckets[i].max < g.buckets[j].max
 		})
-		buckets := make([]upstreamTraceql.HistogramBucket, len(g.buckets))
+		buckets := make([]histogramBucket, len(g.buckets))
 		for i, b := range g.buckets {
-			buckets[i] = upstreamTraceql.HistogramBucket{Max: b.max, Count: b.count}
+			buckets[i] = histogramBucket{Max: b.max, Count: b.count}
 		}
 		for _, phi := range m.Quantiles {
-			value, _ := upstreamTraceql.Log2QuantileWithBucket(phi, buckets)
+			value, _ := log2QuantileWithBucket(phi, buckets)
 			labels := make(map[string]string, len(g.labels)+1)
 			for k, v := range g.labels {
 				labels[k] = v
