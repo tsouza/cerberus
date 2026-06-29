@@ -64,7 +64,7 @@ jobs:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -108,7 +108,7 @@ jobs:
     if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: .github/scripts
           persist-credentials: false
