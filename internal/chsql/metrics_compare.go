@@ -295,6 +295,14 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	// compare join (the 's' span scan + the seeded root leg) rather than
 	// above the join where CH 24.12 cannot prune it. Gated on both Start
 	// and End being set, matching maybePushInnerScanTimeBounds' contract.
+	// Fail closed if the compare inner is a spans scan with no request window:
+	// without Start/End the bound is nil and each MergeTree leg scans full
+	// retention. requireInnerSpansScanBound fires only for the Tempo spans
+	// inner (findScanTable resolves the renamed otel_traces table), so PromQL
+	// compare shapes are unaffected.
+	if err := requireInnerSpansScanBound(r, m.Inner, findScanTable(m.Inner)); err != nil {
+		return err
+	}
 	var bound *compareScanBound
 	if !r.Start.IsZero() && !r.End.IsZero() {
 		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, r.Offset.Nanoseconds(), rangeNS)

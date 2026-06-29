@@ -37,6 +37,7 @@ func EmitMetricsExemplars(
 	m *chplan.MetricsAggregate,
 	traceIDCol, spanIDCol string,
 	maxPerSeries int64,
+	spansTable string,
 ) (string, []any, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
@@ -77,8 +78,8 @@ func EmitMetricsExemplars(
 		return "", nil, err
 	}
 
-	e := &emitter{}
-	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries); err != nil {
+	e := &emitter{spansTable: spansTable}
+	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries, spansTable); err != nil {
 		span.RecordError(err)
 		return "", nil, err
 	}
@@ -92,6 +93,7 @@ func (e *emitter) emitMetricsExemplars(
 	m *chplan.MetricsAggregate,
 	traceIDCol, spanIDCol string,
 	maxPerSeries int64,
+	spansTable string,
 ) error {
 	for _, g := range m.GroupBy {
 		if err := (&Builder{}).Expr(g); err != nil {
@@ -168,6 +170,14 @@ func (e *emitter) emitMetricsExemplars(
 		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	)
+	// Fail closed if the inner is a spans scan with no request window: the
+	// shared maybePushInnerScanTimeBounds silently no-ops on a zero window,
+	// which over otel_traces is a full-retention scan. requireInnerSpansScanBound
+	// fires only for the Tempo spans-inner zero-window case (PromQL's inner is
+	// a metrics table, so it is unaffected).
+	if err := requireInnerSpansScanBound(rw, m.Inner, spansTable); err != nil {
+		return err
+	}
 	// Same Start/End pushdown as emitRangeWindowMetrics — see
 	// maybePushInnerScanTimeBounds.
 	maybePushInnerScanTimeBounds(innerSb, rw, tsCol, rangeNS)

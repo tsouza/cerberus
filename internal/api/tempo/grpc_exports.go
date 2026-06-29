@@ -255,7 +255,7 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	// the empty Exemplars slice already attached by toMetricsSeries
 	// — the wire envelope stays well-formed.
 	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
-		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1)
+		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1, h.Schema.SpansTable)
 	if exErr != nil {
 		h.Logger.Warn("cerberus tempo grpc metrics_query_range exemplars emit failed",
 			"err", exErr)

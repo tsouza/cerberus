@@ -17,7 +17,7 @@ func TestEmitMetricsExemplars_NilRangeWindow(t *testing.T) {
 		Op:         chplan.MetricsOpRate,
 		ValueAlias: "Value",
 		Inner:      &chplan.Scan{Table: "otel_traces"},
-	}, "TraceId", "SpanId", 1)
+	}, "TraceId", "SpanId", 1, "")
 	if err == nil {
 		t.Fatalf("expected error for nil RangeWindow, got nil")
 	}
@@ -55,7 +55,7 @@ func TestEmitMetricsExemplars_MissingColumns(t *testing.T) {
 			}
 			_, _, err := chsql.EmitMetricsExemplars(context.Background(), plan,
 				plan.Input.(*chplan.MetricsAggregate),
-				tc.traceIDCol, tc.spanIDCol, 1)
+				tc.traceIDCol, tc.spanIDCol, 1, "")
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -87,7 +87,7 @@ func TestEmitMetricsExemplars_ShapeSanity(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	sql, args, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 2)
+	sql, args, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 2, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}

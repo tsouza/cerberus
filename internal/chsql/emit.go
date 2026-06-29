@@ -61,7 +61,18 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	// SQL still prunes granules. Single mechanism, derived once in
 	// chplan — emitters no longer remember it.
 	n = chplan.AttachInstantScanTimeBounds(n)
-	e := &emitter{}
+	// Enforce the spans-scan resource-bound invariant at the emit chokepoint.
+	// spansTableFromCtx is "" for PromQL / metrics matrix emission (no spans
+	// table under enforcement), so this is a table-scoped no-op for those
+	// heads; for the Tempo plans whose context carries the spans table (root
+	// lookup, structure-tab search) it rejects any otel_traces Scan that would
+	// reach ClickHouse without partition pruning or a finite trace-id set.
+	spansTable := spansTableFromCtx(ctx)
+	if err := chplan.RequireSpansScansBounded(spansTable, n); err != nil {
+		span.RecordError(err)
+		return "", nil, err
+	}
+	e := &emitter{spansTable: spansTable}
 	if err := e.emitNode(n); err != nil {
 		span.RecordError(err)
 		return "", nil, err
@@ -80,6 +91,16 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 type emitter struct {
 	b    strings.Builder
 	args []any
+
+	// spansTable is the TraceQL spans table under resource-bound enforcement,
+	// or "" when none (PromQL / metrics matrix emit). When non-empty, the
+	// per-site fromSpansScan helper rejects any FROM <spansTable> rendered
+	// without a declared resource bound. It is seeded from the emit context
+	// (chsql.Emit) and re-asserted by the whole-trace emitters
+	// (emitNestedSetAnnotate / emitStructuralJoin) from the node's own table
+	// so the structure-tab synthetic recursive scans are gated even when the
+	// caller did not thread WithSpansTable.
+	spansTable string
 
 	// structSeq is a monotonic counter handed out to the recursive
 	// structural-join emitter so each WITH RECURSIVE closure gets a

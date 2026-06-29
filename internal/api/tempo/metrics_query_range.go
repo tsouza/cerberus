@@ -355,7 +355,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	series := toMetricsSeries(samples, metrics)
 
 	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
-		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1)
+		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1, h.Schema.SpansTable)
 	if exErr != nil {
 		// Emit failure: the matrix response still ships with an empty
 		// `Exemplars` array per Tempo's wire shape. Warn so production
