@@ -4,29 +4,29 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	ast "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // traceQLSource documents where the TraceQL inventory comes from. The
-// pinned tsouza/tempo fork exports no enumerable feature table
-// (operators, intrinsics, and metrics ops are iota enums with no
+// in-house clean-room TraceQL parser exports no enumerable feature
+// table (operators, intrinsics, and metrics ops are iota enums with no
 // public registry slice), so the inventory is fully hand-curated with
 // parser-pinned existence checks: every row's Pin must parse via
-// traceql.Parse — the exact parser configuration cerberus's Tempo head
-// uses (internal/api/tempo/handler.go: parseExpr) — AND be matched
-// back to its own row ID by [CollectTraceQLFeatureIDs].
-const traceQLSource = "github.com/grafana/tempo/pkg/traceql " +
-	"(hand-curated, parser-pinned existence checks; tsouza fork pin in go.mod)"
+// ast.Parse — the exact parser cerberus's Tempo head uses
+// (internal/traceql/ast, via internal/api/tempo/handler.go: parseExpr)
+// — AND be matched back to its own row ID by [CollectTraceQLFeatureIDs].
+const traceQLSource = "github.com/tsouza/cerberus/internal/traceql/ast " +
+	"(in-house Apache TraceQL parser; hand-curated, parser-pinned existence checks)"
 
 // GenerateTraceQL builds the TraceQL feature inventory. It returns an
 // error when any pin fails to parse or fails to round-trip through the
-// AST matcher — both indicate the pinned parser drifted out from under
-// the inventory's assumptions.
+// AST matcher — both indicate the in-house parser drifted out from
+// under the inventory's assumptions.
 func GenerateTraceQL() (*Inventory, error) {
 	rows := curatedTraceQLRows()
 
 	for _, r := range rows {
-		expr, err := traceql.Parse(r.Pin)
+		expr, err := ast.Parse(r.Pin)
 		if err != nil {
 			return nil, fmt.Errorf("inventory row %s: pin %q does not parse: %w", r.ID, r.Pin, err)
 		}
@@ -45,12 +45,12 @@ func GenerateTraceQL() (*Inventory, error) {
 
 // curatedTraceQLRows returns the hand-curated TraceQL rows. Each Pin is
 // the parser-pinned existence check: GenerateTraceQL fails if the
-// pinned parser stops accepting it.
+// in-house parser stops accepting it.
 //
 // Pins are authored with two extra constraints beyond parseability:
 //
 //   - Field-level `||` over the SAME attribute is avoided where the
-//     row isn't specifically about it: traceql.Parse runs the upstream
+//     row isn't specifically about it: ast.Parse runs the in-house
 //     AST optimiser, which rewrites `a = "x" || a = "y"` into the
 //     non-parseable internal OpIn — that rewrite IS the op:in row.
 //   - Arithmetic pins put the attribute on the operator's left so the
@@ -211,10 +211,10 @@ func curatedTraceQLRows() []Row {
 // CollectTraceQLFeatureIDs walks a parsed TraceQL expression and
 // returns the set of inventory row IDs it exercises. AST-level so an
 // operator token inside a string literal can never count as coverage.
-// The pinned parser exports no generic visitor, so the walk is a local
+// The in-house parser exports no generic visitor, so the walk is a local
 // type-switch over the exported AST surface (pipeline elements, field
 // expressions, metrics stages).
-func CollectTraceQLFeatureIDs(root *traceql.RootExpr) map[string]bool {
+func CollectTraceQLFeatureIDs(root *ast.RootExpr) map[string]bool {
 	ids := map[string]bool{}
 	if root == nil {
 		return ids
@@ -234,52 +234,52 @@ func CollectTraceQLFeatureIDs(root *traceql.RootExpr) map[string]bool {
 	return ids
 }
 
-func collectTraceQLPipelineElement(ids map[string]bool, el traceql.PipelineElement) {
+func collectTraceQLPipelineElement(ids map[string]bool, el ast.PipelineElement) {
 	switch v := el.(type) {
-	case *traceql.SpansetFilter:
+	case *ast.SpansetFilter:
 		if v != nil {
 			collectTraceQLFieldExpr(ids, v.Expression)
 		}
-	case *traceql.SpansetOperation:
+	case *ast.SpansetOperation:
 		collectTraceQLSpansetOperation(ids, v)
-	case traceql.SpansetOperation:
+	case ast.SpansetOperation:
 		collectTraceQLSpansetOperation(ids, &v)
-	case traceql.ScalarFilter:
+	case ast.ScalarFilter:
 		collectTraceQLScalarExpr(ids, v.LHS)
 		collectTraceQLScalarExpr(ids, v.RHS)
-	case *traceql.ScalarFilter:
+	case *ast.ScalarFilter:
 		if v != nil {
 			collectTraceQLScalarExpr(ids, v.LHS)
 			collectTraceQLScalarExpr(ids, v.RHS)
 		}
-	case traceql.Aggregate:
+	case ast.Aggregate:
 		collectTraceQLAggregate(ids, v)
-	case *traceql.Aggregate:
+	case *ast.Aggregate:
 		if v != nil {
 			collectTraceQLAggregate(ids, *v)
 		}
-	case traceql.SelectOperation:
+	case ast.SelectOperation:
 		ids["pipe:select"] = true
 		for _, a := range v.Attrs() {
 			collectTraceQLAttribute(ids, a)
 		}
-	case *traceql.SelectOperation:
+	case *ast.SelectOperation:
 		if v != nil {
 			collectTraceQLPipelineElement(ids, *v)
 		}
-	case traceql.GroupOperation:
+	case ast.GroupOperation:
 		ids["pipe:by"] = true
 		collectTraceQLFieldExpr(ids, v.Expression)
-	case *traceql.GroupOperation:
+	case *ast.GroupOperation:
 		if v != nil {
 			collectTraceQLPipelineElement(ids, *v)
 		}
-	case traceql.CoalesceOperation, *traceql.CoalesceOperation:
+	case ast.CoalesceOperation, *ast.CoalesceOperation:
 		ids["pipe:coalesce"] = true
 	}
 }
 
-func collectTraceQLSpansetOperation(ids map[string]bool, op *traceql.SpansetOperation) {
+func collectTraceQLSpansetOperation(ids map[string]bool, op *ast.SpansetOperation) {
 	if op == nil {
 		return
 	}
@@ -290,114 +290,114 @@ func collectTraceQLSpansetOperation(ids map[string]bool, op *traceql.SpansetOper
 	collectTraceQLSpansetExpr(ids, op.RHS)
 }
 
-func collectTraceQLSpansetExpr(ids map[string]bool, e traceql.SpansetExpression) {
+func collectTraceQLSpansetExpr(ids map[string]bool, e ast.SpansetExpression) {
 	switch v := e.(type) {
-	case *traceql.SpansetFilter:
+	case *ast.SpansetFilter:
 		if v != nil {
 			collectTraceQLFieldExpr(ids, v.Expression)
 		}
-	case *traceql.SpansetOperation:
+	case *ast.SpansetOperation:
 		collectTraceQLSpansetOperation(ids, v)
-	case traceql.SpansetOperation:
+	case ast.SpansetOperation:
 		collectTraceQLSpansetOperation(ids, &v)
 	}
 }
 
 // spansetOpID maps the spanset-level operators (structural relations +
 // set operations) onto row IDs.
-func spansetOpID(op traceql.Operator) (string, bool) {
+func spansetOpID(op ast.Operator) (string, bool) {
 	switch op {
-	case traceql.OpSpansetChild:
+	case ast.OpSpansetChild:
 		return "struct:child", true
-	case traceql.OpSpansetParent:
+	case ast.OpSpansetParent:
 		return "struct:parent", true
-	case traceql.OpSpansetDescendant:
+	case ast.OpSpansetDescendant:
 		return "struct:descendant", true
-	case traceql.OpSpansetAncestor:
+	case ast.OpSpansetAncestor:
 		return "struct:ancestor", true
-	case traceql.OpSpansetSibling:
+	case ast.OpSpansetSibling:
 		return "struct:sibling", true
-	case traceql.OpSpansetNotChild:
+	case ast.OpSpansetNotChild:
 		return "struct:not-child", true
-	case traceql.OpSpansetNotParent:
+	case ast.OpSpansetNotParent:
 		return "struct:not-parent", true
-	case traceql.OpSpansetNotDescendant:
+	case ast.OpSpansetNotDescendant:
 		return "struct:not-descendant", true
-	case traceql.OpSpansetNotAncestor:
+	case ast.OpSpansetNotAncestor:
 		return "struct:not-ancestor", true
-	case traceql.OpSpansetNotSibling:
+	case ast.OpSpansetNotSibling:
 		return "struct:not-sibling", true
-	case traceql.OpSpansetUnionChild:
+	case ast.OpSpansetUnionChild:
 		return "struct:union-child", true
-	case traceql.OpSpansetUnionParent:
+	case ast.OpSpansetUnionParent:
 		return "struct:union-parent", true
-	case traceql.OpSpansetUnionDescendant:
+	case ast.OpSpansetUnionDescendant:
 		return "struct:union-descendant", true
-	case traceql.OpSpansetUnionAncestor:
+	case ast.OpSpansetUnionAncestor:
 		return "struct:union-ancestor", true
-	case traceql.OpSpansetUnionSibling:
+	case ast.OpSpansetUnionSibling:
 		return "struct:union-sibling", true
-	case traceql.OpSpansetAnd:
+	case ast.OpSpansetAnd:
 		return "setop:and", true
-	case traceql.OpSpansetUnion:
+	case ast.OpSpansetUnion:
 		return "setop:union", true
 	}
 	return "", false
 }
 
-func collectTraceQLScalarExpr(ids map[string]bool, e traceql.ScalarExpression) {
+func collectTraceQLScalarExpr(ids map[string]bool, e ast.ScalarExpression) {
 	switch v := e.(type) {
-	case traceql.Aggregate:
+	case ast.Aggregate:
 		collectTraceQLAggregate(ids, v)
-	case *traceql.Aggregate:
+	case *ast.Aggregate:
 		if v != nil {
 			collectTraceQLAggregate(ids, *v)
 		}
-	case traceql.Static:
+	case ast.Static:
 		collectTraceQLStatic(ids, v)
-	case *traceql.Static:
+	case *ast.Static:
 		if v != nil {
 			collectTraceQLStatic(ids, *v)
 		}
 	}
 }
 
-func collectTraceQLAggregate(ids map[string]bool, agg traceql.Aggregate) {
+func collectTraceQLAggregate(ids map[string]bool, agg ast.Aggregate) {
 	ids["pipe:"+agg.Op().String()] = true
 	if inner := agg.InnerExpr(); inner != nil {
 		collectTraceQLFieldExpr(ids, inner)
 	}
 }
 
-func collectTraceQLFieldExpr(ids map[string]bool, e traceql.FieldExpression) {
+func collectTraceQLFieldExpr(ids map[string]bool, e ast.FieldExpression) {
 	switch v := e.(type) {
-	case *traceql.BinaryOperation:
+	case *ast.BinaryOperation:
 		if v == nil {
 			return
 		}
 		collectTraceQLBinary(ids, v)
-	case *traceql.UnaryOperation:
+	case *ast.UnaryOperation:
 		if v != nil {
 			collectTraceQLUnary(ids, *v)
 		}
-	case traceql.UnaryOperation:
+	case ast.UnaryOperation:
 		collectTraceQLUnary(ids, v)
-	case *traceql.Attribute:
+	case *ast.Attribute:
 		if v != nil {
 			collectTraceQLAttribute(ids, *v)
 		}
-	case traceql.Attribute:
+	case ast.Attribute:
 		collectTraceQLAttribute(ids, v)
-	case *traceql.Static:
+	case *ast.Static:
 		if v != nil {
 			collectTraceQLStatic(ids, *v)
 		}
-	case traceql.Static:
+	case ast.Static:
 		collectTraceQLStatic(ids, v)
 	}
 }
 
-func collectTraceQLBinary(ids map[string]bool, b *traceql.BinaryOperation) {
+func collectTraceQLBinary(ids map[string]bool, b *ast.BinaryOperation) {
 	// Nested-set comparisons get their own row family (root-ness vs
 	// position-dependence) instead of the generic op rows, mirroring
 	// internal/traceql's lowerNestedSetBinary classification.
@@ -412,55 +412,55 @@ func collectTraceQLBinary(ids map[string]bool, b *traceql.BinaryOperation) {
 }
 
 // fieldOpID maps field-expression operators onto row IDs.
-func fieldOpID(op traceql.Operator) (string, bool) {
+func fieldOpID(op ast.Operator) (string, bool) {
 	switch op {
-	case traceql.OpEqual:
+	case ast.OpEqual:
 		return "op:eq", true
-	case traceql.OpNotEqual:
+	case ast.OpNotEqual:
 		return "op:neq", true
-	case traceql.OpGreater:
+	case ast.OpGreater:
 		return "op:gt", true
-	case traceql.OpGreaterEqual:
+	case ast.OpGreaterEqual:
 		return "op:gte", true
-	case traceql.OpLess:
+	case ast.OpLess:
 		return "op:lt", true
-	case traceql.OpLessEqual:
+	case ast.OpLessEqual:
 		return "op:lte", true
-	case traceql.OpRegex, traceql.OpRegexMatchAny:
+	case ast.OpRegex, ast.OpRegexMatchAny:
 		return "op:regex", true
-	case traceql.OpNotRegex, traceql.OpRegexMatchNone:
+	case ast.OpNotRegex, ast.OpRegexMatchNone:
 		return "op:not-regex", true
-	case traceql.OpAnd:
+	case ast.OpAnd:
 		return "op:and", true
-	case traceql.OpOr:
+	case ast.OpOr:
 		return "op:or", true
-	case traceql.OpIn, traceql.OpNotIn:
+	case ast.OpIn, ast.OpNotIn:
 		return "op:in", true
-	case traceql.OpAdd:
+	case ast.OpAdd:
 		return "op:add", true
-	case traceql.OpSub:
+	case ast.OpSub:
 		return "op:sub", true
-	case traceql.OpMult:
+	case ast.OpMult:
 		return "op:mult", true
-	case traceql.OpDiv:
+	case ast.OpDiv:
 		return "op:div", true
-	case traceql.OpMod:
+	case ast.OpMod:
 		return "op:mod", true
-	case traceql.OpPower:
+	case ast.OpPower:
 		return "op:pow", true
 	}
 	return "", false
 }
 
-func collectTraceQLUnary(ids map[string]bool, u traceql.UnaryOperation) {
+func collectTraceQLUnary(ids map[string]bool, u ast.UnaryOperation) {
 	switch u.Op {
-	case traceql.OpExists:
+	case ast.OpExists:
 		ids["op:exists"] = true
-	case traceql.OpNotExists:
+	case ast.OpNotExists:
 		ids["op:not-exists"] = true
-	case traceql.OpNot:
+	case ast.OpNot:
 		ids["op:not"] = true
-	case traceql.OpSub:
+	case ast.OpSub:
 		// Unary minus (arithmetic negation `-<expr>`). The same OpSub
 		// token reaches binaryOpRowID for the binary `a - b` form; the
 		// two never collide because the parser emits distinct
@@ -471,23 +471,23 @@ func collectTraceQLUnary(ids map[string]bool, u traceql.UnaryOperation) {
 	collectTraceQLFieldExpr(ids, u.Expression)
 }
 
-func collectTraceQLAttribute(ids map[string]bool, a traceql.Attribute) {
-	if a.Intrinsic != traceql.IntrinsicNone {
+func collectTraceQLAttribute(ids map[string]bool, a ast.Attribute) {
+	if a.Intrinsic != ast.IntrinsicNone {
 		if id, ok := intrinsicRowID(a.Intrinsic); ok {
 			ids[id] = true
 		}
 		return
 	}
 	switch a.Scope {
-	case traceql.AttributeScopeSpan:
+	case ast.AttributeScopeSpan:
 		ids["attr:span"] = true
-	case traceql.AttributeScopeResource:
+	case ast.AttributeScopeResource:
 		ids["attr:resource"] = true
-	case traceql.AttributeScopeEvent:
+	case ast.AttributeScopeEvent:
 		ids["attr:event"] = true
-	case traceql.AttributeScopeLink:
+	case ast.AttributeScopeLink:
 		ids["attr:link"] = true
-	case traceql.AttributeScopeInstrumentation:
+	case ast.AttributeScopeInstrumentation:
 		ids["attr:instrumentation"] = true
 	default:
 		ids["attr:unscoped"] = true
@@ -501,45 +501,45 @@ func collectTraceQLAttribute(ids map[string]bool, a traceql.Attribute) {
 // them through nestedSetRowID without descending into operands), so a
 // nested-set intrinsic at this level is a bare reference — the
 // select() projection position, nestedset:select.
-func intrinsicRowID(i traceql.Intrinsic) (string, bool) {
+func intrinsicRowID(i ast.Intrinsic) (string, bool) {
 	switch i {
-	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
+	case ast.IntrinsicNestedSetParent, ast.IntrinsicNestedSetLeft, ast.IntrinsicNestedSetRight:
 		return "nestedset:select", true
-	case traceql.IntrinsicName, traceql.ScopedIntrinsicSpanName:
+	case ast.IntrinsicName, ast.ScopedIntrinsicSpanName:
 		return "intrinsic:name", true
-	case traceql.IntrinsicDuration, traceql.ScopedIntrinsicSpanDuration:
+	case ast.IntrinsicDuration, ast.ScopedIntrinsicSpanDuration:
 		return "intrinsic:duration", true
-	case traceql.IntrinsicStatus, traceql.ScopedIntrinsicSpanStatus:
+	case ast.IntrinsicStatus, ast.ScopedIntrinsicSpanStatus:
 		return "intrinsic:status", true
-	case traceql.IntrinsicStatusMessage, traceql.ScopedIntrinsicSpanStatusMessage:
+	case ast.IntrinsicStatusMessage, ast.ScopedIntrinsicSpanStatusMessage:
 		return "intrinsic:statusMessage", true
-	case traceql.IntrinsicKind, traceql.ScopedIntrinsicSpanKind:
+	case ast.IntrinsicKind, ast.ScopedIntrinsicSpanKind:
 		return "intrinsic:kind", true
-	case traceql.IntrinsicTraceID:
+	case ast.IntrinsicTraceID:
 		return "intrinsic:trace-id", true
-	case traceql.IntrinsicSpanID:
+	case ast.IntrinsicSpanID:
 		return "intrinsic:span-id", true
-	case traceql.IntrinsicParent, traceql.IntrinsicParentID:
+	case ast.IntrinsicParent, ast.IntrinsicParentID:
 		return "intrinsic:parent", true
-	case traceql.IntrinsicEventName:
+	case ast.IntrinsicEventName:
 		return "intrinsic:event-name", true
-	case traceql.IntrinsicLinkTraceID:
+	case ast.IntrinsicLinkTraceID:
 		return "intrinsic:link-traceID", true
-	case traceql.IntrinsicLinkSpanID:
+	case ast.IntrinsicLinkSpanID:
 		return "intrinsic:link-spanID", true
-	case traceql.IntrinsicInstrumentationName:
+	case ast.IntrinsicInstrumentationName:
 		return "intrinsic:instrumentation-name", true
-	case traceql.IntrinsicInstrumentationVersion:
+	case ast.IntrinsicInstrumentationVersion:
 		return "intrinsic:instrumentation-version", true
-	case traceql.IntrinsicTraceRootSpan, traceql.ScopedIntrinsicTraceRootName:
+	case ast.IntrinsicTraceRootSpan, ast.ScopedIntrinsicTraceRootName:
 		return "intrinsic:rootName", true
-	case traceql.IntrinsicTraceRootService, traceql.ScopedIntrinsicTraceRootService:
+	case ast.IntrinsicTraceRootService, ast.ScopedIntrinsicTraceRootService:
 		return "intrinsic:rootServiceName", true
-	case traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
+	case ast.IntrinsicTraceDuration, ast.ScopedIntrinsicTraceDuration:
 		return "intrinsic:traceDuration", true
-	case traceql.IntrinsicChildCount:
+	case ast.IntrinsicChildCount:
 		return "intrinsic:childCount", true
-	case traceql.IntrinsicEventTimeSinceStart:
+	case ast.IntrinsicEventTimeSinceStart:
 		return "intrinsic:event-timeSinceStart", true
 	}
 	return "", false
@@ -551,20 +551,20 @@ func intrinsicRowID(i traceql.Intrinsic) (string, bool) {
 // nestedSetParent comparisons whose truth value depends only on
 // root-ness map to root / non-root; everything else is
 // position-dependent.
-func nestedSetRowID(ids map[string]bool, b *traceql.BinaryOperation) bool {
+func nestedSetRowID(ids map[string]bool, b *ast.BinaryOperation) bool {
 	attr, lit, flipped, ok := nestedSetOperands(b)
 	if !ok {
 		return false
 	}
 	switch attr.Intrinsic {
-	case traceql.IntrinsicNestedSetLeft:
+	case ast.IntrinsicNestedSetLeft:
 		ids["nestedset:left"] = true
 		return true
-	case traceql.IntrinsicNestedSetRight:
+	case ast.IntrinsicNestedSetRight:
 		ids["nestedset:right"] = true
 		return true
 	}
-	if lit.Type != traceql.TypeInt {
+	if lit.Type != ast.TypeInt {
 		ids["nestedset:position"] = true
 		return true
 	}
@@ -592,17 +592,17 @@ func nestedSetRowID(ids map[string]bool, b *traceql.BinaryOperation) bool {
 // nestedSetOperands extracts the (attribute, literal) pair from a
 // comparison where one side is a nested-set intrinsic. flipped reports
 // the literal was on the left.
-func nestedSetOperands(b *traceql.BinaryOperation) (attr traceql.Attribute, lit traceql.Static, flipped, ok bool) {
-	isNested := func(e traceql.FieldExpression) (traceql.Attribute, bool) {
+func nestedSetOperands(b *ast.BinaryOperation) (attr ast.Attribute, lit ast.Static, flipped, ok bool) {
+	isNested := func(e ast.FieldExpression) (ast.Attribute, bool) {
 		a, aok := exprAttribute(e)
 		if !aok {
-			return traceql.Attribute{}, false
+			return ast.Attribute{}, false
 		}
 		switch a.Intrinsic {
-		case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
+		case ast.IntrinsicNestedSetParent, ast.IntrinsicNestedSetLeft, ast.IntrinsicNestedSetRight:
 			return a, true
 		}
-		return traceql.Attribute{}, false
+		return ast.Attribute{}, false
 	}
 	if a, aok := isNested(b.LHS); aok {
 		st, _ := exprStatic(b.RHS)
@@ -612,62 +612,62 @@ func nestedSetOperands(b *traceql.BinaryOperation) (attr traceql.Attribute, lit 
 		st, _ := exprStatic(b.LHS)
 		return a, st, true, true
 	}
-	return traceql.Attribute{}, traceql.Static{}, false, false
+	return ast.Attribute{}, ast.Static{}, false, false
 }
 
-func exprAttribute(e traceql.FieldExpression) (traceql.Attribute, bool) {
+func exprAttribute(e ast.FieldExpression) (ast.Attribute, bool) {
 	switch v := e.(type) {
-	case *traceql.Attribute:
+	case *ast.Attribute:
 		if v == nil {
-			return traceql.Attribute{}, false
+			return ast.Attribute{}, false
 		}
 		return *v, true
-	case traceql.Attribute:
+	case ast.Attribute:
 		return v, true
 	}
-	return traceql.Attribute{}, false
+	return ast.Attribute{}, false
 }
 
-func exprStatic(e traceql.FieldExpression) (traceql.Static, bool) {
+func exprStatic(e ast.FieldExpression) (ast.Static, bool) {
 	switch v := e.(type) {
-	case *traceql.Static:
+	case *ast.Static:
 		if v == nil {
-			return traceql.Static{}, false
+			return ast.Static{}, false
 		}
 		return *v, true
-	case traceql.Static:
+	case ast.Static:
 		return v, true
 	}
-	return traceql.Static{}, false
+	return ast.Static{}, false
 }
 
-func flipTraceQLCmp(op traceql.Operator) traceql.Operator {
+func flipTraceQLCmp(op ast.Operator) ast.Operator {
 	switch op {
-	case traceql.OpLess:
-		return traceql.OpGreater
-	case traceql.OpLessEqual:
-		return traceql.OpGreaterEqual
-	case traceql.OpGreater:
-		return traceql.OpLess
-	case traceql.OpGreaterEqual:
-		return traceql.OpLessEqual
+	case ast.OpLess:
+		return ast.OpGreater
+	case ast.OpLessEqual:
+		return ast.OpGreaterEqual
+	case ast.OpGreater:
+		return ast.OpLess
+	case ast.OpGreaterEqual:
+		return ast.OpLessEqual
 	}
 	return op
 }
 
-func evalNestedSetCmp(a int64, op traceql.Operator, v int64) (bool, bool) {
+func evalNestedSetCmp(a int64, op ast.Operator, v int64) (bool, bool) {
 	switch op {
-	case traceql.OpEqual:
+	case ast.OpEqual:
 		return a == v, true
-	case traceql.OpNotEqual:
+	case ast.OpNotEqual:
 		return a != v, true
-	case traceql.OpLess:
+	case ast.OpLess:
 		return a < v, true
-	case traceql.OpLessEqual:
+	case ast.OpLessEqual:
 		return a <= v, true
-	case traceql.OpGreater:
+	case ast.OpGreater:
 		return a > v, true
-	case traceql.OpGreaterEqual:
+	case ast.OpGreaterEqual:
 		return a >= v, true
 	}
 	return false, false
@@ -676,29 +676,29 @@ func evalNestedSetCmp(a int64, op traceql.Operator, v int64) (bool, bool) {
 // nestedSetNonRootConstant mirrors internal/traceql's
 // nonRootCmpConstant: whether `p op v` has the same truth value for
 // every non-root position p >= 1, and what that value is.
-func nestedSetNonRootConstant(op traceql.Operator, v int64) (value, constant bool) {
+func nestedSetNonRootConstant(op ast.Operator, v int64) (value, constant bool) {
 	switch op {
-	case traceql.OpEqual:
+	case ast.OpEqual:
 		if v < 1 {
 			return false, true
 		}
-	case traceql.OpNotEqual:
+	case ast.OpNotEqual:
 		if v < 1 {
 			return true, true
 		}
-	case traceql.OpLess:
+	case ast.OpLess:
 		if v <= 1 {
 			return false, true
 		}
-	case traceql.OpLessEqual:
+	case ast.OpLessEqual:
 		if v < 1 {
 			return false, true
 		}
-	case traceql.OpGreater:
+	case ast.OpGreater:
 		if v < 1 {
 			return true, true
 		}
-	case traceql.OpGreaterEqual:
+	case ast.OpGreaterEqual:
 		if v <= 1 {
 			return true, true
 		}
@@ -706,51 +706,51 @@ func nestedSetNonRootConstant(op traceql.Operator, v int64) (value, constant boo
 	return false, false
 }
 
-func collectTraceQLStatic(ids map[string]bool, st traceql.Static) {
+func collectTraceQLStatic(ids map[string]bool, st ast.Static) {
 	switch st.Type {
-	case traceql.TypeString:
+	case ast.TypeString:
 		ids["static:string"] = true
-	case traceql.TypeInt:
+	case ast.TypeInt:
 		ids["static:int"] = true
-	case traceql.TypeFloat:
+	case ast.TypeFloat:
 		ids["static:float"] = true
-	case traceql.TypeBoolean:
+	case ast.TypeBoolean:
 		ids["static:bool"] = true
-	case traceql.TypeDuration:
+	case ast.TypeDuration:
 		ids["static:duration"] = true
-	case traceql.TypeStatus:
+	case ast.TypeStatus:
 		ids["static:status"] = true
-	case traceql.TypeKind:
+	case ast.TypeKind:
 		ids["static:kind"] = true
 	}
 }
 
-func collectTraceQLFirstStage(ids map[string]bool, fs traceql.FirstStageElement) {
+func collectTraceQLFirstStage(ids map[string]bool, fs ast.FirstStageElement) {
 	switch v := fs.(type) {
-	case *traceql.MetricsAggregate:
+	case *ast.MetricsAggregate:
 		if v == nil {
 			return
 		}
 		ids["metric:"+v.Op().String()] = true
-		if attr := v.Attribute(); attr != (traceql.Attribute{}) {
+		if attr := v.Attribute(); attr != (ast.Attribute{}) {
 			collectTraceQLAttribute(ids, attr)
 		}
 		collectTraceQLGroupBy(ids, v.GroupBy())
-	case *traceql.AverageOverTimeAggregator:
+	case *ast.AverageOverTimeAggregator:
 		if v == nil {
 			return
 		}
 		ids["metric:avg_over_time"] = true
-		if attr := v.Attribute(); attr != (traceql.Attribute{}) {
+		if attr := v.Attribute(); attr != (ast.Attribute{}) {
 			collectTraceQLAttribute(ids, attr)
 		}
 		collectTraceQLGroupBy(ids, v.GroupBy())
-	case *traceql.MetricsCompare:
+	case *ast.MetricsCompare:
 		ids["metric:compare"] = true
 	}
 }
 
-func collectTraceQLGroupBy(ids map[string]bool, attrs []traceql.Attribute) {
+func collectTraceQLGroupBy(ids map[string]bool, attrs []ast.Attribute) {
 	if len(attrs) == 0 {
 		return
 	}
@@ -760,25 +760,25 @@ func collectTraceQLGroupBy(ids map[string]bool, attrs []traceql.Attribute) {
 	}
 }
 
-func collectTraceQLSecondStage(ids map[string]bool, ss traceql.SecondStageElement) {
+func collectTraceQLSecondStage(ids map[string]bool, ss ast.SecondStageElement) {
 	switch v := ss.(type) {
-	case *traceql.TopKBottomK:
+	case *ast.TopKBottomK:
 		if v == nil {
 			return
 		}
 		switch v.Op() {
-		case traceql.OpTopK:
+		case ast.OpTopK:
 			ids["second:topk"] = true
-		case traceql.OpBottomK:
+		case ast.OpBottomK:
 			ids["second:bottomk"] = true
 		}
-	case *traceql.MetricsFilter:
+	case *ast.MetricsFilter:
 		ids["second:threshold"] = true
-	case traceql.ChainedSecondStage:
+	case ast.ChainedSecondStage:
 		for _, el := range v.Elements() {
 			collectTraceQLSecondStage(ids, el)
 		}
-	case *traceql.ChainedSecondStage:
+	case *ast.ChainedSecondStage:
 		if v != nil {
 			collectTraceQLSecondStage(ids, *v)
 		}

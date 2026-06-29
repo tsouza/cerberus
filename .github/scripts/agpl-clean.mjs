@@ -1,10 +1,15 @@
 // agpl-clean.mjs — the provably-clean-build licence gate.
 //
-// Cerberus ships under Apache-2.0. The grafana/loki and grafana/tempo
-// parsers it lowers from are AGPLv3. Linking AGPL code into the Apache
-// binary distributed as `cmd/cerberus` is a licence violation, so this
-// gate asserts the EXACT set of packages the binary compiles in and
-// fails if any AGPL package is reachable from `./cmd/cerberus`.
+// Cerberus ships under Apache-2.0. Its LogQL and TraceQL parsers are
+// in-house clean-room Apache reimplementations (internal/logql/lsyntax,
+// internal/logql/logpattern, internal/drain, internal/traceql/ast); PromQL
+// uses the upstream Apache prometheus parser. The AGPLv3 grafana/loki and
+// grafana/tempo parsers survive only as test-only oracles (the agpl_oracle-
+// tagged tests and the compatibility harnesses), never in the shipped binary.
+// Linking AGPL code into the Apache binary distributed as `cmd/cerberus`
+// would be a licence violation, so this gate asserts the EXACT set of
+// packages the binary compiles in and fails if any AGPL package is reachable
+// from `./cmd/cerberus`.
 //
 // What it does:
 //   1. `go list -deps ./cmd/cerberus` — the transitive package closure
@@ -21,27 +26,15 @@
 //
 // Env contract:
 //   AGPL_CLEAN_PACKAGE     the `go list` target. Default `./cmd/cerberus`.
-//   AGPL_CLEAN_WARN_ONLY   when '1', a violation is reported as a
-//                          ::warning:: and the script exits 0 (tracking
-//                          mode — non-blocking). Default: a violation is a
-//                          ::error:: and the script exits 1 (enforcing mode).
 //
-// Exit 0 = clean (or warn-only tracking mode); exit 1 = violation in
-// enforcing mode. Offending packages are always printed.
-//
-// NOTE (de-AGPL track): until the loki / tempo PARSER rewrites land,
-// production code (internal/api/loki, internal/logql, internal/api/tempo,
-// internal/traceql) still imports these AGPL packages, so this gate
-// CURRENTLY REPORTS a violation. The CI job runs it with
-// AGPL_CLEAN_WARN_ONLY=1 (+ continue-on-error) so it tracks the exposure
-// as a warning without blocking. Drop the env (enforcing mode) and add it
-// to branch protection once the parser PRs remove the prod imports.
+// Exit 0 = clean; exit 1 = an AGPL package is reachable from the binary.
+// Offending packages are always printed. This gate is ENFORCING (a
+// violation fails CI) and is a required status check on `main`.
 
 import process from 'node:process';
-import { capture, error, notice, warning, log } from './lib/gh.mjs';
+import { capture, error, notice, log } from './lib/gh.mjs';
 
 const PACKAGE = process.env.AGPL_CLEAN_PACKAGE || './cmd/cerberus';
-const WARN_ONLY = process.env.AGPL_CLEAN_WARN_ONLY === '1';
 
 // An import path is an AGPL violation when it sits under grafana/loki,
 // or under grafana/tempo EXCEPT the Apache-licensed tempopb subtree.
@@ -77,12 +70,6 @@ function main() {
   const msg =
     `agpl-clean: ${PACKAGE} links ${offenders.length} AGPL package(s) — see the list above. ` +
     `The Apache-2.0 cerberus binary must not compile AGPLv3 grafana/loki or grafana/tempo code.`;
-  if (WARN_ONLY) {
-    warning(`${msg} (tracking only — not a merge gate until the parser rewrites land)`, {
-      title: 'agpl-clean',
-    });
-    process.exit(0);
-  }
   error(msg, { title: 'agpl-clean' });
   process.exit(1);
 }

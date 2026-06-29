@@ -3,8 +3,7 @@ package logql
 import (
 	"fmt"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
-	"github.com/grafana/loki/v3/pkg/util/constants"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -13,10 +12,9 @@ import (
 // variantLabel is the reserved label LogQL stamps onto every series a
 // `variants(...) of (...)` query produces, identifying which variant arm
 // the series came from. The value is the variant's zero-based index
-// rendered as a decimal string ("0", "1", …). Mirrors reference Loki's
-// constants.VariantLabel ("__variant__"); we read it from the upstream
-// package so the two never drift.
-const variantLabel = constants.VariantLabel
+// rendered as a decimal string ("0", "1", …). Matches reference Loki's
+// constants.VariantLabel.
+const variantLabel = "__variant__"
 
 // lowerMultiVariant lowers LogQL's `variants(m0, m1, …) of ({selector}[r])`
 // multi-variant metric form (grafana/loki/v3 pkg/logql/syntax

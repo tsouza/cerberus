@@ -5,7 +5,9 @@ go 1.26.2
 require (
 	github.com/ClickHouse/ch-go v0.72.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
+	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/axiomhq/hyperloglog v0.2.6
+	github.com/buger/jsonparser v1.1.2
 	github.com/chdb-io/chdb-go v1.12.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gogo/protobuf v1.3.2
@@ -58,7 +60,6 @@ require (
 	github.com/DataDog/sketches-go v1.4.8 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
-	github.com/Masterminds/sprig/v3 v3.3.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/Workiva/go-datastructures v1.1.7 // indirect
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
@@ -84,7 +85,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
-	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -332,28 +332,28 @@ require (
 
 replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db
 
-// All four upstream parser dependencies route through tsouza/* forks. The
-// forks exist primarily as a Dependabot watch boundary: tsouza/cerberus-
-// forks-monitor rebases each fork onto upstream/main daily, and only mints
-// a new patch tag when commits touch the narrow subtree cerberus consumes.
+// The remaining upstream parser dependency (Prometheus) and the OTel
+// collector-contrib DDL templates route through tsouza/* forks. The forks
+// exist primarily as a Dependabot watch boundary: tsouza/cerberus-forks-
+// monitor rebases each fork onto upstream/main daily, and only mints a new
+// patch tag when commits touch the narrow subtree cerberus consumes.
 // Dependabot then opens a single PR per upstream change that actually
 // matters, instead of one PR per upstream release. See docs/upstream-
 // forks.md for the full flow.
+//
+// LogQL and TraceQL no longer route through a fork: cerberus parses both
+// with its own clean-room Apache reimplementations (internal/logql/lsyntax,
+// internal/logql/logpattern, internal/drain, internal/traceql/ast), so the
+// AGPL grafana/loki + grafana/tempo parser forks were dropped. The shipped
+// binary keeps a direct upstream require only for the Apache-licensed
+// grafana/tempo/pkg/tempopb wire types; the AGPL upstream parsers are
+// referenced solely by test-only oracles (agpl_oracle-tagged tests, the
+// test/oracle nested module, and the compatibility harnesses).
 
 // prometheus: zero patches; the fork is a pure Dependabot watch boundary
 // scoped to promql/parser, model/labels, model/histogram, and a couple of
 // adjacent files cerberus reaches into.
 replace github.com/prometheus/prometheus => github.com/tsouza/prometheus v0.0.1-cerberus-parser
-
-// loki: zero patches; scoped to pkg/logql/syntax, pkg/logql/log/pattern,
-// pkg/logqlmodel, and a few logql/log/*.go files. The /v3 major version
-// follows upstream's module path.
-replace github.com/grafana/loki/v3 => github.com/tsouza/loki/v3 v3.0.0-cerberus-parser
-
-// tempo: narrow accessors on top of pkg/traceql to retire the unsafe.Pointer
-// + reflect.FieldByName shims in internal/traceql/. See docs/fork-tempo-
-// plan.md for the migration plan and accessor inventory.
-replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.4-cerberus-accessors
 
 // otelc: hoists the ClickHouse exporter's sqltemplates out of `internal/`
 // so cerberus can import them as the schema source-of-truth. collector-

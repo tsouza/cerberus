@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	logqlsyntax "github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/promql/parser"
+	logqlsyntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
