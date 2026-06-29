@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tempo "github.com/tsouza/cerberus/internal/traceql/ast"
 
@@ -48,6 +49,22 @@ func TestLower(t *testing.T) {
 				t.Fatalf("fixture %s: bad search_limit %q: %v", c.Name, v, err)
 			}
 			ctx = traceql.WithSearchTraceLimit(ctx, n)
+		}
+		// Optional `search_window:` section threads /api/search's request
+		// [start, end] window (two whitespace-separated Unix-second bounds)
+		// into lowering, so a fixture can pin the windowed compound/structural
+		// search shape (#1109 GAP-3). Absent ⇒ no window, today's behaviour.
+		if v, ok := c.Section("search_window"); ok {
+			fields := strings.Fields(v)
+			if len(fields) != 2 {
+				t.Fatalf("fixture %s: search_window wants two Unix-second bounds, got %q", c.Name, v)
+			}
+			startSec, err1 := strconv.ParseInt(fields[0], 10, 64)
+			endSec, err2 := strconv.ParseInt(fields[1], 10, 64)
+			if err1 != nil || err2 != nil {
+				t.Fatalf("fixture %s: bad search_window %q", c.Name, v)
+			}
+			ctx = traceql.WithSearchWindow(ctx, time.Unix(startSec, 0).UTC(), time.Unix(endSec, 0).UTC())
 		}
 		plan, err := traceql.Lower(ctx, expr, s)
 		if err != nil {

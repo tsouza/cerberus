@@ -33,8 +33,10 @@ func inspectExpr(e Expr, visit func(Expr) bool, nodeVisit func(Node)) {
 		return
 	}
 	switch v := e.(type) {
-	case *ColumnRef, *LitString, *InlineString, *LitInt, *LitFloat, *LitBool, *BareIdent:
-		// Leaf expressions: no sub-expressions.
+	case *ColumnRef, *LitString, *InlineString, *LitInt, *LitFloat, *LitBool, *BareIdent, *BoundedTraceScope:
+		// Leaf expressions: no sub-expressions. BoundedTraceScope carries
+		// only column names + a limit (the top-N subquery is re-derived at
+		// emit time), so it has nothing to descend into.
 	case *Binary:
 		inspectExpr(v.Left, visit, nodeVisit)
 		inspectExpr(v.Right, visit, nodeVisit)

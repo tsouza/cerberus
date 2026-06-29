@@ -341,10 +341,14 @@ func predicateColumns(e chplan.Expr) []string {
 }
 
 // collectColumn returns a walkExpr visitor that records every column
-// name an expression node reads into seen. Two node kinds carry one:
-// ColumnRef (by definition) and NestedArrayExists, whose Column field
+// name an expression node reads into seen. Three node kinds carry one:
+// ColumnRef (by definition), NestedArrayExists, whose Column field
 // names the Nested carrier (e.g. `Events`) as a plain string rather
-// than a child ColumnRef.
+// than a child ColumnRef, and BoundedTraceScope, whose TraceIDColumn is
+// read as the LHS of its `<TraceId> IN (...)` predicate (a bare
+// outer-scope column, not a child ColumnRef) — omitting it would let
+// ProjectionPushdown prune TraceId off the Scan beneath a gated leaf and
+// emit an UNKNOWN_IDENTIFIER (the failure mode walkExpr's own doc names).
 func collectColumn(seen map[string]struct{}) func(chplan.Expr) {
 	return func(sub chplan.Expr) {
 		switch v := sub.(type) {
@@ -352,6 +356,8 @@ func collectColumn(seen map[string]struct{}) func(chplan.Expr) {
 			seen[v.Name] = struct{}{}
 		case *chplan.NestedArrayExists:
 			seen[v.Column] = struct{}{}
+		case *chplan.BoundedTraceScope:
+			seen[v.TraceIDColumn] = struct{}{}
 		}
 	}
 }

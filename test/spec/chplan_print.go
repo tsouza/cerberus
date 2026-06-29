@@ -613,6 +613,16 @@ func printExpr(e chplan.Expr) string {
 		flat := strings.TrimRight(sb.String(), "\n")
 		flat = strings.Join(strings.Fields(strings.ReplaceAll(flat, "\n", " ; ")), " ")
 		return fmt.Sprintf("scalarSubquery{%s}", flat)
+	case *chplan.BoundedTraceScope:
+		// One-line greppable form: the gate shows on each leaf Filter of a
+		// bounded structure-tab row source so the IR snapshot proves the
+		// closures are seeded from the top-N set, not the whole window. The
+		// window suffix (when set) shows the top-N RANKING is itself bounded to
+		// [start, end] — the #1109 GAP-3 rank-in-window fix.
+		if v.WindowStartNano != 0 || v.WindowEndNano != 0 {
+			return fmt.Sprintf("(%s IN topNewestRootTraces(%d, window=[%d,%d]))", v.TraceIDColumn, v.TraceLimit, v.WindowStartNano, v.WindowEndNano)
+		}
+		return fmt.Sprintf("(%s IN topNewestRootTraces(%d))", v.TraceIDColumn, v.TraceLimit)
 	default:
 		return fmt.Sprintf("<unknown:%T>", e)
 	}

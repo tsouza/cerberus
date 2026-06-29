@@ -116,28 +116,50 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		n.ParentSpanIDColumn == "" || n.TimestampColumn == "" {
 		return fmt.Errorf("%w: NestedSetAnnotate column names unset", ErrUnsupported)
 	}
+	// The numbering walk reads the spans table directly (anchor + recursive
+	// step). Put that table under the resource-bound invariant so the synthetic
+	// recursive scans are gated by fromSpansScan even when the caller did not
+	// thread WithSpansTable onto the emit context.
+	e.spansTable = n.SpansTable
 
 	inputSub, err := e.subqueryFrag(n.Input)
 	if err != nil {
 		return err
 	}
-	scope, err := e.traceScopeFrag(n.Input, n.TraceIDColumn)
+	// When the search returns only the N newest traces, bound the numbering
+	// walk to exactly those N: rank the root spans by Timestamp (descending,
+	// ties by TraceId ascending — the order /api/search's TruncateSummaries
+	// keeps) and keep the top N. The lowering only sets TraceLimit when the
+	// plan guarantees each returned trace's root is in the result, so this
+	// root-Timestamp ranking equals the result-min-Timestamp ranking the
+	// handler applies — the kept traces are numbered byte-identically; the
+	// excess is dropped.
+	//
+	// In the bounded case the numbering scope is the SELF-CONTAINED top-N
+	// frag (boundedRootScopeFrag), NOT traceScopeFrag(n.Input): the same
+	// lowering that sets TraceLimit also pushes a BoundedTraceScope gate into
+	// every leaf of n.Input (the structural-union row source), so deriving the
+	// scope from n.Input here would (a) re-render the gate it embeds — an
+	// emit cycle — and (b) be redundant. The leaf gate emits this exact same
+	// frag, so the numbering and the row source see a byte-identical trace
+	// set, which is load-bearing: a mismatch would strand kept rows at the
+	// 0/0/0 LEFT-JOIN default. Under the gating precondition the dropped
+	// `IN traceScopeFrag(input)` conjunct was a no-op anyway (the bare-root
+	// union arm puts every root trace in that scope).
+	var scope Frag
+	if n.TraceLimit > 0 {
+		scope = boundedRootScopeFrag(n.SpansTable, n.TraceIDColumn, n.ParentSpanIDColumn, n.TimestampColumn, n.TraceLimit, n.WindowStartNano, n.WindowEndNano)
+	} else {
+		scope, err = e.traceScopeFrag(n.Input, n.TraceIDColumn)
+		if err != nil {
+			return err
+		}
+	}
+
+	numbering, err := e.buildNestedSetNumbering(n, scope)
 	if err != nil {
 		return err
 	}
-	// When the search returns only the N newest traces, bound the numbering
-	// walk to exactly those N: rank the root spans of the scope's trace
-	// universe by Timestamp (descending, ties by TraceId ascending — the
-	// order /api/search's TruncateSummaries keeps) and keep the top N. The
-	// lowering only sets TraceLimit when the plan guarantees each returned
-	// trace's root is in the result, so this root-Timestamp ranking equals
-	// the result-min-Timestamp ranking the handler applies — the kept
-	// traces are numbered byte-identically; the excess is dropped.
-	if n.TraceLimit > 0 {
-		scope = boundedTraceScopeFrag(n, scope)
-	}
-
-	numbering := buildNestedSetNumbering(n, scope)
 
 	aliasedNS := func(nsCol, outCol string) Frag {
 		// The `ns` qualifier is backtick-quoted (Qual/QualIdent), matching
@@ -168,7 +190,7 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 // sorted DFS paths into (SpanId, left, right, parent) rows. scope is
 // a parenthesised single-column SELECT (from traceScopeFrag) bounding
 // which traces the walk numbers.
-func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuilder {
+func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) (*QueryBuilder, error) {
 	// One fixed-width path element for the span row `qual` qualifies
 	// (empty qual = bare column references in the anchor SELECT).
 	pathElem := func(qual string) Frag {
@@ -193,6 +215,24 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 	// recursive step bounds it (`c._depth < <cap>`) so a span-id cycle
 	// degrades to a partial numbering instead of erroring with CH code
 	// 306 (see structuralDepthBoundFrag / defaultStructuralRecursionDepth).
+	// Anchor and step both scan the spans table under the resource-bound
+	// invariant. The anchor is form-b bounded by `TraceId IN (scope)`; the
+	// step is form-b bounded by the same scope re-embedded as a NON-recursive
+	// `t.TraceId IN (SELECT TraceId FROM scope)` prune (delta N1) — scope is
+	// boundedRootScopeFrag / traceScopeFrag, neither recursive, so the prune
+	// cannot trip CH error 49 yet gives the step genuine partition pruning
+	// instead of relying on the per-iteration closure join.
+	anchorTraceIn := InSubquery(Col(n.TraceIDColumn), scope)
+	stepTraceIn := InSubquery(qualColFrag("t", n.TraceIDColumn), scope)
+	anchorFrom, err := e.fromSpansScan(n.SpansTable, traceIDSetBound(anchorTraceIn))
+	if err != nil {
+		return nil, err
+	}
+	stepFrom, err := e.fromSpansScan(n.SpansTable, traceIDSetBound(stepTraceIn))
+	if err != nil {
+		return nil, err
+	}
+
 	anchor := NewQuery().
 		Select(
 			Col(n.TraceIDColumn),
@@ -201,12 +241,12 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			As(pathElem(""), "_path"),
 			verbatim("0 AS `_depth`"),
 		).
-		From(Col(n.SpansTable)).
+		From(anchorFrom).
 		Where(
 			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
 			// scope already carries its own parens; InSubquery adds none,
 			// giving `<TraceId> IN (SELECT …)` with a single paren pair.
-			InSubquery(Col(n.TraceIDColumn), scope),
+			anchorTraceIn,
 		)
 
 	// Recursive step: append one path element per child level and carry
@@ -230,7 +270,7 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			Call("concat", verbatim("c.`_path`"), pathElem("t")),
 			verbatim("c.`_depth` + 1 AS `_depth`"),
 		).
-		From(aliasedFrag(Col(n.SpansTable), "t")).
+		From(aliasedFrag(stepFrom, "t")).
 		Join(
 			InnerJoin,
 			aliasedFrag(verbatim("`_cerberus_ns_paths`"), "c"),
@@ -239,7 +279,10 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 				Eq(qualColFrag("t", n.ParentSpanIDColumn), qualColFrag("c", n.SpanIDColumn)),
 			),
 		).
-		Where(structuralDepthBoundFrag(0))
+		// structuralDepthBoundFrag caps the recursion; stepTraceIn (delta N1)
+		// adds a genuine partition prune so each iteration's `t` scan reads
+		// only the scoped traces' rows, not the whole table.
+		Where(structuralDepthBoundFrag(0), stepTraceIn)
 
 	w := strconv.Itoa(nestedSetPathElemWidth)
 
@@ -322,7 +365,7 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			verbatim("if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent`"),
 		).
 		From(keyed.Frag()).
-		GroupBy(Col(n.TraceIDColumn), Col(n.SpanIDColumn))
+		GroupBy(Col(n.TraceIDColumn), Col(n.SpanIDColumn)), nil
 }
 
 // traceScopeFrag derives the numbering walk's trace-id scope from the
@@ -374,39 +417,70 @@ func (e *emitter) traceScopeFrag(n chplan.Node, traceIDCol string) (Frag, error)
 	return NewQuery().Select(Col(traceIDCol)).From(sub).Frag(), nil
 }
 
-// boundedTraceScopeFrag narrows scope to the N newest traces the numbering
-// walk needs — exactly the set /api/search returns. It ranks the root spans
-// (ParentSpanId = ”) of the traces in scope by start time and keeps the top
-// n.TraceLimit:
+// boundedRootScopeFrag renders the N newest root-bearing traces directly from
+// the spans table — the set /api/search returns when it keeps the top N:
 //
 //	(SELECT `TraceId`
 //	   FROM `otel_traces`
-//	  WHERE `ParentSpanId` = '' AND `TraceId` IN <scope>
+//	  WHERE `ParentSpanId` = ''
 //	  GROUP BY `TraceId`
 //	  ORDER BY min(`Timestamp`) DESC, `TraceId` ASC
-//	  LIMIT <n.TraceLimit>)
+//	  LIMIT <limit>)
 //
-// `min(Timestamp)` per trace is the trace's start time — the same value
-// toTraceSummaries records as StartTimeUnixNano — and the DESC / TraceId-ASC
-// order matches sortSummariesStartDesc, so the n.TraceLimit traces kept here
-// are precisely the ones TruncateSummaries keeps (root-Timestamp == result-
-// min-Timestamp under lowerSelect's root-in-result gate). The GROUP BY +
-// LIMIT over the narrow root scan is linear in trace count and tiny next to
-// the numbering it bounds. QueryBuilder.Frag already parenthesises the SELECT,
-// so the anchor's `TraceId IN (...)` stays a single subquery, matching the
-// unbounded form.
-func boundedTraceScopeFrag(n *chplan.NestedSetAnnotate, scope Frag) Frag {
+// `min(Timestamp)` over a trace's ROOT spans is the root's start time, and
+// the DESC / TraceId-ASC order matches sortSummariesStartDesc. This
+// APPROXIMATES the set TruncateSummaries keeps, which ranks by
+// StartTimeUnixNano = min(Timestamp) over ALL matched result rows (root +
+// matched descendants; toTraceSummaries). The two ranking keys coincide when
+// the root is each trace's earliest matched span — true absent intra-trace
+// clock skew — so for the common case the kept set is exactly
+// TruncateSummaries'. Under skew (a matched descendant timestamped before its
+// root) the N-th boundary trace may differ; that residual is accepted to keep
+// the gate cheap — ranking by the true result-min would require materialising
+// the full result, i.e. the OOM this bound exists to prevent. The GROUP BY +
+// LIMIT over the narrow root scan keeps bounded memory (a partial top-N sort),
+// and the recursive closures it gates only ever process those N traces.
+//
+// It is SELF-CONTAINED — no `TraceId IN <input scope>` conjunct — for two
+// reasons. (1) It is referenced from two places that must agree byte-for-byte:
+// the NestedSetAnnotate numbering anchor scope AND every leaf-scan gate
+// (chplan.BoundedTraceScope) pushed into the row source; a self-contained frag
+// makes those references identical by construction, so numbering and row
+// source see the same trace set with no chance of drift stranding rows at the
+// 0/0/0 LEFT-JOIN default. (2) Referencing the input scope from a gate pushed
+// INTO that input's leaves would be an emit cycle. Dropping the conjunct is a
+// no-op under the gating precondition (inputGuaranteesRootInResult): the
+// bare-root union arm puts every root-bearing trace in the input scope, so
+// `ParentSpanId=” AND TraceId IN <input scope>` selected exactly the same
+// roots as `ParentSpanId=”` alone. Determinism (the `TraceId ASC` tie-break
+// makes the order total) is load-bearing: both references are evaluated
+// independently by ClickHouse and must yield the same N-boundary. QueryBuilder.Frag
+// already parenthesises the SELECT, so each `TraceId IN (...)` stays a single
+// subquery.
+// startNano / endNano (when non-zero) restrict the ranking to roots whose start
+// time falls in the request window, so the result is the newest-N roots IN the
+// window rather than the newest-N ever — without this a historical-window
+// search gates the row source to globally-newest roots outside the window and
+// returns nothing (#1109 GAP-3 / structure-tab rank-in-window). The window
+// conjuncts mirror tsBound on the traceql side (`Timestamp >=/<=
+// fromUnixTimestamp64Nano(nano)`), and because both call sites pass the SAME
+// nanos the numbering scope and leaf gate stay byte-identical.
+func boundedRootScopeFrag(spansTable, traceIDCol, parentCol, tsCol string, limit, startNano, endNano int64) Frag {
+	where := []Frag{Eq(Col(parentCol), InlineLit(""))}
+	if startNano != 0 {
+		where = append(where, Gte(Col(tsCol), Call("fromUnixTimestamp64Nano", InlineLit(startNano))))
+	}
+	if endNano != 0 {
+		where = append(where, Lte(Col(tsCol), Call("fromUnixTimestamp64Nano", InlineLit(endNano))))
+	}
 	return NewQuery().
-		Select(Col(n.TraceIDColumn)).
-		From(Col(n.SpansTable)).
-		Where(
-			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
-			InSubquery(Col(n.TraceIDColumn), scope),
-		).
-		GroupBy(Col(n.TraceIDColumn)).
-		OrderBy(Call("min", Col(n.TimestampColumn)), true).
-		OrderBy(Col(n.TraceIDColumn), false).
-		Limit(n.TraceLimit).
+		Select(Col(traceIDCol)).
+		From(Col(spansTable)).
+		Where(where...).
+		GroupBy(Col(traceIDCol)).
+		OrderBy(Call("min", Col(tsCol)), true).
+		OrderBy(Col(traceIDCol), false).
+		Limit(limit).
 		Frag()
 }
 

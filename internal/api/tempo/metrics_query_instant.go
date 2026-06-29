@@ -166,7 +166,7 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 	}
 	wrapped := wrapMetricsForSample(applyMetricsSecondStages(rw, stages, nil), metrics)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: "tempo-metrics-instant",
 	})

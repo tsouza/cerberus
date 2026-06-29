@@ -44,6 +44,13 @@ func searchTraceLimit(ctx context.Context) int64 {
 	return 0
 }
 
+// SearchTraceLimit exposes the /api/search trace limit (WithSearchTraceLimit)
+// to adapters that finalise the plan outside this package — the Tempo Lang's
+// ProjectSamples wrap reads it to cap a spanset-aggregation search to the
+// newest N traces server-side, the parity counterpart to the SearchTraceLimit
+// node plain search already gets. 0 = unbounded.
+func SearchTraceLimit(ctx context.Context) int64 { return searchTraceLimit(ctx) }
+
 // stampNestedSetTraceLimit walks the lowered plan and sets TraceLimit on
 // every NestedSetAnnotate whose input plan guarantees each returned trace's
 // root span is in the result set — the precondition under which ranking the
@@ -60,19 +67,153 @@ func searchTraceLimit(ctx context.Context) int64 {
 // emits, and any chained second select()'s Project. NestedSetAnnotate never
 // appears under a metrics pipeline (select is span-shaped, not metric), so
 // the metric node families are deliberately not traversed.
-func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) chplan.Node {
+func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
 	if limit <= 0 || plan == nil {
 		return plan
 	}
+	// Window the top-N root RANKING to [start, end] so the structure tab ranks
+	// the newest-N roots IN the window, not the newest-N ever. Without this a
+	// historical-window search gates the row source to globally-newest roots
+	// outside the window and returns an empty result (#1109 GAP-3). The same
+	// nanos go onto BOTH the numbering scope (NestedSetAnnotate.Window*) and the
+	// leaf gate (BoundedTraceScope.Window*) so boundedRootScopeFrag emits a
+	// byte-identical subquery for each — a mismatch would strand kept rows.
+	var startNano, endNano int64
+	if !start.IsZero() {
+		startNano = start.UnixNano()
+	}
+	if !end.IsZero() {
+		endNano = end.UnixNano()
+	}
 	switch v := plan.(type) {
 	case *chplan.Project:
-		v.Input = stampNestedSetTraceLimit(v.Input, limit, s)
+		v.Input = stampNestedSetTraceLimit(v.Input, limit, start, end, s)
 	case *chplan.NestedSetAnnotate:
 		if inputGuaranteesRootInResult(v.Input, s.ParentSpanIDColumn) {
 			v.TraceLimit = limit
+			v.WindowStartNano = startNano
+			v.WindowEndNano = endNano
+			// Bound the row source too, not just the numbering. The numbering
+			// walk is bounded by TraceLimit (boundedRootScopeFrag), but the
+			// structural-union row source (v.Input) is otherwise computed over
+			// every trace in the window — two recursive closures + a wide-row
+			// UNION DISTINCT — and only truncated to N afterward, peaking past
+			// the per-query memory cap (#1109 prod OOM). Push one shared
+			// BoundedTraceScope gate into every leaf so the closures (seeded
+			// via the #77 seed re-render of those leaves) scan only the top-N
+			// traces — the IDENTICAL set the numbering uses, so no kept row is
+			// stranded at the 0/0/0 LEFT-JOIN default. Gating here, inside the
+			// same precondition that sets TraceLimit, keeps the two bounds in
+			// lock-step (they can never fire on different shapes).
+			gate := &chplan.BoundedTraceScope{
+				SpansTable:         v.SpansTable,
+				TraceIDColumn:      v.TraceIDColumn,
+				ParentSpanIDColumn: v.ParentSpanIDColumn,
+				TimestampColumn:    v.TimestampColumn,
+				TraceLimit:         limit,
+				WindowStartNano:    startNano,
+				WindowEndNano:      endNano,
+			}
+			v.Input = pushLeafPredicate(v.Input, gate)
 		}
 	}
 	return plan
+}
+
+// pushLeafPredicate ANDs pred into every leaf Filter/Scan of a search row
+// source, descending the full node spine a TraceQL search plan can produce (the
+// union / structural / project / limit / nested-set / AGGREGATE spine over
+// Filter(Scan) / Scan leaves). A bare Scan is wrapped in a Filter; a Filter(Scan)
+// gets pred conjoined; every interior node recurses into all children via the
+// exhaustively-tested chplan.RewriteChildren. The pass is kept off the metrics
+// families NOT by node-type filtering but by its single gate: stampSearchWindow
+// (and the BoundedTraceScope caller) early-return when searchTraceLimit(ctx) <= 0,
+// which is exactly the metrics path — so this only ever runs on span search
+// plans, and an Aggregate-topped search (`| count() > N`) gets its leaf scan
+// windowed instead of silently scanning all retention (GAP-3).
+//
+// Two callers share it, both pushing an immutable shared Expr into the leaves
+// so every leaf emits identical SQL:
+//   - the #1109/#1110 BoundedTraceScope gate (`TraceId IN topN`), which bounds
+//     the structural closures (seeded via the #77 seed re-render of their leaf
+//     subtree) to the top-N traces; and
+//   - the #1109 stampSearchWindow fold (`Timestamp BETWEEN start AND end`),
+//     which bounds every compound/structural/nested-set search leaf to the
+//     request window instead of scanning full retention.
+//
+// The generic recurse descends NestedSetAnnotate.Input (the row source) so a
+// `select(nestedSet*)` compound search gets its leaves gated/windowed; the
+// numbering CTE the emitter synthesises from NestedSetAnnotate is NOT a chplan
+// child, so it is correctly never reached (Tempo numbers whole traces
+// regardless of the window). isRootSpanFilter looks through a passthrough
+// Project, so recursing Project.Input reaches the re-projected bare-root arm.
+func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
+	switch v := n.(type) {
+	case *chplan.Scan:
+		// Leaf: wrap in a Filter carrying the predicate.
+		return &chplan.Filter{Input: v, Predicate: pred}
+	case *chplan.Filter:
+		// A Filter directly on a Scan conjoins (one Filter); otherwise recurse.
+		if _, ok := v.Input.(*chplan.Scan); ok {
+			v.Predicate = conjoin(v.Predicate, pred)
+			return v
+		}
+		v.Input = pushLeafPredicate(v.Input, pred)
+		return v
+	case *chplan.SearchTraceLimit:
+		// Already fully windowed: stampSearchTraceLimit creates this node and
+		// folds the window onto its plain-search leaves at lower.go:56, before
+		// stampSearchWindow runs at :62. Recursing here would double-fold the
+		// predicate (TestSearchWindow_PlainNotDoubleFolded). This is an explicit
+		// "already handled", not a silent drop — every OTHER node still recurses.
+		return n
+	default:
+		// Every interior node recurses into ALL its children via the
+		// exhaustively-tested generic rewrite, so no node type — Aggregate
+		// (a `| count() > N` search), joins, unions, or a future addition —
+		// can hit a silent default that drops the window onto an all-time
+		// scan (GAP-3). This pass only runs for searchTraceLimit(ctx) > 0
+		// (stampSearchWindow early-returns otherwise), i.e. only on span
+		// search plans, so every child it reaches is a span row source whose
+		// leaves correctly take the window.
+		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
+			return pushLeafPredicate(c, pred), true
+		})
+		return out
+	}
+}
+
+// stampSearchWindow folds the /api/search request window into every leaf
+// Filter/Scan of a compound search row source (`&&` / `||`, structural
+// >>/<</&>>, select(nestedSet*)) so it scans only [start, end] instead of full
+// retention. The plain-search shape is ALREADY windowed by stampSearchTraceLimit
+// (which wraps it in a SearchTraceLimit node), and this pass runs AFTER it and
+// does not descend SearchTraceLimit, so plain search stays byte-identical (no
+// double-fold).
+//
+// Gated on limit > 0 — the exact "this is /api/search, not a metrics pipeline"
+// discriminator (only the HTTP + gRPC search handlers set WithSearchTraceLimit;
+// the metrics handlers lower with a bare ctx). A metrics plan therefore never
+// reaches this pass, and even if it did the recursion's default case skips the
+// Aggregate/RangeWindow families. A zero/absent window yields a nil predicate
+// and the plan is returned unchanged (the search handlers clamp a windowless
+// request to DefaultSearchLookback, so on the search path the window is always
+// present).
+//
+// The window predicate reaches only chplan leaf scans. The structural closures'
+// recursive `t`-scan and the nested-set numbering CTE are emitter-synthetic
+// (not chplan children), so they correctly stay unwindowed: the closure inherits
+// the window via the #77 seed re-render of its (now-windowed) leaf, and the
+// numbering must number whole traces regardless of the window.
+func stampSearchWindow(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
+	if limit <= 0 || plan == nil {
+		return plan
+	}
+	window := andWindow(nil, start, end, s.TimestampColumn)
+	if window == nil {
+		return plan
+	}
+	return pushLeafPredicate(plan, window)
 }
 
 // inputGuaranteesRootInResult reports whether every trace n emits is
@@ -80,18 +221,64 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, s schema.Traces) ch
 // the precondition for bounding the numbering walk by root-span Timestamp.
 //
 // The recognised shape is the Grafana Traces Drilldown structure-tab input:
-// a `||` SetOperation one of whose arms is a bare root-span filter
+// a `||` SetOperation where (1) one arm is a bare root-span filter
 // (`{ nestedSetParent < 0 }`, lowered to Filter(ParentSpanId = "") over a
-// Scan, optionally re-projected). The union re-adds every matched trace's
-// root, so result-min(Timestamp) per trace == root.Timestamp. This is the
-// only OOM-prone shape; gating on it keeps the bound exact-parity-safe by
-// construction and leaves all other selects unbounded.
+// Scan, optionally re-projected) — which re-adds every trace's root — and
+// (2) BOTH arms emit only spans belonging to root-bearing traces, so every
+// trace in the result carries its root.
+//
+// Requirement (2) is load-bearing for the bound's correctness, not just its
+// optimality: the bound (numbering scope + the BoundedTraceScope row-source
+// gate) ranks/keeps traces by their ROOT span, so any trace admitted to the
+// result WITHOUT a root span (e.g. a `{ kind = server }` arm matching a
+// rootless trace under sampling / ingest lag) would be silently dropped by
+// the gate — a wrong result, not a boundary reorder. Gating on (2) keeps the
+// result set faithful: every admitted trace has a root, and the only residual
+// approximation is the start-time RANKING (root-span vs result-min Timestamp;
+// see boundedRootScopeFrag), which only shuffles the kept set at the N-th
+// boundary under intra-trace clock skew.
+//
+// A non-bare-root arm is root-bearing-only when it is a POSITIVE
+// descendant/child structural join seeded from a root filter
+// (`{ root } &>> { x }` / `>>` / `&>` / `>`): every span it emits descends
+// from a root, so its trace is root-bearing. Negated / ancestor / parent /
+// sibling arms make no such guarantee and leave the select unbounded.
 func inputGuaranteesRootInResult(n chplan.Node, parentSpanIDCol string) bool {
 	set, ok := n.(*chplan.SetOperation)
 	if !ok || set.Op != chplan.SetUnion {
 		return false
 	}
-	return isRootSpanFilter(set.Left, parentSpanIDCol) || isRootSpanFilter(set.Right, parentSpanIDCol)
+	leftRoot := isRootSpanFilter(set.Left, parentSpanIDCol)
+	rightRoot := isRootSpanFilter(set.Right, parentSpanIDCol)
+	if !leftRoot && !rightRoot {
+		return false // no arm re-adds the roots
+	}
+	return armEmitsOnlyRootBearingTraces(set.Left, parentSpanIDCol) &&
+		armEmitsOnlyRootBearingTraces(set.Right, parentSpanIDCol)
+}
+
+// armEmitsOnlyRootBearingTraces reports whether every span n emits belongs to
+// a trace that carries a root span (ParentSpanId = "") — the per-arm half of
+// inputGuaranteesRootInResult. Two shapes qualify: a bare root-span filter
+// (it emits roots), and a positive descendant/child structural join whose
+// ANCESTOR side (Left) is a root filter (every emitted span descends from a
+// root, and union forms also re-emit those roots). Any other shape — a bare
+// non-root filter, a negated/ancestor/parent/sibling structural join, a
+// nested set-op — is conservatively rejected.
+func armEmitsOnlyRootBearingTraces(n chplan.Node, parentSpanIDCol string) bool {
+	if isRootSpanFilter(n, parentSpanIDCol) {
+		return true
+	}
+	sj, ok := n.(*chplan.StructuralJoin)
+	if !ok || sj.Op.IsNegated() {
+		return false
+	}
+	switch sj.Op.Positive() {
+	case chplan.StructuralDescendant, chplan.StructuralChild:
+		return isRootSpanFilter(sj.Left, parentSpanIDCol)
+	default:
+		return false
+	}
 }
 
 // isRootSpanFilter reports whether n is a root-span filter

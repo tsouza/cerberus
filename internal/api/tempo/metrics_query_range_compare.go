@@ -306,7 +306,7 @@ func (h *Handler) execCompareRange(
 	}
 	wrapped := wrapCompareForSample(rw, cmp)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: "tempo-metrics-matrix",
 	})
