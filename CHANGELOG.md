@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.6.7] — 2026-06-29
+
+### Fixed
+
+- **traceql:** backport traces drilldown-OOM stack to 1.6.x (#1109/#1110 + #1113 + #1121/#1122 + #1154) (#1156)
+
 ## [v1.6.6] — 2026-06-29
 
 ### Fixed
