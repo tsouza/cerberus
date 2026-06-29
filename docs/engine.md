@@ -79,7 +79,9 @@ type Lang interface {
 - `Name()` returns a stable identifier — `"promql"`, `"logql"`,
   `"traceql"`. The engine threads it onto progress-context keys
   and telemetry labels.
-- `Parse` runs the upstream parser, lowers the AST into a
+- `Parse` runs the head's parser — the upstream Apache prometheus
+  parser for PromQL, cerberus's in-house Apache reimplementation for
+  LogQL / TraceQL — lowers the AST into a
   `chplan` tree, and returns the plan plus a `Meta` value. The
   adapter is also responsible for opening the `parse` / `lower`
   pipeline-stage spans so the trace shape is consistent across
@@ -176,7 +178,7 @@ A typical request flows through the following stages:
      `Engine.QueryPlanCursor(...)` — streaming variants for
      Prom's `/query_range` matrix pivot.
 4. **Inside the engine:**
-   1. `lang.Parse` runs the upstream parser and lowers to
+   1. `lang.Parse` runs the head's parser and lowers to
       `chplan`. Opens `parse` + `lower` spans.
    2. `lang.ProjectSamples` wraps the plan into the canonical
       `Sample` row shape.
@@ -206,8 +208,10 @@ losing the cause.
 
 The middle of the pipeline — lower → optimize → emit → schema
 resolution — is the part the three heads share. Each stage is
-described below. The three heads converge on it: each parses with its
-reference upstream parser, lowers to the shared IR, and runs the same
+described below. The three heads converge on it: each parses its query
+language — PromQL with the upstream Apache prometheus parser, LogQL and
+TraceQL with cerberus's own in-house Apache reimplementations — lowers to
+the shared IR, and runs the same
 optimize step. After optimize, the solver classifies the plan and picks
 an execution route — route A (one ClickHouse statement, the default for
 the overwhelming majority of traffic) or route B (the sharded-pushdown
@@ -219,8 +223,8 @@ re-anchored shards and concatenates them behind one cursor.
    PromQL                LogQL                TraceQL
      │                     │                     │
      ▼                     ▼                     ▼
-prometheus/        grafana/loki/v3/         grafana/tempo/
-promql/parser      pkg/logql/syntax         pkg/traceql        ← reference upstream parsers, imported directly
+prometheus/        internal/logql/          internal/traceql/
+promql/parser      lsyntax                  ast                ← PromQL: upstream Apache parser; LogQL/TraceQL: in-house Apache parsers
      │                     │                     │
      │      per-QL lowering (head → chplan)      │
      ▼                     ▼                     ▼

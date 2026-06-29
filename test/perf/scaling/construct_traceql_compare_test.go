@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -106,7 +106,7 @@ func emitTraceQLCompareSQL(t *testing.T, k int) (string, []any) {
 		preds[i] = fmt.Sprintf(`span.a%d = "x"`, i)
 	}
 	q := "{ " + strings.Join(preds, " && ") + " }"
-	expr, err := tempo.Parse(q)
+	expr, err := traceqlast.Parse(q)
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", q, err)
 	}
