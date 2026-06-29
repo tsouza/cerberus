@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.9.0
+version: 0.9.1
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.8.2"
+appVersion: "1.8.3"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,9 +45,27 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.8.2
+      image: ghcr.io/tsouza/cerberus:v1.8.3
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: added
+      description: "engine: nested-subquery anchor product (GAP-C) + plan-node bound registry (#1120)"
+    - kind: added
+      description: "engine: reject subqueries whose anchor grid busts the sample budget (GAP-2) (#1115)"
+    - kind: added
       description: "chart: bwc mode — bundled production ClickHouse on object storage (S3/GCS/Azure), no operator (#1106)"
+    - kind: fixed
+      description: "license: de-AGPL audit cleanup (#1136)"
+    - kind: fixed
+      description: "logql: clean-room Apache LogQL parser (remove AGPL pkg/logql/syntax) (#1130)"
+    - kind: fixed
+      description: "traceql: clean-room Apache TraceQL parser (remove AGPL pkg/traceql) (#1131)"
+    - kind: fixed
+      description: "traceql: numeric-coerce attribute-vs-attribute ordering comparisons (#1127)"
+    - kind: fixed
+      description: "chclient: enforce the drain budget — 0 no longer disables it + cap line-peek bytes (#1123)"
+    - kind: fixed
+      description: "tempo: push /api/search limit into spanset-aggregation as server-side ORDER BY+LIMIT (#1122)"
+    - kind: fixed
+      description: "traceql: window spanset-aggregation searches (GAP-3) via generic leaf recurse (#1121)"
