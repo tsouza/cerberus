@@ -10,30 +10,40 @@ import (
 	tql "github.com/tsouza/cerberus/internal/traceql"
 	"github.com/tsouza/cerberus/internal/traceql/ast"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// This test drives the REAL Traces Drilldown emit paths — root lookup, the
-// structure-tab structural/nested-set lowering, the metrics-compare matrix, and
-// the metrics-exemplars matrix — through their actual emitters and asserts the
-// spans-scan resource-bound invariant holds: every otel_traces scan that
-// reaches ClickHouse is partition-pruned (a window or a finite trace-id set) or
-// memory-streaming bounded. The negative cases prove the invariant fails closed
-// when a bound is missing.
+// This test drives the REAL Traces Drilldown emit paths through their real
+// emitters and the real engine seam, and asserts the spans-scan resource-bound
+// invariant holds: every otel_traces scan that reaches ClickHouse is
+// partition-pruned (a window or a finite trace-id set) or memory-streaming
+// bounded. The tests deliberately do NOT hand-thread WithSpansTable with a
+// literal table — prod threads it at the engine seam via the Lang's
+// SpansTable(), so the tests derive the scope the same way (or go through the
+// engine). Reverting that wiring un-bounds the path and FAILS these tests.
 
 const scanBoundSpansTable = "otel_traces"
 
 func tracesSchema() schema.Traces { return schema.DefaultOTelTraces() }
 
-// assertEverySpansFromBounded checks that every `FROM ... otel_traces` token in
-// sql sits in a SELECT scope that also carries a recognized bound — a TraceId
-// membership (`TraceId IN`), a Timestamp window (`Timestamp >`/`<`), or the
-// recursive depth cap (`_depth <`) for the memory-streaming arm. It is a
-// coarse, whole-statement check: it requires at least one bound token to appear
-// for every spans-scan occurrence, which catches a fully-unbounded scan slipping
-// through (the OOM shape) without overfitting to exact SQL.
+// emitScoped mirrors the engine seam (engine.emitForHead): it threads the spans
+// table onto the emit context via the REAL Lang.SpansTable() — so if that
+// method is reverted to "", the chokepoint no-ops and the negative cases below
+// stop failing.
+func emitScoped(t *testing.T, lang *traceqlLang, plan chplan.Node) (string, error) {
+	t.Helper()
+	ctx := chsql.WithSpansTable(context.Background(), lang.SpansTable())
+	sql, _, err := chsql.Emit(ctx, plan)
+	return sql, err
+}
+
+// assertEverySpansFromBounded checks that every otel_traces scan in sql sits in
+// a scope that also carries a recognized bound — a TraceId membership, a
+// Timestamp window, or the recursive depth cap for the memory-streaming arm.
 func assertEverySpansFromBounded(t *testing.T, sql string) {
 	t.Helper()
 	scans := strings.Count(sql, scanBoundSpansTable)
@@ -46,48 +56,97 @@ func assertEverySpansFromBounded(t *testing.T, sql string) {
 		strings.Count(sql, "toDateTime64")
 	depthTokens := strings.Count(sql, "_depth <")
 	if boundTokens+windowTokens+depthTokens < scans {
-		t.Errorf("found %d %q scans but only %d bound tokens (traceID=%d window=%d depth=%d) — an unbounded spans scan slipped through:\n%s",
+		t.Errorf("found %d %q scans but only %d bound tokens (traceID=%d window=%d depth=%d):\n%s",
 			scans, scanBoundSpansTable, boundTokens+windowTokens+depthTokens,
 			boundTokens, windowTokens, depthTokens, sql)
 	}
 }
 
-func TestScanResourceBound_RootLookupBounded(t *testing.T) {
+// capturingQuerier records the last SQL the handler emitted and returns a fixed
+// sample set, so a handler entry point can be exercised end-to-end.
+type capturingQuerier struct {
+	lastSQL string
+	samples []chclient.Sample
+}
+
+func (q *capturingQuerier) Query(_ context.Context, sql string, _ ...any) ([]chclient.Sample, error) {
+	q.lastSQL = sql
+	return q.samples, nil
+}
+
+func (q *capturingQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]string, error) {
+	q.lastSQL = sql
+	return nil, nil
+}
+
+func searchCtx(start, end time.Time) context.Context {
+	ctx := tql.WithSearchTraceLimit(context.Background(), 20)
+	return tql.WithSearchWindow(ctx, start, end)
+}
+
+// TestScanResourceBound_EngineSeamEnforces proves the chokepoint actually runs
+// over a Tempo plan at the engine seam. A bare, unbounded spans scan routed
+// through the real engine with the real Tempo Lang must be rejected — because
+// engine.emitForHead threads WithSpansTable(traceqlLang.SpansTable()). Revert
+// that wiring (or SpansTable() -> "") and the scan emits unbounded, failing
+// here.
+func TestScanResourceBound_EngineSeamEnforces(t *testing.T) {
 	t.Parallel()
 	s := tracesSchema()
-	plan := buildRootLookupPlan(s, []string{"0123456789abcdef0123456789abcdef"})
-	sql, _, err := chsql.Emit(chsql.WithSpansTable(context.Background(), s.SpansTable), plan)
-	if err != nil {
-		t.Fatalf("root lookup emit: %v", err)
+	h := New(&capturingQuerier{}, s, "v-test", nil)
+
+	unbounded := chplan.Node(&chplan.Scan{Table: s.SpansTable})
+	_, err := h.Engine.QueryPlan(context.Background(), h.Lang(), unbounded,
+		engine.Meta{IsTraceByID: true, ResponseShape: "tempo-trace"})
+	var v *chplan.ScanResourceBoundViolation
+	if !errors.As(err, &v) {
+		t.Fatalf("bare spans scan through the engine seam must be rejected (ScanResourceBoundViolation), got %v", err)
 	}
-	if !strings.Contains(sql, "`TraceId` IN") {
-		t.Errorf("root lookup must scan otel_traces under a TraceId IN set:\n%s", sql)
+}
+
+func TestScanResourceBound_RootLookupRealEntry(t *testing.T) {
+	t.Parallel()
+	s := tracesSchema()
+	q := &capturingQuerier{}
+	h := New(q, s, "v-test", nil)
+
+	// Real entry, no test-supplied WithSpansTable: resolveTraceRoots threads it
+	// itself (root_lookup.go) before chsql.Emit.
+	if _, err := h.resolveTraceRoots(context.Background(), []string{"0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("resolveTraceRoots: %v", err)
 	}
-	assertEverySpansFromBounded(t, sql)
+	if !strings.Contains(q.lastSQL, "`TraceId` IN") {
+		t.Errorf("root lookup must scan otel_traces under a TraceId IN set:\n%s", q.lastSQL)
+	}
+	assertEverySpansFromBounded(t, q.lastSQL)
+
+	// The chokepoint the root-lookup path relies on is real and table-scoped:
+	// an unbounded root-lookup-shaped plan is rejected only when the spans
+	// table is on the context.
+	bare := chplan.Node(&chplan.Scan{Table: s.SpansTable})
+	if _, _, err := chsql.Emit(chsql.WithSpansTable(context.Background(), s.SpansTable), bare); err == nil {
+		t.Errorf("unbounded root-lookup-shaped scan must be rejected under WithSpansTable")
+	}
 }
 
 func TestScanResourceBound_StructureTabBounded(t *testing.T) {
 	t.Parallel()
 	s := tracesSchema()
-	// A descendant structural search — the structure-tab row-source shape.
+	lang := &traceqlLang{schema: s}
 	expr, err := ast.Parse(`{ .service.name = "checkout" } >> { .http.method = "GET" }`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
-	end := start.Add(time.Hour)
-	ctx := tql.WithSearchTraceLimit(context.Background(), 20)
-	ctx = tql.WithSearchWindow(ctx, start, end)
-
+	ctx := searchCtx(start, start.Add(time.Hour))
 	plan, err := tql.Lower(ctx, expr, s)
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
-	sql, _, err := chsql.Emit(chsql.WithSpansTable(ctx, s.SpansTable), plan)
+	sql, err := emitScoped(t, lang, plan)
 	if err != nil {
 		t.Fatalf("structure emit: %v", err)
 	}
-	// The recursive step must carry the seed trace-id prune and the depth cap.
 	if !strings.Contains(sql, "t.`TraceId` IN") {
 		t.Errorf("structural recursive step must be trace-id pruned:\n%s", sql)
 	}
@@ -97,27 +156,21 @@ func TestScanResourceBound_StructureTabBounded(t *testing.T) {
 func TestScanResourceBound_NestedSetStructureBounded(t *testing.T) {
 	t.Parallel()
 	s := tracesSchema()
-	// The Drilldown structure tab: a select() over the root-union + descendant
-	// shape that lowers to a NestedSetAnnotate. With a search limit + window the
-	// numbering walk and its leaves are bounded in lock-step.
+	lang := &traceqlLang{schema: s}
 	expr, err := ast.Parse(`{ } | select(nestedSetParent)`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
-	end := start.Add(time.Hour)
-	ctx := tql.WithSearchTraceLimit(context.Background(), 20)
-	ctx = tql.WithSearchWindow(ctx, start, end)
-
+	ctx := searchCtx(start, start.Add(time.Hour))
 	plan, err := tql.Lower(ctx, expr, s)
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
-	sql, _, err := chsql.Emit(chsql.WithSpansTable(ctx, s.SpansTable), plan)
+	sql, err := emitScoped(t, lang, plan)
 	if err != nil {
 		t.Fatalf("nested-set emit: %v", err)
 	}
-	// The numbering anchor AND recursive step must both be trace-id scoped.
 	if strings.Count(sql, "`TraceId` IN") < 2 {
 		t.Errorf("nested-set anchor + step must both be trace-id scoped:\n%s", sql)
 	}
@@ -135,7 +188,6 @@ func TestScanResourceBound_ExemplarsBoundedAndFailClosed(t *testing.T) {
 		ValueAlias:     "Value",
 		Inner:          &chplan.Scan{Table: s.SpansTable},
 	}
-	// Windowed: bounded, no error.
 	rw := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute,
 		Start: start, End: start.Add(5 * time.Minute), TimestampColumn: "Timestamp",
@@ -147,7 +199,6 @@ func TestScanResourceBound_ExemplarsBoundedAndFailClosed(t *testing.T) {
 	}
 	assertEverySpansFromBounded(t, sql)
 
-	// Zero window over a spans inner: fail closed.
 	rwUnbounded := &chplan.RangeWindow{
 		Input: m, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",
 	}
@@ -158,18 +209,59 @@ func TestScanResourceBound_ExemplarsBoundedAndFailClosed(t *testing.T) {
 	}
 }
 
+// TestScanResourceBound_CompareFailClosed covers the compare() matrix gate
+// (item 6): a RangeWindow with a half-open / zero window over a spans-inner
+// compare node must fail closed when the emit context is spans-scoped.
+func TestScanResourceBound_CompareFailClosed(t *testing.T) {
+	t.Parallel()
+	s := tracesSchema()
+	cmp := &chplan.MetricsCompare{
+		Inner:     &chplan.Scan{Table: s.SpansTable},
+		Selection: &chplan.LitBool{V: true},
+	}
+	rw := &chplan.RangeWindow{
+		Input: cmp, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",
+	}
+	ctx := chsql.WithSpansTable(context.Background(), s.SpansTable)
+	if _, _, err := chsql.Emit(ctx, rw); !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+		t.Fatalf("zero-window compare over spans inner must fail closed, got %v", err)
+	}
+}
+
+// TestScanResourceBound_MetricsMatrixFailClosed covers item 3: the metrics
+// matrix emitter (emitRangeWindowMetrics) fails closed on a zero-window spans
+// inner when the emit context is spans-scoped (as the engine threads it).
+func TestScanResourceBound_MetricsMatrixFailClosed(t *testing.T) {
+	t.Parallel()
+	s := tracesSchema()
+	m := &chplan.MetricsAggregate{
+		Op:             chplan.MetricsOpCountOverTime,
+		GroupByAliases: nil,
+		ValueAlias:     "Value",
+		Inner:          &chplan.Scan{Table: s.SpansTable},
+	}
+	rw := &chplan.RangeWindow{
+		Input: m, Step: time.Minute, Range: time.Minute, TimestampColumn: "Timestamp",
+	}
+	ctx := chsql.WithSpansTable(context.Background(), s.SpansTable)
+	if _, _, err := chsql.Emit(ctx, rw); !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+		t.Fatalf("zero-window metrics matrix over spans inner must fail closed, got %v", err)
+	}
+	// Without the spans scope it is a no-op (table-scoped): the now64 fallback
+	// emits (the established emitter unit-test behaviour).
+	if _, _, err := chsql.Emit(context.Background(), rw); err != nil {
+		t.Fatalf("metrics matrix without WithSpansTable must emit, got %v", err)
+	}
+}
+
 func TestScanResourceBound_BareScanIsTableScoped(t *testing.T) {
 	t.Parallel()
-	bare := &chplan.Scan{Table: scanBoundSpansTable}
-
-	// With the spans table on the context the bare scan is rejected.
+	bare := chplan.Node(&chplan.Scan{Table: scanBoundSpansTable})
 	_, _, err := chsql.Emit(chsql.WithSpansTable(context.Background(), scanBoundSpansTable), bare)
 	var v *chplan.ScanResourceBoundViolation
 	if !errors.As(err, &v) {
 		t.Fatalf("bare spans scan under WithSpansTable must be a ScanResourceBoundViolation, got %v", err)
 	}
-
-	// Without it the invariant is a no-op (table-scoped): a bare scan emits.
 	if _, _, err := chsql.Emit(context.Background(), bare); err != nil {
 		t.Fatalf("bare scan without WithSpansTable must emit (table-scoped no-op), got %v", err)
 	}

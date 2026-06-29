@@ -124,6 +124,10 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 
 	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 
+	// The spans-scoped emit context (as the engine threads for the Tempo head)
+	// is what arms the resource-bound invariant; an isolated emit is a no-op.
+	ctx := chsql.WithSpansTable(context.Background(), "otel_traces")
+
 	// Start set, End zero over a spans inner -> fail closed.
 	rwOneEnd := &chplan.RangeWindow{
 		Input:           compareNode(),
@@ -133,7 +137,7 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 		End:             time.Time{}, // zero
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := chsql.Emit(context.Background(), rwOneEnd)
+	_, _, err := chsql.Emit(ctx, rwOneEnd)
 	if !errors.Is(err, chsql.ErrUnboundedSpansScan) {
 		t.Fatalf("Start-only window over spans inner must fail closed with ErrUnboundedSpansScan, got %v", err)
 	}
@@ -148,7 +152,7 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 		End:             start.Add(3 * time.Minute),
 		TimestampColumn: "Timestamp",
 	}
-	sqlBoth, _, err := chsql.Emit(context.Background(), rwBoth)
+	sqlBoth, _, err := chsql.Emit(ctx, rwBoth)
 	if err != nil {
 		t.Fatalf("Emit (both ends): %v", err)
 	}

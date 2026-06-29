@@ -297,10 +297,10 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	// and End being set, matching maybePushInnerScanTimeBounds' contract.
 	// Fail closed if the compare inner is a spans scan with no request window:
 	// without Start/End the bound is nil and each MergeTree leg scans full
-	// retention. requireInnerSpansScanBound fires only for the Tempo spans
-	// inner (findScanTable resolves the renamed otel_traces table), so PromQL
-	// compare shapes are unaffected.
-	if err := requireInnerSpansScanBound(r, m.Inner, findScanTable(m.Inner)); err != nil {
+	// retention. Scoped to e.spansTable (threaded onto the emit context for the
+	// Tempo head), so it enforces in prod but is a no-op for an isolated emit
+	// that did not set a spans table.
+	if err := requireInnerSpansScanBound(r, m.Inner, e.spansTable); err != nil {
 		return err
 	}
 	var bound *compareScanBound

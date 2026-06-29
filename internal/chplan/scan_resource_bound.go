@@ -131,11 +131,14 @@ func flattenConjuncts(e Expr) []Expr {
 }
 
 // isTraceIDSetConjunct reports whether c proves a finite TraceId membership:
-// a BoundedTraceScope (self-identifying top-N subquery) or a non-negated
-// InList over the bare TraceId column. When cols.TraceID is empty the InList
-// check accepts any non-negated InList over a bare (unqualified) ColumnRef —
-// over a spans scan that is an id-set, never an attribute predicate (attribute
-// INs carry a MapAccess / FieldAccess left, not a bare ColumnRef).
+//   - a BoundedTraceScope (self-identifying top-N subquery);
+//   - a non-negated InList over the bare TraceId column (root lookup);
+//   - a `TraceId = <literal>` equality (the /traces/{id} singleton set).
+//
+// When cols.TraceID is empty the column checks accept any bare (unqualified)
+// ColumnRef — over a spans scan that is an id column, never an attribute
+// predicate (attribute INs / equalities carry a MapAccess / FieldAccess left,
+// not a bare ColumnRef).
 func isTraceIDSetConjunct(c Expr, cols ScanBoundCols) bool {
 	switch v := c.(type) {
 	case *BoundedTraceScope:
@@ -144,11 +147,32 @@ func isTraceIDSetConjunct(c Expr, cols ScanBoundCols) bool {
 		if v.Negated {
 			return false
 		}
-		ref, ok := v.Left.(*ColumnRef)
-		if !ok || ref.Qualifier != "" {
+		return isTraceIDCol(v.Left, cols)
+	case *Binary:
+		if v.Op != OpEq {
 			return false
 		}
-		return cols.TraceID == "" || ref.Name == cols.TraceID
+		return (isTraceIDCol(v.Left, cols) && isConstExpr(v.Right)) ||
+			(isTraceIDCol(v.Right, cols) && isConstExpr(v.Left))
+	}
+	return false
+}
+
+// isTraceIDCol reports whether e is the bare (unqualified) TraceId column.
+func isTraceIDCol(e Expr, cols ScanBoundCols) bool {
+	ref, ok := e.(*ColumnRef)
+	if !ok || ref.Qualifier != "" {
+		return false
+	}
+	return cols.TraceID == "" || ref.Name == cols.TraceID
+}
+
+// isConstExpr reports whether e is a constant literal — the right-hand side of
+// a `TraceId = <id>` singleton bound.
+func isConstExpr(e Expr) bool {
+	switch e.(type) {
+	case *LitString, *InlineString, *LitInt, *LitFloat, *LitBool:
+		return true
 	}
 	return false
 }
@@ -233,31 +257,62 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 	}
 	cols := deriveScanBoundCols(root)
 	var firstErr error
-	var descend func(n Node, pred Expr)
-	descend = func(n Node, pred Expr) {
+	var descend func(n Node, pred Expr, underLimit bool)
+	descend = func(n Node, pred Expr, underLimit bool) {
 		if firstErr != nil || n == nil {
 			return
 		}
 		switch v := n.(type) {
+		case *MetricsAggregate, *MetricsCompare, *MetricsHistogramOverTime:
+			// The metrics matrix emitters bound their own inner spans scan at
+			// emit time (maybePushInnerScanTimeBounds), enforced fail-closed by
+			// the per-site chsql requireInnerSpansScanBound gate. Their inner
+			// carries no window in the IR, so classifying it here would
+			// false-reject a correct prod query — skip the subtree and let the
+			// per-site gate own it.
+			return
 		case *Filter:
-			// The nearest enclosing Filter replaces the inherited predicate
-			// for everything below it.
-			descend(v.Input, v.Predicate)
+			// Accumulate conjuncts down the spine so an outer-window +
+			// inner-attribute leaf (Filter_window(Filter_attr(Scan))) is still
+			// recognised as windowed.
+			descend(v.Input, conjoinScanPred(pred, v.Predicate), underLimit)
+		case *Limit:
+			// A `LIMIT N` (Count > 0) bounds the output to a top-N: with an
+			// ORDER BY it is a bounded-N priority queue (O(N) memory), the
+			// /search/recent shape. The scan still reads partitions but cannot
+			// buffer full retention into memory — a memory-streaming bound.
+			descend(v.Input, pred, underLimit || v.Count > 0)
 		case *Scan:
-			if v.Table == spansTable && SpansScanResourceBound(pred, cols) == boundNone {
-				firstErr = &ScanResourceBoundViolation{Table: spansTable}
+			if v.Table != spansTable {
+				return
 			}
+			if SpansScanResourceBound(pred, cols) != boundNone || underLimit {
+				return
+			}
+			firstErr = &ScanResourceBoundViolation{Table: spansTable}
 		default:
-			// Propagate the nearest enclosing filter predicate down through
-			// non-Filter nodes so a Scan beneath an intervening Project /
-			// Aggregate still sees its governing filter.
+			// Propagate the accumulated filter predicate + limit context down
+			// through non-Filter nodes so a Scan beneath an intervening
+			// Project / Aggregate still sees its governing bounds.
 			for _, c := range n.Children() {
-				descend(c, pred)
+				descend(c, pred, underLimit)
 			}
 		}
 	}
-	descend(root, nil)
+	descend(root, nil, false)
 	return firstErr
+}
+
+// conjoinScanPred ANDs two predicates, dropping a nil arm.
+func conjoinScanPred(a, b Expr) Expr {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	default:
+		return &Binary{Op: OpAnd, Left: a, Right: b}
+	}
 }
 
 // deriveScanBoundCols opportunistically lifts the spans column names from the

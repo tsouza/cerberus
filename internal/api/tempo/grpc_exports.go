@@ -231,7 +231,7 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 		metrics,
 	)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: "tempo-metrics-matrix",
 	})
@@ -350,7 +350,7 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 	}
 	wrapped := wrapMetricsForSample(applyMetricsSecondStages(rw, stages, nil), metrics)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: "tempo-metrics-instant",
 	})

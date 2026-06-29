@@ -75,6 +75,75 @@ func TestRequireSpansScansBounded_AcceptsBoundedLeaves(t *testing.T) {
 	}
 }
 
+func TestRequireSpansScansBounded_AccumulatesConjunctsDownSpine(t *testing.T) {
+	// An outer window Filter over an inner attribute Filter over the Scan:
+	// the descent must ACCUMULATE conjuncts so the window (on the outer Filter)
+	// is recognised at the leaf, not replaced by the inner attribute predicate.
+	attrFilter := &chplan.Filter{
+		Input: &chplan.Scan{Table: spansTable},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.MapAccess{Map: &chplan.ColumnRef{Name: "SpanAttributes"}, Key: &chplan.LitString{V: "http.method"}},
+			Right: &chplan.LitString{V: "GET"},
+		},
+	}
+	windowed := &chplan.Filter{Input: attrFilter, Predicate: tsWindowPred()}
+	if err := chplan.RequireSpansScansBounded(spansTable, windowed); err != nil {
+		t.Fatalf("outer-window + inner-attr leaf must be accepted via conjunct accumulation, got %v", err)
+	}
+	// The same nesting WITHOUT the outer window is rejected (attr alone is no bound).
+	var v *chplan.ScanResourceBoundViolation
+	if !errors.As(chplan.RequireSpansScansBounded(spansTable, attrFilter), &v) {
+		t.Fatalf("attribute-only nested filter must be rejected")
+	}
+}
+
+func TestRequireSpansScansBounded_LimitTopNIsBounded(t *testing.T) {
+	// /search/recent: Limit(OrderBy(Scan)) is a bounded-N top-N (O(N) memory),
+	// not a full buffer — the descent recognises the enclosing Limit.
+	plan := &chplan.Limit{
+		Count: 20,
+		Input: &chplan.OrderBy{
+			Input: &chplan.Scan{Table: spansTable},
+			Keys:  []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true}},
+		},
+	}
+	if err := chplan.RequireSpansScansBounded(spansTable, plan); err != nil {
+		t.Fatalf("Limit(OrderBy(Scan)) top-N must be accepted, got %v", err)
+	}
+}
+
+func TestRequireSpansScansBounded_SkipsMetricsEmitterInner(t *testing.T) {
+	// A metrics-emitter inner scan is bounded at emit time (per-site gate), so
+	// the IR descent must skip it rather than false-reject the (IR-unwindowed)
+	// inner.
+	plan := &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:    chplan.MetricsOpRate,
+			Inner: &chplan.Scan{Table: spansTable},
+		},
+		TimestampColumn: "Timestamp",
+	}
+	if err := chplan.RequireSpansScansBounded(spansTable, plan); err != nil {
+		t.Fatalf("metrics-emitter inner must be skipped by the IR descent, got %v", err)
+	}
+}
+
+func TestRequireSpansScansBounded_AcceptsTraceIDEquality(t *testing.T) {
+	// /traces/{id}: a `TraceId = <id>` singleton is a finite trace set.
+	plan := &chplan.Filter{
+		Input: &chplan.Scan{Table: spansTable},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "TraceId"},
+			Right: &chplan.LitString{V: "abc123"},
+		},
+	}
+	if err := chplan.RequireSpansScansBounded(spansTable, plan); err != nil {
+		t.Fatalf("TraceId = <id> singleton must be accepted, got %v", err)
+	}
+}
+
 func TestRequireSpansScansBounded_RejectsAttributeInList(t *testing.T) {
 	// An attribute IN-list (Left is a MapAccess, not a bare TraceId column) is
 	// NOT a partition bound — it must not be mistaken for a trace-id set.

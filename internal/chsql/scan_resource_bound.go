@@ -66,9 +66,24 @@ func traceIDSetBound(conjuncts ...Frag) scanResourceBound {
 	return scanResourceBound{kind: spansBoundTraceIDSet, conjuncts: conjuncts}
 }
 
-// memoryStreamingBound declares a recursive-arm memory-streaming bound (depth
-// cap + finite working set). It carries no partition conjunct by construction —
-// the seed-IN was dropped to keep CH from erroring 49 on the nested recursion.
+// memoryStreamingBound declares a recursive-arm memory-streaming bound. It is
+// used only when the seed-IN pushdown is dropped to keep CH from erroring 49 on
+// a recursive subquery nested in a recursive arm, so it carries no partition
+// conjunct of its own.
+//
+// Width AND depth are both bounded, so this is not a fig-leaf "bounded":
+//   - DEPTH: structuralDepthBoundFrag caps the closure at
+//     defaultStructuralRecursionDepth (128) iterations.
+//   - WIDTH: the recursive working table only ever holds spans of traces in the
+//     SEED's result, and the seed is itself a spans scan that the resource-bound
+//     invariant forces to be window- or trace-id-bounded (form-a / form-b) — the
+//     structure-tab additionally caps it to the top-N traces via the
+//     BoundedTraceScope #1109/#1110 fix. So the working set is
+//     O(spans in the bounded seed trace set), never the whole table.
+//
+// The bound the seed leaf carries is verified by the chokepoint
+// (RequireSpansScansBounded), so this arm cannot widen past what the seed
+// already proved.
 func memoryStreamingBound() scanResourceBound {
 	return scanResourceBound{kind: spansBoundMemoryStreaming}
 }
@@ -127,14 +142,16 @@ func requireInnerSpansScanBound(rw *chplan.RangeWindow, inner chplan.Node, spans
 
 // spansTableKey is the unexported context key carrying the TraceQL spans table
 // name into the emit chokepoint, so chsql.Emit can scope RequireSpansScansBounded
-// to the spans table. PromQL / metrics matrix callers never set it, leaving the
-// top-level IR descent a no-op for those heads.
+// to the spans table. PromQL / LogQL callers never set it, leaving the top-level
+// IR descent a no-op for those heads.
 type spansTableKey struct{}
 
-// WithSpansTable returns ctx carrying the TraceQL spans table name. The Tempo
-// handlers whose plan is fully IR-bounded (root lookup; the structure-tab
-// search) wrap their emit context with it so chsql.Emit verifies every spans
-// Scan in the plan is resource-bounded. An empty table leaves ctx unchanged.
+// WithSpansTable returns ctx carrying the TraceQL spans table name. The engine
+// threads it onto the emit context for the Tempo head (engine.emitForHead, via
+// the Lang's SpansTable() method), so chsql.Emit's RequireSpansScansBounded runs
+// over every Tempo plan — search, structural, nested-set, metrics, trace-by-id.
+// The root-lookup path (chsql.Emit called directly, not through the engine) sets
+// it itself. An empty table leaves ctx unchanged.
 func WithSpansTable(ctx context.Context, table string) context.Context {
 	if table == "" {
 		return ctx
