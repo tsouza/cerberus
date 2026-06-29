@@ -1,6 +1,6 @@
 {
   "ql": "traceql",
-  "source": "github.com/grafana/tempo/pkg/traceql (hand-curated, parser-pinned existence checks; tsouza fork pin in go.mod)",
+  "source": "github.com/tsouza/cerberus/internal/traceql/ast (in-house Apache TraceQL parser; hand-curated, parser-pinned existence checks)",
   "rows": [
     {
       "id": "attr:event",
