@@ -68,8 +68,7 @@ type lowerCtx struct {
 	// (currently `service_name` → `ServiceName`) the outer aggregate
 	// needs. Empty (the default) means "no outer by-clause referencing
 	// a top-level column" — the augmenting Project is suppressed and
-	// the bare-selector / range-vector plan stays byte-identical with
-	// pre-#232 fixtures.
+	// the bare-selector / range-vector plan emits unchanged.
 	//
 	// Only `by(...)` propagates; `without(...)` exclusion semantics
 	// don't reference specific columns so the slot stays nil for the

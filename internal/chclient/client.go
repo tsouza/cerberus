@@ -273,8 +273,8 @@ type Config struct {
 	// (within BreakerWindow) that trip the circuit breaker from CLOSED to
 	// OPEN. 0 falls back to the breaker default (5). cmd/cerberus wires it
 	// from CERBERUS_CH_BREAKER_THRESHOLD; see breaker.go for the state
-	// machine. Defaults reproduce the pre-#95 hardcoded constants exactly,
-	// so out-of-the-box breaker behaviour is byte-unchanged.
+	// machine. The defaults are the production-safe breaker constants, so
+	// out-of-the-box behaviour is sensible without any tuning.
 	BreakerThreshold int
 
 	// BreakerWindow is the rolling window over which BreakerThreshold
@@ -499,7 +499,7 @@ func buildBreakers(
 	// The default (unscoped) breaker fronts a bare *Client used without
 	// ForHead — schema preflight, tests, the startup ping. It carries no
 	// head label so it never pollutes a per-head series; direct callers see
-	// exactly the pre-#94 single-breaker behaviour. It is deliberately left
+	// a single unscoped breaker. It is deliberately left
 	// OUT of the observed set so the state gauge emits exactly one series per
 	// real head (no head="" sample).
 	def = mk("")
@@ -712,11 +712,11 @@ func buildOptions(cfg Config) *clickhouse.Options {
 // shared tail of New, factored out so option-building (buildOptions) and
 // breaker/Client assembly read as two distinct concerns.
 func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
-	// Per-head breaker registry (#94) sharing one telemetry set (#95 tuning
-	// + disable config flows to every head). Zero tuning fields resolve to
+	// Per-head breaker registry sharing one telemetry set (tuning +
+	// disable config flows to every head). Zero tuning fields resolve to
 	// the GA defaults inside each breaker (resolveThreshold / resolveWindow /
 	// resolveOpenInterval), so a bare Config — notably the ones tests build —
-	// keeps the pre-#95 hardcoded behaviour byte-for-byte. The telemetry set
+	// gets the production-safe defaults. The telemetry set
 	// is wired off the global MeterProvider and zero-initialised at
 	// construction for all four heads so a healthy replica exports a flat
 	// closed/0 series per head instead of "No data" — see breaker_metrics.go.

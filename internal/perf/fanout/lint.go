@@ -1,27 +1,26 @@
 // Package fanout is cerberus's static compute-fan-out linter — the
-// cheap, always-on tripwire from the Phase-1 perf assessment.
+// cheap, always-on tripwire that catches a query stage exploding
+// intermediate cardinality before the final aggregation collapses it.
 //
-// Every perf bug the assessment catalogued was a COMPUTE FAN-OUT: the
-// scan touched a normal number of rows, but an intermediate stage
-// exploded the cardinality before the final aggregation collapsed it —
-// a step-grid CROSS JOIN that paired every sample with every eval anchor
-// (the pre-#804 range_lwr / histogram shapes), an arrayJoin explosion
-// feeding a JOIN, or an unbounded WITH RECURSIVE structural closure (the
-// pre-#808/#809 nested-set / descendant walks). None of these change the
-// scanned-row count, so row-count- or EXPLAIN-based guards miss them.
+// A compute fan-out touches a normal number of scanned rows but blows up
+// the row count mid-plan: a step-grid CROSS JOIN that pairs every sample
+// with every eval anchor (the range_lwr / histogram shapes), an
+// arrayJoin explosion feeding a JOIN, or an unbounded WITH RECURSIVE
+// structural closure (nested-set / descendant walks). None of these
+// change the scanned-row count, so row-count- or EXPLAIN-based guards
+// miss them.
 //
 // [Lint] inspects the lowered [chplan] IR and the emitted ClickHouse SQL
 // statically — zero data, no execution — and returns a [Violation] for
 // each unbounded fan-out shape. It is wired into the always-on
 // (non-chDB) check gate by test/regression/fanout_lint_test.go, which
-// runs it over every test/spec/** fixture so a future PR that
-// reintroduces an unbounded fan-out fails at review time.
+// runs it over every test/spec/** fixture so a PR that reintroduces an
+// unbounded fan-out fails at review time.
 //
-// The API is deliberately representation-split so later perf-framework
-// components can reuse it: [Lint] takes both a plan tree and the SQL
-// string; callers that only have one pass the other as its zero value
-// (nil plan / empty SQL) and the rules keyed on the missing
-// representation simply do not fire.
+// The API is deliberately representation-split: [Lint] takes both a plan
+// tree and the SQL string; callers that only have one pass the other as
+// its zero value (nil plan / empty SQL) and the rules keyed on the
+// missing representation simply do not fire.
 package fanout
 
 import (
@@ -38,7 +37,7 @@ type Rule string
 const (
 	// RuleUnboundedCrossJoin flags a chplan.CrossJoin where NEITHER side
 	// is statically collapsed to a bounded row count — the range_lwr /
-	// histogram step-grid class (#804 / #805). A CROSS JOIN is safe only
+	// histogram step-grid class. A CROSS JOIN is safe only
 	// when at least one side is provably ≤1 row (OneRow, a no-GROUP-BY
 	// Aggregate, Limit 1, ...) or is already collapsed by an Aggregate
 	// (the unavoidable per-(series, step) broadcast shape — the right
@@ -53,7 +52,7 @@ const (
 
 	// RuleUncappedRecursion flags a `WITH RECURSIVE` CTE emitted WITHOUT
 	// a `_depth < <literal>` depth-cap bound — the nested-set /
-	// structural-recursion class (#808 / #809). Every recursive CTE must
+	// structural-recursion class. Every recursive CTE must
 	// carry an integer depth ceiling so a span-id cycle degrades to a
 	// partial closure instead of an unbounded walk.
 	RuleUncappedRecursion Rule = "uncapped-recursion"
@@ -107,7 +106,7 @@ func lintCrossJoins(plan chplan.Node) []Violation {
 			return true
 		}
 		// Safe iff at least one side is bounded-to-few-rows OR already
-		// collapsed by an aggregation. The dangerous shape — the pre-#804
+		// collapsed by an aggregation. The dangerous shape — the
 		// step-grid blowup — is `CrossJoin{StepGrid, Filter(Scan)}`: an
 		// N-anchor grid against RAW (un-collapsed) scan rows, yielding
 		// rows×anchors intermediate cardinality.

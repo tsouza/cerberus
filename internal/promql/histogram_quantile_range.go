@@ -273,8 +273,8 @@ func lowerHistogramQuantileNativeBareRange(
 
 	// LWR aggregation: latest exp-histogram fields per (series, anchor).
 	// argMax(<col>, TimeUnix) picks the value at the row with the highest
-	// TimeUnix in the (series, anchor) group, matching the Phase-1 instant-
-	// mode "newest sample" semantic with anchor swapped in for `now64(9)`.
+	// TimeUnix in the (series, anchor) group, matching the instant-mode
+	// "newest sample" semantic with anchor swapped in for `now64(9)`.
 	expHistAggs := []chplan.AggFunc{
 		{
 			Name: "argMax",

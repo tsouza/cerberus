@@ -19,8 +19,8 @@ import (
 // `__error__` / `__error_details__` labels and flows on (label filters
 // keep the row; unwrap keeps the sample with value 0). ClickHouse's
 // `parseTimeDelta`, in contrast, throws (code 36) on the first value it
-// can't parse — one Go-shaped `291.792µs` in a single row used to abort
-// the whole query (crawl run 27327766381, Logs Drilldown fields tab).
+// can't parse — one Go-shaped `291.792µs` in a single row would abort
+// the whole query (e.g. the Logs Drilldown fields tab).
 //
 // CH `parseTimeDelta` unit gaps vs Go `time.ParseDuration` (verified
 // empirically against clickhouse-server 24.8.14 and chDB / server 25.8

@@ -137,9 +137,8 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		//
 		// The metric-value column is the canonical PascalCase `Value` (the
 		// alias the RangeWindow / Aggregate emitters project at every outer
-		// SELECT site since #310 collapsed the rename Project layer); mirror
-		// it here so the wire-wrap doesn't ColumnRef the pre-#310 lowercase
-		// alias.
+		// SELECT site); mirror it here so the wire-wrap doesn't ColumnRef a
+		// lowercase alias.
 		//
 		// Inner stream-identity column resolution: a bare range-aggregation
 		// (`rate({...}[5m])` / `count_over_time({...}[5m])` / …) leaves the
