@@ -56,6 +56,14 @@ const (
 	// recursion depth cap + finite working set (not a partition claim). It is
 	// asserted by the chsql per-site gate, not by the IR descent.
 	boundMemoryStreaming
+	// boundEmpty is a constant-false predicate: `WHERE false` reads zero rows
+	// (ClickHouse prunes every part), the tightest possible bound. The
+	// trace-scoped / per-event intrinsics that OTel-CH does not materialise
+	// (rootName / rootServiceName / traceDuration / span:childCount /
+	// event:timeSinceStart / instrumentation-scoped attributes) lower to a
+	// StaticNil constant-false predicate, which ConstantFold collapses
+	// `false AND <window>` to a bare `false` — that scan cannot OOM.
+	boundEmpty
 )
 
 // String renders a ScanBoundKind for diagnostics.
@@ -67,6 +75,8 @@ func (k ScanBoundKind) String() string {
 		return "trace-id-set"
 	case boundMemoryStreaming:
 		return "memory-streaming"
+	case boundEmpty:
+		return "empty"
 	default:
 		return "none"
 	}
@@ -107,6 +117,15 @@ func SpansScanResourceBound(pred Expr, cols ScanBoundCols) ScanBoundKind {
 		return boundNone
 	}
 	conjuncts := flattenConjuncts(pred)
+	for _, c := range conjuncts {
+		// A constant-false conjunct makes the whole AND false: the scan reads
+		// zero rows (CH prunes every part). This is the lowering of the
+		// unmaterialised trace-scoped / per-event intrinsics (StaticNil), not a
+		// gate exemption — `WHERE false` genuinely cannot OOM.
+		if lb, ok := c.(*LitBool); ok && !lb.V {
+			return boundEmpty
+		}
+	}
 	for _, c := range conjuncts {
 		if isTraceIDSetConjunct(c, cols) {
 			return boundTraceIDSet

@@ -165,6 +165,42 @@ func TestRequireSpansScansBounded_SkipsMetricsEmitterInner(t *testing.T) {
 	}
 }
 
+func TestRequireSpansScansBounded_AcceptsConstantFalse(t *testing.T) {
+	// The trace-scoped / per-event intrinsics OTel-CH does not materialise
+	// (rootName / traceDuration / span:childCount / instrumentation.*) lower to
+	// a StaticNil constant-false predicate, which ConstantFold collapses to a
+	// bare `false`. A `WHERE false` scan reads zero rows — the tightest bound —
+	// and must be accepted, not rejected as unbounded.
+	bare := &chplan.Filter{
+		Input:     &chplan.Scan{Table: spansTable},
+		Predicate: &chplan.LitBool{V: false},
+	}
+	if err := chplan.RequireSpansScansBounded(spansTable, bare); err != nil {
+		t.Fatalf("constant-false scan (WHERE false) must be accepted, got %v", err)
+	}
+	// A `false AND <window>` conjunction (pre-ConstantFold shape) is also empty.
+	conj := &chplan.Filter{
+		Input: &chplan.Scan{Table: spansTable},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpAnd,
+			Left:  &chplan.LitBool{V: false},
+			Right: tsWindowPred(),
+		},
+	}
+	if err := chplan.RequireSpansScansBounded(spansTable, conj); err != nil {
+		t.Fatalf("`false AND window` scan must be accepted, got %v", err)
+	}
+	// But a constant-TRUE predicate reads everything — still unbounded.
+	allRows := &chplan.Filter{
+		Input:     &chplan.Scan{Table: spansTable},
+		Predicate: &chplan.LitBool{V: true},
+	}
+	var v *chplan.ScanResourceBoundViolation
+	if !errors.As(chplan.RequireSpansScansBounded(spansTable, allRows), &v) {
+		t.Fatalf("`WHERE true` scan reads full retention and must be rejected")
+	}
+}
+
 func TestRequireSpansScansBounded_AcceptsTraceIDEquality(t *testing.T) {
 	// /traces/{id}: a `TraceId = <id>` singleton is a finite trace set.
 	plan := &chplan.Filter{
