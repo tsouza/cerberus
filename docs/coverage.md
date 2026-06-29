@@ -8,10 +8,13 @@ intrinsic / metrics-op — with an honest support status.
 
 ## How to read this
 
-Cerberus parses each head with its **reference upstream parser**
-(`prometheus/promql/parser`, `grafana/loki/v3/pkg/logql/syntax`,
-`grafana/tempo/pkg/traceql`), so anything those parsers accept, cerberus
-parses. The status below reflects whether cerberus's full
+Cerberus parses PromQL with the upstream Apache `prometheus/promql/parser`,
+and parses LogQL and TraceQL with its own in-house clean-room Apache
+reimplementations (`internal/logql/lsyntax`, `internal/traceql/ast`),
+validated against the upstream AGPL `grafana/loki/v3/pkg/logql/syntax` and
+`grafana/tempo/pkg/traceql` parsers as test-only differential oracles. So
+anything those reference parsers accept, cerberus parses. The status below
+reflects whether cerberus's full
 `parse → fold → lower → optimize → emit` pipeline turns a symbol into
 ClickHouse SQL, measured against what the reference backend does with the
 same query.

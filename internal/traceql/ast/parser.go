@@ -246,7 +246,7 @@ func scalarFilterOp(k tokenKind) Operator {
 // =====================================================================
 
 func (c *cursor) parseRoot() *RootExpr {
-	first := c.parsePipelineStage(true)
+	first := c.parsePipelineStage()
 	elems := []PipelineElement{first}
 
 	var m1 FirstStageElement
@@ -260,7 +260,7 @@ func (c *cursor) parseRoot() *RootExpr {
 			break
 		}
 		c.advance() // consume PIPE
-		elems = append(elems, c.parsePipelineStage(false))
+		elems = append(elems, c.parsePipelineStage())
 	}
 
 	var lead PipelineElement
@@ -315,10 +315,11 @@ func asPipeline(e PipelineElement) Pipeline {
 // Pipeline stages
 // =====================================================================
 
-// parsePipelineStage parses one stage of a spanset pipeline. The first stage
-// permits the same forms as later ones (the grammar's only difference is that
-// coalesce may not lead; accepting it here is harmless over-acceptance).
-func (c *cursor) parsePipelineStage(_ bool) PipelineElement {
+// parsePipelineStage parses one stage of a spanset pipeline. Every stage
+// permits the same forms (the grammar's only difference is that coalesce may
+// not lead; accepting it everywhere is harmless over-acceptance, so the
+// position of the stage does not affect parsing).
+func (c *cursor) parsePipelineStage() PipelineElement {
 	switch c.kind() {
 	case tokBy:
 		return c.parseGroupOperation()
@@ -415,7 +416,7 @@ func (c *cursor) parseSpansetPrimary() SpansetExpression {
 // parseParenPipeline parses the contents of a parenthesised spanset, which may
 // itself be a `|`-chained pipeline or a spanset operator expression.
 func (c *cursor) parseParenPipeline() SpansetExpression {
-	first := c.parsePipelineStage(true)
+	first := c.parsePipelineStage()
 	if c.kind() != tokPipe {
 		if se, ok := first.(SpansetExpression); ok {
 			return se
@@ -425,7 +426,7 @@ func (c *cursor) parseParenPipeline() SpansetExpression {
 	elems := []PipelineElement{first}
 	for c.kind() == tokPipe {
 		c.advance()
-		elems = append(elems, c.parsePipelineStage(false))
+		elems = append(elems, c.parsePipelineStage())
 	}
 	return Pipeline{Elements: elems}
 }
