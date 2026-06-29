@@ -1,0 +1,28 @@
+-- query.traceql --
+{ status = error } | rate() by (resource.service.name)
+-- seed --
+CREATE TABLE otel_traces (
+    StatusCode String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('Error', map('service.name', 'frontend')),
+    ('Error', map('service.name', 'frontend')),
+    ('Ok', map('service.name', 'frontend')),
+    ('Error', map('service.name', 'backend'));
+-- expected_rows --
+[
+  ["backend", 1],
+  ["frontend", 2]
+]
+-- args --
+[0] string = "service.name"
+[1] int64 = 1
+[2] string = "Error"
+[3] string = "service.name"
+-- chplan --
+MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
+  Filter predicate=(StatusCode = "Error")
+    Scan(otel_traces)
+-- sql --
+SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)) GROUP BY `ResourceAttributes`[?]
