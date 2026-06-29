@@ -314,7 +314,7 @@ jobs:
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
       - name: Sync Docker Hub overview
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         continue-on-error: true
         with:
           username: tsouza
@@ -352,9 +352,17 @@ jobs:
     name: eol-retire
     needs: [gate, goreleaser]
     # Only when a NEW app version actually published (goreleaser ran + succeeded).
-    # No `always()`: if goreleaser was skipped or failed, nothing shipped, so the
-    # window did not move and there is nothing to retire.
-    if: needs.gate.outputs.app_publish == 'true' && needs.goreleaser.result == 'success'
+    # `always()` is LOAD-BEARING: like `goreleaser` and `chart-release`, this job
+    # transitively depends on `preflight`, which is SKIPPED on the main / dispatch
+    # path. Without `always()`, GitHub's skip-propagation cascades the skip down
+    # this whole chain, so the job never runs on a real minor open and EOL lines
+    # never get retired. `always()` unwraps that skip; the two guards below then
+    # keep it a strict no-op on patches / backports / failed publishes — it only
+    # fires when goreleaser actually shipped a new version.
+    if: |
+      always() &&
+      needs.gate.outputs.app_publish == 'true' &&
+      needs.goreleaser.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       # Deleting a branch ref needs contents:write. (The job uses RELEASE_PAT

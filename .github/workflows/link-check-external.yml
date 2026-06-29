@@ -34,7 +34,7 @@ jobs:
       # Persist lychee's response cache across runs so a known-good link is
       # not re-fetched every week (and a known-bad one is not hammered).
       - name: Restore lychee cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .lycheecache
           key: lychee-${{ github.run_id }}

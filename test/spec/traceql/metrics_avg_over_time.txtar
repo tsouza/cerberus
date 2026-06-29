@@ -1,0 +1,23 @@
+-- query.traceql --
+{} | avg_over_time(duration)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (50000000),
+    (100000000),
+    (200000000);
+-- expected_rows --
+[
+  [0.11666666666666667]
+]
+-- args --
+[0] float64 = 1e+09
+[1] bool = true
+-- chplan --
+MetricsAggregate op=avg_over_time attr=(Duration / 1e+09) valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)
+-- sql --
+SELECT avg((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)

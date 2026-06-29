@@ -9,9 +9,9 @@ import (
 )
 
 // Env var names for the solver tuning surface. CERBERUS_EVAL_ROUTE is the
-// master switch (default "auto" — the phase-2 flip; operators pin "single" to
-// disable routing); the rest map 1:1 onto the Config fields and default to
-// DefaultConfig's conservative phase-1 values when unset.
+// master switch (default "auto"; operators pin "single" to disable routing);
+// the rest map 1:1 onto the Config fields and default to DefaultConfig's
+// conservative values when unset.
 const (
 	EnvRoute              = "CERBERUS_EVAL_ROUTE"
 	EnvMinFanout          = "CERBERUS_SHARD_MIN_FANOUT"
@@ -31,7 +31,7 @@ const (
 // A parse failure on any knob is returned so a typo never silently routes (or
 // never silently disables routing).
 //
-// PRODUCTION DEFAULT (phase-2 flip): when CERBERUS_EVAL_ROUTE is unset the
+// PRODUCTION DEFAULT: when CERBERUS_EVAL_ROUTE is unset the
 // solver routes in "auto" mode — eligible plans that clear the cost thresholds
 // take route B; everything else (ineligible / below-threshold / non-PromQL)
 // fails toward the byte-identical route A. Operators pin "single" to disable
@@ -40,8 +40,8 @@ const (
 // unaffected; only this env-driven prod path flips to auto.
 func ConfigFromEnv() (Config, error) {
 	cfg := DefaultConfig()
-	// Phase-2 flip: unset CERBERUS_EVAL_ROUTE means "auto" in production, not
-	// the library's dark "single" default.
+	// Unset CERBERUS_EVAL_ROUTE means "auto" in production, not the library's
+	// dark "single" default.
 	cfg.Mode = ModeAuto
 
 	if v := strings.TrimSpace(os.Getenv(EnvRoute)); v != "" {
