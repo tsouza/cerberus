@@ -1450,9 +1450,9 @@ type breakerConfig struct {
 }
 
 // breakerFromEnv reads the CERBERUS_CH_BREAKER_* knobs from the viper
-// loader. Unset values use the defaults above, which reproduce the
-// pre-#95 hardcoded breaker constants exactly (so defaults are
-// byte-unchanged). CERBERUS_CH_BREAKER_ENABLED=false disables the breaker
+// loader. Unset values use the defaults above — the production-safe
+// breaker constants — so an unconfigured deployment gets sensible
+// behaviour. CERBERUS_CH_BREAKER_ENABLED=false disables the breaker
 // entirely (always-allow, never trips); when disabled the threshold /
 // window / interval knobs are still validated so a typo doesn't pass
 // silently, but they have no runtime effect.

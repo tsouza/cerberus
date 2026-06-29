@@ -118,11 +118,10 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	return plan, engine.Meta{IsMetric: true}, nil
 }
 
-// ProjectSamples wraps plan with the Sample-shape Project the Prom
-// handler used to apply inline via wrapWithSampleProjection. The
-// per-handler derived-vs-canonical branch (RangeWindow / Aggregate /
-// Scan / Filter shapes) lives in wrapWithSampleProjection and is
-// re-used verbatim — moving the projection behind Lang keeps the
+// ProjectSamples wraps plan with the Sample-shape Project via
+// wrapWithSampleProjection. The per-handler derived-vs-canonical branch
+// (RangeWindow / Aggregate / Scan / Filter shapes) lives in
+// wrapWithSampleProjection — keeping the projection behind Lang keeps the
 // engine generic without forcing prom's per-shape switch into the
 // shared layer.
 func (l *lang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {

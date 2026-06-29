@@ -16,8 +16,8 @@ import (
 // as the @-modifier guard's oracle: a windowed node's bounds must match the
 // grid this Meta predicts at that spine depth.
 type RequestMeta struct {
-	// Lang is the head name ("promql" | "logql" | "traceql"). Phase 1 routes
-	// PromQL query_range only; the field lets the Planner reject the others
+	// Lang is the head name ("promql" | "logql" | "traceql"). Only PromQL
+	// query_range is routed; the field lets the Planner reject the others
 	// without importing the engine's Lang registry.
 	Lang string
 
@@ -29,7 +29,7 @@ type RequestMeta struct {
 	End   time.Time
 
 	// Step is the request resolution. Step == 0 is an instant query, never
-	// time-slice routed in phase 1.
+	// time-slice routed.
 	Step time.Duration
 }
 
@@ -37,7 +37,7 @@ type RequestMeta struct {
 // (composition order). A Decision is always produced — even when not routed —
 // so the shadow header X-Cerberus-Route-Decision can report the reason.
 type Decision struct {
-	// Strategy is the decomposition strategy name. Phase 1 emits exactly
+	// Strategy is the decomposition strategy name — exactly
 	// StrategyShardedTimeslice on a route, empty otherwise.
 	Strategy string
 
@@ -72,7 +72,7 @@ type Decision struct {
 	Step        time.Duration // the request grid step
 }
 
-// StrategyShardedTimeslice is the only decomposition strategy phase 1 emits:
+// StrategyShardedTimeslice is the only decomposition strategy emitted:
 // disjoint sub-grids of the primary (anchor) dimension.
 const StrategyShardedTimeslice = "sharded-timeslice"
 
@@ -93,7 +93,7 @@ const (
 	ReasonNotSliceable = "not-sliceable"
 
 	// ReasonInstant: an instant query (Step == 0 or OuterRange == 0) — no
-	// anchor grid to slice in phase 1.
+	// anchor grid to slice.
 	ReasonInstant = "instant"
 
 	// ReasonHighD: the K clamp floor (K <= OuterRange / max(D, Step)) drove

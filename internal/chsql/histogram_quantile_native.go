@@ -14,7 +14,7 @@
 //     the original array) toward the least-negative, then through the
 //     zero bucket, then through PositiveBucketCounts in natural
 //     order. arrayReverse([]) = [], so distributions with no negative
-//     observations collapse to the Phase 1 walk
+//     observations collapse to the positive-only walk
 //     (`arrayConcat([ZeroCount], PositiveBucketCounts)`).
 //  3. total = cum[length(cum)]; target = phi * total.
 //  4. idx = arrayFirstIndex(c -> c >= target, cum) (1-based).
@@ -31,8 +31,8 @@
 //     - phi > 1 → +Inf (out of domain).
 //     - phi == 0 → lower edge of the lowest bucket (in domain):
 //     `-pow(base, NegativeOffset + length(Negative))` if any
-//     negative observations exist; otherwise 0 (matches Phase 1
-//     convention for non-negative distributions).
+//     negative observations exist; otherwise 0 (the convention for
+//     non-negative distributions).
 //     - phi == 1 → upper edge of the highest bucket (in domain):
 //     `pow(base, PositiveOffset + length(Positive))` when positive
 //     observations exist; else `ZeroThreshold` when zero bucket is
@@ -57,11 +57,11 @@
 //     covers `(base^idx, base^(idx+1)]`:
 //     `value = pow(base, PositiveOffset + (idx - nlen - 2) + fraction)`.
 //
-// Phase parity: distributions with empty NegativeBucketCounts and
-// ZeroCount = 0 produce the same numeric output as the original
-// positive-only emitter (idx = 1 only fires when target = 0, which
-// the phi<=0 / total=0 short-circuits already cover). The Phase 1
-// `idx = 1 → ZeroThreshold` branch is subsumed by the zero-bucket
+// Positive-only parity: distributions with empty NegativeBucketCounts
+// and ZeroCount = 0 reduce to the positive-only result (idx = 1 only
+// fires when target = 0, which the phi<=0 / total=0 short-circuits
+// already cover). The `idx = 1 → ZeroThreshold` branch is subsumed by
+// the zero-bucket
 // linear interpolation: with ZeroCount > 0 and target landing inside
 // the zero band, the interpolation returns a value in
 // `[-ZeroThreshold, +ZeroThreshold]` rather than the fixed upper edge.
@@ -263,7 +263,7 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	//         [ZeroCount],
 	//         PositiveBucketCounts)).
 	// arrayReverse on an empty array yields [], so the walk collapses to
-	// the Phase 1 shape when NegativeBucketCounts is empty.
+	// the positive-only shape when NegativeBucketCounts is empty.
 	w.cum = func() Frag {
 		return Call(
 			"arrayCumSum",

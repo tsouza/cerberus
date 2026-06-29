@@ -5,7 +5,7 @@
 // already-optimized chplan onto disjoint slices of the anchor grid so each
 // shard runs the same compat-gated SQL restricted to its anchor sub-grid.
 //
-// Phase 1 (this package's foundation) ships the policy half only:
+// The package is built from:
 //
 //   - Config — the tuning surface, with one DefaultConfig and a fail-fast
 //     Validate.
@@ -13,15 +13,14 @@
 //     post-optimize plan into a Decision (the shadow-header signal).
 //   - Slicer — the anchor-grid geometry that splits the eval grid into K
 //     disjoint, on-grid slices and re-anchors a deep copy per slice.
+//   - Executor — schedules the K shard queries (serial or bounded-parallel).
+//   - shardCursor — composes the K shard result streams into one cursor.
 //
-// The Executor (scheduling), shardCursor (composition), and the engine /
-// chclient wiring are LATER PRs and deliberately absent here.
-//
-// Import-cycle rule: internal/engine will later hold a *solver.Solver, so
-// this package must NOT import internal/engine. The request metadata the
-// Planner needs is carried by the package-local RequestMeta, populated by a
-// later engine adapter — never engine.Meta. This package imports only
-// internal/chplan and the standard library.
+// Import-cycle rule: internal/engine holds a *solver.Solver, so this package
+// must NOT import internal/engine. The request metadata the Planner needs is
+// carried by the package-local RequestMeta, populated by the engine adapter —
+// never engine.Meta. This package imports only internal/chplan, the executor
+// interfaces, and the standard library.
 package solver
 
 import (
@@ -39,7 +38,7 @@ const (
 
 	// ModeSingle disables the solver entirely: the Planner still computes a
 	// Decision (for the shadow header) but always returns routed=false, so
-	// every request stays on route A. The phase-1 ship-dark default.
+	// every request stays on route A. The library's ship-dark default.
 	ModeSingle = "single"
 
 	// ModeSharded drops the cost thresholds to the floor (K_min = 2) so
@@ -103,9 +102,9 @@ const (
 	defaultMaxOutputRows      = 2_000_000
 )
 
-// DefaultConfig returns the conservative phase-1 defaults. Mode defaults to
-// "single" — the solver ships dark — so DefaultConfig is safe to wire before
-// any parity lane has flipped the auto gate.
+// DefaultConfig returns the conservative library defaults. Mode defaults to
+// "single" — the solver ships dark — so DefaultConfig is safe to wire as the
+// in-process default without enabling routing.
 func DefaultConfig() Config {
 	return Config{
 		Mode:               ModeSingle,

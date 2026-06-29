@@ -121,8 +121,8 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 	// bucketizeDuration produces upstream — Log2Bucketize(d)
 	// in nanos, divided by 1e9 so the bucket reads in seconds. Only
 	// quantile_over_time consults IsDuration today; the rest of the
-	// matrix path emits the same SQL whether or not the operand was
-	// originally a duration intrinsic.
+	// matrix path emits the same SQL whether or not the operand is a
+	// duration intrinsic.
 	isDuration := op == traceql.MetricsAggregateQuantileOverTime && agg.Attribute().Intrinsic == traceql.IntrinsicDuration
 
 	return &chplan.MetricsAggregate{

@@ -3,27 +3,24 @@
 //	parse → lower (inside Lang.Parse) → wrap-projection → optimize →
 //	emit → execute
 //
-// The three per-API handlers (prom / loki / tempo) each used to inline
-// this loop with copy-pasted telemetry plumbing. Engine extracts the
-// loop so the handlers shrink to (a) HTTP routing, (b) per-language
+// Engine owns this loop so the per-API handlers (prom / loki / tempo)
+// stay thin: each handler is just (a) HTTP routing, (b) per-language
 // adapter wiring, and (c) the response-shape pivot.
 //
 // Per-language differences live behind the Lang interface: the parser
 // type stays inside the adapter, lowering happens inside Lang.Parse,
-// and the sample-row reshaping that used to live in each handler's
-// wrapWithSampleProjection helper moves behind Lang.ProjectSamples.
+// and the sample-row reshaping lives behind Lang.ProjectSamples.
 //
 // Execution strategy: route A (the default for the overwhelming majority
 // of traffic) emits one optimized plan into one ClickHouse statement and
-// pushes all reduction into CH. The maintainer relaxed the old "one CH
-// query per request — no scatter-gather" lock on 2026-06-12 for the narrow
-// memory-unbounded anchor-fan-out class: the sharded-pushdown solver
-// (internal/solver, docs/solver.md) re-anchors K copies of the
-// same optimized plan onto disjoint anchor slices, emits each via chsql.Emit,
-// and concatenates the streams — no new evaluator, no new SQL template, and
-// the all-or-nothing wire contract preserved. The solver hooks the seam
-// between Optimizer.Run and chsql.Emit (see QueryPlan / QueryPlanCursor) and
-// is off by default. The relaxed invariant set lives in docs/performance.md.
+// pushes all reduction into CH. For the narrow memory-unbounded
+// anchor-fan-out class, the sharded-pushdown solver (internal/solver,
+// docs/solver.md) re-anchors K copies of the same optimized plan onto
+// disjoint anchor slices, emits each via chsql.Emit, and concatenates the
+// streams — no new evaluator, no new SQL template, and the all-or-nothing
+// wire contract preserved. The solver hooks the seam between
+// Optimizer.Run and chsql.Emit (see QueryPlan / QueryPlanCursor) and is
+// off by default. The invariant set lives in docs/performance.md.
 package engine
 
 import (
@@ -72,7 +69,7 @@ const (
 	// Value grammar: "<strategy>;reason=<reason>". On a non-route the
 	// strategy is the route-A label "route-a" and reason is the solver's
 	// Reason vocabulary (instant / below-threshold / not-sliceable / ...);
-	// on a true route (phase-2, never under Mode=single) the strategy is the
+	// on a true route (never under Mode=single) the strategy is the
 	// decomposition name (sharded-timeslice) carrying ";k=<K>" before the
 	// reason. The header is OBSERVATIONAL — it never changes the X-Cerberus-
 	// Strategy value or the response body.
@@ -438,11 +435,11 @@ type Engine struct {
 	// classification branch, the shadow header, and the Executor are all
 	// dead code. When non-nil the engine classifies the optimized plan at
 	// the seam between Optimizer.Run and chsql.Emit and stamps the
-	// additive X-Cerberus-Route-Decision shadow header; under the phase-1
-	// default (Mode=single) the Planner never routes, so EXECUTION STAYS ON
+	// additive X-Cerberus-Route-Decision shadow header; under the default
+	// (Mode=single) the Planner never routes, so EXECUTION STAYS ON
 	// ROUTE A and the Executor is never invoked. The routed branch is wired
-	// (so the phase-2 flip is a config change) but dormant at the default
-	// config.
+	// (so flipping to routed mode is a config change) but dormant at the
+	// default config.
 	Solver *solver.Solver
 
 	// Settings carries the optional, DARK-by-default per-query ClickHouse
@@ -784,8 +781,8 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // executeRouted runs the dormant route-B path: it dispatches the K shard
 // cursors through the Solver's Executor and drains the composed cursor into
 // the eager Result slice. It is NEVER reached under Mode=single (classify
-// returns routed=false there); it is wired so the phase-2 flip is a config
-// change. A nil Executor on a routed Decision is a wiring bug — fail closed
+// returns routed=false there); it is wired so flipping to routed mode is a
+// config change. A nil Executor on a routed Decision is a wiring bug — fail closed
 // to an error rather than panic.
 func (e *Engine) executeRouted(
 	ctx context.Context,
@@ -1041,7 +1038,7 @@ func (e *Engine) ObserveCapRejection(language string) {
 // dispatches the K shard cursors through the Solver's Executor and returns
 // the composed cursor directly (the caller drives the drain + Close, exactly
 // as route A's single cursor). NEVER reached under Mode=single; wired so the
-// phase-2 flip is a config change.
+// flip to routed mode is a config change.
 func (e *Engine) executeRoutedCursor(
 	ctx context.Context,
 	lang Lang,

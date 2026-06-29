@@ -309,8 +309,8 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Tempo's /api/search honours `limit` (max trace summaries, default
 	// 20) and `spss` (max spans per spanset, default 3). Grafana's
 	// Traces Drilldown sends both (limit=200&spss=10 for the trace
-	// list); ignoring them used to return every matching trace
-	// (observed live: 4937 summaries / ~755KB body for limit=200).
+	// list); ignoring them returns every matching trace
+	// (e.g. 4937 summaries / ~755KB body for limit=200).
 	limit := positiveIntParam(r, "limit", DefaultSearchLimit)
 	if limit > MaxSearchLimit {
 		limit = MaxSearchLimit
@@ -400,9 +400,9 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 	}
 }
 
-// classifySearchErr maps an engine.Query error to the HTTP status the
-// inline handler used to return: parse failures → 400, lower failures
-// → 422, emit failures → 500, execute failures → 502. The Lang
+// classifySearchErr maps an engine.Query error to its HTTP status:
+// parse failures → 400, lower failures → 422, emit failures → 500,
+// execute failures → 502. The Lang
 // adapter tags parse vs lower errors with errParseStage / errLowerStage
 // so errors.Is recovers the precise stage even though the engine
 // collapses both into its outer `engine: parse:` wrapper.

@@ -368,10 +368,10 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // langForRequest builds a per-request *logql.Lang carrying the request's
 // [start, end] window. The engine threads Start / End down through
 // logql.LowerAt so every Scan(LogsTable) gains a
-// `Timestamp BETWEEN start AND end` predicate at the SQL layer — the
-// fix for the wire-format contract violation where /query and
-// /query_range used to return every matching log row regardless of the
-// requested window.
+// `Timestamp BETWEEN start AND end` predicate at the SQL layer. Without
+// it, /query and /query_range would return every matching log row
+// regardless of the requested window, violating the wire-format
+// contract.
 func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
 	return &logql.Lang{Schema: h.Schema, Start: start, End: end}
 }

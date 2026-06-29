@@ -17,8 +17,7 @@ import (
 // failures (HTTP 400) from lowering failures (HTTP 422). The engine
 // wraps Lang.Parse errors with `engine: parse:` which collapses both
 // into a single bucket; carrying the stage in the wrapped error chain
-// preserves the per-stage HTTP-status mapping the inlined handler
-// used to return.
+// preserves the per-stage HTTP-status mapping.
 //
 // ErrParseStage / ErrLowerStage are the exported aliases the sibling
 // gRPC handler (internal/api/tempo/grpc) chains via errors.Is to map
