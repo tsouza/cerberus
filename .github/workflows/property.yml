@@ -69,7 +69,7 @@ concurrency:
 
 jobs:
   property:
-    name: property (PromQL + LogQL, rapid N=500)
+    name: property (PromQL + LogQL + TraceQL, rapid N=500)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on

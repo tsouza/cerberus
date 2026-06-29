@@ -504,6 +504,15 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:25.8-alpine ghcr.io/open-te
 # e2e values), so the exact bundled-CH tag MUST be imported here.
 E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
 
+# k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
+# per k3d version) so we pull ONE known tag with retry and hand it to
+# `k3d cluster create --image` — k3d then boots from the host-cached copy
+# instead of letting cluster creation pull k3s from Docker Hub mid-flight, which
+# intermittently times out ("registry-1.docker.io ... context deadline
+# exceeded") and fails the whole e2e. To drop the Docker Hub dependency entirely,
+# re-tag this into ghcr.io (co-located with the CI runners) and point here.
+K3S_IMAGE := "rancher/k3s:v1.31.5-k3s1"
+
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
 # default (CI uses none). Interpolated unquoted, so the value is shell-parsed:
 # wrap any single arg containing shell metacharacters (`<`, `%`, `,`) in
@@ -523,9 +532,26 @@ K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 #   host:3000 -> LB -> NodePort 30030 (grafana svc)
 # The k3d loadbalancer publishes on 0.0.0.0, so both ports are reachable on
 # every host interface (LAN IP included), not just localhost.
+# Pull each image with retry + linear backoff. Docker Hub from CI runners
+# intermittently times out the pull ("context deadline exceeded"); retrying
+# clears the transient failure instead of failing k3d creation / image staging.
+_pull-retry +IMAGES:
+    @for img in {{IMAGES}}; do \
+        ok=0; \
+        for attempt in 1 2 3 4 5; do \
+            echo "    docker pull $img (attempt $attempt)"; \
+            docker pull "$img" >/dev/null && { ok=1; break; }; \
+            sleep $((attempt * 3)); \
+        done; \
+        [ "$ok" = 1 ] || { echo "ERROR: docker pull $img failed after 5 attempts" >&2; exit 1; }; \
+    done
+
 e2e-up: e2e-down
+    @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
+    @just _pull-retry {{K3S_IMAGE}}
     @echo "==> creating k3d cluster {{K3D_CLUSTER}}"
     k3d cluster create {{K3D_CLUSTER}} \
+        --image {{K3S_IMAGE}} \
         --port "3000:30030@loadbalancer" \
         --port "8080:30080@loadbalancer" \
         --no-lb=false \
@@ -534,11 +560,8 @@ e2e-up: e2e-down
         --wait
     @echo "==> building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
-    @echo "==> pre-pulling external images on host docker"
-    @for img in {{E2E_EXTERNAL_IMAGES}}; do \
-        echo "    docker pull $img"; \
-        docker pull "$img" >/dev/null || { echo "ERROR: docker pull $img failed" >&2; exit 1; }; \
-    done
+    @echo "==> pre-pulling external images on host docker (retry)"
+    @just _pull-retry {{E2E_EXTERNAL_IMAGES}}
     @echo "==> importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
     @# k3d bundles EVERY image into one tarball, mounts it into a transient
     @# tools node, and runs `ctr image import`. Two failure modes bite:
@@ -979,8 +1002,11 @@ e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
 #      cerberus's stamped tables already present and its CREATE … IF NOT EXISTS
 #      is a no-op.
 e2e-bwc-up: e2e-down
+    @echo "==> [bwc] pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
+    @just _pull-retry {{K3S_IMAGE}}
     @echo "==> [bwc] creating k3d cluster {{K3D_CLUSTER}}"
     k3d cluster create {{K3D_CLUSTER}} \
+        --image {{K3S_IMAGE}} \
         --port "3000:30030@loadbalancer" \
         --port "8080:30080@loadbalancer" \
         --no-lb=false \
@@ -996,8 +1022,7 @@ e2e-bwc-up: e2e-down
     @# E2E_BWC_IMAGES) instead, so skip importing the unused standalone image.
     @for img in {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}; do \
         case "$img" in clickhouse/clickhouse-server:*-alpine) continue ;; esac; \
-        echo "    docker pull $img"; \
-        docker pull "$img" >/dev/null || { echo "ERROR: docker pull $img failed" >&2; exit 1; }; \
+        just _pull-retry "$img"; \
     done
     @# Import each image individually + VERIFY it landed in the node's
     @# containerd (k3d image import can print success while the node import
