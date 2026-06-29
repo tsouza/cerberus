@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	tempotraceql "github.com/grafana/tempo/pkg/traceql"
 	promparser "github.com/prometheus/prometheus/promql/parser"
+
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/promql"
@@ -209,7 +210,7 @@ func lowerTrigger(t *testing.T, e Entry) string {
 		}
 		return lerr.Error()
 	case "traceql":
-		expr, err := tempotraceql.Parse(e.TriggerQuery)
+		expr, err := traceqlast.Parse(e.TriggerQuery)
 		if err != nil {
 			t.Fatalf("trigger %q does not parse as TraceQL: %v", e.TriggerQuery, err)
 		}

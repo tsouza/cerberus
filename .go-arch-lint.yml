@@ -88,7 +88,10 @@ components:
   chplan:    { in: chplan }
   promql:    { in: promql }
   logql:     { in: logql }
+  lsyntax:   { in: logql/lsyntax }
+  logpattern: { in: logql/logpattern }
   traceql:   { in: traceql }
+  traceql-ast: { in: traceql/ast }
   optimizer: { in: optimizer }
   chsql:     { in: chsql }
   chclient:  { in: chclient }
@@ -117,6 +120,10 @@ components:
   api-info:       { in: api/info }
   chclienttest:   { in: chclienttest }
   qlcommon:       { in: qlcommon }
+  # Clean-room in-house Drain log-template miner (replaces the AGPL
+  # grafana/loki pkg/pattern/drain). Stdlib-only leaf; the loki `/patterns`
+  # handler trains it over a peek window.
+  drain:          { in: drain }
   # Static fan-out perf linter — reads the chplan IR; leaf utility.
   perf-fanout:    { in: perf/fanout }
   # Boot-time requirements preflight — reads CH version + system.columns
@@ -173,9 +180,23 @@ deps:
     mayDependOn:
       - chplan
       - engine
+      - lsyntax
+      - logpattern
+  # The clean-room in-house LogQL parser (replaces the AGPL
+  # grafana/loki pkg/logql/syntax parser). It depends only on logpattern
+  # (the in-house `| pattern` matcher, used for parse-time validation);
+  # otherwise it builds the AST out of prometheus labels + its own leaf
+  # types.
+  lsyntax:
+    mayDependOn:
+      - logpattern
+  # logpattern is the in-house clean-room Drain-free pattern matcher
+  # (replaces the AGPL grafana/loki pkg/logql/log/pattern). Stdlib-only
+  # leaf.
   traceql:
     mayDependOn:
       - chplan
+      - traceql-ast
 
   # The optimizer rewrites plans in place. It must not know about SQL
   # emission, the CH driver, or HTTP handlers. (It may read schema via
@@ -250,6 +271,9 @@ deps:
       - engine
       - optimizer
       - logql
+      - lsyntax
+      - logpattern
+      - drain
   api-prom:
     mayDependOn:
       - chplan
@@ -266,6 +290,7 @@ deps:
       - engine
       - optimizer
       - traceql
+      - traceql-ast
   api-tempo-grpc:
     mayDependOn:
       - api-tempo

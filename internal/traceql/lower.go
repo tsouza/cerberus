@@ -9,9 +9,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"

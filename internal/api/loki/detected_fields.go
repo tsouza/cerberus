@@ -11,8 +11,6 @@ import (
 
 	"github.com/axiomhq/hyperloglog"
 	"github.com/dustin/go-humanize"
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/api/format"
@@ -284,12 +282,11 @@ func detectFields(rows []chclient.DetectedFieldRow, limit int) []DetectedField {
 			df.sketch.Insert([]byte(v))
 		}
 
-		// Body parsing: seed the labels builder with the stream labels
-		// so parsed keys that shadow a stream label rename to
+		// Body parsing: seed the extractor with the stream labels so
+		// parsed keys that shadow a stream label rename to
 		// `<key>_extracted`, matching upstream.
-		streamLbls := labels.FromMap(format.NormalizeLabelMap(row.Resource))
-		entryLbls := loglib.NewBaseLabelsBuilder().ForLabels(streamLbls, labels.StableHash(streamLbls))
-		parsedLabels, parsers := parseLine(row.Line, entryLbls)
+		streamLabels := format.NormalizeLabelMap(row.Resource)
+		parsedLabels, parsers, jsonPaths := parseLine(row.Line, streamLabels)
 		for _, k := range sortedKeys(parsedLabels) {
 			df := track(k, parsers)
 			if df == nil {
@@ -302,7 +299,7 @@ func detectFields(rows []chclient.DetectedFieldRow, limit int) []DetectedField {
 			}
 			// If we parsed with JSON, record the original JSON path.
 			if slices.Contains(parsers, "json") {
-				df.jsonPath = entryLbls.GetJSONPath(k)
+				df.jsonPath = jsonPaths[k]
 			}
 			v := parsedLabels[k]
 			df.typ = determineFieldType(v)
@@ -326,40 +323,6 @@ func detectFields(rows []chclient.DetectedFieldRow, limit int) []DetectedField {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out
-}
-
-// parseLine runs Loki's own line parsers over a log body: json first
-// (capturing JSON paths), logfmt as the fallback — the exact cascade
-// upstream's parseEntry uses. Returns the extracted (key → value) map
-// (logqlmodel error labels dropped) plus the single-parser list that
-// produced it; (nil, nil) when neither parser accepts the line.
-func parseLine(line string, lbls *loglib.LabelsBuilder) (map[string]string, []string) {
-	parser := "json"
-	jsonParser := loglib.NewJSONParser(true)
-	_, jsonSuccess := jsonParser.Process(0, []byte(line), lbls)
-	if !jsonSuccess || lbls.HasErr() {
-		lbls.Reset()
-
-		logfmtParser := loglib.NewLogfmtParser(false, false)
-		parser = "logfmt"
-		_, logfmtSuccess := logfmtParser.Process(0, []byte(line), lbls)
-		if !logfmtSuccess || lbls.HasErr() {
-			return nil, nil
-		}
-	}
-
-	out := map[string]string{}
-	lbls.LabelsResult().Parsed().Range(func(l labels.Label) {
-		if l.Name == logqlmodel.ErrorLabel || l.Name == logqlmodel.ErrorDetailsLabel ||
-			l.Name == logqlmodel.PreserveErrorLabel {
-			return
-		}
-		out[l.Name] = l.Value
-	})
-	if len(out) == 0 {
-		return nil, nil
-	}
-	return out, []string{parser}
 }
 
 // determineFieldType sniffs a value and picks the upstream type tag.

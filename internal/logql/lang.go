@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"go.opentelemetry.io/otel/trace"
+
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/cerbtrace"

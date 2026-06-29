@@ -1,21 +1,23 @@
-// Quarantine module for cerberus's test-only consumers of AGPL-licensed
-// upstream parsers (grafana/loki, grafana/tempo). A nested go.mod is a hard
+// Quarantine module for cerberus's test-only consumers of the AGPL-licensed
+// upstream LogQL parser (grafana/loki/v3/pkg/logql). A nested go.mod is a hard
 // module boundary: the root module's `go list ./...` / `go build ./...` stop
 // here, so these AGPL importers are NOT part of the root module graph and
 // therefore not linked into the Apache-2.0 `cmd/cerberus` binary. See
-// .github/scripts/agpl-clean.mjs (the clean-build gate) and PR0 of the
-// de-AGPL track.
+// .github/scripts/agpl-clean.mjs (the clean-build gate) and the de-AGPL track.
 //
-// The replace set mirrors the root go.mod so the oracle exercises the exact
-// same forked parsers cerberus itself lowers from.
+// Loki resolves to upstream Apache/AGPL grafana/loki directly (the parser fork
+// was dropped); the LogQL inventory imports only its exported parser surface as
+// a test-only reference. The TraceQL inventory now parses with cerberus's own
+// in-house Apache parser (internal/traceql/ast) — no upstream Tempo dependency.
+// The PromQL inventory uses the upstream Apache prometheus parser fork pin.
 module github.com/tsouza/cerberus/test/oracle
 
 go 1.26.2
 
 require (
 	github.com/grafana/loki/v3 v3.7.1
-	github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1
 	github.com/prometheus/prometheus v0.311.3
+	github.com/tsouza/cerberus v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -24,7 +26,6 @@ require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/Masterminds/sprig/v3 v3.3.0 // indirect
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
-	github.com/apache/thrift v0.23.1-0.20260429145742-d2acd3c49e58 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500 // indirect
@@ -74,7 +75,6 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-rootcerts v1.0.2 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
-	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/memberlist v0.5.4 // indirect
@@ -96,9 +96,6 @@ require (
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.152.0 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils v0.152.0 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.152.0 // indirect
 	github.com/opentracing-contrib/go-grpc v0.1.2 // indirect
 	github.com/opentracing-contrib/go-stdlib v1.1.1 // indirect
 	github.com/opentracing/opentracing-go v1.2.1-0.20220228012449-10b1cf09e00b // indirect
@@ -127,8 +124,6 @@ require (
 	go.etcd.io/etcd/client/pkg/v3 v3.6.9 // indirect
 	go.etcd.io/etcd/client/v3 v3.6.9 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/collector/featuregate v1.58.0 // indirect
-	go.opentelemetry.io/collector/pdata v1.58.0 // indirect
 	go.opentelemetry.io/contrib/bridges/prometheus v0.68.0 // indirect
 	go.opentelemetry.io/contrib/exporters/autoexport v0.68.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0 // indirect
@@ -197,13 +192,11 @@ replace github.com/tsouza/cerberus => ../..
 // replace does NOT propagate to this module. Copied verbatim from root go.mod.
 replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db
 
-// Parser forks — mirror root go.mod so the oracle parses with the same
-// grammar cerberus lowers from.
+// PromQL parser fork — mirror root go.mod so the oracle parses with the same
+// grammar cerberus lowers from. LogQL and TraceQL now resolve to upstream
+// Apache Loki / Tempo directly (the AGPL parser forks were dropped); the
+// oracle imports only their exported parser surface as a test-only reference.
 replace github.com/prometheus/prometheus => github.com/tsouza/prometheus v0.0.1-cerberus-parser
-
-replace github.com/grafana/loki/v3 => github.com/tsouza/loki/v3 v3.0.0-cerberus-parser
-
-replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.4-cerberus-accessors
 
 // otel collector-contrib submodule forks (transitively reachable via the
 // loki/tempo graph); mirror root go.mod.

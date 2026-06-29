@@ -5,8 +5,6 @@ import (
 	"testing"
 	"text/template"
 	"time"
-
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 )
 
 // renderInline evaluates the template body against the dot value and
@@ -176,8 +174,9 @@ func TestTemplateFunc_Repeat(t *testing.T) {
 }
 
 // TestTemplateFunc_FullSurfaceParse — the funcmap is now Loki's FULL
-// surface (consumed verbatim via loglib.AddLineAndTimestampFunctions),
-// so every name that previously failed at parse time with "function not
+// surface (the in-house sprig allow-list + Loki-native funcs in
+// templateFuncs, parity-checked by the agpl_oracle test against
+// upstream), so every name that previously failed at parse time with "function not
 // defined" now parses and executes. This is the deliberate-subset
 // reversal: these used to be wrong-rejected with a 400.
 //
@@ -291,22 +290,5 @@ func TestTemplateFunc_LineAndTimestampParity(t *testing.T) {
 	}
 	if got, want := bms.String(), "1673798889000"; got != want {
 		t.Errorf("__timestamp__|unixEpochMillis: got %q want %q", got, want)
-	}
-}
-
-// TestTemplateFunc_ParityWithUpstreamFuncmap pins that cerberus's
-// funcmap is exactly upstream Loki's set — same keys — so a future
-// upstream addition surfaces here rather than silently diverging.
-func TestTemplateFunc_ParityWithUpstreamFuncmap(t *testing.T) {
-	t.Parallel()
-	cer := templateFuncs(func() string { return "" }, func() int64 { return 0 })
-	up := loglib.AddLineAndTimestampFunctions(func() string { return "" }, func() int64 { return 0 })
-	if len(cer) != len(up) {
-		t.Fatalf("funcmap size mismatch: cerberus=%d upstream=%d", len(cer), len(up))
-	}
-	for k := range up {
-		if _, ok := cer[k]; !ok {
-			t.Errorf("cerberus funcmap missing upstream func %q", k)
-		}
 	}
 }
