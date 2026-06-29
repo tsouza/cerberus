@@ -46,7 +46,7 @@ import (
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -104,7 +104,7 @@ const nsCycleSeedInsert = `INSERT INTO otel_traces (TraceId, SpanId, ParentSpanI
 // of both traces in the input, so the numbering CTE walks the cyclic trace.
 func emitNestedSetSelectSQL(t *testing.T) (string, []any) {
 	t.Helper()
-	expr, err := tempo.Parse(`{ } | select(nestedSetParent, nestedSetLeft, nestedSetRight)`)
+	expr, err := traceqlast.Parse(`{ } | select(nestedSetParent, nestedSetLeft, nestedSetRight)`)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

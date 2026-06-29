@@ -3,7 +3,7 @@ package traceql
 import (
 	"testing"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // TestParserSmoke pins that the upstream Tempo TraceQL parser accepts

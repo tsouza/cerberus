@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // TestParserShape_* tests pin specific properties of the parsed Tempo

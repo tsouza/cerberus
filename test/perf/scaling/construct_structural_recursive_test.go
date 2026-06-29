@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"testing"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -144,7 +144,7 @@ func structuralSeedInsert(candidates, noise, depth int) string {
 // the real cerberus parse -> lower -> emit chain — the pushed-down shape.
 func emitStructuralRecursiveSQL(t *testing.T) (string, []any) {
 	t.Helper()
-	expr, err := tempo.Parse(`{ resource.service.name = "root_marker" } >> { resource.service.name = "leaf_marker" }`)
+	expr, err := traceqlast.Parse(`{ resource.service.name = "root_marker" } >> { resource.service.name = "leaf_marker" }`)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
