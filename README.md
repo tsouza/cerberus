@@ -72,9 +72,12 @@ SQL underneath.
   Grafana sees three normal datasources.
 - **No custom QL.** PromQL, LogQL, TraceQL — exactly as your dashboards
   and alerts already use them.
-- **No reinvented parsers.** Cerberus imports `prometheus/promql/parser`,
-  `grafana/loki/v3/pkg/logql/syntax`, and `grafana/tempo/pkg/traceql`
-  directly. If upstream parses it, cerberus parses it.
+- **Grammar-faithful parsers.** PromQL is parsed by the upstream Apache
+  `prometheus/promql/parser` directly. LogQL and TraceQL are parsed by
+  cerberus's own clean-room Apache reimplementations of the published
+  grammars (`internal/logql/lsyntax`, `internal/traceql/ast`), kept honest
+  by differential tests against the upstream parsers. If upstream parses
+  it, cerberus parses it — without linking Grafana's AGPL code.
 
 ## Version requirements
 
@@ -175,8 +178,10 @@ reference and a production HA example.
 
 ## Architecture
 
-Cerberus has **one** query pipeline, not three. Each head parses with its
-reference upstream parser and lowers to a shared plan IR
+Cerberus has **one** query pipeline, not three. Each head parses its
+query language — PromQL with the upstream Apache prometheus parser, LogQL
+and TraceQL with cerberus's own in-house Apache reimplementations — and
+lowers to a shared plan IR
 ([`internal/chplan`](internal/chplan)); a rule-based optimiser rewrites
 it; the closed typed-Frag [`internal/chsql`](internal/chsql) emitter
 produces parameterised, escape-free ClickHouse SQL; and the engine
@@ -288,3 +293,9 @@ local-dev and end-to-end commands live in
 ## License
 
 [Apache 2.0](LICENSE) © Thiago Souza.
+
+Cerberus's LogQL and TraceQL parsers are clean-room reimplementations of the
+published language grammars, API-compatible with Grafana Loki / Tempo but not
+derived from their AGPLv3 source. Third-party attributions and the clean-room
+statement are in [`NOTICE`](NOTICE). Cerberus is not affiliated with or endorsed
+by Grafana Labs, Prometheus, or the OpenTelemetry project.

@@ -7,8 +7,8 @@
 #                        the alpine variant regression.
 #   tempo                Reference grafana/tempo single-binary, listens on
 #                        :3200 (HTTP) and :4317 (OTLP gRPC). Pinned to the
-#                        commit-hash tag that matches the tsouza/tempo
-#                        replace target in go.mod — see the inline note
+#                        commit-hash tag that matches the grafana/tempo
+#                        version pinned in go.mod — see the inline note
 #                        on the version pin.
 #   cerberus-tempo       cerberus under test, listens on :29092. Same
 #                        Dockerfile.local image as the prom harness; the
@@ -58,22 +58,21 @@ services:
       - "28124:8123"
 
   tempo:
-    # Pin to the commit-hash tag that matches the tsouza/tempo replace
-    # target in go.mod. Reasoning:
+    # Pin to the commit-hash tag that matches the grafana/tempo version
+    # in go.mod. Reasoning:
     #
-    #   go.mod replace: github.com/grafana/tempo =>
-    #       github.com/tsouza/tempo v0.0.1-cerberus-accessors
+    #   go.mod: github.com/grafana/tempo
+    #       v1.5.1-0.20260508211128-2f74ea818de1
+    #   (pseudo-version of grafana/tempo commit
+    #   2f74ea818de1377e6ac9dd15117fa284c9c6ba36
+    #   = `v3.0.0-rc.1-7-g2f74ea818`, see harness/.../upstream/VERSION).
     #
-    #   tsouza/tempo cerberus-accessors branches from grafana/tempo
-    #   commit 2f74ea818de1377e6ac9dd15117fa284c9c6ba36
-    #   (= `v3.0.0-rc.1-7-g2f74ea818`, see harness/.../upstream/VERSION).
-    #
-    # Tempo's pkg/traceql parser ships in the server binary, so a Docker
-    # image that lags or leads the fork's branch point will diff against
+    # Tempo's pkg/traceql parser ships in the reference server binary, so a
+    # Docker image that lags or leads that commit will diff against
     # cerberus for purely-parser reasons. `grafana/tempo:main-2f74ea8`
-    # is built from the exact upstream commit the tsouza/tempo fork
-    # branches from. Bump the tag here in lock-step when the tsouza/tempo
-    # replace tag moves (procedure in compatibility/tempo/README.md).
+    # is built from the exact upstream commit go.mod pins. Bump the tag
+    # here in lock-step when the grafana/tempo version in go.mod moves
+    # (procedure in compatibility/tempo/README.md).
     image: grafana/tempo:main-2f74ea8
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:

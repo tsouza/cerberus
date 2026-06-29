@@ -3,14 +3,13 @@ package loki
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"text/template"
 
-	loglib "github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
-	"github.com/prometheus/prometheus/model/labels"
+	logpattern "github.com/tsouza/cerberus/internal/logql/logpattern"
+
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // postProcessExtract walks the parsed LogQL expression and pulls out
@@ -35,13 +34,11 @@ import (
 //     a Loki pattern expression and adds each named capture to the
 //     labels map. `<_>` skips a segment.
 //   - `| drop foo, bar` / `| drop foo="v"` — remove named labels (or
-//     labels whose value matches the matcher) from the output. Applied
-//     by handing the labels to upstream Loki's `log.DropLabels.Process`
-//     so cerberus inherits its exact semantics (including the
-//     special-error-label preservation).
+//     labels whose value matches the matcher) from the output, as map
+//     operations reproducing Loki's DropLabels semantics.
 //   - `| keep foo, bar` / `| keep foo="v"` — opposite of drop: keep
-//     only the named labels (or labels whose value matches). Also
-//     delegates to upstream Loki's `log.KeepLabels.Process`.
+//     only the named labels (or labels whose value matches), reproducing
+//     Loki's KeepLabels semantics (special error labels always kept).
 //
 // Lowering already returns nil-predicate no-ops for these stages so
 // the SQL doesn't try to model them. Returns a transform that maps
@@ -84,9 +81,8 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 			}
 		case *syntax.DropLabelsExpr, *syntax.KeepLabelsExpr:
 			// In a multi-case type switch v keeps the type-switch
-			// expression's interface type (StageExpr), which is exactly
-			// what newLabelProjectionStep wants — Stage() lives on the
-			// StageExpr interface.
+			// expression's interface type (StageExpr); newLabelProjectionStep
+			// re-asserts the concrete drop/keep type to read its matchers.
 			step, err := newLabelProjectionStep(v)
 			if err != nil {
 				return nil, err
@@ -213,7 +209,7 @@ var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 // Returns a FRESH labels map per row so callers can safely treat the
 // original sample's labels as immutable (a shared reference from a
 // previous step is also fine — we always allocate).
-func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
+func newLabelFormatStep(formats []syntax.LabelFmt) (lineTransform, error) {
 	// Pre-parse all template Formats so per-row execution is cheap.
 	type compiled struct {
 		dst    string
@@ -323,7 +319,7 @@ func unpackStep(line string, _ int64, labels map[string]string) (string, map[str
 		if err := json.Unmarshal(v, &s); err != nil {
 			continue
 		}
-		if k == logqlmodel.PackedEntryKey {
+		if k == syntax.PackedEntryKey {
 			newLine = s
 			continue
 		}
@@ -356,7 +352,7 @@ const duplicateSuffix = "_extracted"
 // A pattern that fails to match (Matches returns nil) leaves the line
 // and labels unchanged — Loki's silent-fallback semantics.
 func newPatternStep(p string) (lineTransform, error) {
-	m, err := pattern.New(p)
+	m, err := logpattern.New(p)
 	if err != nil {
 		return nil, err
 	}
@@ -384,50 +380,88 @@ func newPatternStep(p string) (lineTransform, error) {
 	}, nil
 }
 
-// newLabelProjectionStep implements `| drop` and `| keep` by delegating
-// to upstream Loki's `log.Stage` machinery. Both StageExprs expose a
-// `Stage()` method that returns the same `log.DropLabels` / `log.KeepLabels`
-// implementation Loki itself runs at query time — cerberus inherits the
-// exact matcher semantics (including the special-error-label
-// preservation and the bare-name vs matcher-form distinction) by
-// reusing the upstream Process call. Field access on the unexported
-// `dropLabels` / `keepLabels` slice is not needed: we operate on the
-// LabelsBuilder shape Loki's Stage expects.
+// newLabelProjectionStep implements `| drop` and `| keep` as map
+// operations over a row's label set, reproducing upstream Loki's
+// DropLabels / KeepLabels semantics (pkg/logql/log/{drop,keep}_labels.go):
 //
-// Each invocation builds a fresh LabelsBuilder over the input label
-// map, runs Process, and reads the surviving labels back. Labels pass
-// through unchanged in shape; only the membership of the output map
-// differs from the input. The line is never rewritten.
+//   - `| drop`: a bare entry deletes the named label; a matcher entry
+//     (`| drop x="v"`) deletes the label only when it is present and its
+//     value matches. The `__error__` / `__error_details__` keys are
+//     ordinary map keys here, so the same rules apply to them.
+//   - `| keep`: an empty keep list keeps everything; otherwise every
+//     non-special label is dropped unless it matches a keep entry (bare
+//     name, or matcher name+value). The special `__error__` family is
+//     always retained.
 //
-// Returns a FRESH labels map per row so callers can safely treat the
+// Each invocation returns a FRESH labels map so callers can treat the
 // original sample's labels as immutable, consistent with the other
-// label-mutating steps (label_format, unpack, pattern).
+// label-mutating steps. The line is never rewritten.
 func newLabelProjectionStep(stage syntax.StageExpr) (lineTransform, error) {
-	st, err := stage.Stage()
-	if err != nil {
-		return nil, err
+	switch s := stage.(type) {
+	case *syntax.DropLabelsExpr:
+		matchers := s.Matchers()
+		return func(line string, _ int64, in map[string]string) (string, map[string]string) {
+			out := copyLabelMap(in)
+			for _, d := range matchers {
+				if d.Matcher != nil {
+					if v, ok := out[d.Matcher.Name]; ok && d.Matcher.Matches(v) {
+						delete(out, d.Matcher.Name)
+					}
+					continue
+				}
+				delete(out, d.Name)
+			}
+			return line, out
+		}, nil
+	case *syntax.KeepLabelsExpr:
+		matchers := s.Matchers()
+		return func(line string, _ int64, in map[string]string) (string, map[string]string) {
+			out := copyLabelMap(in)
+			if len(matchers) == 0 {
+				return line, out
+			}
+			for name, val := range in {
+				if isSpecialLabel(name) {
+					continue
+				}
+				keep := false
+				for _, k := range matchers {
+					if k.Matcher != nil && k.Matcher.Name == name && k.Matcher.Matches(val) {
+						keep = true
+						break
+					}
+					if k.Name == name {
+						keep = true
+						break
+					}
+				}
+				if !keep {
+					delete(out, name)
+				}
+			}
+			return line, out
+		}, nil
+	default:
+		return nil, fmt.Errorf("loki: unsupported label projection stage %T", stage)
 	}
-	baseBuilder := loglib.NewBaseLabelsBuilder()
-	return func(line string, _ int64, in map[string]string) (string, map[string]string) {
-		// Convert the input label map into labels.Labels. Order doesn't
-		// matter for Drop/Keep — both iterate via UnsortedLabels — but
-		// labels.FromMap returns a canonicalised set so the hash is
-		// stable across calls with the same content.
-		lbs := labels.FromMap(in)
-		builder := baseBuilder.ForLabels(lbs, labels.StableHash(lbs))
-		builder.Reset()
-		// Process returns (modifiedLine, keepRow). Drop/Keep never
-		// rewrite the line or reject the row — they only mutate the
-		// builder's label set. Discard both return values.
-		_, _ = st.Process(0, []byte(line), builder)
-		// LabelsResult().Labels() returns the surviving label set after
-		// the stage applied. Read it back into a plain map[string]string
-		// so the rest of the pipeline (line_format, label_format, …)
-		// keeps its map-based contract.
-		out := make(map[string]string, len(in))
-		builder.LabelsResult().Labels().Range(func(l labels.Label) {
-			out[l.Name] = l.Value
-		})
-		return line, out
-	}, nil
+}
+
+// isSpecialLabel reports whether name is one of Loki's reserved error
+// labels, which `| keep` always retains.
+func isSpecialLabel(name string) bool {
+	switch name {
+	case syntax.ErrorLabel, syntax.ErrorDetailsLabel, syntax.PreserveErrorLabel:
+		return true
+	}
+	return false
+}
+
+// copyLabelMap returns a shallow copy of in so per-row mutations stay
+// scoped to the result.
+func copyLabelMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

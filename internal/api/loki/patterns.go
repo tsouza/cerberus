@@ -6,12 +6,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logproto"
-	drainpkg "github.com/grafana/loki/v3/pkg/pattern/drain"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/drain"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -37,15 +36,6 @@ type Pattern struct {
 	Level   string     `json:"level"`
 	Samples [][2]int64 `json:"samples"`
 }
-
-// nilLimits satisfies drain.Limits with no per-tenant JSON tokenisation
-// hints. Cerberus is single-tenant; the upstream pattern ingester uses
-// this hook to tokenise specific JSON fields differently, but the
-// format passed to drain.New ignores it for FormatUnknown (the generic
-// punctuation tokeniser).
-type nilLimits struct{}
-
-func (nilLimits) PatternIngesterTokenizableJSONFields(string) []string { return nil }
 
 // handlePatterns implements GET /loki/api/v1/patterns.
 //
@@ -158,15 +148,12 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 // shape. Returns an empty (non-nil) slice when no lines hit any cluster
 // — the JSON envelope encodes that as `data:[]`, matching upstream Loki.
 //
-// drain.New(FormatUnknown) uses the punctuation tokeniser, which is the
-// most generic of the three (JSON / logfmt / unknown) and works on
-// arbitrary log lines. Cerberus does not run DetectLogFormat on the
-// first line because that gates the tokeniser for all subsequent lines
-// — a single non-JSON / non-logfmt row in a mostly-JSON stream would
-// then break tokenisation for the rest. The punctuation tokeniser is
-// equally happy with all three shapes.
+// The miner is the in-house clean-room Drain implementation
+// (internal/drain), which tokenises on whitespace and treats
+// digit-bearing tokens as variables — generic enough for arbitrary log
+// lines without a per-format tokeniser gate.
 func minePatterns(lines []chclient.TimestampedLine) []Pattern {
-	d := drainpkg.New("", drainpkg.DefaultConfig(), nilLimits{}, drainpkg.FormatUnknown, nil)
+	d := drain.New(drain.DefaultConfig())
 	for _, line := range lines {
 		d.Train(line.Body, line.Timestamp.UnixNano())
 	}
@@ -195,22 +182,16 @@ func minePatterns(lines []chclient.TimestampedLine) []Pattern {
 	return out
 }
 
-// projectSamples converts drain's per-cluster []*logproto.PatternSample
-// (Timestamp model.Time = millisecond, Value int64 = count) onto the
-// upstream wire shape `[][unix_seconds, count]`. Samples are sorted by
-// timestamp ascending so the response is stable across runs.
-//
-// model.Time is milliseconds-since-epoch typed as int64; its .Unix()
-// returns seconds. Upstream's WriteQueryPatternsResponseJSON calls
-// `sample.Timestamp.Unix()`, which strips the millisecond component —
-// cerberus matches that exactly.
-func projectSamples(samples []*logproto.PatternSample) [][2]int64 {
+// projectSamples converts the in-house drain cluster samples
+// (TimestampUnixSec, Count) onto the upstream wire shape
+// `[][unix_seconds, count]`. Samples already arrive ascending by
+// timestamp (drain.Cluster.Samples sorts), and the resolution is whole
+// seconds, matching upstream's `WriteQueryPatternsResponseJSON`, which
+// emits `sample.Timestamp.Unix()`.
+func projectSamples(samples []drain.Sample) [][2]int64 {
 	out := make([][2]int64, 0, len(samples))
 	for _, s := range samples {
-		if s == nil {
-			continue
-		}
-		out = append(out, [2]int64{s.Timestamp.Unix(), s.Value})
+		out = append(out, [2]int64{s.TimestampUnixSec, s.Count})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
 	return out

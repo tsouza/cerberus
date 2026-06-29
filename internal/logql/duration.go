@@ -1,7 +1,7 @@
 package logql
 
 import (
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -290,7 +290,7 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 	}
 	noPriorError := notExpr(&chplan.FuncCall{
 		Name: "mapContains",
-		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: logqlmodel.ErrorLabel}},
+		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: syntax.ErrorLabel}},
 	})
 	args := make([]chplan.Expr, 0, len(marks)*2+1)
 	for _, m := range marks {
@@ -298,9 +298,9 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 			args,
 			&chplan.Binary{Op: chplan.OpAnd, Left: noPriorError, Right: m.cond},
 			&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
-				&chplan.LitString{V: logqlmodel.ErrorLabel},
+				&chplan.LitString{V: syntax.ErrorLabel},
 				&chplan.LitString{V: m.kind},
-				&chplan.LitString{V: logqlmodel.ErrorDetailsLabel},
+				&chplan.LitString{V: syntax.ErrorDetailsLabel},
 				m.details,
 			}},
 		)

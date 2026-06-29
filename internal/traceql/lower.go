@@ -9,9 +9,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -120,11 +121,10 @@ func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
 // outermost chplan node (which matches the chsql emitter's
 // inside-out subquery wrap).
 //
-// The IR + chsql emit foundation landed in PR #437. This lowering
-// became wireable once tsouza/tempo v0.0.3-cerberus-accessors
-// exposed Op() / Limit() / Value() / Elements() / Separators()
-// accessors on the upstream-unexported SecondStageElement variants
-// (mirrors the MetricsAggregate accessor pattern from #143).
+// The IR + chsql emit foundation landed in PR #437. The in-house ast
+// (internal/traceql/ast) exposes Op() / Limit() / Value() / Elements() /
+// Separators() accessors on its SecondStageElement variants, which this
+// lowering reads to build the load-bearing shapes.
 func lowerMetricsSecondStage(inner chplan.Node, ss traceql.SecondStageElement) (chplan.Node, error) {
 	switch v := ss.(type) {
 	case *traceql.TopKBottomK:
@@ -677,7 +677,8 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 // so both the attribute and the intrinsic existence forms are
 // load-bearing shapes.
 //
-// Reference semantics (tsouza/tempo fork, pkg/traceql):
+// Reference semantics (grafana/tempo pkg/traceql, the AGPL upstream
+// cerberus reimplements clean-room — test-only oracle, never linked):
 //
 //   - `x != nil` (OpExists) evaluates to `static.Type != TypeNil`
 //     after executing x against the span (ast_execute.go). Intrinsic
@@ -742,8 +743,9 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr
 // (UnaryOperation{OpSub}) — e.g. `{ -span.foo > 0 }`,
 // `{ -(span.a + span.b) = -5 }`, `{ -span.duration < 0ns }`.
 //
-// Reference semantics (tsouza/tempo fork, ast_execute.go
-// UnaryOperation.execute, OpSub branch): the operand executes to a
+// Reference semantics (grafana/tempo pkg/traceql ast_execute.go
+// UnaryOperation.execute, OpSub branch — the AGPL upstream cerberus
+// reimplements clean-room, test-only oracle, never linked): the operand executes to a
 // Static; if its type is not numeric (int / float / duration) the
 // reference returns an error, otherwise it returns `-1 * n` preserving
 // the operand's numeric type (NewStaticInt / NewStaticFloat /
@@ -1318,7 +1320,34 @@ func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.
 	if isComparisonOp(op) && (isNumericExpr(lhs) || isNumericExpr(rhs)) {
 		return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
 	}
+	// Two bare attribute accesses under an ORDERING comparison (`span.a > span.b`,
+	// `a <= b`) carry numeric intent: Tempo compares them by their typed value,
+	// but OTel-CH stores every attribute as String, so a raw compare is
+	// lexicographic — `'10' > '5'` is false. Coerce both via toFloat64OrNull, the
+	// same path the literal-hint branch above takes. Equality (`=` / `!=`) stays a
+	// string compare (the common attribute-equality / label-matcher case); a
+	// legitimately-string ordering compare coerces to NULL and drops — the
+	// identical trade-off the literal-hint path already accepts.
+	if isOrderingComparisonOp(op) {
+		_, lhsField := lhs.(*chplan.FieldAccess)
+		_, rhsField := rhs.(*chplan.FieldAccess)
+		if lhsField && rhsField {
+			return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
+		}
+	}
 	return lhs, rhs
+}
+
+// isOrderingComparisonOp reports whether op is an ordering comparison
+// (`<` `<=` `>` `>=`) — the comparison subset that implies numeric intent on two
+// attribute operands. Equality (`=` `!=`) is excluded: attribute equality is
+// string-valued (label-matcher semantics).
+func isOrderingComparisonOp(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
+		return true
+	}
+	return false
 }
 
 // coerceFieldAccess wraps every FieldAccess inside expr in

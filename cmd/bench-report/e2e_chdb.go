@@ -8,9 +8,8 @@ import (
 	"strings"
 	"time"
 
-	logqlsyntax "github.com/grafana/loki/v3/pkg/logql/syntax"
-	tempo "github.com/grafana/tempo/pkg/traceql"
 	"github.com/prometheus/prometheus/promql/parser"
+	logqlsyntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -18,6 +17,7 @@ import (
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // e2eResult is one representative query's end-to-end latency on the large
@@ -177,7 +177,7 @@ func emitPromRange(q string, start, end time.Time, step time.Duration) (string, 
 }
 
 func emitTraceQL(q string) (string, error) {
-	expr, err := tempo.Parse(q)
+	expr, err := traceqlast.Parse(q)
 	if err != nil {
 		return "", err
 	}

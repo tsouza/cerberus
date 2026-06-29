@@ -7,6 +7,7 @@ import (
 	lokisyntax "github.com/grafana/loki/v3/pkg/logql/syntax"
 
 	"github.com/tsouza/cerberus/internal/logql"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // TestParseExprPermissive_MatchAllAccepted pins the load-bearing
@@ -134,7 +135,7 @@ func TestParseExprPermissive_MatchAllMatcherSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExprPermissive: %v", err)
 	}
-	sel, ok := expr.(lokisyntax.LogSelectorExpr)
+	sel, ok := expr.(syntax.LogSelectorExpr)
 	if !ok {
 		t.Fatalf("expr is not a LogSelectorExpr: %T", expr)
 	}

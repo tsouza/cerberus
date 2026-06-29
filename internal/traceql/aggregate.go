@@ -1,13 +1,13 @@
 // This file (and select.go) read parser AST nodes exclusively via the
-// upstream-fork-exposed accessors on github.com/tsouza/tempo:cerberus-accessors
-// — no reflection, no pointer aliasing tricks. See docs/upstream-forks.md.
+// typed accessors on cerberus's in-house TraceQL AST
+// (internal/traceql/ast) — no reflection, no pointer aliasing tricks.
 
 package traceql
 
 import (
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -54,9 +54,8 @@ const (
 // lowerAggregate handles `| count()`, `| sum(...)`, `| avg(...)`,
 // `| max(...)`, `| min(...)`. count() has no inner expression — we
 // aggregate the constant 1 per row. The other four read the inner
-// FieldExpression via the upstream-fork-exposed Aggregate.InnerExpr()
-// accessor (github.com/tsouza/tempo:cerberus-accessors) — see
-// docs/upstream-forks.md.
+// FieldExpression via the in-house Aggregate.InnerExpr() accessor
+// (internal/traceql/ast).
 //
 // Per-trace identity is preserved by grouping on TraceId and
 // piggybacking representative envelope columns (SpanName,

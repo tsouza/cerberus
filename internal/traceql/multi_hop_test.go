@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	tempo "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -24,7 +24,8 @@ func TestLowerMultiHopChain(t *testing.T) {
 	s := schema.DefaultOTelTraces()
 
 	expr, err := tempo.Parse(
-		`{ resource.service.name = "a" } > { resource.service.name = "b" } > { resource.service.name = "c" }`)
+		`{ resource.service.name = "a" } > { resource.service.name = "b" } > { resource.service.name = "c" }`,
+	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -60,7 +61,8 @@ func TestLowerRecursiveDescendant(t *testing.T) {
 	s := schema.DefaultOTelTraces()
 
 	expr, err := tempo.Parse(
-		`{ resource.service.name = "root" } >> { resource.service.name = "leaf" }`)
+		`{ resource.service.name = "root" } >> { resource.service.name = "leaf" }`,
+	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -90,7 +92,8 @@ func TestLowerRecursiveAncestor(t *testing.T) {
 	s := schema.DefaultOTelTraces()
 
 	expr, err := tempo.Parse(
-		`{ resource.service.name = "leaf" } << { resource.service.name = "root" }`)
+		`{ resource.service.name = "leaf" } << { resource.service.name = "root" }`,
+	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -119,7 +122,8 @@ func TestEmitRecursiveDescendant_EndToEnd(t *testing.T) {
 	s := schema.DefaultOTelTraces()
 
 	expr, err := tempo.Parse(
-		`{ resource.service.name = "root" } >> { resource.service.name = "leaf" }`)
+		`{ resource.service.name = "root" } >> { resource.service.name = "leaf" }`,
+	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

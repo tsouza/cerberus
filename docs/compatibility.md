@@ -231,7 +231,7 @@ real bug rather than a silent wrong-rejection:
 2. **Meta-tests** — `go test ./test/rejection-parity/` pins the
    ratchet: the scanned-site set must equal the catalogue
    (regenerable via `CERBERUS_UPDATE_INVENTORY=1`, mirroring
-   `test/inventory`), every entry must be classified, every
+   `test/oracle/inventory`), every entry must be classified, every
    `rejection` trigger must parse with the head's reference parser
    AND fail the head's lowering with the catalogued message, and the
    parity corpus is derived 1:1 from the rejection entries. Adding a

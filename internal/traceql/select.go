@@ -6,17 +6,15 @@ package traceql
 import (
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // lowerSelect handles `| select(.attr1, .attr2, ...)` projection.
-// The attribute list is read via the upstream-fork-exposed
-// SelectOperation.Attrs() accessor
-// (github.com/tsouza/tempo:cerberus-accessors) — see
-// docs/upstream-forks.md.
+// The attribute list is read via the in-house
+// SelectOperation.Attrs() accessor (internal/traceql/ast).
 //
 // Output: a chplan.Project that emits the standard span-identity
 // columns (TraceId, SpanId, Timestamp) plus the selected attribute

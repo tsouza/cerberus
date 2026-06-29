@@ -36,7 +36,7 @@ import (
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 
-	tempo "github.com/grafana/tempo/pkg/traceql"
+	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -92,7 +92,7 @@ const cycleSeedInsert = `INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId,
 // { resource.service.name = "leaf" }` through the real cerberus chain.
 func emitCycleDescendantSQL(t *testing.T) (string, []any) {
 	t.Helper()
-	expr, err := tempo.Parse(`{ resource.service.name = "root" } >> { resource.service.name = "leaf" }`)
+	expr, err := traceqlast.Parse(`{ resource.service.name = "root" } >> { resource.service.name = "leaf" }`)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

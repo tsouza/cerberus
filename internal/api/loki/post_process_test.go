@@ -3,7 +3,7 @@ package loki
 import (
 	"testing"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // TestLineFormat_LabelInterpolation — the canonical case: a `| line_format`

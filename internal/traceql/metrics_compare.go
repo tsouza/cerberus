@@ -3,7 +3,7 @@ package traceql
 import (
 	"fmt"
 
-	"github.com/grafana/tempo/pkg/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -14,7 +14,8 @@ import (
 // tab) into a chplan.MetricsCompare node.
 //
 // Reference semantics — grafana/tempo pkg/traceql/engine_metrics_compare.go
-// (consumed via the tsouza/tempo cerberus-accessors fork):
+// (the AGPL upstream cerberus reimplements clean-room; consulted only as a
+// test-only oracle, never linked into the binary):
 //
 //   - Every span the pipeline produces is assigned to one of two
 //     cohorts: "selection" (the span matches the compare() filter and,
