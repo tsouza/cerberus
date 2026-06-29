@@ -137,11 +137,10 @@ func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
 // outermost chplan node (which matches the chsql emitter's
 // inside-out subquery wrap).
 //
-// The IR + chsql emit foundation landed in PR #437. This lowering
-// became wireable once tsouza/tempo v0.0.3-cerberus-accessors
-// exposed Op() / Limit() / Value() / Elements() / Separators()
-// accessors on the upstream-unexported SecondStageElement variants
-// (mirrors the MetricsAggregate accessor pattern from #143).
+// The IR + chsql emit foundation landed in PR #437. The in-house ast
+// (internal/traceql/ast) exposes Op() / Limit() / Value() / Elements() /
+// Separators() accessors on its SecondStageElement variants, which this
+// lowering reads to build the load-bearing shapes.
 func lowerMetricsSecondStage(inner chplan.Node, ss traceql.SecondStageElement) (chplan.Node, error) {
 	switch v := ss.(type) {
 	case *traceql.TopKBottomK:
@@ -694,7 +693,8 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 // so both the attribute and the intrinsic existence forms are
 // load-bearing shapes.
 //
-// Reference semantics (tsouza/tempo fork, pkg/traceql):
+// Reference semantics (grafana/tempo pkg/traceql, the AGPL upstream
+// cerberus reimplements clean-room — test-only oracle, never linked):
 //
 //   - `x != nil` (OpExists) evaluates to `static.Type != TypeNil`
 //     after executing x against the span (ast_execute.go). Intrinsic
@@ -759,8 +759,9 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr
 // (UnaryOperation{OpSub}) — e.g. `{ -span.foo > 0 }`,
 // `{ -(span.a + span.b) = -5 }`, `{ -span.duration < 0ns }`.
 //
-// Reference semantics (tsouza/tempo fork, ast_execute.go
-// UnaryOperation.execute, OpSub branch): the operand executes to a
+// Reference semantics (grafana/tempo pkg/traceql ast_execute.go
+// UnaryOperation.execute, OpSub branch — the AGPL upstream cerberus
+// reimplements clean-room, test-only oracle, never linked): the operand executes to a
 // Static; if its type is not numeric (int / float / duration) the
 // reference returns an error, otherwise it returns `-1 * n` preserving
 // the operand's numeric type (NewStaticInt / NewStaticFloat /

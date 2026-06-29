@@ -10,7 +10,6 @@ type RootExpr struct {
 	MetricsPipeline    FirstStageElement
 	MetricsSecondStage SecondStageElement
 	Hints              *Hints
-	OptimizationCount  int
 }
 
 func (r RootExpr) String() string {

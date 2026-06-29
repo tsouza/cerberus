@@ -4,10 +4,10 @@
 # this directory. See ../../README.md and ../../../docs/loki-compliance-plan.md
 # for the bump procedure.
 #
-# Cerberus's `tsouza/loki` fork (replace directive in go.mod) only
-# tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel`;
-# `pkg/logql/bench/` is OUT of that watch boundary. The snapshot here
-# therefore pins grafana/loki directly rather than the fork tag.
+# This `pkg/logql/bench/` corpus is reference test material only — it is
+# never linked into cmd/cerberus (the shipped LogQL parser is cerberus's
+# own in-house reimplementation, internal/logql/lsyntax). The snapshot
+# here pins grafana/loki directly.
 
 upstream_repo:     github.com/grafana/loki
 upstream_tag:      v3.7.0

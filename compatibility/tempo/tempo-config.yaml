@@ -25,7 +25,7 @@
 #       harness's read paths.
 #
 # When the tempo image pin in docker-compose.yml bumps (in lock-step
-# with the tsouza/tempo go.mod replace), revisit this config: Tempo's
+# with the grafana/tempo go.mod version), revisit this config: Tempo's
 # config schema occasionally renames fields between minor versions.
 
 stream_over_http_enabled: true

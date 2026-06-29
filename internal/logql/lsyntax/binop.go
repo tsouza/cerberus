@@ -3,8 +3,6 @@ package lsyntax
 import (
 	"fmt"
 	"math"
-
-	"github.com/prometheus/prometheus/promql"
 )
 
 // IsLogicalBinOp reports whether op is one of the logical/set binary
@@ -18,131 +16,62 @@ func IsLogicalBinOp(op string) bool {
 	return false
 }
 
-// MergeBinOp evaluates a binary operation between two scalar samples.
-// It mirrors the upstream LogQL scalar merge semantics and backs the
-// parse-time constant folding of literal-only binary expressions.
-func MergeBinOp(op string, left, right *promql.Sample, swap, filter, isVectorComparison bool) (*promql.Sample, error) {
-	var merger func(left, right *promql.Sample) *promql.Sample
-
+// foldScalarBinOp evaluates a binary operation between two scalar values,
+// mirroring the upstream LogQL scalar-merge semantics. It backs the
+// parse-time constant folding of literal-only binary expressions, where
+// both legs are always concrete scalars (no vector comparison, no filter
+// semantics).
+func foldScalarBinOp(op string, left, right float64) (float64, error) {
 	switch op {
 	case OpTypeAdd:
-		merger = func(l, r *promql.Sample) *promql.Sample {
-			if l == nil || r == nil {
-				return nil
-			}
-			res := *l
-			res.F += r.F
-			return &res
-		}
+		return left + right, nil
 	case OpTypeSub:
-		merger = func(l, r *promql.Sample) *promql.Sample {
-			if l == nil || r == nil {
-				return nil
-			}
-			res := *l
-			res.F -= r.F
-			return &res
-		}
+		return left - right, nil
 	case OpTypeMul:
-		merger = func(l, r *promql.Sample) *promql.Sample {
-			if l == nil || r == nil {
-				return nil
-			}
-			res := *l
-			res.F *= r.F
-			return &res
-		}
+		return left * right, nil
 	case OpTypeDiv:
-		merger = func(l, r *promql.Sample) *promql.Sample {
-			if l == nil || r == nil {
-				return nil
-			}
-			res := *l
-			if r.F == 0 {
-				res.F = math.NaN()
-			} else {
-				res.F /= r.F
-			}
-			return &res
+		if right == 0 {
+			return math.NaN(), nil
 		}
+		return left / right, nil
 	case OpTypeMod:
-		merger = func(l, r *promql.Sample) *promql.Sample {
-			if l == nil || r == nil {
-				return nil
-			}
-			res := *l
-			if r.F == 0 {
-				res.F = math.NaN()
-			} else {
-				res.F = math.Mod(res.F, r.F)
-			}
-			return &res
+		if right == 0 {
+			return math.NaN(), nil
 		}
+		return math.Mod(left, right), nil
 	case OpTypePow:
-		merger = func(l, r *promql.Sample) *promql.Sample {
-			if l == nil || r == nil {
-				return nil
-			}
-			res := *l
-			res.F = math.Pow(l.F, r.F)
-			return &res
-		}
+		return math.Pow(left, right), nil
 	case OpTypeCmpEQ:
-		merger = comparator(func(l, r float64) bool { return l == r }, filter)
+		return boolToFloat(left == right), nil
 	case OpTypeNEQ:
-		merger = comparator(func(l, r float64) bool { return l != r }, filter)
+		return boolToFloat(left != right), nil
 	case OpTypeGT:
-		merger = comparator(func(l, r float64) bool { return l > r }, filter)
+		return boolToFloat(left > right), nil
 	case OpTypeGTE:
-		merger = comparator(func(l, r float64) bool { return l >= r }, filter)
+		return boolToFloat(left >= right), nil
 	case OpTypeLT:
-		merger = comparator(func(l, r float64) bool { return l < r }, filter)
+		return boolToFloat(left < right), nil
 	case OpTypeLTE:
-		merger = comparator(func(l, r float64) bool { return l <= r }, filter)
+		return boolToFloat(left <= right), nil
 	default:
-		return nil, fmt.Errorf("should never happen: unexpected operation: (%s)", op)
+		return 0, fmt.Errorf("should never happen: unexpected operation: (%s)", op)
 	}
-
-	res := merger(left, right)
-	if !isVectorComparison {
-		return res, nil
-	}
-	if filter {
-		retSample := left
-		if swap {
-			retSample = right
-		}
-		if res != nil {
-			return retSample, nil
-		}
-	}
-	return res, nil
 }
 
-func comparator(pred func(l, r float64) bool, filter bool) func(l, r *promql.Sample) *promql.Sample {
-	return func(l, r *promql.Sample) *promql.Sample {
-		if l == nil || r == nil {
-			return nil
-		}
-		res := *l
-		val := 0.0
-		if pred(l.F, r.F) {
-			val = 1.0
-		} else if filter {
-			return nil
-		}
-		res.F = val
-		return &res
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1.0
 	}
+	return 0.0
 }
 
 // reduceBinOp folds a binary operation between two literal floats into a
 // single literal, maintaining the invariant that a BinOpExpr never has
 // two literal legs.
 func reduceBinOp(op string, left, right float64) *LiteralExpr {
-	merged, err := MergeBinOp(op, &promql.Sample{F: left}, &promql.Sample{F: right}, false, false, false)
+	val, err := foldScalarBinOp(op, left, right)
 	if err != nil {
 		return &LiteralExpr{err: err}
 	}
-	return &LiteralExpr{Val: merged.F}
+	return &LiteralExpr{Val: val}
 }

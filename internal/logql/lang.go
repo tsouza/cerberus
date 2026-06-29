@@ -363,11 +363,11 @@ func parseExprTraced(ctx context.Context, query string) (syntax.Expr, error) {
 // during parsing itself, so the permissive path still surfaces them
 // downstream when cerberus's lowering walks the AST.
 //
-// Detection is by error-message substring because the upstream
-// errAtleastOneEqualityMatcherRequired constant is unexported.
-// `empty-compatible` is unique to that single rejection path in
-// vendored Loki v3.0.0-cerberus-parser, so the substring is stable
-// across the corpus the cerberus-forks-monitor rebases.
+// Detection is by error-message substring because the in-house
+// lsyntax errEmptyCompatibleMatcherRejected constant is unexported.
+// This is a cerberus-internal substring contract between lsyntax's
+// validator and this permissive path: `empty-compatible` is unique to
+// that single rejection message, so the substring is stable.
 //
 // Exported so handlers outside the logql package
 // (internal/api/loki/index_stats.go's selectorMatchers,
