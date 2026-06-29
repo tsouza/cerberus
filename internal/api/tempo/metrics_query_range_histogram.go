@@ -129,7 +129,7 @@ func (h *Handler) serveMetricsQueryRangeHistogram(
 	}
 	wrapped := wrapHistogramForSample(rw, hist)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: "tempo-metrics-matrix",
 	})

@@ -128,6 +128,18 @@ func NewWithBatches(batches ...Batch) *Driver {
 func Default() *Driver {
 	return NewWithBatches(
 		AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{}),
+		// analyzer.scan-resource-bound (Analyzer, must-run): RequireScanResourceBound
+		// is an EARLY signal for the spans-scan resource-bound invariant (the
+		// chsql.Emit chokepoint is the sufficient enforcement). It is verify-only:
+		// it lifts the facts already on the node — a NestedSetAnnotate with
+		// TraceLimit > 0 must carry its lock-step BoundedTraceScope leaf — and
+		// panics if that pairing was broken in lowering. No ctx, no schema, no
+		// synthesis; mutates nothing. Runs before the heuristic batches; the
+		// verification rule never mutates, so the batch is idempotent.
+		AnalyzerBatch(
+			"analyzer.scan-resource-bound",
+			RequireScanResourceBound{},
+		),
 		Batch{
 			Name:     "optimizer.constant-fold-heuristic",
 			Strategy: Once(),
