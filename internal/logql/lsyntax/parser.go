@@ -93,11 +93,13 @@ func ParseLogSelector(input string, validate bool) (LogSelectorExpr, error) {
 // validation
 // ------------------------------------------------------------------
 
-// errAtLeastOneEqualityMatcherRequired is the message the upstream LogQL
-// parser produces when a selector has no matcher that constrains a
-// non-empty value. cerberus's permissive parse path keys its retry on
-// the "empty-compatible" substring, so the wording is preserved.
-const errAtLeastOneEqualityMatcherRequired = "queries require at least one regexp or equality matcher that does not have an empty-compatible value. For instance, app=~\".*\" does not meet this requirement, but app=~\".+\" will"
+// errEmptyCompatibleMatcherRejected is returned when a selector has no
+// matcher that constrains a non-empty value. The error text is
+// deliberately matched to upstream Loki for wire compatibility: it is
+// returned verbatim to clients, and cerberus's permissive parse path
+// (logql.ParseExprPermissive) keys its retry on the "empty-compatible"
+// substring, so the wording must not drift.
+const errEmptyCompatibleMatcherRejected = "queries require at least one regexp or equality matcher that does not have an empty-compatible value. For instance, app=~\".*\" does not meet this requirement, but app=~\".+\" will"
 
 func validateExpr(expr Expr) error {
 	switch e := expr.(type) {
@@ -172,7 +174,7 @@ func validateMatchers(matchers []*labels.Matcher) error {
 			return nil
 		}
 	}
-	return NewParseError(errAtLeastOneEqualityMatcherRequired, 0, 0)
+	return NewParseError(errEmptyCompatibleMatcherRejected, 0, 0)
 }
 
 // matcherEmptyCompatible reports whether a matcher also matches the empty

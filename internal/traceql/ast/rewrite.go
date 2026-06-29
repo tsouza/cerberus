@@ -32,9 +32,6 @@ func rewritePipeline(p *Pipeline) {
 		switch e := elem.(type) {
 		case *SpansetFilter:
 			e.Expression = rewriteFieldExpr(e.Expression)
-		case SpansetFilter:
-			e.Expression = rewriteFieldExpr(e.Expression)
-			p.Elements[i] = e
 		case GroupOperation:
 			e.Expression = rewriteFieldExpr(e.Expression)
 			p.Elements[i] = e
@@ -72,9 +69,6 @@ func rewriteFieldExpr(fe FieldExpression) FieldExpression {
 		if folded, ok := foldArrayComparison(e); ok {
 			return folded
 		}
-		return e
-	case *UnaryOperation:
-		e.Expression = rewriteFieldExpr(e.Expression)
 		return e
 	case UnaryOperation:
 		e.Expression = rewriteFieldExpr(e.Expression)

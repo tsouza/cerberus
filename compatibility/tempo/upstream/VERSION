@@ -1,17 +1,12 @@
-# Vendored from github.com/tsouza/tempo (fork of grafana/tempo).
+# Vendored from github.com/grafana/tempo.
 #
 # This file records the EXACT upstream coordinates of the snapshot under
 # this directory. See ./README.md and ../../docs/tempo-compliance-plan.md
 # for the bump procedure.
 
-fork_repo:        github.com/tsouza/tempo
-fork_tag:         v0.0.1-cerberus-accessors
-fork_commit:      5e75744c3b21a850c7ac374591ef3ef2e857fc6d
-
-# Upstream commit on grafana/tempo:main that cerberus-accessors was
-# branched from. The cerberus-accessors branch only patches pkg/traceql/;
-# cmd/tempo-vulture/ and pkg/httpclient/ are byte-identical between the
-# fork tag and this upstream base (verified via `git diff`).
+# Snapshot taken from the grafana/tempo commit that go.mod pins for the
+# Apache pkg/tempopb wire types. cmd/tempo-vulture/ and pkg/httpclient/
+# are vendored verbatim from this commit.
 upstream_repo:    github.com/grafana/tempo
 upstream_commit:  2f74ea818de1377e6ac9dd15117fa284c9c6ba36
 upstream_describe: v3.0.0-rc.1-7-g2f74ea818

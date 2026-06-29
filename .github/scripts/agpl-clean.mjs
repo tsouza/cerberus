@@ -1,9 +1,11 @@
 // agpl-clean.mjs — the provably-clean-build licence gate.
 //
 // Cerberus ships under Apache-2.0. Its LogQL and TraceQL parsers are
-// in-house clean-room Apache reimplementations (internal/logql/lsyntax,
-// internal/logql/logpattern, internal/drain, internal/traceql/ast); PromQL
-// uses the upstream Apache prometheus parser. The AGPLv3 grafana/loki and
+// in-house, independent Apache reimplementations (internal/logql/lsyntax,
+// internal/logql/logpattern, internal/drain, internal/traceql/ast); a small
+// set of error-message strings is deliberately matched to upstream for wire
+// compatibility (documented at each site). PromQL uses the upstream Apache
+// prometheus parser. The AGPLv3 grafana/loki and
 // grafana/tempo parsers survive only as test-only oracles (the agpl_oracle-
 // tagged tests and the compatibility harnesses), never in the shipped binary.
 // Linking AGPL code into the Apache binary distributed as `cmd/cerberus`
