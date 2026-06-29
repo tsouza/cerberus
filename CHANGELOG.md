@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.7.3] — 2026-06-29
+
+### Fixed
+
+- **license:** backport de-AGPL clean-room parsers to 1.7.x (#1151)
+
 ## [v1.7.2] — 2026-06-26
 
 ### Fixed
