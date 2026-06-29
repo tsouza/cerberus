@@ -1,20 +1,18 @@
-// Internal-package (`package optimizer`) companions to
+// Internal-package (`package chplan`) companions to
 // gremlins_mutants_test.go. These pin mutants on the unexported
-// rewriteChildren helpers (rewriteLeftRight / rewriteIrregularNode),
-// which the external optimizer_test package can't reach directly. Each
-// test drives rewriteChildren with a recursion fn that rewrites a
+// RewriteChildren helpers (rewriteLeftRight / rewriteIrregularNode),
+// which the external chplan_test package can't reach directly. Each
+// test drives RewriteChildren with a recursion fn that rewrites a
 // single planted sentinel child, constructing the input so the original
 // code and the mutated branch produce observably different `changed`
 // flags or output trees.
 //
 // Mutant IDs use gremlins's `file:line:col` notation from the
 // phase3-optimizer workflow logs.
-package optimizer
+package chplan
 
 import (
 	"testing"
-
-	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges pins the
@@ -33,24 +31,24 @@ import (
 func TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges(t *testing.T) {
 	t.Parallel()
 
-	node := &chplan.CrossJoin{
+	node := &CrossJoin{
 		Left:  sentinelChild(),
-		Right: &chplan.Scan{Table: "right_unchanged"},
+		Right: &Scan{Table: "right_unchanged"},
 	}
 
-	out, changed := rewriteChildren(node, rewriteChildrenFn)
+	out, changed := RewriteChildren(node, rewriteChildrenFn)
 	if !changed {
 		t.Fatalf("rewriteLeftRight must report changed=true when only Left rewrote (INVERT_LOGICAL `&&`→`||` would return unchanged)")
 	}
-	cj, ok := out.(*chplan.CrossJoin)
+	cj, ok := out.(*CrossJoin)
 	if !ok {
 		t.Fatalf("expected *CrossJoin, got %T", out)
 	}
-	ls, ok := cj.Left.(*chplan.Scan)
+	ls, ok := cj.Left.(*Scan)
 	if !ok || ls.Table != "REWRITTEN_CHILD" {
 		t.Fatalf("expected Left rewritten to REWRITTEN_CHILD, got %#v", cj.Left)
 	}
-	rs, ok := cj.Right.(*chplan.Scan)
+	rs, ok := cj.Right.(*Scan)
 	if !ok || rs.Table != "right_unchanged" {
 		t.Fatalf("expected Right preserved as right_unchanged, got %#v", cj.Right)
 	}
@@ -72,25 +70,25 @@ func TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges(t *testing.T) {
 func TestRewriteIrregular_TopK_RecursesIntoKExprWhenInputUnchanged(t *testing.T) {
 	t.Parallel()
 
-	node := &chplan.TopK{
-		Input: &chplan.Scan{Table: "input_unchanged"},
+	node := &TopK{
+		Input: &Scan{Table: "input_unchanged"},
 		KExpr: sentinelChild(),
 		K:     1,
 	}
 
-	out, changed := rewriteChildren(node, rewriteChildrenFn)
+	out, changed := RewriteChildren(node, rewriteChildrenFn)
 	if !changed {
 		t.Fatalf("rewriteIrregularNode must recurse into a non-nil TopK.KExpr (CONDITIONALS_NEGATION `!= nil`→`== nil` would skip it)")
 	}
-	tk, ok := out.(*chplan.TopK)
+	tk, ok := out.(*TopK)
 	if !ok {
 		t.Fatalf("expected *TopK, got %T", out)
 	}
-	ks, ok := tk.KExpr.(*chplan.Scan)
+	ks, ok := tk.KExpr.(*Scan)
 	if !ok || ks.Table != "REWRITTEN_CHILD" {
 		t.Fatalf("expected KExpr rewritten to REWRITTEN_CHILD, got %#v", tk.KExpr)
 	}
-	in, ok := tk.Input.(*chplan.Scan)
+	in, ok := tk.Input.(*Scan)
 	if !ok || in.Table != "input_unchanged" {
 		t.Fatalf("expected Input preserved as input_unchanged, got %#v", tk.Input)
 	}
@@ -111,24 +109,24 @@ func TestRewriteIrregular_TopK_RecursesIntoKExprWhenInputUnchanged(t *testing.T)
 func TestRewriteIrregular_MetricsCompare_RebuildsWhenOnlyRootLookupChanges(t *testing.T) {
 	t.Parallel()
 
-	node := &chplan.MetricsCompare{
-		Inner:      &chplan.Scan{Table: "inner_unchanged"},
+	node := &MetricsCompare{
+		Inner:      &Scan{Table: "inner_unchanged"},
 		RootLookup: sentinelChild(),
 	}
 
-	out, changed := rewriteChildren(node, rewriteChildrenFn)
+	out, changed := RewriteChildren(node, rewriteChildrenFn)
 	if !changed {
 		t.Fatalf("rewriteIrregularNode must report changed=true when only MetricsCompare.RootLookup rewrote (INVERT_LOGICAL `&&`→`||` would return unchanged)")
 	}
-	mc, ok := out.(*chplan.MetricsCompare)
+	mc, ok := out.(*MetricsCompare)
 	if !ok {
 		t.Fatalf("expected *MetricsCompare, got %T", out)
 	}
-	rl, ok := mc.RootLookup.(*chplan.Scan)
+	rl, ok := mc.RootLookup.(*Scan)
 	if !ok || rl.Table != "REWRITTEN_CHILD" {
 		t.Fatalf("expected RootLookup rewritten to REWRITTEN_CHILD, got %#v", mc.RootLookup)
 	}
-	in, ok := mc.Inner.(*chplan.Scan)
+	in, ok := mc.Inner.(*Scan)
 	if !ok || in.Table != "inner_unchanged" {
 		t.Fatalf("expected Inner preserved as inner_unchanged, got %#v", mc.Inner)
 	}

@@ -80,7 +80,12 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	}
 
 	plan := buildRootLookupPlan(h.Schema, traceIDs)
-	sql, args, err := chsql.Emit(ctx, plan)
+	// The root-lookup plan scans the spans table bounded by a literal
+	// `TraceId IN (<padded ids>)` set (form-b). Thread the spans table onto the
+	// emit context so chsql.Emit's RequireSpansScansBounded verifies that bound
+	// is present — a regression that dropped the IN filter would fail closed
+	// rather than full-scan otel_traces.
+	sql, args, err := chsql.Emit(chsql.WithSpansTable(ctx, h.Schema.SpansTable), plan)
 	if err != nil {
 		return nil, fmt.Errorf("root lookup: emit: %w", err)
 	}

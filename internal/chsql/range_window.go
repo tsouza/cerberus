@@ -803,6 +803,14 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeWindow wrapping MetricsAggregate requires Step > 0", ErrUnsupported)
 	}
+	// Fail closed if the inner is a spans scan with no request window: the
+	// shared maybePushInnerScanTimeBounds below silently no-ops on a zero
+	// window, which over otel_traces is a full-retention scan. Fires only for
+	// the Tempo spans inner (PromQL's inner is a metrics table). This covers
+	// both the regular and the quantile-bucket routes below.
+	if err := requireInnerSpansScanBound(r, m.Inner, e.spansTable); err != nil {
+		return err
+	}
 	// quantile_over_time takes the bucket-shape route: emit one row per
 	// (group, anchor, bucket) with `count(1)` and let the Tempo handler
 	// (internal/api/tempo/metrics_query_range.go) post-process via
@@ -1131,6 +1139,12 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	}
 	if m.Inner == nil {
 		return fmt.Errorf("%w: quantile_over_time matrix path requires MetricsAggregate.Inner", ErrUnsupported)
+	}
+	// Fail closed on a zero-window spans inner (see emitRangeWindowMetrics).
+	// Redundant when reached via emitRangeWindowMetrics, but keeps this entry
+	// point safe if ever called directly.
+	if err := requireInnerSpansScanBound(r, m.Inner, e.spansTable); err != nil {
+		return err
 	}
 
 	// Pre-flight expressions so chplan errors surface synchronously.

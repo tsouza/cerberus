@@ -1,0 +1,28 @@
+GAP-3 (#1109): a compound `&&` search gets the /api/search request window
+folded into BOTH leaf scans, so it scans only [start, end] instead of full
+retention. Before the fold, stampSearchTraceLimit skipped this non-plain shape
+and no Timestamp predicate was emitted at all.
+
+-- search_limit --
+20
+-- search_window --
+1782571392 1782573192
+-- query.traceql --
+{ resource.service.name = "a" } && { span.http.status_code = 500 }
+-- sql --
+SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`
+-- args --
+[0] int64 = 1782571392000000000
+[1] int64 = 1782573192000000000
+[2] string = "service.name"
+[3] string = "a"
+[4] int64 = 1782571392000000000
+[5] int64 = 1782573192000000000
+[6] string = "http.status_code"
+[7] int64 = 500
+-- chplan --
+SetOperation op=&&
+  Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+    Scan(otel_traces)
+  Filter predicate=((toFloat64OrNull(SpanAttributes["http.status_code"]) = 500) AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+    Scan(otel_traces)

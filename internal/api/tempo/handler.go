@@ -999,8 +999,13 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// `min(Timestamp) AS TimeUnix`) so the wrap projection just
 		// reads them out + merges the TraceId into Attributes via
 		// mapConcat (same `__cerberus_traceID` reserved-key pattern as
-		// canonicalSampleProjections).
-		return &chplan.Project{Input: plan, Projections: spansetAggregateSampleProjections()}
+		// canonicalSampleProjections). boundNewestTraces caps the result to
+		// the newest `limit` qualifying traces server-side, below the
+		// projection so the TraceStartNs sort key is still in scope.
+		return &chplan.Project{
+			Input:       boundNewestTraces(plan, searchLimitFromMeta(meta)),
+			Projections: spansetAggregateSampleProjections(),
+		}
 	case isAggregateShape(plan):
 		// MetricsAggregate / MetricsSecondStage output is just
 		// (group-keys, agg-func-aliases). SpanName / Timestamp /
@@ -1301,6 +1306,52 @@ func isProjectShape(plan chplan.Node) bool {
 	return ok
 }
 
+// metaKeySearchTraceLimit keys the /api/search trace limit the TraceQL Lang
+// stashes in engine.Meta.Extra (set in lang.go from traceql.SearchTraceLimit)
+// so the wrap projection can bound a spanset-aggregation result.
+const metaKeySearchTraceLimit = "searchTraceLimit"
+
+// searchLimitFromMeta reads the /api/search trace limit threaded through
+// engine.Meta.Extra, or 0 (unbounded) when absent.
+func searchLimitFromMeta(meta engine.Meta) int64 {
+	if v, ok := meta.Extra[metaKeySearchTraceLimit].(int64); ok {
+		return v
+	}
+	return 0
+}
+
+// boundNewestTraces caps a spanset-aggregation search (`| count() > N`,
+// `| by(name)`, `| avg(...) > X`) to the newest `limit` qualifying traces
+// server-side as ORDER BY TraceStartNs DESC LIMIT N — the parity counterpart to
+// the SQL LIMIT plain search gets via its SearchTraceLimit node, mirroring the
+// Go-side sortSummariesStartDesc + TruncateSummaries this path also runs. The
+// aggregate is untouched: ORDER+LIMIT only select WHICH finished per-trace
+// groups are emitted, so count()/avg()/by() still compute over every trace in
+// the window. Without it a busy window drains every qualifying group and can
+// trip the per-query sample budget — a spurious 422 where Tempo returns the
+// newest N. The ORDER BY is load-bearing: a bare LIMIT on a GROUP BY is
+// non-deterministic. No-op unless limit > 0.
+func boundNewestTraces(plan chplan.Node, limit int64) chplan.Node {
+	if limit <= 0 {
+		return plan
+	}
+	return &chplan.Limit{
+		Count: limit,
+		Input: &chplan.OrderBy{
+			Input: plan,
+			// TraceStartNs DESC, TraceId ASC — byte-parity with the Go-side
+			// sortSummariesStartDesc tie-break (start DESC, then TraceId ASC),
+			// so which trace lands inside vs outside the LIMIT at an exact
+			// start-ns collision is deterministic and matches the old drain-all
+			// path. Both are Aggregate output columns.
+			Keys: []chplan.OrderKey{
+				{Expr: &chplan.ColumnRef{Name: "TraceStartNs"}, Desc: true},
+				{Expr: &chplan.ColumnRef{Name: "TraceId"}, Desc: false},
+			},
+		},
+	}
+}
+
 // isAggregateShape reports whether the plan's output schema is just
 // the Aggregate's projected columns (group-keys + agg-func aliases),
 // i.e. the otel_traces canonical columns aren't available. Covers
@@ -1360,6 +1411,11 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 		"MetricName":    false,
 		"ResourceAttrs": false,
 		"TimeUnix":      false,
+		// boundNewestTraces sorts the result by TraceStartNs; require it here
+		// too so the shape-matcher and the ORDER BY key stay in lockstep — a
+		// future envelope without TraceStartNs must not match (the ORDER BY
+		// would reference a non-existent alias).
+		"TraceStartNs": false,
 	}
 	for _, af := range a.AggFuncs {
 		if _, ok := wanted[af.Alias]; ok {

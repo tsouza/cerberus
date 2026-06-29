@@ -123,3 +123,18 @@ jobs:
       # owns. See internal/routerrules/realch_integration_test.go.
       - name: Run router-corpus write+read differential (real ClickHouse)
         run: just router-corpus-integration
+
+      # The TraceQL whole-trace drilldown legs (Grafana Traces Drilldown
+      # Structure + Comparison tabs) read otel_traces through recursive CTEs and
+      # matrix metric scans. PR #1154 made "every spans scan is resource-bounded"
+      # an invariant; its delta-N1 prune embeds a NON-recursive `TraceId IN
+      # (SELECT …)` subquery inside a recursive arm, a shape ClickHouse rejects
+      # with error 49 if mis-emitted. The chDB round-trip lane does not execute
+      # these recursive-CTE drilldown shapes, so that seam is invisible to it.
+      # This step lowers + emits the real Structure + Comparison queries and runs
+      # them against the real ClickHouse this lane already owns, proving they
+      # execute without error 49, that partition pruning fires at runtime, and
+      # that the compare scan fails closed on an absent window. See
+      # test/spec/traces_scan_resource_bound_integration_test.go.
+      - name: Run TraceQL spans-scan resource-bound differential (real ClickHouse)
+        run: just traces-scan-bound-integration

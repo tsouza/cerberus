@@ -37,6 +37,7 @@ func EmitMetricsExemplars(
 	m *chplan.MetricsAggregate,
 	traceIDCol, spanIDCol string,
 	maxPerSeries int64,
+	spansTable string,
 ) (string, []any, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
@@ -77,8 +78,8 @@ func EmitMetricsExemplars(
 		return "", nil, err
 	}
 
-	e := &emitter{}
-	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries); err != nil {
+	e := &emitter{spansTable: spansTable}
+	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries, spansTable); err != nil {
 		span.RecordError(err)
 		return "", nil, err
 	}
@@ -87,11 +88,30 @@ func EmitMetricsExemplars(
 	return sql, e.args, nil
 }
 
+// exemplarNumAnchors computes the count of per-step anchors the exemplar
+// fanout materialises: from OuterRange when set, else from the [Start, End]
+// span, else a single instant anchor. A Start > End span is rejected.
+func exemplarNumAnchors(rw *chplan.RangeWindow, stepNS int64) (int64, error) {
+	switch {
+	case rw.OuterRange > 0:
+		return rw.OuterRange.Nanoseconds()/stepNS + 1, nil
+	case !rw.Start.IsZero() && !rw.End.IsZero():
+		span := rw.End.Sub(rw.Start).Nanoseconds()
+		if span < 0 {
+			return 0, fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
+		}
+		return span/stepNS + 1, nil
+	default:
+		return 1, nil
+	}
+}
+
 func (e *emitter) emitMetricsExemplars(
 	rw *chplan.RangeWindow,
 	m *chplan.MetricsAggregate,
 	traceIDCol, spanIDCol string,
 	maxPerSeries int64,
+	spansTable string,
 ) error {
 	for _, g := range m.GroupBy {
 		if err := (&Builder{}).Expr(g); err != nil {
@@ -107,18 +127,9 @@ func (e *emitter) emitMetricsExemplars(
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	var numAnchors int64
-	switch {
-	case rw.OuterRange > 0:
-		numAnchors = rw.OuterRange.Nanoseconds()/stepNS + 1
-	case !rw.Start.IsZero() && !rw.End.IsZero():
-		span := rw.End.Sub(rw.Start).Nanoseconds()
-		if span < 0 {
-			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
-		}
-		numAnchors = span/stepNS + 1
-	default:
-		numAnchors = 1
+	numAnchors, err := exemplarNumAnchors(rw, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(m.Inner)
@@ -168,6 +179,14 @@ func (e *emitter) emitMetricsExemplars(
 		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	)
+	// Fail closed if the inner is a spans scan with no request window: the
+	// shared maybePushInnerScanTimeBounds silently no-ops on a zero window,
+	// which over otel_traces is a full-retention scan. requireInnerSpansScanBound
+	// fires only for the Tempo spans-inner zero-window case (PromQL's inner is
+	// a metrics table, so it is unaffected).
+	if err := requireInnerSpansScanBound(rw, m.Inner, spansTable); err != nil {
+		return err
+	}
 	// Same Start/End pushdown as emitRangeWindowMetrics — see
 	// maybePushInnerScanTimeBounds.
 	maybePushInnerScanTimeBounds(innerSb, rw, tsCol, rangeNS)

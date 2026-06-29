@@ -170,12 +170,15 @@ func drilldownUnionInput() *chplan.SetOperation {
 }
 
 // TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope pins the bounded
-// numbering: a non-zero TraceLimit wraps the anchor's trace-id IN scope
-// in a `GROUP BY TraceId ORDER BY min(Timestamp) DESC, TraceId LIMIT N`
-// subquery that keeps only the N newest traces — exactly the set
-// /api/search's TruncateSummaries keeps (newest by start time, ties by
-// TraceId). The rest of the numbering (recursive walk, ARRAY JOIN, window
-// passes) is unchanged; only the trace universe narrows.
+// numbering: a non-zero TraceLimit narrows the anchor's trace-id IN scope to
+// the SELF-CONTAINED top-N root subquery (`SELECT TraceId FROM otel_traces
+// WHERE ParentSpanId=” GROUP BY TraceId ORDER BY min(Timestamp) DESC,
+// TraceId ASC LIMIT N`) — exactly the set /api/search's TruncateSummaries
+// keeps (newest by start time, ties by TraceId). It is self-contained (no
+// `IN <input scope>` conjunct) so the SAME frag can gate the row-source
+// leaves (chplan.BoundedTraceScope) without an emit cycle; the
+// numbering==gate identity is pinned in
+// TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate.
 func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
 	t.Parallel()
 	n := nsAnnotateOver(drilldownUnionInput())
@@ -184,10 +187,10 @@ func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// The anchor scope is wrapped in the newest-N selection. The ordering
-	// (DESC, TraceId ASC) and the GROUP BY min(Timestamp) match
+	// The anchor scope is the self-contained newest-N root selection. The
+	// ordering (DESC, TraceId ASC) and the GROUP BY min(Timestamp) match
 	// sortSummariesStartDesc / toTraceSummaries' StartTimeUnixNano.
-	wantBound := "WHERE `ParentSpanId` = '' AND `TraceId` IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200"
+	wantBound := "WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
 	if !strings.Contains(sql, wantBound) {
 		t.Errorf("bounded anchor scope missing;\nwant substring: %s\ngot:\n%s", wantBound, sql)
 	}
@@ -195,6 +198,94 @@ func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
 	// recursive numbering CTE still renders exactly once.
 	if got := strings.Count(sql, "WITH RECURSIVE _cerberus_ns_paths"); got != 1 {
 		t.Errorf("numbering CTE must render exactly once, got %d:\n%s", got, sql)
+	}
+}
+
+// TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate pins the
+// load-bearing identity: the top-N subquery the numbering anchor scope emits
+// is BYTE-IDENTICAL to the one a leaf-scan BoundedTraceScope gate emits. If
+// they ever drift, the numbering would number a different trace set than the
+// row source produces, stranding kept rows at the 0/0/0 LEFT-JOIN default.
+func TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate(t *testing.T) {
+	t.Parallel()
+	const topN = "(SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+
+	// Numbering side: a bounded NestedSetAnnotate's anchor scope.
+	n := nsAnnotateOver(drilldownUnionInput())
+	n.TraceLimit = 200
+	nsSQL, _, err := chsql.Emit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Emit numbering: %v", err)
+	}
+	if !strings.Contains(nsSQL, "`TraceId` IN "+topN) {
+		t.Errorf("numbering anchor scope does not emit the expected top-N subquery %s\ngot:\n%s", topN, nsSQL)
+	}
+
+	// Gate side: a leaf Filter carrying a BoundedTraceScope, emitted directly.
+	gated := &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Predicate: &chplan.BoundedTraceScope{
+			SpansTable:         "otel_traces",
+			TraceIDColumn:      "TraceId",
+			ParentSpanIDColumn: "ParentSpanId",
+			TimestampColumn:    "Timestamp",
+			TraceLimit:         200,
+		},
+	}
+	gateSQL, _, err := chsql.Emit(context.Background(), gated)
+	if err != nil {
+		t.Fatalf("Emit gate: %v", err)
+	}
+	if !strings.Contains(gateSQL, "`TraceId` IN "+topN) {
+		t.Errorf("leaf gate does not emit the expected top-N subquery %s\ngot:\n%s", topN, gateSQL)
+	}
+}
+
+// TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate extends the
+// byte-identity invariant to the WINDOWED top-N (#1109 GAP-3 rank-in-window):
+// when WindowStartNano/EndNano are set, BOTH the numbering scope and the leaf
+// gate must emit the SAME windowed top-N subquery (`... WHERE ParentSpanId=”
+// AND Timestamp >= ... AND Timestamp <= ... GROUP BY ...`). A divergence here
+// would rank the numbering and the row source over different windows and strand
+// kept rows at 0/0/0.
+func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testing.T) {
+	t.Parallel()
+	const (
+		startNano int64 = 1767225600000000000
+		endNano   int64 = 1767225602000000000
+	)
+	const topN = "(SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `Timestamp` >= fromUnixTimestamp64Nano(1767225600000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1767225602000000000) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+
+	n := nsAnnotateOver(drilldownUnionInput())
+	n.TraceLimit = 200
+	n.WindowStartNano = startNano
+	n.WindowEndNano = endNano
+	nsSQL, _, err := chsql.Emit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Emit numbering: %v", err)
+	}
+	if !strings.Contains(nsSQL, "`TraceId` IN "+topN) {
+		t.Errorf("windowed numbering scope does not emit the expected windowed top-N %s\ngot:\n%s", topN, nsSQL)
+	}
+
+	gated := &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Predicate: &chplan.BoundedTraceScope{
+			SpansTable:         "otel_traces",
+			TraceIDColumn:      "TraceId",
+			ParentSpanIDColumn: "ParentSpanId",
+			TimestampColumn:    "Timestamp",
+			TraceLimit:         200,
+			WindowStartNano:    startNano,
+			WindowEndNano:      endNano,
+		},
+	}
+	gateSQL, _, err := chsql.Emit(context.Background(), gated)
+	if err != nil {
+		t.Fatalf("Emit gate: %v", err)
+	}
+	if !strings.Contains(gateSQL, "`TraceId` IN "+topN) {
+		t.Errorf("windowed leaf gate does not emit the expected windowed top-N %s\ngot:\n%s", topN, gateSQL)
 	}
 }
 
