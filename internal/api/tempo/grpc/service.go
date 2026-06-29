@@ -7,8 +7,8 @@
 // stream incrementally over this surface.
 //
 // Wire-format generated stubs live in github.com/grafana/tempo/pkg/
-// tempopb (routed through the tsouza/tempo:cerberus-accessors fork —
-// see go.mod). This package only depends on the generated server
+// tempopb — the plain Apache-2.0 upstream wire types, a direct require
+// in go.mod (no fork). This package only depends on the generated server
 // interface + the cerberus query pipeline (Engine, schema, admit
 // limiter); no protoc plumbing is needed in tree.
 //

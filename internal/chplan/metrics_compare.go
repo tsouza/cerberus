@@ -5,7 +5,8 @@ package chplan
 // operator (Grafana Traces Drilldown's "Comparison" tab).
 //
 // Reference semantics (grafana/tempo pkg/traceql/engine_metrics_compare.go,
-// consumed via the tsouza/tempo cerberus-accessors fork): every span
+// the AGPL upstream cerberus reimplements clean-room — consulted only as a
+// test-only oracle, never linked): every span
 // produced by the query's pipeline is split into two cohorts —
 // "selection" (spans matching the compare() filter, optionally further
 // restricted to a unix-nanosecond start/end window) and "baseline"
