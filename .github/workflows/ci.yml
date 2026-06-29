@@ -449,28 +449,25 @@ jobs:
             "**/*.md"
 
   # `agpl-clean` is the provably-clean-build licence gate. Cerberus ships
-  # under Apache-2.0; the grafana/loki + grafana/tempo parsers it lowers
-  # from are AGPLv3. The gate runs `go list -deps ./cmd/cerberus` and
-  # fails if any AGPL package is reachable from the binary (grafana/loki/*
-  # or grafana/tempo/* except the Apache-licensed pkg/tempopb). Logic
-  # lives in .github/scripts/agpl-clean.mjs (node: builtins only).
+  # under Apache-2.0. Its LogQL / TraceQL parsers are in-house clean-room
+  # Apache reimplementations (internal/logql/lsyntax, internal/logql/logpattern,
+  # internal/drain, internal/traceql/ast), and PromQL uses the upstream Apache
+  # prometheus parser — so no AGPLv3 grafana/loki or grafana/tempo code reaches
+  # the binary. The only grafana/tempo subtree the binary may link is the
+  # Apache-licensed pkg/tempopb wire types. Test-only AGPL oracles + the
+  # compatibility harnesses are quarantined in the test/oracle nested module
+  # and never enter the binary graph.
   #
-  # NOT YET REQUIRED. Production code (internal/api/loki, internal/logql,
-  # internal/api/tempo, internal/traceql) still imports these AGPL
-  # packages until the parser rewrites land, so the gate CURRENTLY reports
-  # a violation. AGPL_CLEAN_WARN_ONLY=1 downgrades that to a loud
-  # ::warning:: and exits 0, so the job tracks the exposure without
-  # blocking merges (continue-on-error is kept as belt-and-suspenders for
-  # any non-violation failure, e.g. `go list` itself erroring). FLIP to a
-  # required status check — drop AGPL_CLEAN_WARN_ONLY (enforcing mode:
-  # ::error:: + exit 1), drop continue-on-error, add to branch protection —
-  # once the parser PRs remove the production AGPL imports and it goes green.
+  # ENFORCING: the gate runs `go list -deps ./cmd/cerberus` and FAILS (exit 1)
+  # if any AGPL package is reachable from the binary (grafana/loki/* or
+  # grafana/tempo/* except pkg/tempopb). Logic lives in
+  # .github/scripts/agpl-clean.mjs (node: builtins only). Add to branch
+  # protection as a required status check.
   agpl-clean:
     name: agpl-clean
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -479,7 +476,5 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: AGPL clean-build gate (tracking only — not a merge gate yet)
-        env:
-          AGPL_CLEAN_WARN_ONLY: '1'
+      - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
