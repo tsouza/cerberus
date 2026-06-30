@@ -39,7 +39,7 @@ min_native_rate: "25.9"
 # the quickstart enables via CERBERUS_CH_OPTIMIZATIONS (today:
 # aggregation_in_order, condition_cache, ts_grid_range -> highest floor 25.9).
 # The check asserts quickstart_clickhouse >= that derived highest floor.
-quickstart_clickhouse: "26.5"
+quickstart_clickhouse: "26.6"
 
 # chdb_substrate - the ClickHouse version of the test substrate: the in-process
 # chDB engine (libchdb / chdb-go) the parity + perf suites run on, and the tag
