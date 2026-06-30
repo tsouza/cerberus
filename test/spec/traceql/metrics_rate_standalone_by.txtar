@@ -1,0 +1,33 @@
+Bug 1: a standalone `| by(X)` grouping stage immediately before a metrics
+aggregate must fold into the aggregate's by-clause, so `{} | by(X) | rate()`
+lowers IDENTICALLY to the valid `{} | rate() by (X)` (see metrics_rate_by.txtar
+— same seed, same expected SQL/args/rows). Pre-fix this shape lowered to a
+standalone GROUP-BY Aggregate that stripped Timestamp; the metrics rate grid the
+/api/metrics/query_range handler wraps over it then referenced a Timestamp the
+inner aggregate had collapsed away — ClickHouse code 47 ("Unknown expression or
+function identifier `Timestamp`"), surfaced to Grafana as a 502. The fold
+(foldTrailingGroupByIntoMetrics) routes the grouping through the aggregate's
+by-clause, keeping Timestamp in scope and emitting valid grid-able SQL.
+
+-- query.traceql --
+
+{} | by(resource.service.name) | rate()
+
+-- sql --
+SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?]
+-- args --
+[0] string = "service.name"
+[1] int64 = 1
+[2] bool = true
+[3] string = "service.name"
+-- seed --
+CREATE TABLE otel_traces ( ResourceAttributes Map(String, String) ) ENGINE = Memory;
+INSERT INTO otel_traces VALUES (map('service.name', 'frontend')), (map('service.name', 'frontend')), (map('service.name', 'frontend'));
+-- expected_rows --
+
+[["frontend",3]]
+
+-- chplan --
+MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

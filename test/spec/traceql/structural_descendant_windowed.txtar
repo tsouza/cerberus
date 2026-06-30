@@ -1,8 +1,27 @@
-GAP-3 (#1109): a structural `>>` search windows the L (seed) and R leaf scans.
-The recursive closure's bare `t`-scan stays UNWINDOWED (it is emitter-synthetic,
-not a chplan leaf) — it is bounded instead by the #77 seed-trace-id pushdown,
-which inherits the window from the now-windowed seed. Windowing `t` would drop
-off-window connective spans and sever the L->...->R chain.
+GAP-3 (#1109): a structural `>>` search windows the L (seed) and R leaf scans,
+AND the recursive closure's bare `t`-scan. That `t`-scan is emitter-synthetic
+(not a chplan leaf), so the leaf-window pass cannot reach it; it is stamped
+directly by windowRecursiveScans, which lands a bare `Timestamp >= ... AND <= ...`
+conjunct on the physical `otel_traces` scan inside the recursive arm. This is the
+partition prune the inert `t.TraceId IN (<seed>)` membership can never deliver:
+only a Timestamp predicate sitting on the scan prunes the toDate(Timestamp)
+partitions, so without it the closure re-scans full retention (the GAP-3 OOM).
+Tradeoff (accepted): windowing `t` drops off-window connective spans, so a chain
+whose intermediate hops straddle the window edge degrades to a partial closure —
+the same residual the seed-trace-id top-N already accepts (kept traces sit in
+the window).
+
+Memory bound (Bug 2 / structural-closure top-N): with a `search_limit`, every
+structural leaf (the L seed, the step's `_seed_ids` re-render, and the R scan)
+also carries `TraceId IN (SELECT TraceId FROM otel_traces WHERE ParentSpanId=''
+... GROUP BY TraceId ORDER BY min(Timestamp) DESC, TraceId LIMIT 20)` — the SAME
+top-N-newest-root BoundedTraceScope gate the nested-set structure-tab path uses
+(boundedRootScopeFrag). The scan was already windowed (the GAP-3 fix above), but
+the closure seed still ran over EVERY in-window trace and only truncated to N
+afterward, peaking the WITH RECURSIVE working set past the per-query memory cap
+(prod `{} >> {}` read ~525K rows and OOM'd). The gate restricts the closure seed
+to the N requested traces, matching the nested-set path's ranking so the two
+search paths keep the same traces. stampStructuralTraceLimit pushes it.
 
 -- search_limit --
 20
@@ -11,7 +30,7 @@ off-window connective spans and sever the L->...->R chain.
 -- query.traceql --
 { resource.service.name = "a" } >> { span.http.status_code = 500 }
 -- sql --
-SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) AS _seed UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND t.`TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) AS _seed_ids)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_1 WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`
+SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) AS _seed UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND t.`TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) AS _seed_ids) AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_1 WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`
 -- args --
 [0] int64 = 1782571392000000000
 [1] int64 = 1782573192000000000
