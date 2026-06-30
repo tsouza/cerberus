@@ -243,3 +243,66 @@ func TestUnwindowedSpansScans_Defers(t *testing.T) {
 		t.Fatalf("blank sql must defer, got %d", n)
 	}
 }
+
+// emptyTableWouldFlag is windowed SQL whose GROUP-BY arm scans a bare
+// `FROM “ ` (empty-ident table). With an empty spansTable the per-table regex
+// compiles to exactly that "FROM “" shape, so the downstream matcher WOULD
+// emit a finding here — proving the empty-spansTable guard is what suppresses
+// it, not an incidental no-match. The sibling arm carries the request window so
+// the precondition is armed; the bare-table arm is windowless under a GROUP BY.
+const emptyTableWouldFlag = "SELECT a FROM `` GROUP BY a " +
+	"UNION ALL " +
+	"SELECT b FROM x WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)"
+
+// TestUnwindowedSpansScans_EmptyTableDefersEvenWhenMatchable pins the
+// short-circuit in the entry guard `spansTable == "" || TrimSpace(sql) == ""`.
+// An `||`→`&&` mutation would stop deferring when ONLY the table is empty, fall
+// through, and (because the empty-table regex matches the bare `FROM “ `)
+// report a finding. Asserting zero findings on this matchable input kills that
+// mutant — the prior defer fixtures used SQL with no bare `FROM “ `, so the
+// fall-through path produced nil anyway and never exercised the operator.
+func TestUnwindowedSpansScans_EmptyTableDefersEvenWhenMatchable(t *testing.T) {
+	t.Parallel()
+	// Sanity: the same SQL under a real table name is genuinely flaggable, so
+	// the zero below is the empty-table guard at work, not a dead input.
+	if n := len(spansscan.UnwindowedSpansScans(
+		strings.ReplaceAll(emptyTableWouldFlag, "FROM ``", "FROM `otel_traces`"), spansTable,
+	)); n != 1 {
+		t.Fatalf("test setup: substituting a real table must flag 1, got %d", n)
+	}
+	if n := len(spansscan.UnwindowedSpansScans(emptyTableWouldFlag, "")); n != 0 {
+		t.Fatalf("empty spansTable must defer even when sql carries a bare `FROM ``` the empty-table regex matches, got %d", n)
+	}
+}
+
+// windowedThenWindowless places a co-scope-WINDOWED spans scan (which hits the
+// prune `continue`) at a LOWER offset than a windowless GROUP-BY spans scan
+// (which must be flagged). The windowed arm is examined first; the flaggable
+// one comes after the UNION ALL.
+const windowedThenWindowless = "SELECT a FROM `otel_traces` " +
+	"WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) " +
+	"UNION ALL " +
+	"SELECT b FROM `otel_traces` GROUP BY b"
+
+// TestUnwindowedSpansScans_PruneSkipDoesNotHaltScan pins the `continue` in the
+// co-scope-Timestamp prune branch. An INVERT_LOOPCTRL mutation (`continue` →
+// `break`) would abandon the scan loop at the first already-pruned scan, so the
+// later windowless GROUP-BY scan would never be examined and the finding lost.
+// Asserting that the flagged scan is the SECOND (higher-offset) one proves the
+// loop kept going past the pruned scan.
+func TestUnwindowedSpansScans_PruneSkipDoesNotHaltScan(t *testing.T) {
+	t.Parallel()
+	findings := spansscan.UnwindowedSpansScans(windowedThenWindowless, spansTable)
+	if len(findings) != 1 {
+		t.Fatalf("windowed-then-windowless: got %d finding(s), want 1\nSQL:\n%s", len(findings), windowedThenWindowless)
+	}
+	windowlessScan := strings.LastIndex(windowedThenWindowless, "FROM `otel_traces`")
+	firstScan := strings.Index(windowedThenWindowless, "FROM `otel_traces`")
+	if windowlessScan <= firstScan {
+		t.Fatalf("test setup: expected the windowless scan to follow the windowed one (first=%d, last=%d)", firstScan, windowlessScan)
+	}
+	if findings[0].Offset != windowlessScan {
+		t.Fatalf("expected the finding at the windowless scan (offset %d), got %d — the loop must continue past the pruned scan, not break",
+			windowlessScan, findings[0].Offset)
+	}
+}
