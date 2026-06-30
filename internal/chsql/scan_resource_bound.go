@@ -140,6 +140,88 @@ func requireInnerSpansScanBound(rw *chplan.RangeWindow, inner chplan.Node, spans
 	return nil
 }
 
+// spansScanWindowFrags renders the two direct Timestamp partition-prune
+// conjuncts that bound an emitter-synthetic recursive / grouped spans scan to
+// the request window:
+//
+//	<tsCol> >= fromUnixTimestamp64Nano(<startNano>)
+//	<tsCol> <= fromUnixTimestamp64Nano(<endNano>)
+//
+// Either bound is omitted (nil) when its nanosecond value is 0, so an unset
+// window contributes nothing and the FROM stays byte-identical to the
+// pre-window output. The shape is byte-identical to boundedRootScopeFrag's
+// window conjuncts so the two sites that bound the same trace set agree.
+//
+// This is the partition-pruning bound the inert `TraceId IN (<seed>)`
+// membership cannot provide: only a Timestamp predicate sitting directly on a
+// physical otel_traces scan prunes the toDate(Timestamp) partitions, so the
+// recursive `t`-scan reads only the request window's partitions rather than
+// full retention.
+func spansScanWindowFrags(tsCol string, startNano, endNano int64) (lo, hi Frag) {
+	if tsCol == "" {
+		return nil, nil
+	}
+	if startNano != 0 {
+		lo = Gte(Col(tsCol), Call("fromUnixTimestamp64Nano", InlineLit(startNano)))
+	}
+	if endNano != 0 {
+		hi = Lte(Col(tsCol), Call("fromUnixTimestamp64Nano", InlineLit(endNano)))
+	}
+	return lo, hi
+}
+
+// appendNonNilFrags appends the non-nil frags in extra to conds, used to fold
+// the optional window conjuncts (spansScanWindowFrags) into a step / anchor
+// WHERE list without emitting empty slots.
+func appendNonNilFrags(conds []Frag, extra ...Frag) []Frag {
+	for _, f := range extra {
+		if f != nil {
+			conds = append(conds, f)
+		}
+	}
+	return conds
+}
+
+// requireSpansScanWindow is the emit-time fail-closed guard for an
+// emitter-synthetic recursive / grouped spans scan that opted into request-window
+// partition pruning — the partition-prune analogue of requireInstantScanBound.
+// It rejects a scan that reaches emit with no [start,end] window (so it would
+// read full retention behind an inert TraceId-IN) rather than silently emitting
+// the unbounded scan.
+//
+// It is scoped two ways so it never fires on the spec/golden lane or the
+// metrics/test paths that legitimately carry no window:
+//
+//   - ctxSpansTable is the table threaded purely from the emit context
+//     (chsql.WithSpansTable). The golden lane never threads it, so the guard is
+//     a no-op there even though the recursive emitters force-set the (separate)
+//     enforcement spansTable. Only a genuine Tempo request enforces.
+//   - tsCol == "" means the node was never opted into windowing (the lowering
+//     stamps the timestamp column and the window together), so the guard stays
+//     out of the way until the window-stamping lowering wires it — the same
+//     "establish then require" sequencing requireInstantScanBound uses.
+//
+// A ONE-SIDED window (only start, or only end) still prunes partitions — `>=
+// start` or `<= end` each prunes the toDate(Timestamp) parts on its side — and
+// search semantics deliberately allow an open-ended bound (handler.go: "A
+// one-sided window is a deliberate open-ended bound"). spansScanWindowFrags
+// already omits the zero side gracefully, emitting the one bound that is set. So
+// the guard fires only when BOTH bounds are zero — a genuinely windowless scan.
+func requireSpansScanWindow(ctxSpansTable, table, tsCol string, startNano, endNano int64) error {
+	if ctxSpansTable == "" || table != ctxSpansTable || tsCol == "" {
+		return nil
+	}
+	if startNano == 0 && endNano == 0 {
+		return fmt.Errorf(
+			"%w: recursive spans scan of %q reached emit without a request window — "+
+				"the inert TraceId-IN membership does not prune partitions, so the scan would read "+
+				"full retention; the search lowering must stamp the [start,end] window onto the node",
+			ErrUnboundedSpansScan, table,
+		)
+	}
+	return nil
+}
+
 // spansTableKey is the unexported context key carrying the TraceQL spans table
 // name into the emit chokepoint, so chsql.Emit can scope RequireSpansScansBounded
 // to the spans table. PromQL / LogQL callers never set it, leaving the top-level

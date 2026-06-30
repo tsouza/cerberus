@@ -148,6 +148,13 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 	// union arm puts every root trace in that scope).
 	var scope Frag
 	if n.TraceLimit > 0 {
+		// Fail closed: the bounded structure-tab path always carries a request
+		// window (the search handler clamps to DefaultSearchLookback), so on the
+		// production search path a zero window here means the walk's anchor /
+		// step scans would read full retention behind the inert TraceId-IN.
+		if err := requireSpansScanWindow(e.ctxSpansTable, n.SpansTable, n.TimestampColumn, n.WindowStartNano, n.WindowEndNano); err != nil {
+			return err
+		}
 		scope = boundedRootScopeFrag(n.SpansTable, n.TraceIDColumn, n.ParentSpanIDColumn, n.TimestampColumn, n.TraceLimit, n.WindowStartNano, n.WindowEndNano)
 	} else {
 		scope, err = e.traceScopeFrag(n.Input, n.TraceIDColumn)
@@ -233,6 +240,27 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 		return nil, err
 	}
 
+	// Direct request-window conjuncts on both the anchor and step `t` scans so
+	// ClickHouse partition-prunes them — the `TraceId IN (scope)` membership
+	// alone never prunes the toDate(Timestamp) partitions, so without these the
+	// walk reads full retention to satisfy the IN. Omitted (no-op) when the node
+	// was not window-stamped (Window* / TimestampColumn unset on the
+	// metrics / spec / unbounded paths), keeping that output byte-identical.
+	// On the windowed search path the numbering walk traverses only [start,end]
+	// spans: a trace whose intermediate spans straddle the window edge degrades
+	// to a partial numbering, the same residual approximation boundedRootScopeFrag
+	// already accepts (the kept top-N traces sit inside the window).
+	winLo, winHi := spansScanWindowFrags(n.TimestampColumn, n.WindowStartNano, n.WindowEndNano)
+
+	anchorConds := appendNonNilFrags(
+		[]Frag{
+			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
+			// scope already carries its own parens; InSubquery adds none,
+			// giving `<TraceId> IN (SELECT …)` with a single paren pair.
+			anchorTraceIn,
+		},
+		winLo, winHi,
+	)
 	anchor := NewQuery().
 		Select(
 			Col(n.TraceIDColumn),
@@ -242,12 +270,7 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 			verbatim("0 AS `_depth`"),
 		).
 		From(anchorFrom).
-		Where(
-			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
-			// scope already carries its own parens; InSubquery adds none,
-			// giving `<TraceId> IN (SELECT …)` with a single paren pair.
-			anchorTraceIn,
-		)
+		Where(anchorConds...)
 
 	// Recursive step: append one path element per child level and carry
 	// `_depth + 1`. The `c._depth < <cap>` bound (shared with the
@@ -279,10 +302,11 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 				Eq(qualColFrag("t", n.ParentSpanIDColumn), qualColFrag("c", n.SpanIDColumn)),
 			),
 		).
-		// structuralDepthBoundFrag caps the recursion; stepTraceIn (delta N1)
-		// adds a genuine partition prune so each iteration's `t` scan reads
-		// only the scoped traces' rows, not the whole table.
-		Where(structuralDepthBoundFrag(0), stepTraceIn)
+		// structuralDepthBoundFrag caps the recursion; stepTraceIn scopes the
+		// `t` scan to the working trace set; winLo/winHi (when window-stamped)
+		// add the direct Timestamp predicate that actually prunes the
+		// toDate(Timestamp) partitions (the IN membership does not).
+		Where(appendNonNilFrags([]Frag{structuralDepthBoundFrag(0), stepTraceIn}, winLo, winHi)...)
 
 	w := strconv.Itoa(nestedSetPathElemWidth)
 

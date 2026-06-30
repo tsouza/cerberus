@@ -129,6 +129,66 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 	return ctx
 }
 
+// settingMaxThreads caps the number of concurrent ClickHouse read threads for a
+// query. Each read thread holds its own column read buffer, so on S3-backed
+// storage (large buffers) uncapped parallelism multiplies buffer RAM. It is
+// RESULT-EQUIVALENT: it changes only how many lanes run concurrently, never the
+// rows produced.
+const settingMaxThreads = "max_threads"
+
+// compareMaxThreads bounds the read parallelism of a TraceQL compare() query to
+// keep it under the per-query memory budget on wide-attribute / S3-backed scans.
+// compare() reads the wide ResourceAttributes / SpanAttributes Map columns; on
+// S3-backed parts every read thread allocates its own large read buffer, so the
+// concurrent buffers — not the GROUP BY hash table — are what push the query
+// over budget once the aggregation already spills. Validated on prod ClickHouse
+// 26.6: external-group-by spill at half the cap PLUS this thread cap completes a
+// previously-OOMing compare() under a 2 GiB per-query cap (spill@1GiB + threads=4).
+const compareMaxThreads = 4
+
+// applyCompareMemoryBound stamps the two memory-bounding settings a TraceQL
+// compare() query needs to stay under the per-query memory budget on
+// wide-attribute, S3-backed scans. It fires ONLY when plan contains a
+// chplan.MetricsCompare node, so plain queries keep full read parallelism and
+// are byte-unchanged.
+//
+// The validated fix couples TWO result-equivalent knobs that must ride together
+// for compare():
+//
+//   - max_bytes_before_external_group_by, sized at half the live per-query
+//     memory cap via the same spillThreshold the unconditional spill uses, so
+//     the compare() attribute-distribution GROUP BY spills to disk instead of
+//     building its hash table unbounded in RAM.
+//   - max_threads, capped at compareMaxThreads, so the concurrent S3 read
+//     buffers for the wide Map columns can't multiply past the budget.
+//
+// Spill ALONE was proven insufficient on prod: read parallelism still peaked
+// above the cap. Both knobs are RESULT-EQUIVALENT — external aggregation yields
+// the same rows, and bounding threads only changes concurrency — so attaching
+// them never changes the compare() result, only its peak memory.
+func applyCompareMemoryBound(ctx context.Context, plan chplan.Node, maxMemory int64) context.Context {
+	if !planHasMetricsCompare(plan) {
+		return ctx
+	}
+	ctx = chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalGroupBy, spillThreshold(maxMemory))
+	ctx = chclient.WithQuerySetting(ctx, settingMaxThreads, compareMaxThreads)
+	return ctx
+}
+
+// planHasMetricsCompare reports whether plan contains a chplan.MetricsCompare
+// node anywhere in its tree — the lowered form of TraceQL's compare() operator.
+func planHasMetricsCompare(plan chplan.Node) bool {
+	found := false
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		if _, ok := n.(*chplan.MetricsCompare); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // eligibleForAggregationInOrder reports whether plan's single Aggregate has a
 // GROUP BY that is a genuine bare-column prefix of its scanned table's
 // sorting key. The check is deliberately conservative: it returns false on

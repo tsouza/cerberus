@@ -84,6 +84,21 @@ func EmitMetricsExemplars(
 		return "", nil, err
 	}
 	sql := e.b.String()
+	// Fail closed at the emit chokepoint, exactly as chsql.Emit does. The
+	// exemplars statement is built here and executed directly by the Tempo
+	// handlers (metrics_query_range / grpc_exports), so it never flows through
+	// chsql.Emit — without this call a windowless recursive otel_traces inner
+	// (e.g. a `{ } >> { } | rate()` structural metric whose recursive arm
+	// carries no request window) would reach ClickHouse and full-scan retention.
+	// The node-level requireInnerSpansScanBound above only catches a zero outer
+	// window; the inner recursive arm can be unwindowed while the outer grid is
+	// windowed, which only the SQL-string guard sees. spansTable is threaded
+	// onto the guard ctx so a custom schema spans-table name is matched (the
+	// handler ctx is not engine-threaded with WithSpansTable).
+	if err := GuardEmittedSQL(WithSpansTable(ctx, spansTable), sql); err != nil {
+		span.RecordError(err)
+		return "", nil, err
+	}
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
 	return sql, e.args, nil
 }
