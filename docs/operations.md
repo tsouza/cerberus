@@ -253,6 +253,21 @@ validated against a real (non-chDB) server with that setting enforced — found
 result-correct at flat memory — which is why `auto` now selects it on ≥ 25.9
 rather than leaving it opt-in.
 
+### Recursive-CTE parallelism — recommend ClickHouse ≥ 26.6 for trace structure
+
+The TraceQL structural operators (`>>`, `&>>`, the Explore-Traces structure tab)
+lower to a `WITH RECURSIVE` nested-set numbering over the per-trace span forest
+(`internal/chsql/nested_set_annotate.go`). Through 26.5, a `GROUP BY` over a
+large recursive-CTE result was single-threaded server-side; **ClickHouse 26.6
+parallelizes it**. This is automatic — no setting, no cerberus knob, no version
+gate — so any server on 26.6+ runs the structural-join arm across cores with no
+config change. cerberus's per-query memory bound on this path (the top-N
+`BoundedTraceScope` leaf gate that caps how many traces feed the recursion)
+holds on every floor; 26.6 only makes the bounded recursion *faster*. There is
+no correctness floor here (the SQL is 24.8-safe), so it stays a **recommendation,
+not a requirement**: trace-heavy deployments leaning on the structure tab should
+prefer 26.6+, everyone else is unaffected.
+
 ### Prometheus resource-attribute labels
 
 The Prometheus head projects each metric row's OTel `ResourceAttributes` map as
