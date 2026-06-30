@@ -167,7 +167,12 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	}
 	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
-	ctx = applySpillSettings(ctx, e.queryMemoryCap())
+	memCap := e.queryMemoryCap()
+	ctx = applySpillSettings(ctx, memCap)
+	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
+	// for the wide attribute Map columns can't blow the budget even after the
+	// aggregation spills. Fires only on the metrics-compare plan shape.
+	ctx = applyCompareMemoryBound(ctx, plan, memCap)
 	ctx = e.Settings.apply(ctx, plan)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the

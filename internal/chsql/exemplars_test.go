@@ -130,3 +130,80 @@ func TestEmitMetricsExemplars_ShapeSanity(t *testing.T) {
 		t.Errorf("SQL still emits group alias as a separate column (breaks 4-column Sample shape)\nSQL=%s", sql)
 	}
 }
+
+// TestEmitMetricsExemplars_StructuralUnwindowedInnerRejected is the FIX B
+// regression for the exemplars emit-path bypass. The inner of a
+// `{ } >> { } | rate()` structural metric is a recursive descendant closure
+// over otel_traces. With no request window stamped on that closure's step scan
+// (TimestampColumn / WindowStartNano unset), the recursive `FROM otel_traces`
+// arm reads full retention — the traces-OOM class. The OUTER exemplars grid IS
+// windowed (rw.Start/End set), so the statement carries a request window and
+// the node-level requireInnerSpansScanBound — which only fires on a zero OUTER
+// window — passes. Before FIX B, EmitMetricsExemplars built and returned this
+// SQL (the handler executed it directly, never through chsql.Emit, so the
+// universal guard never saw it). EmitMetricsExemplars must now run
+// GuardEmittedSQL on its own output and reject the unwindowed recursive arm.
+func TestEmitMetricsExemplars_StructuralUnwindowedInnerRejected(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+	inner := &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralDescendant,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+		// TimestampColumn / WindowStartNano / WindowEndNano deliberately
+		// unset: the recursive step scan renders without a window predicate.
+	}
+	m := &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpRate,
+		ValueAlias: "Value",
+		Inner:      inner,
+	}
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Step:            time.Minute,
+		Range:           time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "Timestamp",
+	}
+	_, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "otel_traces")
+	if err == nil {
+		t.Fatalf("expected ErrUnboundedSpansScan for unwindowed recursive exemplars inner, got nil")
+	}
+	if !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+		t.Fatalf("expected ErrUnboundedSpansScan, got %v", err)
+	}
+}
+
+// TestEmitMetricsExemplars_PlainWindowedInnerAccepted is the negative control:
+// with the spans table explicitly set (matching production, which threads
+// h.Schema.SpansTable), a plain windowed inner scan still emits cleanly. The
+// guard is shape-gated, not table-gated — a windowed otel_traces scan is not
+// rejected just because the table name is known.
+func TestEmitMetricsExemplars_PlainWindowedInnerAccepted(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+	m := &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpRate,
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	}
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Step:            time.Minute,
+		Range:           time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "Timestamp",
+	}
+	if _, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "otel_traces"); err != nil {
+		t.Fatalf("windowed plain inner must emit cleanly, got %v", err)
+	}
+}

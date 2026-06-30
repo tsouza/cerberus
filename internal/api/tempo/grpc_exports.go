@@ -186,6 +186,11 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	if perr != nil {
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %w", errParseStage, perr)
 	}
+	// Thread the request window onto ctx so the universal recursive-arm window
+	// stamp (traceql.stampRecursiveScanWindow) bounds the EMITTER-SYNTHETIC
+	// recursive spans scans of a metrics-over-structural / nested-set source; the
+	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
+	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
 	lowerT.Done(ctx)
@@ -308,6 +313,11 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 	if perr != nil {
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: %w", errParseStage, perr)
 	}
+	// Thread the request window onto ctx so the universal recursive-arm window
+	// stamp (traceql.stampRecursiveScanWindow) bounds the EMITTER-SYNTHETIC
+	// recursive spans scans of a metrics-over-structural / nested-set source; the
+	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
+	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
 	lowerT.Done(ctx)

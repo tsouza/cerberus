@@ -148,7 +148,7 @@ func TestTracesScanResourceBoundRealCH(t *testing.T) {
 
 	// --- 1. Structure query: real lower→emit, executes WITHOUT error 49 and
 	//        returns the correct nested-set numbering. ---
-	structSQL := emitStructure(t, s, true)
+	structSQL := emitStructure(t, s)
 	t.Run("structure_executes_correct", func(t *testing.T) {
 		rows := queryNestedSet(ctx, t, conn, structSQL)
 		assertNestedSetShape(t, rows, int(wantTraces))
@@ -180,12 +180,24 @@ func TestTracesScanResourceBoundRealCH(t *testing.T) {
 			t.Errorf("windowed leaf read %d parts, table holds %d — partition pruning did not fire", windowParts, totalParts)
 		}
 
-		// (b) the actual drilldown query prunes far fewer parts windowed than
-		//     un-windowed (runtime query_log SelectedParts).
+		// (b) the same drilldown over a WIDE window (the full seeded range) selects
+		//     strictly more parts than the narrow request window — the window
+		//     predicate prunes at the drilldown level, across every recursive arm.
+		//     The un-windowed variant cannot be emitted at all: the universal guard
+		//     fails it closed, so an unbounded recursive scan never reaches CH.
 		windowedDrill := measureSelectedParts(ctx, t, conn, structSQL, "scanbound_struct_win")
-		unwindowedDrill := measureSelectedParts(ctx, t, conn, emitStructure(t, s, false), "scanbound_struct_nowin")
-		if windowedDrill >= unwindowedDrill {
-			t.Errorf("windowed Structure query did not prune parts vs un-windowed: windowed=%d unwindowed=%d", windowedDrill, unwindowedDrill)
+		dataMinNs := scalarUInt64(ctx, t, conn, "SELECT toUInt64(toUnixTimestamp64Nano(min(Timestamp))) FROM otel_traces")
+		dataMaxNs := scalarUInt64(ctx, t, conn, "SELECT toUInt64(toUnixTimestamp64Nano(max(Timestamp))) FROM otel_traces")
+		wideRaw, wideArgs, err := emitStructureRaw(s, time.Unix(0, int64(dataMinNs)).UTC(), time.Unix(0, int64(dataMaxNs)).UTC())
+		if err != nil {
+			t.Fatalf("emit wide-window structure: %v", err)
+		}
+		wideDrill := measureSelectedParts(ctx, t, conn, inlineScanBoundArgs(t, wideRaw, wideArgs), "scanbound_struct_wide")
+		if windowedDrill >= wideDrill {
+			t.Errorf("narrow-window Structure did not prune vs wide window: narrow=%d wide=%d", windowedDrill, wideDrill)
+		}
+		if _, _, err := emitStructureRaw(s, time.Time{}, time.Time{}); !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+			t.Errorf("un-windowed Structure emit did not fail closed: err=%v (want ErrUnboundedSpansScan)", err)
 		}
 	})
 
@@ -209,28 +221,36 @@ func TestTracesScanResourceBoundRealCH(t *testing.T) {
 
 // --- emit helpers (the real cerberus lower→emit path) ---
 
-// emitStructure lowers and emits the Structure query through the production
-// path. windowed selects whether a request window is threaded (the form-a
-// bound) — the un-windowed variant still lowers to a bounded plan (the
-// BoundedTraceScope trace-id set), so both are valid; the windowed one prunes
-// partitions, the un-windowed does not.
-func emitStructure(t *testing.T, s schema.Traces, windowed bool) string {
-	t.Helper()
+// emitStructureRaw lowers and emits the Structure query through the production
+// path, returning the emit error rather than failing the test. windowed selects
+// whether a request window is threaded: the windowed variant prunes partitions
+// and emits cleanly; the un-windowed variant reaches the universal emit-time
+// guard with a recursive otel_traces scan carrying no co-scope window and is
+// rejected with ErrUnboundedSpansScan, so it can never reach ClickHouse.
+func emitStructureRaw(s schema.Traces, start, end time.Time) (string, []any, error) {
 	expr, err := ast.Parse(structureQuery)
 	if err != nil {
-		t.Fatalf("parse structure: %v", err)
+		return "", nil, err
 	}
 	ctx := tql.WithSearchTraceLimit(context.Background(), scanBoundSearchLimit)
-	if windowed {
-		ctx = tql.WithSearchWindow(ctx, scanBoundWinStart, scanBoundWinEnd)
+	if !start.IsZero() && !end.IsZero() {
+		ctx = tql.WithSearchWindow(ctx, start, end)
 	}
 	plan, err := tql.Lower(ctx, expr, s)
 	if err != nil {
-		t.Fatalf("lower structure: %v", err)
+		return "", nil, err
 	}
-	sqlStr, args, err := chsql.Emit(chsql.WithSpansTable(ctx, s.SpansTable), plan)
+	return chsql.Emit(chsql.WithSpansTable(ctx, s.SpansTable), plan)
+}
+
+// emitStructure is emitStructureRaw over the request window with test-fatal
+// error handling; the windowed variant emits cleanly (the un-windowed one,
+// emitStructureRaw with zero times, fails closed at the guard).
+func emitStructure(t *testing.T, s schema.Traces) string {
+	t.Helper()
+	sqlStr, args, err := emitStructureRaw(s, scanBoundWinStart, scanBoundWinEnd)
 	if err != nil {
-		t.Fatalf("emit structure: %v", err)
+		t.Fatalf("emit windowed structure: %v", err)
 	}
 	return inlineScanBoundArgs(t, sqlStr, args)
 }

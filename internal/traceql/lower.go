@@ -42,16 +42,22 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 		span.RecordError(err)
 		return nil, err
 	}
-	// The /api/search trace-limit + window folds apply only to SPAN search
-	// plans. A metrics query (MetricsPipeline / MetricsSecondStage) gets its
-	// time bound from the /api/metrics/query_range handler's RangeWindow wrap,
-	// never from these stamps — and its leaves must NOT take the request window
-	// even if the query is (mis)routed through /api/search with a limit. Gating
-	// here keeps the "only span plans reach pushLeafPredicate" invariant
-	// enforced rather than conventional, so the generic leaf recurse can never
-	// fold a window onto a metrics-pipeline leaf.
+	// The request window resolves from ctx for BOTH the span-search path
+	// (handler.go WithSearchWindow) and the metrics handlers (which thread it too
+	// — see internal/api/tempo/metrics_query_range.go et al.). searchWindowFromCtx
+	// returns zero times for callers that pass no window (spec/property harnesses,
+	// /traces/{id}).
+	start, end := searchWindowFromCtx(ctx)
+	// LEAF stamping is SEARCH-ONLY. The /api/search trace-limit + window folds
+	// apply to the chplan-leaf scans of a SPAN search plan. A metrics query
+	// (MetricsPipeline / MetricsSecondStage) gets its leaf time bound from the
+	// /api/metrics/query_range handler's RangeWindow wrap, never from these
+	// stamps — and its leaves must NOT take the request window even if the query
+	// is (mis)routed through /api/search with a limit. Gating here keeps the
+	// "only span plans reach pushLeafPredicate" invariant enforced rather than
+	// conventional, so the generic leaf recurse can never fold a window onto a
+	// metrics-pipeline leaf.
 	if expr.MetricsPipeline == nil && expr.MetricsSecondStage == nil {
-		start, end := searchWindowFromCtx(ctx)
 		// Bound the nested-set numbering walk to the N traces /api/search will
 		// return, ranked within the request window (no-op unless the request set
 		// a limit AND the plan is a select() over the Drilldown structure shape
@@ -70,6 +76,18 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 		// plain-search SearchTraceLimit node (no double-fold).
 		plan = stampSearchWindow(plan, searchTraceLimit(ctx), start, end, s)
 	}
+	// RECURSIVE-ARM stamping is UNIVERSAL — search AND metrics. The
+	// EMITTER-SYNTHETIC recursive spans scans (the nested-set numbering CTE on
+	// NestedSetAnnotate, the structural-closure step arm on StructuralJoin) scan
+	// the physical spans table directly inside a WITH RECURSIVE, BELOW where the
+	// metrics RangeWindow wrap can reach. So a metrics pipeline over a structural
+	// / nested-set source (`{ } >> { } | rate()`,
+	// `{ nestedSetParent<0 } | by(nestedSetParent) | rate()`) would otherwise emit
+	// a windowless recursive arm that reads full retention behind the inert
+	// `TraceId IN (<seed>)`. The stamp needs only a non-zero [start,end] + tsCol,
+	// independent of the response trace limit, so it runs for every plan; a zero
+	// window no-ops, keeping non-windowed callers byte-identical.
+	plan = stampRecursiveScanWindow(plan, start, end, s)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }
@@ -84,13 +102,26 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		return nil, fmt.Errorf("traceql: empty pipeline")
 	}
 
-	plan, err := lowerPipeline(expr.Pipeline, s)
+	// Fold a standalone trailing `| by(X)` grouping stage into a following
+	// metrics aggregate so `{...} | by(X) | rate()` lowers identically to the
+	// valid `{...} | rate() by (X)`. Without this the `by(X)` stage lowers to a
+	// standalone GROUP-BY Aggregate that strips Timestamp, and the metrics rate
+	// grid the /api/metrics/query_range handler wraps over it then references a
+	// Timestamp the inner aggregate already collapsed away — ClickHouse code 47
+	// ("Unknown expression or function identifier `Timestamp`"), a 502. Routing
+	// the grouping through the aggregate's by-clause keeps Timestamp in scope.
+	pipeline, mp := expr.Pipeline, expr.MetricsPipeline
+	if mp != nil {
+		pipeline, mp = foldTrailingGroupByIntoMetrics(pipeline, mp)
+	}
+
+	plan, err := lowerPipeline(pipeline, s)
 	if err != nil {
 		return nil, err
 	}
 
-	if expr.MetricsPipeline != nil {
-		plan, err = lowerMetricsPipeline(plan, expr.MetricsPipeline, s)
+	if mp != nil {
+		plan, err = lowerMetricsPipeline(plan, mp, s)
 		if err != nil {
 			return nil, err
 		}

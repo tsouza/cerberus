@@ -184,6 +184,82 @@ func (e *emitter) boundedRootLeg(root Frag, traceIDCol string, inner Frag, bound
 		Frag()
 }
 
+// windowRootLookupScan returns a clone of the root-lookup relation with the
+// request window AND-ed into the Filter that sits directly on the spans Scan,
+// so the per-trace root aggregate prunes partitions below its GROUP BY (a
+// Timestamp predicate above the GROUP BY would reference an ungrouped column and
+// could not push down). startNano / endNano are the request window's unix
+// nanoseconds; each bound is omitted when its value is 0. The rewrite only
+// touches a Scan whose Table is the context-threaded spans table, leaving any
+// other shape untouched (defensive — the compare lowering always produces the
+// Aggregate→Filter→Scan root lookup, but a future schema may not). Returns the
+// input unchanged when no matching spans scan is found.
+func windowRootLookupScan(root chplan.Node, tsCol string, startNano, endNano int64, spansTable string) chplan.Node {
+	lo, hi := tsBoundExprs(tsCol, startNano, endNano)
+	if lo == nil && hi == nil {
+		return root
+	}
+	clone := chplan.CloneNode(root)
+	if pushWindowToSpansScanFilter(clone, spansTable, lo, hi) {
+		return clone
+	}
+	return root
+}
+
+// tsBoundExprs builds the lower (`>= fromUnixTimestamp64Nano(startNano)`) and
+// upper (`<= fromUnixTimestamp64Nano(endNano)`) request-window comparison
+// expressions for tsCol, mirroring the search lowering's tsBound shape so the
+// root-leg window matches the rest of the search path. Either side is nil when
+// its nanosecond value is 0.
+func tsBoundExprs(tsCol string, startNano, endNano int64) (lo, hi chplan.Expr) {
+	fromNano := func(nano int64) chplan.Expr {
+		return &chplan.FuncCall{
+			Name: "fromUnixTimestamp64Nano",
+			Args: []chplan.Expr{&chplan.LitInt{V: nano}},
+		}
+	}
+	if startNano != 0 {
+		lo = &chplan.Binary{Op: chplan.OpGe, Left: &chplan.ColumnRef{Name: tsCol}, Right: fromNano(startNano)}
+	}
+	if endNano != 0 {
+		hi = &chplan.Binary{Op: chplan.OpLe, Left: &chplan.ColumnRef{Name: tsCol}, Right: fromNano(endNano)}
+	}
+	return lo, hi
+}
+
+// pushWindowToSpansScanFilter walks n in place looking for the Filter that sits
+// directly on a Scan of spansTable (or a bare such Scan) and conjoins lo/hi into
+// its predicate. n must be a solely-owned clone. Returns true once it has
+// folded the window, false if no matching spans scan is reachable.
+func pushWindowToSpansScanFilter(n chplan.Node, spansTable string, lo, hi chplan.Expr) bool {
+	switch v := n.(type) {
+	case *chplan.Filter:
+		if sc, ok := v.Input.(*chplan.Scan); ok && sc.Table == spansTable {
+			v.Predicate = conjoinExpr(conjoinExpr(v.Predicate, lo), hi)
+			return true
+		}
+		return pushWindowToSpansScanFilter(v.Input, spansTable, lo, hi)
+	case *chplan.Aggregate:
+		return pushWindowToSpansScanFilter(v.Input, spansTable, lo, hi)
+	case *chplan.Project:
+		return pushWindowToSpansScanFilter(v.Input, spansTable, lo, hi)
+	}
+	return false
+}
+
+// conjoinExpr ANDs right into left, dropping a nil right (so a one-sided window
+// stays bare) and returning right when left is nil.
+func conjoinExpr(left, right chplan.Expr) chplan.Expr {
+	switch {
+	case right == nil:
+		return left
+	case left == nil:
+		return right
+	default:
+		return &chplan.Binary{Op: chplan.OpAnd, Left: left, Right: right}
+	}
+}
+
 // compareSelOut / compareAttrOut / compareValOut / compareValueOut
 // resolve the output aliases with the same defaults the lowering pins
 // (internal/traceql/metrics_compare.go).
@@ -307,6 +383,33 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	if !r.Start.IsZero() && !r.End.IsZero() {
 		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, r.Offset.Nanoseconds(), rangeNS)
 		bound = &compareScanBound{lo: lo, hi: hi}
+	}
+	// Push the request window directly onto the root-lookup's physical scan
+	// (below its GROUP BY), so CH partition-prunes it. boundedRootLeg's
+	// `TraceId IN (<bounded cohort>)` seed sits ABOVE the GROUP BY and so prunes
+	// nothing — it stays as the cohort scope, but a direct Timestamp predicate
+	// on the root scan is what actually prunes the toDate(Timestamp) partitions.
+	// Gated on the context-threaded spans table so it only fires for a real
+	// Tempo request (the spec/golden lane never threads it, staying
+	// byte-identical). The window edge residual — a root whose start straddles
+	// out of [start,end] is dropped — is the same approximation
+	// boundedRootScopeFrag already accepts.
+	if bound != nil && e.ctxSpansTable != "" && m.RootLookup != nil {
+		// A zero time.Time's UnixNano() is a huge negative number, not 0, which
+		// would emit a bogus fromUnixTimestamp64Nano(<negative>) bound instead of
+		// omitting the side. Mirror the `!r.Start.IsZero() && !r.End.IsZero()`
+		// guard above (and handler.go scanTimestampWindow) so an absent bound
+		// passes 0 and windowRootLookupScan omits it.
+		var startN, endN int64
+		if !r.Start.IsZero() {
+			startN = r.Start.UnixNano()
+		}
+		if !r.End.IsZero() {
+			endN = r.End.UnixNano()
+		}
+		windowed := *m
+		windowed.RootLookup = windowRootLookupScan(m.RootLookup, tsCol, startN, endN, e.ctxSpansTable)
+		m = &windowed
 	}
 	base, err := e.compareBaseQuery(m, bound, tsCol)
 	if err != nil {

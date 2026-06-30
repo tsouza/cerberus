@@ -151,6 +151,31 @@ type StructuralJoin struct {
 	ExtraProjectionColumns []string
 
 	MaxDepth int
+
+	// TimestampColumn names the spans Timestamp column the recursive
+	// closure's step scan is partition-pruned on. It is set together with
+	// WindowStartNano / WindowEndNano by the /api/search lowering window
+	// stamp; left "" on every other path (metrics, spec/property
+	// harnesses, direct-join tests), in which case the emitter renders the
+	// step scan without a request-window predicate (byte-identical to the
+	// pre-window output). When set, it also arms the emit-time fail-closed
+	// guard (chsql.requireSpansScanWindow): a step scan that opted into
+	// windowing but reaches emit with a zero window is rejected rather than
+	// scanning full retention.
+	TimestampColumn string
+
+	// WindowStartNano / WindowEndNano (unix nanoseconds, 0 = unset) carry the
+	// /api/search request window the recursive closure's step scan of the spans
+	// table is bounded by, so ClickHouse can partition-prune it instead of
+	// reading full retention to satisfy the inert `t.TraceId IN (<seed>)`
+	// membership (the seed-id IN never prunes partitions). They are set
+	// alongside TimestampColumn on the search path only; every other path leaves
+	// them 0 and the step scan stays unwindowed. The window bounds which spans
+	// the walk traverses — at the window edge a trace whose intermediate spans
+	// fall outside [start,end] degrades to a partial closure, the same residual
+	// approximation boundedRootScopeFrag already accepts to keep the gate cheap.
+	WindowStartNano int64
+	WindowEndNano   int64
 }
 
 func (*StructuralJoin) planNode() {}
@@ -171,6 +196,11 @@ func (j *StructuralJoin) Equal(other Node) bool {
 		return false
 	}
 	if j.MaxDepth != o.MaxDepth {
+		return false
+	}
+	if j.TimestampColumn != o.TimestampColumn ||
+		j.WindowStartNano != o.WindowStartNano ||
+		j.WindowEndNano != o.WindowEndNano {
 		return false
 	}
 	if len(j.ExtraProjectionColumns) != len(o.ExtraProjectionColumns) {

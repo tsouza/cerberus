@@ -27,6 +27,7 @@ import (
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -64,6 +65,48 @@ type Querier interface {
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
 }
 
+// guardedQuerier wraps the Querier the Tempo handlers call directly and runs
+// the universal spans-scan partition-pruning guard (chsql.GuardEmittedSQL) over
+// every SQL string before it reaches ClickHouse. It is the bypass-proof closure
+// for the otel_traces-SQL paths that do NOT flow through chsql.Emit: the
+// string-result discovery endpoints (/search/tags + /search/tag/{name}/values),
+// the trace root lookup, and the exemplars execution. Any future handler that
+// executes spans SQL via h.Client is guarded by construction — there is no
+// per-call site to forget.
+//
+// The metrics matrix path is deliberately NOT routed through this wrapper: the
+// engine holds the raw Querier so its optional CursorQuerier / memoryCapQuerier
+// surfaces survive (wrapping would strip them and disable streaming), and that
+// path is already guarded at emit by chsql.Emit. The guard is a no-op on SQL
+// with no otel_traces scan, so double-guarding the exemplars statement (once in
+// EmitMetricsExemplars, once here on execute) is harmless.
+//
+// spansTable is the configured schema spans table; it is threaded onto the
+// guard ctx (chsql.WithSpansTable) so a non-default table name is matched even
+// though the handler request ctx is not engine-threaded with it.
+type guardedQuerier struct {
+	inner      Querier
+	spansTable string
+}
+
+func (g *guardedQuerier) guard(ctx context.Context, sql string) error {
+	return chsql.GuardEmittedSQL(chsql.WithSpansTable(ctx, g.spansTable), sql)
+}
+
+func (g *guardedQuerier) Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	if err := g.guard(ctx, sql); err != nil {
+		return nil, err
+	}
+	return g.inner.Query(ctx, sql, args...)
+}
+
+func (g *guardedQuerier) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
+	if err := g.guard(ctx, sql); err != nil {
+		return nil, err
+	}
+	return g.inner.QueryStrings(ctx, sql, args...)
+}
+
 // Handler implements the Tempo HTTP API endpoints cerberus speaks.
 // Mount it via Handler.Mount(mux). The current surface covers
 // /api/echo, /api/status/version, /api/search, /api/search/recent,
@@ -96,8 +139,14 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 		logger = slog.Default()
 	}
 	opt := optimizer.Default()
+	// Handlers that execute otel_traces SQL directly (string-result discovery
+	// endpoints, root lookup, exemplars) go through the guarded wrapper so the
+	// spans-scan partition-pruning invariant holds by construction. The Engine
+	// keeps the raw client: its matrix path is already guarded at emit by
+	// chsql.Emit, and wrapping would hide the client's optional CursorQuerier /
+	// memoryCapQuerier surfaces and disable streaming.
 	return &Handler{
-		Client:    client,
+		Client:    &guardedQuerier{inner: client, spansTable: s.SpansTable},
 		Schema:    s,
 		Optimizer: opt,
 		Logger:    logger,
@@ -474,13 +523,51 @@ const (
 	maxSearchRecentLimit     = 200
 )
 
+// tsScanBound renders `<tsCol> <op> fromUnixTimestamp64Nano(<t.UnixNano()>)` —
+// a nanosecond Timestamp predicate that sits directly on the spans Scan so
+// ClickHouse partition-prunes toDate(Timestamp). Mirrors traceql.tsBound; kept
+// handler-local for the parser-less plan builders (search/recent, trace-by-id),
+// which compose chplan nodes by hand rather than going through lowering.
+func tsScanBound(tsCol string, op chplan.BinaryOp, t time.Time) chplan.Expr {
+	return &chplan.Binary{
+		Op:   op,
+		Left: &chplan.ColumnRef{Name: tsCol},
+		Right: &chplan.FuncCall{
+			Name: "fromUnixTimestamp64Nano",
+			Args: []chplan.Expr{&chplan.LitInt{V: t.UnixNano()}},
+		},
+	}
+}
+
+// scanTimestampWindow builds a `Timestamp >= start [AND Timestamp <= end]`
+// predicate for a hand-built scan. A zero start/end omits that side (a one-sided
+// window stays open-ended on the other); both zero returns nil so the caller
+// emits the bare Scan.
+func scanTimestampWindow(tsCol string, start, end time.Time) chplan.Expr {
+	var pred chplan.Expr
+	if !start.IsZero() {
+		pred = tsScanBound(tsCol, chplan.OpGe, start)
+	}
+	if !end.IsZero() {
+		upper := tsScanBound(tsCol, chplan.OpLe, end)
+		if pred == nil {
+			pred = upper
+		} else {
+			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: upper}
+		}
+	}
+	return pred
+}
+
 // handleSearchRecent implements `GET /api/search/recent`. Returns the
 // most-recent N traces (per the seeded Timestamp) without applying a
 // TraceQL filter. Grafana's Tempo Search UI calls this on first page
 // load to populate the trace list.
 //
-// Honors `?limit=N` (default 20, max 200); ignores `start` / `end` for
-// now (the emitter doesn't thread them through OrderBy + Limit).
+// Honors `?limit=N` (default 20, max 200). The request `start` / `end` bound
+// the scan to a Timestamp window; a windowless request defaults to the most
+// recent DefaultSearchLookback so the scan partition-prunes instead of reading
+// full retention.
 func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	limit := int64(defaultSearchRecentLimit)
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -492,10 +579,27 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Bound the recent-trace scan to the request window so the Timestamp
+	// predicate sits DIRECTLY on the Scan and ClickHouse partition-prunes
+	// toDate(Timestamp) — without it `ORDER BY Timestamp DESC LIMIT N` reads
+	// every partition before truncating. A windowless request defaults to the
+	// most recent DefaultSearchLookback (BoundDiscoveryWindow), matching the
+	// search / tag-discovery paths; a malformed bound is a 400.
+	start, end, err := parseTempoStartEnd(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "", "", err)
+		return
+	}
+	start, end = BoundDiscoveryWindow(start, end)
+
 	s := h.Schema
-	// Plan: Limit(OrderBy(Scan(otel_traces) ORDER BY Timestamp DESC) LIMIT N)
-	// — the engine applies wrap-projection + optimizer + emit + execute.
+	// Plan: Limit(OrderBy(Filter(Scan(otel_traces), Timestamp window)
+	// ORDER BY Timestamp DESC) LIMIT N) — the engine applies wrap-projection +
+	// optimizer + emit + execute.
 	plan := chplan.Node(&chplan.Scan{Table: s.SpansTable})
+	if window := scanTimestampWindow(s.TimestampColumn, start, end); window != nil {
+		plan = &chplan.Filter{Input: plan, Predicate: window}
+	}
 	plan = &chplan.OrderBy{
 		Input: plan,
 		Keys: []chplan.OrderKey{
@@ -718,6 +822,14 @@ func (h *Handler) lowerTraceByID(traceID string) (chplan.Node, error) {
 		Left:  &chplan.ColumnRef{Name: h.Schema.TraceIDColumn},
 		Right: &chplan.LitString{V: id},
 	})
+	// When the trace_id_ts MV is enabled, AND its precise per-trace Timestamp
+	// window onto the scan so it partition-prunes. Without the MV there is no
+	// safe window — a trace can be any age, and a now-relative lookback would
+	// silently hide older traces — so the lookup runs as a bare `TraceId = id`
+	// point scan. That reads full retention (TraceId never prunes
+	// toDate(Timestamp)) but returns only one trace's spans, so it is slow, not
+	// OOM-prone; the universal spans-scan guard does not flag it (it is neither a
+	// recursive nor a GROUP-BY scope). Enabling the MV makes any-age lookups fast.
 	if h.Schema.TraceIDTsEnabled {
 		pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: h.traceIDTsWindow(id)}
 	}
