@@ -61,9 +61,10 @@ services:
     #
     # Pinned to a recent ClickHouse so the demo exercises every cerberus
     # optimization (see the cerberus service env): condition_cache needs
-    # >= 25.3 and the native ts_grid rate path needs >= 25.6 — both
-    # comfortably satisfied here.
-    image: clickhouse/clickhouse-server:26.5
+    # >= 25.3, the native ts_grid rate path needs >= 25.6, and >= 26.6
+    # parallelizes the GROUP BY over the WITH RECURSIVE used by the TraceQL
+    # structural-join path — all comfortably satisfied here.
+    image: clickhouse/clickhouse-server:26.6
     networks: [cerberus-dev]
     environment:
       CLICKHOUSE_DB: otel
