@@ -839,7 +839,7 @@ templates (the `sqltemplates` API exposed by the
 match a stock OTel ClickHouse Exporter deployment — with **one
 deliberate exception**. The five metrics tables (`otel_metrics_gauge`,
 `otel_metrics_sum`, `otel_metrics_histogram`,
-`otel_metrics_exp_histogram`, `otel_metrics_summary`) carry a
+`otel_metrics_exponential_histogram`, `otel_metrics_summary`) carry a
 **MetricName-first sort key**:
 
 ```sql

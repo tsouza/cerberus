@@ -43,7 +43,7 @@ func TestEmit_HistogramQuantileNative_NoZeroThresholdColumn(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		Phi:                        0.95,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
@@ -72,7 +72,7 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 	t.Parallel()
 
 	base := &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		Phi:                        0.95,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
@@ -127,7 +127,7 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.HistogramQuantileNative{
-		Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		Phi:                        0.95,
 		ScaleColumn:                "Scale",
 		ZeroCountColumn:            "ZeroCount",
@@ -159,7 +159,7 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		"0.95 = 1",
 		"-`ZeroThreshold`",
 		"2 * `ZeroThreshold`",
-		"FROM `otel_metrics_exp_histogram`",
+		"FROM `otel_metrics_exponential_histogram`",
 	}
 	for _, tok := range wantTokens {
 		if !strings.Contains(sql, tok) {

@@ -1089,7 +1089,7 @@ func TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB(t *testing.T) {
 // Mirrors `histogramDDL`'s minimal-but-MergeTree shape so the chsql
 // emitter's PREWHERE promotion path runs end-to-end against ClickHouse
 // semantics (Memory engine rejects PREWHERE).
-const expHistogramDDL = `CREATE TABLE otel_metrics_exp_histogram (
+const expHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
@@ -1123,7 +1123,7 @@ func TestQuery_HistogramQuantileNativeAgg_ChDB(t *testing.T) {
 	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
 	seed := expHistogramDDL + fmt.Sprintf(`
-INSERT INTO otel_metrics_exp_histogram VALUES
+INSERT INTO otel_metrics_exponential_histogram VALUES
     ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('%s', 9), 0, 0, 0, [1, 2, 3], 0, []),
     ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('%s', 9), 0, 0, 0, [3, 4, 3], 0, []);`,
 		seedTS, seedTS)
@@ -1195,7 +1195,7 @@ func TestQuery_HistogramQuantileNativeAgg_MixedScale_ChDB(t *testing.T) {
 	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
 	seed := expHistogramDDL + fmt.Sprintf(`
-INSERT INTO otel_metrics_exp_histogram VALUES
+INSERT INTO otel_metrics_exponential_histogram VALUES
     ('http_server_duration_exp_hist', map('series', 'fine'),   toDateTime64('%s', 9), 1, 0, 0, [1, 2, 3, 4], 0, []),
     ('http_server_duration_exp_hist', map('series', 'coarse'), toDateTime64('%s', 9), 0, 0, 0, [5, 10],       0, []);`,
 		seedTS, seedTS)

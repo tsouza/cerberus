@@ -1065,7 +1065,7 @@ func TestHistogramQuantileNative_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	build := func() *chplan.HistogramQuantileNative {
 		return &chplan.HistogramQuantileNative{
-			Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+			Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 			Phi:                        0.99,
 			ScaleColumn:                "Scale",
 			ZeroCountColumn:            "ZeroCount",
@@ -2235,7 +2235,7 @@ func TestHistogramQuantileNative_Equal_Negative_PhiExpr(t *testing.T) {
 	t.Parallel()
 	mk := func(e chplan.Expr) *chplan.HistogramQuantileNative {
 		return &chplan.HistogramQuantileNative{
-			Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+			Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 			PhiExpr:                    e,
 			ScaleColumn:                "Scale",
 			ZeroCountColumn:            "ZeroCount",

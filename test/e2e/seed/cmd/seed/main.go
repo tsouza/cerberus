@@ -416,7 +416,7 @@ VALUES
 	//     (color / shape / env) for `label_replace` / `label_join` /
 	//     `count_values` and the vector-matching panels.
 	//   - showcase_latency_exp_hist — exponential (native) histogram
-	//     rows in otel_metrics_exp_histogram; the `_exp_hist` suffix
+	//     rows in otel_metrics_exponential_histogram; the `_exp_hist` suffix
 	//     routes `histogram_quantile(φ, showcase_latency_exp_hist)`
 	//     onto the native-quantile lowering (schema.ExpHistogramSuffix).
 	//
@@ -477,7 +477,7 @@ FROM numbers(120)`
 	// bucket counts grow with the sample index so the cumulative
 	// distribution is monotone, Count = ZeroCount + sum(buckets), and
 	// the native-quantile midpoint estimation always has mass to walk.
-	insertShowcaseExpHistSQL = `INSERT INTO otel_metrics_exp_histogram
+	insertShowcaseExpHistSQL = `INSERT INTO otel_metrics_exponential_histogram
   (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, Flags, Min, Max, AggregationTemporality)
 SELECT
     map('service.name', 'api'),
@@ -577,7 +577,7 @@ func verifyRowcounts(ctx context.Context, conn driver.Conn) error {
 		{"metrics_gauge", "SELECT count() FROM otel_metrics_gauge"},
 		{"metrics_sum", "SELECT count() FROM otel_metrics_sum"},
 		{"metrics_histogram", "SELECT count() FROM otel_metrics_histogram"},
-		{"metrics_exp_hist", "SELECT count() FROM otel_metrics_exp_histogram"},
+		{"metrics_exp_hist", "SELECT count() FROM otel_metrics_exponential_histogram"},
 		{"logs", "SELECT count() FROM otel_logs"},
 		{"traces", "SELECT count() FROM otel_traces"},
 	}

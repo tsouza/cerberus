@@ -31,7 +31,7 @@ package chplan
 //     contract used elsewhere in the metrics pipeline (PromQL aggregations
 //     drop __name__; the Sample wrapping is the caller's responsibility).
 //   - PRG ships the classic-histogram path; PR H adds the
-//     exponential-histogram variant (otel_metrics_exp_histogram) as a
+//     exponential-histogram variant (otel_metrics_exponential_histogram) as a
 //     sibling node so dispatch stays one switch in lowerCall.
 //
 // The chsql emitter renders the interpolation as a CH expression chain
