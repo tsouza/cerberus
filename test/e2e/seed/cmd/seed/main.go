@@ -2,11 +2,23 @@
 // fixture rows that the e2e test suite + Grafana Playwright smoke depend on.
 //
 // It is the Go replacement for the three pre-existing
-// `test/e2e/seed/{otel_metrics,otel_logs,otel_traces}.sql` scripts. The DDL
-// half now lives in [internal/schema/ddl] (PR C of the schema-source-of-truth
-// sequence) which wraps the upstream OTel ClickHouse Exporter templates. The
-// INSERT statements below are preserved verbatim from the old .sql files so
-// the row set the regression tests + e2e tests see is unchanged.
+// `test/e2e/seed/{otel_metrics,otel_logs,otel_traces}.sql` scripts. The INSERT
+// statements below are preserved verbatim from the old .sql files so the row
+// set the regression tests + e2e tests see is unchanged.
+//
+// # Schema authority (the seeder never creates tables)
+//
+// The seeder does NOT create the schema. In every stack it runs against an
+// external writer owns table creation: the OTel Collector's clickhouseexporter
+// (create_schema: true) in the compose quickstart, plus cerberus's own
+// auto-create hook in the k3d lane. Making the collector the SOLE schema
+// authority in compose turns cerberus's readiness probe into a live drift
+// detector — if cerberus's read-side table-name defaults ever diverge from the
+// exporter's real names again, cerberus can't find its expected tables, /readyz
+// stays 503, and compose-smoke fails. A cerberus-DDL create path here would
+// re-mask that drift by minting the cerberus-named tables the seeder inserts
+// into, so it is deliberately absent: the seeder WAITS for the external
+// writer's tables to appear (see waitForTables) before it inserts.
 //
 // Connection inputs (all env-driven; the Justfile sets them via
 // `kubectl port-forward`):
@@ -62,8 +74,6 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-
-	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
 func main() {
@@ -115,9 +125,14 @@ func run(ctx context.Context, reSeedInterval time.Duration) error {
 		return fmt.Errorf("ping %s: %w", addr, err)
 	}
 
-	log.Printf("seed: applying upstream OTel-CH DDL to %s (database=%s)", addr, database) //nolint:gosec // G706: addr+database are CI/dev env config, not user input
-	if err := ddl.ApplyWithConfig(ctx, conn, ddl.Config{Database: database}, ddl.All); err != nil {
-		return fmt.Errorf("apply ddl: %w", err)
+	// The seeder never creates the schema (see the package doc comment): the
+	// OTel collector's clickhouseexporter owns table creation. Wait for every
+	// table the INSERTs below target to exist before inserting, so the seeder
+	// tolerates the collector-creates-first ordering rather than failing with
+	// UNKNOWN_TABLE on a cold stack.
+	log.Printf("seed: waiting for the external writer's tables on %s (database=%s)", addr, database) //nolint:gosec // G706: addr+database are CI/dev env config, not user input
+	if err := waitForTables(ctx, conn, database, seededTables, tableWaitTimeout); err != nil {
+		return fmt.Errorf("wait for tables: %w", err)
 	}
 
 	if err := seedAll(ctx, conn); err != nil {
@@ -157,6 +172,83 @@ func run(ctx context.Context, reSeedInterval time.Duration) error {
 			log.Printf("seed: re-seed tick at %s ok", t.Format(time.RFC3339))
 		}
 	}
+}
+
+// Table-wait tuning. The collector's clickhouseexporter creates every OTel
+// table eagerly at exporter start(), so on a warm stack the tables are already
+// present and the first poll returns immediately; the budget only has to absorb
+// a cold boot where the seeder races ahead of the collector's start().
+const (
+	// tableWaitTimeout bounds the wait for the external writer's tables before
+	// the seeder gives up with a clear error rather than hanging a shard.
+	tableWaitTimeout = 3 * time.Minute
+	// tableWaitPoll is the gap between table-existence polls.
+	tableWaitPoll = 2 * time.Second
+)
+
+// seededTables are the tables every seed INSERT targets — the set the external
+// schema writer (the OTel collector) must have created before the seeder can
+// insert. Kept in lockstep with the INSERT statements below; a table added to
+// an INSERT without being added here would surface as an UNKNOWN_TABLE on a
+// cold stack instead of a bounded, explained wait.
+var seededTables = []string{
+	"otel_metrics_gauge",
+	"otel_metrics_sum",
+	"otel_metrics_histogram",
+	"otel_metrics_exponential_histogram",
+	"otel_logs",
+	"otel_traces",
+}
+
+// waitForTables blocks until every table in tables exists in database, or the
+// timeout elapses (or ctx is cancelled). It is the seeder's tolerance for the
+// collector-creates-first ordering: on a cold stack the seeder can start before
+// the collector's start() has run the schema DDL, so rather than failing with
+// UNKNOWN_TABLE it polls system.tables until the writer has provisioned every
+// table the INSERTs target. On timeout it names the tables still missing so a
+// CI failure points straight at the stuck creator.
+func waitForTables(ctx context.Context, conn driver.Conn, database string, tables []string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(tableWaitPoll)
+	defer ticker.Stop()
+	for {
+		missing, err := missingTables(ctx, conn, database, tables)
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			log.Printf("seed: all %d tables present", len(tables))
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s waiting for tables to be created by the external writer: %v", timeout, missing)
+		}
+		log.Printf("seed: %d table(s) not yet created, waiting: %v", len(missing), missing)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// missingTables returns the members of tables that do not yet exist in
+// database. The query is static with the name bound as a parameter — no
+// SQL string interpolation, same discipline as the INSERTs.
+func missingTables(ctx context.Context, conn driver.Conn, database string, tables []string) ([]string, error) {
+	const existsSQL = "SELECT count() FROM system.tables WHERE database = ? AND name = ?"
+	var missing []string
+	for _, t := range tables {
+		var n uint64
+		row := conn.QueryRow(ctx, existsSQL, database, t)
+		if err := row.Scan(&n); err != nil {
+			return nil, fmt.Errorf("introspect table %s: %w", t, err)
+		}
+		if n == 0 {
+			missing = append(missing, t)
+		}
+	}
+	return missing, nil
 }
 
 // seedAll runs every INSERT once against the live connection. The
