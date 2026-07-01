@@ -3,7 +3,7 @@ package chplan
 // HistogramQuantileNative is the lowered form of PromQL's
 // `histogram_quantile(phi, <native-histogram-selector>)` against the
 // OTel-CH exponential (native) histogram table
-// (`otel_metrics_exp_histogram`).
+// (`otel_metrics_exponential_histogram`).
 //
 // The OTel exponential-histogram representation stores buckets at
 // log-scale resolution rather than as explicit upper bounds:
@@ -34,7 +34,7 @@ package chplan
 //   - Input produces rows surfacing the exp-histogram columns
 //     (Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
 //     NegativeOffset, NegativeBucketCounts). Typically Scan or
-//     Filter over otel_metrics_exp_histogram.
+//     Filter over otel_metrics_exponential_histogram.
 //   - Phi is a scalar literal; PhiExpr is the computed-phi sibling
 //     (typically a ScalarSubquery from `scalar(<vector>)`) and takes
 //     precedence over Phi at emit time, with a leading

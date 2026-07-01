@@ -107,15 +107,15 @@ Deployments with a customised CH layout — renamed tables, sharded
 clusters, alternate database conventions — override the table names via
 env vars at startup; nothing rebuild-related is required.
 
-| Variable                                      | Default                      | Effect                                             |
-| --------------------------------------------- | ---------------------------- | -------------------------------------------------- |
-| `CERBERUS_SCHEMA_METRICS_GAUGE_TABLE`         | `otel_metrics_gauge`         | Gauge-metrics table name.                          |
-| `CERBERUS_SCHEMA_METRICS_SUM_TABLE`           | `otel_metrics_sum`           | Sum / counter metrics table name.                  |
-| `CERBERUS_SCHEMA_METRICS_HISTOGRAM_TABLE`     | `otel_metrics_histogram`     | Classic histogram metrics table name.              |
-| `CERBERUS_SCHEMA_METRICS_EXP_HISTOGRAM_TABLE` | `otel_metrics_exp_histogram` | Exponential / native histogram metrics table name. |
-| `CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE`       | `otel_metrics_summary`       | Summary metrics table name.                        |
-| `CERBERUS_SCHEMA_LOGS_TABLE`                  | `otel_logs`                  | Logs table name read by the Loki API.              |
-| `CERBERUS_SCHEMA_TRACES_TABLE`                | `otel_traces`                | Spans table name read by the Tempo API.            |
+| Variable                                      | Default                              | Effect                                             |
+| --------------------------------------------- | ------------------------------------ | -------------------------------------------------- |
+| `CERBERUS_SCHEMA_METRICS_GAUGE_TABLE`         | `otel_metrics_gauge`                 | Gauge-metrics table name.                          |
+| `CERBERUS_SCHEMA_METRICS_SUM_TABLE`           | `otel_metrics_sum`                   | Sum / counter metrics table name.                  |
+| `CERBERUS_SCHEMA_METRICS_HISTOGRAM_TABLE`     | `otel_metrics_histogram`             | Classic histogram metrics table name.              |
+| `CERBERUS_SCHEMA_METRICS_EXP_HISTOGRAM_TABLE` | `otel_metrics_exponential_histogram` | Exponential / native histogram metrics table name. |
+| `CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE`       | `otel_metrics_summary`               | Summary metrics table name.                        |
+| `CERBERUS_SCHEMA_LOGS_TABLE`                  | `otel_logs`                          | Logs table name read by the Loki API.              |
+| `CERBERUS_SCHEMA_TRACES_TABLE`                | `otel_traces`                        | Spans table name read by the Tempo API.            |
 
 One related opt-in knob is a boolean rather than a table-name override:
 

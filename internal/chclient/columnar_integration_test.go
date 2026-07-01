@@ -48,6 +48,20 @@ const columnarMatrixSQL = `
 	ORDER BY Attributes, TimeUnix
 `
 
+// columnarLowCardinalityDDL is the matrix table with the label map keyed by
+// LowCardinality(String) — the type the real OTel-CH exporter writes for
+// Attributes / ResourceAttributes. ch-go's Auto inference (used by the columnar
+// matrix decode) cannot construct this Map type and only special-cases the
+// plain Map(String, String); without a fall-back the columnar path 502s on it.
+const columnarLowCardinalityDDL = `
+	CREATE TABLE otel_metrics_gauge (
+		MetricName String,
+		Attributes Map(LowCardinality(String), String),
+		TimeUnix DateTime64(9),
+		Value Float64
+	) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix)
+`
+
 func TestColumnarMatrixParity_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -73,6 +87,59 @@ func TestColumnarMatrixParity_E2E(t *testing.T) {
 	rowErr := drainMatrixErr(ctx, t, newColumnarClient(t, addr, false, budget))
 	colErr := drainMatrixErr(ctx, t, newColumnarClient(t, addr, true, budget))
 	assertBudgetErrEqual(t, rowErr, colErr, budget)
+}
+
+// TestColumnarLowCardinalityMapFallback_E2E proves the columnar matrix decode
+// returns the correct rows on a Map(LowCardinality(String), String) label
+// column — the type the real OTel-CH exporter writes for Attributes /
+// ResourceAttributes — by falling back to the row path when ch-go's Auto
+// inference cannot construct that Map type (it only special-cases the plain
+// Map(String, String)). Without the fall-back the columnar path surfaces
+// ch-go's "automatic column inference not supported" error as a 502; here it
+// must decode the full fixture instead.
+//
+// The row path is the control: the columnar drain must return the SAME samples,
+// byte-identical and non-empty. If the fall-back were removed, drainMatrix's
+// QueryCursor call would already have failed on the inference error, so a green
+// run of this test is the guard that the fall-back actually executes.
+func TestColumnarLowCardinalityMapFallback_E2E(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	addr := startColumnarCH(ctx, t)
+
+	// Ingest a small multi-series matrix into a table whose Attributes column is
+	// keyed by LowCardinality(String) (the exporter's real shape).
+	ingest := newColumnarClient(t, addr, false, 0)
+	if err := ingest.Exec(ctx, columnarLowCardinalityDDL); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	const (
+		series    = 4
+		perSeries = 30
+	)
+	base := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
+	var values [][]any
+	for s := 0; s < series; s++ {
+		attrs := map[string]string{"job": "api", "instance": fmt.Sprintf("host-%d", s)}
+		for p := 0; p < perSeries; p++ {
+			ts := base.Add(time.Duration(s*perSeries+p) * time.Second)
+			values = append(values, []any{"http_requests_total", attrs, ts, float64(p)})
+		}
+	}
+	if err := batchInsert(ctx, ingest, values); err != nil {
+		t.Fatalf("insert fixture: %v", err)
+	}
+
+	// Row path (control) and columnar path (fall-back exercised on the LC map).
+	rowSamples := drainMatrix(ctx, t, newColumnarClient(t, addr, false, 0))
+	colSamples := drainMatrix(ctx, t, newColumnarClient(t, addr, true, 0))
+
+	if len(colSamples) != series*perSeries {
+		t.Fatalf("columnar path returned %d samples, want %d — the LowCardinality-map fall-back did not decode the fixture",
+			len(colSamples), series*perSeries)
+	}
+	assertSamplesEqual(t, rowSamples, colSamples)
 }
 
 // startColumnarCH boots a ClickHouse container and returns its host:port.

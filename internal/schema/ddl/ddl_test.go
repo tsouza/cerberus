@@ -27,7 +27,7 @@ func TestRenderSignal_Metrics(t *testing.T) {
 		"otel_metrics_gauge",
 		"otel_metrics_sum",
 		"otel_metrics_histogram",
-		"otel_metrics_exp_histogram",
+		"otel_metrics_exponential_histogram",
 		"otel_metrics_summary",
 	}
 	for i, stmt := range stmts[:wantCreates] {

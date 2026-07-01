@@ -75,7 +75,7 @@ func TestAutoCreateSchema_StartupWiring(t *testing.T) {
 	got := listTables(ctx, t, client, "otel")
 	want := []string{
 		"otel_logs",
-		"otel_metrics_exp_histogram",
+		"otel_metrics_exponential_histogram",
 		"otel_metrics_gauge",
 		"otel_metrics_histogram",
 		"otel_metrics_sum",
