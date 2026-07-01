@@ -41,7 +41,11 @@ jobs:
     # re-establishes the headroom + a clear test-quality rationale.
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 90 (not 60): phase4-traceql runs workers=1 (see its matrix note) to stay
+    # under the runner memory ceiling, which serialises its ~109 timeout mutants
+    # and pushes its wall-clock toward an hour on a 2-core runner. The faster
+    # phases finish well inside this; it only bounds a genuinely-hung leg.
+    timeout-minutes: 90
     # Heavy mutation work runs on push / schedule / dispatch, and on a release
     # PR (head branch release/*). On an ordinary (non-release) pull_request the
     # ENTIRE matrix is SKIPPED — zero gremlins jobs queued — so the high matrix
@@ -198,7 +202,17 @@ jobs:
           - phase: phase4-traceql
             scope: ./internal/traceql
             efficacy: 95
-            workers: 0
+            # internal/traceql carries ~109 timeout-inducing mutants (loop-control
+            # and conditional flips in the recursive-descent parser + lowering).
+            # At the default NumCPU workers those concurrent timed-out `go test`
+            # cycles spike memory past the ~7 GB ubuntu-latest ceiling ~2 min in,
+            # and the OS kills the runner (surfaced as a shutdown signal) before
+            # the run finishes — at whatever file it happens to be on, so the death
+            # point varies. workers=1 serialises them so only one spike is live at
+            # a time and it stays under the ceiling. The package's efficacy on
+            # adequate hardware is 95.51% (KILLED 468, TIMED OUT 109, LIVED 22) —
+            # above the floor; the CI cap is runner budget, not test quality.
+            workers: 1
           - phase: phase5-qlcommon
             scope: ./internal/qlcommon
             efficacy: 95
