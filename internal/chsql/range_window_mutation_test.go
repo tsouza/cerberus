@@ -238,6 +238,75 @@ func TestFusedInstantSelfGuard(t *testing.T) {
 	}
 }
 
+// TestFusedInstantInnerGate kills the inner-matrix gate in
+// tryEmitFusedInstantSubquery (range_window_fused.go:102/113/122). Each case
+// starts from the fully-fusible fusedOuter() and perturbs ONE inner field so
+// the gate should reject (handled=false); the flip would proceed to fuse
+// (handled=true). The clean baseline fuses (handled=true).
+//
+//   - 102:20 `inner.Identity || …` `||`→`&&`: Identity=true still rejects.
+//   - 102:40 `inner.OuterRange <= 0` `<=`→`<`: OuterRange==0 still rejects.
+//   - 102:45 `… || inner.Step <= 0` `||`→`&&`, and
+//     102:59 `inner.Step <= 0` `<=`→`<`: Step==0 still rejects.
+//   - 113:33 `TimestampColumn == "" || ValueColumn == ""` `||`→`&&`: an empty
+//     TimestampColumn (ValueColumn still set) still rejects.
+//   - 122:26 `inner.Start.IsZero() || inner.End.IsZero()` `||`→`&&`: a zero
+//     inner Start (End still set) still rejects.
+func TestFusedInstantInnerGate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		perturb func(inner *chplan.RangeWindow)
+	}{
+		{"identity inner", func(in *chplan.RangeWindow) { in.Identity = true }},
+		{"zero OuterRange", func(in *chplan.RangeWindow) { in.OuterRange = 0 }},
+		{"zero Step", func(in *chplan.RangeWindow) { in.Step = 0 }},
+		{"empty TimestampColumn", func(in *chplan.RangeWindow) { in.TimestampColumn = "" }},
+		{"zero inner Start", func(in *chplan.RangeWindow) { in.Start = time.Time{} }},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := fusedOuter()
+			tc.perturb(r.Input.(*chplan.RangeWindow))
+			e := &emitter{}
+			handled, err := e.tryEmitFusedInstantSubquery(r)
+			if err != nil {
+				t.Fatalf("gate rejection must not error, got %v", err)
+			}
+			if handled {
+				t.Errorf("perturbed inner (%s) must not fuse (handled=true) — the inner gate flip is alive", tc.name)
+			}
+		})
+	}
+	// Positive control: the untouched fusible shape fuses.
+	e := &emitter{}
+	if handled, err := e.tryEmitFusedInstantSubquery(fusedOuter()); err != nil || !handled {
+		t.Fatalf("clean fusible inner must fuse: handled=%v err=%v", handled, err)
+	}
+}
+
+// TestFusedInstantAnchorCount kills range_window_fused.go:158
+// `inner.OuterRange.Nanoseconds()/stepNS + 1`. With OuterRange=10m and Step=1m
+// the fused anchor grid is `range(11)`. The `/`→`*` flip (@158:46) overflows to
+// a wildly different count and the `+`→`-` flip (@158:54) yields `range(9)`, so
+// pinning the exact `range(11)` literal kills both arithmetic mutants.
+func TestFusedInstantAnchorCount(t *testing.T) {
+	t.Parallel()
+	sql, _, err := Emit(context.Background(), fusedOuter())
+	if err != nil {
+		t.Fatalf("Emit(fused instant subquery): %v", err)
+	}
+	// OuterRange 10m / Step 1m + 1 = 11 anchors.
+	if !strings.Contains(sql, "range(11)") {
+		t.Errorf("fused anchor grid must be range(11) (OuterRange/Step + 1) — line 158 arithmetic flipped\nSQL: %s", sql)
+	}
+	if strings.Contains(sql, "range(9)") {
+		t.Errorf("found range(9) — `+ 1` mutated to `- 1` (line 158)\nSQL: %s", sql)
+	}
+}
+
 // TestOverTimeDirectMatrixNoGroupBy kills range_window.go:2465. With an empty
 // GroupBy the regroup-key slice cap is `len(groupFrags)+1` = 1; the
 // ARITHMETIC_BASE flip to `-1` makes `make([]Frag, 0, -1)`, which panics
