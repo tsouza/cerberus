@@ -213,6 +213,7 @@ const SHARDS = [
 const EXCLUDED = [
   'crawl/reconcile.spec.ts', //          crawl-suite reconcile pin; the k3d lane runs only the crawl trio, never reconcile
   'loki_tail.spec.ts', //                direct-WebSocket Loki live-tail oracle (#1011); runs in the compose-smoke lane (shard-kiosk), not the k3d dashboard lane — it drives the tail WS endpoint on the compose stack, never Grafana on k3d
+  'metrics_histogram.spec.ts', //        direct cerberus Prom-API histogram_quantile checks over the exp/classic telemetrygen sources that exist only in the compose stack (docker-compose sidecars); runs in the compose-smoke lane (shard-smoke), never Grafana on k3d
 ];
 
 // Shard names render straight into the matrix `name` -> child check context

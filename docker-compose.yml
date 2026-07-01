@@ -19,10 +19,13 @@
 #                   off and the seeder never creates tables — so cerberus's
 #                   readiness probe doubles as a live schema-drift detector.
 #                   Config: test/e2e/otel-collector/compose-config.yaml.
-#   telemetrygen    one exponential-histogram metric source (e2e_latency_exp_hist)
-#                   fed through the collector, so the exporter-created
-#                   otel_metrics_exponential_histogram table carries data a
-#                   native histogram_quantile query can read back.
+#   telemetrygen    two histogram metric sources fed through the collector so
+#                   the exporter-created tables carry data a histogram_quantile
+#                   query can read back: telemetrygen-exphist writes the native
+#                   exponential shape (e2e_latency_exp_hist ->
+#                   otel_metrics_exponential_histogram) and
+#                   telemetrygen-classichist writes the classic explicit-bucket
+#                   shape (e2e_latency_classic_hist -> otel_metrics_histogram).
 #   cerberus        built from the repo-root `Dockerfile.local` (same image
 #                   the k3d E2E uses). Does NOT auto-create the schema
 #                   (CERBERUS_AUTO_CREATE_SCHEMA=false); it serves unready
@@ -190,9 +193,9 @@ services:
     # table cerberus must read back. The metric name carries the `_exp_hist`
     # suffix so cerberus's native path routes
     # `histogram_quantile(φ, e2e_latency_exp_hist)` onto that table
-    # (schema.ExpHistogramSuffix); the compose-smoke exp-histogram verifier
-    # (.github/scripts/e2e-verify-exp-histogram.mjs) asserts the query returns a
-    # value. `--duration inf` at `--rate 20` emits continuously for the whole
+    # (schema.ExpHistogramSuffix); the compose-smoke histogram spec
+    # (test/e2e/playwright/metrics_histogram.spec.ts) asserts the query returns
+    # a value. `--duration inf` at `--rate 20` emits continuously for the whole
     # stack lifetime, so a fresh sample always sits inside the PromQL staleness
     # window no matter how long the shard runs (`down -v` tears it down).
     image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.152.0
@@ -206,6 +209,44 @@ services:
       - --otlp-insecure
       - --otlp-metric-name
       - e2e_latency_exp_hist
+      - --duration
+      - inf
+      - --rate
+      - "20"
+    # telemetrygen FATALs if the collector's OTLP endpoint isn't accepting
+    # connections yet (k3d #82); on-failure restart retries until it is up.
+    restart: on-failure
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  telemetrygen-classichist:
+    # Classic-histogram data SOURCE, fed THROUGH the collector — the explicit-
+    # bucket sibling of telemetrygen-exphist. telemetrygen emits OTLP classic
+    # Histogram points to the collector, whose clickhouseexporter persists them
+    # into otel_metrics_histogram — the exporter-owned table cerberus reads back
+    # via the classic `_bucket` / `le` reconstruction. The metric name carries a
+    # distinct `_classic_hist` suffix so cerberus routes
+    # `histogram_quantile(φ, rate(e2e_latency_classic_hist_bucket[…]))` onto that
+    # table; the compose-smoke histogram spec
+    # (test/e2e/playwright/metrics_histogram.spec.ts) asserts the query returns a
+    # value. Kept separate from the exponential source and from the
+    # deterministic showcase seed so this nondeterministic feed never collides
+    # with either. `--duration inf` at `--rate 20` emits continuously for the
+    # whole stack lifetime, so a fresh sample always sits inside the PromQL
+    # staleness window no matter how long the shard runs (`down -v` tears it
+    # down).
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.152.0
+    networks: [cerberus-dev]
+    command:
+      - metrics
+      - --metric-type
+      - Histogram
+      - --otlp-endpoint
+      - otel-collector:4317
+      - --otlp-insecure
+      - --otlp-metric-name
+      - e2e_latency_classic_hist
       - --duration
       - inf
       - --rate
