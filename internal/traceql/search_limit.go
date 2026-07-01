@@ -36,9 +36,11 @@ func WithSearchTraceLimit(ctx context.Context, n int) context.Context {
 }
 
 // searchTraceLimit recovers the value WithSearchTraceLimit stored, or 0
-// when unset (unbounded).
+// when unset (unbounded). `n >= 1` (equivalently `n > 0` for the int the
+// key ever holds) rejects a non-positive value stored directly under the
+// key, so only a real, positive trace limit reads back.
 func searchTraceLimit(ctx context.Context) int64 {
-	if n, ok := ctx.Value(searchTraceLimitKey{}).(int); ok && n > 0 {
+	if n, ok := ctx.Value(searchTraceLimitKey{}).(int); ok && n >= 1 {
 		return int64(n)
 	}
 	return 0

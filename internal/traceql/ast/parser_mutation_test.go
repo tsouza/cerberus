@@ -231,3 +231,71 @@ func TestBottomKLimit(t *testing.T) {
 		t.Errorf("bottomk limit = %d; want 7", ts.Limit())
 	}
 }
+
+// TestAdvanceClampsAtEOF pins the exact boundary of cursor.advance()'s
+// end-of-input clamp: `if c.pos < len(c.p.toks)-1 { c.pos++ }`. The clamp keeps
+// pos pinned at the final index (the trailing EOF token) once reached, so a
+// call to advance() while already at EOF returns EOF and does not run off the
+// slice.
+//
+// Each input below is a scoped-intrinsic scope colon (`trace:`, `span:`, …)
+// that is the LAST token before EOF. parseScopedIntrinsic advances twice
+// unconditionally (`scope := c.advance().kind; field := c.advance().kind`): the
+// first advance consumes the colon and lands on EOF, the second advance is the
+// one that fires the clamp. The scope+EOF pair is not a valid intrinsic, so the
+// parser calls c.fail, which peek()s the current token to build the error.
+//
+// On the correct clamp, pos stays on EOF and c.fail surfaces a clean
+// ParseError. If the boundary is loosened (`<`→`<=`, or `-1`→`+1`/dropped so the
+// bound becomes len or len+1), the second advance pushes pos past the slice and
+// the subsequent peek panics with an index-out-of-range that escapes Parse's
+// parseErr-only recover — turning a clean error into a crash. Asserting a clean
+// error here therefore kills the CONDITIONALS_BOUNDARY / ARITHMETIC_BASE /
+// INVERT_NEGATIVES mutants on that clamp condition.
+func TestAdvanceClampsAtEOF(t *testing.T) {
+	t.Parallel()
+	// Scope colons whose lexer token is emitted even with no field following.
+	cases := []string{
+		`{ trace:`,
+		`{ span:`,
+		`{ event:`,
+		`{ link:`,
+	}
+	for _, q := range cases {
+		expr, err := Parse(q)
+		if err == nil {
+			t.Errorf("Parse(%q) = %v, nil; want a clean parse error (advance() must clamp at EOF)", q, expr)
+		}
+		if expr != nil {
+			t.Errorf("Parse(%q): expr = %v; want nil on error", q, expr)
+		}
+	}
+}
+
+// TestMetricsFirstStageBreaksAtTrailingPipe pins the `break` at the end of the
+// metrics-first-stage branch in parseRoot. After a `| rate()` (or any metrics
+// first stage) is parsed, the loop must STOP consuming pipeline stages: a
+// second metrics first stage chained by a bare pipe (`| rate()`) is not a legal
+// continuation, so the leftover pipe must reach the trailing tokEOF check and
+// be rejected.
+//
+// If the loop-control mutates break→continue (INVERT_LOOPCTRL), the loop
+// re-enters, sees the trailing `| rate()`, treats it as another metrics first
+// stage, overwrites the first, and parses successfully. Asserting that the
+// chained form is REJECTED (while the single-stage form is ACCEPTED) kills that
+// mutant.
+func TestMetricsFirstStageBreaksAtTrailingPipe(t *testing.T) {
+	t.Parallel()
+
+	// Baseline: a single metrics first stage parses cleanly.
+	if _, err := Parse(`{} | rate()`); err != nil {
+		t.Fatalf("Parse(`{} | rate()`) errored: %v; want success", err)
+	}
+
+	// Two metrics first stages chained by a pipe is not a valid pipeline. With
+	// break, the trailing `| rate()` is left unconsumed and rejected at EOF.
+	// With continue, the loop swallows it and the parse wrongly succeeds.
+	if expr, err := Parse(`{} | rate() | rate()`); err == nil {
+		t.Errorf("Parse(`{} | rate() | rate()`) = %v, nil; want a parse error (loop must break after the metrics first stage)", expr)
+	}
+}

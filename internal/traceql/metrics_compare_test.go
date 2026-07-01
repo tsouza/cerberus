@@ -168,6 +168,60 @@ func TestLowerMetricsCompare_FoldsTrivialAndTrue(t *testing.T) {
 	}
 }
 
+// bareSelectionOp returns the top-level operator of the compare
+// selection predicate. An un-windowed compare lowers `{status = error}`
+// to a single `Binary{OpEq}`; a windowed compare wraps it as
+// `Binary{OpAnd, window, filter}`. The op therefore distinguishes the
+// two shapes.
+func bareSelectionOp(t *testing.T, mc *chplan.MetricsCompare) chplan.BinaryOp {
+	t.Helper()
+	bin, ok := mc.Selection.(*chplan.Binary)
+	if !ok {
+		t.Fatalf("Selection = %#v, want *chplan.Binary", mc.Selection)
+	}
+	return bin.Op
+}
+
+// TestLowerMetricsCompare_ZeroStartNoWindow — a compare window whose start
+// is exactly 0 is NOT a window: the `startNs > 0 && endNs > 0` guard is
+// false (0 is not > 0), so the selection stays the bare `status = error`
+// filter (top-level OpEq), never AND(window, filter).
+//
+// This pins the boundary + logical operators on that guard: turning the
+// left `>` into `>=` (0 >= 0 is true), or the `&&` into `||`
+// (false || true is true), would wrongly wrap the selection in the
+// (start, end] window — flipping the top-level op from OpEq to OpAnd.
+func TestLowerMetricsCompare_ZeroStartNoWindow(t *testing.T) {
+	t.Parallel()
+
+	mc := lowerCompare(t, `{} | compare({status = error}, 5, 0, 1300)`)
+	if mc.StartNs != 0 || mc.EndNs != 1300 {
+		t.Fatalf("window = (%d, %d], want (0, 1300]", mc.StartNs, mc.EndNs)
+	}
+	if op := bareSelectionOp(t, mc); op != chplan.OpEq {
+		t.Errorf("Selection top-level op = %v, want OpEq (bare filter, no window ANDed for startNs=0)", op)
+	}
+}
+
+// TestLowerMetricsCompare_ZeroEndNoWindow — the mirror of the start=0 case:
+// an end of exactly 0 also fails the guard (0 is not > 0), so the
+// selection stays the bare filter.
+//
+// Turning the right `>` into `>=` (0 >= 0 is true), or the `&&` into `||`
+// (true || false is true), would wrongly add the window and flip the
+// top-level op to OpAnd.
+func TestLowerMetricsCompare_ZeroEndNoWindow(t *testing.T) {
+	t.Parallel()
+
+	mc := lowerCompare(t, `{} | compare({status = error}, 5, 1100, 0)`)
+	if mc.StartNs != 1100 || mc.EndNs != 0 {
+		t.Fatalf("window = (%d, %d], want (1100, 0]", mc.StartNs, mc.EndNs)
+	}
+	if op := bareSelectionOp(t, mc); op != chplan.OpEq {
+		t.Errorf("Selection top-level op = %v, want OpEq (bare filter, no window ANDed for endNs=0)", op)
+	}
+}
+
 // TestLowerMetricsCompare_PairsSkipRootWithoutColumns — blanking the
 // parent-span-id column drops the root lookup (and the rootName /
 // rootServiceName pairs) instead of failing the query.

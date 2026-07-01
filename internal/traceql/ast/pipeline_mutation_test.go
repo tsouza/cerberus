@@ -92,6 +92,43 @@ func TestChainedSecondStageString(t *testing.T) {
 	}
 }
 
+// TestChainedSecondStageStringFewerSeparators pins the `i < len(c.separators)`
+// bounds guard at its exact boundary. Separators() is documented as
+// index-aligned with Elements, but the guard exists precisely to render
+// correctly when there are FEWER separators than elements: the trailing
+// element(s) beyond the separator slice must be emitted with no leading
+// separator. Widening the guard to `i <= len(c.separators)` (the
+// CONDITIONALS_BOUNDARY mutant) reads c.separators[len(c.separators)] on that
+// trailing element and panics with an index-out-of-range — which this test's
+// call to String() surfaces as a failure.
+func TestChainedSecondStageStringFewerSeparators(t *testing.T) {
+	t.Parallel()
+	c := ChainedSecondStage{
+		elements: []SecondStageElement{
+			&TopKBottomK{op: OpTopK, limit: 3},
+			&TopKBottomK{op: OpBottomK, limit: 2},
+		},
+		// One fewer separator than elements: the second element must render
+		// without a leading separator, and must not index past the slice.
+		separators: []string{"A"},
+	}
+	if got := c.String(); got != "Atopk(3)bottomk(2)" {
+		t.Errorf("ChainedSecondStage.String() = %q; want Atopk(3)bottomk(2)", got)
+	}
+}
+
+// TestHintsStringEmptyRendersEmpty pins the empty-hints guard in Hints.String.
+// The guard `if h == nil || len(h.Hints) == 0 { return "" }` returns the empty
+// string for a present-but-empty hints clause; inverting its `||` to `&&`
+// (the INVERT_LOGICAL mutant) makes a non-nil, zero-length Hints fall through
+// to the render path and emit a spurious " with()" instead of "".
+func TestHintsStringEmptyRendersEmpty(t *testing.T) {
+	t.Parallel()
+	if got := (&Hints{}).String(); got != "" {
+		t.Errorf("(&Hints{}).String() = %q; want empty string", got)
+	}
+}
+
 // TestTopKBottomKString pins the second-stage rendering.
 func TestTopKBottomKString(t *testing.T) {
 	t.Parallel()
