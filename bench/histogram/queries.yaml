@@ -1,0 +1,59 @@
+# Query battery for the histogram-quantile benchmark. Each entry is fired
+# against every live backend (cerberus / Prometheus / Mimir). Range windows are
+# clamped to the available data window, so the "24h" shapes run on the 1h smoke
+# dataset too (covering the whole window) and stretch to a full day on the bench
+# dataset. `probes` documents what each shape stresses.
+queries:
+  # --- instant, low cardinality (aggregate away route) -------------------
+  - name: "p50 instant · by(le)"
+    type: instant
+    query: 'histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))'
+    lookback: 5m
+    probes: "median quantile, single aggregated series — the cheapest common shape"
+
+  - name: "p90 instant · by(le)"
+    type: instant
+    query: 'histogram_quantile(0.90, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))'
+    lookback: 5m
+    probes: "tail quantile, single aggregated series"
+
+  - name: "p99 instant · by(le)"
+    type: instant
+    query: 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))'
+    lookback: 5m
+    probes: "extreme tail quantile, single aggregated series"
+
+  # --- instant, high cardinality (keep route) ---------------------------
+  - name: "p99 instant · by(le,route)"
+    type: instant
+    query: 'histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))'
+    lookback: 5m
+    probes: "per-route tail quantile — one output series per route (high cardinality)"
+
+  # --- multi-quantile in one request ------------------------------------
+  - name: "p50/p90/p99 union instant · by(le,route)"
+    type: instant
+    query: |-
+      histogram_quantile(0.50, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))
+        or histogram_quantile(0.90, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))
+        or histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))
+    lookback: 5m
+    probes: "three quantiles fanned out per route in a single evaluation"
+
+  # --- range, short lookback -------------------------------------------
+  - name: "p99 range 1h/60s · by(le)"
+    type: range
+    query: 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))'
+    range: 1h
+    step: 60
+    lookback: 5m
+    probes: "range evaluation over the last hour at 1-minute step, aggregated"
+
+  # --- range, long window, high cardinality ----------------------------
+  - name: "p99 range 24h/300s · by(le,route)"
+    type: range
+    query: 'histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))'
+    range: 24h
+    step: 300
+    lookback: 5m
+    probes: "long range × high cardinality — the shape where a columnar store should shine (clamped to the data window)"

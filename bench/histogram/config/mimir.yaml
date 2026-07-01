@@ -1,0 +1,71 @@
+# Minimal single-binary (monolithic) Grafana Mimir config for the benchmark.
+# Filesystem blocks storage, single ingester (replication factor 1), self-formed
+# memberlist ring, multitenancy off so no X-Scope-OrgID header is required.
+# Query API is Prometheus-compatible under /prometheus/api/v1/.
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+  grpc_listen_port: 9095
+  log_level: warn
+
+usage_stats:
+  enabled: false
+
+activity_tracker:
+  filepath: /data/metrics-activity.log
+
+common:
+  storage:
+    backend: filesystem
+    filesystem:
+      dir: /data/common
+
+blocks_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/blocks
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+  tsdb:
+    dir: /data/tsdb
+
+memberlist:
+  join_members: []
+
+distributor:
+  ring:
+    kvstore:
+      store: memberlist
+
+ingester:
+  ring:
+    kvstore:
+      store: memberlist
+    replication_factor: 1
+
+compactor:
+  data_dir: /data/compactor
+  sharding_ring:
+    kvstore:
+      store: memberlist
+
+store_gateway:
+  sharding_ring:
+    kvstore:
+      store: memberlist
+    replication_factor: 1
+
+ruler_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/ruler
+
+limits:
+  # Accept the generator's historical backfill and give generous ingestion
+  # limits so the benchmark dataset lands without per-tenant throttling.
+  out_of_order_time_window: 1h
+  creation_grace_period: 30m
+  max_global_series_per_user: 0
+  ingestion_rate: 1000000
+  ingestion_burst_size: 2000000

@@ -1,0 +1,110 @@
+# Histogram-quantile benchmark stack: ClickHouse + cerberus + Prometheus + Mimir
+# on one network. All host ports live in the 52xxx range to avoid the dev
+# instances (18085/18086), the snapshot CH (38123/39000), the prod tunnel
+# (47000/48123), and any other 49xxx bench stack that may be running on this
+# machine. Container names carry the `histbench-ab5` prefix so a second stack
+# can never collide with a leftover default-named `histbench-*` stack.
+#
+# Bring up:   docker compose -p histbench-ab5 up -d --build --wait
+# Tear down:  docker compose -p histbench-ab5 down -v
+name: histbench-ab5
+
+services:
+  clickhouse:
+    # 26.x so cerberus's native timeSeriesRateToGrid path (floor 25.9) is
+    # exercised rather than the arrayJoin fan-out fallback.
+    image: clickhouse/clickhouse-server:26.6 # Ubuntu-base (NOT alpine — see compat harness note)
+    container_name: histbench-ab5-clickhouse
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_PASSWORD: cerberus
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
+    ports:
+      - "52000:9000" # native protocol (generator inserts here)
+      - "52123:8123" # http
+
+  cerberus:
+    image: cerberus:histbench-ab5
+    container_name: histbench-ab5-cerberus
+    build:
+      context: ../..
+      dockerfile: Dockerfile.local
+    environment:
+      CERBERUS_HTTP_ADDR: ":52091"
+      CERBERUS_ENABLED_HEADS: "prom" # isolate the Prometheus head
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_DIAL_TIMEOUT: "10s"
+      CERBERUS_AUTO_CREATE_SCHEMA: "true"
+      # CH-native optimizations resolve to "auto" by default: on the 26.6 image
+      # above (server_ts_grid_capability=available) cerberus auto-enables the
+      # native timeSeriesRateToGrid operator for the rate(...) inside the
+      # histogram_quantile range queries — no explicit flag needed. On a server
+      # below 25.9 the same "auto" resolution keeps the correct arrayJoin
+      # fan-out fallback instead. Left explicit here to document the intent.
+      CERBERUS_CH_OPTIMIZATIONS: "auto"
+      # Give the benchmark head room so long-range / high-cardinality shapes
+      # aren't rejected by a default cap (a fair perf comparison, not a limits test).
+      CERBERUS_QUERY_MAX_SAMPLES: "50000000"
+      CERBERUS_CH_QUERY_MAX_MEMORY: "4Gi"
+      CERBERUS_QUERY_TIMEOUT: "120s"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "52091:52091"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/cerberus", "--version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  prometheus:
+    image: prom/prometheus:v3.11.3
+    container_name: histbench-ab5-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --web.listen-address=:9090
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "52090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  mimir:
+    image: grafana/mimir:2.14.0
+    container_name: histbench-ab5-mimir
+    command:
+      - -config.file=/etc/mimir/mimir.yaml
+      - -target=all # monolithic single-binary mode
+    volumes:
+      - ./config/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - mimir-data:/data
+    ports:
+      - "52009:9009"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9009/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+volumes:
+  mimir-data:
