@@ -167,7 +167,7 @@ func TestApply_CreatesDatabaseWhenAbsent(t *testing.T) {
 	tables := listTables(ctx, t, conn, target)
 	want := []string{
 		"otel_logs",
-		"otel_metrics_exp_histogram",
+		"otel_metrics_exponential_histogram",
 		"otel_metrics_gauge",
 		"otel_metrics_histogram",
 		"otel_metrics_sum",
@@ -228,7 +228,7 @@ func TestApply_CreatesAllTables(t *testing.T) {
 	tables := listTables(ctx, t, conn, database)
 	want := []string{
 		"otel_logs",
-		"otel_metrics_exp_histogram",
+		"otel_metrics_exponential_histogram",
 		"otel_metrics_gauge",
 		"otel_metrics_histogram",
 		"otel_metrics_sum",
@@ -278,7 +278,7 @@ func TestApply_SignalSubset(t *testing.T) {
 
 	tables := listTables(ctx, t, conn, database)
 	want := []string{
-		"otel_metrics_exp_histogram",
+		"otel_metrics_exponential_histogram",
 		"otel_metrics_gauge",
 		"otel_metrics_histogram",
 		"otel_metrics_sum",

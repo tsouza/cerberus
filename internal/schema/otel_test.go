@@ -29,7 +29,7 @@ func TestDefaultOTelMetricsPinsUpstreamColumns(t *testing.T) {
 		"GaugeTable":        "otel_metrics_gauge",
 		"SumTable":          "otel_metrics_sum",
 		"HistogramTable":    "otel_metrics_histogram",
-		"ExpHistogramTable": "otel_metrics_exp_histogram",
+		"ExpHistogramTable": "otel_metrics_exponential_histogram",
 		"SummaryTable":      "otel_metrics_summary",
 	}
 	for name, want := range wantTables {

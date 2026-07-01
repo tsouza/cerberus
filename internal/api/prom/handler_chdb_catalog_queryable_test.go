@@ -69,7 +69,7 @@ const catalogHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
-const catalogExpHistogramDDL = `CREATE TABLE otel_metrics_exp_histogram (
+const catalogExpHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
@@ -112,7 +112,7 @@ INSERT INTO otel_metrics_sum VALUES
 INSERT INTO otel_metrics_histogram VALUES
     ('cerberus_queries_duration_seconds', map('cerberus.ql', 'promql'), toDateTime64('%[1]s', 9), 3, 1.5, [1, 1, 1], [0.1, 1]),
     ('http.server.request.duration', map('http.request.method', 'GET'), toDateTime64('%[1]s', 9), 2, 0.5, [2, 0], [0.25]);
-INSERT INTO otel_metrics_exp_histogram VALUES
+INSERT INTO otel_metrics_exponential_histogram VALUES
     ('showcase_latency_exp_hist', map('job', 'api'), toDateTime64('%[1]s', 9), 4, 2.0, 2, 1, 0, [1, 2], 0, []);
 INSERT INTO otel_metrics_summary VALUES
     ('rpc.duration', map('job', 'api'), toDateTime64('%[1]s', 9), 5, 2.5);`,

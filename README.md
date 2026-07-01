@@ -90,7 +90,7 @@ schema** — one table per signal, not one giant table:
 - traces in `otel_traces`,
 - logs in `otel_logs`,
 - metrics split by type across `otel_metrics_gauge`, `otel_metrics_sum`,
-  `otel_metrics_histogram`, `otel_metrics_exp_histogram`, and
+  `otel_metrics_histogram`, `otel_metrics_exponential_histogram`, and
   `otel_metrics_summary`.
 
 This is the layout the OpenTelemetry Collector's ClickHouse exporter writes

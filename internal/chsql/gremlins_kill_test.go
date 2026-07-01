@@ -1478,7 +1478,7 @@ func TestHistogramQuantileNative_AliasFallback(t *testing.T) {
 		NegativeBucketCountsColumn: "NegativeBucketCounts",
 		GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
 		GroupByAliases:             []string{"alias_a"}, // only one
-		Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -3899,7 +3899,7 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 			PositiveBucketCountsColumn: "PositiveBucketCounts",
 			NegativeOffsetColumn:       "NegativeOffset",
 			NegativeBucketCountsColumn: "NegativeBucketCounts",
-			Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+			Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		}
 		sql, _, err := Emit(context.Background(), plan)
 		if err != nil {
