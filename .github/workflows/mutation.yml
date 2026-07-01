@@ -204,50 +204,59 @@ jobs:
           # contained ~109 timeout-inducing mutants in the recursive-descent
           # parser plus tens of thousands more in lower.go. Even with
           # workers=1 to serialize test cycles, cumulative gremlins-driver RSS
-          # plus each mutant's full `go test ./internal/traceql` re-link of
-          # the loki + prometheus + dskit + memberlist parser dep graph
-          # pushes past the ceiling. Like logql, split into sub-phases:
+          # plus each mutant's full `go test` re-link of the in-house TraceQL
+          # parser + lowering dep graph pushes past the ceiling. Round 11's
+          # first split OOM-killed `-other` (it kept most of the ast package)
+          # and the `-parser`/`-lower` legs errored before running: their
+          # exclude regexes used negative lookahead `(?!…)`, which Go's RE2
+          # engine rejects. Round 12 splits by PACKAGE into four legs, each an
+          # RE2-safe alternation of the files to exclude (no lookahead):
           #
-          # - phase4-traceql-parser: mutates ast/parser.go only, where
-          #   the timeout-inducing loop-control + conditional mutations live.
-          #   Parser is ~29 KB and generates the timeouts documented at
-          #   lines 205-206 above (the original job comment noted ~109
-          #   timeout mutants).
+          # - parser: ast/parser.go only — the recursive-descent parser, where
+          #   the ~109 timeout-inducing loop-control/conditional mutants live.
+          # - ast:    the rest of the internal/traceql/ast package (lexer + the
+          #   AST node defs).
+          # - lower:  lower.go only (the ~84 KB lowering file).
+          # - other:  the remaining top-level files (aggregate, metrics_compare,
+          #   metrics_pipeline, group_coalesce, search_limit, select).
           #
-          # - phase4-traceql-lower: mutates lower.go only, the heaviest
-          #   file at ~83.6 KB. Isolating it keeps re-link overhead
-          #   localized to this phase.
-          #
-          # - phase4-traceql-other: mutates remaining files (aggregate,
-          #   metrics_compare, metrics_pipeline, search_limit, select, etc.).
-          #   These are smaller and together should fit the budget.
-          #
-          # If any sub-phase still OOM-kills, that file is excluded in
-          # .gremlins.yaml (per the dotted_labels.go precedent) with a
-          # rationale block documenting the runner-budget constraint
-          # vs test-quality gap. The files are covered by Layer-2 TXTAR
-          # fixtures + standalone unit tests.
-          #
-          # Promotion to required PR gate happens after all three hold green
-          # for a week.
+          # Efficacy is preserved: gremlins runs the mutated file's own package
+          # tests per mutant, so scoping the ast legs to ./internal/traceql/ast
+          # still runs parser_test.go / *_mutation_test.go. If a leg still
+          # OOM-kills, split it further or exclude the file in .gremlins.yaml
+          # (per the dotted_labels.go precedent); it stays covered by Layer-2
+          # TXTAR fixtures + unit tests. Promotion to required after all hold
+          # green for a week.
           - phase: phase4-traceql-parser
-            scope: ./internal/traceql
+            scope: ./internal/traceql/ast
             efficacy: 95
             workers: 1
-            # Mutate ast/parser.go only. Excludes every other traceql source.
-            exclude_files: '(^internal/traceql/(?!ast/parser\.go)|ast/(?!parser\.go)).*\.go$'
+            # Mutate ast/parser.go only; exclude the rest of the ast package.
+            # exclude-files matches SCOPE-RELATIVE paths (here, relative to
+            # ./internal/traceql/ast), so entries are bare filenames.
+            exclude_files: '^(assert|attribute|doc|enum|expr|lexer|metrics|parse|pipeline|rewrite|static)\.go$'
+          - phase: phase4-traceql-ast
+            scope: ./internal/traceql/ast
+            efficacy: 95
+            workers: 1
+            # Mutate the rest of the ast package (lexer + node defs); parser.go
+            # runs in its own leg above.
+            exclude_files: '^parser\.go$'
           - phase: phase4-traceql-lower
             scope: ./internal/traceql
             efficacy: 95
             workers: 1
-            # Mutate lower.go only. Excludes every other traceql source.
-            exclude_files: '(^internal/traceql/(?!lower\.go)|lower_).*\.go$|^internal/traceql/[^/]+\.go$|^internal/traceql/ast/.*\.go$'
+            # Mutate lower.go only. scope ./internal/traceql recurses into ast/,
+            # so exclude the whole ast subtree (scope-relative '^ast/') plus the
+            # other top-level files.
+            exclude_files: '^ast/|^(aggregate|doc|group_coalesce|metrics_compare|metrics_pipeline|search_limit|select)\.go$'
           - phase: phase4-traceql-other
             scope: ./internal/traceql
             efficacy: 95
             workers: 1
-            # Mutate everything except ast/parser.go and lower.go.
-            exclude_files: '(ast/parser|lower)\.go$|lower_.*_test\.go$'
+            # Mutate the remaining top-level files; exclude lower.go + the ast
+            # subtree (scope-relative, ast/ pulled in by recursion).
+            exclude_files: '^ast/|^lower\.go$'
           - phase: phase5-qlcommon
             scope: ./internal/qlcommon
             efficacy: 95
