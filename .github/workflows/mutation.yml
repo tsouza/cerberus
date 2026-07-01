@@ -199,20 +199,55 @@ jobs:
             # top_level_columns.go (~21 KB total). Unchanged from
             # round 8.
             exclude_files: '(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\.go$'
-          - phase: phase4-traceql
+          # phase4-traceql historically OOM-killed the ubuntu-latest runner
+          # (~7 GB RAM) after ~3 minutes. The original monolithic phase
+          # contained ~109 timeout-inducing mutants in the recursive-descent
+          # parser plus tens of thousands more in lower.go. Even with
+          # workers=1 to serialize test cycles, cumulative gremlins-driver RSS
+          # plus each mutant's full `go test ./internal/traceql` re-link of
+          # the loki + prometheus + dskit + memberlist parser dep graph
+          # pushes past the ceiling. Like logql, split into sub-phases:
+          #
+          # - phase4-traceql-parser: mutates ast/parser.go only, where
+          #   the timeout-inducing loop-control + conditional mutations live.
+          #   Parser is ~29 KB and generates the timeouts documented at
+          #   lines 205-206 above (the original job comment noted ~109
+          #   timeout mutants).
+          #
+          # - phase4-traceql-lower: mutates lower.go only, the heaviest
+          #   file at ~83.6 KB. Isolating it keeps re-link overhead
+          #   localized to this phase.
+          #
+          # - phase4-traceql-other: mutates remaining files (aggregate,
+          #   metrics_compare, metrics_pipeline, search_limit, select, etc.).
+          #   These are smaller and together should fit the budget.
+          #
+          # If any sub-phase still OOM-kills, that file is excluded in
+          # .gremlins.yaml (per the dotted_labels.go precedent) with a
+          # rationale block documenting the runner-budget constraint
+          # vs test-quality gap. The files are covered by Layer-2 TXTAR
+          # fixtures + standalone unit tests.
+          #
+          # Promotion to required PR gate happens after all three hold green
+          # for a week.
+          - phase: phase4-traceql-parser
             scope: ./internal/traceql
             efficacy: 95
-            # internal/traceql carries ~109 timeout-inducing mutants (loop-control
-            # and conditional flips in the recursive-descent parser + lowering).
-            # At the default NumCPU workers those concurrent timed-out `go test`
-            # cycles spike memory past the ~7 GB ubuntu-latest ceiling ~2 min in,
-            # and the OS kills the runner (surfaced as a shutdown signal) before
-            # the run finishes — at whatever file it happens to be on, so the death
-            # point varies. workers=1 serialises them so only one spike is live at
-            # a time and it stays under the ceiling. The package's efficacy on
-            # adequate hardware is 95.51% (KILLED 468, TIMED OUT 109, LIVED 22) —
-            # above the floor; the CI cap is runner budget, not test quality.
             workers: 1
+            # Mutate ast/parser.go only. Excludes every other traceql source.
+            exclude_files: '(^internal/traceql/(?!ast/parser\.go)|ast/(?!parser\.go)).*\.go$'
+          - phase: phase4-traceql-lower
+            scope: ./internal/traceql
+            efficacy: 95
+            workers: 1
+            # Mutate lower.go only. Excludes every other traceql source.
+            exclude_files: '(^internal/traceql/(?!lower\.go)|lower_).*\.go$|^internal/traceql/[^/]+\.go$|^internal/traceql/ast/.*\.go$'
+          - phase: phase4-traceql-other
+            scope: ./internal/traceql
+            efficacy: 95
+            workers: 1
+            # Mutate everything except ast/parser.go and lower.go.
+            exclude_files: '(ast/parser|lower)\.go$|lower_.*_test\.go$'
           - phase: phase5-qlcommon
             scope: ./internal/qlcommon
             efficacy: 95
