@@ -3938,26 +3938,6 @@ func TestOptQualColFrag_QualifierBranch(t *testing.T) {
 	}
 }
 
-// --- structural_join.go nil-node guard (714:7) ---
-
-// TestSubtreeHasRecursiveStructural_NilGuard kills the
-// CONDITIONALS_NEGATION on `if n == nil { return false }`. A nil node
-// must short-circuit to false; the `== nil` → `!= nil` flip would skip
-// the early-out and call n.Children() on a nil node, panicking. The
-// test asserts the nil case returns false WITHOUT panicking.
-func TestSubtreeHasRecursiveStructural_NilGuard(t *testing.T) {
-	t.Parallel()
-	if subtreeHasRecursiveStructural(nil) {
-		t.Errorf("subtreeHasRecursiveStructural(nil) must be false")
-	}
-	// A non-recursive subtree (a bare Scan) must also be false — anchors
-	// the positive side so the nil case is a genuine early-out, not a
-	// blanket false.
-	if subtreeHasRecursiveStructural(&chplan.Scan{Table: "t"}) {
-		t.Errorf("subtreeHasRecursiveStructural(Scan) must be false")
-	}
-}
-
 // --- range_window.go over-time matrix anchor count + mode split ---
 
 // TestEmitRangeWindowOverTimeMatrix_AnchorArithmetic kills the

@@ -395,11 +395,30 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Thread the request window so stampSearchTraceLimit folds it into the
 	// bounded plain-search scan. No-op when both bounds are absent.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
-	// Engine.Query runs parse → lower → wrap-projection → optimize →
-	// emit → execute. The TraceQL adapter (h.lang) owns the parser
-	// dispatch + wrap-projection so the post-engine response pivot
-	// stays handler-local.
-	res, err := h.Engine.Query(ctx, h.lang, q)
+	// Parse + lower first so the handler can inspect the lowered plan and
+	// route the execution. h.lang.Parse runs the TraceQL parser + traceql.Lower
+	// (with the request window / trace-limit folds already applied via the ctx
+	// above), so the returned plan is the same one Engine.Query would run — the
+	// split below is a routing decision, not a re-parse.
+	plan, meta, err := h.lang.Parse(ctx, q)
+	if err != nil {
+		writeError(w, classifySearchErr(err), "", "", err)
+		return
+	}
+	// A positive recursive structural search (`A >> B` / `A << B`) lowers to a
+	// WITH RECURSIVE closure INNER JOINed to the WIDE R projection; on a dense
+	// descendant side that projection materialises every matched span (hundreds
+	// of thousands) only to return the top-N traces — the prod OOM. Split it:
+	// phase A ranks narrowly to the top-N TraceIds, phase B re-runs the closure
+	// projecting wide but restricted to just those traces, bounding the wide
+	// projection to the response set. Every other search shape stays on the
+	// single-query path — byte-identical to today.
+	var res engine.Result
+	if sj, ok := structuralTwoPhaseTarget(plan); ok {
+		res, err = h.runStructuralTwoPhase(ctx, sj, plan, meta, limit)
+	} else {
+		res, err = h.Engine.QueryPlan(ctx, h.lang, plan, meta)
+	}
 	if err != nil {
 		writeError(w, classifySearchErr(err), "", "", err)
 		return

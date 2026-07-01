@@ -106,13 +106,15 @@ func TestEmitStructuralRecursive_PreservesLeftArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// The L subquery's `?` arg now appears twice: once at the seed
-	// position (FROM (<L>) AS _seed) and once in the #77 predicate-
-	// pushdown IN subquery (t.TraceId IN (SELECT TraceId FROM (<L>)
-	// AS _seed_ids)). Both must carry the same bound value, in order,
-	// and nothing may be swallowed.
-	if len(args) != 2 || args[0] != "GET /home" || args[1] != "GET /home" {
-		t.Errorf("args = %v, want [GET /home GET /home]", args)
+	// The L subquery's `?` arg appears exactly once — at the seed position
+	// (FROM (<L>) AS _seed). The recursive step no longer re-embeds the
+	// seed-trace-id IN subquery (the step JOIN ON `t.TraceId = c.TraceId`
+	// already confines `t` to the seed's traces), so the arg is not
+	// duplicated. The bare `{}` right side is not a cheap selective leaf, so
+	// no candidate-prefilter subquery re-renders L either. Nothing may be
+	// swallowed.
+	if len(args) != 1 || args[0] != "GET /home" {
+		t.Errorf("args = %v, want [GET /home]", args)
 	}
 }
 

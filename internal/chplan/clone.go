@@ -126,6 +126,7 @@ func cloneCompositeNode(n Node) Node {
 		c.Left = CloneNode(v.Left)
 		c.Right = CloneNode(v.Right)
 		c.ExtraProjectionColumns = cloneStrings(v.ExtraProjectionColumns)
+		c.TraceIDRestriction = cloneStrings(v.TraceIDRestriction)
 		return &c
 	case *VectorJoin:
 		c := *v

@@ -455,7 +455,58 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 		SpanIDColumn:           s.SpanIDColumn,
 		ParentSpanIDColumn:     s.ParentSpanIDColumn,
 		ExtraProjectionColumns: structuralExtraProjectionColumns(s),
+		CandidatePrefilter:     candidatePrefilterEligible(relation, left, right),
 	}, nil
+}
+
+// candidatePrefilterEligible reports whether a recursive descendant/ancestor
+// join should carry the candidate prefilter — restricting its anchor seed to
+// traces present on BOTH sides (the L-intersect-R set) so a sparse selective
+// query walks the closure over only the traces that can possibly match.
+//
+// It fires only for the plain recursive relations (`>>` / `<<`) — the shapes
+// whose WITH RECURSIVE closure over the whole trace set is the expensive part
+// — and only when BOTH sides are cheap selective Filter(Scan) leaves. Two
+// exclusions are load-bearing:
+//
+//   - a bare `{}` side lowers to a plain Scan (no Filter): dense, the closure
+//     already has to walk it, so intersecting buys nothing and the extra
+//     candidate subquery would only add work. Skip => plain closure, no
+//     regression on the dense case.
+//   - a derived / structural side (a *chplan.StructuralJoin) arises at the
+//     OUTER level of a left-associative chain `A>>B>>C`, whose left side is
+//     itself a StructuralJoin. Prefiltering there would re-execute the inner
+//     closure inside the candidate subquery — doubling the work. Only the
+//     innermost level, where both sides are Filter(Scan), gets the prefilter.
+func candidatePrefilterEligible(relation chplan.StructuralOp, left, right chplan.Node) bool {
+	switch relation {
+	case chplan.StructuralDescendant, chplan.StructuralAncestor:
+	default:
+		return false
+	}
+	return isCheapSelectiveLeaf(left) && isCheapSelectiveLeaf(right)
+}
+
+// isCheapSelectiveLeaf reports whether n is a cheap, selective spans leaf: a
+// Filter directly over a Scan whose predicate is a real matcher (not nil, not
+// a bare constant boolean). A bare Scan (`{}`), a nested-set-annotated scan, a
+// set operation, or a structural join all return false — they are either dense
+// or derived, and the candidate prefilter must not fire on them (see
+// candidatePrefilterEligible for why).
+func isCheapSelectiveLeaf(n chplan.Node) bool {
+	f, ok := n.(*chplan.Filter)
+	if !ok {
+		return false
+	}
+	if _, ok := f.Input.(*chplan.Scan); !ok {
+		return false
+	}
+	switch f.Predicate.(type) {
+	case nil, *chplan.LitBool:
+		// A missing or constant-boolean predicate is not selective.
+		return false
+	}
+	return true
 }
 
 // structuralExtraProjectionColumns returns the non-key column list the

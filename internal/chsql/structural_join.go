@@ -436,20 +436,24 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 // ParentSpanId hits the trace root), byte-identical to the unbounded
 // output, well before the cap.
 //
-// The recursive arm also scopes its scan of the span table to the
-// seed's trace-id set (`t.TraceId IN (SELECT TraceId FROM (<L>))`),
-// so each iteration reads only the candidate traces' rows rather than
-// re-scanning the whole table — the #77 predicate pushdown. This is
-// semantics-preserving (the step ON already pins t.TraceId =
-// c.TraceId) and pulls the seed's `[start,end]` time window into the
-// recursive scan for free.
+// The recursive step does NOT re-embed a seed-trace-id IN subquery: the step
+// JOIN ON `t.TraceId = c.TraceId` already confines `t` to the closure's
+// working trace set (every c.TraceId originates in the anchor seed), so the IN
+// was redundant with the join. The step scan is instead bounded by the
+// stamped request window (a direct `Timestamp` partition-prune predicate; see
+// stampRecursiveScanWindow) and, on the two-phase phase-B path, by the top-N
+// trace-id literal set (TraceIDRestriction). The candidate prefilter and the
+// phase-B restriction may additionally scope the anchor seed (see
+// structuralAnchorWhere).
 //
-// Rendered shape (>> case, default cap):
+// Rendered shape (>> case, default cap, windowed search path):
 //
 //	SELECT R.* FROM (
 //	  WITH RECURSIVE _struct_closure AS (
 //	    SELECT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth
 //	      FROM (<L>) AS _seed
+//	      [WHERE `TraceId` IN (SELECT DISTINCT `TraceId` FROM (<R>) AS _cand)]  -- candidate prefilter
+//	      [AND/WHERE `TraceId` IN ('<id1>', … '<idN>')]                        -- phase B
 //	    UNION ALL
 //	    SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1
 //	      FROM `otel_traces` AS t
@@ -457,11 +461,13 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 //	        ON t.`TraceId` = c.`TraceId`
 //	       AND t.`ParentSpanId` = c.`SpanId`
 //	      WHERE c._depth < <cap>
-//	        AND t.`TraceId` IN (SELECT `TraceId` FROM (<L>) AS _seed_ids)
+//	        AND t.`Timestamp` >= … AND t.`Timestamp` <= …                      -- window prune
+//	        [AND t.`TraceId` IN ('<id1>', … '<idN>')]                          -- phase B
 //	  )
 //	  SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure
 //	) AS L INNER JOIN (<R>) AS R
 //	  ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`
+//	[WHERE R.`TraceId` IN ('<id1>', … '<idN>')]                               -- phase B
 //
 // Anchor rows are *not* themselves part of the descendant/ancestor
 // closure for the join — TraceQL semantics require R to be strictly
@@ -542,12 +548,28 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			verbatim("0 AS _depth"),
 		).
 		From(aliasedFrag(leftSub, "_seed"))
+	// Restrict the anchor seed when the plan opted into the candidate
+	// prefilter (both sides selective, sparse — the L-intersect-R set) and/or
+	// the two-phase trace-id restriction (phase B, the top-N traces). Both are
+	// pure pruning bounds keyed on the seed's TraceId; a plan that sets
+	// neither renders the anchor byte-identical to before. rightSub is the
+	// closure's OTHER side (R for the canonical closure).
+	if seedWhere := structuralAnchorWhere(j, rightSub); len(seedWhere) > 0 {
+		anchor = anchor.Where(seedWhere...)
+	}
 
 	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t
-	// INNER JOIN _struct_closure AS c ON <stepOn>
-	// WHERE c._depth < <cap> [AND t.TraceId IN (SELECT TraceId FROM (<L>) AS _seed_ids)].
+	// INNER JOIN _struct_closure AS c ON <stepOn> WHERE c._depth < <cap>
+	// [AND <window bounds>] [AND t.TraceId IN (<top-N literals>)].
+	//
+	// The step scan is classified memory-streaming, not a trace-id-set claim:
+	// the step JOIN ON `t.TraceId = c.TraceId` already confines `t` to the
+	// closure's working trace set (every c.TraceId originates in the anchor
+	// seed), so the redundant seed-trace-id IN subquery is dropped. Width is
+	// bounded by the seed's (window- or trace-id-bounded) trace set and depth
+	// by structuralDepthBoundFrag; see memoryStreamingBound.
 	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
-	stepFrom, err := e.fromSpansScan(table, structuralStepBound(j.Left, j.TraceIDColumn, leftSub))
+	stepFrom, err := e.fromSpansScan(table, memoryStreamingBound())
 	if err != nil {
 		return err
 	}
@@ -564,7 +586,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			aliasedFrag(verbatim(cteName), "c"),
 			stepOn,
 		).
-		Where(structuralStepWhere(j, j.Left, leftSub)...)
+		Where(structuralStepWhere(j)...)
 
 	// Closure subquery: WITH RECURSIVE <cteName> AS (<anchor> UNION ALL <step>) SELECT DISTINCT TraceId, SpanId FROM <cteName> WHERE _depth > 0.
 	closure := NewQuery().
@@ -610,7 +632,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// subquery on the upward-walked SpanIds. We rebuild the
 		// closure with R as the seed and step direction inverted.
 		invCTEName := "_struct_closure_inv_" + strconv.Itoa(e.nextStructSeq())
-		inverseClosure, err := e.buildStructuralInverseClosure(j, j.Right, rightSub, table, invCTEName)
+		inverseClosure, err := e.buildStructuralInverseClosure(j, rightSub, table, invCTEName)
 		if err != nil {
 			return err
 		}
@@ -628,6 +650,12 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			Select(rightProj...).
 			From(aliasedFrag(closure.Frag(), "L")).
 			Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
+		// Phase B: granule-prune the wide R scan to the top-N traces. The
+		// closure already restricts L to those traces (anchor seed WHERE), so
+		// this only shrinks the R side's reads — the result rows are unchanged.
+		if len(j.TraceIDRestriction) > 0 {
+			sb = sb.Where(inStringLiteralsFrag(qualColFrag("R", j.TraceIDColumn), j.TraceIDRestriction))
+		}
 		e.emitSelect(sb)
 		return nil
 	}
@@ -644,7 +672,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 // (`t.SpanId = c.ParentSpanId`). The two arms of the UNION DISTINCT
 // thus cover both projection directions, mirroring upstream's
 // `union=true` Span.DescendantOf semantics.
-func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Node, rightSub Frag, table, cteName string) (*QueryBuilder, error) {
+func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, table, cteName string) (*QueryBuilder, error) {
 	var stepRel Frag
 	switch j.Op.Positive() {
 	case chplan.StructuralDescendant:
@@ -677,7 +705,7 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNo
 		From(aliasedFrag(rightSub, "_seed"))
 
 	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
-	stepFrom, err := e.fromSpansScan(table, structuralStepBound(seedNode, j.TraceIDColumn, rightSub))
+	stepFrom, err := e.fromSpansScan(table, memoryStreamingBound())
 	if err != nil {
 		return nil, err
 	}
@@ -694,7 +722,7 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNo
 			aliasedFrag(verbatim(cteName), "c"),
 			stepOn,
 		).
-		Where(structuralStepWhere(j, seedNode, rightSub)...)
+		Where(structuralStepWhere(j)...)
 
 	closure := NewQuery().
 		WithRecursive(cteName, anchor, step).
@@ -707,73 +735,83 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNo
 	return closure, nil
 }
 
-// structuralStepWhere builds the WHERE conjuncts for a recursive
-// closure's step arm: always the #78 depth bound, plus the #77
-// seed-trace-id pushdown when it is safe to emit.
+// structuralStepWhere builds the WHERE conjuncts for a recursive closure's
+// step arm: the depth bound, the optional request-window partition-prune
+// bounds, and — on the two-phase phase-B path only — the top-N trace-id
+// restriction on the physical `t` scan.
 //
-// The pushdown re-embeds the seed subquery (<seedNode> rendered as
-// seedSub) inside the recursive arm's IN subquery. ClickHouse rejects
-// a recursive CTE nested inside another recursive CTE's recursive arm
-// (error 49 "is not recursive"), so when the seed subtree itself
-// lowers to a recursive structural closure (a nested `>>` / `<<`
-// chain) the pushdown is skipped — that level keeps the depth bound
-// only. The skip is correctness-preserving: the recursive arm still
-// joins `t.TraceId = c.TraceId` (scoping to the working set), it just
-// doesn't additionally pre-filter `t` by the seed's trace-id set. The
-// common single-level case (and the innermost level of a nested chain)
-// always gets the pushdown.
-func structuralStepWhere(j *chplan.StructuralJoin, seedNode chplan.Node, seedSub Frag) []Frag {
+// The step no longer carries a seed-trace-id IN subquery. The step JOIN ON
+// `t.TraceId = c.TraceId` already confines `t` to the closure's working trace
+// set (every c.TraceId originates in the anchor seed), so the IN membership
+// was redundant with the join and only added CH-parser weight — dropping it
+// reclassifies the step scan as memory-streaming (bounded by the seed trace
+// set width + the depth cap), which is what memoryStreamingBound records at
+// the fromSpansScan site.
+func structuralStepWhere(j *chplan.StructuralJoin) []Frag {
 	conds := []Frag{structuralDepthBoundFrag(j.MaxDepth)}
-	if !subtreeHasRecursiveStructural(seedNode) {
-		conds = append(conds, structuralSeedTraceFilter(j.TraceIDColumn, seedSub))
-	}
 	// Bound the step's physical `t` scan of the spans table to the request
-	// window so ClickHouse prunes partitions — the inert `t.TraceId IN
-	// (<seed>)` membership above never prunes them. Omitted (no-op) when the
-	// node was not window-stamped (TimestampColumn / Window* unset on the
-	// metrics / spec / direct-join paths), keeping that output byte-identical;
-	// armed and fail-closed on the production search path (see
-	// requireSpansScanWindow at the emit sites).
+	// window so ClickHouse prunes partitions. Omitted (no-op) when the node was
+	// not window-stamped (TimestampColumn / Window* unset on the metrics / spec
+	// / direct-join paths), keeping that output byte-identical; armed and
+	// fail-closed on the production search path (see requireSpansScanWindow at
+	// the emit sites).
 	winLo, winHi := spansScanWindowFrags(j.TimestampColumn, j.WindowStartNano, j.WindowEndNano)
-	return appendNonNilFrags(conds, winLo, winHi)
+	conds = appendNonNilFrags(conds, winLo, winHi)
+	// Phase B: granule-prune the step scan to the top-N traces so idx_trace_id
+	// prunes each recursion level's read. Empty off the two-phase path.
+	if len(j.TraceIDRestriction) > 0 {
+		conds = append(conds, inStringLiteralsFrag(qualColFrag("t", j.TraceIDColumn), j.TraceIDRestriction))
+	}
+	return conds
 }
 
-// structuralStepBound classifies the resource bound on a recursive structural
-// step's spans scan, mirroring structuralStepWhere's pushdown decision. When
-// the seed subtree is NOT itself recursive, the step carries the seed-trace-id
-// IN pushdown (`t.TraceId IN (SELECT TraceId FROM (<seed>))`) — a finite
-// trace-id set (form-b). When the seed IS recursive the pushdown is dropped to
-// avoid CH error 49 (a recursive subquery nested in a recursive arm), so the
-// step is bounded only by the recursion depth cap + the finite recursive
-// working set — honestly classified as memory-streaming, not a partition claim.
-func structuralStepBound(seedNode chplan.Node, traceIDCol string, seedSub Frag) scanResourceBound {
-	if subtreeHasRecursiveStructural(seedNode) {
-		return memoryStreamingBound()
+// structuralAnchorWhere builds the WHERE conjuncts for a recursive closure's
+// anchor seed: the candidate prefilter (both sides selective — restrict seeds
+// to traces present on the OTHER side too) and/or the two-phase trace-id
+// restriction (phase B — restrict seeds to the top-N traces). Both key on the
+// seed's TraceId and both are pure pruning bounds; a plan that sets neither
+// gets an empty slice and the anchor stays byte-identical. otherSideSub is the
+// closure's other-side subquery Frag (R for the canonical closure).
+func structuralAnchorWhere(j *chplan.StructuralJoin, otherSideSub Frag) []Frag {
+	var conds []Frag
+	if j.CandidatePrefilter {
+		conds = append(conds, InSubquery(
+			Col(j.TraceIDColumn),
+			structuralCandidateTraceSubquery(otherSideSub, j.TraceIDColumn),
+		))
 	}
-	return traceIDSetBound(structuralSeedTraceFilter(traceIDCol, seedSub))
+	if len(j.TraceIDRestriction) > 0 {
+		conds = append(conds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
+	}
+	return conds
 }
 
-// subtreeHasRecursiveStructural reports whether n (or any descendant)
-// is a StructuralJoin whose positive op is recursive (`>>` / `<<`),
-// i.e. it would itself emit a WITH RECURSIVE closure. Used to decide
-// whether the seed-trace-id pushdown is safe to nest inside a parent
-// recursive arm (see structuralStepWhere).
-func subtreeHasRecursiveStructural(n chplan.Node) bool {
-	if n == nil {
-		return false
+// structuralCandidateTraceSubquery renders
+// `(SELECT DISTINCT <TraceID> FROM (<otherSide>) AS _cand)` — the set of trace
+// ids the closure's other side matches, used to intersect the anchor seed down
+// to only traces that can possibly participate in the relation (the candidate
+// prefilter). otherSide carries the search's window + resource predicates, so
+// the candidate set is window-scoped for free.
+func structuralCandidateTraceSubquery(otherSide Frag, traceIDCol string) Frag {
+	sub := NewQuery().
+		Select(Distinct(Col(traceIDCol))).
+		From(aliasedFrag(otherSide, "_cand"))
+	return Subquery(sub)
+}
+
+// inStringLiteralsFrag renders `<col> IN ('<id0>', '<id1>', …)` with each id
+// emitted as a quoted string literal via InlineLit — the typed-Frag form of
+// the literal-id membership the two-phase phase-B splices onto the anchor /
+// step / R scans. The ids are spliced as literals, NOT bound params: a bound
+// `TraceId IN (?)` set is opaque to ClickHouse's granule pruner, so it would
+// not granule-prune via idx_trace_id, defeating the whole point of phase B.
+// Callers guard len(ids) > 0 (In panics on an empty list).
+func inStringLiteralsFrag(col Frag, ids []string) Frag {
+	lits := make([]Frag, 0, len(ids))
+	for _, id := range ids {
+		lits = append(lits, InlineLit(id))
 	}
-	if sj, ok := n.(*chplan.StructuralJoin); ok {
-		switch sj.Op.Positive() {
-		case chplan.StructuralDescendant, chplan.StructuralAncestor:
-			return true
-		}
-	}
-	for _, c := range n.Children() {
-		if subtreeHasRecursiveStructural(c) {
-			return true
-		}
-	}
-	return false
+	return In(col, lits...)
 }
 
 // structuralDepthBoundFrag renders the recursive-CTE iteration cap
@@ -788,36 +826,6 @@ func subtreeHasRecursiveStructural(n chplan.Node) bool {
 func structuralDepthBoundFrag(maxDepth int) Frag {
 	bound := effectiveRecursionDepth(maxDepth)
 	return verbatim("c._depth < " + strconv.Itoa(bound))
-}
-
-// structuralSeedTraceFilter renders `t.<TraceID> IN (SELECT <TraceID>
-// FROM <seed> AS _seed_ids)` — the predicate that restricts the
-// recursive arm's scan of the span table to only the trace ids the
-// seed (L for the canonical closure, R for the inverse) matched.
-//
-// This is the #77 predicate pushdown. Without it the recursive arm
-// scans the bare full span table on every iteration (O(depth ×
-// full-scan)); with it each level reads only the rows of the seed's
-// candidate traces (O(matching-trace-rows)). The rewrite is
-// semantics-preserving: the closure is per-trace (the step ON already
-// pins `t.TraceId = c.TraceId`, and every `c.TraceId` originates in
-// the seed), so no descendant/ancestor row can be added or dropped by
-// scoping `t` to the seed's trace-id set. Because the seed subquery
-// (<L> / <R>) carries the search's `[start,end]` Timestamp filter and
-// resource/span predicates, that time window is pushed into the
-// recursive scan for free.
-//
-// seedSub is the already-rendered seed subquery Frag (parenthesised by
-// subqueryFrag); aliasing it `_seed_ids` keeps CH's analyzer happy
-// when the subquery is referenced from the IN clause.
-func structuralSeedTraceFilter(traceIDCol string, seedSub Frag) Frag {
-	seedIDs := NewQuery().
-		Select(Col(traceIDCol)).
-		From(aliasedFrag(seedSub, "_seed_ids"))
-	// In() already parenthesises its right-hand list, so splice the
-	// seed-id SELECT bare (Spliced, not Subquery — the latter would
-	// double-wrap in parens).
-	return In(qualColFrag("t", traceIDCol), Spliced(seedIDs))
 }
 
 // findScanTable walks a plan subtree looking for the first chplan.Scan

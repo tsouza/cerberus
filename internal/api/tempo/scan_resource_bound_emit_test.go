@@ -208,8 +208,14 @@ func TestScanResourceBound_StructureTabBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("structure emit: %v", err)
 	}
-	if !strings.Contains(sql, "t.`TraceId` IN") {
-		t.Errorf("structural recursive step must be trace-id pruned:\n%s", sql)
+	// The recursive step scan is bounded by the request window sitting DIRECTLY
+	// on the `otel_traces AS t` scan (a toDate(Timestamp) partition prune). The
+	// seed-trace-id IN pushdown was dropped — it was redundant with the step
+	// JOIN ON `t.TraceId = c.TraceId` and inert for partition pruning — so the
+	// step is now bounded by this stronger, partition-pruning window predicate
+	// rather than a trace-id membership.
+	if !strings.Contains(sql, "c._depth < 128 AND `Timestamp` >=") {
+		t.Errorf("structural recursive step must be window-pruned directly on the t scan:\n%s", sql)
 	}
 	assertEverySpansFromBounded(t, sql)
 }
