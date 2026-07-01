@@ -612,6 +612,56 @@ const PROBE_OPEN_MS = 900;
 const PROBE_CLOSE_MS = 300;
 
 /**
+ * CSS locator for a scenes AdHocFiltersVariable combobox — the
+ * "+ add filter" builder. This is the out-of-page twin of
+ * discoverStaticControls' in-page `isAdhoc` test (a `var-adhoc*` input
+ * id, or a `+ label…` / `filter by labels` placeholder); KEEP THE TWO
+ * IN LOCKSTEP so the settle below waits for exactly what discovery then
+ * classifies as an adhoc-filter control.
+ */
+export const ADHOC_FILTER_INPUT_SELECTOR =
+  'input[id^="var-adhoc"], ' +
+  'input[role="combobox"][placeholder^="+ label" i], ' +
+  'input[role="combobox"][placeholder*="filter by label" i]';
+
+/**
+ * Cap on the positive wait for a drilldown app's adhoc bar to mount.
+ * The bar settles within a second or two once the app clears its init
+ * race; this bound is only the safety net for a surface that never
+ * renders one (callers gate the wait to surfaces that DO).
+ */
+export const ADHOC_FILTER_SETTLE_TIMEOUT_MS = 15_000;
+
+/**
+ * Positive settle for a drilldown app's adhoc "+ add filter" bar.
+ *
+ * The Traces Drilldown app boots through a primarySignal-init race: it
+ * mounts, fires a transient dangling-operand query (`{ && …} | rate()`,
+ * which cerberus correctly rejects — reference Tempo rejects the same
+ * syntax error), then sets primarySignal and RE-renders with its
+ * steady-state chrome, the adhoc filter bar included. A networkidle
+ * settle (tolerateRepaintFlicker) can resolve in the gap between those
+ * two phases, so a control-discovery pass that runs then intermittently
+ * misses the adhoc control — and the surface it mints. The Metrics /
+ * Logs Drilldown apps carry no such race; their adhoc bar is already
+ * present within the normal settle, which is why only the traces
+ * surface needs this.
+ *
+ * Waiting for the adhoc input to become visible makes the control set
+ * deterministic before discovery (and before re-driving an adhoc
+ * interaction). Best-effort and bounded: a surface whose settled state
+ * has no adhoc bar falls through once the cap elapses, so callers gate
+ * this to surfaces that render one.
+ */
+export async function settleAdhocFilterBar(page: Page): Promise<void> {
+  await page
+    .locator(ADHOC_FILTER_INPUT_SELECTOR)
+    .first()
+    .waitFor({ state: 'visible', timeout: ADHOC_FILTER_SETTLE_TIMEOUT_MS })
+    .catch(() => {});
+}
+
+/**
  * Discover every view-affecting control on the current page.
  * Comboboxes are PROBED — opened, options read, closed via Escape —
  * so the planner knows their cardinality up front; probing performs

@@ -147,6 +147,7 @@ import {
   driveInteraction,
   interactionStateKey,
   planInteractions,
+  settleAdhocFilterBar,
   type PlannedInteraction,
 } from './interactions.js';
 import {
@@ -1200,6 +1201,20 @@ type InteractionSweepResult = {
 };
 
 /**
+ * The Traces Drilldown explore surface is the one place the adhoc
+ * "+ add filter" bar mounts only after a primarySignal-init race (see
+ * settleAdhocFilterBar). Gate the extra settle to it so no other
+ * surface pays the wait; the Metrics / Logs Drilldown adhoc bars have
+ * no such race and are already discovered within the normal settle.
+ */
+const TRACES_DRILLDOWN_EXPLORE_CANONICAL =
+  '/a/grafana-exploretraces-app/explore';
+
+function needsAdhocBarSettle(canonical: string): boolean {
+  return canonical === TRACES_DRILLDOWN_EXPLORE_CANONICAL;
+}
+
+/**
  * Sweep one visited surface's interactive controls.
  *
  * Every planned interaction runs against a FRESH navigation of the
@@ -1248,6 +1263,7 @@ async function sweepInteractions(
       timeout: 90_000,
     });
     await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 30_000 });
+    if (needsAdhocBarSettle(entry.canonical)) await settleAdhocFilterBar(page);
     const controls = await discoverControls(page);
     const fullPlan = planInteractions(
       controls,
@@ -1283,6 +1299,7 @@ async function sweepInteractions(
         timeout: 90_000,
       });
       await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 30_000 });
+      if (needsAdhocBarSettle(entry.canonical)) await settleAdhocFilterBar(page);
     } catch (err) {
       fail('navigation-threw', `goto(${entry.concrete}) threw: ${(err as Error).message}`);
       continue;
