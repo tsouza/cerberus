@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/optimizer"
 )
@@ -70,6 +71,7 @@ func TestRequireScanTimeBound_RejectsUnboundedInstantLeaf(t *testing.T) {
 	if v == nil {
 		t.Fatal("RequireScanTimeBound must reject an unbounded instant windowed-array leaf")
 	}
+	require.NotNil(t, v, "violation should not be nil")
 	if v.Func != "rate" {
 		t.Errorf("violation Func = %q, want %q", v.Func, "rate")
 	}

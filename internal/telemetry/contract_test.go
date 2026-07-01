@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -195,6 +196,7 @@ func TestGet_NoopMeterProviderProducesNonNilInstruments(t *testing.T) {
 	if inst == nil {
 		t.Fatal("Get = nil under noop provider")
 	}
+	require.NotNil(t, inst, "instrument set should not be nil")
 	if inst.QueriesTotal == nil || inst.QueryDuration == nil ||
 		inst.StageDuration == nil || inst.RulesApplied == nil ||
 		inst.ClickHouseRowsRead == nil || inst.ClickHouseBytesRead == nil {

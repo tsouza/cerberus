@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
@@ -114,6 +115,7 @@ func TestMatrixFromCursor_MemoPreservesBucketing(t *testing.T) {
 		if r == nil {
 			t.Fatalf("series %v not in reference", ms.Metric)
 		}
+		require.NotNil(t, r, "reference should not be nil")
 		if len(ms.Values) != len(r.vals) {
 			t.Fatalf("series %v: got %d values, want %d", ms.Metric, len(ms.Values), len(r.vals))
 		}

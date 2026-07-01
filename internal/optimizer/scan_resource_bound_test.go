@@ -3,6 +3,7 @@ package optimizer_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/optimizer"
 )
@@ -84,6 +85,7 @@ func TestRequireScanResourceBound_PanicsWhenGateStripped(t *testing.T) {
 	if v == nil {
 		t.Fatalf("TraceLimit>0 NestedSetAnnotate without a BoundedTraceScope leaf must panic ScanResourceBoundViolation")
 	}
+	require.NotNil(t, v, "violation should not be nil")
 	if v.Table != "otel_traces" {
 		t.Errorf("violation Table = %q, want otel_traces", v.Table)
 	}
