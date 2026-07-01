@@ -217,6 +217,44 @@ services:
       otel-collector:
         condition: service_started
 
+  telemetrygen-classichist:
+    # Classic-histogram data SOURCE, fed THROUGH the collector — the explicit-
+    # bucket sibling of telemetrygen-exphist. telemetrygen emits OTLP classic
+    # Histogram points to the collector, whose clickhouseexporter persists them
+    # into otel_metrics_histogram — the exporter-owned table cerberus reads back
+    # via the classic `_bucket` / `le` reconstruction. The metric name carries a
+    # distinct `_classic_hist` suffix so cerberus routes
+    # `histogram_quantile(φ, rate(e2e_latency_classic_hist_bucket[…]))` onto that
+    # table; the compose-smoke classic-histogram verifier
+    # (.github/scripts/e2e-verify-classic-histogram.mjs) asserts the query
+    # returns a value. Kept separate from the exponential source and from the
+    # deterministic showcase seed so this nondeterministic feed never collides
+    # with either. `--duration inf` at `--rate 20` emits continuously for the
+    # whole stack lifetime, so a fresh sample always sits inside the PromQL
+    # staleness window no matter how long the shard runs (`down -v` tears it
+    # down).
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.152.0
+    networks: [cerberus-dev]
+    command:
+      - metrics
+      - --metric-type
+      - Histogram
+      - --otlp-endpoint
+      - otel-collector:4317
+      - --otlp-insecure
+      - --otlp-metric-name
+      - e2e_latency_classic_hist
+      - --duration
+      - inf
+      - --rate
+      - "20"
+    # telemetrygen FATALs if the collector's OTLP endpoint isn't accepting
+    # connections yet (k3d #82); on-failure restart retries until it is up.
+    restart: on-failure
+    depends_on:
+      otel-collector:
+        condition: service_started
+
   cerberus:
     image: cerberus:dev
     pull_policy: build

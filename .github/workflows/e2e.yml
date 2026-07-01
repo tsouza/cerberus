@@ -398,6 +398,15 @@ jobs:
         env:
           CERBERUS_URL: http://localhost:8080
 
+      # Same loop for the classic (explicit-bucket) histogram write path: a
+      # second telemetrygen sidecar feeds classic Histogram points into
+      # otel_metrics_histogram, and cerberus must resolve the classic `_bucket`
+      # quantile idiom over them. Explicit-bucket sibling of the check above.
+      - name: verify collector classic-histogram is queryable through cerberus
+        run: node .github/scripts/e2e-verify-classic-histogram.mjs
+        env:
+          CERBERUS_URL: http://localhost:8080
+
       - name: smoke Grafana /api/health
         run: |
           curl -fsS --max-time 5 http://localhost:3000/api/health \
@@ -604,6 +613,11 @@ jobs:
 
       - name: verify collector exp-histogram is queryable through cerberus
         run: node .github/scripts/e2e-verify-exp-histogram.mjs
+        env:
+          CERBERUS_URL: http://localhost:8080
+
+      - name: verify collector classic-histogram is queryable through cerberus
+        run: node .github/scripts/e2e-verify-classic-histogram.mjs
         env:
           CERBERUS_URL: http://localhost:8080
 
