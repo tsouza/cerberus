@@ -123,6 +123,7 @@ const SHARDS = [
       'iterate-filter-drill.spec.ts', //        33.2s
       'iterate-histogram-completeness.spec.ts', // 30.7s
       'iterate-metrics-explorer.spec.ts', //    27.7s
+      'metrics_histogram.spec.ts', //           ~5s happy path — direct cerberus API, polls the telemetrygen-fed exp + classic histogram quantiles
     ],
   },
   {
