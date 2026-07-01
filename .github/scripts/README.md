@@ -358,20 +358,6 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `cerberus-bwc`), `STORAGE_POLICY` (default `bwc_object_store`), `MC_IMAGE`
     (default the pinned `minio/mc` RELEASE), `POLL_SECONDS` (default `30`).
   - Exit: `0` all assertions passed, `1` on any placement-assertion failure.
-- **`e2e-verify-exp-histogram.mjs`** — `e2e.yml`, the `compose-smoke-shard`
-  (required) + `compose-smoke-shard-info` (informational) jobs, run after
-  `docker compose up --wait`. Asserts the OTel collector's
-  exponential-histogram write path is queryable end to end: a telemetrygen
-  sidecar feeds OTLP `ExponentialHistogram` points named `e2e_latency_exp_hist`
-  through the collector into the exporter-created
-  `otel_metrics_exponential_histogram` table, and this module polls cerberus's
-  Prom API for `histogram_quantile(0.9, e2e_latency_exp_hist)` until it returns
-  a finite value. Complements the readiness probe (which proves the table
-  exists) by proving collector-written data is READABLE through cerberus's
-  native quantile path.
-  - Env: `CERBERUS_URL` (default `http://localhost:8080`), `EXP_HIST_METRIC`
-    (default `e2e_latency_exp_hist`), `POLL_SECONDS` (default `120`).
-  - Exit: `0` the quantile returned a finite value, `1` if not within budget.
 - **`e2e-cerberus-restart-gate.mjs`** — `e2e.yml`, the `Assert zero
   cerberus restarts` step on the k3d dashboard/crawl shards. Sums
   `restartCount` across the cerberus pods; on any restart dumps the
