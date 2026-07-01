@@ -176,6 +176,30 @@ type StructuralJoin struct {
 	// approximation boundedRootScopeFrag already accepts to keep the gate cheap.
 	WindowStartNano int64
 	WindowEndNano   int64
+
+	// TraceIDRestriction, when non-empty, confines every physical spans scan
+	// of the closure (the anchor seed, the recursive step `t`, and the R
+	// leaf) to this literal on-disk TraceId set so ClickHouse's idx_trace_id
+	// bloom filter granule-prunes the wide fetch. It is set only by the
+	// /api/search two-phase orchestrator between phase A (narrow rank -> the
+	// top-N TraceIds) and phase B (wide fetch of just those traces); every
+	// other path leaves it nil, so the emitted SQL — and thus the result — is
+	// byte-identical off the two-phase path. The restriction is a pure
+	// pruning bound: correctness comes from the closure, so restricting to a
+	// subset of traces only shrinks reads, never changes the per-trace rows.
+	TraceIDRestriction []string
+
+	// CandidatePrefilter, when true, restricts the recursive anchor seed to
+	// traces that appear on BOTH sides of the relation (the L-intersect-R
+	// candidate set), so a sparse selective query walks the closure over only
+	// the traces that can possibly match instead of every trace the ancestor
+	// side seeds. It is set by lowering only when BOTH sides are cheap
+	// selective Filter(Scan) leaves (see traceql.isCheapSelectiveLeaf); a
+	// bare `{}` (dense) side or a derived/structural side (a left-associative
+	// `A>>B>>C` chain) leaves it false so a dense query never regresses and a
+	// chain never re-executes its inner closure. Semantics-preserving: a
+	// trace with no R span can never produce a descendant/ancestor match.
+	CandidatePrefilter bool
 }
 
 func (*StructuralJoin) planNode() {}
@@ -203,11 +227,22 @@ func (j *StructuralJoin) Equal(other Node) bool {
 		j.WindowEndNano != o.WindowEndNano {
 		return false
 	}
+	if j.CandidatePrefilter != o.CandidatePrefilter {
+		return false
+	}
 	if len(j.ExtraProjectionColumns) != len(o.ExtraProjectionColumns) {
 		return false
 	}
 	for i := range j.ExtraProjectionColumns {
 		if j.ExtraProjectionColumns[i] != o.ExtraProjectionColumns[i] {
+			return false
+		}
+	}
+	if len(j.TraceIDRestriction) != len(o.TraceIDRestriction) {
+		return false
+	}
+	for i := range j.TraceIDRestriction {
+		if j.TraceIDRestriction[i] != o.TraceIDRestriction[i] {
 			return false
 		}
 	}

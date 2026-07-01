@@ -143,21 +143,28 @@ func TestEmitRecursiveDescendant_EndToEnd(t *testing.T) {
 		// Closure CTE name carries a per-emit sequence suffix; the
 		// recursive arm self-joins it aliased `c`.
 		"_struct_closure_1 AS c",
-		// #78: the recursive arm is bounded by the default safety cap.
+		// The recursive arm is bounded by the default safety cap.
 		"c._depth < 128",
-		// #77: the recursive arm scopes its scan to the seed's trace ids.
-		"_seed_ids",
-		"t.`TraceId` IN (SELECT `TraceId` FROM",
+		// Both sides are cheap selective leaves, so the anchor seed is
+		// candidate-prefiltered to traces present on the R side too — the
+		// L-intersect-R set — via a DISTINCT-TraceId subquery aliased _cand.
+		"IN (SELECT DISTINCT `TraceId` FROM",
+		"AS _cand",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("emitted SQL missing %q\n  got: %s", want, sql)
 		}
 	}
+	// The recursive step no longer re-embeds a seed-trace-id IN subquery — the
+	// step JOIN ON `t.TraceId = c.TraceId` already confines `t` to the seed's
+	// traces — so `_seed_ids` must be absent.
+	if strings.Contains(sql, "_seed_ids") {
+		t.Errorf("emitted SQL must not carry the dropped seed-trace-id pushdown\n  got: %s", sql)
+	}
 
-	// 6 string args: the L subquery's two args ("service.name" / "root")
-	// appear twice — once at the _seed position and once in the #77
-	// seed-trace-id pushdown subquery — followed by R's two
-	// ("service.name" / "leaf").
+	// 6 string args: the L subquery's two ("service.name" / "root") at the
+	// _seed position, then R's two ("service.name" / "leaf") in the candidate-
+	// prefilter subquery, then R's two again at the final INNER JOIN.
 	if got, expectedLen := len(args), 6; got != expectedLen {
 		t.Errorf("args length = %d, want %d (args=%v)", got, expectedLen, args)
 	}
