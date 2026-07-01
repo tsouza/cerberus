@@ -43,11 +43,12 @@ Cerberus's E2E stack populates ClickHouse from **two independent
 sources** that write to the same `otel.*` tables:
 
 1. **Synthetic seed (`just e2e-seed`).** Runs the Go program at
-   `test/e2e/seed/cmd/seed/`. It applies the upstream OTel-CH DDL via
-   `internal/schema/ddl.Apply` and inserts a small set of deterministic
-   rows (the canonical `up` metric, a couple of log lines, a span pair,
-   etc.). This is what spec-style E2E tests assert on — they need
-   known values at known timestamps with known labels.
+   `test/e2e/seed/cmd/seed/`. It does NOT create tables — it waits for an
+   external writer (the collector's clickhouseexporter, and here also
+   cerberus's own auto-create hook) to provision the schema, then inserts a
+   small set of deterministic rows (the canonical `up` metric, a couple of
+   log lines, a span pair, etc.). This is what spec-style E2E tests assert
+   on — they need known values at known timestamps with known labels.
 
 2. **Real OTel pipeline (`test/e2e/k3s/otel-collector.yaml`).** Boots
    alongside cerberus and continuously writes real telemetry:

@@ -378,7 +378,25 @@ jobs:
       - name: smoke cerberus /healthz + /readyz
         run: |
           curl -fsS --max-time 5 http://localhost:8080/healthz
-          curl -fsS --max-time 5 http://localhost:8080/readyz
+          # /readyz is the live schema-drift gate. The collector's
+          # clickhouseexporter is the SOLE schema authority (cerberus
+          # auto-create is off), so cerberus serves 503 until the exporter's
+          # start() provisions the tables — a beat behind the liveness
+          # healthcheck that satisfies `up --wait`. --retry-all-errors makes
+          # curl retry the 503 until the schema lands; a genuine table-name
+          # drift never resolves and the step fails, which is the catch.
+          curl -fsS --max-time 5 --retry 30 --retry-delay 2 --retry-all-errors \
+            http://localhost:8080/readyz
+
+      # The collector-created otel_metrics_exponential_histogram table must be
+      # queryable end to end: telemetrygen feeds ExponentialHistogram points
+      # through the collector, and cerberus must resolve a native quantile over
+      # them. Polls cerberus's Prom API until the query returns a finite value
+      # (ingestion lags the insert by a beat) or the budget elapses.
+      - name: verify collector exp-histogram is queryable through cerberus
+        run: node .github/scripts/e2e-verify-exp-histogram.mjs
+        env:
+          CERBERUS_URL: http://localhost:8080
 
       - name: smoke Grafana /api/health
         run: |
@@ -577,7 +595,17 @@ jobs:
       - name: smoke cerberus /healthz + /readyz
         run: |
           curl -fsS --max-time 5 http://localhost:8080/healthz
-          curl -fsS --max-time 5 http://localhost:8080/readyz
+          # Poll /readyz: the collector (sole schema authority) provisions the
+          # tables a beat after the liveness healthcheck satisfies `up --wait`,
+          # so retry the 503 until the schema lands. A real table-name drift
+          # never resolves and the step fails.
+          curl -fsS --max-time 5 --retry 30 --retry-delay 2 --retry-all-errors \
+            http://localhost:8080/readyz
+
+      - name: verify collector exp-histogram is queryable through cerberus
+        run: node .github/scripts/e2e-verify-exp-histogram.mjs
+        env:
+          CERBERUS_URL: http://localhost:8080
 
       - name: smoke Grafana /api/health
         run: |

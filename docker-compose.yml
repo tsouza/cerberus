@@ -14,11 +14,20 @@
 #                   Closes the dogfood loop: cerberus emits self-telemetry
 #                   over OTLP -> collector writes to ClickHouse -> cerberus
 #                   queries it back through its own Prom/Loki/Tempo APIs.
+#                   Its clickhouseexporter (create_schema: true) is the SOLE
+#                   schema authority for this stack — cerberus auto-create is
+#                   off and the seeder never creates tables — so cerberus's
+#                   readiness probe doubles as a live schema-drift detector.
 #                   Config: test/e2e/otel-collector/compose-config.yaml.
+#   telemetrygen    one exponential-histogram metric source (e2e_latency_exp_hist)
+#                   fed through the collector, so the exporter-created
+#                   otel_metrics_exponential_histogram table carries data a
+#                   native histogram_quantile query can read back.
 #   cerberus        built from the repo-root `Dockerfile.local` (same image
-#                   the k3d E2E uses). Auto-creates the OTel-CH schema on
-#                   startup via CERBERUS_AUTO_CREATE_SCHEMA=true, so no
-#                   separate init job. Exports OTLP to `otel-collector:4317`.
+#                   the k3d E2E uses). Does NOT auto-create the schema
+#                   (CERBERUS_AUTO_CREATE_SCHEMA=false); it serves unready
+#                   until the collector provisions the tables, then reads
+#                   them. Exports OTLP to `otel-collector:4317`.
 #                   Cerberus's own self-telemetry (metrics + logs + traces)
 #                   is the sole data source for the quickstart: it flows
 #                   cerberus -> otel-collector -> ClickHouse -> back into
@@ -144,9 +153,10 @@ services:
     # self-telemetry can't guarantee deterministically: counter resets
     # (`resets()`), flapping gauges (`changes()`), multi-key label sets
     # (`label_join` / `count_values`), and exponential histograms
-    # (native `histogram_quantile`). The seeder's ddl.Apply is the same
-    # CREATE IF NOT EXISTS set cerberus's CERBERUS_AUTO_CREATE_SCHEMA
-    # applies, so the startup race between the two is idempotent.
+    # (native `histogram_quantile`). The seeder does NOT create tables — the
+    # collector's clickhouseexporter is the sole schema authority — so it
+    # WAITS for the exporter-created tables to appear, then INSERTs its rows
+    # into them (see test/e2e/seed/cmd/seed/main.go waitForTables).
     image: cerberus-seed:dev
     pull_policy: build
     build:
@@ -163,6 +173,49 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      # Gate the seeder behind the collector process so its table-existence
+      # wait starts once the sole schema writer is live (service_started only —
+      # the FROM-scratch contrib image has no healthcheck binary; the seeder's
+      # own bounded waitForTables poll absorbs the create-schema latency).
+      otel-collector:
+        condition: service_started
+
+  telemetrygen-exphist:
+    # Exponential-histogram data SOURCE, fed THROUGH the collector. Every other
+    # metric shape in this stack reaches CH either via cerberus's own OTLP
+    # self-telemetry or the seeder's direct INSERT; none exercises the
+    # collector's exponential-histogram WRITE path. telemetrygen emits OTLP
+    # ExponentialHistogram points to the collector, whose clickhouseexporter
+    # persists them into otel_metrics_exponential_histogram — the exporter-owned
+    # table cerberus must read back. The metric name carries the `_exp_hist`
+    # suffix so cerberus's native path routes
+    # `histogram_quantile(φ, e2e_latency_exp_hist)` onto that table
+    # (schema.ExpHistogramSuffix); the compose-smoke exp-histogram verifier
+    # (.github/scripts/e2e-verify-exp-histogram.mjs) asserts the query returns a
+    # value. `--duration inf` at `--rate 20` emits continuously for the whole
+    # stack lifetime, so a fresh sample always sits inside the PromQL staleness
+    # window no matter how long the shard runs (`down -v` tears it down).
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.152.0
+    networks: [cerberus-dev]
+    command:
+      - metrics
+      - --metric-type
+      - ExponentialHistogram
+      - --otlp-endpoint
+      - otel-collector:4317
+      - --otlp-insecure
+      - --otlp-metric-name
+      - e2e_latency_exp_hist
+      - --duration
+      - inf
+      - --rate
+      - "20"
+    # telemetrygen FATALs if the collector's OTLP endpoint isn't accepting
+    # connections yet (k3d #82); on-failure restart retries until it is up.
+    restart: on-failure
+    depends_on:
+      otel-collector:
+        condition: service_started
 
   cerberus:
     image: cerberus:dev
@@ -180,9 +233,15 @@ services:
       CERBERUS_CH_USERNAME: "cerberus"
       CERBERUS_CH_PASSWORD: "cerberus"
       CERBERUS_CH_DIAL_TIMEOUT: "10s"
-      # CERBERUS_AUTO_CREATE_SCHEMA   apply the OTel-CH DDL on startup so a
-      # fresh CH volume is queryable without a separate migration step.
-      CERBERUS_AUTO_CREATE_SCHEMA: "true"
+      # CERBERUS_AUTO_CREATE_SCHEMA   OFF by design. The collector's
+      # clickhouseexporter (create_schema: true) is the SOLE schema authority
+      # for this stack, so cerberus never mints its own tables. That makes the
+      # readiness probe a live drift detector: if cerberus's read-side table
+      # names ever diverge from the exporter's real names, the expected tables
+      # are absent, /readyz stays 503, and compose-smoke fails instead of
+      # silently querying an empty table.
+      # cerberus serves unready until the exporter provisions the schema.
+      CERBERUS_AUTO_CREATE_SCHEMA: "false"
       # CERBERUS_OTLP_*       export self-telemetry (metrics + logs +
       # traces) to the in-stack OTel Collector over OTLP/gRPC. Closes
       # the dogfood loop: cerberus emits -> collector writes to CH ->

@@ -115,20 +115,20 @@ func TestLogsSeedUsesUnderscoredServiceName(t *testing.T) {
 // seed, every metadata query fails with `Table doesn't exist` and
 // cerberus returns 502.
 //
-// Schema creation is now delegated to internal/schema/ddl which always
-// creates all 5 metrics tables (gauge, sum, histogram, exp_histogram,
-// summary) as a single Metrics signal. So the table is guaranteed to
-// exist as long as the seeder calls `ddl.Apply(ctx, conn, ddl.All)` —
-// that's what this test now asserts.
+// The compose stack's OTel-CH schema is provisioned by the external OTel
+// collector, so the seeder blocks (waitForTables) until every table it inserts
+// into — otel_metrics_histogram included — has been created before it writes.
+// The histogram table is therefore guaranteed present as long as the seeder
+// keeps otel_metrics_histogram in its wait set; that's what this test asserts.
 func TestMetricsSeedHasHistogramTable(t *testing.T) {
 	t.Parallel()
 
 	content := readSeedSource(t)
-	if !strings.Contains(content, "ddl.ApplyWithConfig") && !strings.Contains(content, "ddl.Apply") {
-		t.Errorf("%s: expected the seeder to call ddl.Apply / ddl.ApplyWithConfig to create the OTel-CH schema (incl. otel_metrics_histogram)", seedSource)
+	if !strings.Contains(content, "waitForTables") {
+		t.Errorf("%s: expected the seeder to waitForTables until the external writer provisions the OTel-CH schema (incl. otel_metrics_histogram)", seedSource)
 	}
-	if !strings.Contains(content, "ddl.All") {
-		t.Errorf("%s: expected the seeder to pass ddl.All — without the Metrics signal, otel_metrics_histogram is missing and Prom /labels + /label/.../values + /metadata fail with 502", seedSource)
+	if !strings.Contains(content, `"otel_metrics_histogram"`) {
+		t.Errorf("%s: expected the seeder to require otel_metrics_histogram (in its wait set) — without it, Prom /labels + /label/.../values + /metadata fail with 502", seedSource)
 	}
 }
 
