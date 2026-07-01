@@ -299,6 +299,10 @@
       "lean": false
     },
     {
+      "url": "/a/grafana-exploretraces-app/explore#adhoc[+ label = value]={rep}",
+      "lean": true
+    },
+    {
       "url": "/a/grafana-exploretraces-app/explore#radio[Single|Grid|Rows]=Rows",
       "lean": false
     },
