@@ -1,0 +1,24 @@
+{
+  "bounds": [
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10
+  ],
+  "end_unix": 1782913680,
+  "instances": 5,
+  "metric": "http_request_duration_seconds",
+  "metric_bucket": "http_request_duration_seconds_bucket",
+  "otel_series": 500,
+  "routes": 100,
+  "start_unix": 1782827340,
+  "step_interval_seconds": 60,
+  "steps": 1440
+}
