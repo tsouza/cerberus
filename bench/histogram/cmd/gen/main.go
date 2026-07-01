@@ -78,7 +78,7 @@ func parseFlags() config {
 	flag.StringVar(&c.chAddr, "ch-addr", envOr("BENCH_CH_ADDR", "localhost:49000"), "ClickHouse native addr")
 	flag.StringVar(&c.chDB, "ch-db", envOr("BENCH_CH_DATABASE", "otel"), "ClickHouse database")
 	flag.StringVar(&c.chUser, "ch-user", envOr("BENCH_CH_USERNAME", "cerberus"), "ClickHouse user")
-	flag.StringVar(&c.chPass, "ch-pass", envOr("BENCH_CH_PASSWORD", "cerberus"), "ClickHouse password")
+	flag.StringVar(&c.chPass, "ch-pass", envOr("BENCH_CH_PASSWORD", ""), "ClickHouse password (empty for the throwaway local bench stack)")
 	flag.StringVar(&c.promRW, "prom-remote-write", envOr("BENCH_PROM_RW", "http://localhost:49090/api/v1/write"), "Prometheus remote-write URL (empty to skip)")
 	flag.StringVar(&c.mimirRW, "mimir-remote-write", envOr("BENCH_MIMIR_RW", "http://localhost:49009/api/v1/push"), "Mimir remote-write URL (empty to skip)")
 	flag.StringVar(&c.mimirOrgID, "mimir-org-id", envOr("BENCH_MIMIR_ORGID", ""), "Mimir X-Scope-OrgID header (empty when multitenancy disabled)")

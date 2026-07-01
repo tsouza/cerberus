@@ -18,7 +18,8 @@ services:
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus
-      CLICKHOUSE_PASSWORD: cerberus
+      # Throwaway local-only benchmark stack — empty password on purpose (not a secret).
+      CLICKHOUSE_PASSWORD: ""
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
@@ -44,7 +45,7 @@ services:
       CERBERUS_CH_ADDR: "clickhouse:9000"
       CERBERUS_CH_DATABASE: "otel"
       CERBERUS_CH_USERNAME: "cerberus"
-      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_PASSWORD: ""
       CERBERUS_CH_DIAL_TIMEOUT: "10s"
       CERBERUS_AUTO_CREATE_SCHEMA: "true"
       # CH-native optimizations resolve to "auto" by default: on the 26.6 image
