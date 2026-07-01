@@ -382,7 +382,13 @@ func assertRecursiveStepsBounded(t *testing.T, sqlStr string) {
 		if cut := strings.Index(seg, " UNION "); cut >= 0 {
 			seg = seg[:cut]
 		}
-		if !strings.Contains(seg, "t.`TraceId` IN") && !strings.Contains(seg, "t.`Timestamp`") {
+		// A bound is present as either the seed-trace-id set (`t.`TraceId` IN`)
+		// or the request-window predicate. The window predicate is rendered on
+		// the bare `Timestamp` column: the step scans `otel_traces AS t` joined
+		// to a closure CTE that carries no Timestamp column, so unqualified
+		// `Timestamp` resolves unambiguously to `t`'s — and it partition-prunes,
+		// which the (now-dropped) inert seed-id IN never did.
+		if !strings.Contains(seg, "t.`TraceId` IN") && !strings.Contains(seg, "`Timestamp`") {
 			t.Errorf("recursive otel_traces step #%d carries no TraceId/Timestamp bound (delta-N1 regression):\n...%s...", i, clip(seg, 320))
 		}
 	}
