@@ -93,7 +93,7 @@ type Config struct {
 	// Tables overrides the per-signal table names. The zero values fall
 	// back to the upstream defaults (otel_logs, otel_traces,
 	// otel_metrics_gauge, otel_metrics_sum, otel_metrics_histogram,
-	// otel_metrics_exp_histogram, otel_metrics_summary).
+	// otel_metrics_exponential_histogram, otel_metrics_summary).
 	Tables Tables
 
 	// Settings appends extra MergeTree SETTINGS to every auto-created table,
@@ -194,7 +194,7 @@ const (
 	defaultMetricsGaugeTable        = "otel_metrics_gauge"
 	defaultMetricsSumTable          = "otel_metrics_sum"
 	defaultMetricsHistogramTable    = "otel_metrics_histogram"
-	defaultMetricsExpHistogramTable = "otel_metrics_exp_histogram"
+	defaultMetricsExpHistogramTable = "otel_metrics_exponential_histogram"
 	defaultMetricsSummaryTable      = "otel_metrics_summary"
 )
 

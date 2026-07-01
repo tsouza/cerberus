@@ -3613,7 +3613,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "The _exp_hist suffix routes the selector onto cerberus's native (exponential) histogram quantile lowering against otel_metrics_exp_histogram.",
+      "description": "The _exp_hist suffix routes the selector onto cerberus's native (exponential) histogram quantile lowering against otel_metrics_exponential_histogram.",
       "fieldConfig": {
         "defaults": {
           "color": {

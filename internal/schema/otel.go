@@ -175,7 +175,7 @@ type Metrics struct {
 	// PromQL itself has no naming convention for exp histograms (the
 	// upstream Prom distinguishes them by wire-format tag), so cerberus
 	// adopts a simple suffix-based heuristic for the v0.1 seed:
-	// `foo_exp_hist` reads from `otel_metrics_exp_histogram`, everything
+	// `foo_exp_hist` reads from `otel_metrics_exponential_histogram`, everything
 	// else stays on the classic table. Override the suffix via Config
 	// for deployments that follow a different convention; an empty
 	// string disables the routing entirely.
@@ -316,7 +316,7 @@ func DefaultOTelMetrics() Metrics {
 		GaugeTable:                   "otel_metrics_gauge",
 		SumTable:                     "otel_metrics_sum",
 		HistogramTable:               "otel_metrics_histogram",
-		ExpHistogramTable:            "otel_metrics_exp_histogram",
+		ExpHistogramTable:            "otel_metrics_exponential_histogram",
 		SummaryTable:                 "otel_metrics_summary",
 		MetricNameColumn:             "MetricName",
 		AttributesColumn:             "Attributes",

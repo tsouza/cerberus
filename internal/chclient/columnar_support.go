@@ -34,6 +34,30 @@ var errBudgetExceeded = errors.New("chclient: columnar sample budget exceeded")
 func isMatrixMismatch(err error) bool { return errors.Is(err, errMatrixMismatch) }
 func isBudgetErr(err error) bool      { return errors.Is(err, errBudgetExceeded) }
 
+// unsupportedInferenceMarker is the substring ch-go's proto.ColAuto.Infer puts
+// in its error when a result column carries a type its automatic inference does
+// not construct — most consequentially `Map(LowCardinality(String), String)`,
+// the label-map column type the real OTel-CH exporter writes (its Attributes /
+// ResourceAttributes maps use LowCardinality keys, and ch-go only special-cases
+// the plain `Map(String, String)`). ch-go exposes no typed sentinel for this,
+// so the error chain (…"raw block: target: column type inference: automatic
+// column inference not supported for …") is the only handle. Matched as a
+// substring so it survives the several wrap layers between Infer and pool.Do.
+const unsupportedInferenceMarker = "automatic column inference not supported"
+
+// isUnsupportedColumnInference reports whether err is ch-go's
+// automatic-column-inference failure (see unsupportedInferenceMarker). Such a
+// failure is a deterministic, client-side decode LIMITATION — a function of the
+// result column type, not of the ClickHouse backend — so it is not a CH outage
+// and must not trip the breaker; the columnar path treats it exactly like a
+// shape-mismatch and falls back to the row path, whose clickhouse-go/v2 reflect
+// decoder handles LowCardinality-keyed maps. The failure fires at block
+// column-setup (before any row reaches OnResult), so no partial samples have
+// been emitted and the row-path re-run is safe.
+func isUnsupportedColumnInference(err error) bool {
+	return err != nil && strings.Contains(err.Error(), unsupportedInferenceMarker)
+}
+
 // chSettings translates the per-query clickhouse.Settings map (max_memory_usage
 // / max_execution_time / timeout_overflow_mode / plan-shape settings) into
 // ch-go's []ch.Setting so the columnar dial runs under the IDENTICAL server
