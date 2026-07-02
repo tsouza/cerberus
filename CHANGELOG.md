@@ -4,7 +4,9 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-## [v1.8.5] — 2026-07-02
+## [chart-v0.9.4] — 2026-07-02
+
+Chart-only release (appVersion stays 1.8.5 — no binary/image change).
 
 ### Fixed
 
