@@ -4,6 +4,31 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.9.0] — 2026-07-02
+
+### Added
+
+- **traceql:** two-phase structural search to bound the wide projection (#1166)
+
+### Fixed
+
+- **prom:** exp-histogram support on the real OTel-CH exporter schema (#1171)
+- **traces:** window-bound every otel_traces scan + memory-bound compare and structural (#1163)
+
+### Changed
+
+- split phase4-traceql into three memory-balanced matrix entries
+
+### CI
+
+- **mutation:** rebalance traceql split into four RE2-safe package-scoped legs (#1178)
+- **mutation:** run phase4-traceql at workers=1 to fit the runner budget (#1177)
+
+### Documentation
+
+- rewrite README to be human-first (plain intro, lighter 1.0 disclaimer, progressive depth) (#1162)
+- **operations:** recommend ClickHouse 26.6+ for parallel recursive CTEs on structural-join (#1160)
+
 ## [v1.8.4] — 2026-06-29
 
 ### Fixed
