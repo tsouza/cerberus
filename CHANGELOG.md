@@ -6,6 +6,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.9.0] — 2026-07-02
 
+### Fixed
+
+- **chart:** chMaxMemory reaches split heads + int64 all numeric emitters + guard split ingress (#1182)
+
+## [v1.9.0] — 2026-07-02
+
 ### Added
 
 - **traceql:** two-phase structural search to bound the wide projection (#1166)
