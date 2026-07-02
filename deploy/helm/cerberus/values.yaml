@@ -63,6 +63,10 @@ split:
     # (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when
     # null.
     maxSamples: null
+    # -- Per-query ClickHouse server-side memory ceiling for the Prometheus head
+    # (CERBERUS_CH_QUERY_MAX_MEMORY). Inherits top-level `query.chMaxMemory` when
+    # null.
+    chMaxMemory: null
   loki:
     # -- Render the Loki head Deployment + Service in split mode.
     enabled: true
@@ -76,6 +80,10 @@ split:
     # (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when
     # null.
     maxSamples: null
+    # -- Per-query ClickHouse server-side memory ceiling for the Loki head
+    # (CERBERUS_CH_QUERY_MAX_MEMORY). Inherits top-level `query.chMaxMemory` when
+    # null.
+    chMaxMemory: null
   tempo:
     # -- Render the Tempo head Deployment + Service in split mode.
     enabled: true
@@ -90,6 +98,10 @@ split:
     # (CERBERUS_QUERY_MAX_SAMPLES). Inherits top-level `query.maxSamples` when
     # null. Tempo /api/search benefits from a tighter cap.
     maxSamples: null
+    # -- Per-query ClickHouse server-side memory ceiling for the Tempo head
+    # (CERBERUS_CH_QUERY_MAX_MEMORY). Inherits top-level `query.chMaxMemory` when
+    # null. Tempo's heavy structural aggregations benefit from a fat cap here.
+    chMaxMemory: null
 
 image:
   # -- cerberus container image repository.

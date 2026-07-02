@@ -1,4 +1,12 @@
 {{- if .Values.ingress.enabled }}
+{{- /* The aggregate `cerberus` Service exists only in monolith mode (see
+       service.yaml's `ne split` gate), so a single Ingress backend has nothing
+       to target in split mode (it would 503). Fail fast with guidance rather
+       than render a dangling backend — split callers route the per-head
+       prometheus/loki/tempo Services directly (see NOTES.txt). */ -}}
+{{- if eq .Values.mode "split" }}
+{{- fail "ingress.enabled is unsupported in split mode: the aggregate Service does not exist. Route the per-head prometheus/loki/tempo Services directly (see NOTES), or set mode=monolith." }}
+{{- end }}
 {{- $fullName := include "cerberus.fullname" . }}
 {{- $svcPort := .Values.service.port }}
 apiVersion: networking.k8s.io/v1
