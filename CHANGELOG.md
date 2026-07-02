@@ -8,6 +8,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Fixed
 
+- **chart:** chMaxMemory reaches split heads + int64 all numeric emitters + guard split ingress (#1182) (#1183)
+
+## [v1.8.5] — 2026-07-02
+
+### Fixed
+
 - backport traces-scan window bound + exp-histogram schema fix to 1.8.x (#1163/#1171) (#1180)
 
 ## [v1.8.4] — 2026-06-29

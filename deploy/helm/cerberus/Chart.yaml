@@ -8,7 +8,7 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.9.3
+version: 0.9.4
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
@@ -50,4 +50,4 @@ annotations:
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: fixed
-      description: "backport traces-scan window bound + exp-histogram schema fix to 1.8.x (#1163/#1171) (#1180)"
+      description: "chart: chMaxMemory reaches split heads + int64 all numeric emitters + guard split ingress (#1182) (#1183)"
