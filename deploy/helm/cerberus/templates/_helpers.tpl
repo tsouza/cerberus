@@ -81,8 +81,9 @@ datasource NOTES iterate without re-deriving it. Returns a YAML list of
 cerberus.headValues — the resolved per-head `split.<svc>` block, normalised so a
 null/absent field falls back to the top-level default. Input is the head's bare
 Service name (e.g. "prometheus"); reads .Values.split.<svc> off the ROOT context
-via $. Returns a YAML dict {enabled, replicaCount, resources, maxSamples} with
-every field populated. Used by the per-head Deployment + Service partials.
+via $. Returns a YAML dict {enabled, replicaCount, resources, maxSamples,
+chMaxMemory} with every field populated. Used by the per-head Deployment +
+Service partials.
 */}}
 {{- define "cerberus.headValues" -}}
 {{- $ctx := .ctx -}}
@@ -101,6 +102,14 @@ resources:
 {{- if kindIs "invalid" $ms }}{{ $ms = $ctx.Values.query.maxSamples }}{{ end }}
 {{- if not (kindIs "invalid" $ms) }}
 maxSamples: {{ int64 $ms }}
+{{- end }}
+{{- /* chMaxMemory: per-head override else top-level query.chMaxMemory (may be
+       unset). NOT int64-coerced — the binary also accepts a humanized size
+       string ("2Gi"), so preserve the raw scalar; the consumer quotes it. */ -}}
+{{- $chm := $head.chMaxMemory }}
+{{- if kindIs "invalid" $chm }}{{ $chm = $ctx.Values.query.chMaxMemory }}{{ end }}
+{{- if not (kindIs "invalid" $chm) }}
+chMaxMemory: {{ $chm }}
 {{- end }}
 {{- end }}
 
@@ -286,8 +295,10 @@ CERBERUS_QUERY_MAX_SAMPLES: {{ int64 .maxSamples | quote }}
 CERBERUS_QUERY_TIMEOUT: {{ . | quote }}
 {{- end }}
 {{- if not (kindIs "invalid" .chMaxMemory) }}
-{{- /* Quoted verbatim so a humanized size string (e.g. "2Gi") passes through unchanged; the binary accepts both a raw byte integer and a Kubernetes-style suffixed size. */}}
-CERBERUS_CH_QUERY_MAX_MEMORY: {{ .chMaxMemory | quote }}
+{{- /* Humanized size strings ("2Gi") pass through; a raw-byte integer loads as
+       float64 and MUST be int64'd (cerberus.numOrStr) or it renders in scientific
+       notation ("1.07e+09"), which the binary's integer parser rejects. */}}
+CERBERUS_CH_QUERY_MAX_MEMORY: {{ include "cerberus.numOrStr" .chMaxMemory | quote }}
 {{- end }}
 {{- end }}
 {{- if .Values.debug.pprof }}
@@ -323,7 +334,7 @@ CERBERUS_SCHEMA_STORAGE_POLICY: {{ . | quote }}
 {{- if $settings }}
 {{- $pairs := list }}
 {{- range $k := (keys $settings | sortAlpha) }}
-{{- $pairs = append $pairs (printf "%s=%v" $k (index $settings $k | toString)) }}
+{{- $pairs = append $pairs (printf "%s=%s" $k (include "cerberus.numOrStr" (index $settings $k))) }}
 {{- end }}
 {{- if $pairs }}
 CERBERUS_SCHEMA_SETTINGS: {{ join "," $pairs | quote }}
@@ -334,7 +345,7 @@ CERBERUS_SCHEMA_SETTINGS: {{ join "," $pairs | quote }}
        duplicate env key is never emitted into the ConfigMap. */}}
 {{- range $k, $v := .Values.schema }}
 {{- if not (has $k (list "ttl" "replicated" "storagePolicy" "settings")) }}
-CERBERUS_SCHEMA_{{ $k }}: {{ $v | quote }}
+CERBERUS_SCHEMA_{{ $k }}: {{ include "cerberus.numOrStr" $v | quote }}
 {{- end }}
 {{- end }}
 {{- with .Values.http.addr }}
@@ -347,9 +358,20 @@ CERBERUS_LOG_LEVEL: {{ . | quote }}
 CERBERUS_LOG_FORMAT: {{ . | quote }}
 {{- end }}
 {{- range $k, $v := .Values.config }}
-{{ $k }}: {{ $v | quote }}
+{{ $k }}: {{ include "cerberus.numOrStr" $v | quote }}
 {{- end }}
 {{- end }}
+
+{{/*
+cerberus.numOrStr — render a scalar that may be a raw-byte integer or a
+humanized/size string. Values-file numbers load as float64; an integral one is
+int64'd so it never renders in scientific notation ("1.07e+09"), which the
+cerberus binary's integer parser and ClickHouse's SETTINGS/config parsers reject.
+Non-integral floats and strings pass through unchanged. Caller quotes the result.
+*/}}
+{{- define "cerberus.numOrStr" -}}
+{{- if and (kindIs "float64" .) (eq (floor .) .) }}{{ int64 . }}{{ else }}{{ . }}{{ end }}
+{{- end -}}
 
 {{/*
 cerberus.env — the container `env:` list. Holds ONLY entries that need
