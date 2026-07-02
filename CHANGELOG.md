@@ -4,7 +4,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-## [v1.9.0] — 2026-07-02
+## [chart 0.10.1] — 2026-07-02
 
 ### Fixed
 
