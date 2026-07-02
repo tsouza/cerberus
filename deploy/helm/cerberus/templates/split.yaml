@@ -136,6 +136,16 @@ spec:
                      the binary's integer parser rejects. */}}
               value: {{ $hv.maxSamples | int64 | quote }}
             {{- end }}
+            {{- if not (kindIs "invalid" $hv.chMaxMemory) }}
+            - name: CERBERUS_CH_QUERY_MAX_MEMORY
+              {{- /* A numeric byte value re-parses as float64 via fromYaml; int64
+                     it to avoid scientific notation (the binary's integer parser
+                     rejects 4e+09). A humanized size string ("2Gi") is emitted
+                     verbatim. Mirrors CERBERUS_QUERY_MAX_SAMPLES above — without
+                     this, split heads never received the CH per-query memory
+                     cap that headValues now carries. */}}
+              value: {{ if kindIs "float64" $hv.chMaxMemory }}{{ $hv.chMaxMemory | int64 | quote }}{{ else }}{{ $hv.chMaxMemory | quote }}{{ end }}
+            {{- end }}
             {{- /* GOMEMLIMIT derived from THIS head's own memory limit, so each
                    head's Go soft heap limit tracks its own (possibly distinct)
                    cgroup limit — a single global extraEnv value cannot. */}}
