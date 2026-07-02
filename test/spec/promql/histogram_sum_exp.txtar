@@ -1,7 +1,7 @@
 -- query.promql --
 histogram_sum(latency_exp_hist)
 -- seed --
-CREATE TABLE otel_metrics_exp_histogram (
+CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
@@ -14,7 +14,7 @@ CREATE TABLE otel_metrics_exp_histogram (
     NegativeOffset Int32,
     NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_exp_histogram VALUES
+INSERT INTO otel_metrics_exponential_histogram VALUES
     ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 13, 30, 0, 1, 0, [3, 5, 2], 1, [2]);
 -- expected_rows --
 [
@@ -34,6 +34,6 @@ INSERT INTO otel_metrics_exp_histogram VALUES
 Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Sum AS Value]
   Aggregate groupBy=[Attributes AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
     Filter predicate=(MetricName IN ("latency_exp_hist", "latency.exp.hist", "latency.exp/hist", "latency.exp_hist", "latency/exp/hist", "latency/exp_hist", "latency_exp.hist"))
-      Scan(otel_metrics_exp_histogram)
+      Scan(otel_metrics_exponential_histogram)
 -- sql --
-SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Sum` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exp_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))) GROUP BY `Attributes`)
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Sum` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))) GROUP BY `Attributes`)

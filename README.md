@@ -14,7 +14,7 @@ _Keep Grafana, alerting, and your CLI tooling. Swap the backend._
 <sub>
 <a href="#why-cerberus">Why cerberus</a> &nbsp;·&nbsp;
 <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
-<a href="#architecture">Architecture</a> &nbsp;·&nbsp;
+<a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
 <a href="#compatibility">Compatibility</a> &nbsp;·&nbsp;
 <a href="#documentation">Docs</a>
 </sub>
@@ -32,97 +32,87 @@ _Keep Grafana, alerting, and your CLI tooling. Swap the backend._
 
 </div>
 
-> [!NOTE]
-> **1.0.0 — stable wire API, young project.** The Prometheus / Loki /
-> Tempo HTTP surfaces cerberus serves are its 1.0 compatibility contract
-> and follow semantic versioning from here. Behaviour is held to reference
-> Prometheus / Loki / Tempo by differential harnesses on every merge
-> (PromQL at **574/574** on the CNCF compliance tester). It's a confident
-> 1.0 on behaviour — but a young, actively-developed project, so evaluate
-> it against your own corpus before production, and expect TraceQL to carry
-> the lightest conformance confidence of the three heads
-> ([details](#compatibility)). See [`CHANGELOG.md`](CHANGELOG.md) for what
-> has landed.
+Cerberus lets you keep your metrics, logs, and traces in **ClickHouse**
+and go on querying them from **Grafana** with **PromQL, LogQL, and
+TraceQL** — as if Prometheus, Loki, and Tempo were still doing the work.
 
-The three `*QL compat` badges are **differential parity scores** —
-`passed / total` cases where cerberus matched a reference Prometheus /
-Loki / Tempo on the same seeded corpus ([details](#compatibility)). The
-PromQL leg runs the third-party
-[PromLabs / CNCF **PromQL Compliance Tester**](https://github.com/prometheus/compliance)
-(`prometheus/compliance`) — the same tool the CNCF Prometheus Conformance
-Program uses — at **574/574 cases passing, no allow-list**, against a real
-`prom/prometheus`. The scores are tracked, not gated: see
-[Compatibility](#compatibility) for exactly what the CI checks enforce.
+It is a **read-only query gateway**. You add it to Grafana as three
+datasources (one Prometheus, one Loki, one Tempo). When you run a query,
+cerberus translates it into ClickHouse SQL, runs it, and hands back the
+normal Prometheus / Loki / Tempo response. Grafana can't tell the
+difference, so your existing dashboards and alerts keep working unchanged.
+
+```text
+  OpenTelemetry Collector ──writes──▶ ClickHouse ◀──reads── cerberus ◀──queries── Grafana
+                                                            (PromQL / LogQL / TraceQL)
+```
+
+**Cerberus does not ingest or store anything.** Your OpenTelemetry
+Collector already writes telemetry into ClickHouse through its ClickHouse
+exporter; cerberus only reads it back. So you do **not** point Promtail, an
+OTel agent, or any other writer at cerberus — those keep writing straight
+to ClickHouse exactly as they do now. Cerberus sits on the read side only.
+
+> [!NOTE]
+> **1.0 — stable wire API, young project.** The Prometheus / Loki / Tempo
+> HTTP surfaces are a versioned 1.0 contract, but the project itself is
+> young and moving fast. Try it against your own data before you rely on it
+> in production. See [`CHANGELOG.md`](CHANGELOG.md) for what has landed.
 
 ---
 
 ## Why cerberus?
 
-Metrics, logs, and traces rarely share a store — the usual answer is
-Prometheus + Loki + Tempo, three retention policies and storage bills for
-what is largely the same OTLP data sliced three ways. ClickHouse is a
-great single store for all three signals; cerberus supplies the missing
-**query side**. Point Grafana at it as three datasources and your
-existing PromQL / LogQL / TraceQL keeps working, translated to ClickHouse
-SQL underneath.
+Metrics, logs, and traces rarely share a store. The usual answer is
+Prometheus + Loki + Tempo: three systems, three retention policies, three
+storage bills — for what is largely the same OpenTelemetry data sliced
+three ways. ClickHouse is a great single store for all three signals.
+Cerberus supplies the missing **query side**, so you get one backend
+without giving up the query languages and tooling you already use.
 
 - **No Grafana plugin.** Cerberus speaks each upstream HTTP API verbatim
-  (`/api/v1/query_range`, `/loki/api/v1/query_range`, `/api/search`, …).
-  Grafana sees three normal datasources.
-- **No custom QL.** PromQL, LogQL, TraceQL — exactly as your dashboards
-  and alerts already use them.
-- **Grammar-faithful parsers.** PromQL is parsed by the upstream Apache
-  `prometheus/promql/parser` directly. LogQL and TraceQL are parsed by
-  cerberus's own clean-room Apache reimplementations of the published
-  grammars (`internal/logql/lsyntax`, `internal/traceql/ast`), kept honest
-  by differential tests against the upstream parsers. If upstream parses
-  it, cerberus parses it — without linking Grafana's AGPL code.
+  (`/api/v1/query_range`, `/loki/api/v1/query_range`, `/api/search`, …),
+  so Grafana sees three ordinary datasources.
+- **No new query language.** PromQL, LogQL, and TraceQL — exactly as your
+  dashboards and alerts already write them.
+- **Faithful parsers.** PromQL is parsed by the upstream Apache
+  `prometheus/promql/parser`. LogQL and TraceQL are parsed by cerberus's
+  own clean-room Apache reimplementations of the published grammars
+  (`internal/logql/lsyntax`, `internal/traceql/ast`), checked against the
+  real Grafana parsers in testing. If upstream parses a query, so does
+  cerberus — without linking Grafana's AGPL-licensed code into the binary.
 
-## Version requirements
+## How it works
 
-Two axes decide whether a deployment is compatible: the **ClickHouse server
-version** cerberus queries, and the **OTel schema shape** the data was written
-in.
+ClickHouse holds your telemetry in the **standard OpenTelemetry ClickHouse
+schema** — one table per signal, not one giant table:
 
-| Component            | Minimum                        | Notes                                                                                                                               |
-| -------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. Enabling the experimental native rate requires 25.9 (below).    |
-| OTel exporter schema | **clickhouseexporter 0.152.0** | A **schema shape**, not a binary version — see below.                                                                               |
+- traces in `otel_traces`,
+- logs in `otel_logs`,
+- metrics split by type across `otel_metrics_gauge`, `otel_metrics_sum`,
+  `otel_metrics_histogram`, `otel_metrics_exponential_histogram`, and
+  `otel_metrics_summary`.
 
-**ClickHouse.** 24.8 is the lowest version cerberus's emitted SQL is correct on:
-the 24.8 empty-input / parse-unit / filter-path quirks are all worked around
-unconditionally, so a query that runs on 24.8 runs on every newer server too.
-The differential compatibility harnesses — the source of truth for all three
-heads — execute on ClickHouse 25.8, so the validated SQL is exercised forward of
-the floor as well. The ClickHouse-optimization auto-picker
-(`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes the connected server's
-version once at startup and enables the result-equivalent optimizations it
-supports — `aggregation_in_order` (24.8+) and `condition_cache` (25.3+), plus the
-native `timeSeries*ToGrid` aggregates on capable servers (the whole family at
-25.9+ — the rate/resample aggregates first shipped at 25.6 but used a closed
-membership window that diverged from PromQL until the 25.9 left-open fix, so
-25.9 is the auto floor for all four). Those native aggregates keep an
-"experimental" maturity label but are auto-selected by version, because they are
-validated result-correct at flat memory. So on modern ClickHouse the auto-picker
-**raises** the effective floor to **25.9** for eligible `rate(<counter>[range])`
-range queries, lowering them to the compiled `timeSeriesRateToGrid` aggregate. On a 24.8 server none of the
-native aggregates engage and the 24.8-safe SQL is emitted unchanged. The lone
-opt-in-only feature is `columnar_result_decode` (a perf tradeoff `auto` never
-selects). See
-[`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) for the
-auto-picker and
-[`docs/operations.md`](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259)
-for the runtime contract and the experimental-setting details.
+This is the layout the OpenTelemetry Collector's ClickHouse exporter writes
+by default. Cerberus reads those tables; it never creates or writes them.
+If your column layout differs from the exporter defaults, point cerberus at
+it with `CERBERUS_SCHEMA_*` overrides — see the
+[configuration reference](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
 
-**OTel schema — the shape, not the exporter.** Cerberus reads the
-**OpenTelemetry ClickHouse schema shape** pinned to `clickhouseexporter`
-**v0.152.0** (via the `tsouza/…:cerberus-ddl` fork in
-[`go.mod`](go.mod)). What matters is the **table layout** — column names,
-types, and `Map` shapes — not which binary produced it. Any exporter, collector
-pipeline, or ingestion path that writes tables in that shape works; the exporter
-binary version itself is irrelevant. If your layout deviates from the exporter
-defaults, point cerberus at it with the `CERBERUS_SCHEMA_*` overrides — see
-[`docs/configuration.md`](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
+Each query takes one path: the head parses its language and lowers it to a
+shared plan, a small optimizer rewrites that plan, and cerberus emits
+parameterised ClickHouse SQL and streams the result back in the upstream
+wire format. There is **one** pipeline behind all three heads, so a new
+optimization costs one implementation, not three. The full breakdown is in
+[`docs/engine.md`](docs/engine.md); the performance strategy is in
+[`docs/performance.md`](docs/performance.md).
+
+> **Rate-over-range is exact by default.** `rate(…)` range queries match
+> reference Prometheus bit-for-bit and stay sub-second at realistic scale.
+> For million-row queries an experimental native ClickHouse path
+> (`timeSeriesRateToGrid`) trades a sub-observable last-bit rounding
+> difference for flat memory and an order-of-magnitude speed-up — see the
+> [exactness-vs-scale tradeoff guide](docs/performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
 
 ## Quick start
 
@@ -180,39 +170,56 @@ ClickHouse / OTLP / schema / admit blocks plus full escape hatches
 the [chart README](deploy/helm/cerberus/README.md) for the complete values
 reference and a production HA example.
 
-## Architecture
+## Version requirements
 
-Cerberus has **one** query pipeline, not three. Each head parses its
-query language — PromQL with the upstream Apache prometheus parser, LogQL
-and TraceQL with cerberus's own in-house Apache reimplementations — and
-lowers to a shared plan IR
-([`internal/chplan`](internal/chplan)); a rule-based optimiser rewrites
-it; the closed typed-Frag [`internal/chsql`](internal/chsql) emitter
-produces parameterised, escape-free ClickHouse SQL; and the engine
-streams results. The three HTTP heads plug in as thin `Lang` adapters
-over [`internal/engine`](internal/engine), so the optimiser and emitter
-never know which head produced a plan — **new optimisations cost one
-implementation, not three**.
+Two things decide whether a deployment is compatible: the **ClickHouse
+server version** cerberus queries, and the **schema shape** your telemetry
+was written in.
 
-See [`docs/engine.md`](docs/engine.md) for the `Lang` contract, the
-request lifecycle, and the per-stage breakdown (IR algebra, optimiser
-rules, the typed-SQL emitter, the OTel schema). For how cerberus keeps
-queries fast — the compute-fan-out strategy and per-layer optimisations —
-see [`docs/performance.md`](docs/performance.md).
+| Component            | Minimum                        | Notes                                                               |
+| -------------------- | ------------------------------ | ------------------------------------------------------------------- |
+| ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. |
+| OTel exporter schema | **clickhouseexporter 0.152.0** | A table layout, not a binary version — any matching writer works.   |
 
-> **Rate-over-range is exact by default.** `rate(…)` range queries match
-> reference Prometheus bit-for-bit and stay sub-second at realistic scale.
-> For million-row queries an experimental native ClickHouse path
-> (`timeSeriesRateToGrid`) trades a sub-observable last-bit rounding
-> difference for flat memory and an order-of-magnitude speed-up — see the
-> [exactness-vs-scale tradeoff guide](docs/performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
+**ClickHouse.** 24.8 is the lowest version cerberus's emitted SQL is
+correct on; a query that runs on 24.8 runs on every newer server too. The
+differential compatibility harnesses execute on ClickHouse 25.8, so the
+validated SQL is exercised forward of the floor as well. On modern
+ClickHouse, the optimization auto-picker
+(`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes the server version
+once at startup and turns on result-equivalent optimizations it supports —
+`aggregation_in_order` (24.8+), `condition_cache` (25.3+), and the native
+`timeSeries*ToGrid` aggregates (25.9+). Those native aggregates are
+validated result-correct at flat memory but kept behind an "experimental"
+label; `auto` selects them by version, so eligible
+`rate(<counter>[range])` range queries lower to the compiled
+`timeSeriesRateToGrid` aggregate on 25.9+ and emit the 24.8-safe SQL
+unchanged below it. The one opt-in-only feature is
+`columnar_result_decode` (a perf tradeoff `auto` never selects). See
+[`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) and
+[`docs/operations.md`](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259)
+for the runtime contract.
+
+**OTel schema — the shape, not the exporter.** Cerberus reads the standard
+OpenTelemetry ClickHouse schema, pinned to the `clickhouseexporter`
+**v0.152.0** table layout (via the `tsouza/…:cerberus-ddl` fork in
+[`go.mod`](go.mod)). What matters is the column names, types, and `Map`
+shapes — not which binary wrote them. Any exporter, collector pipeline, or
+other path that produces that layout works. If yours differs, point
+cerberus at it with the `CERBERUS_SCHEMA_*` overrides — see the
+[configuration reference](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
 
 ## Compatibility
 
+The three `*QL compat` badges at the top are **parity scores** —
+`passed / total` cases where cerberus returned the same answer as a
+reference Prometheus / Loki / Tempo on the same seeded data. Here is how
+they are measured.
+
 Each query language has a **differential harness**: cerberus and a
 reference engine answer the same corpus against the same seeded data, and
-the responses are diffed case-for-case — pinning _observed semantics on
-real ClickHouse_ against an upstream oracle, not just emitted SQL.
+the responses are diffed case-for-case — pinning observed behaviour on
+real ClickHouse against an upstream oracle, not just the emitted SQL.
 
 The strongest leg is **PromQL**, which runs the third-party **PromQL
 Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
@@ -255,12 +262,11 @@ fix at the source, not an exception to suppress. The full playbook
 
 ## Testing
 
-Cerberus is tested in a 13-layer map spanning AST-shape pinning, plan-IR
-invariants, optimiser properties, emitted-SQL goldens, chDB roundtrips,
-function-surface parity, HTTP wire conformance, differential harnesses,
-Playwright UX flows, deterministic chaos / goleak, perf benchmarks +
-compute-fan-out guards, live-stack chaos against the k3d deployment, and
-an oracle-based property framework.
+Cerberus is tested at 13 layers, from parser and plan checks through
+emitted-SQL goldens and query roundtrips on real ClickHouse, the
+differential harnesses above, end-to-end Grafana flows, chaos and
+leak detectors, performance guards, and an oracle-based property
+framework.
 `just test` runs the core lanes; see
 [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical layer
 map, the CI-gate inventory, and the gremlins rollout.

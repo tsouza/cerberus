@@ -500,6 +500,13 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// when the caller did not thread WithSpansTable onto the emit context.
 	e.spansTable = table
 
+	// Fail closed: on the production search path (context-threaded spans table)
+	// a window-stamped closure that reaches emit with no request window would
+	// scan full retention behind the inert TraceId-IN, so reject it.
+	if err := requireSpansScanWindow(e.ctxSpansTable, table, j.TimestampColumn, j.WindowStartNano, j.WindowEndNano); err != nil {
+		return err
+	}
+
 	leftSub, err := e.subqueryFrag(j.Left)
 	if err != nil {
 		return err
@@ -652,6 +659,12 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNo
 		return nil, fmt.Errorf("%w: union recursive structural op %q", ErrUnsupported, j.Op)
 	}
 
+	// Fail closed on the production search path, mirroring emitStructuralRecursive:
+	// a window-stamped closure with no request window would scan full retention.
+	if err := requireSpansScanWindow(e.ctxSpansTable, table, j.TimestampColumn, j.WindowStartNano, j.WindowEndNano); err != nil {
+		return nil, err
+	}
+
 	// DISTINCT on both arms — same duplicate-row containment as the
 	// canonical closure (see emitStructuralRecursive).
 	anchor := NewQuery().
@@ -714,7 +727,15 @@ func structuralStepWhere(j *chplan.StructuralJoin, seedNode chplan.Node, seedSub
 	if !subtreeHasRecursiveStructural(seedNode) {
 		conds = append(conds, structuralSeedTraceFilter(j.TraceIDColumn, seedSub))
 	}
-	return conds
+	// Bound the step's physical `t` scan of the spans table to the request
+	// window so ClickHouse prunes partitions — the inert `t.TraceId IN
+	// (<seed>)` membership above never prunes them. Omitted (no-op) when the
+	// node was not window-stamped (TimestampColumn / Window* unset on the
+	// metrics / spec / direct-join paths), keeping that output byte-identical;
+	// armed and fail-closed on the production search path (see
+	// requireSpansScanWindow at the emit sites).
+	winLo, winHi := spansScanWindowFrags(j.TimestampColumn, j.WindowStartNano, j.WindowEndNano)
+	return appendNonNilFrags(conds, winLo, winHi)
 }
 
 // structuralStepBound classifies the resource bound on a recursive structural

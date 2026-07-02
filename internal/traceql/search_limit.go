@@ -86,8 +86,6 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 		endNano = end.UnixNano()
 	}
 	switch v := plan.(type) {
-	case *chplan.Project:
-		v.Input = stampNestedSetTraceLimit(v.Input, limit, start, end, s)
 	case *chplan.NestedSetAnnotate:
 		if inputGuaranteesRootInResult(v.Input, s.ParentSpanIDColumn) {
 			v.TraceLimit = limit
@@ -116,8 +114,105 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 			}
 			v.Input = pushLeafPredicate(v.Input, gate)
 		}
+		return plan
+	default:
+		// Descend through ANY node between the pipeline root and the
+		// NestedSetAnnotate — Project (`| select(nestedSet*)`), Aggregate
+		// (`| group(by(nestedSet*))` / `| min(nestedSetLeft)`), Limit, set-ops —
+		// so a structure-tab numbering nested under a later pipeline stage still
+		// gets the top-N RANKING bound. The gate stays correctly scoped: it only
+		// fires on a NestedSetAnnotate whose input is the Drilldown structure
+		// shape (inputGuaranteesRootInResult), so a plain aggregate-over-nestedSet
+		// (input Filter(Scan)) is descended into but left unbounded. The metrics
+		// pipelines never reach here — Lower gates this whole pass on a
+		// non-metrics plan — so the generic recurse can never bound a metric leaf.
+		out, _ := chplan.RewriteChildren(plan, func(c chplan.Node) (chplan.Node, bool) {
+			return stampNestedSetTraceLimit(c, limit, start, end, s), true
+		})
+		return out
 	}
-	return plan
+}
+
+// stampRecursiveScanWindow folds the request window onto the EMITTER-SYNTHETIC
+// recursive spans scans — the nested-set numbering CTE (NestedSetAnnotate's
+// anchor/step arms) and the structural-closure step arm (StructuralJoin) —
+// which scan the physical spans table directly and so are NOT chplan children
+// reachable by stampSearchWindow's leaf-predicate push. Setting Window* (and,
+// for StructuralJoin, TimestampColumn) on the node arms the emitter's direct
+// `Timestamp >= … AND Timestamp <= …` partition-prune predicate (and its
+// fail-closed guard): `TraceId IN (<seed>)` membership never prunes the
+// toDate(Timestamp) partitions, so without this the walk reads full retention
+// behind an inert IN.
+//
+// This runs on ANY plan that carries a request window — search OR metrics. The
+// leaf-stamp passes (stampSearchWindow etc.) are gated search-only because a
+// metrics query's chplan-leaf scans take their time bound from the
+// /api/metrics/query_range handler's RangeWindow wrap. But that wrap cannot
+// reach BELOW a WITH RECURSIVE, so a metrics pipeline over a structural /
+// nested-set source (`{ } >> { } | rate()`,
+// `{ nestedSetParent<0 } | by(nestedSetParent) | rate()`) would emit a
+// windowless recursive arm unless this stamp runs for it too. The bound needs
+// only a non-zero [start,end] + tsCol, NOT the /api/search response trace limit
+// — conflating the two would skip the metrics path, which carries no limit.
+//
+// Unlike stampNestedSetTraceLimit's structure-tab RANKING bound, the request
+// window is safe to apply to EVERY span search shape — select(nestedSet*),
+// group(by(nestedSet*)), aggregate-over-nestedSet, and the structural
+// >> / << / &>> closures all legitimately scan only [start, end]. The walk
+// descends every node type (Aggregate, Project, Limit, set-ops, joins) so a
+// NestedSetAnnotate or StructuralJoin nested under any of them is reached. For
+// the structure-tab shape stampNestedSetTraceLimit already set the same nanos
+// on the NestedSetAnnotate; re-setting them here is idempotent.
+//
+// A zero window leaves the plan unchanged (no node opts into windowing), so
+// non-windowed callers (spec/property harnesses, /traces/{id}) stay
+// byte-identical.
+func stampRecursiveScanWindow(plan chplan.Node, start, end time.Time, s schema.Traces) chplan.Node {
+	if plan == nil {
+		return plan
+	}
+	var startNano, endNano int64
+	if !start.IsZero() {
+		startNano = start.UnixNano()
+	}
+	if !end.IsZero() {
+		endNano = end.UnixNano()
+	}
+	if startNano == 0 && endNano == 0 {
+		return plan
+	}
+	return windowRecursiveScans(plan, startNano, endNano, s.TimestampColumn)
+}
+
+// windowRecursiveScans is stampRecursiveScanWindow's in-place walk. It stamps
+// the window onto every NestedSetAnnotate / StructuralJoin it reaches and
+// recurses generically through every other node so deeply-nested closures are
+// covered.
+func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string) chplan.Node {
+	switch v := n.(type) {
+	case *chplan.NestedSetAnnotate:
+		// TimestampColumn is already set by the select / group / aggregate
+		// lowering; only the window bounds need stamping here.
+		v.WindowStartNano = startNano
+		v.WindowEndNano = endNano
+		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol)
+		return v
+	case *chplan.StructuralJoin:
+		// Lowering leaves TimestampColumn "" on the structural join; setting it
+		// alongside the window arms both the emit-time push and its fail-closed
+		// guard (chsql.requireSpansScanWindow).
+		v.TimestampColumn = tsCol
+		v.WindowStartNano = startNano
+		v.WindowEndNano = endNano
+		v.Left = windowRecursiveScans(v.Left, startNano, endNano, tsCol)
+		v.Right = windowRecursiveScans(v.Right, startNano, endNano, tsCol)
+		return v
+	default:
+		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
+			return windowRecursiveScans(c, startNano, endNano, tsCol), true
+		})
+		return out
+	}
 }
 
 // pushLeafPredicate ANDs pred into every leaf Filter/Scan of a search row
@@ -144,9 +239,10 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 // The generic recurse descends NestedSetAnnotate.Input (the row source) so a
 // `select(nestedSet*)` compound search gets its leaves gated/windowed; the
 // numbering CTE the emitter synthesises from NestedSetAnnotate is NOT a chplan
-// child, so it is correctly never reached (Tempo numbers whole traces
-// regardless of the window). isRootSpanFilter looks through a passthrough
-// Project, so recursing Project.Input reaches the re-projected bare-root arm.
+// child, so this leaf pass never reaches it — the sibling stampRecursiveScanWindow
+// pass windows that synthetic anchor/step scan directly instead. isRootSpanFilter
+// looks through a passthrough Project, so recursing Project.Input reaches the
+// re-projected bare-root arm.
 func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 	switch v := n.(type) {
 	case *chplan.Scan:
@@ -202,9 +298,12 @@ func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 //
 // The window predicate reaches only chplan leaf scans. The structural closures'
 // recursive `t`-scan and the nested-set numbering CTE are emitter-synthetic
-// (not chplan children), so they correctly stay unwindowed: the closure inherits
-// the window via the #77 seed re-render of its (now-windowed) leaf, and the
-// numbering must number whole traces regardless of the window.
+// (not chplan children), so this leaf pass cannot reach them — the sibling
+// stampRecursiveScanWindow pass stamps the request window onto those synthetic
+// scans directly (a Timestamp partition-prune predicate on the physical
+// `otel_traces` scan inside the recursive arm), which the inert `TraceId IN`
+// seed membership can never deliver. Without it the closure / numbering CTE
+// re-scans full retention (the GAP-3 OOM).
 func stampSearchWindow(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
 	if limit <= 0 || plan == nil {
 		return plan

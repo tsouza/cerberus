@@ -203,6 +203,16 @@ jobs:
             scope: ./internal/qlcommon
             efficacy: 95
             workers: 0
+          # phase6-spansscan covers the shared spans-scan partition-pruning
+          # matcher (internal/spansscan) — the predicate functions behind the
+          # universal emit-chokepoint guard and the perf/fanout corpus lint.
+          # It is a tiny stdlib-only leaf package, so the run is fast; the bar
+          # matches every other phase. Stays informational until it holds green
+          # for a week, per the rollout note above.
+          - phase: phase6-spansscan
+            scope: ./internal/spansscan
+            efficacy: 95
+            workers: 0
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6

@@ -71,7 +71,7 @@ type phiArg struct {
 //
 //   - A bare `*parser.VectorSelector` naming a histogram metric —
 //     classic (target table `otel_metrics_histogram`) or exponential /
-//     native (target table `otel_metrics_exp_histogram`); OR
+//     native (target table `otel_metrics_exponential_histogram`); OR
 //
 //   - A composition of `sum [by/without]` aggregations and range-vector
 //     functions (`rate`, `increase`) wrapping a bare VectorSelector —
@@ -793,7 +793,7 @@ const (
 //	          groupArray(NegativeBucketCounts) AS _hq_neg_buckets,
 //	      ]
 //	        Filter <metric matchers> AND TimeUnix in (anchor-Range, anchor]
-//	          Scan(otel_metrics_exp_histogram)
+//	          Scan(otel_metrics_exponential_histogram)
 //
 // The merge algorithm in the inner Project (see
 // expHistogramMergeOffsetExpr + expHistogramMergeBucketsExpr) mirrors

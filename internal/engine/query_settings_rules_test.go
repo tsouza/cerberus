@@ -213,3 +213,49 @@ func TestAggregationInOrder_ResultShapingSQLUnchanged(t *testing.T) {
 		t.Errorf("baseline ctx unexpectedly carries the setting")
 	}
 }
+
+// testQueryMemoryCap is a representative 2 GiB per-query cap, matching the
+// deployment cap the compare() memory bound was validated against on prod.
+const testQueryMemoryCap int64 = 2 << 30
+
+// compareOverScan builds a minimal MetricsCompare plan (the lowered shape of
+// TraceQL's compare()) over a Scan, enough for the plan-shape trigger.
+func compareOverScan() *chplan.MetricsCompare {
+	return &chplan.MetricsCompare{
+		TopN:  10,
+		Inner: &chplan.Scan{Table: "otel_traces"},
+	}
+}
+
+// TestApplyCompareMemoryBound_CompareStampsBoth — a compare() plan gets BOTH the
+// external-group-by spill threshold (sized at half the cap) and the read-thread
+// cap, so the previously-OOMing compare() stays under the per-query budget.
+func TestApplyCompareMemoryBound_CompareStampsBoth(t *testing.T) {
+	ctx := applyCompareMemoryBound(context.Background(), compareOverScan(), testQueryMemoryCap)
+
+	if got, want := settingValue(ctx, settingMaxBytesBeforeExternalGroupBy), spillThreshold(testQueryMemoryCap); got != want {
+		t.Errorf("max_bytes_before_external_group_by = %v; want %v (half the %d-byte cap)", got, want, testQueryMemoryCap)
+	}
+	if got, want := settingValue(ctx, settingMaxThreads), compareMaxThreads; got != want {
+		t.Errorf("max_threads = %v; want %v", got, want)
+	}
+}
+
+// TestApplyCompareMemoryBound_NonCompareStampsNeither — a plain (non-compare)
+// plan keeps full read parallelism: the compare-only bound never fires, so
+// neither setting is stamped by this rule. (The unconditional spill in
+// applySpillSettings still covers ordinary GROUP BY/sort separately.)
+func TestApplyCompareMemoryBound_NonCompareStampsNeither(t *testing.T) {
+	// A {} | rate()-shaped plan: RangeWindow + Aggregate over a Scan — no
+	// MetricsCompare node anywhere in the tree.
+	plan := &chplan.RangeWindow{Input: aggOverScan("otel_metrics_sum", "MetricName")}
+
+	ctx := applyCompareMemoryBound(context.Background(), plan, testQueryMemoryCap)
+
+	if got := settingValue(ctx, settingMaxThreads); got != nil {
+		t.Errorf("non-compare plan: max_threads = %v; want absent", got)
+	}
+	if got := settingValue(ctx, settingMaxBytesBeforeExternalGroupBy); got != nil {
+		t.Errorf("non-compare plan: max_bytes_before_external_group_by = %v; want absent (compare rule must not fire)", got)
+	}
+}

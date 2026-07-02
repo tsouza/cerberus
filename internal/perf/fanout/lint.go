@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/spansscan"
 )
 
 // Rule identifies which fan-out shape a [Violation] flags.
@@ -64,6 +65,21 @@ const (
 	// no-GROUP-BY Aggregate (one row by construction); anything else is a
 	// fan-out.
 	RuleCorrelatedSubquery Rule = "correlated-subquery"
+
+	// RuleUnwindowedSpansScan flags a physical `otel_traces` scan that
+	// sits in a context where ClickHouse CANNOT push the request window
+	// down into the partition pruner — a recursive (`WITH RECURSIVE`) arm
+	// or a `GROUP BY` root-lookup — yet carries no co-scope `Timestamp`
+	// predicate. otel_traces is `PARTITION BY toDate(Timestamp)`, so ONLY
+	// a Timestamp range sitting directly on the scan prunes partitions; a
+	// windowed `TraceId IN (<seed>)` is inert for pruning. A recursive
+	// STEP/ANCHOR arm or a pre-IN `GROUP BY` therefore reads the WHOLE
+	// table unless the window is replicated onto the scan itself — the
+	// traces-OOM class. The rule fires only when the statement otherwise
+	// carries a request window (a rendered `fromUnixTimestamp64Nano(`
+	// bound); a window-less query has nothing to push and defers to the
+	// resource-bound gate.
+	RuleUnwindowedSpansScan Rule = "unwindowed-spans-scan"
 )
 
 // Violation is a single static fan-out finding.
@@ -91,6 +107,7 @@ func Lint(plan chplan.Node, sql string) []Violation {
 	out = append(out, lintFanoutFeedingJoin(plan)...)
 	out = append(out, lintCorrelatedSubquery(plan)...)
 	out = append(out, lintRecursionCap(sql)...)
+	out = append(out, lintUnwindowedSpansScan(sql)...)
 	return out
 }
 
@@ -386,6 +403,40 @@ func lintRecursionCap(sql string) []Violation {
 			recursive, caps,
 		),
 	}}
+}
+
+// ---------------------------------------------------------------------
+// Rule 5 — unwindowed physical spans scan (no partition pruning)
+// ---------------------------------------------------------------------
+
+const (
+	// spansTable is the physical spans relation. It is
+	// `PARTITION BY toDate(Timestamp)`, so only a Timestamp range
+	// predicate sitting directly on a scan of it prunes partitions. The
+	// corpus lint scopes the shared matcher to this default table; the emit
+	// chokepoint scopes it to the context-threaded spans table.
+	spansTable = "otel_traces"
+	// requestWindowBound is the rendered request-window bound shape the
+	// shared matcher keys on. It is re-exported here unchanged so the
+	// package's own precondition tests can reference it by the local name.
+	requestWindowBound = spansscan.RequestWindowBound
+)
+
+// lintUnwindowedSpansScan delegates to the shared spansscan matcher (the same
+// matcher the emit chokepoint runs as the universal backstop) and maps each
+// Finding onto a RuleUnwindowedSpansScan Violation. The detection logic lives
+// in one place so the corpus tripwire and the construction-proof emit guard
+// can never diverge.
+func lintUnwindowedSpansScan(sql string) []Violation {
+	findings := spansscan.UnwindowedSpansScans(sql, spansTable)
+	if len(findings) == 0 {
+		return nil
+	}
+	out := make([]Violation, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, Violation{Rule: RuleUnwindowedSpansScan, Detail: f.Reason})
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------

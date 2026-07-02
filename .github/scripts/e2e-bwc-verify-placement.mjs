@@ -49,11 +49,14 @@ const POLL_SECONDS = Number(process.env.POLL_SECONDS || '30');
 const BWC_DISKS = new Set(['bwc_object_cache', 'bwc_object_disk']);
 
 // The OTel tables cerberus's own auto-create DDL manages and stamps with the
-// storage policy. The collector's clickhouseexporter may ALSO create tables of
-// its own (e.g. otel_metrics_exponential_histogram, a name cerberus's DDL does
-// not use); those are outside cerberus's schema-stamping contract, so the
-// explicit-SETTINGS check is scoped to this canonical set. Physical placement
-// of EVERY table's data is still asserted comprehensively via system.parts.
+// storage policy. These names MUST match the ones the upstream
+// clickhouseexporter writes — cerberus's DDL borrows the exporter's templates
+// but fills in its own table-name defaults, so any drift between the two means
+// cerberus reads a table the exporter never created and silently returns
+// nothing. The storage-policy check is scoped to this canonical set; the DRIFT
+// GUARD below then fails the run if the collector created any `otel_metrics_*`
+// base table outside it. Physical placement of EVERY table's data is still
+// asserted comprehensively via system.parts.
 const CANONICAL_TABLES = new Set([
   'otel_logs',
   'otel_traces',
@@ -61,7 +64,7 @@ const CANONICAL_TABLES = new Set([
   'otel_metrics_gauge',
   'otel_metrics_sum',
   'otel_metrics_histogram',
-  'otel_metrics_exp_histogram',
+  'otel_metrics_exponential_histogram',
   'otel_metrics_summary',
 ]);
 
@@ -145,6 +148,22 @@ function main() {
   const nonCanonical = tables.filter((t) => !CANONICAL_TABLES.has(t));
   if (nonCanonical.length > 0) {
     log(`non-cerberus MergeTree tables (placement asserted via system.parts, not SHOW CREATE): ${nonCanonical.join(', ')}`);
+  }
+  // DRIFT GUARD. The collector's clickhouseexporter owns the physical
+  // OTel-metrics schema; cerberus must READ exactly the tables it creates. Any
+  // `otel_metrics_*` base table the collector created that is NOT in the
+  // canonical set cerberus reads means cerberus's schema-name defaults have
+  // drifted from the exporter's — cerberus would query a table that does not
+  // exist (or an empty one it created itself) and silently return nothing, so
+  // the run must fail here rather than let that reach a datasource.
+  const drift = nonCanonical.filter((t) => /^otel_metrics_[a-z_]+$/.test(t));
+  if (drift.length > 0) {
+    error(
+      `schema drift: the OTel collector created metrics table(s) cerberus does not read: ${drift.join(', ')} — ` +
+        `cerberus's schema-name defaults have drifted from the clickhouseexporter's. ` +
+        `Reconcile internal/schema + internal/schema/ddl with the exporter's table names.`,
+    );
+    failures += drift.length;
   }
   if (canonicalPresent.length > 0 && stampedCount === canonicalPresent.length) {
     notice(`storage_policy='${STORAGE_POLICY}' stamped on all ${stampedCount} cerberus OTel tables`);

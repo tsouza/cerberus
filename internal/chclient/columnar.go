@@ -195,6 +195,18 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		span.End()
 		return nil, false, nil
 	}
+	// A result column whose type ch-go's Auto inference does not construct —
+	// most consequentially the real OTel-CH exporter's
+	// `Map(LowCardinality(String), String)` label maps — fails at block
+	// column-setup before any row is decoded. That is a client-side decode
+	// limitation, not a CH outage, so (like a shape-mismatch) it does not touch
+	// the breaker and defers to the row path, whose reflect decoder handles the
+	// LowCardinality map. Without this fall-back the columnar optimisation turns
+	// an otherwise-working query into a 502 on every stock OTel-CH deployment.
+	if isUnsupportedColumnInference(runErr) {
+		span.End()
+		return nil, false, nil
+	}
 	// Surface the accumulated ProfileEvents inline on the execute span (both the
 	// error and success paths below keep the span). A shape-mismatch returns
 	// above before this, since it carried no real result.

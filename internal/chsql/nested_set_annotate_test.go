@@ -260,6 +260,18 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 	n.TraceLimit = 200
 	n.WindowStartNano = startNano
 	n.WindowEndNano = endNano
+	// Production's windowRecursiveScans (traceql/search_limit.go) stamps the
+	// window on EVERY recursive scan in the tree — the outer NestedSetAnnotate
+	// AND the structural-union row source's own closure. Mirror that here on the
+	// inner StructuralJoin so the emitted statement is fully partition-bounded: a
+	// windowed numbering over a windowless structural closure is a shape the
+	// lowering never produces, and the universal emit guard (spansscan) rejects
+	// the windowless recursive otel_traces scan it would otherwise emit. The
+	// asserted windowed top-N (driven by NestedSetAnnotate.Window*) is unchanged.
+	sj := n.Input.(*chplan.SetOperation).Left.(*chplan.StructuralJoin)
+	sj.TimestampColumn = "Timestamp"
+	sj.WindowStartNano = startNano
+	sj.WindowEndNano = endNano
 	nsSQL, _, err := chsql.Emit(context.Background(), n)
 	if err != nil {
 		t.Fatalf("Emit numbering: %v", err)

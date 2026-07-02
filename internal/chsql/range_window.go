@@ -1026,8 +1026,9 @@ func (e *emitter) metricsZeroFillGridArm(
 	extraCols []zeroFillExtraCol,
 ) Frag {
 	tsCol := r.TimestampColumn
-	disc := NewQuery().From(inner)
+	var disc *QueryBuilder
 	if len(groupAliases) > 0 {
+		disc = NewQuery().From(inner)
 		for i, g := range m.GroupBy {
 			expr := g
 			alias := groupAliases[i]
@@ -1039,11 +1040,18 @@ func (e *emitter) metricsZeroFillGridArm(
 			discKeys = append(discKeys, func(b *Builder) { b.Ident(a) })
 		}
 		disc.GroupBy(discKeys...)
+		// Group discovery replays the sample arm's Start/End scan-bound
+		// pushdown so it reads the same bounded window.
+		maybePushInnerScanTimeBounds(disc, r, tsCol, rangeNS)
 	} else {
-		disc.Select(InlineLit(int64(1)))
-		disc.Limit(1)
+		// No group-by: the zero grid needs exactly one driver row. Read it from
+		// the synthetic 1-row `system.one` table so the probe carries NO spans
+		// scan — the old `SELECT 1 FROM (<otel_traces>) LIMIT 1` planted a
+		// windowless fact-table scan that prunes nothing (it has no Timestamp
+		// predicate) purely to test non-emptiness. system.one is always exactly
+		// one row, so the unlabelled zero grid is now emitted unconditionally.
+		disc = NewQuery().Select(InlineLit(int64(1))).From(Qual("system", "one"))
 	}
-	maybePushInnerScanTimeBounds(disc, r, tsCol, rangeNS)
 
 	grid := NewQuery().From(disc.Frag())
 	for _, alias := range groupAliases {

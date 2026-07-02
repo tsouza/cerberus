@@ -48,6 +48,24 @@ func (a *MetricsAggregate) GroupBy() []Attribute { return a.by }
 // Quantiles returns the phi values for quantile_over_time.
 func (a *MetricsAggregate) Quantiles() []float64 { return a.quantiles }
 
+// WithLeadingGroupBy returns a copy of the aggregate with attrs prepended to
+// its by(...) grouping. Lowering uses it to fold a standalone `| by(X)`
+// pipeline stage that immediately precedes a metrics aggregate into the
+// aggregate's group-by, so `{...} | by(X) | rate()` lowers identically to the
+// already-valid `{...} | rate() by (X)` form. attrs are prepended (not
+// appended) so the standalone-stage grouping, which textually comes first,
+// keys the series ahead of any group already on the aggregate. An empty attrs
+// returns the receiver unchanged.
+func (a *MetricsAggregate) WithLeadingGroupBy(attrs []Attribute) *MetricsAggregate {
+	if len(attrs) == 0 {
+		return a
+	}
+	merged := make([]Attribute, 0, len(attrs)+len(a.by))
+	merged = append(merged, attrs...)
+	merged = append(merged, a.by...)
+	return &MetricsAggregate{op: a.op, attr: a.attr, by: merged, quantiles: a.quantiles}
+}
+
 func (*MetricsAggregate) isFirstStage() {}
 
 func (a MetricsAggregate) String() string {
@@ -97,6 +115,19 @@ func (a *AverageOverTimeAggregator) Attribute() Attribute { return a.attr }
 
 // GroupBy returns the `by(...)` attributes.
 func (a *AverageOverTimeAggregator) GroupBy() []Attribute { return a.by }
+
+// WithLeadingGroupBy returns a copy with attrs prepended to its by(...)
+// grouping — the avg_over_time counterpart to MetricsAggregate.WithLeadingGroupBy,
+// so `{...} | by(X) | avg_over_time(d)` folds to `{...} | avg_over_time(d) by (X)`.
+func (a *AverageOverTimeAggregator) WithLeadingGroupBy(attrs []Attribute) *AverageOverTimeAggregator {
+	if len(attrs) == 0 {
+		return a
+	}
+	merged := make([]Attribute, 0, len(attrs)+len(a.by))
+	merged = append(merged, attrs...)
+	merged = append(merged, a.by...)
+	return &AverageOverTimeAggregator{attr: a.attr, by: merged}
+}
 
 func (*AverageOverTimeAggregator) isFirstStage() {}
 
