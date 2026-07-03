@@ -4,6 +4,13 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.8.6] — 2026-07-03
+
+### Fixed
+
+- **chsql:** pass timeSeries*ToGrid family whole-second DateTime, not DateTime64 (#1185/#1187)
+- **schema:** widen proj_metric_metadata with IsMonotonic to keep routing (#1186/#1187)
+
 ## [chart-v0.9.4] — 2026-07-02
 
 Chart-only release (appVersion stays 1.8.5 — no binary/image change).
