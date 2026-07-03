@@ -78,9 +78,35 @@ func TestRenderSignal_Metrics(t *testing.T) {
 		"(SELECT `MetricName`, `Attributes`, max(`TimeUnix`) GROUP BY `MetricName`, `Attributes`)") {
 		t.Errorf("missing proj_series body in:\n%s", all)
 	}
+	// gauge/histogram have no IsMonotonic column, so their proj_metric_metadata
+	// body stays the plain (MetricName, description, unit, TimeUnix) shape.
 	if !strings.Contains(all, "ADD PROJECTION IF NOT EXISTS proj_metric_metadata "+
 		"(SELECT `MetricName`, any(`MetricDescription`), any(`MetricUnit`), max(`TimeUnix`) GROUP BY `MetricName`)") {
-		t.Errorf("missing proj_metric_metadata body in:\n%s", all)
+		t.Errorf("missing plain proj_metric_metadata body in:\n%s", all)
+	}
+	// otel_metrics_sum is the only catalog table with an IsMonotonic column
+	// (see isMonotonicColumn's doc comment) — its proj_metric_metadata body
+	// must carry any(IsMonotonic) so the counter/gauge split filter
+	// (internal/api/prom/metadata.go) can route to this projection via an
+	// aggregate HAVING predicate instead of falling back to a raw WHERE
+	// IsMonotonic full scan. A regression here silently reintroduces the
+	// full-table-scan bug even though the plain-body assertion above still
+	// passes (gauge/histogram still render it).
+	sumIdx := len(catalogTables[:1]) * len(metricCatalogProjections) // gauge's entries precede sum's
+	sumStmts := proj[sumIdx : sumIdx+len(metricCatalogProjections)]
+	sumAll := strings.Join(sumStmts, "\n")
+	if !strings.Contains(sumAll, "ADD PROJECTION IF NOT EXISTS proj_metric_metadata "+
+		"(SELECT `MetricName`, any(`MetricDescription`), any(`MetricUnit`), max(`TimeUnix`), any(`IsMonotonic`) GROUP BY `MetricName`)") {
+		t.Errorf("otel_metrics_sum proj_metric_metadata body missing any(IsMonotonic) widening:\n%s", sumAll)
+	}
+	gaugeAll := strings.Join(proj[:sumIdx], "\n")
+	if strings.Contains(gaugeAll, "IsMonotonic") {
+		t.Errorf("otel_metrics_gauge projections must not reference IsMonotonic (no such column):\n%s", gaugeAll)
+	}
+	histIdx := sumIdx + len(metricCatalogProjections)
+	histAll := strings.Join(proj[histIdx:histIdx+len(metricCatalogProjections)], "\n")
+	if strings.Contains(histAll, "IsMonotonic") {
+		t.Errorf("otel_metrics_histogram projections must not reference IsMonotonic (no such column):\n%s", histAll)
 	}
 }
 
