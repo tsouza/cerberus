@@ -922,9 +922,13 @@ func TestRangeWindowNativeInnerScanTimeBound(t *testing.T) {
 	// resolves. The `r.TimestampColumn != RangeWindowAnchorAlias` guard
 	// gates that extra projection; a CONDITIONALS_NEGATION mutant (`!=` ->
 	// `==`) drops the re-alias for a differently-named column, so pinning
-	// the `anchor_ts` -> `TimeUnix` projection kills it.
-	if !strings.Contains(sql, "`anchor_ts` AS `TimeUnix`") {
-		t.Errorf("expected RangeWindowNative anchor re-alias `anchor_ts` AS `TimeUnix` in SQL=%s", sql)
+	// the `anchor_ts` -> `TimeUnix` projection kills it. Both projections
+	// go through nativeAnchorTimestampFrag's `toDateTime64(anchor_ts, 9)`
+	// cast — the family's timeSeriesRange axis is whole-second DateTime
+	// (nativeGridTimeBoundFrag), so this restores the DateTime64(9) every
+	// other anchor_ts producer/consumer in the codebase expects, losslessly.
+	if !strings.Contains(sql, "toDateTime64(`anchor_ts`, 9) AS `TimeUnix`") {
+		t.Errorf("expected RangeWindowNative anchor re-alias toDateTime64(`anchor_ts`, 9) AS `TimeUnix` in SQL=%s", sql)
 	}
 }
 

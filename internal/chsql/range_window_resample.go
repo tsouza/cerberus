@@ -137,7 +137,7 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 	outer := NewQuery().From(inner.Frag())
 	outer.Select(Col(r.MetricNameCol))
 	outer.Select(Col(r.AttributesCol))
-	outer.Select(As(Col(RangeWindowAnchorAlias), r.TimestampCol))
+	outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampCol))
 	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueCol))
 	outer.ArrayJoin(
 		As(Col(nativeGridArrayAlias), nativeGridValAlias),

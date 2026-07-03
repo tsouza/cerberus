@@ -198,9 +198,9 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	for _, g := range groupFrags {
 		outer.Select(g)
 	}
-	outer.Select(Col(RangeWindowAnchorAlias))
+	outer.Select(As(nativeAnchorTimestampFrag(), RangeWindowAnchorAlias))
 	if r.TimestampColumn != RangeWindowAnchorAlias {
-		outer.Select(As(Col(RangeWindowAnchorAlias), r.TimestampColumn))
+		outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampColumn))
 	}
 	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueColumn))
 	outer.ArrayJoin(

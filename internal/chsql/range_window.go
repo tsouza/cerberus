@@ -1745,14 +1745,36 @@ func offsetShiftedTimeFrag(t time.Time, offsetNS int64) Frag {
 // pre-fix) implicit coercion was already attempting.
 func nativeGridTimeBoundFrag(t time.Time, offsetNS int64) Frag {
 	if t.IsZero() {
-		return func(b *Builder) { b.sb.WriteString("now()") }
+		return Call("now")
 	}
 	unixSec := t.Add(-time.Duration(offsetNS)).Unix()
-	return func(b *Builder) {
-		b.sb.WriteString("toDateTime(")
-		b.sb.WriteString(strconv.FormatInt(unixSec, 10))
-		b.sb.WriteString(", 'UTC')")
-	}
+	return Call("toDateTime", InlineLit(unixSec), InlineLit("UTC"))
+}
+
+// nativeAnchorTimestampFrag casts the per-row anchor_ts column — ARRAY
+// JOINed out of the whole-second Array(DateTime) nativeGridTimeBoundFrag's
+// timeSeriesRange axis produces (see its doc comment for why that grid
+// must stay DateTime, not DateTime64) — back to the DateTime64(9) type
+// every other anchor_ts producer in the codebase emits and every
+// anchor_ts consumer expects: date-function lowerings that read it via
+// `toUnixTimestamp64Nano` (internal/promql/date_fns.go's `timestamp(v)`),
+// and every head that re-aliases anchor_ts as the schema TimestampColumn
+// ("TimeUnix") for downstream nanosecond-precision arithmetic. Emitting
+// the family's start/end bounds as whole-second DateTime fixed a CH
+// argument-coercion overflow (nativeGridTimeBoundFrag), but it also
+// changed timeSeriesRange's OWN return element type to match — silently
+// narrowing anchor_ts everywhere the native family populates it, and
+// breaking any caller still assuming DateTime64(9) with a CH "Expected:
+// DateTime64, got: DateTime" type error.
+//
+// Lossless: the family's grid_step is already whole-second UInt32, so
+// there is no sub-second component to begin with — widening back to
+// DateTime64(9) here only restores the type, not any precision, and
+// does not reintroduce the overflow, which is specific to argument
+// coercion INTO timeSeries*ToGrid's own params, not to a plain
+// `toDateTime64(...)` cast on an already-materialised value.
+func nativeAnchorTimestampFrag() Frag {
+	return Call("toDateTime64", Col(RangeWindowAnchorAlias), InlineLit(int64(nanoScale)))
 }
 
 // groupArrayPairFrag returns a Frag rendering
