@@ -274,6 +274,14 @@ func inlineArgs(t *testing.T, sql string, args []any) string {
 // arms (e.g. the grouped Attributes arm vs others) when a request fans out.
 func captureGaugeArm(t *testing.T, path string, match func(sql string) bool) string {
 	t.Helper()
+	return captureArm(t, path, "otel_metrics_gauge", match)
+}
+
+// captureArm is captureGaugeArm generalised to an arbitrary catalog table —
+// used for the sum table's counter/gauge (IsMonotonic) split, which the
+// gauge table has no equivalent of.
+func captureArm(t *testing.T, path, table string, match func(sql string) bool) string {
+	t.Helper()
 	q := &stubQuerier{
 		strings:  []string{"j"},
 		metaRows: []chclient.MetricMetaRow{{Name: "m_0", Description: "desc 0", Unit: "unit"}},
@@ -287,11 +295,11 @@ func captureGaugeArm(t *testing.T, path string, match func(sql string) bool) str
 	resp.Body.Close()
 
 	for i, stmt := range q.allSQL {
-		if strings.Contains(stmt, "otel_metrics_gauge") && match(stmt) {
+		if strings.Contains(stmt, table) && match(stmt) {
 			return inlineArgs(t, stmt, q.allArgs[i])
 		}
 	}
-	t.Fatalf("handler issued no matching gauge-table query for %s; allSQL=%q", path, q.allSQL)
+	t.Fatalf("handler issued no matching %s query for %s; allSQL=%q", table, path, q.allSQL)
 	return ""
 }
 
@@ -308,6 +316,72 @@ func setupScanBoundTable(t *testing.T, db *sql.DB, table string) {
 	}
 	// One dense part per day-partition so the projection collapses real parts,
 	// not inflated unmerged insert parts.
+	if _, err := db.Exec("OPTIMIZE TABLE " + table + " FINAL"); err != nil {
+		t.Fatalf("optimize %s: %v", table, err)
+	}
+}
+
+// scanBoundSumTableDDL mirrors scanBoundPartitionedDDL, adding the sum
+// table's IsMonotonic column — the counter/gauge (Prom type) discriminator
+// no other catalog table carries (see internal/schema/ddl's
+// isMonotonicColumn and internal/api/prom/metadata.go's monotonic split).
+func scanBoundSumTableDDL(table string) string {
+	return fmt.Sprintf(`CREATE OR REPLACE TABLE %s (
+    MetricName String,
+    MetricDescription String,
+    MetricUnit String,
+    IsMonotonic Bool,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree()
+PARTITION BY toDate(TimeUnix)
+ORDER BY (MetricName, TimeUnix);`, table)
+}
+
+// scanBoundSumInsert mirrors scanBoundInsert, additionally assigning
+// IsMonotonic deterministically per MetricName (`(number % 50) % 2`) so it
+// is invariant across every row of a given metric — the same real-world
+// assumption the any(IsMonotonic) projection aggregate relies on.
+func scanBoundSumInsert(table string) string {
+	return fmt.Sprintf(`INSERT INTO %s
+SELECT
+    concat('m_', toString(number %% 50)) AS MetricName,
+    concat('desc ', toString(number %% 50)) AS MetricDescription,
+    'unit' AS MetricUnit,
+    (number %% 50) %% 2 = 0 AS IsMonotonic,
+    map('job', 'j', 'instance', toString(number %% 200)) AS Attributes,
+    now64(9) - INTERVAL (number %% %d) DAY AS TimeUnix,
+    toFloat64(number) AS Value
+FROM numbers(%d);`, table, scanBoundDays, scanBoundRows)
+}
+
+// scanBoundSumProjections mirrors scanBoundProjections, widening
+// proj_metric_metadata with any(IsMonotonic) — the fix under test. Without
+// it, the sum table's counter/gauge split (a HAVING any(IsMonotonic) = ...
+// predicate) cannot be served by the projection at all.
+func scanBoundSumProjections(table string) []string {
+	return []string{
+		"ALTER TABLE " + table + " ADD PROJECTION proj_series " +
+			"(SELECT MetricName, Attributes, max(TimeUnix) GROUP BY MetricName, Attributes)",
+		"ALTER TABLE " + table + " MATERIALIZE PROJECTION proj_series",
+		"ALTER TABLE " + table + " ADD PROJECTION proj_metric_metadata " +
+			"(SELECT MetricName, any(MetricDescription), any(MetricUnit), max(TimeUnix), any(IsMonotonic) GROUP BY MetricName)",
+		"ALTER TABLE " + table + " MATERIALIZE PROJECTION proj_metric_metadata",
+	}
+}
+
+// setupScanBoundSumTable mirrors setupScanBoundTable for the sum table's
+// wider (IsMonotonic-carrying) shape.
+func setupScanBoundSumTable(t *testing.T, db *sql.DB, table string) {
+	t.Helper()
+	stmts := []string{scanBoundSumTableDDL(table), scanBoundSumInsert(table)}
+	stmts = append(stmts, scanBoundSumProjections(table)...)
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup %s: %v", stmt, err)
+		}
+	}
 	if _, err := db.Exec("OPTIMIZE TABLE " + table + " FINAL"); err != nil {
 		t.Fatalf("optimize %s: %v", table, err)
 	}
@@ -395,4 +469,29 @@ func TestMetadataScanBound_MetadataExplain_Repro(t *testing.T) {
 			strings.Contains(sql, "GROUP BY `MetricName`")
 	})
 	assertRoutesAndPrunes(t, db, "windowless metadata", emit, "proj_metric_metadata")
+}
+
+// TestMetadataScanBound_MetadataMonotonicExplain_Repro is the counterpart of
+// TestMetadataScanBound_MetadataExplain_Repro for the sum table's
+// counter/gauge (IsMonotonic) split — the one arm the gauge-table-only guard
+// above cannot exercise, and exactly the shape that silently fell back to a
+// full table scan before proj_metric_metadata carried any(IsMonotonic) and
+// the handler switched from a raw WHERE IsMonotonic to a HAVING
+// any(IsMonotonic) predicate (see internal/schema/ddl and
+// internal/api/prom/metadata.go's metricMetaSQL). Reproduced on a live
+// deployment via EXPLAIN before the fix: 262130/262130 granules (full scan)
+// with WHERE, 128/128 once routed via HAVING.
+func TestMetadataScanBound_MetadataMonotonicExplain_Repro(t *testing.T) {
+	db := openScanBoundDB(t)
+	setupScanBoundSumTable(t, db, "otel_metrics_sum")
+	// The sum table's counter arm is the monotonic=true HAVING predicate,
+	// distinguished from the non-monotonic (gauge) arm by the absence of a
+	// leading NOT.
+	emit := captureArm(t, "/api/v1/metadata", "otel_metrics_sum", func(sql string) bool {
+		return strings.Contains(sql, "any(`MetricDescription`)") &&
+			strings.Contains(sql, "GROUP BY `MetricName`") &&
+			strings.Contains(sql, "any(`IsMonotonic`)") &&
+			!strings.Contains(sql, "NOT any(`IsMonotonic`)")
+	})
+	assertRoutesAndPrunes(t, db, "windowless metadata (sum, monotonic)", emit, "proj_metric_metadata")
 }

@@ -536,11 +536,18 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 //     row pool widened from the window to all-time (arguably more correct for
 //     metric-level metadata). The payoff: the pure `GROUP BY MetricName` +
 //     aggregate HAVING routes to the proj_metric_metadata aggregating
-//     projection — turning the whole-table group into a tiny projection read. A
-//     raw WHERE (metric-name filter or IsMonotonic predicate) keeps that arm off
-//     the projection, so only the unfiltered list-all shape — the hot Grafana
-//     call — routes; the filtered arms fall back to the bounded scan, which is
-//     already cheap.
+//     projection — turning the whole-table group into a tiny projection read.
+//     The sum table's monotonic filter uses the same aggregate-only shape —
+//     `HAVING any(IsMonotonic) [= | != ...]` rather than a raw WHERE — so it
+//     ALSO routes to the projection (see below); proj_metric_metadata carries
+//     any(IsMonotonic) for exactly that reason. A raw WHERE metric-name
+//     filter still keeps that one arm off the projection (there is no
+//     per-name projection key to serve an exact-match lookup from), so only
+//     the metricName == "" shape routes — but that is the hot, unfiltered
+//     Grafana listing call this optimization targets. (Before the
+//     any(IsMonotonic) widening, a raw WHERE IsMonotonic here silently fell
+//     back to a full scan of the fact table — confirmed on a live deployment
+//     via EXPLAIN: 262130/262130 granules vs 128/128 once routed.)
 //   - !nowAnchored (a user-supplied finite [start,end]): the closed
 //     WHERE-bounded window is kept (a historical window cannot be answered
 //     exactly from per-name max alone), and partition pruning bounds the scan.
@@ -568,14 +575,35 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start
 	}
 
 	if monotonic != nil {
-		// Bare boolean-column predicate (`IsMonotonic` / `NOT
-		// IsMonotonic`) — no bound args, so the metric-name filter
-		// below keeps its positional slot.
-		pred := chsql.Col(h.Schema.IsMonotonicColumn)
-		if !*monotonic {
-			pred = chsql.Not(pred)
+		if nowAnchored {
+			// Aggregate-only predicate — `any(IsMonotonic)` (monotonicity
+			// is invariant per metric name, the same assumption
+			// any(MetricDescription)/any(MetricUnit) already lean on).
+			// proj_metric_metadata carries this aggregate for the sum
+			// table (see internal/schema/ddl's isMonotonicColumn
+			// widening), so this HAVING routes to the projection the
+			// same way the max(TimeUnix) HAVING above does. A raw WHERE
+			// IsMonotonic predicate here would NOT route — ClickHouse
+			// cannot serve a raw column filter from an aggregating
+			// projection that doesn't carry the raw column — and falls
+			// back to full-scanning the fact table: confirmed on a live
+			// deployment via EXPLAIN, 262130/262130 granules with WHERE
+			// vs 128/128 with this HAVING form.
+			pred := anyCall(h.Schema.IsMonotonicColumn)
+			if !*monotonic {
+				pred = chsql.Not(pred)
+			}
+			sb.Having(pred)
+		} else {
+			// The !nowAnchored arm already commits to a WHERE-bounded
+			// scan (see above) rather than the projection, so a bare
+			// boolean-column predicate costs nothing extra here.
+			pred := chsql.Col(h.Schema.IsMonotonicColumn)
+			if !*monotonic {
+				pred = chsql.Not(pred)
+			}
+			sb.Where(pred)
 		}
-		sb.Where(pred)
 	}
 
 	if metricName == "" {
