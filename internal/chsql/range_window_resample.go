@@ -74,11 +74,14 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 	}
 
 	// Offset folds onto both grid bounds (window slides back), mirroring the
-	// rate native emit. offsetShiftedTimeFrag renders the bare DateTime64
-	// literal when Offset is zero (the common case).
+	// rate native emit. nativeGridTimeBoundFrag renders the whole-second
+	// DateTime literal timeSeriesResampleToGridWithStaleness's
+	// start_timestamp/end_timestamp parameters are documented as accepting
+	// (see its doc comment) — NOT the DateTime64(9) offsetShiftedTimeFrag
+	// produces, which this family's argument coercion cannot always digest.
 	offsetNS := r.Offset.Nanoseconds()
-	startFrag := offsetShiftedTimeFrag(r.Start, offsetNS)
-	endFrag := offsetShiftedTimeFrag(r.End, offsetNS)
+	startFrag := nativeGridTimeBoundFrag(r.Start, offsetNS)
+	endFrag := nativeGridTimeBoundFrag(r.End, offsetNS)
 	stepSeconds := int64(r.Step.Seconds())
 	stalenessSeconds := int64(r.Lookback.Seconds())
 
@@ -101,10 +104,11 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 	// while selecting from the (anchor-Offset-lookback, anchor-Offset] span.
 	// Both arrays have identical length (same step, same span width), so the
 	// i-th offset-shifted aggregate value lands on the i-th unshifted anchor.
-	// offsetShiftedTimeFrag(_, 0) renders the bare literal, so the offset-zero
-	// common case stays byte-identical to the shifted frags.
-	gridStartFrag := offsetShiftedTimeFrag(r.Start, 0)
-	gridEndFrag := offsetShiftedTimeFrag(r.End, 0)
+	// nativeGridTimeBoundFrag(_, 0) renders the same whole-second literal
+	// shape as startFrag/endFrag above (offset 0), keeping this axis and
+	// gridAgg's in lockstep.
+	gridStartFrag := nativeGridTimeBoundFrag(r.Start, 0)
+	gridEndFrag := nativeGridTimeBoundFrag(r.End, 0)
 	gridTS := Call("timeSeriesRange", gridStartFrag, gridEndFrag, InlineLit(stepSeconds))
 
 	innerSub, err := e.subqueryFrag(r.Input)

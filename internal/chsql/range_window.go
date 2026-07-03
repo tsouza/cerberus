@@ -1716,6 +1716,45 @@ func offsetShiftedTimeFrag(t time.Time, offsetNS int64) Frag {
 	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offsetNS))))
 }
 
+// nativeGridTimeBoundFrag renders `<t>` (optionally shifted left by
+// offsetNS) as a whole-second CH `DateTime` literal — `toDateTime(<unix
+// seconds>, 'UTC')`, or `now()` for the zero time — rather than the
+// nanosecond-precision `DateTime64(9)` offsetShiftedTimeFrag produces.
+//
+// This is the start_timestamp/end_timestamp argument shape for the
+// timeSeries*ToGrid native aggregate family (timeSeriesRateToGrid,
+// timeSeriesResampleToGridWithStaleness, timeSeriesChangesToGrid,
+// timeSeriesResetsToGrid) and their companion timeSeriesRange, which
+// ClickHouse's own docs type as "UInt32 or DateTime" — never DateTime64.
+// Passing a DateTime64(9) literal there instead forces ClickHouse's
+// argument-coercion machinery through an internal Decimal(18, 9)
+// (scale-9 fixed-point) representation, which has room for only 9
+// INTEGER digits. Any Unix-second count past 2001-09-09 already needs
+// 10, so on ClickHouse versions where that coercion path is exercised
+// this raises "Decimal value is too big: 10 digits were read: '<epoch
+// seconds>'e0. Expected to read decimal with scale 9 and precision 18"
+// for every real-world query — reproduced against a live deployment,
+// though not against the chDB 25.8.2.1 substrate this repo's tests run
+// on (see the regression tests alongside this family's chDB suites).
+//
+// The family's own grid_step / staleness_window / window parameters are
+// already whole-second UInt32, so second granularity is the finest
+// resolution any of these aggregates ever honor regardless of what
+// sub-second precision Start/End carry — rendering the documented
+// DateTime type here loses nothing beyond what the (previously silent,
+// pre-fix) implicit coercion was already attempting.
+func nativeGridTimeBoundFrag(t time.Time, offsetNS int64) Frag {
+	if t.IsZero() {
+		return func(b *Builder) { b.sb.WriteString("now()") }
+	}
+	unixSec := t.Add(-time.Duration(offsetNS)).Unix()
+	return func(b *Builder) {
+		b.sb.WriteString("toDateTime(")
+		b.sb.WriteString(strconv.FormatInt(unixSec, 10))
+		b.sb.WriteString(", 'UTC')")
+	}
+}
+
 // groupArrayPairFrag returns a Frag rendering
 // `arraySort(groupArray((<ts>, <val>)))`. The CH idiom that turns a
 // per-row scan of a metrics table into a per-series (ts, value) array,
