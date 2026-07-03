@@ -1716,6 +1716,67 @@ func offsetShiftedTimeFrag(t time.Time, offsetNS int64) Frag {
 	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offsetNS))))
 }
 
+// nativeGridTimeBoundFrag renders `<t>` (optionally shifted left by
+// offsetNS) as a whole-second CH `DateTime` literal — `toDateTime(<unix
+// seconds>, 'UTC')`, or `now()` for the zero time — rather than the
+// nanosecond-precision `DateTime64(9)` offsetShiftedTimeFrag produces.
+//
+// This is the start_timestamp/end_timestamp argument shape for the
+// timeSeries*ToGrid native aggregate family (timeSeriesRateToGrid,
+// timeSeriesResampleToGridWithStaleness, timeSeriesChangesToGrid,
+// timeSeriesResetsToGrid) and their companion timeSeriesRange, which
+// ClickHouse's own docs type as "UInt32 or DateTime" — never DateTime64.
+// Passing a DateTime64(9) literal there instead forces ClickHouse's
+// argument-coercion machinery through an internal Decimal(18, 9)
+// (scale-9 fixed-point) representation, which has room for only 9
+// INTEGER digits. Any Unix-second count past 2001-09-09 already needs
+// 10, so on ClickHouse versions where that coercion path is exercised
+// this raises "Decimal value is too big: 10 digits were read: '<epoch
+// seconds>'e0. Expected to read decimal with scale 9 and precision 18"
+// for every real-world query — reproduced against a live deployment,
+// though not against the chDB 25.8.2.1 substrate this repo's tests run
+// on (see the regression tests alongside this family's chDB suites).
+//
+// The family's own grid_step / staleness_window / window parameters are
+// already whole-second UInt32, so second granularity is the finest
+// resolution any of these aggregates ever honor regardless of what
+// sub-second precision Start/End carry — rendering the documented
+// DateTime type here loses nothing beyond what the (previously silent,
+// pre-fix) implicit coercion was already attempting.
+func nativeGridTimeBoundFrag(t time.Time, offsetNS int64) Frag {
+	if t.IsZero() {
+		return Call("now")
+	}
+	unixSec := t.Add(-time.Duration(offsetNS)).Unix()
+	return Call("toDateTime", InlineLit(unixSec), InlineLit("UTC"))
+}
+
+// nativeAnchorTimestampFrag casts the per-row anchor_ts column — ARRAY
+// JOINed out of the whole-second Array(DateTime) nativeGridTimeBoundFrag's
+// timeSeriesRange axis produces (see its doc comment for why that grid
+// must stay DateTime, not DateTime64) — back to the DateTime64(9) type
+// every other anchor_ts producer in the codebase emits and every
+// anchor_ts consumer expects: date-function lowerings that read it via
+// `toUnixTimestamp64Nano` (internal/promql/date_fns.go's `timestamp(v)`),
+// and every head that re-aliases anchor_ts as the schema TimestampColumn
+// ("TimeUnix") for downstream nanosecond-precision arithmetic. Emitting
+// the family's start/end bounds as whole-second DateTime fixed a CH
+// argument-coercion overflow (nativeGridTimeBoundFrag), but it also
+// changed timeSeriesRange's OWN return element type to match — silently
+// narrowing anchor_ts everywhere the native family populates it, and
+// breaking any caller still assuming DateTime64(9) with a CH "Expected:
+// DateTime64, got: DateTime" type error.
+//
+// Lossless: the family's grid_step is already whole-second UInt32, so
+// there is no sub-second component to begin with — widening back to
+// DateTime64(9) here only restores the type, not any precision, and
+// does not reintroduce the overflow, which is specific to argument
+// coercion INTO timeSeries*ToGrid's own params, not to a plain
+// `toDateTime64(...)` cast on an already-materialised value.
+func nativeAnchorTimestampFrag() Frag {
+	return Call("toDateTime64", Col(RangeWindowAnchorAlias), InlineLit(int64(nanoScale)))
+}
+
 // groupArrayPairFrag returns a Frag rendering
 // `arraySort(groupArray((<ts>, <val>)))`. The CH idiom that turns a
 // per-row scan of a metrics table into a per-series (ts, value) array,

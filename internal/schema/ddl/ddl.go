@@ -436,8 +436,11 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		// enumeration reads (gauge/sum/histogram, see metricTables() in
 		// internal/api/prom/metadata.go) carry the projections.
 		for _, table := range []string{cfg.Tables.MetricsGauge, cfg.Tables.MetricsSum, cfg.Tables.MetricsHistogram} {
+			// Only the sum table carries isMonotonicColumn (see its doc
+			// comment) — metadataProjection's body widens for it alone.
+			hasMonotonic := table == cfg.Tables.MetricsSum
 			for _, p := range metricCatalogProjections {
-				stmts = append(stmts, renderAddMetricProjection(cfg, table, p))
+				stmts = append(stmts, renderAddMetricProjection(cfg, table, p, hasMonotonic))
 			}
 		}
 		return stmts, nil
@@ -497,14 +500,24 @@ const (
 	metricAttributesColumn  = "Attributes"
 	metricDescriptionColumn = "MetricDescription"
 	metricUnitColumn        = "MetricUnit"
+	// isMonotonicColumn is the sum table's fixed OTel-CH exporter column
+	// distinguishing monotonic Sums (Prom counters) from non-monotonic Sums /
+	// UpDownCounters (Prom gauges — see internal/api/prom/metadata.go). It
+	// exists ONLY on the sum table, so metadataProjection's body widens for
+	// that one table only (see metricCatalogProjections / hasMonotonic).
+	isMonotonicColumn = "IsMonotonic"
 )
 
 // metricProjection is one curated aggregating projection the DDL apply path
 // installs on each metrics catalog table. body is built fresh per call so each
-// rendered ALTER owns its QueryBuilder (no shared mutable state across tables).
+// rendered ALTER owns its QueryBuilder (no shared mutable state across
+// tables). hasMonotonic is true only when rendering against the sum table —
+// the only catalog table carrying isMonotonicColumn — so a projection can
+// widen its aggregated columns for that one table without breaking on
+// gauge/histogram, which have no such column.
 type metricProjection struct {
 	name string
-	body func() *chsql.QueryBuilder
+	body func(hasMonotonic bool) *chsql.QueryBuilder
 }
 
 // metricCatalogProjections is the curated registry of aggregating projections
@@ -518,7 +531,7 @@ type metricProjection struct {
 var metricCatalogProjections = []metricProjection{
 	{
 		name: seriesProjection,
-		body: func() *chsql.QueryBuilder {
+		body: func(bool) *chsql.QueryBuilder {
 			return chsql.NewQuery().
 				Select(
 					chsql.Col(metricNameColumn),
@@ -530,15 +543,26 @@ var metricCatalogProjections = []metricProjection{
 	},
 	{
 		name: metadataProjection,
-		body: func() *chsql.QueryBuilder {
-			return chsql.NewQuery().
+		body: func(hasMonotonic bool) *chsql.QueryBuilder {
+			q := chsql.NewQuery().
 				Select(
 					chsql.Col(metricNameColumn),
 					chsql.Call("any", chsql.Col(metricDescriptionColumn)),
 					chsql.Call("any", chsql.Col(metricUnitColumn)),
 					chsql.Call("max", chsql.Col(metricTimeColumn)),
-				).
-				GroupBy(chsql.Col(metricNameColumn))
+				)
+			if hasMonotonic {
+				// any(IsMonotonic) — monotonicity is invariant per metric
+				// name in practice (a property of the OTel metric
+				// definition, not a per-sample value), the same assumption
+				// any(MetricDescription)/any(MetricUnit) already lean on
+				// above. Carrying it lets the sum table's counter/gauge
+				// split filter via an aggregate HAVING predicate (routes to
+				// this projection) instead of a raw WHERE IsMonotonic
+				// (which cannot — see internal/api/prom/metadata.go).
+				q.Select(chsql.Call("any", chsql.Col(isMonotonicColumn)))
+			}
+			return q.GroupBy(chsql.Col(metricNameColumn))
 		},
 	},
 }
@@ -548,8 +572,8 @@ var metricCatalogProjections = []metricProjection{
 // ALTER replicates the same way the CREATE statements do. ADD PROJECTION IF
 // NOT EXISTS is metadata-only and idempotent, so the same Apply path covers
 // both freshly-created and pre-existing tables.
-func renderAddMetricProjection(cfg Config, table string, p metricProjection) string {
-	stmt := chsql.AlterTableAddProjection(cfg.Database, table, p.name, p.body())
+func renderAddMetricProjection(cfg Config, table string, p metricProjection, hasMonotonic bool) string {
+	stmt := chsql.AlterTableAddProjection(cfg.Database, table, p.name, p.body(hasMonotonic))
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)
 	}
