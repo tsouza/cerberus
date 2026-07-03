@@ -408,14 +408,14 @@ func TestMetadata_NonMonotonicSumIsGauge(t *testing.T) {
 			return nil
 		}
 		switch {
-		case strings.Contains(call.sql, "NOT `IsMonotonic`"):
+		case strings.Contains(call.sql, "NOT any(`IsMonotonic`)"):
 			return []chclient.MetricMetaRow{{
 				Name:        "cerberus_query_inflight",
 				Description: "Currently-executing engine queries.",
 				Unit:        "{query}",
 				Type:        call.kind,
 			}}
-		case strings.Contains(call.sql, "`IsMonotonic`"):
+		case strings.Contains(call.sql, "any(`IsMonotonic`)"):
 			return []chclient.MetricMetaRow{{
 				Name:        "cerberus_queries_total",
 				Description: "Total engine queries.",
@@ -462,7 +462,7 @@ func TestMetadata_NonMonotonicSumIsGauge(t *testing.T) {
 			len(sumCalls), sumCalls)
 	}
 	for _, call := range sumCalls {
-		nonMonotonic := strings.Contains(call.sql, "NOT `IsMonotonic`")
+		nonMonotonic := strings.Contains(call.sql, "NOT any(`IsMonotonic`)")
 		switch {
 		case nonMonotonic && call.kind != "gauge":
 			t.Errorf("NOT IsMonotonic arm reported type %q, want gauge; sql=%q",
