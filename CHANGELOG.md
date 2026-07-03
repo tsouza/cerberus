@@ -4,6 +4,14 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.9.1] — 2026-07-03
+
+### Fixed
+
+- **schema:** widen proj_metric_metadata with IsMonotonic to keep routing (#1186)
+- **chsql:** pass timeSeries*ToGrid family whole-second DateTime, not DateTime64 (#1185)
+- **chart:** chMaxMemory reaches split heads + int64 all numeric emitters + guard split ingress (#1182)
+
 ## [chart 0.10.1] — 2026-07-02
 
 ### Fixed
