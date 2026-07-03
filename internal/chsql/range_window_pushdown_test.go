@@ -2,6 +2,7 @@ package chsql_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -921,9 +922,13 @@ func TestRangeWindowNativeInnerScanTimeBound(t *testing.T) {
 	// resolves. The `r.TimestampColumn != RangeWindowAnchorAlias` guard
 	// gates that extra projection; a CONDITIONALS_NEGATION mutant (`!=` ->
 	// `==`) drops the re-alias for a differently-named column, so pinning
-	// the `anchor_ts` -> `TimeUnix` projection kills it.
-	if !strings.Contains(sql, "`anchor_ts` AS `TimeUnix`") {
-		t.Errorf("expected RangeWindowNative anchor re-alias `anchor_ts` AS `TimeUnix` in SQL=%s", sql)
+	// the `anchor_ts` -> `TimeUnix` projection kills it. Both projections
+	// go through nativeAnchorTimestampFrag's `toDateTime64(anchor_ts, 9)`
+	// cast — the family's timeSeriesRange axis is whole-second DateTime
+	// (nativeGridTimeBoundFrag), so this restores the DateTime64(9) every
+	// other anchor_ts producer/consumer in the codebase expects, losslessly.
+	if !strings.Contains(sql, "toDateTime64(`anchor_ts`, 9) AS `TimeUnix`") {
+		t.Errorf("expected RangeWindowNative anchor re-alias toDateTime64(`anchor_ts`, 9) AS `TimeUnix` in SQL=%s", sql)
 	}
 }
 
@@ -1009,6 +1014,105 @@ func TestRangeWindowResampleInnerScanTimeBound(t *testing.T) {
 	if !strings.Contains(sql, wantUpper) {
 		t.Errorf("expected RangeWindowResample offset-only upper bound %q in SQL=%s", wantUpper, sql)
 	}
+}
+
+// TestNativeTSGridFamilyBoundsAreWholeSecondDateTime pins the
+// start_timestamp/end_timestamp argument TYPE the timeSeries*ToGrid native
+// aggregate family (RangeWindowNative's timeSeriesRateToGrid /
+// timeSeriesChangesToGrid / timeSeriesResetsToGrid, and RangeWindowResample's
+// timeSeriesResampleToGridWithStaleness) and their companion timeSeriesRange
+// receive: a whole-second `toDateTime(<unix seconds>, 'UTC')`, never a
+// nanosecond-precision `toDateTime64(..., 9)`.
+//
+// ClickHouse's own docs type these functions' start_timestamp/end_timestamp
+// parameters as "UInt32 or DateTime" — never DateTime64. Emitting
+// DateTime64(9) there (as this emitter did before this test was added)
+// forces ClickHouse's argument-coercion machinery through an internal
+// Decimal(18, 9) representation with room for only 9 INTEGER digits; any
+// Unix-second count past 2001-09-09 already needs 10. On ClickHouse server
+// versions where that coercion path is exercised (reproduced against a live
+// deployment; NOT reproducible on this repo's pinned chDB 25.8.2.1
+// substrate — see TestNativeTSGridRate_DualEmitParity /
+// TestNativeTSGridResample_DualEmitParity, which exercise the identical
+// literal shape and pass there regardless) this 502s every real-world
+// query with "DB::Exception: Decimal value is too big: 10 digits were
+// read: '<epoch seconds>'e0. Expected to read decimal with scale 9 and
+// precision 18: while parsing aggregate function '<fn>'".
+//
+// The fixed Start/End below are deliberately in the "needs 10 digits"
+// range (>= 1_000_000_000, i.e. after 2001-09-09) with a sub-second
+// component (mirroring a real Grafana millisecond-epoch request) — picking
+// an easy small/round timestamp here would silently stop catching a
+// regression back to toDateTime64.
+func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
+	t.Parallel()
+
+	start := time.UnixMilli(1782889603653).UTC()
+	end := time.UnixMilli(1783062403653).UTC()
+	offset := 2 * time.Minute
+
+	if start.Unix() < 1_000_000_000 || end.Unix() < 1_000_000_000 {
+		t.Fatalf("fixture bug: start/end must need 10 Unix-second digits to exercise the Decimal(18,9) overflow this test guards against (start=%d end=%d)", start.Unix(), end.Unix())
+	}
+
+	wantStartShifted := fmt.Sprintf("toDateTime(%d, 'UTC')", start.Add(-offset).Unix())
+	wantEndShifted := fmt.Sprintf("toDateTime(%d, 'UTC')", end.Add(-offset).Unix())
+	wantStartUnshifted := fmt.Sprintf("toDateTime(%d, 'UTC')", start.Unix())
+	wantEndUnshifted := fmt.Sprintf("toDateTime(%d, 'UTC')", end.Unix())
+	wantGridTS := "timeSeriesRange(" + wantStartUnshifted + ", " + wantEndUnshifted + ", 120)"
+
+	t.Run("RangeWindowNative_rate", func(t *testing.T) {
+		t.Parallel()
+		plan := &chplan.RangeWindowNative{
+			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Func:            "rate",
+			Start:           start,
+			End:             end,
+			Step:            120 * time.Second,
+			Range:           5 * time.Minute,
+			Offset:          offset,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+		}
+		sql, _, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		wantAgg := "timeSeriesRateToGrid(" + wantStartShifted + ", " + wantEndShifted + ", 120, 300)"
+		if !strings.Contains(sql, wantAgg) {
+			t.Errorf("expected offset-shifted whole-second aggregate bounds %q in SQL=%s", wantAgg, sql)
+		}
+		if !strings.Contains(sql, wantGridTS) {
+			t.Errorf("expected unshifted whole-second timeSeriesRange bounds %q in SQL=%s", wantGridTS, sql)
+		}
+	})
+
+	t.Run("RangeWindowResample", func(t *testing.T) {
+		t.Parallel()
+		plan := &chplan.RangeWindowResample{
+			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Start:         start,
+			End:           end,
+			Step:          120 * time.Second,
+			Lookback:      5 * time.Minute,
+			Offset:        offset,
+			MetricNameCol: "MetricName",
+			AttributesCol: "Attributes",
+			TimestampCol:  "TimeUnix",
+			ValueCol:      "Value",
+		}
+		sql, _, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		wantAgg := "timeSeriesResampleToGridWithStaleness(" + wantStartShifted + ", " + wantEndShifted + ", 120, 300)"
+		if !strings.Contains(sql, wantAgg) {
+			t.Errorf("expected offset-shifted whole-second aggregate bounds %q in SQL=%s", wantAgg, sql)
+		}
+		if !strings.Contains(sql, wantGridTS) {
+			t.Errorf("expected unshifted whole-second timeSeriesRange bounds %q in SQL=%s", wantGridTS, sql)
+		}
+	})
 }
 
 // TestRangeWindowResampleRejectsBadInput pins the resample emitter's

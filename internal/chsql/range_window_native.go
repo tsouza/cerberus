@@ -134,11 +134,14 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 
 	// The grid bounds fold the Offset modifier the same way the fan-out
 	// does: both Start and End shift left by Offset so the window becomes
-	// [End - Offset - Range, End - Offset]. offsetShiftedTimeFrag renders
-	// the bare DateTime64 literal when Offset is zero (the common case).
+	// [End - Offset - Range, End - Offset]. nativeGridTimeBoundFrag renders
+	// the whole-second DateTime literal this timeSeries*ToGrid aggregate's
+	// start_timestamp/end_timestamp parameters are documented as accepting
+	// (see its doc comment) — NOT the DateTime64(9) offsetShiftedTimeFrag
+	// produces, which this family's argument coercion cannot always digest.
 	offsetNS := r.Offset.Nanoseconds()
-	startFrag := offsetShiftedTimeFrag(r.Start, offsetNS)
-	endFrag := offsetShiftedTimeFrag(r.End, offsetNS)
+	startFrag := nativeGridTimeBoundFrag(r.Start, offsetNS)
+	endFrag := nativeGridTimeBoundFrag(r.End, offsetNS)
 	stepSeconds := int64(r.Step.Seconds())
 	windowSeconds := int64(r.Range.Seconds())
 
@@ -159,11 +162,11 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	// Offset must NOT move the reported timestamps — it shifts only the
 	// aggregate's membership window (gridAgg's start/end), mirroring the
 	// fan-out, which reports the query-grid anchor while selecting from the
-	// (anchor-Offset-Range, anchor-Offset] span. offsetShiftedTimeFrag(_, 0)
-	// renders the bare literal, so the offset-zero common case stays
-	// byte-identical to the shifted frags.
-	gridStartFrag := offsetShiftedTimeFrag(r.Start, 0)
-	gridEndFrag := offsetShiftedTimeFrag(r.End, 0)
+	// (anchor-Offset-Range, anchor-Offset] span. nativeGridTimeBoundFrag(_, 0)
+	// renders the same whole-second literal shape as startFrag/endFrag above
+	// (offset 0), keeping this axis and gridAgg's in lockstep.
+	gridStartFrag := nativeGridTimeBoundFrag(r.Start, 0)
+	gridEndFrag := nativeGridTimeBoundFrag(r.End, 0)
 	gridTS := Call("timeSeriesRange", gridStartFrag, gridEndFrag, InlineLit(stepSeconds))
 
 	innerSub, err := e.subqueryFrag(r.Input)
@@ -195,9 +198,9 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	for _, g := range groupFrags {
 		outer.Select(g)
 	}
-	outer.Select(Col(RangeWindowAnchorAlias))
+	outer.Select(As(nativeAnchorTimestampFrag(), RangeWindowAnchorAlias))
 	if r.TimestampColumn != RangeWindowAnchorAlias {
-		outer.Select(As(Col(RangeWindowAnchorAlias), r.TimestampColumn))
+		outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampColumn))
 	}
 	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueColumn))
 	outer.ArrayJoin(
