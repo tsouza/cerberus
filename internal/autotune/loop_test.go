@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/tsouza/cerberus/internal/routerrules"
 	"github.com/tsouza/cerberus/internal/solver"
-	"go.uber.org/goleak"
 )
 
 // fakeCorpus answers the autotuner's OOM-floor aggregates from a fixed scenario.
