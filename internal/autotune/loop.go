@@ -26,21 +26,31 @@ import (
 // auto-mode thresholds.
 type Loop struct {
 	planner  *solver.Planner
-	tuner    *routerrules.Autotuner
+	newTuner func() *routerrules.Autotuner
 	interval time.Duration
 	logger   *slog.Logger
 }
 
-// New builds a Loop. interval must be > 0 (solver.Config.Validate enforces this
-// whenever Autotune is set, so cmd/ has already failed fast on a bad value).
-func New(planner *solver.Planner, tuner *routerrules.Autotuner, interval time.Duration, logger *slog.Logger) *Loop {
-	return &Loop{planner: planner, tuner: tuner, interval: interval, logger: logger}
+// New builds a Loop. newTuner returns a fresh Autotuner per tick; cmd/ supplies
+// a closure that rebuilds the corpus source with a rolling window lower bound
+// (recomputed each call), so the fit reads recent data rather than an
+// ever-expanding window pinned at process start. interval must be > 0
+// (solver.Config.Validate enforces this whenever Autotune is set).
+func New(planner *solver.Planner, newTuner func() *routerrules.Autotuner, interval time.Duration, logger *slog.Logger) *Loop {
+	return &Loop{planner: planner, newTuner: newTuner, interval: interval, logger: logger}
 }
 
 // Run drives the loop until ctx is cancelled, then returns — leaving no
-// goroutine behind (goleak-clean). A transient corpus-read failure is logged and
-// skipped so one bad tick never stops self-tuning.
+// goroutine behind (goleak-clean). It fits once immediately so learned
+// protection is reapplied promptly after a (re)start, then on each tick. A
+// transient corpus-read failure is logged and skipped so one bad tick never
+// stops self-tuning.
 func (l *Loop) Run(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	l.tick(ctx)
+
 	t := time.NewTicker(l.interval)
 	defer t.Stop()
 	for {
@@ -57,10 +67,15 @@ func (l *Loop) Run(ctx context.Context) {
 // thresholds. The fit is relative to the live gate, so successive ticks ratchet
 // the thresholds down toward the observed OOM line and never churn once settled.
 func (l *Loop) tick(ctx context.Context) {
+	// A tick buffered on the ticker channel can still be selected after ctx was
+	// cancelled at shutdown; bail before issuing a corpus query on a dead ctx.
+	if ctx.Err() != nil {
+		return
+	}
 	minFanout, minAnchorPairs := l.planner.CurrentThresholds()
 	cur := routerrules.Thresholds{MinFanout: minFanout, MinAnchorPairs: minAnchorPairs}
 
-	res, err := l.tuner.Fit(ctx, cur)
+	res, err := l.newTuner().Fit(ctx, cur)
 	if err != nil {
 		l.logger.WarnContext(ctx, "autotune fit failed", "err", err)
 		return

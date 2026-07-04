@@ -141,7 +141,7 @@ func mountAPIHeads(
 		// in auto mode, periodically refit MinFanout / MinAnchorPairs from the
 		// router corpus and hot-swap certified changes into the live Planner. It
 		// runs on the server lifecycle ctx, so it exits on shutdown.
-		startAutotune(ctx, evalSolver, promClient, logger)
+		startAutotune(ctx, evalSolver, promClient, cfg, logger)
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
@@ -970,14 +970,34 @@ const autotuneCorpusWindow = 7 * 24 * time.Hour
 // to tune, so it no-ops there, and a fixed-threshold deployment
 // (CERBERUS_SOLVER_AUTOTUNE=false) pays nothing. The loop goroutine runs on the
 // server lifecycle ctx and exits when ctx is cancelled at shutdown.
-func startAutotune(ctx context.Context, s *solver.Solver, client *chclient.Client, logger *slog.Logger) {
+func startAutotune(ctx context.Context, s *solver.Solver, client *chclient.Client, cfg config.Config, logger *slog.Logger) {
 	if !s.Cfg.Autotune || s.Cfg.Mode != solver.ModeAuto {
 		return
 	}
-	sinceUnix := float64(time.Now().Add(-autotuneCorpusWindow).Unix())
-	src := routerrules.NewCHCorpusSource(client.Conn(), sinceUnix)
-	tuner := routerrules.NewAutotuner(src, routerrules.DefaultAutotuneOptions())
-	loop := autotune.New(s.Planner, tuner, s.Cfg.AutotuneInterval, logger.With("component", "autotune"))
+	// The fit reads the cerberus_router_corpus MergeTree, which is written ONLY
+	// when the query-log corpus reconciler runs with the chtable sink. Without it
+	// the table does not exist, so autotune stays dormant rather than erroring
+	// every tick against a missing table — it activates once the operator turns
+	// the corpus on (autotune defaults on, so no extra flag is needed that day).
+	if !cfg.CHOptCorpus.Enabled || cfg.CHOptCorpus.SinkMode != corpusSinkModeCHTable {
+		logger.Info(
+			"solver autotune enabled but the router corpus CH table is not being written; "+
+				"loop dormant until the corpus reconciler runs with the chtable sink",
+			"corpus_enabled", cfg.CHOptCorpus.Enabled,
+			"corpus_sink_mode", cfg.CHOptCorpus.SinkMode,
+		)
+		return
+	}
+
+	// Rebuild the source per tick with a freshly-computed window lower bound, so
+	// the fit reads a ROLLING window (recent data) rather than a window frozen at
+	// process start that would only ever expand.
+	conn := client.Conn()
+	newTuner := func() *routerrules.Autotuner {
+		sinceUnix := float64(time.Now().Add(-autotuneCorpusWindow).Unix())
+		return routerrules.NewAutotuner(routerrules.NewCHOOMFloorSource(conn, sinceUnix))
+	}
+	loop := autotune.New(s.Planner, newTuner, s.Cfg.AutotuneInterval, logger.With("component", "autotune"))
 	go loop.Run(ctx)
 	logger.Info(
 		"solver autotune loop started",
