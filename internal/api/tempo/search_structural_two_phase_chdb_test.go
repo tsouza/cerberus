@@ -187,39 +187,47 @@ func TestSearch_WrappedSelectTwoPhase_Parity_ChDB(t *testing.T) {
 
 // TestSearch_NegatedTwoPhase_Parity_ChDB proves the two-phase seam engages for a
 // negated recursive structural search (`!>>`) and stays byte-identical +
-// memory-bounded. `{root-svc} !>> {leaf-svc}` = root spans with no leaf-svc
-// ANCESTOR — every root survives (roots have no ancestors), so all N traces rank.
-// The load-bearing check is len(small)==smallLimit: without the emitter's R-side
-// restriction (structural_join.go), phase B's `R LEFT ANTI JOIN closure(L)` would
-// surface root rows from NON-top-N traces (their ancestors absent from the
-// top-N-restricted closure), returning more than smallLimit traces — a wrong
-// result this pins.
+// memory-bounded. In cerberus `A !>> B` projects the RIGHT operand — B spans with
+// no A ancestor (see test/spec/traceql/structural_not_descendant.txtar). So
+// `{leaf-svc} !>> {root-svc}` returns the ROOT spans (one per trace): roots have
+// no ancestors, so every one survives the anti-join and all N traces rank.
+//
+// The load-bearing leak-catch is the PRE-truncation drain, small.InspectedTraces
+// == wantSmallDrain, NOT len(small.Traces): TruncateSummaries caps the returned
+// summaries to the request limit after a start-DESC sort, so a leak of older
+// non-top-N traces is silently truncated away and len stays == smallLimit either
+// way. The drain counts rows the wide phase-B actually pulled. Without the
+// emitter's R-side restriction (structural_join.go), phase B's
+// `R LEFT ANTI JOIN closure(L)` surfaces root rows from ALL traces (roots never
+// match the top-N-restricted closure), inflating the drain from smallLimit to N —
+// exactly what this pins.
 func TestSearch_NegatedTwoPhase_Parity_ChDB(t *testing.T) {
 	srv := newManyTracesChDBServer(t, structuralTwoPhaseSeed())
 
-	q := url.QueryEscape(`{ resource.service.name = "root-svc" } !>> { resource.service.name = "leaf-svc" }`)
+	q := url.QueryEscape(`{ resource.service.name = "leaf-svc" } !>> { resource.service.name = "root-svc" }`)
 	fullLimit := structTwoPhaseTraceCount + 5
 	full := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, fullLimit, seedWindow))
 	small := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, structTwoPhaseSmallLimit, seedWindow))
 
 	if len(full.Traces) != structTwoPhaseTraceCount {
-		t.Fatalf("full !>> returned %d traces, want all %d", len(full.Traces), structTwoPhaseTraceCount)
+		t.Fatalf("full !>> returned %d traces, want all %d (every root survives, no leaf ancestor)", len(full.Traces), structTwoPhaseTraceCount)
 	}
-	// The leak keystone: exactly smallLimit traces, no non-top-N traces leaked
-	// through the unrestricted anti-join.
-	if len(small.Traces) != structTwoPhaseSmallLimit {
-		t.Fatalf("small !>> returned %d traces, want %d — R-side NOT restricted, non-top-N traces leaked through the anti-join",
-			len(small.Traces), structTwoPhaseSmallLimit)
+	// Leak keystone: the wide phase-B must drain only the top-N roots (one root
+	// row per trace). An unrestricted R side would drain a root from every trace.
+	wantSmallDrain := structTwoPhaseSmallLimit // 1 root row per kept trace
+	if small.Metrics.InspectedTraces != wantSmallDrain {
+		t.Fatalf("negated small drain = %d, want %d — R-side NOT restricted, phase B pulled roots from non-top-N traces through the anti-join",
+			small.Metrics.InspectedTraces, wantSmallDrain)
+	}
+	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+		t.Errorf("negated small drain (%d) not bounded below full (%d) — two-phase didn't engage",
+			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
 	}
 	for i := 0; i < structTwoPhaseSmallLimit; i++ {
 		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
 			t.Errorf("negated two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
 				i, small.Traces[i], full.Traces[i])
 		}
-	}
-	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
-		t.Errorf("negated small drain (%d) not bounded below full (%d) — two-phase didn't engage",
-			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
 	}
 }
 
