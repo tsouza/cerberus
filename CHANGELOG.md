@@ -4,6 +4,17 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.10.0] — 2026-07-04
+
+### Added
+
+- **autotune:** expose loop state via /info/autotune + per-pod metrics (#1193)
+- **solver:** self-driving autotune loop lowering thresholds toward observed OOM line (#1190)
+
+### Documentation
+
+- **autotune:** correct stale certify/off-policy language and OOM-population wording (#1191)
+
 ## [v1.9.1] — 2026-07-03
 
 ### Fixed
