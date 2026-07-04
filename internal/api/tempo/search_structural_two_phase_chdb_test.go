@@ -144,6 +144,47 @@ func TestSearch_StructuralTwoPhase_Parity_ChDB(t *testing.T) {
 	}
 }
 
+// TestSearch_WrappedSelectTwoPhase_Parity_ChDB proves the two-phase seam engages
+// for a row-preserving `| select(...)` Project wrapped over the positive closure,
+// and stays byte-identical + memory-bounded. If the gate did NOT unwrap the
+// Project, this query would fall to the single-query path and the small-limit
+// drain would NOT be bounded below the full drain (no top-N restriction) — so the
+// memory-bound assertion below is what proves the wrapped shape actually routed
+// two-phase.
+func TestSearch_WrappedSelectTwoPhase_Parity_ChDB(t *testing.T) {
+	srv := newManyTracesChDBServer(t, structuralTwoPhaseSeed())
+
+	// A pure column re-projection over the same closure. select(...) does not
+	// drop rows or mutate Timestamp, so phase A still ranks over the inner join.
+	q := url.QueryEscape(structuralQuery + ` | select(resource.service.name)`)
+	fullLimit := structTwoPhaseTraceCount + 5
+	full := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, fullLimit, seedWindow))
+	small := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, structTwoPhaseSmallLimit, seedWindow))
+
+	if len(full.Traces) != structTwoPhaseTraceCount {
+		t.Fatalf("full fetch returned %d traces, want all %d — wrapped-select closure misconfigured",
+			len(full.Traces), structTwoPhaseTraceCount)
+	}
+	if len(small.Traces) != structTwoPhaseSmallLimit {
+		t.Fatalf("small fetch returned %d traces, want %d", len(small.Traces), structTwoPhaseSmallLimit)
+	}
+	// Parity: small-limit two-phase == single-query reference prefix, field-for-field.
+	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
+			t.Errorf("wrapped-select two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
+				i, small.Traces[i], full.Traces[i])
+		}
+	}
+	// Memory bound: proves two-phase actually engaged for the wrapped shape.
+	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+		t.Errorf("wrapped-select small drain (%d) not bounded below full drain (%d) — the Project was not unwrapped, so it fell to single-query",
+			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+	}
+	if want := structTwoPhaseSmallLimit * structTwoPhaseLeavesPerTrace; small.Metrics.InspectedTraces != want {
+		t.Errorf("wrapped-select small drain = %d, want %d", small.Metrics.InspectedTraces, want)
+	}
+}
+
 // TestSearch_StructuralTwoPhase_EmptyResult_ChDB proves the phase-A "no trace
 // matched" branch: when the descendant side matches nothing, phase A returns
 // zero ids and the handler returns an empty result (rather than emitting a

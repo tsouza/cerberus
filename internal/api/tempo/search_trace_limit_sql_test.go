@@ -10,11 +10,40 @@ package tempo_test
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 )
+
+// TestSearch_WrappedSelectTwoPhase_SQLShape pins (in the non-chdb lane) that a
+// `>> | select(...)` query routes two-phase: the phase-A ranking query the
+// engine emits carries the min(Timestamp) top-N over GROUP BY TraceId. A
+// single-query fallback (had the Project not been unwrapped) would emit the wide
+// closure with no such ranking, so these assertions prove the wrapped shape
+// engaged the seam.
+func TestSearch_WrappedSelectTwoPhase_SQLShape(t *testing.T) {
+	t.Parallel()
+	q := url.QueryEscape(`{ resource.service.name = "root-svc" } >> { resource.service.name = "leaf-svc" } | select(resource.service.name)`)
+	sql := searchSQL(t, "/api/search?q="+q+"&limit=3")
+
+	// The structural phase-A ranks per trace by min(Timestamp) aliased to rankTs
+	// (buildStructuralPhaseAPlan), then ORDER BY that alias — so assert the
+	// aggregate + group-by that only the two-phase ranking emits, not the inline
+	// ORDER BY form the plain-search pushdown uses.
+	for _, want := range []string{
+		"GROUP BY `TraceId`",
+		"min(`Timestamp`)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("wrapped-select phase-A SQL missing %q (two-phase did not engage?):\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "max(`Timestamp`)") {
+		t.Errorf("phase-A must rank by min(Timestamp), not max:\n%s", sql)
+	}
+}
 
 // searchSQL drives one /api/search request through the full handler
 // pipeline and returns the SQL the engine emitted (captured by the stub
