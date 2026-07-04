@@ -22,11 +22,14 @@ import (
 // drain, so the Go-heap high-water is bounded to the ceiling plus one CH block
 // — the full wide set never materialises first.
 //
-// 256 MiB matches maxLogPeekBytes (the Loki line-peek sibling). It is a byte
-// count of attribute-map key+value lengths, so a legitimate result would need a
-// genuinely enormous matched-span × map-width product to approach it; the
-// compatibility/tempo corpus pass confirms no valid Matched set does before this
-// ceiling ships.
+// 256 MiB matches maxLogPeekBytes (the Loki line-peek sibling). The ceiling sits
+// at the OOM-adjacent point, not a query-restrictive one — TestDrainByteBudget_
+// CeilingHeadroom measures the real charge: a 1000-trace / 20-service search
+// charges ~16 KB (17,000× margin, because resource attrs intern and share), and
+// a realistic 10k-distinct-attr-span trace-by-id charges ~12 MiB (21× margin).
+// To reach 256 MiB a trace needs ~200k+ spans or genuinely fat attrs — i.e. it
+// already holds 256+ MiB of attribute maps on the heap, the OOM itself. So a
+// crossing 422s only an OOM-scale query, never a servable one.
 const maxTempoSpanDrainBytes = 256 << 20
 
 // ErrDrainBytesExceeded is the sentinel matched (via errors.Is) when a Tempo
@@ -61,6 +64,11 @@ type DrainByteBudget struct {
 	// limit is the original ceiling, carried so a *DrainByteBudgetError can
 	// report the configured cap rather than the residual.
 	limit int64
+	// peak is the high-water of cumulative charged bytes over the request's
+	// lifetime — the actual Go-heap the wide projection reached. Readable after
+	// a drain (Peak) so an observe-only rollout / e2e can report the real charge
+	// distribution and confirm the ceiling is never legitimately approached.
+	peak atomic.Int64
 }
 
 // NewDrainByteBudget returns a budget admitting up to max wide-projection bytes
@@ -89,7 +97,27 @@ func (b *DrainByteBudget) consume(n int64) bool {
 	if b == nil || b.limit <= 0 {
 		return true
 	}
-	return b.remaining.Add(-n) >= 0
+	rem := b.remaining.Add(-n)
+	// Record the high-water (best-effort monotonic CAS) even on the crossing
+	// draw, so Peak reflects how far over the ceiling the request reached.
+	charged := b.limit - rem
+	for {
+		p := b.peak.Load()
+		if charged <= p || b.peak.CompareAndSwap(p, charged) {
+			break
+		}
+	}
+	return rem >= 0
+}
+
+// Peak returns the high-water of cumulative charged bytes over the request — the
+// actual Go-heap the wide projection reached, for observability. 0 on a nil or
+// inert budget.
+func (b *DrainByteBudget) Peak() int64 {
+	if b == nil {
+		return 0
+	}
+	return b.peak.Load()
 }
 
 // Limit returns the configured ceiling (0 on a nil budget), carried so the
