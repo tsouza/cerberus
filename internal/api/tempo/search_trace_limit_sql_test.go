@@ -28,12 +28,16 @@ func TestSearch_WrappedSelectTwoPhase_SQLShape(t *testing.T) {
 	q := url.QueryEscape(`{ resource.service.name = "root-svc" } >> { resource.service.name = "leaf-svc" } | select(resource.service.name)`)
 	sql := searchSQL(t, "/api/search?q="+q+"&limit=3")
 
+	// The structural phase-A ranks per trace by min(Timestamp) aliased to rankTs
+	// (buildStructuralPhaseAPlan), then ORDER BY that alias — so assert the
+	// aggregate + group-by that only the two-phase ranking emits, not the inline
+	// ORDER BY form the plain-search pushdown uses.
 	for _, want := range []string{
 		"GROUP BY `TraceId`",
-		"ORDER BY min(`Timestamp`) DESC, `TraceId`",
+		"min(`Timestamp`)",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Errorf("wrapped-select phase-A SQL missing %q:\n%s", want, sql)
+			t.Errorf("wrapped-select phase-A SQL missing %q (two-phase did not engage?):\n%s", want, sql)
 		}
 	}
 	if strings.Contains(sql, "max(`Timestamp`)") {
