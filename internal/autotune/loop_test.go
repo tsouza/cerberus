@@ -35,7 +35,7 @@ func newLoop(p *solver.Planner, floor routerrules.OOMFloor) *Loop {
 	newTuner := func() *routerrules.Autotuner {
 		return routerrules.NewAutotuner(fakeFloorSource{f: floor})
 	}
-	return New(p, newTuner, time.Hour, quietLogger())
+	return New(p, newTuner, time.Hour, quietLogger(), NewReporter(Status{}))
 }
 
 // TestLoop_Tick_Applies drives one tick with an OOM floor below the default
@@ -51,6 +51,39 @@ func TestLoop_Tick_Applies(t *testing.T) {
 
 	if gotF, gotP := p.CurrentThresholds(); gotF != 9 || gotP != 2169 {
 		t.Errorf("after tick: fanout=%d pairs=%d, want 9 / 2169", gotF, gotP)
+	}
+}
+
+// TestLoop_Tick_ReportsStatus asserts each tick publishes its outcome to the
+// Reporter for /info/autotune: live thresholds, tick count, and the last fit.
+func TestLoop_Tick_ReportsStatus(t *testing.T) {
+	p := newPlanner()
+	rep := NewReporter(Status{Enabled: true, Active: true, Reason: ReasonStatusActive})
+	newTuner := func() *routerrules.Autotuner {
+		return routerrules.NewAutotuner(fakeFloorSource{f: routerrules.OOMFloor{HasSignal: true, MinFanout: 9, MinAnchors: 241}})
+	}
+	l := New(p, newTuner, time.Hour, quietLogger(), rep)
+
+	l.tick(context.Background())
+
+	st := rep.Snapshot()
+	if st.Reason != ReasonStatusActive {
+		t.Errorf("static Reason clobbered: %q", st.Reason)
+	}
+	if st.Ticks != 1 {
+		t.Errorf("Ticks = %d, want 1", st.Ticks)
+	}
+	if st.Live.MinFanout != 9 || st.Live.MinAnchorPairs != 2169 {
+		t.Errorf("Live = %+v, want {9 2169}", st.Live)
+	}
+	if st.LastFit == nil {
+		t.Fatal("LastFit is nil after a tick")
+	}
+	if !st.LastFit.Changed || !st.LastFit.HasOOMSignal || st.LastFit.OOMMinFanout != 9 {
+		t.Errorf("LastFit = %+v, want changed+signal at OOM fanout 9", st.LastFit)
+	}
+	if st.LastFit.At.IsZero() {
+		t.Error("LastFit.At not stamped")
 	}
 }
 
@@ -75,7 +108,7 @@ func TestLoop_Run_StopsOnCancel(t *testing.T) {
 	newTuner := func() *routerrules.Autotuner {
 		return routerrules.NewAutotuner(fakeFloorSource{f: routerrules.OOMFloor{HasSignal: false}})
 	}
-	l := New(p, newTuner, time.Millisecond, quietLogger())
+	l := New(p, newTuner, time.Millisecond, quietLogger(), NewReporter(Status{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

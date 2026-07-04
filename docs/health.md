@@ -163,6 +163,57 @@ Live fields, re-read on every request:
 - `ready` — the same condition `/readyz` uses (CH reachable AND schema
   present AND schema ready).
 
+## `/info/autotune` — self-driving solver state
+
+```text
+GET /info/autotune
+200 OK
+Content-Type: application/json
+
+{
+  "enabled": true,
+  "active": true,
+  "reason": "active",
+  "intervalSeconds": 900,
+  "corpusWindowSeconds": 604800,
+  "configured": { "minFanout": 16, "minAnchorPairs": 4000 },
+  "live":       { "minFanout": 8,  "minAnchorPairs": 1928 },
+  "ticks": 3,
+  "lastFit": {
+    "at": "2026-07-04T05:31:00Z",
+    "reason": "autotune-applied",
+    "changed": true,
+    "hasOomSignal": true,
+    "oomMinFanout": 8,
+    "oomMinAnchors": 241,
+    "candidate": { "minFanout": 8, "minAnchorPairs": 1928 },
+    "error": ""
+  }
+}
+```
+
+The live decision state of the [self-driving autotune loop](solver.md#stage-1--self-driving-thresholds-the-autotune-loop).
+Like `/info`, it is unauthenticated, read-only, and bypasses otelhttp; it is
+served from an in-memory snapshot the loop refreshes each tick (no ClickHouse
+read on the request path).
+
+- `enabled` — the `CERBERUS_SOLVER_AUTOTUNE` toggle.
+- `active` — whether the loop is actually running: enabled **and** auto mode
+  **and** the router-corpus CH table is being written.
+- `reason` — explains `active`: `"active"` | `"disabled"` |
+  `"not-auto-mode"` | `"corpus-unavailable"`.
+- `configured` — the gate the deployment shipped with (`CERBERUS_SHARD_MIN_FANOUT`
+  / `CERBERUS_SHARD_MIN_ANCHOR_PAIRS`).
+- `live` — the gate the Planner is routing with right now; equal to `configured`
+  until the loop lowers it.
+- `ticks` — completed fit cycles.
+- `lastFit` — the most recent fit (absent until the first tick): the observed
+  route-A OOM floor (`oomMinFanout` / `oomMinAnchors`), the `candidate` it
+  produced, whether it `changed` the live gate, and any `error` from that tick.
+
+Returns `404` when autotune introspection is not wired (the prom head, hence the
+solver, is disabled).
+
 ## Kubernetes probe configuration
 
 The shipped `test/e2e/k3s/cerberus-values.yaml` wires the probes as follows:
