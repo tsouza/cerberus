@@ -185,6 +185,44 @@ func TestSearch_WrappedSelectTwoPhase_Parity_ChDB(t *testing.T) {
 	}
 }
 
+// TestSearch_NegatedTwoPhase_Parity_ChDB proves the two-phase seam engages for a
+// negated recursive structural search (`!>>`) and stays byte-identical +
+// memory-bounded. `{root-svc} !>> {leaf-svc}` = root spans with no leaf-svc
+// ANCESTOR — every root survives (roots have no ancestors), so all N traces rank.
+// The load-bearing check is len(small)==smallLimit: without the emitter's R-side
+// restriction (structural_join.go), phase B's `R LEFT ANTI JOIN closure(L)` would
+// surface root rows from NON-top-N traces (their ancestors absent from the
+// top-N-restricted closure), returning more than smallLimit traces — a wrong
+// result this pins.
+func TestSearch_NegatedTwoPhase_Parity_ChDB(t *testing.T) {
+	srv := newManyTracesChDBServer(t, structuralTwoPhaseSeed())
+
+	q := url.QueryEscape(`{ resource.service.name = "root-svc" } !>> { resource.service.name = "leaf-svc" }`)
+	fullLimit := structTwoPhaseTraceCount + 5
+	full := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, fullLimit, seedWindow))
+	small := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, structTwoPhaseSmallLimit, seedWindow))
+
+	if len(full.Traces) != structTwoPhaseTraceCount {
+		t.Fatalf("full !>> returned %d traces, want all %d", len(full.Traces), structTwoPhaseTraceCount)
+	}
+	// The leak keystone: exactly smallLimit traces, no non-top-N traces leaked
+	// through the unrestricted anti-join.
+	if len(small.Traces) != structTwoPhaseSmallLimit {
+		t.Fatalf("small !>> returned %d traces, want %d — R-side NOT restricted, non-top-N traces leaked through the anti-join",
+			len(small.Traces), structTwoPhaseSmallLimit)
+	}
+	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
+			t.Errorf("negated two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
+				i, small.Traces[i], full.Traces[i])
+		}
+	}
+	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+		t.Errorf("negated small drain (%d) not bounded below full (%d) — two-phase didn't engage",
+			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+	}
+}
+
 // TestSearch_StructuralTwoPhase_EmptyResult_ChDB proves the phase-A "no trace
 // matched" branch: when the descendant side matches nothing, phase A returns
 // zero ids and the handler returns an empty result (rather than emitting a

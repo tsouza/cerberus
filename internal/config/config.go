@@ -46,6 +46,11 @@ type Config struct {
 	// open by default.
 	DebugPProf bool
 
+	// TempoStructuralTwoPhase enables the Tempo structural search two-phase
+	// split (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE, default true). False falls back
+	// to the traditional single wide query.
+	TempoStructuralTwoPhase bool
+
 	// LokiTailWriteTimeout bounds a single /tail WebSocket write before a
 	// slow / dead client is torn down. Promoted from the hardcoded 10s in
 	// internal/api/loki/tail.go via CERBERUS_LOKI_TAIL_WRITE_TIMEOUT.
@@ -515,89 +520,90 @@ type OTLPConfig struct {
 // strings — the CERBERUS_* contract is load-bearing (docs + surface
 // tests pin these names).
 const (
-	envHTTPAddr            = "CERBERUS_HTTP_ADDR"
-	envCHAddr              = "CERBERUS_CH_ADDR"
-	envCHDatabase          = "CERBERUS_CH_DATABASE"
-	envCHUsername          = "CERBERUS_CH_USERNAME"
-	envCHPassword          = "CERBERUS_CH_PASSWORD"
-	envCHDialTimeout       = "CERBERUS_CH_DIAL_TIMEOUT"
-	envCHMaxOpenConns      = "CERBERUS_CH_MAX_OPEN_CONNS"
-	envCHMaxIdleConns      = "CERBERUS_CH_MAX_IDLE_CONNS"
-	envCHConnMaxLifetime   = "CERBERUS_CH_CONN_MAX_LIFETIME"
-	envCHKeepAliveEnabled  = "CERBERUS_CH_KEEPALIVE_ENABLED"
-	envCHKeepAliveIdle     = "CERBERUS_CH_KEEPALIVE_IDLE"
-	envCHKeepAliveInterval = "CERBERUS_CH_KEEPALIVE_INTERVAL"
-	envCHKeepAliveCount    = "CERBERUS_CH_KEEPALIVE_COUNT"
-	envQueryMaxSamples     = "CERBERUS_QUERY_MAX_SAMPLES"
-	envQueryTimeout        = "CERBERUS_QUERY_TIMEOUT"
-	envCHQueryMaxMemory    = "CERBERUS_CH_QUERY_MAX_MEMORY"
-	envCHBreakerEnabled    = "CERBERUS_CH_BREAKER_ENABLED"
-	envCHBreakerThreshold  = "CERBERUS_CH_BREAKER_THRESHOLD"
-	envCHBreakerWindow     = "CERBERUS_CH_BREAKER_WINDOW"
-	envCHBreakerOpenIntrvl = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
-	envCHProtocol          = "CERBERUS_CH_PROTOCOL"
-	envCHConnOpenStrategy  = "CERBERUS_CH_CONN_OPEN_STRATEGY"
-	envCHReadTimeout       = "CERBERUS_CH_READ_TIMEOUT"
-	envCHCompression       = "CERBERUS_CH_COMPRESSION"
-	envCHCompressionLevel  = "CERBERUS_CH_COMPRESSION_LEVEL"
-	envCHBlockBufferSize   = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
-	envCHMaxComprBuffer    = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
-	envCHFreeBufOnRelease  = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
-	envCHDebug             = "CERBERUS_CH_DEBUG"
-	envCHTLSEnabled        = "CERBERUS_CH_TLS_ENABLED"
-	envCHTLSCAFile         = "CERBERUS_CH_TLS_CA_FILE"
-	envCHTLSCertFile       = "CERBERUS_CH_TLS_CERT_FILE"
-	envCHTLSKeyFile        = "CERBERUS_CH_TLS_KEY_FILE"
-	envCHTLSServerName     = "CERBERUS_CH_TLS_SERVER_NAME"
-	envCHTLSSkipVerify     = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
-	envCHHTTPHeaders       = "CERBERUS_CH_HTTP_HEADERS"
-	envCHHTTPURLPath       = "CERBERUS_CH_HTTP_URL_PATH"
-	envCHHTTPMaxConns      = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
-	envCHHTTPProxyURL      = "CERBERUS_CH_HTTP_PROXY_URL"
-	envHTTPReadTimeout     = "CERBERUS_HTTP_READ_TIMEOUT"
-	envHTTPReadHdrTimeout  = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
-	envHTTPWriteTimeout    = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
-	envHTTPIdleTimeout     = "CERBERUS_HTTP_IDLE_TIMEOUT"
-	envHTTPMaxHeaderBytes  = "CERBERUS_HTTP_MAX_HEADER_BYTES"
-	envHTTPMaxBodyBytes    = "CERBERUS_HTTP_MAX_BODY_BYTES"
-	envLokiTailWriteTO     = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
-	envDebugPProf          = "CERBERUS_DEBUG_PPROF"
-	envAutoCreateSchema    = "CERBERUS_AUTO_CREATE_SCHEMA"
-	envAutoCreateDatabase  = "CERBERUS_AUTO_CREATE_DATABASE"
-	envSchemaCluster       = "CERBERUS_SCHEMA_CLUSTER"
-	envSchemaTableEngine   = "CERBERUS_SCHEMA_TABLE_ENGINE"
-	envSchemaTTL           = "CERBERUS_SCHEMA_TTL"
-	envSchemaTTLMetrics    = "CERBERUS_SCHEMA_TTL_METRICS"
-	envSchemaTTLLogs       = "CERBERUS_SCHEMA_TTL_LOGS"
-	envSchemaTTLTraces     = "CERBERUS_SCHEMA_TTL_TRACES"
-	envSchemaDBReplicated  = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
-	envSchemaDBReplPath    = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
-	envSchemaDBReplShard   = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
-	envSchemaDBReplReplica = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
-	envSchemaStoragePolicy = "CERBERUS_SCHEMA_STORAGE_POLICY"
-	envSchemaSettings      = "CERBERUS_SCHEMA_SETTINGS"
-	envRequirementsCheck   = "CERBERUS_REQUIREMENTS_CHECK"
-	envExperimentalTSGrid  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
-	envLogCommentShape     = "CERBERUS_LOG_COMMENT_SHAPE"
-	envCHOptimizations     = "CERBERUS_CH_OPTIMIZATIONS"
-	envCHOptimizationsMode = "CERBERUS_CH_OPTIMIZATIONS_MODE"
-	envCHOptCorpusEnabled  = "CERBERUS_CH_OPT_CORPUS_ENABLED"
-	envCHOptCorpusInterval = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
-	envCHOptCorpusSinkPath = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
-	envCHOptCorpusRing     = "CERBERUS_CH_OPT_CORPUS_RING"
-	envCHOptCorpusSinkMode = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
-	envLogFormat           = "CERBERUS_LOG_FORMAT"
-	envLogLevel            = "CERBERUS_LOG_LEVEL"
-	envOTLPEndpoint        = "CERBERUS_OTLP_ENDPOINT"
-	envOTLPInsecure        = "CERBERUS_OTLP_INSECURE"
-	envOTLPHeaders         = "CERBERUS_OTLP_HEADERS"
-	envOTLPTimeout         = "CERBERUS_OTLP_TIMEOUT"
-	envOTLPExportInterval  = "CERBERUS_OTLP_EXPORT_INTERVAL"
-	envAdmitDisabled       = "CERBERUS_ADMIT_DISABLED"
-	envAdmitProm           = "CERBERUS_ADMIT_PROM"
-	envAdmitLoki           = "CERBERUS_ADMIT_LOKI"
-	envAdmitTempo          = "CERBERUS_ADMIT_TEMPO"
-	envEnabledHeads        = "CERBERUS_ENABLED_HEADS"
+	envHTTPAddr                = "CERBERUS_HTTP_ADDR"
+	envCHAddr                  = "CERBERUS_CH_ADDR"
+	envCHDatabase              = "CERBERUS_CH_DATABASE"
+	envCHUsername              = "CERBERUS_CH_USERNAME"
+	envCHPassword              = "CERBERUS_CH_PASSWORD"
+	envCHDialTimeout           = "CERBERUS_CH_DIAL_TIMEOUT"
+	envCHMaxOpenConns          = "CERBERUS_CH_MAX_OPEN_CONNS"
+	envCHMaxIdleConns          = "CERBERUS_CH_MAX_IDLE_CONNS"
+	envCHConnMaxLifetime       = "CERBERUS_CH_CONN_MAX_LIFETIME"
+	envCHKeepAliveEnabled      = "CERBERUS_CH_KEEPALIVE_ENABLED"
+	envCHKeepAliveIdle         = "CERBERUS_CH_KEEPALIVE_IDLE"
+	envCHKeepAliveInterval     = "CERBERUS_CH_KEEPALIVE_INTERVAL"
+	envCHKeepAliveCount        = "CERBERUS_CH_KEEPALIVE_COUNT"
+	envQueryMaxSamples         = "CERBERUS_QUERY_MAX_SAMPLES"
+	envQueryTimeout            = "CERBERUS_QUERY_TIMEOUT"
+	envCHQueryMaxMemory        = "CERBERUS_CH_QUERY_MAX_MEMORY"
+	envCHBreakerEnabled        = "CERBERUS_CH_BREAKER_ENABLED"
+	envCHBreakerThreshold      = "CERBERUS_CH_BREAKER_THRESHOLD"
+	envCHBreakerWindow         = "CERBERUS_CH_BREAKER_WINDOW"
+	envCHBreakerOpenIntrvl     = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
+	envCHProtocol              = "CERBERUS_CH_PROTOCOL"
+	envCHConnOpenStrategy      = "CERBERUS_CH_CONN_OPEN_STRATEGY"
+	envCHReadTimeout           = "CERBERUS_CH_READ_TIMEOUT"
+	envCHCompression           = "CERBERUS_CH_COMPRESSION"
+	envCHCompressionLevel      = "CERBERUS_CH_COMPRESSION_LEVEL"
+	envCHBlockBufferSize       = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
+	envCHMaxComprBuffer        = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
+	envCHFreeBufOnRelease      = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
+	envCHDebug                 = "CERBERUS_CH_DEBUG"
+	envCHTLSEnabled            = "CERBERUS_CH_TLS_ENABLED"
+	envCHTLSCAFile             = "CERBERUS_CH_TLS_CA_FILE"
+	envCHTLSCertFile           = "CERBERUS_CH_TLS_CERT_FILE"
+	envCHTLSKeyFile            = "CERBERUS_CH_TLS_KEY_FILE"
+	envCHTLSServerName         = "CERBERUS_CH_TLS_SERVER_NAME"
+	envCHTLSSkipVerify         = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
+	envCHHTTPHeaders           = "CERBERUS_CH_HTTP_HEADERS"
+	envCHHTTPURLPath           = "CERBERUS_CH_HTTP_URL_PATH"
+	envCHHTTPMaxConns          = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
+	envCHHTTPProxyURL          = "CERBERUS_CH_HTTP_PROXY_URL"
+	envHTTPReadTimeout         = "CERBERUS_HTTP_READ_TIMEOUT"
+	envHTTPReadHdrTimeout      = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
+	envHTTPWriteTimeout        = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
+	envHTTPIdleTimeout         = "CERBERUS_HTTP_IDLE_TIMEOUT"
+	envHTTPMaxHeaderBytes      = "CERBERUS_HTTP_MAX_HEADER_BYTES"
+	envHTTPMaxBodyBytes        = "CERBERUS_HTTP_MAX_BODY_BYTES"
+	envLokiTailWriteTO         = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envDebugPProf              = "CERBERUS_DEBUG_PPROF"
+	envTempoStructuralTwoPhase = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
+	envAutoCreateSchema        = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envAutoCreateDatabase      = "CERBERUS_AUTO_CREATE_DATABASE"
+	envSchemaCluster           = "CERBERUS_SCHEMA_CLUSTER"
+	envSchemaTableEngine       = "CERBERUS_SCHEMA_TABLE_ENGINE"
+	envSchemaTTL               = "CERBERUS_SCHEMA_TTL"
+	envSchemaTTLMetrics        = "CERBERUS_SCHEMA_TTL_METRICS"
+	envSchemaTTLLogs           = "CERBERUS_SCHEMA_TTL_LOGS"
+	envSchemaTTLTraces         = "CERBERUS_SCHEMA_TTL_TRACES"
+	envSchemaDBReplicated      = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
+	envSchemaDBReplPath        = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
+	envSchemaDBReplShard       = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
+	envSchemaDBReplReplica     = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
+	envSchemaStoragePolicy     = "CERBERUS_SCHEMA_STORAGE_POLICY"
+	envSchemaSettings          = "CERBERUS_SCHEMA_SETTINGS"
+	envRequirementsCheck       = "CERBERUS_REQUIREMENTS_CHECK"
+	envExperimentalTSGrid      = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envLogCommentShape         = "CERBERUS_LOG_COMMENT_SHAPE"
+	envCHOptimizations         = "CERBERUS_CH_OPTIMIZATIONS"
+	envCHOptimizationsMode     = "CERBERUS_CH_OPTIMIZATIONS_MODE"
+	envCHOptCorpusEnabled      = "CERBERUS_CH_OPT_CORPUS_ENABLED"
+	envCHOptCorpusInterval     = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
+	envCHOptCorpusSinkPath     = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
+	envCHOptCorpusRing         = "CERBERUS_CH_OPT_CORPUS_RING"
+	envCHOptCorpusSinkMode     = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
+	envLogFormat               = "CERBERUS_LOG_FORMAT"
+	envLogLevel                = "CERBERUS_LOG_LEVEL"
+	envOTLPEndpoint            = "CERBERUS_OTLP_ENDPOINT"
+	envOTLPInsecure            = "CERBERUS_OTLP_INSECURE"
+	envOTLPHeaders             = "CERBERUS_OTLP_HEADERS"
+	envOTLPTimeout             = "CERBERUS_OTLP_TIMEOUT"
+	envOTLPExportInterval      = "CERBERUS_OTLP_EXPORT_INTERVAL"
+	envAdmitDisabled           = "CERBERUS_ADMIT_DISABLED"
+	envAdmitProm               = "CERBERUS_ADMIT_PROM"
+	envAdmitLoki               = "CERBERUS_ADMIT_LOKI"
+	envAdmitTempo              = "CERBERUS_ADMIT_TEMPO"
+	envEnabledHeads            = "CERBERUS_ENABLED_HEADS"
 )
 
 // configFileBaseName is the base name (without extension) viper looks
@@ -881,27 +887,28 @@ func FromEnv() (Config, error) {
 		extra:        surface.ch,
 	})
 	return Config{
-		HTTPAddr:             getString(v, envHTTPAddr),
-		HTTPServer:           surface.httpServer,
-		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
-		ClickHouse:           chCfg,
-		Schema:               schema.DefaultOTelMetricsFromEnv(),
-		Logs:                 schema.DefaultOTelLogsFromEnv(),
-		Traces:               schema.DefaultOTelTracesFromEnv(),
-		AutoCreateSchema:     flags.AutoCreate,
-		AutoCreateDatabase:   flags.AutoCreateDatabase,
-		SchemaProvisioning:   schemaProvisioning,
-		RequirementsCheck:    flags.RequirementsCheck,
-		DebugPProf:           flags.DebugPProf,
-		LogCommentShape:      flags.LogCommentShape,
-		CHOptimizations:      flags.CHOptimizations,
-		CHOptimizationsMode:  flags.CHOptimizationsMode,
-		LegacyTSGridFlag:     flags.TSGrid,
-		CHOptCorpus:          flags.CHOptCorpus,
-		Log:                  logCfg,
-		OTLP:                 otlp,
-		Admit:                admit,
-		EnabledHeads:         enabledHeads,
+		HTTPAddr:                getString(v, envHTTPAddr),
+		HTTPServer:              surface.httpServer,
+		LokiTailWriteTimeout:    surface.lokiTailWriteTimeout,
+		ClickHouse:              chCfg,
+		Schema:                  schema.DefaultOTelMetricsFromEnv(),
+		Logs:                    schema.DefaultOTelLogsFromEnv(),
+		Traces:                  schema.DefaultOTelTracesFromEnv(),
+		AutoCreateSchema:        flags.AutoCreate,
+		AutoCreateDatabase:      flags.AutoCreateDatabase,
+		SchemaProvisioning:      schemaProvisioning,
+		RequirementsCheck:       flags.RequirementsCheck,
+		DebugPProf:              flags.DebugPProf,
+		TempoStructuralTwoPhase: flags.TempoStructuralTwoPhase,
+		LogCommentShape:         flags.LogCommentShape,
+		CHOptimizations:         flags.CHOptimizations,
+		CHOptimizationsMode:     flags.CHOptimizationsMode,
+		LegacyTSGridFlag:        flags.TSGrid,
+		CHOptCorpus:             flags.CHOptCorpus,
+		Log:                     logCfg,
+		OTLP:                    otlp,
+		Admit:                   admit,
+		EnabledHeads:            enabledHeads,
 	}, nil
 }
 
@@ -956,6 +963,7 @@ var allEnvKeys = []string{
 	envHTTPMaxBodyBytes,
 	envLokiTailWriteTO,
 	envDebugPProf,
+	envTempoStructuralTwoPhase,
 	envAutoCreateSchema,
 	envAutoCreateDatabase,
 	envSchemaCluster,
@@ -1068,6 +1076,7 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
+	v.SetDefault(envTempoStructuralTwoPhase, true)
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
 	// Schema-provisioning bool + duration knobs need a non-empty default so
 	// the getBool / getDuration parsers don't reject an unset value. The
@@ -1838,9 +1847,10 @@ type bootFlags struct {
 	// distinguish "unset" (no effect) from an explicit value (force
 	// enable/disable ts_grid_range). Config.ExperimentalTSGridRange is then
 	// back-filled from the resolved EnabledSet, not from this flag directly.
-	TSGrid          chopt.LegacyFlag
-	DebugPProf      bool
-	LogCommentShape bool
+	TSGrid                  chopt.LegacyFlag
+	DebugPProf              bool
+	TempoStructuralTwoPhase bool
+	LogCommentShape         bool
 	// CHOptimizations / CHOptimizationsMode / CHOptCorpus carry the
 	// CERBERUS_CH_OPTIMIZATIONS* + CERBERUS_CH_OPT_CORPUS_* knobs. They live on
 	// bootFlags (rather than a separate parse in FromEnv) so all the boot-time
@@ -1889,6 +1899,10 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 	if err != nil {
 		return bootFlags{}, err
 	}
+	tempoStructuralTwoPhase, err := getBool(v, envTempoStructuralTwoPhase)
+	if err != nil {
+		return bootFlags{}, err
+	}
 	logCommentShape, err := getBool(v, envLogCommentShape)
 	if err != nil {
 		return bootFlags{}, err
@@ -1898,15 +1912,16 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 		return bootFlags{}, err
 	}
 	return bootFlags{
-		AutoCreate:          autoCreate,
-		AutoCreateDatabase:  autoCreateDatabase,
-		RequirementsCheck:   requirementsCheck,
-		TSGrid:              chopt.LegacyFlag{Set: tsGridSet, Value: tsGridValue},
-		DebugPProf:          debugPProf,
-		LogCommentShape:     logCommentShape,
-		CHOptimizations:     chOpt.Optimizations,
-		CHOptimizationsMode: chOpt.Mode,
-		CHOptCorpus:         chOpt.Corpus,
+		AutoCreate:              autoCreate,
+		AutoCreateDatabase:      autoCreateDatabase,
+		RequirementsCheck:       requirementsCheck,
+		TSGrid:                  chopt.LegacyFlag{Set: tsGridSet, Value: tsGridValue},
+		DebugPProf:              debugPProf,
+		TempoStructuralTwoPhase: tempoStructuralTwoPhase,
+		LogCommentShape:         logCommentShape,
+		CHOptimizations:         chOpt.Optimizations,
+		CHOptimizationsMode:     chOpt.Mode,
+		CHOptCorpus:             chOpt.Corpus,
 	}, nil
 }
 

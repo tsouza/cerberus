@@ -131,6 +131,12 @@ type Handler struct {
 	// Limiter caps in-flight Tempo API requests. nil disables the
 	// admission middleware. Wired from CERBERUS_ADMIT_TEMPO.
 	Limiter *admit.Limiter
+
+	// StructuralTwoPhase enables the search->hydrate two-phase split for eligible
+	// structural queries (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE, default true). When
+	// false every search takes the traditional single wide query. New() defaults
+	// it true; cmd/ overrides from config.
+	StructuralTwoPhase bool
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -146,13 +152,14 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 	// chsql.Emit, and wrapping would hide the client's optional CursorQuerier /
 	// memoryCapQuerier surfaces and disable streaming.
 	return &Handler{
-		Client:    &guardedQuerier{inner: client, spansTable: s.SpansTable},
-		Schema:    s,
-		Optimizer: opt,
-		Logger:    logger,
-		Version:   version,
-		Engine:    &engine.Engine{Optimizer: opt, Client: client},
-		lang:      &traceqlLang{schema: s},
+		Client:             &guardedQuerier{inner: client, spansTable: s.SpansTable},
+		Schema:             s,
+		Optimizer:          opt,
+		Logger:             logger,
+		Version:            version,
+		Engine:             &engine.Engine{Optimizer: opt, Client: client},
+		lang:               &traceqlLang{schema: s},
+		StructuralTwoPhase: true,
 	}
 }
 
@@ -413,8 +420,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// projecting wide but restricted to just those traces, bounding the wide
 	// projection to the response set. Every other search shape stays on the
 	// single-query path — byte-identical to today.
+	// The two-phase split is default-on but switchable off
+	// (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false) to fall back to the traditional
+	// single wide query — an escape hatch if a workload ever prefers the
+	// single-pass shape, or to bisect a regression to the two-phase path.
 	var res engine.Result
-	if sj, ok := structuralTwoPhaseTarget(plan); ok {
+	if sj, ok := structuralTwoPhaseTarget(plan); ok && h.StructuralTwoPhase {
 		res, err = h.runStructuralTwoPhase(ctx, sj, plan, meta, limit)
 	} else {
 		res, err = h.Engine.QueryPlan(ctx, h.lang, plan, meta)

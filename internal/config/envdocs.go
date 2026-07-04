@@ -264,6 +264,7 @@ var envDocs = []EnvDoc{
 	{envAdmitProm, "int | bool", "Admission control", "Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
 	{envAdmitLoki, "int | bool", "Admission control", "Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
 	{envAdmitTempo, "int | bool", "Admission control", "Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited."},
+	{envTempoStructuralTwoPhase, "bool", "Query limits and memory", "Split eligible TraceQL structural searches (`A >> B` / `A << B` / `A !>> B`, and a `| select(...)` over them) into a narrow top-N search phase then a wide hydrate restricted to those traces, bounding the wide span projection that OOMs on a dense descendant side. **On by default**; `false` falls back to the traditional single wide query."},
 
 	// --- Logging ---
 	{envLogFormat, "string", "Logging", "slog handler kind: `text` (human-readable) or `json` (aggregators)."},

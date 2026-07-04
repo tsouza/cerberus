@@ -20,17 +20,17 @@ const phaseARankTsAlias = "rankTs"
 // positive recursive structural join (`A >> B` / `A << B`) the two-phase
 // fetch applies to, returning the join node when so.
 //
-// The target is deliberately narrow: only the bare positive descendant /
-// ancestor closure, whose emitted shape is the WITH RECURSIVE closure INNER
-// JOINed to the wide R projection that OOMs on a dense descendant side — plus a
-// single row-preserving `| select(...)` Project wrapped over it (unwrapped
-// here). Direct ops (`>` / `<` / `~`) have a far cheaper single-INNER-JOIN
-// projection; negated (`!>>`) and union (`&>>`) variants have anti-join /
-// two-arm shapes whose emitter leaves the non-closure side unrestricted, so
-// they need an emitter change before the seam can admit them safely (a naive
-// gate relax would leak non-top-N traces — a WRONG result, not just no win).
-// Any other wrapped shape (a set operation, an aggregate, a NestedSetAnnotate)
-// falls to the single-query path — never a wrong result, just no memory win.
+// The target is the positive OR negated descendant / ancestor closure (both
+// route through the WITH RECURSIVE closure), plus a single row-preserving
+// `| select(...)` Project wrapped over it (unwrapped here). The negated anti-join
+// is admitted because the emitter now restricts its R side to the top-N traces
+// (structural_join.go), so phase B stays a faithful subset — without that fix a
+// naive gate relax would leak non-top-N traces (a WRONG result). Direct ops
+// (`>` / `<` / `~`) have a far cheaper single-INNER-JOIN projection and are
+// excluded; the union (`&>>`) two-arm shape leaves its left arm's inverse-closure
+// side unrestricted and still needs its own emitter fix before admission. Any
+// other wrapped shape (a set operation, an aggregate, a NestedSetAnnotate) falls
+// to the single-query path — never a wrong result, just no memory win.
 func structuralTwoPhaseTarget(plan chplan.Node) (*chplan.StructuralJoin, bool) {
 	root := plan
 	// Unwrap a single pure-select Project (`… >> … | select(attr)`). The select
@@ -44,11 +44,20 @@ func structuralTwoPhaseTarget(plan chplan.Node) (*chplan.StructuralJoin, bool) {
 	if !ok {
 		return nil, false
 	}
-	if sj.Op.IsNegated() || sj.Op.IsUnion() {
+	// Union (`&>>`) is still excluded: its left arm's inverse closure leaves that
+	// side's traces unrestricted, so it needs its own emitter fix before the seam
+	// can admit it (a naive relax would leak non-top-N traces — a wrong result).
+	// Negated (`!>>`) IS admitted: the emitter now restricts the anti-join's R
+	// side to the top-N (structural_join.go), so phase B stays a faithful subset.
+	if sj.Op.IsUnion() {
 		return nil, false
 	}
 	switch sj.Op.Positive() {
 	case chplan.StructuralDescendant, chplan.StructuralAncestor:
+		// Positive `>>`/`<<` and negated `!>>`/`!<<` (Positive() maps the negated
+		// ops back to Descendant/Ancestor). Direct `!>`/`!<`/`!~` fall through —
+		// their positive relation is not Descendant/Ancestor — so the single-level
+		// negated emit path is never reached here.
 		return sj, true
 	}
 	return nil, false
