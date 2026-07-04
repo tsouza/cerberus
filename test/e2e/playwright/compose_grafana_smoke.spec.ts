@@ -5,6 +5,11 @@ import {
   type Page,
   type APIRequestContext,
 } from '@playwright/test';
+import {
+  generateSelfTraffic,
+  awaitSelfTelemetryRangeSignal,
+  awaitSeedFixtureSignal,
+} from './helpers/index.js';
 
 /**
  * Compose-stack Grafana catch-net.
@@ -63,6 +68,32 @@ type DSQueryError = {
   status: number;
   error: string;
 };
+
+// --- Shared warmup: gate BOTH tests on a warm, seeded stack -----------------
+//
+// Both tests below assert against a freshly-booted compose stack with ZERO
+// tolerance for datasource errors. On a cold start the cerberus->CH circuit
+// breaker can still be OPEN (or CH still settling) when the sweep fires, so a
+// panel query intermittently caught `503 circuit breaker open`, and the traceql
+// probe found no self-telemetry trace within its budget — a recovered-on-retry
+// flake that CI's failOnFlakyTests turns into a red shard. The sweep runs before
+// this spec's own seed (driveCerberusQLPartition), so nothing guaranteed the
+// stack was warm first. Seeding self-traffic and WAITING until it (and the seed
+// fixture) are queryable proves cerberus is warm — breaker closed, CH reachable,
+// schema present — before any assertion. Mirrors iterate-all-dashboards.spec.ts.
+const SEED_TRAFFIC_SECONDS = 30;
+const WARMUP_SIGNAL_DEADLINE_SECONDS = 120;
+const WARMUP_BOUNDED_WAITS = 3; // 2 self-telemetry exprs + 1 seed-fixture wait
+const WARMUP_BEFOREALL_TIMEOUT_MS =
+  (SEED_TRAFFIC_SECONDS + WARMUP_BOUNDED_WAITS * WARMUP_SIGNAL_DEADLINE_SECONDS) *
+  1000;
+
+test.beforeAll(async ({ request }) => {
+  test.setTimeout(WARMUP_BEFOREALL_TIMEOUT_MS);
+  await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+  await awaitSelfTelemetryRangeSignal(request);
+  await awaitSeedFixtureSignal(request);
+});
 
 test('compose: home, drilldown app, and every provisioned dashboard load without datasource errors', async ({
   page,
