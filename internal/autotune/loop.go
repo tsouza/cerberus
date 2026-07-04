@@ -29,15 +29,20 @@ type Loop struct {
 	newTuner func() *routerrules.Autotuner
 	interval time.Duration
 	logger   *slog.Logger
+
+	// reporter receives a Status update after every tick for /info introspection.
+	// May be nil (tests that don't care); the loop then reports nothing.
+	reporter *Reporter
 }
 
 // New builds a Loop. newTuner returns a fresh Autotuner per tick; cmd/ supplies
 // a closure that rebuilds the corpus source with a rolling window lower bound
 // (recomputed each call), so the fit reads recent data rather than an
 // ever-expanding window pinned at process start. interval must be > 0
-// (solver.Config.Validate enforces this whenever Autotune is set).
-func New(planner *solver.Planner, newTuner func() *routerrules.Autotuner, interval time.Duration, logger *slog.Logger) *Loop {
-	return &Loop{planner: planner, newTuner: newTuner, interval: interval, logger: logger}
+// (solver.Config.Validate enforces this whenever Autotune is set). reporter may
+// be nil.
+func New(planner *solver.Planner, newTuner func() *routerrules.Autotuner, interval time.Duration, logger *slog.Logger, reporter *Reporter) *Loop {
+	return &Loop{planner: planner, newTuner: newTuner, interval: interval, logger: logger, reporter: reporter}
 }
 
 // Run drives the loop until ctx is cancelled, then returns — leaving no
@@ -78,23 +83,73 @@ func (l *Loop) tick(ctx context.Context) {
 	res, err := l.newTuner().Fit(ctx, cur)
 	if err != nil {
 		l.logger.WarnContext(ctx, "autotune fit failed", "err", err)
+		l.report(&routerrules.FitResult{}, err)
 		return
 	}
-	if !res.Changed {
+	if res.Changed {
+		l.planner.SetThresholds(res.Candidate.MinFanout, res.Candidate.MinAnchorPairs)
+		l.logger.InfoContext(ctx, "autotune applied",
+			"reason", res.Reason,
+			"prev_min_fanout", cur.MinFanout,
+			"min_fanout", res.Candidate.MinFanout,
+			"prev_min_anchor_pairs", cur.MinAnchorPairs,
+			"min_anchor_pairs", res.Candidate.MinAnchorPairs,
+			"oom_min_fanout", res.OOMMinFanout,
+			"oom_min_anchors", res.OOMMinAnchors)
+	} else {
 		l.logger.DebugContext(ctx, "autotune no change",
 			"reason", res.Reason,
 			"min_fanout", cur.MinFanout,
 			"min_anchor_pairs", cur.MinAnchorPairs)
+	}
+	l.report(&res, nil)
+}
+
+// report updates the introspection Status after a tick, preserving the static
+// fields main/ seeded (enabled, reason, interval, window, configured) and
+// refreshing the aggregate Stats + Outcome. The loop goroutine is the only writer
+// after seeding, so the read-modify-write is safe.
+func (l *Loop) report(res *routerrules.FitResult, fitErr error) {
+	if l.reporter == nil {
+		return
+	}
+	liveFanout, liveAnchorPairs := l.planner.CurrentThresholds()
+	now := time.Now()
+
+	st := l.reporter.Snapshot()
+	st.Live = routerrules.Thresholds{MinFanout: liveFanout, MinAnchorPairs: liveAnchorPairs}
+	st.Stats.Ticks++
+
+	if fitErr != nil {
+		// A failed corpus read: no fresh outcome counts, and no change to the
+		// gate — count it as a non-converging tick.
+		st.Stats.ErrorTicks++
+		st.Stats.LastError = fitErr.Error()
+		st.Stats.LastErrorAt = now
+		st.Stats.TicksSinceChange++
+		l.reporter.Set(st)
 		return
 	}
 
-	l.planner.SetThresholds(res.Candidate.MinFanout, res.Candidate.MinAnchorPairs)
-	l.logger.InfoContext(ctx, "autotune applied",
-		"reason", res.Reason,
-		"prev_min_fanout", cur.MinFanout,
-		"min_fanout", res.Candidate.MinFanout,
-		"prev_min_anchor_pairs", cur.MinAnchorPairs,
-		"min_anchor_pairs", res.Candidate.MinAnchorPairs,
-		"oom_min_fanout", res.OOMMinFanout,
-		"oom_min_anchors", res.OOMMinAnchors)
+	if res.HasOOMSignal {
+		st.Stats.SignalTicks++
+	}
+	if res.Changed {
+		st.Stats.AppliedTicks++
+		st.Stats.LastChangeAt = now
+		st.Stats.TicksSinceChange = 0
+	} else {
+		st.Stats.TicksSinceChange++
+	}
+
+	st.Outcome = Outcome{
+		At:               now,
+		HasSignal:        res.HasOOMSignal,
+		OOMMinFanout:     res.OOMMinFanout,
+		OOMMinAnchors:    res.OOMMinAnchors,
+		RouteAOomCount:   res.RouteAOomCount,
+		RouteBExecutions: res.RouteBExecutions,
+		RouteBOomCount:   res.RouteBOomCount,
+	}
+	l.reporter.Set(st)
 }

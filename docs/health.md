@@ -163,6 +163,89 @@ Live fields, re-read on every request:
 - `ready` — the same condition `/readyz` uses (CH reachable AND schema
   present AND schema ready).
 
+## `/info/autotune` — self-driving solver state
+
+```text
+GET /info/autotune
+200 OK
+Content-Type: application/json
+
+{
+  "enabled": true,
+  "active": true,
+  "reason": "active",
+  "intervalSeconds": 900,
+  "corpusWindowSeconds": 604800,
+  "configured": { "minFanout": 16, "minAnchorPairs": 4000 },
+  "live":       { "minFanout": 8,  "minAnchorPairs": 1928 },
+  "stats": {
+    "ticks": 42,
+    "signalTicks": 40,
+    "appliedTicks": 3,
+    "errorTicks": 0,
+    "ticksSinceChange": 12,
+    "lastChangeAt": "2026-07-04T05:31:00Z",
+    "lastError": ""
+  },
+  "outcome": {
+    "at": "2026-07-04T05:46:00Z",
+    "hasSignal": true,
+    "oomMinFanout": 8,
+    "oomMinAnchors": 241,
+    "routeAOoms": 2,
+    "routeBExecutions": 1500,
+    "routeBOoms": 0
+  }
+}
+```
+
+**This pod's** live decision state of the
+[self-driving autotune loop](solver.md#stage-1--self-driving-thresholds-the-autotune-loop).
+Like `/info`, it is unauthenticated, read-only, and bypasses otelhttp; it is
+served from an in-memory snapshot the loop refreshes each tick (no ClickHouse
+read on the request path). For the **fleet-wide + historical** view, see the
+metrics below — each pod also emits these as OTel gauges.
+
+- `enabled` / `active` / `reason` — is the loop running here, and why
+  (`"active"` | `"disabled"` | `"not-auto-mode"` | `"corpus-unavailable"`).
+- `configured` vs `live` — the shipped gate vs what the Planner routes with now;
+  the delta is exactly what the loop has done.
+- `stats` — this pod's loop health: `ticks`, `signalTicks`, `appliedTicks`
+  (gate lowerings), `errorTicks`, and `ticksSinceChange` (high = converged).
+- `outcome` — the rolling-window efficacy signal from the corpus (identical
+  across pods, since the corpus is shared). **Good:** `routeBOoms` is 0 (the safe
+  path isn't itself OOMing) and `routeAOoms` trends to 0 with `routeBExecutions`
+  > 0 (unprotected OOMs eliminated, volume protected). **Bad:** `routeBOoms` > 0,
+  or `routeAOoms` persistently high.
+
+Returns `404` when autotune introspection is not wired (the prom head, hence the
+solver, is disabled).
+
+### Fleet + historical view (metrics)
+
+Because cerberus runs multiple pods each with its own loop, the fleet-wide and
+historical view comes from metrics, not this per-pod endpoint. Every prom-head
+pod emits its autotune state as OTel observable gauges (via the standard OTLP →
+CH pipeline), stamped per-pod by `service.instance.id`:
+
+| Metric                                                      | Meaning                                 |
+| ----------------------------------------------------------- | --------------------------------------- |
+| `cerberus_solver_autotune_active`                           | 1 when the loop is running on the pod   |
+| `cerberus_solver_autotune_min_fanout` / `_min_anchor_pairs` | live gate                               |
+| `cerberus_solver_autotune_configured_min_fanout`            | shipped gate (for the delta)            |
+| `cerberus_solver_autotune_applied_total` / `_errors_total`  | per-pod tick counters                   |
+| `cerberus_solver_autotune_route_a_ooms`                     | remaining unprotected OOMs (→ 0 = good) |
+| `cerberus_solver_autotune_route_b_executions`               | volume routed to the safe path          |
+| `cerberus_solver_autotune_route_b_ooms`                     | route-B OOMs — should stay 0            |
+| `cerberus_solver_autotune_oom_min_fanout`                   | observed OOM floor being tracked        |
+
+Aggregate the **corpus-derived** series (`route_*`, `oom_min_fanout`, live gates)
+with `max`/`avg`, never `sum` — every pod reports the same shared-corpus value,
+so summing multiplies by pod count. The **per-pod** counters (`applied_total`,
+`errors_total`) may be summed or shown per `instance`. Autotune is prom-head
+scoped, so any pod emitting these also serves PromQL — the metrics are queryable
+wherever the loop runs.
+
 ## Kubernetes probe configuration
 
 The shipped `test/e2e/k3s/cerberus-values.yaml` wires the probes as follows:

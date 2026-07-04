@@ -115,9 +115,11 @@ func TestCHSourceBuildsTypedSQL(t *testing.T) {
 // predicate (route=A, oom, below-threshold, grid-bearing), the typed min/count
 // wrapping for the strict driver, and the scan into an OOMFloor.
 func TestCHSourceOOMFloor(t *testing.T) {
+	// Columns: f(minIf fanout), a(minIf n_anchors), n(floor countIf),
+	// rb(route-B countIf), rbo(route-B oom countIf).
 	conn := &recordingConn{
 		respond: []scriptedResponse{
-			{match: "FROM cerberus_router_corpus", rows: [][]any{{float64(9), float64(241), int64(5)}}},
+			{match: "FROM cerberus_router_corpus", rows: [][]any{{float64(9), float64(241), int64(5), int64(100), int64(2)}}},
 		},
 	}
 	src := NewCHOOMFloorSource(conn, 0).(*chCorpusSource)
@@ -127,16 +129,21 @@ func TestCHSourceOOMFloor(t *testing.T) {
 		t.Fatalf("OOMFloor: %v", err)
 	}
 	if !got.HasSignal || got.MinFanout != 9 || got.MinAnchors != 241 {
-		t.Fatalf("got %+v, want {MinFanout:9 MinAnchors:241 HasSignal:true}", got)
+		t.Fatalf("floor: got %+v, want {MinFanout:9 MinAnchors:241 HasSignal:true}", got)
+	}
+	if got.RouteAOomCount != 5 || got.RouteBExecutions != 100 || got.RouteBOomCount != 2 {
+		t.Fatalf("counts: got A=%d B=%d Boom=%d, want 5 / 100 / 2",
+			got.RouteAOomCount, got.RouteBExecutions, got.RouteBOomCount)
 	}
 
 	q := conn.queries[0]
 	for _, want := range []string{
-		"toFloat64(ifNull(min(fanout), 0))",
-		"toFloat64(ifNull(min(n_anchors), 0))",
-		"toInt64(count())",
+		"minIf(fanout,",
+		"minIf(n_anchors,",
+		"countIf(",
 		"FROM cerberus_router_corpus",
 		"route = 'A'",
+		"route = 'B'",
 		"exit_status = 'oom'",
 		"decision_reason = 'below-threshold'",
 		"fanout > 0",
@@ -148,12 +155,13 @@ func TestCHSourceOOMFloor(t *testing.T) {
 	}
 }
 
-// TestCHSourceOOMFloorNoSignal asserts an empty eligible population (count()=0)
-// resolves to HasSignal=false — cold start, never a spurious "OOM at fan-out 0".
+// TestCHSourceOOMFloorNoSignal asserts an empty eligible population (floor
+// countIf = 0) resolves to HasSignal=false — cold start, never a spurious "OOM
+// at fan-out 0" — while still reporting route-B outcome counts.
 func TestCHSourceOOMFloorNoSignal(t *testing.T) {
 	conn := &recordingConn{
 		respond: []scriptedResponse{
-			{match: "FROM cerberus_router_corpus", rows: [][]any{{float64(0), float64(0), int64(0)}}},
+			{match: "FROM cerberus_router_corpus", rows: [][]any{{float64(0), float64(0), int64(0), int64(50), int64(0)}}},
 		},
 	}
 	src := NewCHOOMFloorSource(conn, 0).(*chCorpusSource)
@@ -163,7 +171,10 @@ func TestCHSourceOOMFloorNoSignal(t *testing.T) {
 		t.Fatalf("OOMFloor: %v", err)
 	}
 	if got.HasSignal {
-		t.Fatalf("empty population must be no-signal, got %+v", got)
+		t.Fatalf("empty floor population must be no-signal, got %+v", got)
+	}
+	if got.RouteBExecutions != 50 {
+		t.Errorf("RouteBExecutions = %d, want 50 (counts reported even with no floor signal)", got.RouteBExecutions)
 	}
 }
 

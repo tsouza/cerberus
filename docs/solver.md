@@ -351,7 +351,9 @@ the loop no-ops there; disabling it pins the thresholds at their configured
 values, byte-identical to a fixed-threshold build. The fit reads the
 `cerberus_router_corpus` MergeTree, so the loop stays **dormant** until the
 Stage-0 reconciler is writing that table (`CERBERUS_CH_OPT_CORPUS_ENABLED=true`
-with the `chtable` sink) rather than erroring against a missing table.
+with the `chtable` sink) rather than erroring against a missing table. Its live
+decision state — configured vs. live thresholds, the last fit, tick count — is
+exposed at [`GET /info/autotune`](health.md#infoautotune--self-driving-solver-state).
 
 The fit (`routerrules.Autotuner.Fit`) is deliberately narrow and **safe by
 construction, not by statistics**:
