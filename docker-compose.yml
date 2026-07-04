@@ -350,6 +350,69 @@ services:
       retries: 12
       start_period: 5s
 
+  # --- Structural two-phase A/B (opt-in: docker compose --profile twophase up) -
+  # A dense-descendant trace SOURCE plus a SECOND cerberus with the structural
+  # two-phase split switched OFF. tempo_two_phase_compare.spec.ts runs the same
+  # structural search against both heads — split ON at :8080, OFF at :8081 — over
+  # real telemetrygen traces and asserts the returned trace set is identical
+  # (A≡B). Both gated behind the `twophase` profile so the default compose-smoke
+  # never starts them (extra boot weight only when the A/B is actually run).
+  telemetrygen-traces:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.152.0
+    profiles: [twophase]
+    networks: [cerberus-dev]
+    command:
+      - traces
+      - --otlp-endpoint
+      - otel-collector:4317
+      - --otlp-insecure
+      - --service
+      - twophase-gen
+      - --child-spans
+      - "4"
+      - --duration
+      - inf
+      - --rate
+      - "20"
+    restart: on-failure
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  cerberus-nosplit:
+    image: cerberus:dev
+    pull_policy: build
+    profiles: [twophase]
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    networks: [cerberus-dev]
+    environment:
+      CERBERUS_HTTP_ADDR: ":8080"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_DIAL_TIMEOUT: "10s"
+      CERBERUS_AUTO_CREATE_SCHEMA: "false"
+      CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
+      # The ONE difference from the `cerberus` head: the structural two-phase
+      # split OFF, so this head serves the traditional single wide query.
+      CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE: "false"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/cerberus", "--version"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 5s
+
   grafana:
     image: grafana/grafana:12.2.9
     networks: [cerberus-dev]

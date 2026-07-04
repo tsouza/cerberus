@@ -169,6 +169,7 @@ func mountAPIHeads(
 		tempoClient := client.ForHead(chclient.HeadTempo)
 		tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 		tempoHandler.Limiter = tempoLimiter
+		tempoHandler.StructuralTwoPhase = cfg.TempoStructuralTwoPhase
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		tempoHandler.Mount(traceMux)
 		engines = append(engines, tempoHandler.Engine)

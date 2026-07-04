@@ -613,6 +613,17 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			Select(rightProj...).
 			From(aliasedFrag(rightSub, "R")).
 			Join(LeftAntiJoin, aliasedFrag(closure.Frag(), "L"), onClause)
+		// Phase B: restrict R to the top-N traces too. The closure already
+		// restricts L (anchor seed WHERE), but the ANTI JOIN makes R's
+		// restriction load-bearing for CORRECTNESS, not just reads: without it,
+		// R rows from a NON-top-N trace find no ancestor in the top-N-restricted
+		// closure and SURVIVE the anti-join, leaking traces the single query
+		// would not return. Restricting both sides keeps phase B a faithful
+		// top-N subset of the single-query result (A≡B). Nil off the two-phase
+		// path, so every other caller's SQL is byte-identical.
+		if len(j.TraceIDRestriction) > 0 {
+			sb = sb.Where(inStringLiteralsFrag(qualColFrag("R", j.TraceIDColumn), j.TraceIDRestriction))
+		}
 		e.emitSelect(sb)
 		return nil
 	case j.Op.IsUnion():
