@@ -354,6 +354,20 @@ func TruncateSummaries(summaries []TraceSummary, missing []string, limit int) ([
 	return summaries, filtered
 }
 
+// withSpanDrainBudget attaches the fail-closed wide-projection byte budget to
+// ctx — a cap on the cumulative ResourceAttributes+SpanAttributes bytes a span
+// drain may buffer into the Go heap before aborting. It is the byte axis every
+// trace-count / time / row bound misses (a selective-but-fat-map drain heaps
+// gigabytes under all of them); charged per unique span in the chclient cursor,
+// so the drain aborts before the full wide set materialises. EVERY Tempo drain
+// that projects the wide maps — /api/search, /api/search/recent, and
+// /api/traces/{id} — routes through this one helper so no wide-map drain is left
+// uncharged (trace-by-id folds the full per-span SpanAttributes and is the
+// fattest of them).
+func (h *Handler) withSpanDrainBudget(ctx context.Context) context.Context {
+	return chclient.WithDrainByteBudget(ctx, chclient.NewTempoSpanDrainBudget())
+}
+
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
@@ -402,6 +416,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Thread the request window so stampSearchTraceLimit folds it into the
 	// bounded plain-search scan. No-op when both bounds are absent.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
+	ctx = h.withSpanDrainBudget(ctx)
 	// Parse + lower first so the handler can inspect the lowered plan and
 	// route the execution. h.lang.Parse runs the TraceQL parser + traceql.Lower
 	// (with the request window / trace-limit folds already applied via the ctx
@@ -519,6 +534,11 @@ func classifySearchErr(err error) int {
 	// instead of a breaker-adjacent 5xx. The error body carries the
 	// chclient budget message including the configured limit.
 	case errors.Is(err, chclient.ErrTooManySamples):
+		return http.StatusUnprocessableEntity
+	// Wide-projection byte budget: the byte-axis sibling of the sample budget —
+	// the search's cumulative attribute-map bytes crossed the Go-heap ceiling. A
+	// resource rejection, 422 like the row budget above.
+	case errors.Is(err, chclient.ErrDrainBytesExceeded):
 		return http.StatusUnprocessableEntity
 	// ClickHouse memory-limit abort (code 241) — the server-side
 	// sibling of the sample budget: a per-query resource rejection,
@@ -654,7 +674,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	plan = &chplan.Limit{Input: plan, Count: limit}
 
-	ctx := r.Context()
+	ctx := h.withSpanDrainBudget(r.Context())
 	// /search/recent doesn't go through a parser, so use QueryPlan
 	// directly. IsTraceByID stays false: the OrderBy+Limit shape
 	// benefits from the seed optimizer's projection-pushdown pass.
@@ -743,7 +763,9 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	// `if !meta.IsTraceByID` branch). The wrap-projection still runs
 	// via Lang.ProjectSamples so the chclient.Sample shape is
 	// canonical before emit.
-	ctx := r.Context()
+	// Trace-by-id folds the FULL per-span SpanAttributes map into the projection
+	// (the fattest wide drain), so it must carry the byte budget too.
+	ctx := h.withSpanDrainBudget(r.Context())
 	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{
 		IsTraceByID:   true,
 		ResponseShape: "tempo-trace",

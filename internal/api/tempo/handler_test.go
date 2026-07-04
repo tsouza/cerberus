@@ -39,12 +39,19 @@ type stubQuerier struct {
 	// arrival order. Lets tests assert that BOTH the matrix and the
 	// exemplars queries actually fired.
 	queriedSQLs []string
+	// sawByteBudget records whether the ctx passed to Query carried the
+	// wide-projection drain byte budget — lets the no-bypass ratchet test
+	// assert every wide-map drain endpoint attaches it.
+	sawByteBudget bool
 }
 
-func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+func (s *stubQuerier) Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error) {
 	s.lastSQL = sql
 	s.lastArgs = args
 	s.queriedSQLs = append(s.queriedSQLs, sql)
+	if chclient.DrainByteBudgetFromContext(ctx) != nil {
+		s.sawByteBudget = true
+	}
 	if s.err != nil {
 		return nil, s.err
 	}

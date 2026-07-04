@@ -168,6 +168,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 
 	dec := &columnarCursor{
 		budget:         budgetFromContext(ctx),
+		byteBudget:     drainByteBudgetFromContext(ctx),
 		maxSamples:     c.maxSamples,
 		maxMemoryBytes: c.maxMemory,
 		queryTimeout:   c.effectiveQueryTimeout(ctx),
@@ -250,6 +251,8 @@ type columnarCursor struct {
 	interner rowsCursor
 
 	budget         *SampleBudget
+	byteBudget     *DrainByteBudget
+	byteChargedSeq uint32
 	maxSamples     int64
 	maxMemoryBytes int64
 	queryTimeout   time.Duration
@@ -357,6 +360,18 @@ func (d *columnarCursor) decodeBlock(cols matrixCols, rows int) error {
 			curInterned, curID = d.interner.internLabels(curLabels)
 			prevStart, prevEnd = start, end
 			haveSeries = true
+			// Charge the Tempo wide-projection byte budget once per UNIQUE series
+			// (nil off the span-search path). The sameSpan pre-check above
+			// rebuilds curLabels every row (Map offsets advance per row), so gate
+			// the charge on the monotonic series ordinal — NOT the rebuild — to
+			// match rowsCursor and avoid per-row over-counting of a shared map.
+			if d.byteBudget != nil && curID > d.byteChargedSeq {
+				d.byteChargedSeq = curID
+				if !d.byteBudget.consume(labelMapBytes(curInterned)) {
+					d.err = &DrainByteBudgetError{Limit: d.byteBudget.Limit()}
+					return errBudgetExceeded
+				}
+			}
 		}
 		d.samples = append(d.samples, Sample{
 			MetricName: cols.name.Row(r),

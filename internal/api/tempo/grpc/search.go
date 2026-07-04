@@ -103,6 +103,12 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		start = end.Add(-tempo.DefaultSearchLookback)
 	}
 	ctx = traceql.WithSearchWindow(ctx, start, end)
+	// Attach the wide-projection byte budget — the SAME fail-closed Go-heap cap
+	// the HTTP handler applies. Without it the gRPC Search path drained the wide
+	// ResourceAttributes+SpanAttributes maps unbounded (the recursive two-phase
+	// split only fires on HTTP), so a fat-map search OOM'd here even though the
+	// byte-identical HTTP query is bounded. Charged per-span during the drain.
+	ctx = chclient.WithDrainByteBudget(ctx, chclient.NewTempoSpanDrainBudget())
 
 	// Open the streaming cursor against the lowered TraceQL plan.
 	// cursor.Close is deferred so a client cancellation (ctx.Done()
@@ -205,6 +211,15 @@ func mapEngineError(err error) error {
 		return status.Errorf(codes.Unavailable, "%v", err)
 	case errors.Is(err, tempo.ErrParseStage), errors.Is(err, tempo.ErrLowerStage):
 		return status.Errorf(codes.InvalidArgument, "%v", err)
+	// Resource-exhausted family — the per-query budgets (row-count sample budget,
+	// wide-projection byte budget) and the CH memory-limit abort. All are
+	// "the query asked for too much", not an outage, so ResourceExhausted (the
+	// gRPC sibling of HTTP 422 — see classifySearchErr), symmetric with the HTTP
+	// head rather than a misleading Internal.
+	case errors.Is(err, chclient.ErrTooManySamples),
+		errors.Is(err, chclient.ErrDrainBytesExceeded),
+		errors.Is(err, chclient.ErrMemoryLimitExceeded):
+		return status.Errorf(codes.ResourceExhausted, "%v", err)
 	}
 	return status.Errorf(codes.Internal, "%v", err)
 }
