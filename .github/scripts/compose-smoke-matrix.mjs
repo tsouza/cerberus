@@ -164,6 +164,7 @@ const EXCLUDED = [
   'tempo_search_flow.spec.ts', //        head-specific flow; dashboard-lane only
   'tempo_traces.spec.ts', //             head-specific flow; dashboard-lane only
   'tempo_traces_drilldown.spec.ts', //   head-specific flow; dashboard-lane only
+  'tempo_two_phase_compare.spec.ts', //  opt-in structural two-phase A/B; needs `docker compose --profile twophase up` (cerberus-nosplit + telemetrygen-traces) + CERBERUS_NOSPLIT_URL, skipped otherwise — not a compose-smoke shard
   'tempo_ux.spec.ts', //                 *_ux lane; dashboard-lane only
 ];
 
