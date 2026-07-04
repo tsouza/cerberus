@@ -4,6 +4,27 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.10.0] — 2026-07-04
+
+### Added
+
+- **tempo:** extend the structural two-phase split to the gRPC Search path (#1201)
+- **tempo:** admit union `&>>`/`&<<` into the structural two-phase seam (#1198)
+- **tempo:** route `!>>` through two-phase + default-on structural-two-phase toggle (#1197)
+- **tempo:** route `>> | select(...)` through the structural two-phase seam (#1195)
+- **autotune:** expose loop state via /info/autotune + per-pod metrics (#1193)
+- **solver:** self-driving autotune loop lowering thresholds toward observed OOM line (#1190)
+
+### Fixed
+
+- **tempo:** bound the wide-projection drain with a fail-closed byte budget (#1200)
+- **e2e:** warm the stack before compose-smoke's zero-tolerance sweep (#1196)
+
+### Documentation
+
+- **tempo:** record the deliberate no-density-gate decision + pin phase-A narrowness (#1199)
+- **autotune:** correct stale certify/off-policy language and OOM-population wording (#1191)
+
 ## [v1.9.1] — 2026-07-03
 
 ### Fixed
