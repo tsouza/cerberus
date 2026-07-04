@@ -118,6 +118,15 @@ func TestAutotune_CHFit_FlipsKnownOOMShapeToRouteB(t *testing.T) {
 	if res.OOMMinAnchors != autotuneGridAnchors {
 		t.Fatalf("OOMMinAnchors = %d, want %d", res.OOMMinAnchors, autotuneGridAnchors)
 	}
+	// Rolling-window outcome counts through the same real-CH conditional
+	// aggregates: two below-threshold route-A OOMs (fanout 8 + 12; the
+	// not-sliceable row is excluded), and no route-B rows were seeded.
+	if res.RouteAOomCount != 2 {
+		t.Fatalf("RouteAOomCount = %d, want 2 (below-threshold OOM rows, excluding not-sliceable)", res.RouteAOomCount)
+	}
+	if res.RouteBExecutions != 0 || res.RouteBOomCount != 0 {
+		t.Fatalf("route-B counts = %d / %d, want 0 / 0 (none seeded)", res.RouteBExecutions, res.RouteBOomCount)
+	}
 	if !res.Changed {
 		t.Fatalf("fit must lower the gate below the default; Changed=false, candidate=%+v", res.Candidate)
 	}

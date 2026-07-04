@@ -23,8 +23,8 @@ func TestHandleAutotune_ServesStatus(t *testing.T) {
 		Reason:     "active",
 		Configured: ThresholdInfo{MinFanout: 16, MinAnchorPairs: 4000},
 		Live:       ThresholdInfo{MinFanout: 8, MinAnchorPairs: 1928},
-		Ticks:      3,
-		LastFit:    &AutotuneFit{Reason: "autotune-applied", Changed: true, HasOOMSignal: true, OOMMinFanout: 8},
+		Stats:      AutotuneStats{Ticks: 3, AppliedTicks: 1, TicksSinceChange: 2},
+		Outcome:    AutotuneOutcome{HasSignal: true, OOMMinFanout: 8, RouteAOoms: 2, RouteBExecutions: 1500, RouteBOoms: 0},
 	}
 	rec := getAutotune(t, Options{Autotune: func() (AutotuneStatus, bool) { return want, true }})
 
@@ -38,11 +38,14 @@ func TestHandleAutotune_ServesStatus(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !got.Active || got.Reason != "active" || got.Live.MinFanout != 8 || got.Ticks != 3 {
-		t.Errorf("got %+v", got)
+	if !got.Active || got.Reason != "active" || got.Live.MinFanout != 8 {
+		t.Errorf("status: got %+v", got)
 	}
-	if got.LastFit == nil || got.LastFit.OOMMinFanout != 8 {
-		t.Errorf("LastFit = %+v", got.LastFit)
+	if got.Stats.Ticks != 3 || got.Stats.AppliedTicks != 1 {
+		t.Errorf("stats: got %+v", got.Stats)
+	}
+	if !got.Outcome.HasSignal || got.Outcome.RouteBExecutions != 1500 || got.Outcome.RouteBOoms != 0 {
+		t.Errorf("outcome: got %+v", got.Outcome)
 	}
 }
 

@@ -73,6 +73,12 @@ type FitResult struct {
 	OOMMinFanout  int
 	OOMMinAnchors int
 	HasOOMSignal  bool
+
+	// Rolling-window outcome counts over the corpus window, passed through from
+	// the OOM-floor read for introspection (they do not affect the fit).
+	RouteAOomCount   int64
+	RouteBExecutions int64
+	RouteBOomCount   int64
 }
 
 // Fit reads the corpus OOM floor and returns a threshold candidate relative to
@@ -83,15 +89,22 @@ func (a *Autotuner) Fit(ctx context.Context, current Thresholds) (FitResult, err
 	if err != nil {
 		return FitResult{}, err
 	}
-	if !floor.HasSignal {
-		return FitResult{Candidate: current, Reason: ReasonAutotuneNoSignal}, nil
-	}
 
+	// Outcome counts are carried on every result, signal or not (route-B volume
+	// is meaningful even when no route-A OOMs remain).
 	res := FitResult{
-		HasOOMSignal:  true,
-		OOMMinFanout:  floor.MinFanout,
-		OOMMinAnchors: floor.MinAnchors,
+		Candidate:        current,
+		RouteAOomCount:   floor.RouteAOomCount,
+		RouteBExecutions: floor.RouteBExecutions,
+		RouteBOomCount:   floor.RouteBOomCount,
 	}
+	if !floor.HasSignal {
+		res.Reason = ReasonAutotuneNoSignal
+		return res, nil
+	}
+	res.HasOOMSignal = true
+	res.OOMMinFanout = floor.MinFanout
+	res.OOMMinAnchors = floor.MinAnchors
 
 	// Candidate MinFanout: clamp the observed OOM fan-out floor into
 	// [floor, current] — only ever lowers, never above the OOM floor.

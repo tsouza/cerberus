@@ -70,20 +70,25 @@ func TestLoop_Tick_ReportsStatus(t *testing.T) {
 	if st.Reason != ReasonStatusActive {
 		t.Errorf("static Reason clobbered: %q", st.Reason)
 	}
-	if st.Ticks != 1 {
-		t.Errorf("Ticks = %d, want 1", st.Ticks)
-	}
 	if st.Live.MinFanout != 9 || st.Live.MinAnchorPairs != 2169 {
 		t.Errorf("Live = %+v, want {9 2169}", st.Live)
 	}
-	if st.LastFit == nil {
-		t.Fatal("LastFit is nil after a tick")
+	// Process stats.
+	if st.Stats.Ticks != 1 || st.Stats.SignalTicks != 1 || st.Stats.AppliedTicks != 1 {
+		t.Errorf("Stats = %+v, want ticks/signal/applied = 1", st.Stats)
 	}
-	if !st.LastFit.Changed || !st.LastFit.HasOOMSignal || st.LastFit.OOMMinFanout != 9 {
-		t.Errorf("LastFit = %+v, want changed+signal at OOM fanout 9", st.LastFit)
+	if st.Stats.TicksSinceChange != 0 {
+		t.Errorf("TicksSinceChange = %d, want 0 (changed this tick)", st.Stats.TicksSinceChange)
 	}
-	if st.LastFit.At.IsZero() {
-		t.Error("LastFit.At not stamped")
+	if st.Stats.LastChangeAt.IsZero() {
+		t.Error("LastChangeAt not stamped after an applied change")
+	}
+	// Efficacy outcome.
+	if !st.Outcome.HasSignal || st.Outcome.OOMMinFanout != 9 {
+		t.Errorf("Outcome = %+v, want signal at OOM fanout 9", st.Outcome)
+	}
+	if st.Outcome.At.IsZero() {
+		t.Error("Outcome.At not stamped")
 	}
 }
 

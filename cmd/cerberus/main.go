@@ -152,6 +152,9 @@ func mountAPIHeads(
 		// the server lifecycle ctx, so it exits on shutdown. The returned reporter
 		// backs GET /info/autotune (populated even when the loop stays dormant).
 		autotuneReporter = startAutotune(ctx, evalSolver, promClient, cfg, logger)
+		if err := autotune.RegisterMetrics(autotuneReporter); err != nil {
+			logger.Warn("autotune metrics registration failed; /info/autotune still serves this pod", "err", err)
+		}
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
@@ -1057,19 +1060,31 @@ func mapAutotuneStatus(s autotune.Status) info.AutotuneStatus {
 		CorpusWindowSeconds: s.CorpusWindowSeconds,
 		Configured:          info.ThresholdInfo{MinFanout: s.Configured.MinFanout, MinAnchorPairs: s.Configured.MinAnchorPairs},
 		Live:                info.ThresholdInfo{MinFanout: s.Live.MinFanout, MinAnchorPairs: s.Live.MinAnchorPairs},
-		Ticks:               s.Ticks,
+		Stats: info.AutotuneStats{
+			Ticks:            s.Stats.Ticks,
+			SignalTicks:      s.Stats.SignalTicks,
+			AppliedTicks:     s.Stats.AppliedTicks,
+			ErrorTicks:       s.Stats.ErrorTicks,
+			TicksSinceChange: s.Stats.TicksSinceChange,
+			LastError:        s.Stats.LastError,
+		},
+		Outcome: info.AutotuneOutcome{
+			HasSignal:        s.Outcome.HasSignal,
+			OOMMinFanout:     s.Outcome.OOMMinFanout,
+			OOMMinAnchors:    s.Outcome.OOMMinAnchors,
+			RouteAOoms:       s.Outcome.RouteAOomCount,
+			RouteBExecutions: s.Outcome.RouteBExecutions,
+			RouteBOoms:       s.Outcome.RouteBOomCount,
+		},
 	}
-	if s.LastFit != nil {
-		out.LastFit = &info.AutotuneFit{
-			At:            s.LastFit.At.UTC().Format(time.RFC3339),
-			Reason:        s.LastFit.Reason,
-			Changed:       s.LastFit.Changed,
-			HasOOMSignal:  s.LastFit.HasOOMSignal,
-			OOMMinFanout:  s.LastFit.OOMMinFanout,
-			OOMMinAnchors: s.LastFit.OOMMinAnchors,
-			Candidate:     info.ThresholdInfo{MinFanout: s.LastFit.Candidate.MinFanout, MinAnchorPairs: s.LastFit.Candidate.MinAnchorPairs},
-			Error:         s.LastFit.Error,
-		}
+	if !s.Stats.LastChangeAt.IsZero() {
+		out.Stats.LastChangeAt = s.Stats.LastChangeAt.UTC().Format(time.RFC3339)
+	}
+	if !s.Stats.LastErrorAt.IsZero() {
+		out.Stats.LastErrorAt = s.Stats.LastErrorAt.UTC().Format(time.RFC3339)
+	}
+	if !s.Outcome.At.IsZero() {
+		out.Outcome.At = s.Outcome.At.UTC().Format(time.RFC3339)
 	}
 	return out
 }

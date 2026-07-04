@@ -107,30 +107,49 @@ func (l *Loop) tick(ctx context.Context) {
 
 // report updates the introspection Status after a tick, preserving the static
 // fields main/ seeded (enabled, reason, interval, window, configured) and
-// refreshing the dynamic ones (live thresholds, tick count, last fit). The loop
-// goroutine is the only writer after seeding, so the read-modify-write is safe.
+// refreshing the aggregate Stats + Outcome. The loop goroutine is the only writer
+// after seeding, so the read-modify-write is safe.
 func (l *Loop) report(res *routerrules.FitResult, fitErr error) {
 	if l.reporter == nil {
 		return
 	}
 	liveFanout, liveAnchorPairs := l.planner.CurrentThresholds()
-
-	fr := FitReport{
-		At:            time.Now(),
-		Reason:        res.Reason,
-		Changed:       res.Changed,
-		HasOOMSignal:  res.HasOOMSignal,
-		OOMMinFanout:  res.OOMMinFanout,
-		OOMMinAnchors: res.OOMMinAnchors,
-		Candidate:     res.Candidate,
-	}
-	if fitErr != nil {
-		fr.Error = fitErr.Error()
-	}
+	now := time.Now()
 
 	st := l.reporter.Snapshot()
 	st.Live = routerrules.Thresholds{MinFanout: liveFanout, MinAnchorPairs: liveAnchorPairs}
-	st.Ticks++
-	st.LastFit = &fr
+	st.Stats.Ticks++
+
+	if fitErr != nil {
+		// A failed corpus read: no fresh outcome counts, and no change to the
+		// gate — count it as a non-converging tick.
+		st.Stats.ErrorTicks++
+		st.Stats.LastError = fitErr.Error()
+		st.Stats.LastErrorAt = now
+		st.Stats.TicksSinceChange++
+		l.reporter.Set(st)
+		return
+	}
+
+	if res.HasOOMSignal {
+		st.Stats.SignalTicks++
+	}
+	if res.Changed {
+		st.Stats.AppliedTicks++
+		st.Stats.LastChangeAt = now
+		st.Stats.TicksSinceChange = 0
+	} else {
+		st.Stats.TicksSinceChange++
+	}
+
+	st.Outcome = Outcome{
+		At:               now,
+		HasSignal:        res.HasOOMSignal,
+		OOMMinFanout:     res.OOMMinFanout,
+		OOMMinAnchors:    res.OOMMinAnchors,
+		RouteAOomCount:   res.RouteAOomCount,
+		RouteBExecutions: res.RouteBExecutions,
+		RouteBOomCount:   res.RouteBOomCount,
+	}
 	l.reporter.Set(st)
 }

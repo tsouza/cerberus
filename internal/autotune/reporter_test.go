@@ -9,15 +9,15 @@ func TestReporter_SetSnapshot(t *testing.T) {
 		t.Fatalf("initial snapshot = %+v", s)
 	}
 
-	r.Set(Status{Ticks: 5})
-	if s := r.Snapshot(); s.Ticks != 5 || s.Enabled {
+	r.Set(Status{Stats: Stats{Ticks: 5}})
+	if s := r.Snapshot(); s.Stats.Ticks != 5 || s.Enabled {
 		t.Fatalf("post-set snapshot = %+v", s)
 	}
 
 	// Snapshot returns a copy: mutating it must not affect the stored value.
 	s := r.Snapshot()
-	s.Ticks = 99
-	if got := r.Snapshot().Ticks; got != 5 {
+	s.Stats.Ticks = 99
+	if got := r.Snapshot().Stats.Ticks; got != 5 {
 		t.Errorf("Snapshot leaked a live value: Ticks = %d, want 5", got)
 	}
 }

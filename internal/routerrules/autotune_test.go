@@ -10,6 +10,23 @@ type fakeFloorSource struct{ f OOMFloor }
 
 func (s fakeFloorSource) OOMFloor(_ context.Context) (OOMFloor, error) { return s.f, nil }
 
+// TestAutotuneFit_PassesOutcomeCounts asserts Fit forwards the rolling-window
+// outcome counts on every result — including the no-signal branch, where they
+// are still meaningful (route-B volume with zero remaining route-A OOMs).
+func TestAutotuneFit_PassesOutcomeCounts(t *testing.T) {
+	src := fakeFloorSource{f: OOMFloor{HasSignal: false, RouteBExecutions: 200, RouteBOomCount: 1}}
+	res, err := NewAutotuner(src).Fit(context.Background(), Thresholds{MinFanout: 16, MinAnchorPairs: 4000})
+	if err != nil {
+		t.Fatalf("Fit: %v", err)
+	}
+	if res.Reason != ReasonAutotuneNoSignal {
+		t.Errorf("Reason = %q, want no-signal", res.Reason)
+	}
+	if res.RouteBExecutions != 200 || res.RouteBOomCount != 1 {
+		t.Errorf("outcome counts not passed through: %+v", res)
+	}
+}
+
 func TestAutotuneFit(t *testing.T) {
 	cur := Thresholds{MinFanout: 16, MinAnchorPairs: 4000}
 

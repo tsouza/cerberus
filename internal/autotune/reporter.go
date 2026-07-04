@@ -27,22 +27,39 @@ type Status struct {
 	Configured routerrules.Thresholds
 	Live       routerrules.Thresholds
 
-	// Ticks counts completed fit cycles; LastFit is the most recent one (nil
-	// until the first tick).
-	Ticks   int64
-	LastFit *FitReport
+	// Stats aggregates the loop's own behavior; Outcome is the rolling-window
+	// efficacy signal from the corpus. Together they answer "is it doing good?".
+	Stats   Stats
+	Outcome Outcome
 }
 
-// FitReport is the outcome of one fit cycle.
-type FitReport struct {
-	At            time.Time
-	Reason        string
-	Changed       bool
-	HasOOMSignal  bool
-	OOMMinFanout  int
-	OOMMinAnchors int
-	Candidate     routerrules.Thresholds
-	Error         string
+// Stats aggregates the loop's behavior across ticks (process health): whether it
+// has converged (TicksSinceChange high, AppliedTicks small and stable), whether
+// it is finding signal, and whether it is erroring.
+type Stats struct {
+	Ticks            int64
+	SignalTicks      int64
+	AppliedTicks     int64
+	ErrorTicks       int64
+	TicksSinceChange int64
+	LastChangeAt     time.Time
+	LastError        string
+	LastErrorAt      time.Time
+}
+
+// Outcome is the rolling-window efficacy signal from the corpus, refreshed each
+// tick. RouteAOomCount is the eligible OOM population the loop targets (good =
+// trending to 0 as it protects them); RouteBExecutions is the volume it routes to
+// the safe path; RouteBOomCount is route-B OOMs — the mitigation itself failing,
+// which should stay 0 (nonzero = bad). OOMMin* is the last observed floor.
+type Outcome struct {
+	At               time.Time
+	HasSignal        bool
+	OOMMinFanout     int
+	OOMMinAnchors    int
+	RouteAOomCount   int64
+	RouteBExecutions int64
+	RouteBOomCount   int64
 }
 
 // Reason values for Status.Reason.

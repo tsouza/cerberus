@@ -22,14 +22,15 @@ type AutotuneStatus struct {
 	CorpusWindowSeconds float64 `json:"corpusWindowSeconds,omitempty"`
 
 	// Configured is the shipped gate; Live is what the Planner routes with right
-	// now (equal to Configured until the loop lowers it).
+	// now (equal to Configured until the loop lowers it). The delta shows exactly
+	// what the loop has done.
 	Configured ThresholdInfo `json:"configured"`
 	Live       ThresholdInfo `json:"live"`
 
-	// Ticks counts completed fit cycles; LastFit is the most recent one (absent
-	// until the first tick).
-	Ticks   int64        `json:"ticks"`
-	LastFit *AutotuneFit `json:"lastFit,omitempty"`
+	// Stats aggregates the loop's own behavior (process health); Outcome is the
+	// rolling-window efficacy signal from the corpus.
+	Stats   AutotuneStats   `json:"stats"`
+	Outcome AutotuneOutcome `json:"outcome"`
 }
 
 // ThresholdInfo is one (MinFanout, MinAnchorPairs) auto-gate pair.
@@ -38,16 +39,32 @@ type ThresholdInfo struct {
 	MinAnchorPairs int `json:"minAnchorPairs"`
 }
 
-// AutotuneFit is the outcome of one fit cycle.
-type AutotuneFit struct {
-	At            string        `json:"at"` // RFC 3339
-	Reason        string        `json:"reason"`
-	Changed       bool          `json:"changed"`
-	HasOOMSignal  bool          `json:"hasOomSignal"`
-	OOMMinFanout  int           `json:"oomMinFanout"`
-	OOMMinAnchors int           `json:"oomMinAnchors"`
-	Candidate     ThresholdInfo `json:"candidate"`
-	Error         string        `json:"error,omitempty"`
+// AutotuneStats aggregates the loop's behavior across ticks. Convergence reads as
+// a high ticksSinceChange with a small, stable appliedTicks; trouble reads as
+// climbing errorTicks, or signalTicks == 0 while route-A OOMs persist.
+type AutotuneStats struct {
+	Ticks            int64  `json:"ticks"`
+	SignalTicks      int64  `json:"signalTicks"`
+	AppliedTicks     int64  `json:"appliedTicks"`
+	ErrorTicks       int64  `json:"errorTicks"`
+	TicksSinceChange int64  `json:"ticksSinceChange"`
+	LastChangeAt     string `json:"lastChangeAt,omitempty"` // RFC 3339
+	LastError        string `json:"lastError,omitempty"`
+	LastErrorAt      string `json:"lastErrorAt,omitempty"` // RFC 3339
+}
+
+// AutotuneOutcome is the rolling-window efficacy signal (over corpusWindowSeconds).
+// Good: routeBOoms == 0 (the safe path isn't itself OOMing), routeAOoms trending
+// to 0 (unprotected OOMs eliminated) with routeBExecutions > 0 (volume protected).
+// Bad: routeBOoms > 0, or routeAOoms persistently high.
+type AutotuneOutcome struct {
+	At               string `json:"at,omitempty"` // RFC 3339, most recent tick
+	HasSignal        bool   `json:"hasSignal"`
+	OOMMinFanout     int    `json:"oomMinFanout"`
+	OOMMinAnchors    int    `json:"oomMinAnchors"`
+	RouteAOoms       int64  `json:"routeAOoms"`
+	RouteBExecutions int64  `json:"routeBExecutions"`
+	RouteBOoms       int64  `json:"routeBOoms"`
 }
 
 // handleAutotune serves GET /info/autotune. It is unauthenticated and read-only,
