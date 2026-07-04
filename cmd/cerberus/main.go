@@ -139,8 +139,8 @@ func mountAPIHeads(
 
 		// Self-driving threshold loop: when enabled (default) and the solver is
 		// in auto mode, periodically refit MinFanout / MinAnchorPairs from the
-		// router corpus and hot-swap certified changes into the live Planner. It
-		// runs on the server lifecycle ctx, so it exits on shutdown.
+		// router corpus and hot-swap changes into the live Planner. It runs on
+		// the server lifecycle ctx, so it exits on shutdown.
 		startAutotune(ctx, evalSolver, promClient, cfg, logger)
 	}
 

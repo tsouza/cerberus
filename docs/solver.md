@@ -358,11 +358,12 @@ construction, not by statistics**:
 
 - It reads only the observed **route-A OOM floor** over the population the cost
   gate can actually protect: rows where route A OOM'd *after being gated below
-  the thresholds* (`decision_reason = below-threshold`) with a real grid
-  (`fanout > 0 AND n_anchors > 0`), via the narrow `OOMFloorSource` seam. Instant
-  / not-sliceable / high-D route-A OOMs are excluded — they were rejected for
-  eligibility, not by the cost gate, so lowering it cannot help them, and their
-  zero grid would otherwise crater the floor to 0.
+  the thresholds* (`decision_reason = below-threshold`), via the narrow
+  `OOMFloorSource` seam. That predicate excludes the OOMs lowering the gate cannot
+  help — instant / not-sliceable / high-D route-A OOMs were rejected for
+  eligibility, not by the cost gate. An added `fanout > 0 AND n_anchors > 0` guard
+  stops a gridless row (an instant query, recorded with `fanout = 0`) from
+  cratering the floor to 0.
 - It only ever **lowers** a threshold toward that floor, never raises it, and
   applies whatever it computes (no hysteresis) — so the guarantee below holds for
   the **live** gate, not a notional candidate. Because route A and route B are

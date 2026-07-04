@@ -63,14 +63,14 @@ type RuleQuery struct {
 }
 
 // OOMFloor is the observed route-A OOM cost floor: the minimum fan-out and
-// minimum anchor count over the eligible, grid-bearing corpus population that
-// the cost gate can actually protect — route-A queries that OOM'd AFTER being
-// gated below the cost thresholds (decision_reason = below-threshold), with a
-// real grid (fanout > 0 AND n_anchors > 0). Instant / not-sliceable / high-D
-// route-A OOMs are excluded: they were rejected for eligibility, not by the cost
-// gate, so lowering the gate cannot move them to route B, and their zero grid
-// would otherwise crater the min to 0. HasSignal is false when that population
-// is empty (cold start).
+// minimum anchor count over the eligible corpus population the cost gate can
+// actually protect — route-A queries that OOM'd AFTER being gated below the cost
+// thresholds (decision_reason = below-threshold). That predicate excludes the
+// OOMs lowering the gate cannot move to route B (instant / not-sliceable / high-D
+// were rejected for eligibility, not by the cost gate). The additional
+// fanout > 0 AND n_anchors > 0 predicate is a guard against a gridless row
+// (e.g. an instant query, recorded with fanout = 0) slipping in and cratering
+// the min to 0. HasSignal is false when that population is empty (cold start).
 type OOMFloor struct {
 	MinFanout  int
 	MinAnchors int
