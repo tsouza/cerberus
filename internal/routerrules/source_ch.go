@@ -40,6 +40,68 @@ func NewCHCorpusSource(conn CHConn, sinceUnix float64) CorpusSource {
 	return &chCorpusSource{conn: conn, since: sinceUnix}
 }
 
+// NewCHOOMFloorSource builds a ClickHouse-table OOMFloorSource for the autotune
+// fit. Same backing table and window semantics as NewCHCorpusSource.
+func NewCHOOMFloorSource(conn CHConn, sinceUnix float64) OOMFloorSource {
+	return &chCorpusSource{conn: conn, since: sinceUnix}
+}
+
+// reasonBelowThreshold is the decision_reason token for a route-A query the cost
+// gate rejected below its thresholds. Re-declared here as a stable wire contract
+// (mirroring solver.ReasonBelowThreshold) rather than imported, exactly as the
+// enum-domain tokens in columns.go are — routerrules must not depend on solver.
+const reasonBelowThreshold = "below-threshold"
+
+// OOMFloor computes the observed route-A OOM cost floor over the eligible,
+// grid-bearing population (see the OOMFloor type doc for the exact predicate).
+// An empty population resolves to HasSignal=false via the count() companion
+// column, exactly like scalarAggregate — a 0 min is never mistaken for a real
+// "OOM at fan-out 0" (those rows are excluded by the fanout > 0 predicate).
+func (s *chCorpusSource) OOMFloor(ctx context.Context) (OOMFloor, error) {
+	fanoutMin := toFloat64Frag(chsql.Call("ifNull", chsql.Call("min", chsql.BareIdent("fanout")), chsql.InlineLit(int64(0))))
+	anchorMin := toFloat64Frag(chsql.Call("ifNull", chsql.Call("min", chsql.BareIdent("n_anchors")), chsql.InlineLit(int64(0))))
+	qb := chsql.NewQuery().
+		From(chsql.BareIdent(CorpusTableName)).
+		SelectAs(fanoutMin, "f").
+		SelectAs(anchorMin, "a").
+		SelectAs(toInt64Frag(chsql.Call("count")), "n")
+
+	conds := []chsql.Frag{
+		chsql.Eq(chsql.BareIdent("route"), chsql.InlineLit("A")),
+		chsql.Eq(chsql.BareIdent("exit_status"), chsql.InlineLit("oom")),
+		chsql.Eq(chsql.BareIdent("decision_reason"), chsql.InlineLit(reasonBelowThreshold)),
+		chsql.Gt(chsql.BareIdent("fanout"), chsql.InlineLit(int64(0))),
+		chsql.Gt(chsql.BareIdent("n_anchors"), chsql.InlineLit(int64(0))),
+	}
+	if sf := s.sinceFrag(); sf != nil {
+		conds = append(conds, sf)
+	}
+	sql, args := qb.Where(chsql.And(conds...)).Build()
+
+	r, err := s.query(ctx, sql, args)
+	if err != nil {
+		return OOMFloor{}, err
+	}
+	defer func() { _ = r.Close() }()
+
+	var (
+		fanout, anchors float64
+		n               int64
+	)
+	if r.Next() {
+		if err := r.Scan(&fanout, &anchors, &n); err != nil {
+			return OOMFloor{}, fmt.Errorf("routerrules: scan oom floor: %w", err)
+		}
+	}
+	if err := r.Err(); err != nil {
+		return OOMFloor{}, err
+	}
+	if n == 0 {
+		return OOMFloor{}, nil
+	}
+	return OOMFloor{MinFanout: int(fanout), MinAnchors: int(anchors), HasSignal: true}, nil
+}
+
 func (s *chCorpusSource) query(ctx context.Context, sql string, args []any) (rows, error) {
 	// The timeout context must outlive the returned rows: callers iterate and
 	// Scan AFTER query() returns. Cancelling here (defer cancel()) would tear

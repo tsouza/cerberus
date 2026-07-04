@@ -277,10 +277,14 @@ goleak-gated with routed queries.
 ## Routing-decision calibration corpus (stage 0, measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single
-CH query) or B (time-slice sharded) by fixed thresholds over the cost grid it
-derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Stage 0
-asks, **without changing any threshold or routing behavior**, whether that
-heuristic is good enough or whether a calibrated/learned router would pay off.
+CH query) or B (time-slice sharded) by cost thresholds over the grid it
+derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Those
+thresholds start at their configured values and are lowered at runtime by the
+self-driving loop (Stage 1 below); the classifier reads them through an atomic
+overlay, so it stays pure — no per-request state, no RNG. Stage 0 is the
+**measurement-only** substrate that loop consumes: it records, **without itself
+changing any threshold or routing behavior**, the `(N, F, D)` context and the
+observed cost of every decision.
 
 To answer it the engine closes the loop the optimization corpus
 (`internal/optcorpus`) already half-built:
@@ -332,6 +336,59 @@ computed and **changes no routing behavior**. The captured features suffice to
 Step)` back through `Planner.Plan` and it reproduces the recorded route, so an
 operator can sweep counterfactual thresholds against history without touching
 production (proven by `TestPlan_OfflineReplay_ReproducesRoute`).
+
+## Stage 1 — self-driving thresholds (the autotune loop)
+
+`internal/autotune` closes the loop on the Stage-0 corpus. When enabled
+(`CERBERUS_SOLVER_AUTOTUNE`, **default true**) and the solver is in auto mode, a
+background loop (`autotune.Loop`, launched on the server lifecycle context so it
+exits cleanly at shutdown) refits the two auto-gate thresholds — `MinFanout` and
+`MinAnchorPairs` — from the corpus on a cadence
+(`CERBERUS_SOLVER_AUTOTUNE_INTERVAL`, default 15m, plus one immediate fit at
+startup) and hot-swaps any change into the live `Planner` via an atomic pointer
+store (`Planner.SetThresholds`). Single / sharded modes carry no cost gate, so
+the loop no-ops there; disabling it pins the thresholds at their configured
+values, byte-identical to a fixed-threshold build. The fit reads the
+`cerberus_router_corpus` MergeTree, so the loop stays **dormant** until the
+Stage-0 reconciler is writing that table (`CERBERUS_CH_OPT_CORPUS_ENABLED=true`
+with the `chtable` sink) rather than erroring against a missing table.
+
+The fit (`routerrules.Autotuner.Fit`) is deliberately narrow and **safe by
+construction, not by statistics**:
+
+- It reads only the observed **route-A OOM floor** over the population the cost
+  gate can actually protect: rows where route A OOM'd *after being gated below
+  the thresholds* (`decision_reason = below-threshold`) with a real grid
+  (`fanout > 0 AND n_anchors > 0`), via the narrow `OOMFloorSource` seam. Instant
+  / not-sliceable / high-D route-A OOMs are excluded — they were rejected for
+  eligibility, not by the cost gate, so lowering it cannot help them, and their
+  zero grid would otherwise crater the floor to 0.
+- It only ever **lowers** a threshold toward that floor, never raises it, and
+  applies whatever it computes (no hysteresis) — so the guarantee below holds for
+  the **live** gate, not a notional candidate. Because route A and route B are
+  result-identical and route B is the OOM mitigation, lowering can only send more
+  queries to the safe route: the worst case is added route-B overhead, never a
+  wrong answer and never a new OOM.
+- The candidate is clamped so `MinFanout ≤ observed OOM fan-out` and
+  `MinAnchorPairs ≤ min(N)·min(F)` over those rows (a lower bound on the minimum
+  `N·F` product). Together these **prove** every eligible route-A OOM shape in the
+  corpus clears the live gate and would route B — a structural invariant checked
+  in `autotune_test.go`, not a fragile off-policy point estimate.
+- Each tick refits against the *currently active* thresholds over a **rolling**
+  corpus window, so the gate only ratchets downward and settles once it reaches
+  the OOM floor. The monotone ratchet cannot oscillate, so no hysteresis is
+  needed.
+
+**Cold start / kill-switch.** With no eligible route-A OOM in the corpus there is
+no signal and the loop holds the configured thresholds — so a fresh deployment
+behaves byte-identically to the fixed-threshold defaults until real OOM evidence
+accrues. A restart drops the in-memory overlay back to the configured values and
+re-derives from a fresh corpus window.
+
+**Scope of v1.** Because production routing is deterministic, the corpus carries
+no counterfactual A/B evidence with which to *loosen* a threshold; the loop
+therefore only tightens. Loosening (de-protecting a workload the defaults
+over-route) is out of scope until an exploration posture supplies that evidence.
 
 ### Blind spot: a cerberus process OOM-kill
 

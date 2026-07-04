@@ -29,6 +29,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"
+	"github.com/tsouza/cerberus/internal/autotune"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
@@ -36,6 +37,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/routerrules"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/solver"
@@ -134,6 +136,12 @@ func mountAPIHeads(
 		promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
+
+		// Self-driving threshold loop: when enabled (default) and the solver is
+		// in auto mode, periodically refit MinFanout / MinAnchorPairs from the
+		// router corpus and hot-swap certified changes into the live Planner. It
+		// runs on the server lifecycle ctx, so it exits on shutdown.
+		startAutotune(ctx, evalSolver, promClient, cfg, logger)
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
@@ -950,6 +958,54 @@ func buildSolver(
 		"min_anchor_pairs", cfg.MinAnchorPairs,
 	)
 	return s, nil
+}
+
+// autotuneCorpusWindow bounds how far back the self-driving fit reads the router
+// corpus: recent enough to track a shifting workload, wide enough to accumulate
+// the route-A OOM evidence the fit keys on.
+const autotuneCorpusWindow = 7 * 24 * time.Hour
+
+// startAutotune launches the self-driving threshold loop when it is enabled
+// (default) and the solver is in auto mode — single / sharded carry no cost gate
+// to tune, so it no-ops there, and a fixed-threshold deployment
+// (CERBERUS_SOLVER_AUTOTUNE=false) pays nothing. The loop goroutine runs on the
+// server lifecycle ctx and exits when ctx is cancelled at shutdown.
+func startAutotune(ctx context.Context, s *solver.Solver, client *chclient.Client, cfg config.Config, logger *slog.Logger) {
+	if !s.Cfg.Autotune || s.Cfg.Mode != solver.ModeAuto {
+		return
+	}
+	// The fit reads the cerberus_router_corpus MergeTree, which is written ONLY
+	// when the query-log corpus reconciler runs with the chtable sink. Without it
+	// the table does not exist, so autotune stays dormant rather than erroring
+	// every tick against a missing table — it activates once the operator turns
+	// the corpus on (autotune defaults on, so no extra flag is needed that day).
+	if !cfg.CHOptCorpus.Enabled || cfg.CHOptCorpus.SinkMode != corpusSinkModeCHTable {
+		logger.Info(
+			"solver autotune enabled but the router corpus CH table is not being written; "+
+				"loop dormant until the corpus reconciler runs with the chtable sink",
+			"corpus_enabled", cfg.CHOptCorpus.Enabled,
+			"corpus_sink_mode", cfg.CHOptCorpus.SinkMode,
+		)
+		return
+	}
+
+	// Rebuild the source per tick with a freshly-computed window lower bound, so
+	// the fit reads a ROLLING window (recent data) rather than a window frozen at
+	// process start that would only ever expand.
+	conn := client.Conn()
+	newTuner := func() *routerrules.Autotuner {
+		sinceUnix := float64(time.Now().Add(-autotuneCorpusWindow).Unix())
+		return routerrules.NewAutotuner(routerrules.NewCHOOMFloorSource(conn, sinceUnix))
+	}
+	loop := autotune.New(s.Planner, newTuner, s.Cfg.AutotuneInterval, logger.With("component", "autotune"))
+	go loop.Run(ctx)
+	logger.Info(
+		"solver autotune loop started",
+		"interval", s.Cfg.AutotuneInterval,
+		"corpus_window", autotuneCorpusWindow,
+		"min_fanout", s.Cfg.MinFanout,
+		"min_anchor_pairs", s.Cfg.MinAnchorPairs,
+	)
 }
 
 // warnIfClickHouseUnreachable performs the best-effort startup
