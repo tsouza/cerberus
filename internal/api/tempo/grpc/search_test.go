@@ -54,13 +54,28 @@ type stubCursorQuerier struct {
 	// carries `fromUnixTimestamp64Nano(?)` placeholders), so explicit-
 	// window tests assert the supplied bounds reached the query verbatim.
 	lastArgs []any
+	// phaseAStrings records QueryStrings calls — phase A of the structural
+	// two-phase emits its top-N ranking via QueryStrings, so a non-empty slice
+	// proves a gRPC structural search ROUTED through the two-phase split.
+	phaseAStrings []string
 }
 
-func (s *stubCursorQuerier) Query(_ context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
-	return s.rootSamples, nil
+func (s *stubCursorQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	// Search now routes through the eager SearchResult -> Engine.QueryPlan ->
+	// Query (the streaming QueryCursor path is gone), so this method serves the
+	// main search rows. The follow-up root lookup (resolveTraceRoots) emits
+	// argMinIf(...); serve rootSamples for it and capture lastSQL only for the
+	// main query, matching what QueryCursor used to record.
+	if strings.Contains(sql, "argMinIf") {
+		return s.rootSamples, nil
+	}
+	s.lastSQL = sql
+	s.lastArgs = args
+	return s.rows, nil
 }
 
-func (s *stubCursorQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
+func (s *stubCursorQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]string, error) {
+	s.phaseAStrings = append(s.phaseAStrings, sql)
 	return nil, nil
 }
 
@@ -259,13 +274,11 @@ func TestSearch_FrameBatching(t *testing.T) {
 		t.Errorf("traces across frames: got %d, want %d", sum, total)
 	}
 
-	// Cursor.Close MUST be called by the Search handler so CH
-	// resources don't leak. Cancel the context first so any
-	// in-flight goroutine drains, then check.
+	// Release the stream ctx. Search now routes through the eager SearchResult
+	// (no gRPC-owned cursor to Close — CH resources are released inside the engine
+	// when Query returns); the wire contract this test pins is the frame batching
+	// above.
 	cancel()
-	if !waitForClose(&q.closed, time.Second) {
-		t.Errorf("cursor.Close was not invoked")
-	}
 }
 
 // TestSearch_EmptyResultSet asserts the zero-row happy path: a search
@@ -390,11 +403,16 @@ func TestSearch_TraceMetadataPivot(t *testing.T) {
 // resource-release path — the property the design-doc §4 calls out
 // as "Cancellation: stream.Context() cancels on client disconnect;
 // pass into Engine.QueryPlanCursor."
-func TestSearch_CancellationPropagatesToCursor(t *testing.T) {
+func TestSearch_CancellationTerminatesStream(t *testing.T) {
 	t.Parallel()
-	// Enough rows that no realistic in-flight drain ever exhausts the
-	// cursor before the test cancels — we want the cancel to be
-	// observable, not a race with the natural end-of-stream.
+	// Enough rows that no realistic in-flight drain ends before the test
+	// cancels — we want the cancel to be observable, not a race with the
+	// natural end-of-stream. Search now routes through the shared eager
+	// SearchResult (not a gRPC-owned cursor), so cancellation propagates
+	// through the ctx to the CH driver inside the engine; the gRPC-observable
+	// contract is that the stream TERMINATES PROMPTLY on cancel (no hang), which
+	// this asserts. The ctx-error → gRPC-status mapping is pinned separately in
+	// TestMapEngineError_ContextErrors.
 	rows := make([]chclient.Sample, 0, 1000)
 	ts := time.Now()
 	for i := 0; i < 1000; i++ {
@@ -413,8 +431,6 @@ func TestSearch_CancellationPropagatesToCursor(t *testing.T) {
 		t.Fatalf("open stream: %v", err)
 	}
 
-	// Pump the stream in a goroutine so we can cancel mid-drain and
-	// observe Close from the test thread.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -425,7 +441,6 @@ func TestSearch_CancellationPropagatesToCursor(t *testing.T) {
 		}
 	}()
 
-	// Give the server a moment to start draining, then cancel.
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 
@@ -433,10 +448,6 @@ func TestSearch_CancellationPropagatesToCursor(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("stream did not terminate after cancel")
-	}
-
-	if !waitForClose(&q.closed, time.Second) {
-		t.Errorf("cursor.Close was not invoked after cancellation")
 	}
 }
 
@@ -590,20 +601,6 @@ func (c *slowCursor) Sample() chclient.Sample { return c.stubCursor.Sample() }
 func (c *slowCursor) Err() error              { return c.stubCursor.Err() }
 func (c *slowCursor) Close() error            { return c.stubCursor.Close() }
 
-// waitForClose polls the closed counter for up to deadline so the
-// test doesn't race the goroutine that owns the cursor. Returns true
-// once Close has been observed; false when the deadline expires.
-func waitForClose(c *atomic.Int32, deadline time.Duration) bool {
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		if c.Load() == 1 {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return c.Load() == 1
-}
-
 // TestSearch_ParseErrorMapsToInvalidArgument confirms the gRPC error-
 // mapping table from the design doc §3: a TraceQL parser failure
 // surfaces as codes.InvalidArgument (user-facing query error), not
@@ -730,5 +727,31 @@ func TestSearch_SpanSetsLimitAndSpss(t *testing.T) {
 	// Legacy single-set field mirrors SpanSets[0].
 	if tr.SpanSet == nil || len(tr.SpanSet.Spans) != 1 || tr.SpanSet.Spans[0].SpanID != sp.SpanID {
 		t.Errorf("legacy SpanSet must mirror SpanSets[0]; got %+v", tr.SpanSet)
+	}
+}
+
+// TestSearch_StructuralRoutesTwoPhase is the non-vacuity pin: a recursive
+// structural query over gRPC must ROUTE through the same two-phase split as HTTP
+// (phase A ranks via QueryStrings), not silently fall through to a single wide
+// drain. Without the shared SearchResult wiring this passes vacuously; with it,
+// phase A fires. (Phase A returns no ids from the stub, so phase B is skipped and
+// the result is empty — we assert the ROUTING, not the rows.)
+func TestSearch_StructuralRoutesTwoPhase(t *testing.T) {
+	t.Parallel()
+	q := &stubCursorQuerier{}
+	client, cleanup := dialServer(t, q)
+	t.Cleanup(cleanup)
+	stream, err := client.Search(context.Background(), &tempopb.SearchRequest{
+		Query: `{ resource.service.name = "a" } >> { resource.service.name = "b" }`,
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	if _, err := drainSearch(t, stream); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(q.phaseAStrings) == 0 {
+		t.Error("gRPC structural search did not route through the two-phase split (phase A / QueryStrings never fired)")
 	}
 }

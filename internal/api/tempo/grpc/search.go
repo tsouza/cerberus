@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"time"
@@ -110,40 +111,19 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// byte-identical HTTP query is bounded. Charged per-span during the drain.
 	ctx = chclient.WithDrainByteBudget(ctx, chclient.NewTempoSpanDrainBudget())
 
-	// Open the streaming cursor against the lowered TraceQL plan.
-	// cursor.Close is deferred so a client cancellation (ctx.Done()
-	// fires through QueryCursor's progress-context) propagates into
-	// the CH driver — same pattern as Loki's /tail and Prom's
-	// /query_range chunked path.
-	res, err := s.Handler.Engine.QueryCursor(ctx, s.Handler.Lang(), req.Query)
+	// Route through the SAME two-phase-aware entry point the HTTP head uses, so a
+	// recursive structural query is bounded to the top-N traces here too — it used
+	// to drain in FULL because the two-phase split was HTTP-only (the byte budget
+	// above only fail-closed it). Eager, not streaming: the shaper below already
+	// needs the full sample set to group spans by TraceID, so gRPC never streamed
+	// on the Go heap anyway; the byte budget still charges the drain, and the
+	// two-phase split shrinks it to the response traces. Cancellation now surfaces
+	// at the query boundary (mapEngineError maps ctx errors below).
+	res, err := s.Handler.SearchResult(ctx, req.Query, limit)
 	if err != nil {
 		return mapEngineError(err)
 	}
-	defer func() { _ = res.Cursor.Close() }()
-
-	// Drain the cursor into a samples slice. The toTraceSummaries
-	// shaper requires the full result set to group spans by TraceID;
-	// the gRPC frame batching kicks in on the post-shaped summary
-	// list (so frames carry whole-trace summaries, not partial spans).
-	// Cancellation through ctx surfaces as cursor.Next returning false
-	// + cursor.Err returning the wrapped context error.
-	samples := make([]chclient.Sample, 0, 64)
-	for res.Cursor.Next() {
-		samples = append(samples, res.Cursor.Sample())
-		// Honour context cancellation between rows so a client
-		// disconnect mid-drain doesn't block on CH back-pressure.
-		if err := ctx.Err(); err != nil {
-			return status.FromContextError(err).Err()
-		}
-	}
-	if err := res.Cursor.Err(); err != nil {
-		// A cerberus-side outcome surfacing during the drain: a sample-budget 422
-		// (the CH query finished cleanly, cost retained + exit overridden) or a
-		// memory-cap abort (recorded terminally so the corpus does not depend on
-		// the query_log join). Stamp it onto the corpus record for this dispatch.
-		s.Handler.Engine.ObserveDrainOutcome(res.QueryID, "traceql", err)
-		return mapEngineError(err)
-	}
+	samples := res.Samples
 
 	// Honour the request's SpansPerSpanSet + Limit the same way the
 	// HTTP handler honours `spss` + `limit` (zero values fall back to
@@ -207,6 +187,11 @@ func mapEngineError(err error) error {
 		return nil
 	}
 	switch {
+	// Client cancellation / deadline: the eager SearchResult surfaces it at the
+	// query boundary (the old streaming path caught it per-row via ctx.Err). Map
+	// to the proper gRPC status, not a misleading Internal.
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return status.FromContextError(err).Err()
 	case errors.Is(err, chclient.ErrCircuitOpen):
 		return status.Errorf(codes.Unavailable, "%v", err)
 	case errors.Is(err, tempo.ErrParseStage), errors.Is(err, tempo.ErrLowerStage):

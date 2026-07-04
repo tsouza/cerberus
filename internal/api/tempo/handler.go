@@ -421,46 +421,10 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// route the execution. h.lang.Parse runs the TraceQL parser + traceql.Lower
 	// (with the request window / trace-limit folds already applied via the ctx
 	// above), so the returned plan is the same one Engine.Query would run — the
-	// split below is a routing decision, not a re-parse.
-	plan, meta, err := h.lang.Parse(ctx, q)
-	if err != nil {
-		writeError(w, classifySearchErr(err), "", "", err)
-		return
-	}
-	// A positive recursive structural search (`A >> B` / `A << B`) lowers to a
-	// WITH RECURSIVE closure INNER JOINed to the WIDE R projection; on a dense
-	// descendant side that projection materialises every matched span (hundreds
-	// of thousands) only to return the top-N traces — the prod OOM. Split it:
-	// phase A ranks narrowly to the top-N TraceIds, phase B re-runs the closure
-	// projecting wide but restricted to just those traces, bounding the wide
-	// projection to the response set. Every other search shape stays on the
-	// single-query path — byte-identical to today.
-	// The two-phase split is default-on but switchable off
-	// (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false) to fall back to the traditional
-	// single wide query — an escape hatch if a workload ever prefers the
-	// single-pass shape, or to bisect a regression to the two-phase path.
-	//
-	// Deliberately UNCONDITIONAL for every eligible shape — there is no density
-	// cost-gate that would run the single wide query when the descendant side
-	// "looks sparse". A gate was designed and rejected: the OOM variable is
-	// BYTES (matched-span-count × per-span attribute-map width), and every cheap
-	// signal available before the wide fetch (EXPLAIN ESTIMATE rows, system.parts
-	// row counts, count(), window×rate) measures ROWS, blind to fat maps. A
-	// selective-but-fat-map search — e.g. a few thousand error spans each
-	// carrying a ~60 KB stacktrace/body map — passes every row threshold and
-	// OOMs on the single query, reintroducing the exact crash this split fixed.
-	// Meanwhile phase A is already narrow + optimizer-bypassed + window-pruned +
-	// LIMIT-pushed (sub-second on a sparse side, with an empty-result
-	// short-circuit skipping phase B), so a gate would save little for a large
-	// safety risk. A future gate must key off a BYTE-cost signal (column
-	// statistics), not row counts — see TestPhaseAStaysNarrow, which pins the
-	// narrowness this "no gate needed" reasoning rests on.
-	var res engine.Result
-	if sj, ok := structuralTwoPhaseTarget(plan); ok && h.StructuralTwoPhase {
-		res, err = h.runStructuralTwoPhase(ctx, sj, plan, meta, limit)
-	} else {
-		res, err = h.Engine.QueryPlan(ctx, h.lang, plan, meta)
-	}
+	// One shared entry point (SearchResult) parses, routes the two-phase
+	// split, and executes — the SAME method the gRPC Search head calls, so the
+	// two transports cannot diverge on eligibility.
+	res, err := h.SearchResult(ctx, q, limit)
 	if err != nil {
 		writeError(w, classifySearchErr(err), "", "", err)
 		return
