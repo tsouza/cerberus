@@ -38,6 +38,14 @@ func RegisterMetrics(reporter *Reporter) error {
 	gauge := func(name, desc, unit string) (metric.Int64ObservableGauge, error) {
 		return meter.Int64ObservableGauge(name, metric.WithDescription(desc), metric.WithUnit(unit))
 	}
+	// The *_total series are MONOTONIC cumulative counts, so they must be
+	// observable COUNTERS (they land in the OTel-CH sum table). The prom head
+	// routes a `_total` name to the sum table by convention — an observable gauge
+	// named `_total` would write to the gauge table and then never resolve on a
+	// series query, which the compose-smoke metrics-explorer sweep enforces.
+	counter := func(name, desc, unit string) (metric.Int64ObservableCounter, error) {
+		return meter.Int64ObservableCounter(name, metric.WithDescription(desc), metric.WithUnit(unit))
+	}
 
 	active, err := gauge("cerberus_solver_autotune_active",
 		"1 when the self-driving loop is running on this pod (enabled, auto mode, corpus available), else 0.", "{state}")
@@ -59,12 +67,12 @@ func RegisterMetrics(reporter *Reporter) error {
 	if err != nil {
 		return err
 	}
-	appliedTicks, err := gauge("cerberus_solver_autotune_applied_total",
+	appliedTicks, err := counter("cerberus_solver_autotune_applied_total",
 		"Cumulative ticks that lowered the gate on this pod.", "{tick}")
 	if err != nil {
 		return err
 	}
-	errorTicks, err := gauge("cerberus_solver_autotune_errors_total",
+	errorTicks, err := counter("cerberus_solver_autotune_errors_total",
 		"Cumulative ticks whose corpus read failed on this pod.", "{tick}")
 	if err != nil {
 		return err

@@ -22,11 +22,16 @@ func gaugeValues(t *testing.T, reader *metric.ManualReader) map[string]int64 {
 	out := map[string]int64{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			g, ok := m.Data.(metricdata.Gauge[int64])
-			if !ok || len(g.DataPoints) == 0 {
-				continue
+			switch d := m.Data.(type) {
+			case metricdata.Gauge[int64]:
+				if len(d.DataPoints) > 0 {
+					out[m.Name] = d.DataPoints[0].Value
+				}
+			case metricdata.Sum[int64]: // the *_total observable counters
+				if len(d.DataPoints) > 0 {
+					out[m.Name] = d.DataPoints[0].Value
+				}
 			}
-			out[m.Name] = g.DataPoints[0].Value
 		}
 	}
 	return out
