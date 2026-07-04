@@ -22,16 +22,25 @@ const phaseARankTsAlias = "rankTs"
 //
 // The target is deliberately narrow: only the bare positive descendant /
 // ancestor closure, whose emitted shape is the WITH RECURSIVE closure INNER
-// JOINed to the wide R projection that OOMs on a dense descendant side. Direct
-// ops (`>` / `<` / `~`) have a far cheaper single-INNER-JOIN projection;
-// negated (`!>>`) and union (`&>>`) variants have anti-join / two-arm shapes
-// with different phase-A ranking semantics; and any wrapped shape (a Project,
-// a set operation, a `| select(...)` pipeline over the join) is not a bare
-// StructuralJoin root. All of those fall to the single-query path — never a
-// wrong result, just no memory win. They can be added behind the same seam
-// later if their projections turn out to matter.
+// JOINed to the wide R projection that OOMs on a dense descendant side — plus a
+// single row-preserving `| select(...)` Project wrapped over it (unwrapped
+// here). Direct ops (`>` / `<` / `~`) have a far cheaper single-INNER-JOIN
+// projection; negated (`!>>`) and union (`&>>`) variants have anti-join /
+// two-arm shapes whose emitter leaves the non-closure side unrestricted, so
+// they need an emitter change before the seam can admit them safely (a naive
+// gate relax would leak non-top-N traces — a WRONG result, not just no win).
+// Any other wrapped shape (a set operation, an aggregate, a NestedSetAnnotate)
+// falls to the single-query path — never a wrong result, just no memory win.
 func structuralTwoPhaseTarget(plan chplan.Node) (*chplan.StructuralJoin, bool) {
-	sj, ok := plan.(*chplan.StructuralJoin)
+	root := plan
+	// Unwrap a single pure-select Project (`… >> … | select(attr)`). The select
+	// re-projects columns without dropping rows or mutating Timestamp, so phase A
+	// still ranks over the inner join and phase B hydrates the wrapped tree
+	// (restrictStructural walks into the Project to stamp the closure).
+	if p, ok := root.(*chplan.Project); ok && isPureSelectProjection(p) {
+		root = p.Input
+	}
+	sj, ok := root.(*chplan.StructuralJoin)
 	if !ok {
 		return nil, false
 	}
@@ -43,6 +52,23 @@ func structuralTwoPhaseTarget(plan chplan.Node) (*chplan.StructuralJoin, bool) {
 		return sj, true
 	}
 	return nil, false
+}
+
+// isPureSelectProjection reports whether p is a row-preserving `| select(...)`
+// projection directly over a structural join. A `| select(...)` is the only
+// lowering that wraps a StructuralJoin in a Project, and a Project is
+// row-preserving by construction — it maps one input row to one output row;
+// row-collapsing lives in Aggregate nodes, never in a projection — and
+// lowerSelect always emits TraceId/SpanId/Timestamp first, so phase A can still
+// rank over the inner join. Requiring the input to be the bare StructuralJoin
+// (NOT a NestedSetAnnotate / Aggregate / Filter / set-op, which would change the
+// scan or drop rows) is what makes the unwrap safe. The projection expressions
+// themselves may be map-subscripts or other per-row scalars (a selected
+// attribute lowers to `ResourceAttributes['x']`, not a bare column) — those are
+// fine; only the input node kind matters.
+func isPureSelectProjection(p *chplan.Project) bool {
+	_, ok := p.Input.(*chplan.StructuralJoin)
+	return ok
 }
 
 // runStructuralTwoPhase executes a positive recursive structural search in two
@@ -160,7 +186,12 @@ func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit
 // on-disk 32-char form phase A returns, and a defensive left-pad for any short
 // id — so the spliced literals match otel_traces.TraceId exactly.
 func restrictStructural(plan chplan.Node, topN []string) chplan.Node {
-	clone := chplan.CloneNode(plan).(*chplan.StructuralJoin)
+	// Clone as a plain Node (not *StructuralJoin): the plan may be a pure-select
+	// Project wrapped over the join (`… >> … | select(...)`), in which case the
+	// root is the Project and the join sits beneath it. eachStructuralJoin walks
+	// into it either way, so the restriction is stamped whether the root is the
+	// join or a wrapper over it.
+	clone := chplan.CloneNode(plan)
 	ids := padTraceIDs(topN)
 	// Stamp EVERY structural join in the plan, not just the root: a chain
 	// `A >> B >> C` is left-associative, so the root's Left is itself a
