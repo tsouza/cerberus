@@ -424,6 +424,22 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false) to fall back to the traditional
 	// single wide query — an escape hatch if a workload ever prefers the
 	// single-pass shape, or to bisect a regression to the two-phase path.
+	//
+	// Deliberately UNCONDITIONAL for every eligible shape — there is no density
+	// cost-gate that would run the single wide query when the descendant side
+	// "looks sparse". A gate was designed and rejected: the OOM variable is
+	// BYTES (matched-span-count × per-span attribute-map width), and every cheap
+	// signal available before the wide fetch (EXPLAIN ESTIMATE rows, system.parts
+	// row counts, count(), window×rate) measures ROWS, blind to fat maps. A
+	// selective-but-fat-map search — e.g. a few thousand error spans each
+	// carrying a ~60 KB stacktrace/body map — passes every row threshold and
+	// OOMs on the single query, reintroducing the exact crash this split fixed.
+	// Meanwhile phase A is already narrow + optimizer-bypassed + window-pruned +
+	// LIMIT-pushed (sub-second on a sparse side, with an empty-result
+	// short-circuit skipping phase B), so a gate would save little for a large
+	// safety risk. A future gate must key off a BYTE-cost signal (column
+	// statistics), not row counts — see TestPhaseAStaysNarrow, which pins the
+	// narrowness this "no gate needed" reasoning rests on.
 	var res engine.Result
 	if sj, ok := structuralTwoPhaseTarget(plan); ok && h.StructuralTwoPhase {
 		res, err = h.runStructuralTwoPhase(ctx, sj, plan, meta, limit)
