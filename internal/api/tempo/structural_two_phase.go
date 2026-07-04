@@ -44,20 +44,17 @@ func structuralTwoPhaseTarget(plan chplan.Node) (*chplan.StructuralJoin, bool) {
 	if !ok {
 		return nil, false
 	}
-	// Union (`&>>`) is still excluded: its left arm's inverse closure leaves that
-	// side's traces unrestricted, so it needs its own emitter fix before the seam
-	// can admit it (a naive relax would leak non-top-N traces — a wrong result).
-	// Negated (`!>>`) IS admitted: the emitter now restricts the anti-join's R
-	// side to the top-N (structural_join.go), so phase B stays a faithful subset.
-	if sj.Op.IsUnion() {
-		return nil, false
-	}
 	switch sj.Op.Positive() {
 	case chplan.StructuralDescendant, chplan.StructuralAncestor:
-		// Positive `>>`/`<<` and negated `!>>`/`!<<` (Positive() maps the negated
-		// ops back to Descendant/Ancestor). Direct `!>`/`!<`/`!~` fall through —
-		// their positive relation is not Descendant/Ancestor — so the single-level
-		// negated emit path is never reached here.
+		// Positive `>>`/`<<`, negated `!>>`/`!<<`, and union `&>>`/`&<<`
+		// (Positive() maps every recursive descendant/ancestor variant back to
+		// Descendant/Ancestor). Direct `>`/`<`/`~` (and their negated/union forms)
+		// fall through — their positive relation is not Descendant/Ancestor — so
+		// the single-level emit path is never reached here. All three recursive
+		// variants keep phase B a faithful top-N subset: the canonical closure
+		// anchor and the inverse closure step both fold TraceIDRestriction
+		// (structuralAnchorWhere / structuralStepWhere), and each union arm INNER
+		// JOINs on TraceId to a restricted closure side, so no arm leaks.
 		return sj, true
 	}
 	return nil, false

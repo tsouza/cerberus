@@ -231,6 +231,52 @@ func TestSearch_NegatedTwoPhase_Parity_ChDB(t *testing.T) {
 	}
 }
 
+// TestSearch_UnionTwoPhase_Parity_ChDB proves the two-phase seam engages for a
+// union recursive structural search (`&>>`, both projection arms) and stays
+// byte-identical + memory-bounded. `{root-svc} &>> {leaf-svc}` returns the union
+// of both directions — each trace's root AND its leaves participate. The
+// leak-catch is the pre-truncation drain bound: the union has TWO arms
+// (closure(L) INNER JOIN R, and leftSub(L) INNER JOIN inverseClosure(R)); if
+// either arm's restricted side failed to bound its counterpart via the TraceId
+// join, phase B would drain non-top-N traces and small would not sit below full.
+func TestSearch_UnionTwoPhase_Parity_ChDB(t *testing.T) {
+	srv := newManyTracesChDBServer(t, structuralTwoPhaseSeed())
+
+	q := url.QueryEscape(`{ resource.service.name = "root-svc" } &>> { resource.service.name = "leaf-svc" }`)
+	fullLimit := structTwoPhaseTraceCount + 5
+	full := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, fullLimit, seedWindow))
+	small := doSearch(t, srv, fmt.Sprintf("/api/search?q=%s&limit=%d&spss=20%s", q, structTwoPhaseSmallLimit, seedWindow))
+
+	if len(full.Traces) != structTwoPhaseTraceCount {
+		t.Fatalf("full &>> returned %d traces, want all %d", len(full.Traces), structTwoPhaseTraceCount)
+	}
+	if len(small.Traces) != structTwoPhaseSmallLimit {
+		t.Fatalf("small &>> returned %d traces, want %d", len(small.Traces), structTwoPhaseSmallLimit)
+	}
+	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
+			t.Errorf("union two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
+				i, small.Traces[i], full.Traces[i])
+		}
+	}
+	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+		t.Errorf("union small drain (%d) not bounded below full (%d) — an arm leaked non-top-N traces",
+			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+	}
+	// Exact leak-catch. Each kept trace contributes its full union: 1 root
+	// (leftArm, an ancestor of the leaves) + structTwoPhaseLeavesPerTrace leaves
+	// (rightArm, descendants of the root). A weak `< full` bound is NOT enough — a
+	// PARTIAL leak (an unbounded closure step drains a few non-top-N spans without
+	// reaching full) slips under it; pinning the exact drain is what catches the
+	// leak. Verified: with the closure step's TraceIDRestriction disabled this
+	// drain rises above wantSmallDrain and the assertion fires.
+	wantSmallDrain := structTwoPhaseSmallLimit * (1 + structTwoPhaseLeavesPerTrace)
+	if small.Metrics.InspectedTraces != wantSmallDrain {
+		t.Errorf("union small drain = %d, want %d (%d traces * (1 root + %d leaves)) — an arm leaked non-top-N spans",
+			small.Metrics.InspectedTraces, wantSmallDrain, structTwoPhaseSmallLimit, structTwoPhaseLeavesPerTrace)
+	}
+}
+
 // TestSearch_StructuralTwoPhase_EmptyResult_ChDB proves the phase-A "no trace
 // matched" branch: when the descendant side matches nothing, phase A returns
 // zero ids and the handler returns an empty result (rather than emitting a
