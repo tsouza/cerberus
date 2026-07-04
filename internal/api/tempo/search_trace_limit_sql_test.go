@@ -38,6 +38,27 @@ func TestSearch_NegatedTwoPhase_SQLShape(t *testing.T) {
 	}
 }
 
+// TestSearch_UnionTwoPhase_SQLShape pins (non-chdb lane) that a union recursive
+// search `&>>` routes two-phase: the phase-A ranking narrows the two-arm UNION to
+// the top-N per trace (min(Timestamp) over GROUP BY TraceId). Byte-identical
+// parity + the memory bound are proven end-to-end by
+// TestSearch_UnionTwoPhase_Parity_ChDB.
+func TestSearch_UnionTwoPhase_SQLShape(t *testing.T) {
+	t.Parallel()
+	q := url.QueryEscape(`{ resource.service.name = "root-svc" } &>> { resource.service.name = "leaf-svc" }`)
+	sql := searchSQL(t, "/api/search?q="+q+"&limit=3")
+
+	for _, want := range []string{
+		"UNION",
+		"GROUP BY `TraceId`",
+		"min(`Timestamp`)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("union phase-A SQL missing %q (two-phase did not engage?):\n%s", want, sql)
+		}
+	}
+}
+
 // TestSearch_WrappedSelectTwoPhase_SQLShape pins (in the non-chdb lane) that a
 // `>> | select(...)` query routes two-phase: the phase-A ranking query the
 // engine emits carries the min(Timestamp) top-N over GROUP BY TraceId. A
