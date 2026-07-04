@@ -1,7 +1,7 @@
 // Package autotune is the solver's self-driving threshold controller. On a fixed
 // cadence it refits the auto-mode cost thresholds (MinFanout, MinAnchorPairs)
-// from the router corpus via routerrules.Autotuner and hot-swaps any certified
-// change into the running solver.Planner.
+// from the router corpus via routerrules.Autotuner and hot-swaps any change into
+// the running solver.Planner.
 //
 // It is the composition of the corpus-fit "brain" (routerrules) with the policy
 // half (solver): it depends on both and is imported by nothing but cmd/, which
@@ -22,8 +22,8 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
-// Loop drives periodic corpus-fit → certify → hot-reload of the Planner's
-// auto-mode thresholds.
+// Loop drives periodic corpus-fit → hot-reload of the Planner's auto-mode
+// thresholds.
 type Loop struct {
 	planner  *solver.Planner
 	newTuner func() *routerrules.Autotuner

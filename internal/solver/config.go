@@ -93,11 +93,12 @@ type Config struct {
 	// Autotune enables the self-driving threshold loop
 	// (CERBERUS_SOLVER_AUTOTUNE, default true). When true AND Mode == ModeAuto,
 	// a background loop periodically refits MinFanout / MinAnchorPairs from the
-	// router corpus, certifies the candidate off-policy against the OOM floor,
-	// and hot-reloads it into the Planner (Planner.SetThresholds). Disabled pins
-	// the thresholds at their configured values — byte-identical to a
-	// fixed-threshold build. It has no effect outside ModeAuto: single and
-	// sharded carry no cost gate to tune.
+	// router corpus toward the observed route-A OOM floor — only ever lowering
+	// them — and hot-reloads the result into the Planner (Planner.SetThresholds).
+	// Disabled pins the thresholds at their configured values — byte-identical to
+	// a fixed-threshold build. It has no effect outside ModeAuto (single and
+	// sharded carry no cost gate to tune), and stays dormant until the router
+	// corpus CH table is being written (see startAutotune in cmd/).
 	Autotune bool
 
 	// AutotuneInterval is the cadence of the self-driving loop

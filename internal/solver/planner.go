@@ -42,8 +42,7 @@ func (p *Planner) thresholds() (minFanout, minAnchorPairs int) {
 }
 
 // SetThresholds atomically hot-swaps the auto-gate thresholds. Called only by
-// the autotune loop after it certifies a candidate; safe to call concurrently
-// with Plan.
+// the autotune loop after a fit; safe to call concurrently with Plan.
 func (p *Planner) SetThresholds(minFanout, minAnchorPairs int) {
 	p.tuned.Store(&tunedThresholds{MinFanout: minFanout, MinAnchorPairs: minAnchorPairs})
 }
