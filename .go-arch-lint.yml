@@ -149,6 +149,7 @@ components:
   # narrow CHConn + column contract rather than importing optcorpus/chclient, so
   # it depends only on chsql for typed SQL composition.
   routerrules:    { in: routerrules }
+  autotune:       { in: autotune }
 
 # commonComponents are importable from every layer without an explicit
 # `mayDependOn` entry. These are the cross-cutting utility packages
@@ -262,6 +263,15 @@ deps:
     mayDependOn:
       - chplan
       - chclient
+
+  # autotune is the self-driving loop: it composes the solver (Planner, whose
+  # thresholds it hot-swaps) with routerrules (the corpus-fit brain). It is
+  # wired from cmd/ with a corpus source and launched on the server lifecycle
+  # context; it sits above both and is imported by nothing but cmd/.
+  autotune:
+    mayDependOn:
+      - solver
+      - routerrules
 
   # config is wired from cmd/ to build chclient + schema at boot.
   config:

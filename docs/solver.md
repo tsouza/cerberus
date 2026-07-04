@@ -277,10 +277,14 @@ goleak-gated with routed queries.
 ## Routing-decision calibration corpus (stage 0, measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single
-CH query) or B (time-slice sharded) by fixed thresholds over the cost grid it
-derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Stage 0
-asks, **without changing any threshold or routing behavior**, whether that
-heuristic is good enough or whether a calibrated/learned router would pay off.
+CH query) or B (time-slice sharded) by cost thresholds over the grid it
+derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Those
+thresholds start at their configured values and are lowered at runtime by the
+self-driving loop (Stage 1 below); the classifier reads them through an atomic
+overlay, so it stays pure — no per-request state, no RNG. Stage 0 is the
+**measurement-only** substrate that loop consumes: it records, **without itself
+changing any threshold or routing behavior**, the `(N, F, D)` context and the
+observed cost of every decision.
 
 To answer it the engine closes the loop the optimization corpus
 (`internal/optcorpus`) already half-built:
@@ -332,6 +336,49 @@ computed and **changes no routing behavior**. The captured features suffice to
 Step)` back through `Planner.Plan` and it reproduces the recorded route, so an
 operator can sweep counterfactual thresholds against history without touching
 production (proven by `TestPlan_OfflineReplay_ReproducesRoute`).
+
+## Stage 1 — self-driving thresholds (the autotune loop)
+
+`internal/autotune` closes the loop on the Stage-0 corpus. When enabled
+(`CERBERUS_SOLVER_AUTOTUNE`, **default true**) and the solver is in auto mode, a
+background loop (`autotune.Loop`, launched on the server lifecycle context so it
+exits cleanly at shutdown) refits the two auto-gate thresholds — `MinFanout` and
+`MinAnchorPairs` — from the corpus on a cadence
+(`CERBERUS_SOLVER_AUTOTUNE_INTERVAL`, default 15m) and hot-swaps any certified
+change into the live `Planner` via an atomic pointer store
+(`Planner.SetThresholds`). Single / sharded modes carry no cost gate, so the loop
+no-ops there; disabling it pins the thresholds at their configured values,
+byte-identical to a fixed-threshold build.
+
+The fit (`routerrules.Autotuner.Fit`) is deliberately narrow and **safe by
+construction, not by statistics**:
+
+- It reads only the observed route-A OOM line from the corpus — the minimum
+  fan-out and minimum anchor count among rows where route A OOM'd — via the
+  existing `CorpusSource.Aggregate` seam (no new SQL).
+- It only ever **lowers** a threshold toward that line, never raises it. Because
+  route A and route B are result-identical and route B is the OOM mitigation,
+  lowering can only send more queries to the safe route: the worst case is added
+  route-B overhead, never a wrong answer and never a new OOM.
+- The candidate is clamped so `MinFanout ≤ observed OOM fan-out` and
+  `MinAnchorPairs ≤ min(N)·min(F)` over the OOM'd rows (a lower bound on the
+  minimum `N·F` product). Together these **prove** every route-A OOM shape in the
+  corpus clears the candidate gate and would route B — the certification is a
+  structural invariant, checked in `autotune_test.go`, not a fragile off-policy
+  point estimate.
+- Hysteresis (a minimum drop before a candidate is applied) damps threshold
+  thrash under a non-stationary corpus.
+
+**Cold start / kill-switch.** With no route-A OOM in the corpus there is no
+signal and the loop holds the configured thresholds — so a fresh deployment
+behaves byte-identically to the fixed-threshold defaults until real OOM evidence
+accrues. A restart drops the in-memory overlay back to the configured values and
+re-derives from the corpus.
+
+**Scope of v1.** Because production routing is deterministic, the corpus carries
+no counterfactual A/B evidence with which to *loosen* a threshold; the loop
+therefore only tightens. Loosening (de-protecting a workload the defaults
+over-route) is out of scope until an exploration posture supplies that evidence.
 
 ### Blind spot: a cerberus process OOM-kill
 

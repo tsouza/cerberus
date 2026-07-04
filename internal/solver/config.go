@@ -89,6 +89,21 @@ type Config struct {
 	// per-shard max_memory_usage is cap/P (256 MiB floor), holding total
 	// exposure at exactly the single-query cap.
 	MemoryApportion bool
+
+	// Autotune enables the self-driving threshold loop
+	// (CERBERUS_SOLVER_AUTOTUNE, default true). When true AND Mode == ModeAuto,
+	// a background loop periodically refits MinFanout / MinAnchorPairs from the
+	// router corpus, certifies the candidate off-policy against the OOM floor,
+	// and hot-reloads it into the Planner (Planner.SetThresholds). Disabled pins
+	// the thresholds at their configured values — byte-identical to a
+	// fixed-threshold build. It has no effect outside ModeAuto: single and
+	// sharded carry no cost gate to tune.
+	Autotune bool
+
+	// AutotuneInterval is the cadence of the self-driving loop
+	// (CERBERUS_SOLVER_AUTOTUNE_INTERVAL, default 15m). Ignored when Autotune is
+	// false or Mode != ModeAuto.
+	AutotuneInterval time.Duration
 }
 
 // Default tuning constants (docs §Routing / §"The solver framework").
@@ -100,6 +115,8 @@ const (
 	defaultParallel           = 3
 	defaultTimeout            = 60 * time.Second
 	defaultMaxOutputRows      = 2_000_000
+	defaultAutotune           = true
+	defaultAutotuneInterval   = 15 * time.Minute
 )
 
 // DefaultConfig returns the conservative library defaults. Mode defaults to
@@ -116,6 +133,8 @@ func DefaultConfig() Config {
 		Timeout:            defaultTimeout,
 		MaxOutputRows:      defaultMaxOutputRows,
 		MemoryApportion:    false,
+		Autotune:           defaultAutotune,
+		AutotuneInterval:   defaultAutotuneInterval,
 	}
 }
 
@@ -152,6 +171,13 @@ func (c Config) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("solver: Timeout must be > 0, got %s", c.Timeout)
+	}
+	// AutotuneInterval only has to be self-consistent when the loop can run
+	// (Autotune && auto mode); a stale interval on a disabled loop is harmless,
+	// but validating unconditionally keeps the failure at startup, not at the
+	// first tick.
+	if c.Autotune && c.AutotuneInterval <= 0 {
+		return fmt.Errorf("solver: AutotuneInterval must be > 0 when Autotune is set, got %s", c.AutotuneInterval)
 	}
 	return nil
 }

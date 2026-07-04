@@ -1,6 +1,9 @@
 package solver
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestConfigFromEnv_DefaultsToAuto pins the phase-2 flip: with
 // CERBERUS_EVAL_ROUTE unset, the production env path routes in "auto" mode (the
@@ -55,5 +58,49 @@ func TestConfigFromEnv_ShardedForce(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("sharded config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_AutotuneDefaultsOn pins the headline default: the
+// self-driving loop is ENABLED unless an operator opts out, with the default
+// cadence. The resolved config must validate.
+func TestConfigFromEnv_AutotuneDefaultsOn(t *testing.T) {
+	t.Setenv(EnvAutotune, "")
+	t.Setenv(EnvAutotuneInterval, "")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if !cfg.Autotune {
+		t.Errorf("Autotune = false, want true (default-on)")
+	}
+	if cfg.AutotuneInterval != defaultAutotuneInterval {
+		t.Errorf("AutotuneInterval = %s, want %s", cfg.AutotuneInterval, defaultAutotuneInterval)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("autotune config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_AutotuneDisable confirms the kill-switch: setting
+// CERBERUS_SOLVER_AUTOTUNE=false pins the thresholds (fixed-threshold build) and
+// a custom interval parses.
+func TestConfigFromEnv_AutotuneDisable(t *testing.T) {
+	t.Setenv(EnvAutotune, "false")
+	t.Setenv(EnvAutotuneInterval, "30m")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.Autotune {
+		t.Errorf("Autotune = true, want false (kill-switch)")
+	}
+	if cfg.AutotuneInterval != 30*time.Minute {
+		t.Errorf("AutotuneInterval = %s, want 30m", cfg.AutotuneInterval)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled-autotune config failed Validate: %v", err)
 	}
 }
