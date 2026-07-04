@@ -252,6 +252,7 @@ type columnarCursor struct {
 
 	budget         *SampleBudget
 	byteBudget     *DrainByteBudget
+	byteChargedSeq uint32
 	maxSamples     int64
 	maxMemoryBytes int64
 	queryTimeout   time.Duration
@@ -359,15 +360,17 @@ func (d *columnarCursor) decodeBlock(cols matrixCols, rows int) error {
 			curInterned, curID = d.interner.internLabels(curLabels)
 			prevStart, prevEnd = start, end
 			haveSeries = true
-			// Charge the newly-built unique attribute map against the Tempo
-			// wide-projection byte budget (nil off the span-search path, so
-			// PromQL/LogQL drains are untouched). Charging per UNIQUE interned
-			// map — not per row — measures the true Go-heap cost: aliased rows
-			// share the map. Fail-closed the instant the running total crosses
-			// the ceiling, before the full wide set materialises.
-			if d.byteBudget != nil && !d.byteBudget.consume(labelMapBytes(curInterned)) {
-				d.err = &DrainByteBudgetError{Limit: d.byteBudget.Limit()}
-				return errBudgetExceeded
+			// Charge the Tempo wide-projection byte budget once per UNIQUE series
+			// (nil off the span-search path). The sameSpan pre-check above
+			// rebuilds curLabels every row (Map offsets advance per row), so gate
+			// the charge on the monotonic series ordinal — NOT the rebuild — to
+			// match rowsCursor and avoid per-row over-counting of a shared map.
+			if d.byteBudget != nil && curID > d.byteChargedSeq {
+				d.byteChargedSeq = curID
+				if !d.byteBudget.consume(labelMapBytes(curInterned)) {
+					d.err = &DrainByteBudgetError{Limit: d.byteBudget.Limit()}
+					return errBudgetExceeded
+				}
 			}
 		}
 		d.samples = append(d.samples, Sample{

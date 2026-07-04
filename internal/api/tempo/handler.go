@@ -137,12 +137,6 @@ type Handler struct {
 	// false every search takes the traditional single wide query. New() defaults
 	// it true; cmd/ overrides from config.
 	StructuralTwoPhase bool
-
-	// drainBytesLimit overrides the wide-projection byte ceiling for a search
-	// drain. 0 (production) uses chclient's internal default const; tests set it
-	// small to trip the fail-closed gate on a modest fat-map fixture. Not wired
-	// to any env/config — deliberately not an operator knob.
-	drainBytesLimit int64
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -360,6 +354,20 @@ func TruncateSummaries(summaries []TraceSummary, missing []string, limit int) ([
 	return summaries, filtered
 }
 
+// withSpanDrainBudget attaches the fail-closed wide-projection byte budget to
+// ctx — a cap on the cumulative ResourceAttributes+SpanAttributes bytes a span
+// drain may buffer into the Go heap before aborting. It is the byte axis every
+// trace-count / time / row bound misses (a selective-but-fat-map drain heaps
+// gigabytes under all of them); charged per unique span in the chclient cursor,
+// so the drain aborts before the full wide set materialises. EVERY Tempo drain
+// that projects the wide maps — /api/search, /api/search/recent, and
+// /api/traces/{id} — routes through this one helper so no wide-map drain is left
+// uncharged (trace-by-id folds the full per-span SpanAttributes and is the
+// fattest of them).
+func (h *Handler) withSpanDrainBudget(ctx context.Context) context.Context {
+	return chclient.WithDrainByteBudget(ctx, chclient.NewTempoSpanDrainBudget())
+}
+
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
@@ -408,20 +416,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Thread the request window so stampSearchTraceLimit folds it into the
 	// bounded plain-search scan. No-op when both bounds are absent.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
-	// Attach the wide-projection byte budget: a fail-closed cap on the cumulative
-	// ResourceAttributes+SpanAttributes bytes this search may drain into the Go
-	// heap. It is the byte axis every trace-count / time / row bound misses — a
-	// selective-but-fat-map search heaps gigabytes under all of them. Charged
-	// per-span during the drain (chclient cursor), so it aborts before the full
-	// wide set materialises. Scoped to the span-search path here; PromQL/LogQL
-	// drains never see it.
-	byteBudget := chclient.NewTempoSpanDrainBudget()
-	if h.drainBytesLimit > 0 {
-		// Test seam only (0 in production → the internal default const). Not an
-		// env/config knob: there is no per-deployment override to mis-set.
-		byteBudget = chclient.NewDrainByteBudget(h.drainBytesLimit)
-	}
-	ctx = chclient.WithDrainByteBudget(ctx, byteBudget)
+	ctx = h.withSpanDrainBudget(ctx)
 	// Parse + lower first so the handler can inspect the lowered plan and
 	// route the execution. h.lang.Parse runs the TraceQL parser + traceql.Lower
 	// (with the request window / trace-limit folds already applied via the ctx
@@ -679,7 +674,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	plan = &chplan.Limit{Input: plan, Count: limit}
 
-	ctx := r.Context()
+	ctx := h.withSpanDrainBudget(r.Context())
 	// /search/recent doesn't go through a parser, so use QueryPlan
 	// directly. IsTraceByID stays false: the OrderBy+Limit shape
 	// benefits from the seed optimizer's projection-pushdown pass.
@@ -768,7 +763,9 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	// `if !meta.IsTraceByID` branch). The wrap-projection still runs
 	// via Lang.ProjectSamples so the chclient.Sample shape is
 	// canonical before emit.
-	ctx := r.Context()
+	// Trace-by-id folds the FULL per-span SpanAttributes map into the projection
+	// (the fattest wide drain), so it must carry the byte budget too.
+	ctx := h.withSpanDrainBudget(r.Context())
 	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{
 		IsTraceByID:   true,
 		ResponseShape: "tempo-trace",

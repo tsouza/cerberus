@@ -130,14 +130,31 @@ func drainByteBudgetFromContext(ctx context.Context) *DrainByteBudget {
 	return b
 }
 
-// labelMapBytes returns the on-heap byte width of a decoded attribute map: the
-// sum of every key and value string length. It is the per-span wide-projection
-// cost the byte budget charges — the same Map(String,String) key/value bytes
-// ClickHouse materialised and streamed, which the Go heap then holds.
+// perMapEntryHeapBytes approximates the Go-runtime heap the cursor RETAINS per
+// attribute-map entry beyond the raw string content: two ~16-byte string headers
+// (key + value) plus amortised map-bucket overhead. Included so the byte ceiling
+// tracks the real Go-heap high-water rather than just the wire content — a
+// content-only count under-charges the retained heap several-fold and would fire
+// the gate well past the memory it is meant to bound.
+const perMapEntryHeapBytes = 48
+
+// DrainByteBudgetFromContext returns the *DrainByteBudget attached to ctx by
+// WithDrainByteBudget, or nil. Exported so the Tempo handler tests can confirm
+// every wide-map drain endpoint attaches the budget (the no-bypass ratchet).
+func DrainByteBudgetFromContext(ctx context.Context) *DrainByteBudget {
+	return drainByteBudgetFromContext(ctx)
+}
+
+// labelMapBytes returns the on-heap byte width the cursor RETAINS for one unique
+// interned attribute map. That is NOT just the key/value content: internLabels
+// also retains a canonicalLabelKey string of the same content per unique series,
+// and each entry carries Go map-header + string-header overhead. So the charge
+// is ~2× the content (map + canonical-key duplicate) plus per-entry overhead —
+// a deliberately conservative estimate of the true retained heap.
 func labelMapBytes(m map[string]string) int64 {
-	var n int64
+	var content int64
 	for k, v := range m {
-		n += int64(len(k)) + int64(len(v))
+		content += int64(len(k)) + int64(len(v))
 	}
-	return n
+	return content*2 + int64(len(m))*perMapEntryHeapBytes
 }

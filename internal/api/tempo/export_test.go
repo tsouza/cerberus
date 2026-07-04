@@ -27,7 +27,3 @@ var (
 	GroupBatchesForTest      = groupBatches
 	GroupBatchesProtoForTest = groupBatchesProto
 )
-
-// SetDrainBytesLimitForTest sets the wide-projection byte ceiling used by a
-// search drain, so a test can trip the fail-closed gate on a modest fixture.
-func (h *Handler) SetDrainBytesLimitForTest(n int64) { h.drainBytesLimit = n }

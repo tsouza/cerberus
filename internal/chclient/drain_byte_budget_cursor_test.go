@@ -83,7 +83,7 @@ func TestRowsCursor_DrainByteBudget_PerUniqueSeries(t *testing.T) {
 	}
 	// Ceiling just above one map (~1007) but far below 100×1007: per-row charging
 	// would trip; per-unique must not.
-	cur := &rowsCursor{rows: &freshLabelRows{rows: rows}, byteBudget: NewDrainByteBudget(2000)}
+	cur := &rowsCursor{rows: &freshLabelRows{rows: rows}, byteBudget: NewDrainByteBudget(5000)}
 	defer func() { _ = cur.Close() }()
 	var drained int
 	for cur.Next() {
@@ -125,8 +125,8 @@ func TestDrainByteBudget_ConsumeAndContext(t *testing.T) {
 
 func TestLabelMapBytes(t *testing.T) {
 	t.Parallel()
-	if got := labelMapBytes(map[string]string{"ab": "cde", "f": "g"}); got != 2+3+1+1 {
-		t.Fatalf("labelMapBytes = %d, want 7", got)
+	if got := labelMapBytes(map[string]string{"ab": "cde", "f": "g"}); got != 7*2+2*48 {
+		t.Fatalf("labelMapBytes = %d, want 110", got)
 	}
 	if got := labelMapBytes(nil); got != 0 {
 		t.Fatalf("labelMapBytes(nil) = %d, want 0", got)
