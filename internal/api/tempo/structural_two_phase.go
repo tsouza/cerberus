@@ -77,6 +77,39 @@ func isPureSelectProjection(p *chplan.Project) bool {
 	return ok
 }
 
+// SearchResult parses, routes, and executes a /api/search query and returns the
+// eager engine.Result both Search transports shape into trace summaries. It is
+// the SINGLE place the structural two-phase split decision lives, so the HTTP and
+// gRPC heads physically cannot diverge — the HTTP-only two-phase gap this closes.
+// Callers apply toTraceSummaries / TruncateSummaries / spss over res.Samples.
+//
+// A positive recursive structural search (`A >> B` / `A << B`, plus negated
+// `!>>` / union `&>>`) lowers to a WITH RECURSIVE closure INNER JOINed to the
+// WIDE R projection; on a dense descendant side that projection materialises
+// every matched span only to return the top-N traces — the prod OOM. Split it:
+// phase A ranks narrowly to the top-N TraceIds, phase B re-runs the closure
+// projecting wide but restricted to just those traces. Every other shape stays
+// on the single-query path — byte-identical to today.
+//
+// Default-on, switchable off (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false).
+// Deliberately UNCONDITIONAL for every eligible shape — no density cost-gate:
+// the OOM variable is BYTES (matched-span-count × per-span map width), and every
+// cheap pre-fetch signal measures ROWS, blind to fat maps, so a selective-but-
+// fat-map search would slip a gate and reintroduce the crash. The Go-heap bytes
+// are instead bounded at the drain by the wide-projection byte budget
+// (withSpanDrainBudget); a future upfront gate would need a byte-cost signal, not
+// row counts — see TestPhaseAStaysNarrow.
+func (h *Handler) SearchResult(ctx context.Context, query string, limit int) (engine.Result, error) {
+	plan, meta, err := h.lang.Parse(ctx, query)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	if sj, ok := structuralTwoPhaseTarget(plan); ok && h.StructuralTwoPhase {
+		return h.runStructuralTwoPhase(ctx, sj, plan, meta, limit)
+	}
+	return h.Engine.QueryPlan(ctx, h.lang, plan, meta)
+}
+
 // runStructuralTwoPhase executes a positive recursive structural search in two
 // phases and returns the same engine.Result the single wide query would have
 // produced — the identical ordered top-N traces with identical per-trace
