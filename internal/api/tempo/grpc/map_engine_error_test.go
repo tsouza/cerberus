@@ -44,8 +44,12 @@ func TestMapEngineError_ContextErrors(t *testing.T) {
 		want codes.Code
 	}{
 		{context.Canceled, codes.Canceled},
-		{context.DeadlineExceeded, codes.DeadlineExceeded},
+		// Deadline + CH wall-clock timeout both map to Unavailable (the gRPC 503),
+		// symmetric with HTTP classifySearchErr which maps both to 503.
+		{context.DeadlineExceeded, codes.Unavailable},
+		{chclient.ErrQueryTimeout, codes.Unavailable},
 		{fmt.Errorf("engine: execute: %w", context.Canceled), codes.Canceled},
+		{fmt.Errorf("engine: execute: %w", chclient.ErrQueryTimeout), codes.Unavailable},
 	}
 	for _, tc := range cases {
 		if got := status.Code(grpc.MapEngineErrorForTest(tc.err)); got != tc.want {

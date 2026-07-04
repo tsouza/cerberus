@@ -187,11 +187,16 @@ func mapEngineError(err error) error {
 		return nil
 	}
 	switch {
-	// Client cancellation / deadline: the eager SearchResult surfaces it at the
-	// query boundary (the old streaming path caught it per-row via ctx.Err). Map
-	// to the proper gRPC status, not a misleading Internal.
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	// Client cancellation: the eager SearchResult surfaces it at the query
+	// boundary (the old streaming path caught it per-row via ctx.Err).
+	case errors.Is(err, context.Canceled):
 		return status.FromContextError(err).Err()
+	// Timeout family — a CH wall-clock cap (ErrQueryTimeout, code 159) or a ctx
+	// deadline. HTTP classifySearchErr maps BOTH to 503; codes.Unavailable is the
+	// gRPC 503 (transient, retryable), so the two heads stay symmetric. Without
+	// the ErrQueryTimeout case it fell through to a misleading Internal.
+	case errors.Is(err, chclient.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
+		return status.Errorf(codes.Unavailable, "%v", err)
 	case errors.Is(err, chclient.ErrCircuitOpen):
 		return status.Errorf(codes.Unavailable, "%v", err)
 	case errors.Is(err, tempo.ErrParseStage), errors.Is(err, tempo.ErrLowerStage):

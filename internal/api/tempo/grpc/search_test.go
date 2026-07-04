@@ -41,31 +41,31 @@ type stubCursorQuerier struct {
 	// real root span. Empty / nil here means "no roots to patch",
 	// matching the steady-state happy path.
 	rootSamples []chclient.Sample
-	// closed flips to 1 once the cursor's Close has been invoked.
-	// Tests assert against it to prove that cancellation reached the
-	// streaming cursor.
-	closed atomic.Int32
-	// lastSQL captures the SQL the engine handed the cursor open call,
-	// so window-threading tests can assert the emitted scan is windowed
-	// (the gRPC mirror of the HTTP stubQuerier.lastSQL convention).
-	lastSQL string
-	// lastArgs captures the bound parameters alongside lastSQL — the
-	// windowed Timestamp bounds ride here as int64 nanos (the SQL
-	// carries `fromUnixTimestamp64Nano(?)` placeholders), so explicit-
-	// window tests assert the supplied bounds reached the query verbatim.
+	// lastSQL / lastArgs capture what the eager search Query received, so
+	// window-threading tests can assert the emitted scan is windowed.
+	lastSQL  string
 	lastArgs []any
-	// phaseAStrings records QueryStrings calls — phase A of the structural
-	// two-phase emits its top-N ranking via QueryStrings, so a non-empty slice
-	// proves a gRPC structural search ROUTED through the two-phase split.
+	// phaseAStrings records QueryStrings calls; phaseAIDs is what it returns.
+	// A non-empty phaseAStrings proves a gRPC structural search ROUTED through
+	// the two-phase split; setting phaseAIDs lets phase B run end-to-end.
 	phaseAStrings []string
+	phaseAIDs     []string
+	// block makes Query wait for ctx cancellation then return ctx.Err(); released
+	// records it observed the cancellation — so a cancellation test proves the
+	// client cancel propagated through SearchResult -> QueryPlan -> Query.
+	block    bool
+	released atomic.Bool
 }
 
-func (s *stubCursorQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
-	// Search now routes through the eager SearchResult -> Engine.QueryPlan ->
-	// Query (the streaming QueryCursor path is gone), so this method serves the
-	// main search rows. The follow-up root lookup (resolveTraceRoots) emits
-	// argMinIf(...); serve rootSamples for it and capture lastSQL only for the
-	// main query, matching what QueryCursor used to record.
+func (s *stubCursorQuerier) Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	if s.block {
+		<-ctx.Done()
+		s.released.Store(true)
+		return nil, ctx.Err()
+	}
+	// The eager search routes here (the streaming QueryCursor path is gone). The
+	// follow-up root lookup (resolveTraceRoots) emits argMinIf(...); serve
+	// rootSamples for it and the main search rows otherwise.
 	if strings.Contains(sql, "argMinIf") {
 		return s.rootSamples, nil
 	}
@@ -76,50 +76,8 @@ func (s *stubCursorQuerier) Query(_ context.Context, sql string, args ...any) ([
 
 func (s *stubCursorQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]string, error) {
 	s.phaseAStrings = append(s.phaseAStrings, sql)
-	return nil, nil
+	return s.phaseAIDs, nil
 }
-
-func (s *stubCursorQuerier) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
-	s.lastSQL = sql
-	s.lastArgs = args
-	return &stubCursor{rows: s.rows, ctx: ctx, closed: &s.closed}, nil
-}
-
-// stubCursor walks rowsByQuery one Sample at a time. Honours ctx
-// cancellation so the gRPC Search RPC can prove that a client
-// disconnect mid-stream surfaces as a cursor termination.
-type stubCursor struct {
-	rows   []chclient.Sample
-	i      int
-	cur    chclient.Sample
-	err    error
-	ctx    context.Context
-	closed *atomic.Int32
-}
-
-func (c *stubCursor) Next() bool {
-	// Mid-iteration context cancellation: shortcut Next to surface the
-	// ctx error via Err(). Matches the rowsCursor production shape
-	// where a cancelled driver.Rows reports its cause through Err.
-	if err := c.ctx.Err(); err != nil {
-		c.err = err
-		return false
-	}
-	if c.i >= len(c.rows) {
-		return false
-	}
-	c.cur = c.rows[c.i]
-	c.i++
-	return true
-}
-
-func (c *stubCursor) Sample() chclient.Sample { return c.cur }
-func (c *stubCursor) Err() error              { return c.err }
-func (c *stubCursor) Close() error {
-	c.closed.Store(1)
-	return nil
-}
-func (c *stubCursor) Inspected() int64 { return int64(c.i) }
 
 // makeSearchRow returns one synthetic chclient.Sample shaped like the
 // canonical wrap-projection output: MetricName carries SpanName, the
@@ -396,33 +354,16 @@ func TestSearch_TraceMetadataPivot(t *testing.T) {
 	}
 }
 
-// TestSearch_CancellationPropagatesToCursor wires a slow synthetic
-// cursor (1 row every 50ms), cancels the client context mid-stream,
-// and asserts that cursor.Close was invoked. This is the proof that
-// gRPC stream context cancellation flows through to the CH cursor's
-// resource-release path — the property the design-doc §4 calls out
-// as "Cancellation: stream.Context() cancels on client disconnect;
-// pass into Engine.QueryPlanCursor."
-func TestSearch_CancellationTerminatesStream(t *testing.T) {
+// TestSearch_CancellationReachesQuery proves a client cancellation propagates
+// through the eager SearchResult -> Engine.QueryPlan -> Query drain (the
+// coverage the removed gRPC-owned cursor used to give). The stub Query BLOCKS
+// until its ctx is cancelled, so the test asserts BOTH that the stream
+// terminates promptly AND that the server's Query observed the cancellation
+// (released): a broken cancellation path would hang and leave released false.
+func TestSearch_CancellationReachesQuery(t *testing.T) {
 	t.Parallel()
-	// Enough rows that no realistic in-flight drain ends before the test
-	// cancels — we want the cancel to be observable, not a race with the
-	// natural end-of-stream. Search now routes through the shared eager
-	// SearchResult (not a gRPC-owned cursor), so cancellation propagates
-	// through the ctx to the CH driver inside the engine; the gRPC-observable
-	// contract is that the stream TERMINATES PROMPTLY on cancel (no hang), which
-	// this asserts. The ctx-error → gRPC-status mapping is pinned separately in
-	// TestMapEngineError_ContextErrors.
-	rows := make([]chclient.Sample, 0, 1000)
-	ts := time.Now()
-	for i := 0; i < 1000; i++ {
-		rows = append(rows, makeSearchRow(padHexTraceID(i), "GET /api", "svc", ts, 1))
-	}
-	q := &slowCursorQuerier{
-		stubCursorQuerier: stubCursorQuerier{rows: rows},
-		rowDelay:          20 * time.Millisecond,
-	}
-	client, cleanup := dialServer(t, &q.stubCursorQuerier)
+	q := &stubCursorQuerier{block: true}
+	client, cleanup := dialServer(t, q)
 	t.Cleanup(cleanup)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -430,7 +371,6 @@ func TestSearch_CancellationTerminatesStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -449,6 +389,21 @@ func TestSearch_CancellationTerminatesStream(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("stream did not terminate after cancel")
 	}
+	if !waitForBool(&q.released, time.Second) {
+		t.Error("server Query never observed ctx cancellation — not propagated to the eager drain")
+	}
+}
+
+// waitForBool polls an atomic.Bool until true or the deadline elapses.
+func waitForBool(b *atomic.Bool, deadline time.Duration) bool {
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if b.Load() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return b.Load()
 }
 
 // TestSearch_WindowlessDefaultsLookback_SQLShape proves the gRPC
@@ -560,46 +515,6 @@ func TestSearch_ExplicitWindow_Honored(t *testing.T) {
 			sawStart, sawEnd, q.lastArgs)
 	}
 }
-
-// slowCursorQuerier is stubCursorQuerier with a delay between
-// Next() calls so the CancellationPropagatesToCursor test has
-// enough wall-clock to interrupt mid-stream. The embedded
-// stubCursorQuerier carries the rows + closed-counter; the delay
-// is layered on by wrapping QueryCursor's returned cursor.
-type slowCursorQuerier struct {
-	stubCursorQuerier
-	rowDelay time.Duration
-}
-
-func (s *slowCursorQuerier) QueryCursor(ctx context.Context, _ string, _ ...any) (chclient.Cursor, error) {
-	return &slowCursor{
-		stubCursor: stubCursor{rows: s.rows, ctx: ctx, closed: &s.closed},
-		delay:      s.rowDelay,
-	}, nil
-}
-
-type slowCursor struct {
-	stubCursor
-	delay time.Duration
-}
-
-func (c *slowCursor) Next() bool {
-	if c.i > 0 {
-		// Honour ctx cancellation while sleeping so the cancel
-		// propagates promptly (a naked time.Sleep wouldn't return).
-		select {
-		case <-time.After(c.delay):
-		case <-c.ctx.Done():
-			c.err = c.ctx.Err()
-			return false
-		}
-	}
-	return c.stubCursor.Next()
-}
-
-func (c *slowCursor) Sample() chclient.Sample { return c.stubCursor.Sample() }
-func (c *slowCursor) Err() error              { return c.stubCursor.Err() }
-func (c *slowCursor) Close() error            { return c.stubCursor.Close() }
 
 // TestSearch_ParseErrorMapsToInvalidArgument confirms the gRPC error-
 // mapping table from the design doc §3: a TraceQL parser failure
@@ -738,7 +653,17 @@ func TestSearch_SpanSetsLimitAndSpss(t *testing.T) {
 // the result is empty — we assert the ROUTING, not the rows.)
 func TestSearch_StructuralRoutesTwoPhase(t *testing.T) {
 	t.Parallel()
-	q := &stubCursorQuerier{}
+	ts := time.Now()
+	// phaseAIDs = the top-N ranking phase A returns (non-empty so phase B runs);
+	// rows = the wide phase-B hydrate for those traces. Proves the split runs
+	// END-TO-END over gRPC, not just that phase A fires.
+	q := &stubCursorQuerier{
+		phaseAIDs: []string{padHexTraceID(1), padHexTraceID(2)},
+		rows: []chclient.Sample{
+			makeSearchRow(padHexTraceID(1), "op", "a", ts, 1),
+			makeSearchRow(padHexTraceID(2), "op", "a", ts, 1),
+		},
+	}
 	client, cleanup := dialServer(t, q)
 	t.Cleanup(cleanup)
 	stream, err := client.Search(context.Background(), &tempopb.SearchRequest{
@@ -748,10 +673,20 @@ func TestSearch_StructuralRoutesTwoPhase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
-	if _, err := drainSearch(t, stream); err != nil {
+	frames, err := drainSearch(t, stream)
+	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
+	// Phase A fired — routed through the two-phase split, not a single wide query.
 	if len(q.phaseAStrings) == 0 {
-		t.Error("gRPC structural search did not route through the two-phase split (phase A / QueryStrings never fired)")
+		t.Fatal("gRPC structural search did not route through the two-phase split (phase A never fired)")
+	}
+	// Phase B hydrated + shaped end-to-end into trace summaries over the stream.
+	traces := 0
+	for _, f := range frames {
+		traces += len(f.Traces)
+	}
+	if traces != 2 {
+		t.Errorf("gRPC structural two-phase returned %d traces, want 2 (phase B did not hydrate+shape end-to-end)", traces)
 	}
 }
