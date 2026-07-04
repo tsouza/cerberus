@@ -126,6 +126,15 @@ type rowsCursor struct {
 	// A crossing yields the IDENTICAL *TooManySamplesError (errors.Is
 	// ErrTooManySamples) the per-cursor limit produces.
 	budget *SampleBudget
+	// byteBudget is the wide-projection byte budget (nil off the Tempo
+	// span-search path, so PromQL/LogQL drains are untouched). Charged once
+	// per UNIQUE interned series — the true Go-heap cost, since aliased rows
+	// share one map. A crossing yields a *DrainByteBudgetError.
+	byteBudget *DrainByteBudget
+	// byteChargedSeq is the highest series ordinal already charged against
+	// byteBudget. A new series' SeriesID exceeds it (internSeq is monotonic);
+	// a repeat returns a lower ordinal and is not re-charged.
+	byteChargedSeq uint32
 	// seen counts rows successfully decoded so far, compared against
 	// maxSamples after each scan.
 	seen int64
@@ -258,6 +267,19 @@ func (c *rowsCursor) Next() bool {
 		return false
 	}
 	s.Labels, s.SeriesID = c.internLabels(labels)
+	// Charge the wide-projection byte budget once per UNIQUE series: a new
+	// SeriesID exceeds every ordinal charged so far, while a repeat aliases an
+	// already-charged map (charging repeats would over-count the shared heap and
+	// wrongly reject a legitimate many-identical-spans result). Fail-closed the
+	// instant cumulative attribute-map bytes cross the ceiling — before the full
+	// wide set buffers into the Go heap.
+	if c.byteBudget != nil && s.SeriesID > c.byteChargedSeq {
+		c.byteChargedSeq = s.SeriesID
+		if !c.byteBudget.consume(labelMapBytes(s.Labels)) {
+			c.err = &DrainByteBudgetError{Limit: c.byteBudget.Limit()}
+			return false
+		}
+	}
 	// Per-row structured metadata is genuinely distinct per log line
 	// (durations, byte counts, query ids), so it is NOT interned — unlike
 	// the series-identity Labels map. The fifth column arrives as a JSON

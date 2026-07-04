@@ -121,6 +121,7 @@ func (rowDecoder) decode(c *Client, ctx context.Context, sql string, args ...any
 		maxMemoryBytes: c.maxMemory,
 		queryTimeout:   c.effectiveQueryTimeout(ctx),
 		budget:         budgetFromContext(ctx),
+		byteBudget:     drainByteBudgetFromContext(ctx),
 	}, nil
 }
 

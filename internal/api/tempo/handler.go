@@ -137,6 +137,12 @@ type Handler struct {
 	// false every search takes the traditional single wide query. New() defaults
 	// it true; cmd/ overrides from config.
 	StructuralTwoPhase bool
+
+	// drainBytesLimit overrides the wide-projection byte ceiling for a search
+	// drain. 0 (production) uses chclient's internal default const; tests set it
+	// small to trip the fail-closed gate on a modest fat-map fixture. Not wired
+	// to any env/config — deliberately not an operator knob.
+	drainBytesLimit int64
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -402,6 +408,20 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Thread the request window so stampSearchTraceLimit folds it into the
 	// bounded plain-search scan. No-op when both bounds are absent.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
+	// Attach the wide-projection byte budget: a fail-closed cap on the cumulative
+	// ResourceAttributes+SpanAttributes bytes this search may drain into the Go
+	// heap. It is the byte axis every trace-count / time / row bound misses — a
+	// selective-but-fat-map search heaps gigabytes under all of them. Charged
+	// per-span during the drain (chclient cursor), so it aborts before the full
+	// wide set materialises. Scoped to the span-search path here; PromQL/LogQL
+	// drains never see it.
+	byteBudget := chclient.NewTempoSpanDrainBudget()
+	if h.drainBytesLimit > 0 {
+		// Test seam only (0 in production → the internal default const). Not an
+		// env/config knob: there is no per-deployment override to mis-set.
+		byteBudget = chclient.NewDrainByteBudget(h.drainBytesLimit)
+	}
+	ctx = chclient.WithDrainByteBudget(ctx, byteBudget)
 	// Parse + lower first so the handler can inspect the lowered plan and
 	// route the execution. h.lang.Parse runs the TraceQL parser + traceql.Lower
 	// (with the request window / trace-limit folds already applied via the ctx
@@ -519,6 +539,11 @@ func classifySearchErr(err error) int {
 	// instead of a breaker-adjacent 5xx. The error body carries the
 	// chclient budget message including the configured limit.
 	case errors.Is(err, chclient.ErrTooManySamples):
+		return http.StatusUnprocessableEntity
+	// Wide-projection byte budget: the byte-axis sibling of the sample budget —
+	// the search's cumulative attribute-map bytes crossed the Go-heap ceiling. A
+	// resource rejection, 422 like the row budget above.
+	case errors.Is(err, chclient.ErrDrainBytesExceeded):
 		return http.StatusUnprocessableEntity
 	// ClickHouse memory-limit abort (code 241) — the server-side
 	// sibling of the sample budget: a per-query resource rejection,

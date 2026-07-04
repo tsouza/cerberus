@@ -168,6 +168,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 
 	dec := &columnarCursor{
 		budget:         budgetFromContext(ctx),
+		byteBudget:     drainByteBudgetFromContext(ctx),
 		maxSamples:     c.maxSamples,
 		maxMemoryBytes: c.maxMemory,
 		queryTimeout:   c.effectiveQueryTimeout(ctx),
@@ -250,6 +251,7 @@ type columnarCursor struct {
 	interner rowsCursor
 
 	budget         *SampleBudget
+	byteBudget     *DrainByteBudget
 	maxSamples     int64
 	maxMemoryBytes int64
 	queryTimeout   time.Duration
@@ -357,6 +359,16 @@ func (d *columnarCursor) decodeBlock(cols matrixCols, rows int) error {
 			curInterned, curID = d.interner.internLabels(curLabels)
 			prevStart, prevEnd = start, end
 			haveSeries = true
+			// Charge the newly-built unique attribute map against the Tempo
+			// wide-projection byte budget (nil off the span-search path, so
+			// PromQL/LogQL drains are untouched). Charging per UNIQUE interned
+			// map — not per row — measures the true Go-heap cost: aliased rows
+			// share the map. Fail-closed the instant the running total crosses
+			// the ceiling, before the full wide set materialises.
+			if d.byteBudget != nil && !d.byteBudget.consume(labelMapBytes(curInterned)) {
+				d.err = &DrainByteBudgetError{Limit: d.byteBudget.Limit()}
+				return errBudgetExceeded
+			}
 		}
 		d.samples = append(d.samples, Sample{
 			MetricName: cols.name.Row(r),
