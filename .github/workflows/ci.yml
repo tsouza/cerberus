@@ -239,7 +239,7 @@ jobs:
             --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
 
       - name: markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v23
+        uses: DavidAnson/markdownlint-cli2-action@v24
         with:
           globs: |
             **/*.md
