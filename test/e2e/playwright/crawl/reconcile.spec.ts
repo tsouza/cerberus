@@ -257,6 +257,20 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
     }
   });
 
+  // The groupBy-init race (run 29392064642, reproduced locally 2026-07-15):
+  // before the click handler's effect commits the clicked facet name, the
+  // breakdown view forwards the JS `undefined` value string-interpolated in
+  // as the group-by attribute / a nil-comparison operand.
+  test('reconciles the undefined-groupBy breakdown-view race', () => {
+    for (const q of [
+      '{nestedSetParent<0 && true && undefined != nil} | rate() by(undefined)',
+      '{nestedSetParent<0 && true} | rate() by(undefined)',
+      '{true && undefined != nil} | rate()',
+    ]) {
+      expect(isTransientMalformedTraceQLFailure(dsqTempo(q, 400))).toBe(true);
+    }
+  });
+
   test('does NOT reconcile when one query in the request is well-formed', () => {
     const mixed: DsResponseView = {
       url: '/api/ds/query?ds_type=tempo&requestId=SQR1',
@@ -324,6 +338,21 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
         }),
       ).toBe(true);
     }
+  });
+
+  // Response-side fallback for the undefined-groupBy shape. Live-captured
+  // body (compose stack, 2026-07-15):
+  //   {"results":{"A":{"error":"failed to execute TraceQL query: {nestedSetParent<0 && true && undefined != nil} | rate() by(undefined) Status: 400 Bad Request Body: {\"traceID\":\"\",\"spanID\":\"\",\"error\":true,\"message\":\"parse error at line 1, col 31: unknown identifier: undefined\"}\n","errorSource":"plugin","status":500}}}
+  test('reconciles the undefined-groupBy race via the cerberus 400 body', () => {
+    expect(
+      isTransientMalformedTraceQLFailure({
+        url: '/api/ds/query?ds_type=tempo&requestId=SQR108',
+        status: 400,
+        requestBody: '<streamed>',
+        responseBody:
+          '{"results":{"A":{"error":"failed to execute TraceQL query: {nestedSetParent<0 && true && undefined != nil} | rate() by(undefined) Status: 400 Bad Request Body: {\\"traceID\\":\\"\\",\\"spanID\\":\\"\\",\\"error\\":true,\\"message\\":\\"parse error at line 1, col 31: unknown identifier: undefined\\"}\\n","errorSource":"plugin","status":500}}}',
+      }),
+    ).toBe(true);
   });
 
   test('does NOT reconcile a DIFFERENT syntax error via the response body', () => {

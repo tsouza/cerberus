@@ -114,6 +114,32 @@ export const DANGLING_TRACEQL_REJECTION =
   /unexpected\s+(?:&&|\\u0026\\u0026|\|\|)/;
 
 /**
+ * Matches a TraceQL query carrying the literal JS token `undefined` as an
+ * identifier — e.g. `by(undefined)` or `undefined != nil`. Same
+ * primarySignal-init race family as DANGLING_TRACEQL_OPERAND, but the
+ * unresolved React state here is the Traces Drilldown app's `groupBy`
+ * variable rather than `primarySignal`: mid-drill, before the click handler's
+ * effect commits the clicked facet name, the app re-renders its breakdown
+ * query with the JS `undefined` value string-interpolated in as the group-by
+ * attribute. `undefined` is not a valid TraceQL identifier, so cerberus (and
+ * reference Tempo's identical grammar) rejects it with `unknown identifier:
+ * undefined`; the app re-fires a well-formed query once the state settles.
+ * `undefined` never appears in a well-formed TraceQL query (it isn't a
+ * keyword or a real attribute name), so the match stays narrow.
+ */
+export const UNDEFINED_GROUPBY_TRACEQL = /\bundefined\b/;
+
+/**
+ * Matches cerberus's HTTP-400 body for the undefined-groupBy TraceQL shape —
+ * the RESPONSE-side signature of the race UNDEFINED_GROUPBY_TRACEQL matches
+ * request-side. cerberus's parser reports the exact unresolved identifier
+ * name, so this is as specific as the dangling-operand response matcher: a
+ * genuine wrong-rejection of a different malformed query names a different
+ * identifier and still fails loudly.
+ */
+export const UNDEFINED_GROUPBY_REJECTION = /unknown identifier: undefined/;
+
+/**
  * True iff a captured console message is a browser `TypeError: Failed to fetch`
  * — the network-abort class. This is NOT how cerberus signals an error: a
  * cerberus 4xx/5xx arrives as an HTTP response with a JSON body (the fetch
@@ -151,16 +177,17 @@ export function isResourceStatusTwin(consoleMessage: string): boolean {
 
 /**
  * True iff `resp` is a non-2xx Tempo ds/query whose EVERY forwarded TraceQL
- * query carries a dangling-operand spanset (see DANGLING_TRACEQL_OPERAND) —
- * the Traces Drilldown app's primarySignal-init-race shape. cerberus correctly
- * 400s these (reference Tempo rejects the identical syntax-error), so they are
- * a transient app-side artifact, not a cerberus fault.
+ * query carries a known Traces-Drilldown init-race shape: a dangling-operand
+ * spanset (see DANGLING_TRACEQL_OPERAND, the primarySignal-init race) or the
+ * literal `undefined` identifier (see UNDEFINED_GROUPBY_TRACEQL, the
+ * groupBy-init race). cerberus correctly 400s these (reference Tempo rejects
+ * the identical syntax errors), so they are a transient app-side artifact,
+ * not a cerberus fault.
  *
  * It is NOT a blanket 400 suppressor — a non-2xx carrying any well-formed
- * query still fails loudly; only the specific dangling-`&&`/`||` syntax shape
- * the app's known init race emits is reconciled, and ALL queries in the
- * request must exhibit it (a mixed request with one well-formed query is a
- * genuine failure).
+ * query still fails loudly; only the specific known-race syntax shapes are
+ * reconciled, and ALL queries in the request must exhibit one of them (a
+ * mixed request with one well-formed query is a genuine failure).
  */
 export function isTransientMalformedTraceQLFailure(
   resp: DsResponseView,
@@ -171,16 +198,21 @@ export function isTransientMalformedTraceQLFailure(
   if (dsType !== 'tempo') return false;
   const exprs = [...refIdToExpr(resp.requestBody).values()];
   if (exprs.length > 0) {
-    // Request-side: EVERY forwarded query must carry the dangling shape (a
+    // Request-side: EVERY forwarded query must carry a known-race shape (a
     // mixed request with one well-formed query is a genuine failure).
-    return exprs.every((expr) => DANGLING_TRACEQL_OPERAND.test(expr));
+    return exprs.every(
+      (expr) =>
+        DANGLING_TRACEQL_OPERAND.test(expr) ||
+        UNDEFINED_GROUPBY_TRACEQL.test(expr),
+    );
   }
   // Request body uncapturable (a torn-down request left postData empty). Fall
-  // back to cerberus's 400 body, which names the dangling-operand syntax error
-  // verbatim — the same proven shape, observed response-side.
+  // back to cerberus's 400 body, which names the known-race syntax error
+  // verbatim — the same proven shapes, observed response-side.
   if (
     resp.responseBody !== undefined &&
-    DANGLING_TRACEQL_REJECTION.test(resp.responseBody)
+    (DANGLING_TRACEQL_REJECTION.test(resp.responseBody) ||
+      UNDEFINED_GROUPBY_REJECTION.test(resp.responseBody))
   ) {
     return true;
   }
@@ -206,20 +238,21 @@ export function isTransientMalformedTraceQLFailure(
 }
 
 /**
- * Resolve the browser-side twins of the reconciled primarySignal-init-race
- * 400s and return the console errors that remain REPORTABLE.
+ * Resolve the browser-side twins of the reconciled init-race 400s and return
+ * the console errors that remain REPORTABLE.
  *
- * When an interactive drill drives the Traces Drilldown app through its
- * primarySignal-init race, each dangling-operand TraceQL 400 that
- * isTransientMalformedTraceQLFailure reconciled on the wire ALSO surfaces to
- * the browser as a single EMPTY-text console error — Grafana logs the failed
- * background fetch, and the captured `msg.text()` is empty. Given
- * `reconciledInitRace` such reconciled 400s, up to that many empty-text console
- * errors are those twins and are resolved away; EVERY substantive (non-empty)
- * console error is kept (mask nothing of value), and any empty-text error
- * BEYOND the reconciled-400 count is kept too (placeholder text), so a
- * genuinely-broken app — which produces either a non-reconciled wire failure or
- * more console noise than the init race explains — still reports.
+ * When an interactive drill drives the Traces Drilldown app through one of
+ * its known init races (primarySignal or groupBy — see
+ * isTransientMalformedTraceQLFailure), each TraceQL 400 that function
+ * reconciled on the wire ALSO surfaces to the browser as a single EMPTY-text
+ * console error — Grafana logs the failed background fetch, and the captured
+ * `msg.text()` is empty. Given `reconciledInitRace` such reconciled 400s, up
+ * to that many empty-text console errors are those twins and are resolved
+ * away; EVERY substantive (non-empty) console error is kept (mask nothing of
+ * value), and any empty-text error BEYOND the reconciled-400 count is kept
+ * too (placeholder text), so a genuinely-broken app — which produces either a
+ * non-reconciled wire failure or more console noise than the init races
+ * explain — still reports.
  */
 export function reportableConsoleErrors(
   consoleErrors: ReadonlyArray<string>,

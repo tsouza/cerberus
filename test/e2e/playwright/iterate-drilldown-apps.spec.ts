@@ -340,19 +340,23 @@ async function sweepDrilldownApp(
   await Promise.all(captureBodies);
 
   // 1. Wire-status sweep over every captured response — zero
-  //    tolerance for 4xx/5xx, EXCEPT the Traces Drilldown app's
-  //    primarySignal-init race. That app applies its primarySignal
-  //    default inside a React useEffect, so during the initial-load /
-  //    rapid-drill window it transiently forwards a dangling-operand
-  //    TraceQL (`{ && …} | rate()`) that cerberus correctly 400s
-  //    (reference Tempo rejects the identical syntax error). It is a
-  //    third-party app artifact, not a cerberus fault — and racy: the
-  //    400 fires on every run but only lands inside the capture window
-  //    intermittently, which is what makes this spec flaky. The
-  //    reconciler is narrow (every query in the request must carry the
-  //    dangling shape); a well-formed-query non-2xx still fails loudly.
-  //    Mirrors the crawl lane (#934). Count the reconciled races so the
-  //    console sweep below can resolve their browser-side twin.
+  //    tolerance for 4xx/5xx, EXCEPT the Traces Drilldown app's known
+  //    init races. That app applies several pieces of state (notably
+  //    primarySignal and groupBy) inside React useEffects, so during the
+  //    initial-load / rapid-drill window it transiently forwards either a
+  //    dangling-operand TraceQL (`{ && …} | rate()`, the primarySignal
+  //    race) or one carrying the literal JS `undefined` as an identifier
+  //    (`{… && undefined != nil} | rate() by(undefined)`, the groupBy
+  //    race — reproduced locally 2026-07-15, run 29392064642). cerberus
+  //    correctly 400s both (reference Tempo rejects the identical syntax
+  //    errors). Both are third-party app artifacts, not a cerberus fault —
+  //    and racy: the 400 fires on every run but only lands inside the
+  //    capture window intermittently, which is what makes this spec
+  //    flaky. The reconciler is narrow (every query in the request must
+  //    carry one of the known shapes); a well-formed-query non-2xx still
+  //    fails loudly. Mirrors the crawl lane (#934). Count the reconciled
+  //    races so the console sweep below can resolve their browser-side
+  //    twin.
   let reconciledInitRace = 0;
   for (const resp of captured) {
     if (resp.status >= 200 && resp.status <= 299) continue;
