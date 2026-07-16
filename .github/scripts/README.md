@@ -451,6 +451,20 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     written to).
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
+- **`dependabot-tidy-nested-modules.mjs`** — `dependabot-tidy-nested-modules.yml`,
+  the `tidy` job. `test/oracle` is a nested Go module carrying
+  `replace github.com/tsouza/cerberus => ../..`, so its module graph is
+  entangled with the root's; a root-only Dependabot bump routinely leaves
+  `test/oracle/go.mod`/`go.sum` stale and fails `ci.yml`'s "test oracle
+  module" step. Runs `go mod tidy` in each nested module dir and, only if
+  that produced a diff, commits and pushes a fixup straight to the
+  Dependabot PR branch — closing the loop without a human re-running it by
+  hand (see PR #1211).
+  - Env: `NESTED_MODULE_DIRS` (space-separated, default `test/oracle`),
+    `BRANCH` (required — the branch to push the fixup to), `GIT_USER_NAME` /
+    `GIT_USER_EMAIL` (default `github-actions[bot]` identity).
+  - Exit: `0` nothing to do or fixup pushed; `1` on a `go mod tidy` or git
+    failure.
 
 ## Notes
 

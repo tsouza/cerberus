@@ -1,0 +1,67 @@
+name: dependabot-tidy-nested-modules
+# test/oracle is a nested Go module (its own go.mod) that carries
+# `replace github.com/tsouza/cerberus => ../..`, so its module graph is
+# entangled with the root's. `.github/dependabot.yml` only watches
+# `directory: /` — on purpose, a second Dependabot directory for
+# test/oracle would just open a second, unsynced PR, not fix this — so a
+# root-only Dependabot bump routinely leaves test/oracle/go.mod stale and
+# `ci.yml`'s "test oracle module" step fails with "go: updates to go.mod
+# needed; to update it: go mod tidy" (see PR #1211). This workflow closes
+# the loop: re-tidy the nested module(s) inside the Dependabot PR itself
+# and push a fixup commit straight to its branch, so the required checks
+# go green without a human (or agent) noticing and doing it by hand.
+# bench/histogram is a second nested module but deliberately does NOT
+# depend on the root module, so it's excluded by the script's default.
+#
+# Gated the same way as auto-merge-deps.yml: job-level actor guard plus
+# dependabot/fetch-metadata's ecosystem output, since only `go_modules`
+# bumps can desync test/oracle.
+#
+# Token: RELEASE_PAT (fine-grained, contents:write) when present, else
+# github.token. A push made with the plain GITHUB_TOKEN does not trigger
+# downstream `pull_request` workflow runs (GitHub's recursion guard), so
+# without RELEASE_PAT the fixup lands but the PR's checks need a manual
+# re-run; see prepare-release.yml / release.yml for the same fallback.
+on:
+  pull_request:
+    paths:
+      - go.mod
+      - go.sum
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependabot-tidy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tidy:
+    name: tidy nested modules
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: checkout PR branch
+        if: steps.meta.outputs.package-ecosystem == 'go_modules'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.RELEASE_PAT || github.token }}
+
+      - uses: actions/setup-go@v6
+        if: steps.meta.outputs.package-ecosystem == 'go_modules'
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: go mod tidy nested modules + push fixup if needed
+        if: steps.meta.outputs.package-ecosystem == 'go_modules'
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: node .github/scripts/dependabot-tidy-nested-modules.mjs
