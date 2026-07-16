@@ -142,12 +142,6 @@ type Slice struct {
 	Start time.Time
 	End   time.Time
 
-	// ScanFrom is the slice's input lower bound — solver-owned, offset- and
-	// D-aware (docs §Decomposition). It is NOT inherited emitter behavior:
-	// the matrix emitters are offset-blind, so the solver derives the scan
-	// floor itself.
-	ScanFrom time.Time
-
 	// Plan is the re-anchored, share-immutable-off-spine view of the
 	// optimized plan for this slice: only the windowed spine is cloned and
 	// re-gridded; the off-spine subtrees are shared with the original (and

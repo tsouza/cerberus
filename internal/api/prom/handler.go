@@ -951,14 +951,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		if isMatrixRangeWindow(plan) {
 			tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
 			if off, relabel := matrixWindowOffset(plan); relabel {
-				tsExpr = &chplan.Binary{
-					Op:   chplan.OpAdd,
-					Left: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
-					Right: &chplan.FuncCall{
-						Name: "toIntervalNanosecond",
-						Args: []chplan.Expr{&chplan.LitInt{V: off.Nanoseconds()}},
-					},
-				}
+				tsExpr = chplan.OffsetReanchoredAnchorExpr(off)
 			}
 		} else {
 			tsExpr = synthesizedAnchor()

@@ -10,6 +10,26 @@ import "time"
 // RangeWindowAnchorAlias aliases this so every layer names the column once.
 const RangeWindowAnchorColumn = "anchor_ts"
 
+// OffsetReanchoredAnchorExpr builds `anchor_ts + toIntervalNanosecond(offset)`
+// — the IR expression that re-anchors a matrix window's offset-SHIFTED
+// anchor_ts back onto the unshifted request grid. The fan-out matrix emitters
+// keep anchor_ts offset-shifted (chsql gridAnchorFrag), but a reducing window's
+// result is reported on the unshifted grid, so the consumers that read the bare
+// anchor_ts — the Prom sample-projection adapter (wrapWithSampleProjection) and
+// the last/first_over_time preserve-__name__ lowering wrapper — add the offset
+// back with this. Offset enters with its sign (a negative/forward offset
+// subtracts). Shared so the two call sites cannot drift.
+func OffsetReanchoredAnchorExpr(offset time.Duration) Expr {
+	return &Binary{
+		Op:   OpAdd,
+		Left: &ColumnRef{Name: RangeWindowAnchorColumn},
+		Right: &FuncCall{
+			Name: "toIntervalNanosecond",
+			Args: []Expr{&LitInt{V: offset.Nanoseconds()}},
+		},
+	}
+}
+
 // RangeWindow is a PromQL-style range-vector aggregation: for each step
 // across [Start, End] (inclusive), compute Func over the rows whose
 // timestamp lies within [step-Range, step]. Used to lower expressions like

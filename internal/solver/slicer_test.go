@@ -133,42 +133,6 @@ func TestSlice_AnchorUnionAndDisjoint(t *testing.T) {
 	})
 }
 
-func TestSlice_ScanFromSignAware(t *testing.T) {
-	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
-	start := time.Unix(1_700_000_000, 0).UTC()
-	step := 15 * time.Second
-	end := start.Add(time.Hour)
-	rang := 5 * time.Minute // D = 5m for a single-window spine
-
-	for _, tc := range []struct {
-		name   string
-		offset time.Duration
-	}{
-		{"positive offset", time.Hour},
-		{"zero offset", 0},
-		{"negative offset", -10 * time.Minute},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
-			plan := sliceWindow(start, end, step, rang, tc.offset)
-			slices, err := p.slice(plan, meta, 8)
-			if err != nil {
-				t.Fatalf("slice: %v", err)
-			}
-			for _, s := range slices {
-				// ScanFrom = Start_j - D - Offset (sign-aware).
-				want := s.Start.Add(-rang).Add(-tc.offset)
-				if !s.ScanFrom.Equal(want) {
-					t.Fatalf("%s: slice %d ScanFrom=%v, want %v", tc.name, s.Index, s.ScanFrom, want)
-				}
-			}
-		})
-	}
-}
-
 func TestSlice_KClampHonored(t *testing.T) {
 	t.Parallel()
 	p := &Planner{Cfg: autoCfg()}
@@ -354,45 +318,6 @@ func TestSliceLWR_AnchorUnionAndDisjoint(t *testing.T) {
 			t.Fatalf("newest slice End=%v, want grid End=%v", slices[len(slices)-1].End, end)
 		}
 	})
-}
-
-// TestSliceLWR_ScanFromSignAware: the RangeLWR scan floor is
-// Start_j - (Offset + Lookback), and the solver-owned ScanFrom is
-// Start_j - D - Offset where D = Lookback for a single-LWR spine — both
-// offset-sign-aware.
-func TestSliceLWR_ScanFromSignAware(t *testing.T) {
-	t.Parallel()
-	p := &Planner{Cfg: autoCfg()}
-	start := time.Unix(1_700_000_000, 0).UTC()
-	step := 15 * time.Second
-	end := start.Add(time.Hour)
-	lookback := 5 * time.Minute // D = Lookback for a single-LWR spine
-
-	for _, tc := range []struct {
-		name   string
-		offset time.Duration
-	}{
-		{"positive offset", time.Hour},
-		{"zero offset", 0},
-		{"negative offset", -10 * time.Minute},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
-			plan := sliceLWR(start, end, step, lookback, tc.offset)
-			slices, err := p.slice(plan, meta, 8)
-			if err != nil {
-				t.Fatalf("slice: %v", err)
-			}
-			for _, s := range slices {
-				want := s.Start.Add(-lookback).Add(-tc.offset)
-				if !s.ScanFrom.Equal(want) {
-					t.Fatalf("%s: slice %d ScanFrom=%v, want %v", tc.name, s.Index, s.ScanFrom, want)
-				}
-			}
-		})
-	}
 }
 
 // TestSliceLWR_SpineImmutability: re-gridding a returned RangeLWR Slice.Plan's
