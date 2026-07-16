@@ -2169,14 +2169,7 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		// preserve-name wrapper) re-shifted their output past this Project.
 		tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
 		if rw.Offset != 0 && !rw.Identity {
-			tsExpr = &chplan.Binary{
-				Op:   chplan.OpAdd,
-				Left: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
-				Right: &chplan.FuncCall{
-					Name: "toIntervalNanosecond",
-					Args: []chplan.Expr{&chplan.LitInt{V: rw.Offset.Nanoseconds()}},
-				},
-			}
+			tsExpr = chplan.OffsetReanchoredAnchorExpr(rw.Offset)
 		}
 	} else {
 		// Mirror `synthesizedAnchor()` in internal/api/prom/handler.go:
