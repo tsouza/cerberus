@@ -75,5 +75,10 @@ func inspectExpr(e Expr, visit func(Expr) bool, nodeVisit func(Node)) {
 		if nodeVisit != nil && v.Input != nil {
 			nodeVisit(v.Input)
 		}
+	case *InSubquery:
+		inspectExpr(v.Left, visit, nodeVisit)
+		if nodeVisit != nil && v.Subquery != nil {
+			nodeVisit(v.Subquery)
+		}
 	}
 }
