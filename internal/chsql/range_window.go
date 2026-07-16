@@ -656,7 +656,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	// anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
 	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
 	}
 	outer.Select(RawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
 	if minWindowSize > 0 {
@@ -675,6 +675,33 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 // `End + N` so the window shifts forward into the future correctly.
 func endExprFrag(r *chplan.RangeWindow) Frag {
 	return offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
+}
+
+// gridAnchorFrag renders the OUTPUT timestamp for a matrix anchor. The internal
+// `anchor_ts` column is offset-SHIFTED (anchor_ts = End - Offset - i*step)
+// because window membership and the rate/deriv/extrapolation math key off the
+// shifted window's right edge (endExprFrag). But PromQL's `offset` shifts only
+// WHICH samples are read, never the timestamp the result is reported at: a
+// range-mode `rate(m[r] offset o)` value belongs to the UNSHIFTED grid anchor
+// t = anchor_ts + Offset. This mirrors RangeLWR's grid_base-vs-shift_base split
+// (range_lwr.go) and cerberus's own PromQL oracle, which stamps output at the
+// eval time and shifts only the lookup. Add Offset back (signed — a negative /
+// forward offset subtracts) so the reported timestamp lands on the [Start, End]
+// request grid; without it every shard of a sliced offset query re-shifts
+// against its own sub-grid End and the anchors misalign at each seam (and an
+// offset arm of a vector join never matches the unshifted arm). Offset == 0
+// renders the bare column unchanged.
+func gridAnchorFrag(r *chplan.RangeWindow) Frag {
+	// Identity windows (a raw range vector `m[range]`, including a subquery's
+	// inner selector) report each sample at its ACTUAL timestamp, so an offset
+	// genuinely shifts those reported timestamps (Prometheus does the same) —
+	// they must NOT be un-shifted. Only a reducing window (rate / increase /
+	// *_over_time: one computed value per eval anchor) reports on the request
+	// grid and needs the offset added back.
+	if r.Offset == 0 || r.Identity {
+		return verbatim(RangeWindowAnchorAlias)
+	}
+	return Paren(Add(verbatim(RangeWindowAnchorAlias), Call("toIntervalNanosecond", InlineLit(r.Offset.Nanoseconds()))))
 }
 
 // windowPairsSLRFrag renders the per-row CH simple-linear-regression
@@ -2538,7 +2565,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves
 	// — mirrors emitWindowedArrayMatrix's outer projection.
 	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		regroup.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+		regroup.Select(As(gridAnchorFrag(r), r.TimestampColumn))
 	}
 	// The aggregate references srcTs/ValueColumn; in the nested-matrix
 	// rename case (fanoutTsSource) it operates over Value only, so the
@@ -3110,7 +3137,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// (api/prom/handler.go) and the histogram/instant_fn callers that
 	// still read `anchor_ts` directly continue to work.
 	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
 	}
 	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
@@ -3555,7 +3582,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	// anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
 	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
 	}
 	outer.Select(As(value, r.ValueColumn))
 	if minWindowSize > 0 {
