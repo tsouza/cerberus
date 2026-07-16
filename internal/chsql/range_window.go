@@ -200,7 +200,7 @@ const metricsMultiQuantilePhiLabel = "__phi__"
 // Tempo API layer can stamp chplan.MetricsSecondStage.PartitionBy with
 // the exact column the inner SQL exposes — `LIMIT K BY anchor_ts` is
 // what turns a global topk into Tempo's per-anchor topk semantics.
-const RangeWindowAnchorAlias = "anchor_ts"
+const RangeWindowAnchorAlias = chplan.RangeWindowAnchorColumn
 
 // metricsMultiQuantileFanoutFrag returns a Frag rendering the per-(group,
 // anchor) fanout from a `quantiles(p1, p2, ...)(...) AS qs_array` column

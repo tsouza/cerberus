@@ -77,6 +77,10 @@ func TestQueryRange_RateOffset_UnshiftedGrid_ChDB(t *testing.T) {
 		// exercises the OTHER half of the offset-labeling fix.
 		"sum(rate(http_requests_total[5m] offset 2m))",
 		"sum by (job) (rate(http_requests_total[5m] offset 2m))",
+		// __name__-preserving reducers (last/first_over_time) route through a
+		// separate lowering wrapper that also had to be un-shifted.
+		"last_over_time(http_requests_total[5m] offset 2m)",
+		"first_over_time(http_requests_total[5m] offset 2m)",
 	} {
 		t.Run(q, func(t *testing.T) {
 			matrix := runRangeModeQueryRange(t, srv.URL, q, start, end, step)
