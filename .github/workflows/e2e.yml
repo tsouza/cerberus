@@ -174,7 +174,7 @@ jobs:
           # both refs reachable (mirrors ci.yml's forbid-skip checkout).
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -412,7 +412,7 @@ jobs:
       # npm cache keyed on the playwright suite's lockfile (it now ships one).
       # Speeds `npm ci` inside the cached-browsers action below; the heavy item
       # (chromium) is cached separately by that action.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -598,7 +598,7 @@ jobs:
             | tee /tmp/grafana-health.json
           grep -q '"database":[[:space:]]*"ok"' /tmp/grafana-health.json
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -874,13 +874,13 @@ jobs:
         if: env.RUN_SHARD == 'true'
         run: df -h
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: env.RUN_SHARD == 'true'
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: env.RUN_SHARD == 'true'
         with:
           node-version: '22'
@@ -1206,7 +1206,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -1305,13 +1305,13 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
 
       # node for chaos-run.mjs (node: builtins only — no npm install).
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -1473,14 +1473,14 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
 
       # node for .github/scripts/e2e-bwc-verify-placement.mjs (node: builtins
       # only — no npm install).
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 

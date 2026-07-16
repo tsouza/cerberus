@@ -65,7 +65,7 @@ jobs:
       # yet, and the cargo-binstall fallback fails (kubeconform isn't a crate).
       # go install is the canonical, version-pinned, checksum-verified path.
       - if: steps.changes.outputs.chart == 'true'
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

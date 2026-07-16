@@ -68,7 +68,7 @@ jobs:
         with:
           fetch-depth: 0 # need full history + tags for the commit summary
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
 
