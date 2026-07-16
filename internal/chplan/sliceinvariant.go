@@ -51,15 +51,33 @@ func IsSliceInvariant(n Node) bool {
 //   - StepGrid — emits the anchor grid itself; a sub-grid is a subset.
 //   - UnionAll — slice-invariant iff every arm is (checked structurally by
 //     the whole-plan walk, since each arm is itself visited).
+//   - VectorJoin — a step-aligned vector-vector binary join. Each output row
+//     is the per-pair binary op of two per-(match-key, anchor) inputs joined
+//     on the match key AND the anchor timestamp (the emitter ANDs
+//     `L.TimestampColumn = R.TimestampColumn` into the ON clause when
+//     StepAligned, and adds TimestampColumn to each side's GROUP BY). So each
+//     joined row reduces only the samples of one anchor's window on each arm,
+//     independent of the scan lower bound. This holds across all matching
+//     (on/ignoring), all cardinalities (group_left/group_right — the
+//     many-to-one dedup throwIf(uniqExact>1) + Include mapConcat are
+//     per-(match-key, anchor) because the anchor timestamp is IN the join
+//     key), and all ops incl `bool`. BOUNDARY: only the StepAligned shape is
+//     safe. The instant-mode (StepAligned==false) join synthesizes its
+//     join-side timestamp with now64(9) — a wall-clock that diverges across
+//     shards. Registration here is by node kind, so it admits the instant
+//     shape too; the solver's planner carries an explicit sawInstantVectorJoin
+//     fail-closed guard (ReasonInstantJoin) that keeps !StepAligned joins on
+//     route A. VectorSetOp / NaryVectorSetOp (and/or/unless) remain absent —
+//     each is its own PR.
 //
 // Extension point. Phase-3 node families (TopK as per-anchor LIMIT K BY,
-// step-aligned VectorJoin / VectorSetOp, HistogramQuantile{,Native},
-// AbsentOverTime, the metrics_* TraceQL family, nested spines under the lcm
-// clamp) are DELIBERATELY ABSENT: each enters this registry only with its
-// own slice-invariance proof + the reset-at-seam fixture family, one node
-// family per PR. To register a kind, argue its per-(series, anchor) output
-// is scan-lower-bound-independent, add it here, and extend the §Parity
-// lanes — do not add a kind merely because it "looks safe".
+// VectorSetOp, HistogramQuantile{,Native}, AbsentOverTime, the metrics_*
+// TraceQL family, nested spines under the lcm clamp) are DELIBERATELY ABSENT:
+// each enters this registry only with its own slice-invariance proof + the
+// reset-at-seam fixture family, one node family per PR. To register a kind,
+// argue its per-(series, anchor) output is scan-lower-bound-independent, add
+// it here, and extend the §Parity lanes — do not add a kind merely because it
+// "looks safe".
 var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 	kinds := []Node{
 		&Scan{},
@@ -71,6 +89,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&RangeBucketFanout{},
 		&StepGrid{},
 		&UnionAll{},
+		&VectorJoin{},
 	}
 	m := make(map[reflect.Type]struct{}, len(kinds))
 	for _, k := range kinds {

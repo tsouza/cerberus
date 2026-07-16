@@ -118,6 +118,14 @@ const (
 	// exceeds the configured fraction of the outer plan — the slice benefit
 	// cannot pay for replicating it.
 	ReasonScalarHeavy = "scalar-heavy"
+
+	// ReasonInstantJoin: an instant-mode (StepAligned==false) VectorJoin. The
+	// VectorJoin node kind is registered slice-invariant, but the instant shape
+	// synthesizes its join-side timestamp with now64(9) in the emitted SQL — a
+	// wall-clock that diverges across shards and never reaches the plan-level
+	// now64 scanner. Fails closed to route A; only the StepAligned (range-mode)
+	// join, which step-aligns on the real per-anchor timestamp, routes B.
+	ReasonInstantJoin = "instant-join"
 )
 
 // Slice is one shard of the anchor-grid decomposition. Bounds are
