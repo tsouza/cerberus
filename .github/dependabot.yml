@@ -2,6 +2,13 @@ version: 2
 updates:
   # Go modules — parsers get their own daily group so cerberus stays
   # within a release of upstream. Everything else still bumps weekly.
+  # Root module only — deliberately no second `directory: /test/oracle`
+  # entry. test/oracle carries `replace github.com/tsouza/cerberus =>
+  # ../..`, so its module graph is entangled with the root's; a second
+  # Dependabot directory there would just open a SEPARATE, unsynced PR for
+  # the same bump, not fix the drift. `dependabot-tidy-nested-modules.yml`
+  # re-tidies test/oracle inside each root-module PR instead. See PR #1211
+  # and that workflow's header comment.
   - package-ecosystem: gomod
     directory: /
     schedule:
