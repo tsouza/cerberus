@@ -167,7 +167,7 @@ func TestEmitNestedSetAnchorStepWindowed(t *testing.T) {
 // RangeWindow the /api/metrics/query_range handler builds, and emits — with or
 // without the spans table on the context. start/end may be zero to exercise the
 // fail-closed gate.
-func emitCompareInRangeWindow(t *testing.T, start, end time.Time, spansScoped bool) (string, error) {
+func emitCompareInRangeWindow(t *testing.T, start, end time.Time, spansScoped bool) (string, []any, error) {
 	t.Helper()
 	s := schema.DefaultOTelTraces()
 	expr, err := ast.Parse(`{ } | compare({ status = error })`)
@@ -190,44 +190,79 @@ func emitCompareInRangeWindow(t *testing.T, start, end time.Time, spansScoped bo
 	if spansScoped {
 		ctx = chsql.WithSpansTable(ctx, s.SpansTable)
 	}
-	sql, _, err := chsql.Emit(ctx, chplan.Node(rw))
-	return sql, err
+	sql, args, err := chsql.Emit(ctx, chplan.Node(rw))
+	return sql, args, err
 }
 
-// TestEmitCompareRootLookupWindowed pins the compare() root-lookup window push:
-// under the spans scope the per-trace root aggregate gains two direct
-// `fromUnixTimestamp64Nano(...)` Timestamp bounds (below its GROUP BY, where they
-// can partition-prune); without the spans scope the golden/metrics lane stays
-// byte-identical (no push). A zero window under the spans scope fails closed.
+// TestEmitCompareRootLookupWindowed pins the compare() root-lookup window
+// push: the per-trace root aggregate's own scan gains a `TraceId IN
+// (<bounded cohort>)` seed (below its GROUP BY, where CH can
+// partition-prune it), whose own bound renders as two direct
+// `fromUnixTimestamp64Nano(...)` Timestamp calls. windowRootLookupTraceIDSeed
+// derives the spans table straight from RootLookup's own Scan
+// (rootLookupSpansTable), not from the emit context, so this push fires
+// identically whether or not the context threads WithSpansTable — unlike
+// requireSpansScanWindow's fail-closed gate below, which is deliberately
+// scoped to the real Tempo path. A zero window under the spans scope fails
+// closed regardless.
 func TestEmitCompareRootLookupWindowed(t *testing.T) {
 	t.Parallel()
 	start, end := scanWindowEmitBounds()
 
-	withScope, err := emitCompareInRangeWindow(t, start, end, true)
+	withScope, withScopeArgs, err := emitCompareInRangeWindow(t, start, end, true)
 	if err != nil {
 		t.Fatalf("windowed compare emit (spans-scoped): %v", err)
 	}
-	withoutScope, err := emitCompareInRangeWindow(t, start, end, false)
+	withoutScope, withoutScopeArgs, err := emitCompareInRangeWindow(t, start, end, false)
 	if err != nil {
 		t.Fatalf("windowed compare emit (unscoped): %v", err)
 	}
 
-	// The base compare window renders its bounds as positional `?` args, so the
-	// only `fromUnixTimestamp64Nano` calls come from the root-lookup push: two
-	// (lo + hi) under the spans scope, zero without it.
+	// The base compare window renders its bounds as positional `?` args, so
+	// the only `fromUnixTimestamp64Nano` calls come from the root-lookup
+	// seed's own bound: two (lo + hi), present identically with or without
+	// the spans scope threaded on the context.
+	const wantRootSeedBoundCalls = 2
 	countWith := strings.Count(withScope, fromUnixNanoCall)
 	countWithout := strings.Count(withoutScope, fromUnixNanoCall)
-	if countWith != countWithout+2 {
-		t.Errorf("compare root-lookup window push = %d extra %s calls; want exactly 2 (lo+hi on the root scan)\n--- with scope ---\n%s",
-			countWith-countWithout, fromUnixNanoCall, withScope)
+	if countWith != wantRootSeedBoundCalls {
+		t.Errorf("spans-scoped compare root-lookup seed = %d %s calls, want %d:\n%s", countWith, fromUnixNanoCall, wantRootSeedBoundCalls, withScope)
 	}
-	if countWith < 2 {
-		t.Errorf("spans-scoped compare carries no root-lookup Timestamp prune (%s count=%d):\n%s", fromUnixNanoCall, countWith, withScope)
+	if countWithout != wantRootSeedBoundCalls {
+		t.Errorf("unscoped compare root-lookup seed = %d %s calls, want %d (the seed derives its spans table from RootLookup itself, not the emit context):\n%s",
+			countWithout, fromUnixNanoCall, wantRootSeedBoundCalls, withoutScope)
+	}
+
+	// The `?` shape assertion above passes regardless of the bound's actual
+	// VALUE — checked here against args. The seed must mirror the 's' leg's
+	// own (Start-range, End] window, not the raw [Start, End] request
+	// window: a trace whose only matching span falls in the anchor lookback
+	// slice (Start-range, Start) satisfies the 's' leg's bound but would be
+	// silently dropped from root-name/root-service enrichment if the seed
+	// used raw Start.
+	wantSeedLoNano := scanWindowEmitStartNano - scanWindowEmitStep.Nanoseconds()
+	wantSeedHiNano := scanWindowEmitEndNano
+	for _, tc := range []struct {
+		name string
+		args []any
+	}{
+		{"spans-scoped", withScopeArgs},
+		{"unscoped", withoutScopeArgs},
+	} {
+		if !containsInt64Arg(tc.args, wantSeedLoNano) {
+			t.Errorf("%s: seed lower bound arg %d (Start - range) not found in emitted args %v", tc.name, wantSeedLoNano, tc.args)
+		}
+		if !containsInt64Arg(tc.args, wantSeedHiNano) {
+			t.Errorf("%s: seed upper bound arg %d (End) not found in emitted args %v", tc.name, wantSeedHiNano, tc.args)
+		}
+		if containsInt64Arg(tc.args, scanWindowEmitStartNano) {
+			t.Errorf("%s: seed lower bound must be Start-range, not raw Start (found raw Start=%d in args %v)", tc.name, scanWindowEmitStartNano, tc.args)
+		}
 	}
 
 	// Fail closed: a zero request window under the spans scope must be rejected
 	// rather than scanning full retention.
-	if _, err := emitCompareInRangeWindow(t, time.Time{}, time.Time{}, true); !errors.Is(err, chsql.ErrUnboundedSpansScan) {
+	if _, _, err := emitCompareInRangeWindow(t, time.Time{}, time.Time{}, true); !errors.Is(err, chsql.ErrUnboundedSpansScan) {
 		t.Fatalf("zero-window compare under WithSpansTable must fail closed, got %v", err)
 	}
 }
