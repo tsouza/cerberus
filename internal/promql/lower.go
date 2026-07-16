@@ -1269,7 +1269,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
 		},
 	}
@@ -2159,7 +2159,25 @@ func isPlainScanFilter(n chplan.Node) bool {
 func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name string) chplan.Node {
 	var tsExpr chplan.Expr
 	if rw.OuterRange > 0 {
-		tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+		// The matrix RangeWindow keeps anchor_ts offset-SHIFTED for the
+		// window/reduce math; PromQL reports a reducing window's result on the
+		// UNSHIFTED grid, so add Offset back (matching the emitter's
+		// gridAnchorFrag and the handler's matrixWindowOffset). A raw range
+		// vector / subquery (Identity) reports its actual shifted time; a zero
+		// offset needs no relabel. Without this, last_over_time / first_over_time
+		// (the only *_over_time fns that keep __name__ and so route through this
+		// preserve-name wrapper) re-shifted their output past this Project.
+		tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
+		if rw.Offset != 0 && !rw.Identity {
+			tsExpr = &chplan.Binary{
+				Op:   chplan.OpAdd,
+				Left: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+				Right: &chplan.FuncCall{
+					Name: "toIntervalNanosecond",
+					Args: []chplan.Expr{&chplan.LitInt{V: rw.Offset.Nanoseconds()}},
+				},
+			}
+		}
 	} else {
 		// Mirror `synthesizedAnchor()` in internal/api/prom/handler.go:
 		// the instant-shape RangeWindow doesn't expose a real per-row
@@ -2209,8 +2227,8 @@ func wrapRangeWindowAtBroadcast(rw *chplan.RangeWindow, ctx lowerCtx, s schema.M
 	projections = append(
 		projections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "anchor_ts"},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: s.TimestampColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 	)
 	return &chplan.Project{Input: joined, Projections: projections}
