@@ -174,9 +174,7 @@ func (e *emitter) emitFusedInstantSubquery(
 	// regroup saw — the post-groupArray arrayFilter stays the precise window
 	// gate.
 	samplesQ := NewQuery().From(innerSub)
-	for _, g := range groupFrags {
-		samplesQ.Select(g)
-	}
+	samplesQ.Select(groupFrags...)
 	samplesQ.Select(As(groupArrayPairFrag(inner.TimestampColumn, inner.ValueColumn), "samples"))
 	maybePushInnerScanTimeBounds(samplesQ, inner, inner.TimestampColumn, rangeNS)
 	samplesQ.GroupBy(groupFrags...)
@@ -249,9 +247,7 @@ func (e *emitter) emitFusedInstantSubquery(
 	// Layer 2 — the qualifying anchors' values, materialised once as `vals`
 	// (O(numAnchors) scalars, not slices).
 	valsQ := NewQuery().From(samplesQ.Frag())
-	for _, g := range groupFrags {
-		valsQ.Select(g)
-	}
+	valsQ.Select(groupFrags...)
 	valsQ.Select(As(
 		Call("arrayMap",
 			Lambda1("t", tupleElemFrag(BareIdent("t"), 2)),
@@ -264,9 +260,7 @@ func (e *emitter) emitFusedInstantSubquery(
 	// semantics match by construction. A series with zero qualifying anchors
 	// emits no row — matching the materialized path producing no group for it.
 	outerQ := NewQuery().From(valsQ.Frag())
-	for _, g := range groupFrags {
-		outerQ.Select(g)
-	}
+	outerQ.Select(groupFrags...)
 	outerQ.Select(As(reduce(BareIdent("vals")), r.ValueColumn))
 	outerQ.Where(Gt(Call("length", BareIdent("vals")), InlineLit(int64(0))))
 

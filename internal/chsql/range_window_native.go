@@ -176,9 +176,7 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 
 	// Inner SELECT — one row per series carrying the (grid, grid_ts) pair.
 	inner := NewQuery().From(innerSub)
-	for _, g := range groupFrags {
-		inner.Select(g)
-	}
+	inner.Select(groupFrags...)
 	inner.Select(As(gridAgg, nativeGridArrayAlias))
 	inner.Select(As(gridTS, nativeGridTSAlias))
 	// Prune the inner scan to the offset-shifted half-open grid span
@@ -195,9 +193,7 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	// cells, cast to a non-nullable Float64, and surface anchor_ts under
 	// both the bare alias and the schema timestamp column name.
 	outer := NewQuery().From(inner.Frag())
-	for _, g := range groupFrags {
-		outer.Select(g)
-	}
+	outer.Select(groupFrags...)
 	outer.Select(As(nativeAnchorTimestampFrag(), RangeWindowAnchorAlias))
 	if r.TimestampColumn != RangeWindowAnchorAlias {
 		outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampColumn))
