@@ -2,6 +2,14 @@ package chplan
 
 import "time"
 
+// RangeWindowAnchorColumn is the column name the matrix-shape RangeWindow
+// emitters give the per-step anchor timestamp ("anchor_ts"). It is the IR-level
+// contract between the emitter (which produces the column) and the chplan
+// Projects / API result adapters that reference it — re-projecting it into the
+// TimeUnix slot, offset-relabeling it, or grouping by it. chsql's
+// RangeWindowAnchorAlias aliases this so every layer names the column once.
+const RangeWindowAnchorColumn = "anchor_ts"
+
 // RangeWindow is a PromQL-style range-vector aggregation: for each step
 // across [Start, End] (inclusive), compute Func over the rows whose
 // timestamp lies within [step-Range, step]. Used to lower expressions like
