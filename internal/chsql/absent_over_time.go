@@ -200,7 +200,7 @@ func absentGridAnchorFrag(offsetNS int64) Frag {
 	if offsetNS == 0 {
 		return BareIdent("anchor_ts")
 	}
-	return Paren(Add(BareIdent("anchor_ts"), Call("toIntervalNanosecond", InlineLit(offsetNS))))
+	return offsetUnshiftAnchorFrag(BareIdent("anchor_ts"), offsetNS)
 }
 
 // absentOverTimeBookendFrag returns a Frag rendering the eval-grid

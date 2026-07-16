@@ -524,9 +524,7 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 
 	// Innermost SELECT — groupArray of (ts, value), sorted.
 	innermost := NewQuery()
-	for _, g := range groupFrags {
-		innermost.Select(g)
-	}
+	innermost.Select(groupFrags...)
 	innermost.Select(RawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -549,16 +547,12 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
 	innerSb := NewQuery().From(innermost.Frag())
-	for _, g := range groupFrags {
-		innerSb.Select(g)
-	}
+	innerSb.Select(groupFrags...)
 	innerSb.Select(RawAs(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Outer SELECT — final value per series.
 	outerSb := NewQuery().From(innerSb.Frag())
-	for _, g := range groupFrags {
-		outerSb.Select(g)
-	}
+	outerSb.Select(groupFrags...)
 	outerSb.Select(RawAs(valueWriterFor(end), r.ValueColumn))
 	if minWindowSize > 0 {
 		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
@@ -618,9 +612,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
-	for _, g := range groupFrags {
-		fanout.Select(g)
-	}
+	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(RawAs(
@@ -636,9 +628,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())
-	for _, g := range groupFrags {
-		regroup.Select(g)
-	}
+	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	regroup.Select(RawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
@@ -648,9 +638,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 
 	// Outer SELECT — per-(series, anchor) row.
 	outer := NewQuery().From(regroup.Frag())
-	for _, g := range groupFrags {
-		outer.Select(g)
-	}
+	outer.Select(groupFrags...)
 	outer.Select(Col("anchor_ts"))
 	// See emitWindowedArrayExtrapolatedMatrix for the rationale: surface
 	// anchor_ts under the schema timestamp column so a wrapping
@@ -701,7 +689,17 @@ func gridAnchorFrag(r *chplan.RangeWindow) Frag {
 	if r.Offset == 0 || r.Identity {
 		return verbatim(RangeWindowAnchorAlias)
 	}
-	return Paren(Add(verbatim(RangeWindowAnchorAlias), Call("toIntervalNanosecond", InlineLit(r.Offset.Nanoseconds()))))
+	return offsetUnshiftAnchorFrag(verbatim(RangeWindowAnchorAlias), r.Offset.Nanoseconds())
+}
+
+// offsetUnshiftAnchorFrag renders `(<anchor> + toIntervalNanosecond(offsetNS))`
+// — adds a PromQL offset back onto a reducing matrix window's offset-shifted
+// anchor so its result reports on the unshifted request grid (see
+// gridAnchorFrag). Shared by the fan-out (gridAnchorFrag) and absent_over_time
+// (absentGridAnchorFrag) emitters; the offset==0 / Identity short-circuit stays
+// at each call site since it is site-specific.
+func offsetUnshiftAnchorFrag(anchor Frag, offsetNS int64) Frag {
+	return Paren(Add(anchor, Call("toIntervalNanosecond", InlineLit(offsetNS))))
 }
 
 // windowPairsSLRFrag renders the per-row CH simple-linear-regression
@@ -1865,9 +1863,7 @@ func dedupWindowPairsByTsFrag(arr Frag) Frag {
 // that holds one sample per distinct timestamp.
 func dedupWindowPairsLayer(upstream Frag, groupFrags []Frag, withAnchor bool) Frag {
 	q := NewQuery().From(upstream)
-	for _, g := range groupFrags {
-		q.Select(g)
-	}
+	q.Select(groupFrags...)
 	if withAnchor {
 		q.Select(Col("anchor_ts"))
 	}
@@ -2481,9 +2477,7 @@ func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag)
 	}
 
 	sb := NewQuery().From(inner)
-	for _, g := range groupFrags {
-		sb.Select(g)
-	}
+	sb.Select(groupFrags...)
 	sb.Select(As(agg, r.ValueColumn))
 	// The (end - range, end] window predicate the array path applied via
 	// arrayFilter over the (ts, value) tuples becomes a row-level WHERE:
@@ -2544,9 +2538,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
-	for _, g := range groupFrags {
-		fanout.Select(g)
-	}
+	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
@@ -2557,9 +2549,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 
 	// Regroup SELECT — direct aggregate per (series, anchor). No array.
 	regroup := NewQuery().From(fanout.Frag())
-	for _, g := range groupFrags {
-		regroup.Select(g)
-	}
+	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	// Surface anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves
@@ -2951,9 +2941,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 
 	// Innermost SELECT — groupArray of (ts, value), sorted.
 	innermost := NewQuery()
-	for _, g := range groupFrags {
-		innermost.Select(g)
-	}
+	innermost.Select(groupFrags...)
 	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -2976,9 +2964,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 
 	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
-	for _, g := range groupFrags {
-		innerMid.Select(g)
-	}
+	innerMid.Select(groupFrags...)
 	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Mid SELECT — derives the per-window scalars the extrap layer
@@ -2989,9 +2975,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// duplicate (series, ts) sample does not inflate the sample count and
 	// corrupt the extrapolation (see dedupWindowPairsByTsFrag).
 	mid := NewQuery().From(dedupWindowPairsLayer(innerMid.Frag(), groupFrags, false))
-	for _, g := range groupFrags {
-		mid.Select(g)
-	}
+	mid.Select(groupFrags...)
 	mid.Select(As(windowValsFrag(), "window_vals"))
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
 	mid.Select(As(firstTsFrag(), "first_ts"))
@@ -3004,9 +2988,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// subexpression soup. Each scalar is plain dependent arithmetic;
 	// CH evaluates the chain row-by-row.
 	extrap := NewQuery().From(mid.Frag())
-	for _, g := range groupFrags {
-		extrap.Select(g)
-	}
+	extrap.Select(groupFrags...)
 	extrap.Select(Col("window_vals"))
 	extrap.Select(Col("counter_delta"))
 	extrap.Select(Col("first_val"))
@@ -3016,9 +2998,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 
 	// Outer SELECT — final value per series.
 	outer := NewQuery().From(extrap.Frag())
-	for _, g := range groupFrags {
-		outer.Select(g)
-	}
+	outer.Select(groupFrags...)
 	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
 
@@ -3064,9 +3044,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
-	for _, g := range groupFrags {
-		fanout.Select(g)
-	}
+	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
@@ -3082,9 +3060,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())
-	for _, g := range groupFrags {
-		regroup.Select(g)
-	}
+	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
@@ -3097,9 +3073,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// (series, ts) sample does not inflate the per-anchor sample count and
 	// corrupt the extrapolation (see dedupWindowPairsByTsFrag).
 	mid := NewQuery().From(dedupWindowPairsLayer(regroup.Frag(), groupFrags, true))
-	for _, g := range groupFrags {
-		mid.Select(g)
-	}
+	mid.Select(groupFrags...)
 	mid.Select(Col("anchor_ts"))
 	mid.Select(As(windowValsFrag(), "window_vals"))
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
@@ -3109,9 +3083,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 
 	// Extrap SELECT — Prom-side scalars derived per-(series, anchor).
 	extrap := NewQuery().From(mid.Frag())
-	for _, g := range groupFrags {
-		extrap.Select(g)
-	}
+	extrap.Select(groupFrags...)
 	extrap.Select(Col("anchor_ts"))
 	extrap.Select(Col("window_vals"))
 	extrap.Select(Col("counter_delta"))
@@ -3122,9 +3094,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 
 	// Outer SELECT — per-(series, anchor) row.
 	outer := NewQuery().From(extrap.Frag())
-	for _, g := range groupFrags {
-		outer.Select(g)
-	}
+	outer.Select(groupFrags...)
 	outer.Select(Col("anchor_ts"))
 	// Also surface anchor_ts under the schema timestamp column name so an
 	// outer Aggregate that injected `ColumnRef{TimestampColumn}` into its
@@ -3420,9 +3390,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 
 	// Innermost SELECT — groupArray of (ts, value), sorted.
 	innermost := NewQuery()
-	for _, g := range groupFrags {
-		innermost.Select(g)
-	}
+	innermost.Select(groupFrags...)
 	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -3445,24 +3413,18 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 
 	// Inner-middle SELECT — arrayFilter to the [end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
-	for _, g := range groupFrags {
-		innerMid.Select(g)
-	}
+	innerMid.Select(groupFrags...)
 	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Middle SELECT — derives window_vals + counter_delta from window_pairs.
 	mid := NewQuery().From(innerMid.Frag())
-	for _, g := range groupFrags {
-		mid.Select(g)
-	}
+	mid.Select(groupFrags...)
 	mid.Select(As(windowValsFrag(), "window_vals"))
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
 
 	// Outer SELECT — final value per series.
 	outer := NewQuery().From(mid.Frag())
-	for _, g := range groupFrags {
-		outer.Select(g)
-	}
+	outer.Select(groupFrags...)
 	outer.Select(As(value, r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
@@ -3531,9 +3493,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
-	for _, g := range groupFrags {
-		fanout.Select(g)
-	}
+	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
@@ -3553,9 +3513,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())
-	for _, g := range groupFrags {
-		regroup.Select(g)
-	}
+	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
@@ -3565,18 +3523,14 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 
 	// Middle SELECT — window_vals + counter_delta per (series, anchor).
 	mid := NewQuery().From(regroup.Frag())
-	for _, g := range groupFrags {
-		mid.Select(g)
-	}
+	mid.Select(groupFrags...)
 	mid.Select(Col("anchor_ts"))
 	mid.Select(As(windowValsFrag(), "window_vals"))
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
 
 	// Outer SELECT — per-(series, anchor) row.
 	outer := NewQuery().From(mid.Frag())
-	for _, g := range groupFrags {
-		outer.Select(g)
-	}
+	outer.Select(groupFrags...)
 	outer.Select(Col("anchor_ts"))
 	// See emitWindowedArrayExtrapolatedMatrix for the rationale: surface
 	// anchor_ts under the schema timestamp column so a wrapping
