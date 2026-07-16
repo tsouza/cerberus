@@ -374,6 +374,8 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return b.exprSubscript(v)
 	case *chplan.ScalarSubquery:
 		return b.exprScalarSubquery(v)
+	case *chplan.InSubquery:
+		return b.exprInSubquery(v)
 	case *chplan.BoundedTraceScope:
 		return b.exprBoundedTraceScope(v)
 	default:
@@ -414,6 +416,41 @@ func (b *Builder) exprScalarSubquery(s *chplan.ScalarSubquery) error {
 	b.sb.WriteString(e.b.String())
 	b.args = append(b.args, e.args...)
 	return nil
+}
+
+// exprInSubquery renders chplan.InSubquery as `<Left> IN (<SELECT ...>)`.
+// The embedded plan subtree is rendered through a fresh in-package emitter
+// exactly like exprScalarSubquery above, so its args splice into this
+// Builder's stream at the position the IN predicate is written; the operator
+// itself reuses the top-level InSubquery Frag constructor so the shape
+// matches every other `<col> IN (<SELECT ...>)` predicate cerberus emits
+// (chplan.BoundedTraceScope, the nested-set anchor/step scope, …).
+func (b *Builder) exprInSubquery(v *chplan.InSubquery) error {
+	if v.Left == nil {
+		return fmt.Errorf("%w: chplan.InSubquery has nil Left", ErrUnsupported)
+	}
+	if v.Subquery == nil {
+		return fmt.Errorf("%w: chplan.InSubquery has nil Subquery", ErrUnsupported)
+	}
+	e := &emitter{}
+	if err := e.emitSubquery(v.Subquery); err != nil {
+		return err
+	}
+	sql, args := e.b.String(), e.args
+
+	var leftErr error
+	InSubquery(
+		func(lb *Builder) {
+			if err := lb.Expr(v.Left); err != nil {
+				leftErr = err
+			}
+		},
+		func(sb *Builder) {
+			sb.sb.WriteString(sql)
+			sb.args = append(sb.args, args...)
+		},
+	)(b)
+	return leftErr
 }
 
 // exprLambda renders chplan.Lambda. Single-parameter shapes render as
