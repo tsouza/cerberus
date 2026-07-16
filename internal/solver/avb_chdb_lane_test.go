@@ -24,9 +24,10 @@
 //     to route is a hard failure (known-untested, not silently passed), and
 //     the routed count is printed.
 //
-// The fixtures deliberately seed a NaN-emitting series (a dup-input-timestamp
-// counter whose window has sampled_interval == 0, so route A legitimately
-// emits literal nan) and duplicate output timestamps (two series share every
+// The fixtures deliberately seed a NaN-emitting shape (job=d — a dense FLAT
+// counter carried IDENTICALLY on http_requests_total and http_errors_total, so
+// rate() is exactly 0 on both arms and the vector-vector RATIO is 0/0 = literal
+// nan at every anchor) and duplicate output timestamps (two series share every
 // anchor_ts), so the comparator's NaN-bit-class and duplicate-multiplicity
 // paths are exercised on real data.
 //
@@ -77,10 +78,26 @@ var (
 //     both series, so EVERY anchor_ts appears with multiplicity 2 in the
 //     output — the duplicate-timestamp coverage the comparator must handle.
 //
-//   - job=c — exactly two samples at the SAME timestamp (00:10:00). Its only
-//     populated windows hold first_ts == last_ts, so sampled_interval == 0
-//     and route A's rate() arithmetic legitimately emits literal nan — the
-//     NaN-bit-class coverage. The dup-input-timestamp is itself the trigger.
+//   - job=c — exactly two samples at the SAME timestamp (00:10:00). The rate
+//     emitter's timestamp-dedup (dedupWindowPairsByTsFrag / arrayCompact by ts)
+//     collapses the two same-timestamp samples to a single window element, so
+//     every job=c window holds length 1 and fails rate's `length >= 2` filter:
+//     job=c is DROPPED from every rate() output. It is the dup-input-timestamp
+//     DEDUP-DROP coverage — route A and every shard must agree on the drop.
+//
+//   - job=d — a dense FLAT counter, one sample every 15s for the full hour
+//     (241 samples), every sample the SAME value. A flat counter has zero
+//     counter-delta, so rate(job=d[5m]) is exactly 0 at every anchor (a
+//     finite, non-dropped value). job=d exists so the vector-vector ratio
+//     fixtures below emit a GENUINE literal nan: 0/0.
+//
+// A parallel counter http_errors_total carries the SAME four-series shape
+// (dense job=a/job=b, a dup-input-timestamp job=c, a dense flat job=d). Because
+// job=d is flat on BOTH metrics, both ratio arms rate() to 0 at every anchor,
+// so the join emits 0/0 = literal nan for job=d — the NaN-bit-class coverage.
+// The nan is produced deterministically (0.0/0.0) and IDENTICALLY on route A
+// and the owning shard (each anchor is computed in exactly one shard), so the
+// comparator's NaN==NaN-by-bit-class path fires while parity stays green.
 //
 // The ORDER BY does not dedup (MergeTree, not ReplacingMergeTree), so both
 // job=c rows persist. Statements are newline-clean (no inline `-- comment`
@@ -110,7 +127,30 @@ SELECT 'http_requests_total', map('job', 'b'), 'svc',
 FROM numbers(241);
 INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value) VALUES
   ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 5.0),
-  ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 9.0);`
+  ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 9.0);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT 'http_errors_total', map('job', 'a'), 'svc',
+  toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
+  toFloat64(number) * 0.5
+FROM numbers(241);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT 'http_errors_total', map('job', 'b'), 'svc',
+  toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
+  toFloat64(number)
+FROM numbers(241);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value) VALUES
+  ('http_errors_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 3.0),
+  ('http_errors_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 7.0);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT 'http_requests_total', map('job', 'd'), 'svc',
+  toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
+  toFloat64(100)
+FROM numbers(241);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT 'http_errors_total', map('job', 'd'), 'svc',
+  toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
+  toFloat64(100)
+FROM numbers(241);`
 
 // laneFixtures are the eligible shapes the lane proves. Each is a real shape
 // the Planner routes under sharded mode over laneSeed:
@@ -126,16 +166,41 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Val
 //     pass exactly. (No rate arithmetic → no NaN cell, but it shares every
 //     anchor_ts across job=a / job=b, so it adds duplicate-timestamp coverage.)
 //
-// The matrix shapes each carry a NaN cell (the job=c window) and duplicate
-// output timestamps (job=a / job=b share every anchor_ts before aggregation;
-// sum by (job) keeps the per-anchor duplication across the surviving keys); the
-// combined NaN / duplicate-timestamp boundary-coverage gates are satisfied
-// across the whole fixture set.
+// The bare matrix shapes carry duplicate output timestamps (job=a / job=b share
+// every anchor_ts before aggregation; sum by (job) keeps the per-anchor
+// duplication across the surviving keys). The vector-vector RATIO shapes below
+// additionally carry the literal-nan cell (job=d's 0/0). Together the fixture
+// set satisfies the combined NaN / duplicate-timestamp boundary-coverage gates.
 var laneFixtures = []string{
 	"rate(http_requests_total[5m])",
 	"sum(rate(http_requests_total[5m]))",
 	"sum by (job) (rate(http_requests_total[5m]))",
 	"http_requests_total",
+	// Step-aligned vector-vector joins — the shapes this PR unlocks. In
+	// range mode both arms produce a per-step matrix, so the lowering sets
+	// StepAligned=true and the join step-aligns on the per-anchor
+	// TimestampColumn (the join key includes the anchor timestamp), making
+	// every joined row a per-(match-key, anchor) reduce that route B slices
+	// safely. The job=d flat-counter arm rate()s to 0 on BOTH metrics, so the
+	// ratio for job=d is 0/0 = literal nan at every anchor — the NaN coverage.
+	//
+	// - one-to-one on {job}: both arms `sum by (job)` leave a single {job}
+	//   key, matched one-to-one (default on-all-labels).
+	"sum by (job) (rate(http_requests_total[5m])) / sum by (job) (rate(http_errors_total[5m]))",
+	// - on(job) group_left(): exercises the CardManyToOne emitter path (the
+	//   per-(match-key, anchor) dedup throwIf(uniqExact>1) + Include
+	//   mapConcat). With one series per (job, anchor) the uniqueness guard is
+	//   satisfied; the parity proof is that route A's dedup and each shard's
+	//   dedup agree because the anchor timestamp is in the join key.
+	"sum by (job) (rate(http_requests_total[5m])) / on (job) group_left () sum by (job) (rate(http_errors_total[5m]))",
+	// - asymmetric per-arm offset: only the errors arm carries `offset 5m`, so
+	//   the two arms re-anchor to the same shard grid but each keeps its OWN
+	//   offset window. This is the join shape a single global (ΣRange,
+	//   one-offset) scan floor would mishandle; the parity proof is that route
+	//   B's per-arm re-gridding preserves each arm's offset exactly, so the
+	//   sliced ratio equals route A's. The offset drops the first ~10m of
+	//   anchors on the errors arm, but job=a/job=b stay dense afterward.
+	"sum by (job) (rate(http_requests_total[5m])) / sum by (job) (rate(http_errors_total[5m] offset 5m))",
 }
 
 // TestSolver_AvsB_ChDB_Differential is the per-PR parity workhorse. For each
@@ -235,7 +300,7 @@ func TestSolver_AvsB_ChDB_Differential(t *testing.T) {
 	// seed, never to tolerate.
 	if totalNaNCells == 0 {
 		t.Fatalf("comparator NaN path UNEXERCISED: no NaN value-cell appeared in any " +
-			"route-A result — the dup-input-timestamp seed must emit literal nan")
+			"route-A result — the flat-counter job=d must rate() to 0 on both ratio arms so 0/0 emits literal nan")
 	}
 	if totalDupTimestampGroups == 0 {
 		t.Fatalf("comparator duplicate-timestamp path UNEXERCISED: no timestamp appeared " +
