@@ -55,10 +55,10 @@ branch as shields.io badge JSON; the README shows them live. On
   data).
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
-  template-expanded to 574 concrete cases.
-- **Today**: **574/574** cases pass; no allow-list exists. This is the
+  template-expanded to 718 concrete cases.
+- **Today**: **718/718** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 574/574 is a
+  a real reference. (Parity drift is report-only in CI; the 718/718 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -102,7 +102,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 574/574, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 718/718, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -313,7 +313,7 @@ The floors today (`heads.<name>.{passed,total}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 574 / 574    |
+| prometheus | 718 / 718    |
 | loki       | 116 / 116    |
 | tempo      | 48 / 48      |
 
@@ -324,7 +324,7 @@ below it. It cannot flake because the differs compare with
 absolute + relative epsilon tolerance over canonical-key-sorted result
 sets against a deterministic seed, so `passed`/`total` are stable run to
 run (verified: three consecutive green main runs produced byte-identical
-574/574, 116/116, 48/48); the ratchet then compares **integers**, with
+718/718, 116/116, 48/48); the ratchet then compares **integers**, with
 no float/timing/ordering surface left to jitter.
 
 When the harness legitimately gains passing cases or the corpus grows,

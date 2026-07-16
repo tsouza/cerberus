@@ -230,7 +230,7 @@ the SQL array machinery leaves at high cardinality. See
 - **The fan-out remains byte-for-byte available.** Pinning `ts_grid_range` off
   (an explicit list omitting it, or the legacy `=false`) restores the
   established fan-out exactly; on a < 25.9 server it is the only path. Every
-  existing golden, the compat 574/574 corpus, and the compose / e2e lanes are
+  existing golden, the compat 718/718 corpus, and the compose / e2e lanes are
   structurally the fan-out shape.
 
 **Parity.** Validated on the chDB substrate (25.8) by a dual-emit test

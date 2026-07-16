@@ -223,7 +223,7 @@ real ClickHouse against an upstream oracle, not just the emitted SQL.
 The strongest leg is **PromQL**, which runs the third-party **PromQL
 Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
 Prometheus Conformance Program tooling) against a real `prom/prometheus`,
-seeded identically on both sides via remote-write. **574/574 cases pass,
+seeded identically on both sides via remote-write. **718/718 cases pass,
 no allow-list.** LogQL diffs against a real Loki on Grafana's own
 `pkg/logql/bench` corpus — solid, but a Grafana bench corpus rather than a
 standardised conformance suite. TraceQL is the lighter leg: there is **no

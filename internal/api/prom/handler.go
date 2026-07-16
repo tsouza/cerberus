@@ -997,7 +997,15 @@ func matrixWindowOffset(plan chplan.Node) (offset time.Duration, relabel bool) {
 	case *chplan.RangeWindow:
 		return v.Offset, v.Offset != 0 && !v.Identity
 	case *chplan.RangeWindowNative:
-		return v.Offset, v.Offset != 0
+		// Native (timeSeriesRateToGrid) already reports on the UNSHIFTED request
+		// grid: its anchor axis is built with nativeGridTimeBoundFrag(_, 0) and
+		// Offset is folded ONLY into the aggregate's membership window
+		// (range_window_native.go — "Offset must NOT move the reported
+		// timestamps"). So its bare anchor_ts is the grid value already, unlike
+		// the fan-out RangeWindow whose bare anchor_ts is offset-SHIFTED.
+		// Re-shifting it here would double-shift a native `rate(m[r] offset o)`
+		// by +o. Never relabel native.
+		return 0, false
 	case *chplan.Project:
 		return matrixWindowOffset(v.Input)
 	case *chplan.Filter:

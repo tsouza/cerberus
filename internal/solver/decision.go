@@ -10,7 +10,8 @@ import (
 // classify a plan. It is the package-local stand-in for engine.Meta: the
 // import-cycle rule (internal/engine imports internal/solver, never the
 // reverse) forbids referencing engine.Meta here, so the engine adapter
-// (a later PR) populates this small struct from its own Meta + Lang.
+// (internal/engine, engine.go) populates this small struct from its own
+// Meta + Lang.
 //
 // The Planner uses it both as the cost-signal source (Step / OuterRange) and
 // as the @-modifier guard's oracle: a windowed node's bounds must match the
