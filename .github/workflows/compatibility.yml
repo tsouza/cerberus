@@ -12,7 +12,7 @@ name: compatibility
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
 #   * actions/checkout@v7           — stdlib.
-#   * actions/setup-go@v6           — `go run ./cmd/seed` + driver builds.
+#   * actions/setup-go@v7           — `go run ./cmd/seed` + driver builds.
 #   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
 #   * docker/login-action@v4        — authed Docker Hub pulls (rate limits).
 #   * taiki-e/install-action@v2     — installs `just`.
@@ -163,7 +163,7 @@ jobs:
           # both refs reachable (mirrors ci.yml's forbid-skip checkout).
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -244,7 +244,7 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -497,7 +497,7 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -844,7 +844,7 @@ jobs:
       # The run script does `go run ./cmd/seed` + `go test -c` of the
       # vendored bench driver, so we need a Go toolchain. setup-go
       # honours go.mod's `go` directive and pulls the matching toolchain.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
