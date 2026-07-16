@@ -48,9 +48,10 @@ const (
 	ModeSharded = "sharded"
 )
 
-// Config tunes the solver. Every field maps to a CERBERUS_* env var wired by
-// internal/config in a later PR; this package owns only the defaults and the
-// invariants. The defaults are deliberately conservative against the
+// Config tunes the solver. Every field maps to a CERBERUS_* env var parsed by
+// ConfigFromEnv (config_env.go) — kept in this package rather than
+// internal/config to avoid an import cycle; this package owns the defaults and
+// the invariants. The defaults are deliberately conservative against the
 // over-routing attack (docs §Routing): Grafana's auto-step makes the dominant
 // production shape rate[5m] @ 15s hit F=20, N>=241, which must NOT route at
 // these thresholds unless the total expansion is spike-class.
