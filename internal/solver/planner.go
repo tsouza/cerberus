@@ -97,6 +97,20 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	if sig.sawNow64 {
 		return notRouted(ReasonNow64).withGrid(sig, meta), false
 	}
+	// (3b) An instant-mode (!StepAligned) VectorJoin. The slice-invariance
+	// registry admits VectorJoin by node kind, so it ALSO admits the
+	// instant-mode shape — whose emitter synthesizes the join-side timestamp
+	// with now64(9) (internal/chsql/vector_join.go joinTimestampFrag), a
+	// wall-clock the plan-level now64 scanner never sees (it is minted in the
+	// SQL, not carried as a chplan FuncCall). Only the StepAligned (range-mode)
+	// join step-aligns on the real per-anchor TimestampColumn and is safe to
+	// slice; the instant shape fails closed to route A. Plan's Step<=0 guard
+	// already rejects instant *queries* before analyze, but a !StepAligned join
+	// can appear under a range-mode request, so this guard is both the
+	// load-bearing fail-close AND honest telemetry.
+	if sig.sawInstantVectorJoin {
+		return notRouted(ReasonInstantJoin).withGrid(sig, meta), false
+	}
 	// (2) Both Start and End pinned on every windowed node, and no
 	// instant-shape windowed node (OuterRange == 0 / Step == 0).
 	if sig.sawUnpinnedBound || sig.sawInstantWindow {
@@ -237,6 +251,15 @@ type signals struct {
 	sawIncommensurate bool
 	sawScalarHeavy    bool
 
+	// sawInstantVectorJoin records a StepAligned==false VectorJoin — an
+	// instant-mode vector-vector join. Its emitter synthesizes the join-side
+	// timestamp with now64(9) (a per-shard-divergent wall-clock invisible to
+	// the plan-level now64 scanner), so it must stay on route A even though the
+	// VectorJoin node kind is registered slice-invariant. The StepAligned
+	// (range-mode) join, which step-aligns on the real per-anchor
+	// TimestampColumn, does not set this flag and remains routable.
+	sawInstantVectorJoin bool
+
 	// sawNonRangeWindowSpine records a routed-spine grid bound-carrier whose
 	// grid ReanchorRange does NOT re-anchor — a RangeBucketFanout or StepGrid,
 	// which ReanchorRange CloneNode's verbatim (every shard would emit
@@ -375,6 +398,26 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 			p.walkExpr(pr.Expr, sig)
 		}
 		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		return
+
+	case *chplan.VectorJoin:
+		// A vector-vector join is registered slice-invariant, but only the
+		// StepAligned (range-mode) shape is actually safe to slice: the emitter
+		// step-aligns on the real per-anchor TimestampColumn, so each
+		// (match-key, anchor) pair joins independently and the many-to-one
+		// dedup (throwIf(uniqExact>1)) + Include mapConcat are per-anchor. The
+		// instant-mode (!StepAligned) shape synthesizes the join-side timestamp
+		// with now64(9) in SQL (invisible to walkExpr's now64 scan), so it must
+		// fail closed to route A — record the signal the Plan() gate reads.
+		if !v.StepAligned {
+			sig.sawInstantVectorJoin = true
+		}
+		// The join carries no own grid and no lookback: BOTH arms are
+		// independent windowed spines evaluating over the SAME [predStart,
+		// predEnd] at this depth (no widening at the join level — each arm's
+		// own RangeWindow / RangeLWR widens its inner scan). Recurse both.
+		p.walkNode(v.Left, predStart, predEnd, depth, sig)
+		p.walkNode(v.Right, predStart, predEnd, depth, sig)
 		return
 	}
 
@@ -540,12 +583,26 @@ func (p *Planner) walkExpr(e chplan.Expr, sig *signals) {
 // walkScalarInterior walks a ScalarSubquery's plan for now64 and unmarked
 // nodes only — its bounds do not participate in the outer anchor grid, so the
 // grid-prediction / commensurability checks are intentionally skipped here.
+//
+// It ALSO carries the sawInstantVectorJoin fail-close (mirroring walkNode's
+// VectorJoin case): the slice-invariance registry admits VectorJoin by node
+// kind, so an instant-mode (!StepAligned) join buried in a scalar interior —
+// e.g. scalar(sum(up_a)/sum(up_b)), whose Aggregate-rooted arms carry no
+// windowed node and so never trip checkScalarHeavy, and whose now64(9)
+// join-side timestamp is minted in SQL and so never trips the now64 scan —
+// would otherwise pass every gate and route B, replicating a per-shard
+// wall-clock scalar across time-slices. Flag it here so it fails closed to
+// route A exactly as a top-level instant join does.
 func (p *Planner) walkScalarInterior(n chplan.Node, sig *signals) {
 	chplan.Walk(n, func(node chplan.Node) bool {
 		if !chplan.IsSliceInvariant(node) {
 			sig.allSliceInvariant = false
 		}
 		switch v := node.(type) {
+		case *chplan.VectorJoin:
+			if !v.StepAligned {
+				sig.sawInstantVectorJoin = true
+			}
 		case *chplan.Filter:
 			p.scanExprForNow64(v.Predicate, sig)
 		case *chplan.Project:

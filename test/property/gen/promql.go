@@ -79,8 +79,11 @@ func PromQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 //   - bare vector selector             — exercises the LWR rule
 //   - sum(selector)                    — exercises aggregation + LWR
 //   - sum by(label)(selector)          — exercises grouping
-//   - rate(selector[60s])              — exercises range function
-//   - sum(rate(selector[60s]))         — exercises composition
+//   - rate(selector[60s] offset <d>)   — exercises range function; the
+//     range selector also carries an `offset <d>` drawn from RangeOffsetPool
+//     (positive, zero, and negative) so the offset output-timestamp labeling
+//     is exercised against the oracle, not just window membership.
+//   - sum(rate(selector[60s] offset <d>)) — exercises composition + offset
 //
 // Aggregations strip __name__; the bare selector keeps it. Both
 // shapes are valid Prom queries.
@@ -100,22 +103,65 @@ func drawExpr(t *rapid.T, name string, matchers []*labels.Matcher) parser.Expr {
 	case 3:
 		return &parser.Call{
 			Func: parser.Functions["rate"],
-			Args: []parser.Expr{
-				&parser.MatrixSelector{VectorSelector: sel, Range: 60 * time.Second},
-			},
+			Args: []parser.Expr{drawRangeSelector(t, name, matchers)},
 		}
 	case 4:
 		return &parser.AggregateExpr{
 			Op: parser.SUM,
 			Expr: &parser.Call{
 				Func: parser.Functions["rate"],
-				Args: []parser.Expr{
-					&parser.MatrixSelector{VectorSelector: sel, Range: 60 * time.Second},
-				},
+				Args: []parser.Expr{drawRangeSelector(t, name, matchers)},
 			},
 		}
 	}
 	return sel
+}
+
+// rangeSelectorWindow is the fixed `[range]` span attached to every
+// generated range selector. 60s over the dataset's 15s sample spacing
+// admits up to four samples in a full window.
+const rangeSelectorWindow = 60 * time.Second
+
+// RangeOffsetPool is the `offset <d>` sweep attached to range selectors.
+// PromQL's offset shifts only WHICH samples the (T-range, T] window
+// reads; the result is still reported at the unshifted eval ts. This is
+// exactly the axis the range-mode RangeWindow emitter mislabeled (output
+// stamped at T-offset), so the pool exists to drive that path.
+//
+// The values are chosen against the fixed generator geometry — samples
+// at anchor+0..135s, evalTs anchor+200s, range 60s — to cover three
+// distinct window placements plus a negative shift:
+//
+//   - 0              — the un-shifted baseline (no offset token emitted).
+//   - 75s / 120s     — window lands FULLY on seeded data (>=2 samples,
+//     so rate is defined and the output-ts label is actually exercised).
+//   - 170s / 200s    — window's left edge falls BEFORE the seed start,
+//     partially (170s) or almost entirely (200s) off the data.
+//   - -30s           — negative offset slides the window FORWARD, past
+//     the last sample (empty on both sides — an agreement check).
+//
+// Every value is a whole number of seconds so the AST's String() form
+// round-trips through the parser cleanly.
+var RangeOffsetPool = []time.Duration{
+	-30 * time.Second,
+	0,
+	75 * time.Second,
+	120 * time.Second,
+	170 * time.Second,
+	200 * time.Second,
+}
+
+// drawRangeSelector builds the `metric{…}[range]` matrix selector and
+// draws an `offset <d>` modifier from RangeOffsetPool. The offset lives
+// on the inner VectorSelector's OriginalOffset (where MatrixSelector's
+// printer renders it as a trailing `offset …`), and a value of 0 emits
+// no offset token — so the baseline shape is preserved. A fresh
+// VectorSelector is minted here (not the caller's `sel`) so the offset
+// never leaks into the bare-selector / aggregation shapes.
+func drawRangeSelector(t *rapid.T, name string, matchers []*labels.Matcher) *parser.MatrixSelector {
+	vs := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
+	vs.OriginalOffset = rapid.SampledFrom(RangeOffsetPool).Draw(t, "rangeOffset")
+	return &parser.MatrixSelector{VectorSelector: vs, Range: rangeSelectorWindow}
 }
 
 func pickLabelName(t *rapid.T) []string {

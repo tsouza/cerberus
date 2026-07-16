@@ -175,11 +175,32 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		From(emptyWindow.Frag()).
 		Select(As(Lit(""), a.MetricNameColumn)).
 		Select(As(synthAttrsMapFrag(a.SynthLabels), a.AttributesColumn)).
-		Select(As(BareIdent("anchor_ts"), a.TimestampColumn)).
+		Select(As(absentGridAnchorFrag(offsetNS), a.TimestampColumn)).
 		Select(As(Call("toFloat64", Lit(float64(1))), a.ValueColumn))
 
 	e.emitSelect(outer)
 	return nil
+}
+
+// absentGridAnchorFrag renders the OUTPUT timestamp for an absence row.
+// The internal `anchor_ts` column is offset-SHIFTED (anchor_ts =
+// Start/End - Offset ± i*step) because the lookback-window membership
+// (the NOT-IN anti-filter, the covered-anchor fanout, the global
+// prefilter) all key off the shifted grid. But PromQL's `offset` shifts
+// only WHICH samples the window reads, never the timestamp the result is
+// reported at: an `absent_over_time(v[r] offset o)` absence at eval time
+// t belongs to the UNSHIFTED grid anchor t = anchor_ts + Offset. Add
+// Offset back (signed — a negative / forward offset subtracts) so the
+// reported timestamp lands on the [Start, End] request grid. This is the
+// same grid_base-vs-shift_base split range_window's gridAnchorFrag and
+// RangeLWR (range_lwr.go) apply, and matches cerberus's PromQL oracle,
+// which stamps output at the eval time and shifts only the lookup.
+// Offset == 0 renders the bare anchor column unchanged.
+func absentGridAnchorFrag(offsetNS int64) Frag {
+	if offsetNS == 0 {
+		return BareIdent("anchor_ts")
+	}
+	return Paren(Add(BareIdent("anchor_ts"), Call("toIntervalNanosecond", InlineLit(offsetNS))))
 }
 
 // absentOverTimeBookendFrag returns a Frag rendering the eval-grid

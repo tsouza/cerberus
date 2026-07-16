@@ -169,21 +169,21 @@
   },
   {
     "query": "binop_atan2_vv",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_ignoring_instance_strips_instance",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_increase_plus_rate",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_metric_minus_time",
@@ -193,9 +193,9 @@
   },
   {
     "query": "binop_on_job_strips_instance",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_prod_repro",
@@ -205,39 +205,39 @@
   },
   {
     "query": "binop_rate_div_rate_ignoring",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_rate_div_rate_on",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_rate_plus_rate",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_redis_hit_ratio_range",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 4,
+    "reason": "routed"
   },
   {
     "query": "binop_scalar_mul_rate_div_rate_range",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_sumby_rate_plus_sumby_rate",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_time_arith_range",
@@ -265,15 +265,15 @@
   },
   {
     "query": "binop_vv_on_compare_eq",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "binop_vv_on_compare_lt",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "bool_lt",
@@ -283,15 +283,15 @@
   },
   {
     "query": "bool_vv_eq",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "bool_vv_gt",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "bottomk_2",
@@ -619,27 +619,27 @@
   },
   {
     "query": "edge_join_ignoring_extra",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "edge_join_ignoring_group_right",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "edge_join_on_extra_labels",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "edge_join_on_three_keys",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "edge_last_over_time",
@@ -721,15 +721,15 @@
   },
   {
     "query": "empty_ignoring_join",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "empty_on_join",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "exp_metric",
@@ -843,7 +843,7 @@
     "query": "histogram_mean_latency",
     "routed": false,
     "k": 0,
-    "reason": "not-sliceable"
+    "reason": "below-threshold"
   },
   {
     "query": "histogram_quantile_agg_empty",
@@ -1405,9 +1405,9 @@
   },
   {
     "query": "power_op_vv",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "predict_linear_scalar_horizon",
@@ -1795,9 +1795,9 @@
   },
   {
     "query": "subquery_agg_of_binary",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "subquery_avg_over_time_increase",
@@ -2281,33 +2281,33 @@
   },
   {
     "query": "vector_group_left",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_group_left_ignoring",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_group_left_multi_include",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_group_right",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_ignoring_instance",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_mod_scalar",
@@ -2317,15 +2317,15 @@
   },
   {
     "query": "vector_on_job",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_plus_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
   },
   {
     "query": "vector_pow_scalar",

@@ -934,14 +934,32 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 	}
 	if isDerivedShape(plan, s) {
-		// TimeUnix source: matrix-shape RangeWindow exposes a real
-		// per-row timestamp under the literal column `anchor_ts` (one
-		// row per anchor across the subquery's outer range); the outer
-		// Projection's own Alias renames it back to s.TimestampColumn
-		// on emit. The instant case has to synthesise via now64().
+		// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
+		// timestamp under the literal column `anchor_ts`, which the emitter
+		// keeps offset-SHIFTED (the window/rate math keys off the shifted
+		// window edge). PromQL's `offset` shifts only WHICH samples a reducing
+		// window reads, not the timestamp the result is reported at, so for a
+		// reducing rate/increase/*_over_time window with a non-zero offset the
+		// reported timestamp is anchor_ts + Offset (the unshifted request
+		// grid); reading raw `anchor_ts` here re-shifted every offset matrix
+		// query's output past this handler's projection, invisible to the spec
+		// goldens (which never wrap in this projection). A raw range vector /
+		// subquery (Identity) reports each sample at its ACTUAL, offset-shifted
+		// time, so it is left un-relabeled. The instant case synthesises via
+		// now64().
 		var tsExpr chplan.Expr
 		if isMatrixRangeWindow(plan) {
-			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+			tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
+			if off, relabel := matrixWindowOffset(plan); relabel {
+				tsExpr = &chplan.Binary{
+					Op:   chplan.OpAdd,
+					Left: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+					Right: &chplan.FuncCall{
+						Name: "toIntervalNanosecond",
+						Args: []chplan.Expr{&chplan.LitInt{V: off.Nanoseconds()}},
+					},
+				}
+			}
 		} else {
 			tsExpr = synthesizedAnchor()
 		}
@@ -966,6 +984,28 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 // `anchor_ts` passthrough when the inner is matrix-shape. The outer
 // Project's projections still reference `anchor_ts` by name, so the
 // `wrapWithSampleProjection` matrix branch can keep doing the same.
+// matrixWindowOffset walks to the matrix window at plan's root and reports its
+// PromQL offset and whether that offset shifts the REPORTED timestamp. Only a
+// reducing (non-identity) RangeWindow / RangeWindowNative reports on the
+// unshifted request grid, so its shifted anchor_ts must be un-shifted by adding
+// Offset back. A raw range vector / subquery (RangeWindow.Identity) reports each
+// sample at its actual, offset-shifted time and is left alone; a zero offset
+// needs no relabel. Mirrors the emitter's gridAnchorFrag so the bare-selector
+// (wrapWithSampleProjection) and wrapping-aggregate (grid-keyed) paths agree.
+func matrixWindowOffset(plan chplan.Node) (offset time.Duration, relabel bool) {
+	switch v := plan.(type) {
+	case *chplan.RangeWindow:
+		return v.Offset, v.Offset != 0 && !v.Identity
+	case *chplan.RangeWindowNative:
+		return v.Offset, v.Offset != 0
+	case *chplan.Project:
+		return matrixWindowOffset(v.Input)
+	case *chplan.Filter:
+		return matrixWindowOffset(v.Input)
+	}
+	return 0, false
+}
+
 func isMatrixRangeWindow(plan chplan.Node) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:

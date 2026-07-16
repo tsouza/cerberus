@@ -62,8 +62,9 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 		k = 2
 	}
 
-	// Spine geometry the scan floor needs: Offset and cumulative lookback D.
-	offset, d := spineOffsetAndD(plan)
+	// How far back before each slice's oldest anchor its input scan must reach
+	// (Offset + lookback, compounded along nested spines, max across join arms).
+	reach := spineReach(plan)
 
 	// The plan that reaches the slicer is pinned at the full request grid
 	// [Start, End] (the Planner's grid-prediction guard already verified it
@@ -117,13 +118,12 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 		endJ := end.Add(-time.Duration(sp.startIdx) * step)
 		startJ := end.Add(-time.Duration(sp.startIdx+sp.count-1) * step)
 
-		// ScanFrom_j = Start_j - D - Offset_spine. Offset enters with its
-		// sign: a negative offset widens the scan to the RIGHT past End_j,
-		// and the left floor moves accordingly. ScanFrom is solver-owned and
-		// sign-aware (docs §Decomposition); the re-anchored plan carries the
-		// grid, and the executor (a later PR) consumes ScanFrom for the
-		// offset-aware pushdown.
-		scanFrom := startJ.Add(-d).Add(-offset)
+		// ScanFrom_j = Start_j - reach, where reach folds each spine's Offset
+		// (with its sign) and lookback and takes the deepest join/union arm.
+		// ScanFrom is solver-owned and sign-aware (docs §Decomposition); the
+		// re-anchored plan carries the grid, and the executor (a later PR)
+		// consumes ScanFrom for the offset-aware pushdown.
+		scanFrom := startJ.Add(-reach)
 
 		shardPlan, err := chplan.ReanchorRange(base, startJ, endJ)
 		if err != nil {
@@ -304,42 +304,44 @@ func zeroSpineInPlace(n chplan.Node) {
 	}
 }
 
-// spineOffsetAndD walks the windowed spine of plan to recover the Offset
-// folded onto the selector and the cumulative lookback D (Σ Range down matrix
-// windows + leaf RangeLWR.Lookback). Both feed the solver-owned, sign-aware
-// scan floor (docs §Decomposition): the matrix emitters are offset-blind, so
-// the solver derives the input interval itself.
-func spineOffsetAndD(plan chplan.Node) (offset, d time.Duration) {
-	var walk func(chplan.Node)
-	walk = func(n chplan.Node) {
-		switch v := n.(type) {
-		case *chplan.RangeWindow:
-			if v.Offset != 0 {
-				offset = v.Offset
-			}
-			d += v.Range
-			walk(v.Input)
-			return
-		case *chplan.RangeLWR:
-			if v.Offset != 0 {
-				offset = v.Offset
-			}
-			d += v.Lookback
-			walk(v.Input)
-			return
-		case *chplan.Filter:
-			walk(v.Input)
-			return
-		case *chplan.Project:
-			walk(v.Input)
-			return
-		}
-		for _, c := range n.Children() {
-			walk(c)
+// spineReach returns how far BACK before a slice's oldest anchor the slice's
+// input scan must reach: the maximum, over every windowed spine PATH in plan, of
+// (Σ Range/Lookback + Σ Offset along that path). The caller derives
+// ScanFrom_j = Start_j - reach; the matrix emitters are offset-blind, so the
+// solver owns this floor (docs §Decomposition).
+//
+// Range and Offset COMPOUND along a NESTED spine (a subquery's inner window is
+// evaluated at the outer window's shifted sub-anchors), so a path sums them.
+// PARALLEL arms — a VectorJoin's two arms, a companion UnionAll's arms — are
+// independent, so the deepest arm wins (max). This is why the reach cannot
+// collapse to one global (Σ Range, single Offset): summing parallel arms
+// over-scans the shallower one, and — the real hazard — a single
+// "last-offset-wins" scalar can pick the shallower arm's Offset and UNDER-scan
+// the deeper arm (e.g. rate(a[5m]) / rate(b[5m] offset 1h)), silently dropping
+// rows the deeper arm needs. A negative Offset shifts the window toward the
+// future and shrinks a path's reach; max keeps whichever path reaches furthest
+// into the past.
+func spineReach(plan chplan.Node) time.Duration {
+	if plan == nil {
+		return 0
+	}
+	switch v := plan.(type) {
+	case *chplan.RangeWindow:
+		return v.Offset + v.Range + spineReach(v.Input)
+	case *chplan.RangeLWR:
+		return v.Offset + v.Lookback + spineReach(v.Input)
+	}
+	// Off-window node: Filter / Project / Aggregate pass through to their single
+	// spine child; a VectorJoin / UnionAll fans out to parallel arms. The reach
+	// is the deepest child's, or 0 at a leaf (Scan).
+	first := true
+	var reach time.Duration
+	for _, c := range plan.Children() {
+		if r := spineReach(c); first || r > reach {
+			reach, first = r, false
 		}
 	}
-	walk(plan)
-	return offset, d
+	return reach
 }
 
 // gcdDuration returns gcd(|a|,|b|) as a Duration (nanosecond granularity).

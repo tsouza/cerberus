@@ -179,6 +179,35 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		}
 		// Predicate is off-grid immutable: share.
 		return &Filter{Input: input, Predicate: v.Predicate}, nil
+	case *VectorJoin:
+		// A step-aligned vector-vector join carries NO own anchor grid and NO
+		// lookback: each arm is an independent windowed spine that already
+		// evaluates over the request grid, and the join step-aligns the two on
+		// the per-anchor TimestampColumn. Re-anchor BOTH arms onto the SAME
+		// [start, end] the join was asked for (no widening — the arms' own
+		// RangeWindow / RangeLWR nodes do their -Range / -Lookback widening),
+		// then copy-on-write the join node, re-filling the two arms and sharing
+		// the immutable modifier fields (Op / Match / Card / Include /
+		// ReturnBool / StepAligned) + the four column names verbatim. An
+		// @-pinned or grid-divergent arm surfaces ErrReanchorGridMismatch from
+		// the recursion, aborting the whole re-anchor to route A. The
+		// instant-mode (!StepAligned) join is kept off this path by the
+		// planner's sawInstantVectorJoin fail-closed guard (its emitter
+		// synthesizes the join-side timestamp with now64(9), a wall-clock that
+		// diverges across shards); registration is by node kind, so the guard —
+		// not this case — is what excludes it.
+		left, err := reanchor(v.Left, start, end)
+		if err != nil {
+			return nil, err
+		}
+		right, err := reanchor(v.Right, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c := *v
+		c.Left = left
+		c.Right = right
+		return &c, nil
 	default:
 		// Off the windowed spine: SHARE the immutable subtree verbatim. The
 		// off-spine subtree is byte-identical across all K shards (it does not

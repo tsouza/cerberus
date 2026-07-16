@@ -23,6 +23,7 @@ func TestIsSliceInvariant_RegisteredKinds(t *testing.T) {
 		&chplan.RangeBucketFanout{},
 		&chplan.StepGrid{},
 		&chplan.UnionAll{},
+		&chplan.VectorJoin{},
 	}
 	for _, n := range registered {
 		if !chplan.IsSliceInvariant(n) {
@@ -34,7 +35,7 @@ func TestIsSliceInvariant_RegisteredKinds(t *testing.T) {
 // TestIsSliceInvariant_UnregisteredKinds asserts every node kind NOT in the
 // phase-1 set returns false — the default-deny posture. This list is the
 // complement of the registered set over allNodeKinds (defined in
-// clone_test.go); together they cover all 26 node kinds, so adding a node
+// clone_test.go); together they cover all 31 node kinds, so adding a node
 // type without a deliberate registry decision fails the count guard below.
 func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	t.Parallel()
@@ -49,6 +50,7 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 		reflect.TypeOf(&chplan.RangeBucketFanout{}): true,
 		reflect.TypeOf(&chplan.StepGrid{}):          true,
 		reflect.TypeOf(&chplan.UnionAll{}):          true,
+		reflect.TypeOf(&chplan.VectorJoin{}):        true,
 	}
 
 	var unregisteredSeen int
@@ -63,22 +65,27 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 		}
 	}
 
-	// 31 total node kinds, 9 registered → 22 must be default-denied. If this
+	// 31 total node kinds, 10 registered → 21 must be default-denied. If this
 	// drifts, a node kind was added: decide explicitly whether it is
 	// slice-invariant (extend sliceInvariantKinds + the registered set here)
 	// or not (it falls into the default-deny count).
 	//
-	// NaryVectorSetOp is deliberately default-denied: like VectorSetOp it is
-	// a set-op family node, absent from sliceInvariantKinds until its own
-	// slice-invariance proof + §Parity lanes land. RangeWindowNative is also
-	// default-denied: the experimental native-rate node is never routed by
-	// the solver (ReanchorRange does not re-grid it), so it fails closed to
-	// route A — exactly the safe default for an opt-in node. InfoJoin is a
-	// join-family node (like VectorJoin) and is default-denied for the same
-	// reason: its two arms aren't a simple sliced row stream. RangeWindowResample
-	// (a re-gridding range node) and SearchTraceLimit (a per-trace cap) are
-	// likewise default-denied — neither is a simple sliced row stream.
-	const wantUnregistered = 31 - 9
+	// VectorJoin is now REGISTERED (the step-aligned vector-vector join —
+	// each output row reduces one anchor's window on each arm because the
+	// anchor timestamp is in the join key). Its instant-mode shape is held on
+	// route A not by this registry but by the solver's sawInstantVectorJoin
+	// fail-closed guard. VectorSetOp / NaryVectorSetOp are deliberately
+	// default-denied: set-op family nodes (and/or/unless), absent from
+	// sliceInvariantKinds until their own slice-invariance proof + §Parity
+	// lanes land. RangeWindowNative is also default-denied: the experimental
+	// native-rate node is never routed by the solver (ReanchorRange does not
+	// re-grid it), so it fails closed to route A — exactly the safe default for
+	// an opt-in node. InfoJoin is a join-family node whose Info arm is a
+	// point-in-time label lookup, not a sliced row stream, so it stays
+	// default-denied. RangeWindowResample (a re-gridding range node) and
+	// SearchTraceLimit (a per-trace cap) are likewise default-denied — neither
+	// is a simple sliced row stream.
+	const wantUnregistered = 31 - 10
 	if unregisteredSeen != wantUnregistered {
 		t.Fatalf("expected %d default-denied node kinds, saw %d — a node kind was added; "+
 			"make an explicit slice-invariance decision", wantUnregistered, unregisteredSeen)

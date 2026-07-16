@@ -3,8 +3,8 @@
   "_contract": "Per head: 'passed' is the floor of agreeing cases (a run with fewer passing cases regresses); 'total' is the corpus floor (a run whose corpus shrank below this is rejected, so a regression can't hide by dropping a failing case). RAISE these numbers in lock-step whenever the harness legitimately gains passing cases or the corpus grows — never lower them without a documented reason.",
   "heads": {
     "prometheus": {
-      "passed": 574,
-      "total": 574
+      "passed": 718,
+      "total": 718
     },
     "loki": {
       "passed": 116,
