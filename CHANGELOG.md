@@ -4,6 +4,13 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.9.2] — 2026-07-16
+
+### Fixed
+
+- **promql:** report range-mode `offset` output on the unshifted grid, not `t-offset` — a reducing `RangeWindow` re-anchors while the native `RangeWindowNative` path is left unshifted (backport of #1216 + #1217, VectorJoin excluded)
+- **chsql:** push `compare()` root-lookup bound below `GROUP BY`, not above it (backport of #1214)
+
 ## [v1.9.1] — 2026-07-03
 
 ### Fixed

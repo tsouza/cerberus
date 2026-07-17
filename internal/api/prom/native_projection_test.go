@@ -80,3 +80,45 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 		t.Fatalf("TimeUnix projection = %#v, want ColumnRef{anchor_ts}", ts.Expr)
 	}
 }
+
+// TestWrapSampleProjection_NativeRangeWindowOffsetNotReshifted pins that a
+// native RangeWindow carrying a PromQL `offset` is NOT re-shifted by the sample
+// projection. Native (timeSeriesRateToGrid) already reports on the UNSHIFTED
+// request grid — its bare anchor_ts IS the grid value — so
+// wrapWithSampleProjection must project TimeUnix as a plain
+// ColumnRef{anchor_ts}, never anchor_ts + Offset. The fan-out RangeWindow keeps
+// its bare anchor_ts offset-shifted (and IS relabeled), so the two must not
+// share the relabel: a relabel here double-shifts every native
+// `rate(m[r] offset o)` by +o. This is invisible to the SQL goldens (which test
+// chsql.Emit only, never this projection).
+func TestWrapSampleProjection_NativeRangeWindowOffsetNotReshifted(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+
+	native := &chplan.RangeWindowNative{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            time.Minute,
+		Offset:          time.Hour, // the modifier the fan-out RangeWindow re-shifts
+		Start:           time.Unix(1000, 0).UTC(),
+		End:             time.Unix(4600, 0).UTC(),
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+
+	wrapped, ok := wrapWithSampleProjection(native, s).(*chplan.Project)
+	if !ok {
+		t.Fatalf("wrapWithSampleProjection returned %T, want *chplan.Project", wrapped)
+	}
+	ts := wrapped.Projections[2]
+	if ts.Alias != s.TimestampColumn {
+		t.Fatalf("projection[2] alias = %q, want %q", ts.Alias, s.TimestampColumn)
+	}
+	col, ok := ts.Expr.(*chplan.ColumnRef)
+	if !ok || col.Name != chplan.RangeWindowAnchorColumn {
+		t.Fatalf("native offset TimeUnix projection = %#v, want bare ColumnRef{%s} — "+
+			"native already reports the unshifted grid; re-shifting double-shifts by +Offset",
+			ts.Expr, chplan.RangeWindowAnchorColumn)
+	}
+}

@@ -283,6 +283,39 @@ test_cases:
   - query: 'rate(demo_cpu_usage_seconds_total[1m]) / rate(demo_cpu_usage_seconds_total[1m])'
   - query: 'topk(10, sum by(instance) (rate(demo_cpu_usage_seconds_total[1m]) + rate(demo_http_requests_total[1m])))'
 
+  # Range-mode matrix offset (output-timestamp labeling).
+  #
+  # PromQL `offset` shifts only WHICH samples are read; the result is
+  # reported at the UNSHIFTED eval time t (the request grid), never at
+  # t-offset. In matrix mode the range_window emitter must therefore
+  # emit the output timestamp from the unshifted grid anchor while the
+  # internal window/rate math still runs against the offset-shifted
+  # base. A regression that stamps the output at t-offset lands every
+  # sample one offset early.
+  #
+  # The bare-selector offset path (RangeLWR — see the two
+  # `demo_memory_usage_bytes offset {{.offset}}` cases above) was
+  # already correct, so nothing here previously drove RANGE-mode matrix
+  # offset differentially against reference Prometheus: single-arm
+  # parity hid it because both the reference and cerberus arms would
+  # have had to disagree, and only a JOIN across a shifted and an
+  # unshifted arm surfaces the mislabel. These cases pin the labeling
+  # for the extrapolated-rate family (delta/rate/increase), the
+  # instant-rate family (idelta/irate), and the `_over_time` reducers,
+  # each over a matrix range with a positive offset (kept inside the 1h
+  # seed window so the comparison is over non-empty matrices at every
+  # step) and a negative (future-facing) offset.
+  - query: '{{.extrapolatedRateFunc}}(demo_cpu_usage_seconds_total[{{.range}}] offset {{.offset}})'
+    variant_args: ['extrapolatedRateFunc', 'range', 'offset']
+  - query: '{{.extrapolatedRateFunc}}(demo_cpu_usage_seconds_total[5m] offset -{{.offset}})'
+    variant_args: ['extrapolatedRateFunc', 'offset']
+  - query: '{{.instantRateFunc}}(demo_cpu_usage_seconds_total[5m] offset {{.offset}})'
+    variant_args: ['instantRateFunc', 'offset']
+  - query: '{{.simpleTimeAggrOp}}_over_time(demo_memory_usage_bytes[5m] offset {{.offset}})'
+    variant_args: ['simpleTimeAggrOp', 'offset']
+  - query: '{{.simpleTimeAggrOp}}_over_time(demo_memory_usage_bytes[5m] offset -{{.offset}})'
+    variant_args: ['simpleTimeAggrOp', 'offset']
+
   # Wrong-rejection burndown (rejection-parity catalogue, 2026-06):
   # value-level coverage for every shape cerberus newly accepts. Each
   # entry below 422'd on cerberus before the burndown while reference

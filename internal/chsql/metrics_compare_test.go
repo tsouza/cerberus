@@ -10,6 +10,19 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
+// containsInt64Arg reports whether want appears among args as an int64 —
+// used to check a parameterized bound's actual VALUE, since a substring
+// match against the SQL text only proves a `fromUnixTimestamp64Nano(?)`
+// placeholder is present, not which value it was bound to.
+func containsInt64Arg(args []any, want int64) bool {
+	for _, a := range args {
+		if v, ok := a.(int64); ok && v == want {
+			return true
+		}
+	}
+	return false
+}
+
 // compareNode builds a minimal valid MetricsCompare (no root lookup —
 // the join shape is covered by the lowering-level tests + TXTAR
 // fixtures; this file pins the emitter's own contract).
@@ -63,19 +76,23 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 	return m
 }
 
-// TestEmitRangeWindowCompare_JoinScanPushdown pins the FIX-1 scan-
-// bounding pushdown for the join (RootLookup) shape — the prod
-// traces-drilldown OOM. The (Start - range, End] Timestamp window must
-// land INSIDE each MergeTree scan of `s LEFT JOIN r`, never on the
-// SELECT wrapping the join (CH 24.12 cannot push a join-level predicate
-// into either leg):
+// TestEmitRangeWindowCompare_JoinScanPushdown pins the scan-bounding
+// pushdown for the join (RootLookup) shape — the prod traces-drilldown
+// OOM. The (Start - range, End] Timestamp window must land INSIDE each
+// MergeTree scan of `s LEFT JOIN r`, never on the SELECT wrapping the
+// join (CH 24.12 cannot push a join-level predicate into either leg):
 //
 //   - the `s` span leg carries the bound in its own WHERE, immediately
 //     above the `AS s` alias;
 //   - the `r` root leg is seeded with `TraceId IN (<bounded cohort
-//     trace-ids>)` so the same window prunes the root scan through the
-//     GROUP BY TraceId aggregate, while preserving rootName enrichment
-//     for every trace the join can match.
+//     trace-ids>)` pushed directly into the Filter beneath RootLookup's
+//     own physical Scan — i.e. BELOW its GROUP BY TraceId aggregate, not
+//     as a wrap around the aggregate's output — so CH partition-prunes
+//     the scan itself instead of materializing the full aggregate first.
+//     A `TraceId IN (...)` filter sitting ABOVE the GROUP BY (the earlier
+//     boundedRootLeg-only shape) restricts only the aggregate's output
+//     and does not prune the scan; that's what kept OOMing in prod
+//     despite the wrap already existing (see windowRootLookupTraceIDSeed).
 func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	t.Parallel()
 
@@ -87,7 +104,7 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
 		TimestampColumn: "Timestamp",
 	}
-	sql, _, err := chsql.Emit(context.Background(), rw)
+	sql, args, err := chsql.Emit(context.Background(), rw)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -102,12 +119,55 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 		t.Errorf("matrix join SQL must bound the 's' scan inside the join (want %q):\n%s", sLeg, sql)
 	}
 
-	// The 'r' root leg: seeded by the bounded cohort's trace-id set so
-	// the root scan prunes the same way, with enrichment preserved.
-	rSeed := "WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) " +
-		"WHERE " + lo + " AND " + hi + ") AS _cmp_seed)) AS r"
-	if !strings.Contains(sql, rSeed) {
-		t.Errorf("matrix join SQL must seed the 'r' root leg by bounded trace-ids (want %q):\n%s", rSeed, sql)
+	// The 'r' root leg: RootLookup's own Filter(ParentSpanId = '') gains a
+	// `TraceId IN (<bounded cohort>)` conjunct, seeding the scan directly
+	// — BELOW the GROUP BY that follows it — so CH prunes the scan before
+	// aggregating, not after. PREWHERE promotion (internal/optimizer)
+	// splits the two conjuncts of the Filter across PREWHERE/WHERE rather
+	// than AND-ing them into one clause; either placement still lands the
+	// seed inside the scan, below the GROUP BY. The seed's own bound
+	// (tsBoundExprs) renders as fromUnixTimestamp64Nano(?) — the same
+	// parameterized shape the search lowering's tsBound uses — not the
+	// inlined toDateTime64(...) literal the 's' leg's lo/hi above use.
+	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
+		"WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))))"
+	if !strings.Contains(sql, rSeededScan) {
+		t.Errorf("matrix join SQL must seed the 'r' root leg's own scan by bounded trace-ids (want %q):\n%s", rSeededScan, sql)
+	}
+	if !strings.Contains(sql, rSeededScan+" GROUP BY `TraceId`") {
+		t.Errorf("the trace-id seed must sit BELOW RootLookup's GROUP BY, not wrap its output:\n%s", sql)
+	}
+
+	// The seed's own bound is parameterized (fromUnixTimestamp64Nano(?)), so
+	// the shape assertion above passes regardless of the actual bound VALUE —
+	// it must independently be checked against args. The seed has to mirror
+	// the 's' leg's own (Start-range, End] window (see innerScanTsBoundsFrags
+	// in range_window.go), not the raw [Start, End] request window: a trace
+	// whose only matching span falls in the anchor lookback slice
+	// (Start-range, Start) — the normal case for every anchor before the
+	// last — satisfies the 's' leg's bound but would miss a seed bounded to
+	// raw Start, silently dropping that trace's root-name/root-service
+	// enrichment. This is the same shape as prior window-anchor bugs in this
+	// codebase (mismatched request-window bound vs. actual scan bound).
+	wantSeedLoNano := rw.Start.UnixNano() - rw.Range.Nanoseconds()
+	wantSeedHiNano := rw.End.UnixNano()
+	if !containsInt64Arg(args, wantSeedLoNano) {
+		t.Errorf("seed lower bound arg %d (Start - range) not found in emitted args %v", wantSeedLoNano, args)
+	}
+	if !containsInt64Arg(args, wantSeedHiNano) {
+		t.Errorf("seed upper bound arg %d (End) not found in emitted args %v", wantSeedHiNano, args)
+	}
+	if containsInt64Arg(args, rw.Start.UnixNano()) {
+		t.Errorf("seed lower bound must be Start-range, not raw Start (found raw Start.UnixNano()=%d in args %v)", rw.Start.UnixNano(), args)
+	}
+
+	// Regression guard: once the scan-level seed lands, boundedRootLeg's
+	// redundant post-aggregate wrap (`) AS r` immediately preceded by a
+	// bare `WHERE TraceId IN (...)`, with no intervening Filter/Scan) must
+	// not also appear — that shape re-filters an already-pruned result by
+	// the identical trace-id set for no benefit.
+	if strings.Contains(sql, "_cmp_seed") {
+		t.Errorf("boundedRootLeg's post-aggregate wrap must be skipped once the scan-level seed succeeds (unexpected _cmp_seed):\n%s", sql)
 	}
 
 	// Regression guard: the bound must NOT sit on the SELECT that wraps

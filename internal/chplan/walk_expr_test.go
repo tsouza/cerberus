@@ -41,6 +41,7 @@ func TestInspectExprExhaustive(t *testing.T) {
 		&NestedArrayExists{},
 		&ScalarSubquery{},
 		&BoundedTraceScope{},
+		&InSubquery{},
 	}
 
 	// Each listed type must be reached as a root visit without panicking,
@@ -70,7 +71,7 @@ func TestInspectExprExhaustive(t *testing.T) {
 	// switch has no default-panic), so this count forces the author to
 	// revisit both the switch AND this list. Keep it in lock-step with the
 	// number of exprNode() implementers under internal/chplan.
-	const wantExprTypes = 22
+	const wantExprTypes = 23
 	if len(all) != wantExprTypes {
 		t.Fatalf("expected %d Expr types in the exhaustiveness set, listed %d — "+
 			"a new Expr type was added: extend inspectExpr's switch in walk_expr.go AND this list",
@@ -111,8 +112,9 @@ func TestCloneExprExhaustive(t *testing.T) {
 		&NestedArrayExists{},
 		&ScalarSubquery{},
 		&BoundedTraceScope{},
+		&InSubquery{},
 	}
-	const wantExprTypes = 22
+	const wantExprTypes = 23
 	if len(all) != wantExprTypes {
 		t.Fatalf("expected %d Expr types, listed %d — a new Expr type was added: "+
 			"extend cloneExpr's switch in clone.go AND this list", wantExprTypes, len(all))
