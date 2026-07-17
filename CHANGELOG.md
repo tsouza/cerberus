@@ -6,6 +6,10 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.11.0] — 2026-07-16
 
+### Added
+
+- **solver:** register VectorJoin as slice-invariant so step-aligned ratio joins route through the sharded path; fail-close instant joins on route A (#1215)
+
 ### Fixed
 
 - **prom:** don't re-shift native rate offset output (double-shift); sync docs/comments (#1217)

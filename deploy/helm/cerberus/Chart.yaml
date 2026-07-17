@@ -49,6 +49,8 @@ annotations:
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
+    - kind: added
+      description: "solver: register VectorJoin as slice-invariant so step-aligned ratio joins route through the sharded path; fail-close instant joins on route A (#1215)"
     - kind: fixed
       description: "prom: don't re-shift native rate offset output (double-shift); sync docs/comments (#1217)"
     - kind: fixed
