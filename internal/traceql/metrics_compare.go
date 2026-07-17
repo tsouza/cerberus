@@ -156,6 +156,12 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 		node.TraceIDColumn = s.TraceIDColumn
 		node.RootNameAlias = rootNameAlias
 		node.RootServiceAlias = rootServiceAlias
+		// A root-scoped selection (`{ nestedSetParent < 0 }` → Filter(ParentSpanId
+		// = '') over Scan — the traces-drilldown "Comparison" shape) only seeds
+		// TraceIds whose root span is in the request window, so the emitter can
+		// prune the root-lookup scan by Timestamp losslessly. isRootSpanFilter is
+		// the same root-shape predicate the search-limit bound uses.
+		node.InnerRootScoped = isRootSpanFilter(prev, s.ParentSpanIDColumn)
 	}
 
 	return node, nil
