@@ -88,6 +88,11 @@ type MetricsCompare struct {
 	ValAlias         string
 	ValueAlias       string
 	Inner            Node
+	// InnerRootScoped is set by lowering when Inner is confined to root spans
+	// (ParentSpanId = ''). It lets the emitter prune the root-lookup scan by the
+	// request-window Timestamp losslessly — the seed's roots are then in-window
+	// by construction. Only meaningful when RootLookup != nil.
+	InnerRootScoped bool
 }
 
 func (*MetricsCompare) planNode() {}
