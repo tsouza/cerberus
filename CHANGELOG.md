@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.11.1] — 2026-07-17
+
+### Fixed
+
+- **chsql:** window-prune the compare root-lookup scan for root-scoped selections (#1223)
+
 ## [v1.11.0] — 2026-07-16
 
 ### Added
