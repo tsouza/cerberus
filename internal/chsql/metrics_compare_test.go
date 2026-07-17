@@ -87,8 +87,9 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 //   - the `r` root leg is seeded with `TraceId IN (<bounded cohort
 //     trace-ids>)` pushed directly into the Filter beneath RootLookup's
 //     own physical Scan — i.e. BELOW its GROUP BY TraceId aggregate, not
-//     as a wrap around the aggregate's output — so CH partition-prunes
-//     the scan itself instead of materializing the full aggregate first.
+//     as a wrap around the aggregate's output — so the membership predicate
+//     scopes the aggregate's inputs instead of filtering its output (the
+//     scan itself is pruned only in the root-scoped arm's Timestamp bound).
 //     A `TraceId IN (...)` filter sitting ABOVE the GROUP BY (the earlier
 //     boundedRootLeg-only shape) restricts only the aggregate's output
 //     and does not prune the scan; that's what kept OOMing in prod
@@ -121,8 +122,11 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 
 	// The 'r' root leg: RootLookup's own Filter(ParentSpanId = '') gains a
 	// `TraceId IN (<bounded cohort>)` conjunct, seeding the scan directly
-	// — BELOW the GROUP BY that follows it — so CH prunes the scan before
-	// aggregating, not after. PREWHERE promotion (internal/optimizer)
+	// — BELOW the GROUP BY that follows it — so the predicate scopes the
+	// aggregate's inputs rather than filtering its output. This non-root shape
+	// has no direct Timestamp bound, so the scan itself is NOT pruned (that is
+	// #1214's lossless tradeoff; only the root-scoped arm prunes).
+	// PREWHERE promotion (internal/optimizer)
 	// splits the two conjuncts of the Filter across PREWHERE/WHERE rather
 	// than AND-ing them into one clause; either placement still lands the
 	// seed inside the scan, below the GROUP BY. The seed's own bound
@@ -164,7 +168,7 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// Regression guard: once the scan-level seed lands, boundedRootLeg's
 	// redundant post-aggregate wrap (`) AS r` immediately preceded by a
 	// bare `WHERE TraceId IN (...)`, with no intervening Filter/Scan) must
-	// not also appear — that shape re-filters an already-pruned result by
+	// not also appear — that shape re-filters an already-seeded result by
 	// the identical trace-id set for no benefit.
 	if strings.Contains(sql, "_cmp_seed") {
 		t.Errorf("boundedRootLeg's post-aggregate wrap must be skipped once the scan-level seed succeeds (unexpected _cmp_seed):\n%s", sql)
@@ -180,6 +184,70 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	}
 	if strings.Contains(sql[onIdx:], "`Timestamp` >") || strings.Contains(sql[onIdx:], "`Timestamp` <=") {
 		t.Errorf("Timestamp bound must not sit above the join (found after ON clause):\n%s", sql[onIdx:])
+	}
+}
+
+// TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound pins the
+// prod fix for the traces-drilldown "Comparison" OOM: when the selection is
+// root-scoped (InnerRootScoped), the enrichment ('r') root-lookup scan gains a
+// DIRECT request-window Timestamp bound conjoined onto its own Filter, so CH
+// partition/PK-prunes it. #1214's TraceId-IN seed alone cannot prune (TraceId
+// is not the sort key). The bound is lossless here because the seed's roots are
+// all in-window; a non-root selection (InnerRootScoped == false, the
+// JoinScanPushdown test above) keeps the scan unbounded to preserve #1214's
+// no-drop guarantee.
+func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T) {
+	t.Parallel()
+
+	// The discriminating signal is the DIRECT Timestamp bound conjoined onto the
+	// root scan's own Filter, which renders BEFORE the `TraceId IN (…)` seed.
+	// The seed subquery already carries its OWN nested Timestamp bound (#1214),
+	// so a test that only greps the whole filter region for a Timestamp bound is
+	// hollow — it passes on the non-root shape too. Slicing at the seed opener
+	// pins the prefix that differs between the two arms.
+	prefixBeforeSeed := func(t *testing.T, innerRootScoped bool) string {
+		t.Helper()
+		m := compareNodeWithRoot()
+		m.InnerRootScoped = innerRootScoped
+		rw := &chplan.RangeWindow{
+			Input:           m,
+			Range:           time.Minute,
+			Step:            time.Minute,
+			Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+			TimestampColumn: "Timestamp",
+		}
+		sql, _, err := chsql.Emit(context.Background(), rw)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
+		if onIdx < 0 {
+			t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
+		}
+		rLeg := sql[:onIdx]
+		start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
+		seed := strings.Index(rLeg, "`TraceId` IN (SELECT `TraceId`")
+		if start < 0 || seed < 0 || seed <= start {
+			t.Fatalf("expected root leg ParentSpanId filter then TraceId-IN seed:\n%s", rLeg)
+		}
+		return rLeg[start:seed] // the scan filter BEFORE the seed subquery
+	}
+
+	// Root-scoped: the direct request-window Timestamp bound is conjoined onto
+	// the scan filter, ahead of the (retained) TraceId-IN seed.
+	rootPrefix := prefixBeforeSeed(t, true)
+	if !strings.Contains(rootPrefix, "`Timestamp` >= fromUnixTimestamp64Nano(?)") ||
+		!strings.Contains(rootPrefix, "`Timestamp` <= fromUnixTimestamp64Nano(?)") {
+		t.Errorf("root-scoped: direct Timestamp bound must precede the TraceId-IN seed, got prefix:\n%s", rootPrefix)
+	}
+
+	// Negative arm (regression discriminator): a non-root selection must NOT gain
+	// the direct bound — the prefix before the seed is only the ParentSpanId
+	// filter. This is what makes the test fail if the emitter half is reverted.
+	nonRootPrefix := prefixBeforeSeed(t, false)
+	if strings.Contains(nonRootPrefix, "fromUnixTimestamp64Nano") {
+		t.Errorf("non-root: root scan must stay unbounded (no direct Timestamp bound before the seed), got prefix:\n%s", nonRootPrefix)
 	}
 }
 
