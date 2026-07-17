@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.10.3
+version: 0.10.4
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.10.0"
+appVersion: "1.10.1"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,23 +45,11 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.10.0
+      image: ghcr.io/tsouza/cerberus:v1.10.1
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
-    - kind: added
-      description: "tempo: extend the structural two-phase split to the gRPC Search path (#1201)"
-    - kind: added
-      description: "tempo: admit union `&>>`/`&<<` into the structural two-phase seam (#1198)"
-    - kind: added
-      description: "tempo: route `!>>` through two-phase + default-on structural-two-phase toggle (#1197)"
-    - kind: added
-      description: "tempo: route `>> | select(...)` through the structural two-phase seam (#1195)"
-    - kind: added
-      description: "autotune: expose loop state via /info/autotune + per-pod metrics (#1193)"
-    - kind: added
-      description: "solver: self-driving autotune loop lowering thresholds toward observed OOM line (#1190)"
     - kind: fixed
-      description: "tempo: bound the wide-projection drain with a fail-closed byte budget (#1200)"
+      description: "promql: report range-mode offset output on the unshifted grid, not t-offset (backport #1216/#1217)"
     - kind: fixed
-      description: "e2e: warm the stack before compose-smoke's zero-tolerance sweep (#1196)"
+      description: "chsql: push compare() root-lookup bound below GROUP BY, not above it (backport #1214)"

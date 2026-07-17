@@ -159,9 +159,26 @@ func extrapolatedRate(samples []Sample, rangeMs, effectiveTs int64, isCounter, i
 	if durationToStart >= extrapolationThreshold {
 		durationToStart = averageDurationBetweenSamplesMs / 2
 	}
-	// For counters, the zero-start case is already captured by the
-	// counter-reset detection above; no additional left-edge handling
-	// needed (Prom's average-gap heuristic below applies uniformly).
+	// Counter zero-crossing clamp (Prom functions.go::extrapolatedRate,
+	// the `if isCounter { … durationToZero … }` block, applied AFTER the
+	// threshold clamp above). Counters cannot be negative, so when the
+	// series has positive slope we extrapolate back only as far as the
+	// counter's implied zero point rather than all the way to the window
+	// edge — otherwise the left-edge extrapolation would invent negative
+	// counter history. `least(durationToStart, durationToZero)`: the zero
+	// point only shortens the reach, never lengthens it. Reachable once
+	// `offset` slides the window so its left edge sits before the first
+	// in-window sample (durationToStart large), which the range-offset
+	// generator now exercises.
+	if isCounter {
+		durationToZero := durationToStart
+		if resultValue > 0 && len(samples) > 0 && first.V >= 0 {
+			durationToZero = sampledIntervalMs * (first.V / resultValue)
+		}
+		if durationToZero < durationToStart {
+			durationToStart = durationToZero
+		}
+	}
 	extrapolateToInterval += durationToStart
 
 	if durationToEnd >= extrapolationThreshold {

@@ -328,6 +328,11 @@ func cloneExpr(e Expr) Expr {
 		// Expr, not a Node child), so a node-only copy walk would miss the
 		// embedded plan subtree entirely. Copy it explicitly here.
 		return &ScalarSubquery{Input: CloneNode(v.Input)}
+	case *InSubquery:
+		// Same rationale as ScalarSubquery above: Subquery is an embedded
+		// Node reachable only through this Expr, so it needs an explicit
+		// CloneNode rather than a shallow field copy.
+		return &InSubquery{Left: cloneExpr(v.Left), Subquery: CloneNode(v.Subquery)}
 	case *BoundedTraceScope:
 		// Pure leaf (column names + limit, no embedded Node) — a flat value
 		// copy, like the literals above.
