@@ -4,6 +4,32 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.11.0] — 2026-07-16
+
+### Added
+
+- **solver:** register VectorJoin as slice-invariant so step-aligned ratio joins route through the sharded path; fail-close instant joins on route A (#1215)
+
+### Fixed
+
+- **prom:** don't re-shift native rate offset output (double-shift); sync docs/comments (#1217)
+- **promql:** report range-mode offset output on the unshifted grid, not t-offset (#1216)
+- **chsql:** push compare() root-lookup bound below GROUP BY, not above it (#1214)
+- **e2e:** reconcile the Traces-Drilldown undefined-groupBy init race (#1209)
+
+### Changed
+
+- **chsql:** dedupe SELECT-passthrough loops and offset-unshift frag (#1219)
+- **solver:** drop dead ScanFrom/spineReach; share offset-reanchor IR helper (#1218)
+
+### CI
+
+- auto-tidy test/oracle on dependabot go.mod bumps (#1212)
+
+### Documentation
+
+- remove goreportcard badge from README (#1210)
+
 ## [v1.10.0] — 2026-07-04
 
 ### Added
