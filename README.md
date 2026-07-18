@@ -42,8 +42,16 @@ normal Prometheus / Loki / Tempo response. Grafana can't tell the
 difference, so your existing dashboards and alerts keep working unchanged.
 
 ```text
-  OpenTelemetry Collector ──writes──▶ ClickHouse ◀──reads── cerberus ◀──queries── Grafana
-                                                            (PromQL / LogQL / TraceQL)
+      WRITE SIDE                     READ SIDE
+                            (PromQL · LogQL · TraceQL)
+  ┌────────────────┐         ┌──────────┐    ┌─────────┐
+  │ OTel Collector │         │ cerberus │◀───│ Grafana │
+  └───────┬────────┘         └────┬─────┘    └─────────┘
+          │ writes                │ reads
+          ▼                       ▼
+     ┌───────────────────────────────────┐
+     │            ClickHouse             │
+     └───────────────────────────────────┘
 ```
 
 **Cerberus does not ingest or store anything.** Your OpenTelemetry
