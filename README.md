@@ -41,7 +41,8 @@ cerberus translates it into ClickHouse SQL, runs it, and hands back the
 normal Prometheus / Loki / Tempo response. Grafana can't tell the
 difference, so your existing dashboards and alerts keep working unchanged.
 
-```text
+<div align="center">
+<table><tr><td><pre>
       WRITE SIDE                      READ SIDE
                              (PromQL · LogQL · TraceQL)
   ┌────────────────┐         ┌──────────┐    ┌─────────┐
@@ -51,7 +52,8 @@ difference, so your existing dashboards and alerts keep working unchanged.
           │    ┌─────────────┐    │
           └───▶│ ClickHouse  │◀───┘
                └─────────────┘
-```
+</pre></td></tr></table>
+</div>
 
 **Cerberus does not ingest or store anything.** Your OpenTelemetry
 Collector already writes telemetry into ClickHouse through its ClickHouse
