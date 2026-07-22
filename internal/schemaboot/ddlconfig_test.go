@@ -1,36 +1,18 @@
-package main
+package schemaboot_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/schemaboot"
 )
 
-// TestBootstrapClickHouseConfig pins that the bootstrap connection rebinds to
-// ClickHouse's always-present `default` database (so CREATE DATABASE works
-// even when the configured target database doesn't exist yet) while leaving
-// the rest of the connection config untouched.
-func TestBootstrapClickHouseConfig(t *testing.T) {
-	in := chclient.Config{Addr: "ch:9000", Database: "otel", Username: "u", Password: "p"}
-	got := bootstrapClickHouseConfig(in)
-	if got.Database != "default" {
-		t.Errorf("bootstrap Database = %q; want default", got.Database)
-	}
-	if got.Addr != "ch:9000" || got.Username != "u" || got.Password != "p" {
-		t.Errorf("bootstrap config changed non-database fields: %+v", got)
-	}
-	if in.Database != "otel" {
-		t.Errorf("input config mutated: %+v", in)
-	}
-}
-
-// TestSchemaApplyConfig_PerSignalTTLFallback pins the per-signal TTL
-// resolution schemaApplyConfig performs: a non-zero per-signal override
-// wins, and a zero per-signal value inherits the global CERBERUS_SCHEMA_TTL.
-func TestSchemaApplyConfig_PerSignalTTLFallback(t *testing.T) {
+// TestDDLConfig_PerSignalTTLFallback pins the per-signal TTL resolution: a
+// non-zero per-signal override wins, and a zero per-signal value inherits the
+// global CERBERUS_SCHEMA_TTL.
+func TestDDLConfig_PerSignalTTLFallback(t *testing.T) {
 	cfg := config.Config{
 		SchemaProvisioning: config.SchemaProvisioning{
 			TTL:        90 * 24 * time.Hour, // global default
@@ -39,9 +21,9 @@ func TestSchemaApplyConfig_PerSignalTTLFallback(t *testing.T) {
 			TTLMetrics: 0,                   // metrics inherit the global
 		},
 	}
-	got, err := schemaApplyConfig(cfg)
+	got, err := schemaboot.DDLConfig(cfg)
 	if err != nil {
-		t.Fatalf("schemaApplyConfig: %v", err)
+		t.Fatalf("DDLConfig: %v", err)
 	}
 	if got.TTL.Metrics != 90*24*time.Hour {
 		t.Errorf("metrics TTL = %v; want global 90d (inherited)", got.TTL.Metrics)
@@ -54,11 +36,11 @@ func TestSchemaApplyConfig_PerSignalTTLFallback(t *testing.T) {
 	}
 }
 
-// TestSchemaApplyConfig_TableNamesThreaded pins that auto-create uses the
-// SAME resolved table names the query heads read (cfg.Schema / Logs /
-// Traces), so a CERBERUS_SCHEMA_*_TABLE override creates and queries the
-// same table rather than silently diverging onto the upstream defaults.
-func TestSchemaApplyConfig_TableNamesThreaded(t *testing.T) {
+// TestDDLConfig_TableNamesThreaded pins that auto-create uses the SAME resolved
+// table names the query heads read (cfg.Schema / Logs / Traces), so a
+// CERBERUS_SCHEMA_*_TABLE override creates and queries the same table rather
+// than silently diverging onto the upstream defaults.
+func TestDDLConfig_TableNamesThreaded(t *testing.T) {
 	cfg := config.Config{
 		Schema: schema.Metrics{
 			GaugeTable:        "m_gauge",
@@ -70,9 +52,9 @@ func TestSchemaApplyConfig_TableNamesThreaded(t *testing.T) {
 		Logs:   schema.Logs{LogsTable: "my_logs"},
 		Traces: schema.Traces{SpansTable: "my_spans"},
 	}
-	got, err := schemaApplyConfig(cfg)
+	got, err := schemaboot.DDLConfig(cfg)
 	if err != nil {
-		t.Fatalf("schemaApplyConfig: %v", err)
+		t.Fatalf("DDLConfig: %v", err)
 	}
 	if got.Tables.MetricsGauge != "m_gauge" || got.Tables.MetricsSum != "m_sum" ||
 		got.Tables.MetricsHistogram != "m_hist" || got.Tables.MetricsExpHistogram != "m_exp" ||
@@ -87,9 +69,9 @@ func TestSchemaApplyConfig_TableNamesThreaded(t *testing.T) {
 	}
 }
 
-// TestSchemaApplyConfig_ReplicatedThreaded pins the Replicated database
-// engine knobs flow through to the ddl Config.
-func TestSchemaApplyConfig_ReplicatedThreaded(t *testing.T) {
+// TestDDLConfig_ReplicatedThreaded pins the Replicated database engine knobs
+// flow through to the ddl Config.
+func TestDDLConfig_ReplicatedThreaded(t *testing.T) {
 	cfg := config.Config{
 		SchemaProvisioning: config.SchemaProvisioning{
 			Cluster:                   "", // mutually exclusive with replicated
@@ -99,9 +81,9 @@ func TestSchemaApplyConfig_ReplicatedThreaded(t *testing.T) {
 			DatabaseReplicatedReplica: "replica0",
 		},
 	}
-	got, err := schemaApplyConfig(cfg)
+	got, err := schemaboot.DDLConfig(cfg)
 	if err != nil {
-		t.Fatalf("schemaApplyConfig: %v", err)
+		t.Fatalf("DDLConfig: %v", err)
 	}
 	if !got.DatabaseEngine.Replicated ||
 		got.DatabaseEngine.ReplicatedZooPath != "/clickhouse/databases/otel" ||
@@ -111,11 +93,10 @@ func TestSchemaApplyConfig_ReplicatedThreaded(t *testing.T) {
 	}
 }
 
-// TestSchemaApplyConfig_StoragePolicyPinnedFirst pins the StoragePolicy
-// shorthand: it folds into Settings ahead of the generic settings list, so
-// `storage_policy` always precedes any CERBERUS_SCHEMA_SETTINGS entries
-// deterministically.
-func TestSchemaApplyConfig_StoragePolicyPinnedFirst(t *testing.T) {
+// TestDDLConfig_StoragePolicyPinnedFirst pins the StoragePolicy shorthand: it
+// folds into Settings ahead of the generic settings list, so `storage_policy`
+// always precedes any CERBERUS_SCHEMA_SETTINGS entries deterministically.
+func TestDDLConfig_StoragePolicyPinnedFirst(t *testing.T) {
 	cfg := config.Config{
 		SchemaProvisioning: config.SchemaProvisioning{
 			StoragePolicy: "s3_tiered",
@@ -124,9 +105,9 @@ func TestSchemaApplyConfig_StoragePolicyPinnedFirst(t *testing.T) {
 			},
 		},
 	}
-	got, err := schemaApplyConfig(cfg)
+	got, err := schemaboot.DDLConfig(cfg)
 	if err != nil {
-		t.Fatalf("schemaApplyConfig: %v", err)
+		t.Fatalf("DDLConfig: %v", err)
 	}
 	if len(got.Settings) != 2 {
 		t.Fatalf("want 2 settings, got %d: %+v", len(got.Settings), got.Settings)
@@ -139,10 +120,10 @@ func TestSchemaApplyConfig_StoragePolicyPinnedFirst(t *testing.T) {
 	}
 }
 
-// TestSchemaApplyConfig_StoragePolicyDualSourceRejected pins the fail-fast:
-// setting storage_policy via BOTH the shorthand and a Settings key is a
-// startup error — there is exactly one way to set it.
-func TestSchemaApplyConfig_StoragePolicyDualSourceRejected(t *testing.T) {
+// TestDDLConfig_StoragePolicyDualSourceRejected pins the fail-fast: setting
+// storage_policy via BOTH the shorthand and a Settings key is an error — there
+// is exactly one way to set it.
+func TestDDLConfig_StoragePolicyDualSourceRejected(t *testing.T) {
 	cfg := config.Config{
 		SchemaProvisioning: config.SchemaProvisioning{
 			StoragePolicy: "s3_tiered",
@@ -151,14 +132,14 @@ func TestSchemaApplyConfig_StoragePolicyDualSourceRejected(t *testing.T) {
 			},
 		},
 	}
-	if _, err := schemaApplyConfig(cfg); err == nil {
+	if _, err := schemaboot.DDLConfig(cfg); err == nil {
 		t.Fatal("want error for storage_policy set via both shorthand and Settings, got nil")
 	}
 }
 
-// TestSchemaApplyConfig_SettingsOnlyNoStoragePolicy pins that a bare Settings
-// list (no shorthand) threads through unchanged — no spurious storage_policy.
-func TestSchemaApplyConfig_SettingsOnlyNoStoragePolicy(t *testing.T) {
+// TestDDLConfig_SettingsOnlyNoStoragePolicy pins that a bare Settings list (no
+// shorthand) threads through unchanged — no spurious storage_policy.
+func TestDDLConfig_SettingsOnlyNoStoragePolicy(t *testing.T) {
 	cfg := config.Config{
 		SchemaProvisioning: config.SchemaProvisioning{
 			Settings: []schema.KV{
@@ -166,9 +147,9 @@ func TestSchemaApplyConfig_SettingsOnlyNoStoragePolicy(t *testing.T) {
 			},
 		},
 	}
-	got, err := schemaApplyConfig(cfg)
+	got, err := schemaboot.DDLConfig(cfg)
 	if err != nil {
-		t.Fatalf("schemaApplyConfig: %v", err)
+		t.Fatalf("DDLConfig: %v", err)
 	}
 	if len(got.Settings) != 1 || got.Settings[0].Key != "min_bytes_for_wide_part" {
 		t.Errorf("settings not threaded as-is: %+v", got.Settings)
