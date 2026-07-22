@@ -73,6 +73,7 @@ func TestMetricsQueryRangeHistogram_Ungrouped(t *testing.T) {
 	}
 	if b025 == nil {
 		t.Fatalf("no series for __bucket=0.25: %+v", body.Series)
+		return
 	}
 	if len(b025.Samples) != 2 || b025.Samples[0].Value != 1 || b025.Samples[1].Value != 3 {
 		t.Errorf("bucket 0.25 samples wrong (want ascending [1 3]): %+v", b025.Samples)
