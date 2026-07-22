@@ -284,6 +284,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | Doc                                                                      | What's in it                                                                                                                  |
 | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | [`docs/engine.md`](docs/engine.md)                                       | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                  |
+| [`docs/migration.md`](docs/migration.md)                                 | The pre-cutover migration playbook: harvest your real queries, preview the SQL + schema, verify parity, then flip traffic.    |
 | [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                  |
 | [`docs/configuration.md`](docs/configuration.md)                         | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults.                               |
 | [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                           |
