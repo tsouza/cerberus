@@ -672,6 +672,66 @@ func (e *Engine) Query(ctx context.Context, lang Lang, query string) (Result, er
 	return e.QueryPlan(ctx, lang, plan, meta)
 }
 
+// DryRun is the offline result of DryRunSQL: the parameterised ClickHouse SQL
+// the pipeline would execute for a query, plus the optimized plan and Meta,
+// WITHOUT running it.
+type DryRun struct {
+	// SQL is the parameterised ClickHouse SQL that Query would execute. It is
+	// empty when emit failed (see the error DryRunSQL returned alongside it).
+	SQL string
+	// Args is the positional bind list for SQL's `?` placeholders.
+	Args []any
+	// Plan is the optimized plan the SQL was emitted from. It is populated even
+	// when emit fails, so a caller can still inspect WHY (e.g. an unbounded
+	// scan that the emit-time chokepoint rejected).
+	Plan chplan.Node
+	// Meta is the per-language semantic flags the adapter returned from Parse.
+	Meta Meta
+}
+
+// DryRunSQL runs the read-side of the pipeline — parse, project, optimize,
+// emit — and returns the ClickHouse SQL WITHOUT executing it. It reuses the
+// exact stages QueryPlan runs before Execute, so the SQL is byte-identical to
+// what Query would send to ClickHouse. The optimizer pass, the subquery
+// sample-budget gate, and the emit-time chokepoints all fire here just as they
+// do on a live run, so an unbounded query returns their error rather than a
+// misleadingly-clean preview.
+//
+// It exists so offline tooling (the migration preview) can show operators the
+// SQL cerberus will run for a query without a ClickHouse connection — the
+// Engine's Client is never touched. Solver routing is intentionally skipped:
+// the dry run reports the standard emit, which is what executes under the
+// default single-route mode.
+func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun, error) {
+	if lang == nil {
+		return DryRun{}, fmt.Errorf("engine: nil Lang")
+	}
+	plan, meta, err := lang.Parse(ctx, query)
+	if err != nil {
+		return DryRun{}, fmt.Errorf("engine: parse: %w", err)
+	}
+	dr := DryRun{Meta: meta}
+
+	plan = lang.ProjectSamples(plan, meta)
+	if !meta.IsTraceByID {
+		plan = e.Optimizer.Run(ctx, plan)
+	}
+	// Record the optimized plan before the gate + emit, which may return early:
+	// the plan is useful for offline inspection even when emit rejects it.
+	dr.Plan = plan
+
+	if err := requireSubquerySampleBudget(plan, e.MaxQuerySamples); err != nil {
+		return dr, err
+	}
+
+	sql, args, err := emitForHead(ctx, lang, plan)
+	if err != nil {
+		return dr, fmt.Errorf("engine: emit: %w", err)
+	}
+	dr.SQL, dr.Args = sql, args
+	return dr, nil
+}
+
 // QueryPlan runs the post-parse half of the pipeline for a plan the
 // adapter built directly. The Tempo /traces/{id} path is the canonical
 // caller: it hand-rolls a plan instead of running a TraceQL parser, so
