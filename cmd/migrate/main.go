@@ -9,6 +9,7 @@
 //	migrate harvest --rules <glob> \           # build a machine-readable query corpus from
 //	  --dashboards <dir> --out corpus.json     #   rule files + exported Grafana dashboards
 //	migrate explain --corpus corpus.json       # explain a previously-harvested corpus
+//	migrate classify --corpus corpus.json      # bucket each corpus query by PromQL support
 //	migrate verify --corpus corpus.json \       # replay the corpus against a reference
 //	  --ref <prom-url> --cerberus <url>          #   Prometheus and cerberus and diff (parity gate)
 //	migrate inventory --source <prom-url>        # probe the LIVE source Prometheus for the
@@ -30,6 +31,14 @@
 // emitted SQL, the physical tables each query scans, and conservative offline
 // risk flags, or marks the query UNSUPPORTED. Row cardinality is data-dependent
 // and is deliberately NOT estimated offline.
+//
+// classify is a re-view of that same explain data specialised into a
+// classification ledger: it buckets each corpus query as supported (PromQL-pure
+// / rewritable — parses, lowers, and emits SQL cleanly) or unsupported
+// (no-equivalent — a parse/lower/emit error, with the offending construct
+// named), flags supported-but-risky queries, and prints per-bucket counts as
+// text or --json. "supported" means the query TRANSLATES, not that cerberus
+// returns the same numbers as Prometheus — only verify proves parity.
 //
 // verify is the online cutover parity gate: it replays each PromQL query in a
 // harvested corpus against a reference Prometheus AND cerberus over one
@@ -126,6 +135,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runHarvest(args[1:], stdout, stderr)
 		case "explain":
 			return runExplainCmd(args[1:], stdout, stderr)
+		case "classify":
+			return runClassifyCmd(args[1:], stdout, stderr)
 		case "verify":
 			return runVerify(args[1:], stdout, stderr)
 		case "inventory":
