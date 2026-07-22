@@ -43,6 +43,7 @@ func TestLowerCompareInnerRootScoped(t *testing.T) {
 		mc := findMetricsCompare(plan)
 		if mc == nil {
 			t.Fatalf("%q: no MetricsCompare in plan", tc.query)
+			return
 		}
 		if mc.InnerRootScoped != tc.want {
 			t.Errorf("%q: InnerRootScoped=%v, want %v", tc.query, mc.InnerRootScoped, tc.want)

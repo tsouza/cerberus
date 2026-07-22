@@ -105,6 +105,7 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 	}
 	if hit == nil {
 		t.Fatalf("no cluster contained both GET and 200; data=%+v", out.Data)
+		return
 	}
 	if !strings.Contains(hit.Pattern, "<_>") {
 		t.Errorf("expected variable placeholder <_> in pattern; got %q", hit.Pattern)
