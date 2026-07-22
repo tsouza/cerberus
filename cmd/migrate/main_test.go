@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,6 +29,58 @@ func TestRun_UnknownFlagIsError(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if err := run([]string{"--nope"}, &out, &errOut); err == nil {
 		t.Fatal("run with an unknown flag should error")
+	}
+}
+
+// TestStringListFlag pins that --rules accumulates both repeated flags and
+// comma-separated values, trimming blanks.
+func TestStringListFlag(t *testing.T) {
+	var l stringList
+	if err := l.Set("a.yml, b.yml"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Set(" c.yml "); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join([]string(l), "|")
+	if got != "a.yml|b.yml|c.yml" {
+		t.Errorf("stringList = %q, want a.yml|b.yml|c.yml", got)
+	}
+}
+
+// TestRunExplainEndToEnd runs the explain mode offline over a temp rules file:
+// a valid recording rule must produce emitted SQL, and a deliberately-broken
+// expr must be marked UNSUPPORTED — the build keeps going past the bad one.
+func TestRunExplainEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "rules.yml")
+	const rules = `
+groups:
+  - name: probe
+    rules:
+      - record: job:up
+        expr: up
+      - alert: BrokenExpr
+        expr: "!!! not valid promql"
+`
+	if err := os.WriteFile(file, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{"--rules", file}, &out, &errOut); err != nil {
+		t.Fatalf("run --rules: %v (stderr: %s)", err, errOut.String())
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "SELECT") {
+		t.Errorf("explain report should contain the emitted SQL for `up`, got:\n%s", got)
+	}
+	if !strings.Contains(got, "UNSUPPORTED") {
+		t.Errorf("explain report should mark the broken expr UNSUPPORTED, got:\n%s", got)
+	}
+	if !strings.Contains(got, "cardinality is NOT knowable offline") {
+		t.Errorf("explain report should carry the offline-cardinality honesty note, got:\n%s", got)
 	}
 }
 

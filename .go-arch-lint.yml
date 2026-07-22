@@ -154,6 +154,13 @@ components:
   # it depends only on chsql for typed SQL composition.
   routerrules:    { in: routerrules }
   autotune:       { in: autotune }
+  # Offline migration preview support: harvests a PromQL corpus from rule files
+  # (promrules) and assembles the explain report over the chplan IR. Wired from
+  # cmd/migrate only.
+  migrate:        { in: migrate }
+  # Leaf yaml.v3 decode of Prometheus rule files (record/alert exprs). No
+  # internal deps — deliberately avoids prometheus/rulefmt's ~112-package pull.
+  promrules:      { in: promrules }
 
 # commonComponents are importable from every layer without an explicit
 # `mayDependOn` entry. These are the cross-cutting utility packages
@@ -276,6 +283,15 @@ deps:
     mayDependOn:
       - solver
       - routerrules
+
+  # migrate builds the offline explain report. It walks the chplan IR (Tables /
+  # Lint) and harvests its corpus via promrules. Explanation is delegated to an
+  # Explainer interface — the engine/DryRunSQL wiring lives in cmd/migrate
+  # (arch-lint-exempt), so migrate itself takes only chplan + promrules.
+  migrate:
+    mayDependOn:
+      - chplan
+      - promrules
 
   # config is wired from cmd/ to build chclient + schema at boot.
   config:
