@@ -166,6 +166,10 @@ components:
   # ranks the top-N metrics/labels by cardinality (the offline-invisible OOM
   # risk). Leaf, stdlib-only — no internal deps. Wired from cmd/migrate only.
   migrateinventory: { in: migrateinventory }
+  # Offline cutover go/no-go aggregator: reads the JSON artifacts the other
+  # migration blocks emit and folds them into one PASS/FAIL decision. Depends
+  # only on the blocks whose JSON contracts it reuses. Wired from cmd/migrate.
+  migrategate:    { in: migrategate }
   # Leaf yaml.v3 decode of Prometheus rule files (record/alert exprs). No
   # internal deps — deliberately avoids prometheus/rulefmt's ~112-package pull.
   promrules:      { in: promrules }
@@ -308,6 +312,16 @@ deps:
   migrateverify:
     mayDependOn:
       - migrate
+
+  # migrategate is the offline aggregator. It reads the JSON each block emits, so
+  # it reuses their contract types: migrate (classify + rulegraph), migrateverify
+  # (the parity report), and migrateinventory (the cardinality report). It runs no
+  # query and opens no connection — a pure JSON-in, decision-out fold.
+  migrategate:
+    mayDependOn:
+      - migrate
+      - migrateverify
+      - migrateinventory
 
   # config is wired from cmd/ to build chclient + schema at boot.
   config:

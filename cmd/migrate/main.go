@@ -16,6 +16,8 @@
 //	  --ref <prom-url> --cerberus <url>          #   Prometheus and cerberus and diff (parity gate)
 //	migrate inventory --source <prom-url>        # probe the LIVE source Prometheus for the
 //	  --top 50                                    #   cardinality that drives OOM risk
+//	migrate gate --verify verify.json \          # fold the migration artifacts into one
+//	  --classify classify.json ...                 #   cutover go/no-go (exit 0 only on PASS)
 //
 // --schema reads the SAME CERBERUS_* environment the server uses
 // (config.FromEnv), so the previewed schema is byte-identical to what the
@@ -65,6 +67,16 @@
 // (scrape config is not realized cardinality). The numbers RANK RISK; they do
 // not predict cerberus's exact memory. A source that 404s the status endpoint
 // exits non-zero.
+//
+// gate is the cutover decision aggregator: it reads the JSON artifacts the
+// other blocks emit (--verify / --classify / --inventory / --rulegraph, all
+// optional) and folds them into one PASS/FAIL go/no-go, reporting a per-stage
+// checklist and which artifacts were missing. It is pure and offline — reads
+// JSON, runs no query. It REFUSES (non-zero exit), never merely warns, on any
+// blocking input: a verify divergence/error, a classify unsupported, a
+// consumed recorded series that must stay materialized, or a missing required
+// artifact. High source cardinality WARNs but does not block. Exit 0 only on
+// overall PASS.
 package main
 
 import (
@@ -106,9 +118,15 @@ func main() {
 	fmt.Fprintln(os.Stderr, "migrate:", err)
 	// A failed parity gate is a real, expected outcome (cerberus diverged) — it
 	// gets its own exit code so callers can tell it apart from a tool error.
-	var gate verifyFailedError
-	if errors.As(err, &gate) {
+	var vgate verifyFailedError
+	if errors.As(err, &vgate) {
 		os.Exit(verifyExitFail)
+	}
+	// A failed cutover gate (a blocking stage said no-go) is likewise an expected
+	// outcome with its own exit code, distinct from a tool error.
+	var cgate gateFailedError
+	if errors.As(err, &cgate) {
+		os.Exit(gateExitFail)
 	}
 	os.Exit(1)
 }
@@ -155,6 +173,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runVerify(args[1:], stdout, stderr)
 		case "inventory":
 			return runInventory(args[1:], stdout, stderr)
+		case "gate":
+			return runGate(args[1:], stdout, stderr)
 		}
 	}
 
