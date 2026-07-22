@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/migrate"
 )
 
 // TestRun_NoFlagsIsError pins that invoking the tool with nothing to do reports
@@ -81,6 +83,110 @@ groups:
 	}
 	if !strings.Contains(got, "cardinality is NOT knowable offline") {
 		t.Errorf("explain report should carry the offline-cardinality honesty note, got:\n%s", got)
+	}
+}
+
+// TestHarvestThenExplainCorpus drives the composed flow end to end: harvest a
+// corpus from a rules file plus a dashboard (with a Prometheus panel, a nested
+// row, and a Loki panel that is dropped-with-count) to a file, then explain that
+// corpus file. The corpus is deterministic and the explain reads it back.
+func TestHarvestThenExplainCorpus(t *testing.T) {
+	dir := t.TempDir()
+
+	rulesFile := filepath.Join(dir, "rules.yml")
+	const rules = `
+groups:
+  - name: cpu
+    rules:
+      - record: job:up
+        expr: up
+`
+	if err := os.WriteFile(rulesFile, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dashDir := filepath.Join(dir, "dash")
+	if err := os.MkdirAll(dashDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const dashboard = `{
+  "panels": [
+    {"id": 1, "title": "reqs", "datasource": {"type": "prometheus"},
+     "targets": [{"refId": "A", "expr": "sum(rate(http_requests_total[5m]))"}]},
+    {"id": 2, "title": "logs", "datasource": {"type": "loki"},
+     "targets": [{"refId": "A", "expr": "{app=\"x\"}"}]},
+    {"id": 3, "title": "row", "type": "row", "panels": [
+      {"id": 4, "title": "nested", "datasource": {"type": "prometheus"},
+       "targets": [{"refId": "A", "expr": "node_load1"}]}
+    ]}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(dashDir, "board.json"), []byte(dashboard), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	corpusFile := filepath.Join(dir, "corpus.json")
+
+	// harvest → corpus.json
+	var hOut, hErr bytes.Buffer
+	if err := run([]string{"harvest", "--rules", rulesFile, "--dashboards", dashDir, "--out", corpusFile}, &hOut, &hErr); err != nil {
+		t.Fatalf("harvest: %v (stderr: %s)", err, hErr.String())
+	}
+
+	data, err := os.ReadFile(corpusFile) //nolint:gosec // test-controlled temp path.
+	if err != nil {
+		t.Fatalf("read corpus: %v", err)
+	}
+	var corpus migrate.Corpus
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatalf("corpus is not valid JSON: %v\n%s", err, data)
+	}
+	if corpus.Version != migrate.CorpusVersion {
+		t.Errorf("corpus version = %d, want %d", corpus.Version, migrate.CorpusVersion)
+	}
+	// 1 rule + 2 prometheus panel targets (top-level + nested row) = 3 queries.
+	if len(corpus.Queries) != 3 {
+		t.Fatalf("corpus queries = %d, want 3: %+v", len(corpus.Queries), corpus.Queries)
+	}
+	// The Loki panel target is dropped-with-count.
+	if len(corpus.Skipped) != 1 || !strings.Contains(corpus.Skipped[0].Reason, "loki") {
+		t.Fatalf("expected 1 Loki skip, got %+v", corpus.Skipped)
+	}
+	for _, q := range corpus.Queries {
+		if q.Lang != migrate.LangPromQL {
+			t.Errorf("query %q lang = %q, want %q", q.Expr, q.Lang, migrate.LangPromQL)
+		}
+	}
+
+	// Harvest is deterministic: a second harvest to a fresh file is byte-identical.
+	corpusFile2 := filepath.Join(dir, "corpus2.json")
+	var h2Out, h2Err bytes.Buffer
+	if err := run([]string{"harvest", "--rules", rulesFile, "--dashboards", dashDir, "--out", corpusFile2}, &h2Out, &h2Err); err != nil {
+		t.Fatalf("harvest (2): %v (stderr: %s)", err, h2Err.String())
+	}
+	data2, err := os.ReadFile(corpusFile2) //nolint:gosec // test-controlled temp path.
+	if err != nil {
+		t.Fatalf("read corpus2: %v", err)
+	}
+	if !bytes.Equal(data, data2) {
+		t.Errorf("harvest is not deterministic:\n--- run 1 ---\n%s\n--- run 2 ---\n%s", data, data2)
+	}
+
+	// explain --corpus reads the harvested corpus back and dry-runs it.
+	var eOut, eErr bytes.Buffer
+	if err := run([]string{"explain", "--corpus", corpusFile}, &eOut, &eErr); err != nil {
+		t.Fatalf("explain --corpus: %v (stderr: %s)", err, eErr.String())
+	}
+	report := eOut.String()
+	if !strings.Contains(report, "SELECT") {
+		t.Errorf("explain report should contain emitted SQL, got:\n%s", report)
+	}
+	if !strings.Contains(report, "node_load1") {
+		t.Errorf("explain report should include the nested-row panel query, got:\n%s", report)
+	}
+	// The harvest-time Loki skip is carried into the explain report's skip count.
+	if !strings.Contains(report, "1 skipped") {
+		t.Errorf("explain report should carry the 1 harvest-time skip, got:\n%s", report)
 	}
 }
 

@@ -4,24 +4,33 @@
 //
 // Usage:
 //
-//	migrate --schema             # print the CREATE statements cerberus expects
-//	migrate --rules <path/glob>  # explain the ClickHouse SQL for each PromQL
-//	                             # query in the given Prometheus rule files
+//	migrate --schema                          # print the CREATE statements cerberus expects
+//	migrate --rules <path/glob>               # explain the ClickHouse SQL for each PromQL rule
+//	migrate harvest --rules <glob> \           # build a machine-readable query corpus from
+//	  --dashboards <dir> --out corpus.json     #   rule files + exported Grafana dashboards
+//	migrate explain --corpus corpus.json       # explain a previously-harvested corpus
 //
 // --schema reads the SAME CERBERUS_* environment the server uses
 // (config.FromEnv), so the previewed schema is byte-identical to what the
 // server would apply on startup, and pipes straight into clickhouse-client.
 //
-// --rules harvests every recording/alerting rule's PromQL, dry-runs it through
-// the exact read-side pipeline the server runs (parse → project → optimize →
-// emit, via engine.DryRunSQL — the ClickHouse client is never touched), and
-// prints the emitted SQL, the physical tables each query scans, and
-// conservative offline risk flags, or marks the query UNSUPPORTED. Row
-// cardinality is data-dependent and is deliberately NOT estimated offline.
+// harvest scans Prometheus rule files (--rules) and exported Grafana dashboard
+// JSON (--dashboards) and emits a versioned, deterministic corpus.json of the
+// operator's real PromQL — every dropped item (unreadable file, non-Prometheus
+// panel, empty expr) is counted, never silently discarded.
+//
+// explain harvests a corpus (from --rules/--dashboards, or a --corpus file
+// produced by harvest), dry-runs every query through the exact read-side
+// pipeline the server runs (parse → project → optimize → emit, via
+// engine.DryRunSQL — the ClickHouse client is never touched), and prints the
+// emitted SQL, the physical tables each query scans, and conservative offline
+// risk flags, or marks the query UNSUPPORTED. Row cardinality is data-dependent
+// and is deliberately NOT estimated offline.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -76,8 +85,19 @@ type options struct {
 
 // run is the testable entrypoint: it parses args, then dispatches. Splitting it
 // from main() (mirroring cmd/route-rules) keeps flag parsing and dispatch unit
-// -testable without spawning a process.
+// -testable without spawning a process. The first arg selects a subcommand
+// (harvest / explain); anything else falls back to the legacy top-level
+// --schema / --rules flags so existing invocations keep working.
 func run(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "harvest":
+			return runHarvest(args[1:], stdout, stderr)
+		case "explain":
+			return runExplainCmd(args[1:], stdout, stderr)
+		}
+	}
+
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var opts options
@@ -92,7 +112,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	switch {
 	case len(opts.rules) > 0:
-		return runExplain(stdout, opts.rules)
+		src := migrate.MultiSource{migrate.FileSource{RulePaths: opts.rules}}
+		return runExplainReport(stdout, src)
 	case opts.schema:
 		cfg, err := config.FromEnv()
 		if err != nil {
@@ -102,25 +123,130 @@ func run(args []string, stdout, stderr io.Writer) error {
 	default:
 		fs.Usage()
 		return fmt.Errorf("nothing to do: pass --schema to print the expected schema, " +
-			"or --rules <path> to explain PromQL rule files")
+			"--rules <path> to explain PromQL rule files, or the harvest/explain subcommand")
 	}
 }
 
-// runExplain harvests PromQL from the given rule files, dry-runs each query
-// through the read-side pipeline, and writes the explain report to w. It is
-// fully offline: the engine has no Client and DryRunSQL never executes.
-func runExplain(w io.Writer, rulePaths []string) error {
+// runHarvest builds a machine-readable query corpus from rule files and/or
+// Grafana dashboards and writes deterministic corpus JSON to --out (or stdout).
+func runHarvest(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("migrate harvest", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		rules      stringList
+		dashboards string
+		out        string
+	)
+	fs.Var(&rules, "rules",
+		"harvest PromQL from these Prometheus rule files (repeatable or comma-separated paths/globs)")
+	fs.StringVar(&dashboards, "dashboards", "",
+		"harvest PromQL from exported Grafana dashboard JSON under this directory (walked recursively)")
+	fs.StringVar(&out, "out", "", "write the corpus JSON here (default: stdout)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	src, err := harvestSources("", rules, dashboards)
+	if err != nil {
+		return err
+	}
+	queries, skipped, err := src.Harvest(context.Background())
+	if err != nil {
+		return fmt.Errorf("harvest corpus: %w", err)
+	}
+	data, err := migrate.BuildCorpus(queries, skipped).Marshal()
+	if err != nil {
+		return err
+	}
+	return writeOut(stdout, out, data)
+}
+
+// runExplainCmd harvests a corpus (from --corpus, --rules and/or --dashboards),
+// dry-runs every query through the read-side pipeline, and writes the explain
+// report to --out (or stdout). Fully offline: DryRunSQL never executes.
+func runExplainCmd(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("migrate explain", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		rules      stringList
+		dashboards string
+		corpus     string
+		out        string
+	)
+	fs.Var(&rules, "rules",
+		"explain PromQL from these Prometheus rule files (repeatable or comma-separated paths/globs)")
+	fs.StringVar(&dashboards, "dashboards", "",
+		"explain PromQL from exported Grafana dashboard JSON under this directory (walked recursively)")
+	fs.StringVar(&corpus, "corpus", "",
+		"explain a corpus.json previously written by `migrate harvest`")
+	fs.StringVar(&out, "out", "", "write the explain report here (default: stdout)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	src, err := harvestSources(corpus, rules, dashboards)
+	if err != nil {
+		return err
+	}
+	if out == "" {
+		return runExplainReport(stdout, src)
+	}
+	f, err := os.Create(out) //nolint:gosec // operator-supplied report path; offline CLI.
+	if err != nil {
+		return fmt.Errorf("create report file %q: %w", out, err)
+	}
+	defer f.Close()
+	return runExplainReport(f, src)
+}
+
+// harvestSources assembles the corpus sources from the provided inputs. Order is
+// stable (corpus, then rules, then dashboards) but the corpus itself is sorted
+// deterministically, and the explain report renders in that same stable order.
+func harvestSources(corpus string, rules []string, dashboards string) (migrate.CorpusSource, error) {
+	var src migrate.MultiSource
+	if corpus != "" {
+		src = append(src, migrate.CorpusFileSource{Path: corpus})
+	}
+	if len(rules) > 0 {
+		src = append(src, migrate.FileSource{RulePaths: rules})
+	}
+	if dashboards != "" {
+		src = append(src, migrate.DashboardSource{Dir: dashboards})
+	}
+	if len(src) == 0 {
+		return nil, errors.New("nothing to harvest: pass --rules, --dashboards, and/or --corpus")
+	}
+	return src, nil
+}
+
+// runExplainReport dry-runs every query from src through the read-side pipeline
+// and writes the explain report to w. It is fully offline: the engine has no
+// Client and DryRunSQL never executes.
+func runExplainReport(w io.Writer, src migrate.CorpusSource) error {
 	metrics := schema.DefaultOTelMetricsFromEnv()
 	eng := &engine.Engine{Optimizer: optimizer.Default()}
 	lang := prom.NewExplainLang(metrics, time.Unix(explainEvalUnix, 0).UTC())
 
-	src := migrate.FileSource{RulePaths: rulePaths}
 	ex := dryRunExplainer{eng: eng, lang: lang}
 	rep, err := migrate.BuildReport(context.Background(), src, ex)
 	if err != nil {
 		return fmt.Errorf("build explain report: %w", err)
 	}
 	return rep.Write(w)
+}
+
+// writeOut writes data to the named file, or to stdout when out is empty.
+func writeOut(stdout io.Writer, out string, data []byte) error {
+	if out == "" {
+		if _, err := stdout.Write(data); err != nil {
+			return fmt.Errorf("write corpus: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(out, data, 0o600); err != nil {
+		return fmt.Errorf("write corpus file %q: %w", out, err)
+	}
+	return nil
 }
 
 // dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it
