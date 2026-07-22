@@ -72,7 +72,7 @@ func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (Ra
 	q.Set("query", expr)
 	q.Set("start", formatTimestamp(p.Start))
 	q.Set("end", formatTimestamp(p.End))
-	q.Set("step", strconv.FormatInt(int64(p.Step.Seconds()), 10))
+	q.Set("step", formatStep(p.Step))
 	reqURL := b.BaseURL + queryRangePath + "?" + q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -145,6 +145,14 @@ func formatTimestamp(t time.Time) string {
 	return strconv.FormatInt(t.Unix(), 10)
 }
 
+// formatStep renders the range step as Prometheus-style float seconds, keeping
+// sub-second precision (e.g. 1500ms → "1.5", 500ms → "0.5") so the replayed
+// window matches the operator's requested step exactly instead of truncating to
+// whole seconds.
+func formatStep(step time.Duration) string {
+	return strconv.FormatFloat(step.Seconds(), 'f', -1, 64)
+}
+
 // ParseTime resolves a start/end value that may be RFC3339, a Unix-seconds
 // integer, the literal "now", or a relative offset ("-1h", "+30m", "now-15m").
 // Relative values are resolved against now, which the caller pins for
@@ -206,8 +214,11 @@ func BuildParams(startStr, endStr, stepStr string, tolerance float64, now time.T
 
 // LoadCorpus reads a corpus.json produced by `migrate harvest`, splits it into
 // the PromQL queries to replay and the non-PromQL entries carried through for
-// honest accounting, and rejects a corpus whose version this build does not
-// understand. Every query is accounted for — none is silently dropped.
+// honest accounting, carries through the harvest-time skips the corpus recorded,
+// and rejects a corpus whose version this build does not understand. Every entry
+// is accounted for — none is silently dropped: PromQL queries are replayed,
+// non-PromQL queries are counted out of scope, and the harvester's own skips are
+// surfaced so the operator sees queries that never became replayable at all.
 func LoadCorpus(path string) (Corpus, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied corpus path; offline CLI input.
 	if err != nil {
@@ -227,6 +238,9 @@ func LoadCorpus(path string) (Corpus, error) {
 			continue
 		}
 		out.OutOfScope = append(out.OutOfScope, OutOfScopeEntry{Source: q.Source, Lang: q.Lang})
+	}
+	for _, s := range c.Skipped {
+		out.HarvestSkipped = append(out.HarvestSkipped, HarvestSkippedEntry{Source: s.Source, Reason: s.Reason})
 	}
 	return out, nil
 }

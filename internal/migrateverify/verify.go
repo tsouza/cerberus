@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -249,11 +250,23 @@ type OutOfScopeEntry struct {
 	Lang   string `json:"lang"`
 }
 
-// Corpus is the verify input: the PromQL queries to replay plus the non-PromQL
-// entries carried through for honest accounting.
+// HarvestSkippedEntry records a corpus entry that `migrate harvest` could not
+// turn into a replayable query (an unreadable file, a YAML parse failure, a rule
+// with no expression). It carries no PromQL to replay, so verify cannot check its
+// parity — but it is reported and counted here rather than dropped, because the
+// operator needs to know these queries never entered the gate at all.
+type HarvestSkippedEntry struct {
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+}
+
+// Corpus is the verify input: the PromQL queries to replay, the non-PromQL
+// entries carried through for honest accounting, and the harvest-time skips the
+// corpus recorded (queries that never became replayable at all).
 type Corpus struct {
-	PromQL     []Query
-	OutOfScope []OutOfScopeEntry
+	PromQL         []Query
+	OutOfScope     []OutOfScopeEntry
+	HarvestSkipped []HarvestSkippedEntry
 }
 
 // QueryResult is the parity verdict for a single replayed query.
@@ -267,26 +280,29 @@ type QueryResult struct {
 
 // Summary counts verdicts across the whole run.
 type Summary struct {
-	Total       int `json:"total"`
-	Match       int `json:"match"`
-	Diverge     int `json:"diverge"`
-	Unsupported int `json:"unsupported"`
-	Error       int `json:"error"`
-	OutOfScope  int `json:"out_of_scope"`
+	Total          int `json:"total"`
+	Match          int `json:"match"`
+	Diverge        int `json:"diverge"`
+	Unsupported    int `json:"unsupported"`
+	Error          int `json:"error"`
+	OutOfScope     int `json:"out_of_scope"`
+	HarvestSkipped int `json:"harvest_skipped"`
 }
 
 // Report is the full parity result: per-query verdicts, the out-of-scope
-// accounting, and the roll-up summary.
+// accounting, the harvest-time skips, and the roll-up summary.
 type Report struct {
-	Summary    Summary           `json:"summary"`
-	Results    []QueryResult     `json:"results"`
-	OutOfScope []OutOfScopeEntry `json:"out_of_scope,omitempty"`
+	Summary        Summary               `json:"summary"`
+	Results        []QueryResult         `json:"results"`
+	OutOfScope     []OutOfScopeEntry     `json:"out_of_scope,omitempty"`
+	HarvestSkipped []HarvestSkippedEntry `json:"harvest_skipped,omitempty"`
 }
 
 // Failed reports whether the gate should exit non-zero: any diverging or erroring
 // query fails it. Unsupported queries are reported but do not fail the gate — an
 // unsupported query is a coverage gap surfaced for the operator, not a wrong
-// answer. Out-of-scope entries never affect the gate.
+// answer. Out-of-scope and harvest-skipped entries never affect the gate: they
+// carry no replayable query, so there is nothing for the comparator to judge.
 func (r Report) Failed() bool {
 	return r.Summary.Diverge > 0 || r.Summary.Error > 0
 }
@@ -316,8 +332,9 @@ type RangeResult struct {
 //   - cerberus non-200 or non-matrix → unsupported;
 //   - otherwise → the comparator's match/diverge verdict.
 func Verify(ctx context.Context, corpus Corpus, ref, cerberus Backend, p Params) Report {
-	rep := Report{OutOfScope: corpus.OutOfScope}
+	rep := Report{OutOfScope: corpus.OutOfScope, HarvestSkipped: corpus.HarvestSkipped}
 	rep.Summary.OutOfScope = len(corpus.OutOfScope)
+	rep.Summary.HarvestSkipped = len(corpus.HarvestSkipped)
 
 	for _, q := range corpus.PromQL {
 		res := verifyOne(ctx, q, ref, cerberus, p)
@@ -349,10 +366,10 @@ func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) Qu
 		out.Verdict, out.Detail = VerdictError, fmt.Sprintf("reference request failed: %v", refErr)
 	case cerErr != nil:
 		out.Verdict, out.Detail = VerdictError, fmt.Sprintf("cerberus request failed: %v", cerErr)
-	case cerRes.Status != 200 || cerRes.ResultType != resultTypeMatrix:
+	case cerRes.Status != http.StatusOK || cerRes.ResultType != resultTypeMatrix:
 		out.Verdict = VerdictUnsupported
 		out.Detail = fmt.Sprintf("cerberus returned status=%d resultType=%q", cerRes.Status, cerRes.ResultType)
-	case refRes.Status != 200 || refRes.ResultType != resultTypeMatrix:
+	case refRes.Status != http.StatusOK || refRes.ResultType != resultTypeMatrix:
 		out.Verdict = VerdictError
 		out.Detail = fmt.Sprintf("reference returned status=%d resultType=%q (no baseline to compare)", refRes.Status, refRes.ResultType)
 	default:
@@ -375,8 +392,8 @@ func (r Report) WriteText(w io.Writer) error {
 	bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
 	bw.printf("# or errors.\n")
 	bw.printf("#\n")
-	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d out of scope)\n\n",
-		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error, r.Summary.OutOfScope)
+	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d out of scope, +%d harvest-skipped)\n\n",
+		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error, r.Summary.OutOfScope, r.Summary.HarvestSkipped)
 
 	for _, res := range r.Results {
 		if res.Verdict == VerdictMatch {
@@ -399,6 +416,14 @@ func (r Report) WriteText(w io.Writer) error {
 		bw.printf("== out of scope (%d) — not PromQL, no Prometheus baseline\n", len(r.OutOfScope))
 		for _, e := range r.OutOfScope {
 			bw.printf("   %s: lang=%s\n", e.Source, e.Lang)
+		}
+		bw.printf("\n")
+	}
+
+	if len(r.HarvestSkipped) > 0 {
+		bw.printf("== harvest-skipped (%d) — never became a replayable query, not checked\n", len(r.HarvestSkipped))
+		for _, e := range r.HarvestSkipped {
+			bw.printf("   %s: %s\n", e.Source, e.Reason)
 		}
 		bw.printf("\n")
 	}

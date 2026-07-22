@@ -273,13 +273,15 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
 	corpus := Corpus{
-		PromQL:     []Query{{Expr: "good", Source: "s1"}, {Expr: "bad", Source: "s2"}},
-		OutOfScope: []OutOfScopeEntry{{Source: "panel:logs", Lang: "logql"}},
+		PromQL:         []Query{{Expr: "good", Source: "s1"}, {Expr: "bad", Source: "s2"}},
+		OutOfScope:     []OutOfScopeEntry{{Source: "panel:logs", Lang: "logql"}},
+		HarvestSkipped: []HarvestSkippedEntry{{Source: "rule:broken.yml", Reason: "rule has an empty expr"}},
 	}
 	rep := Verify(context.Background(), corpus, ref, cer, testParams())
 
-	if rep.Summary.Total != 2 || rep.Summary.Match != 1 || rep.Summary.Diverge != 1 || rep.Summary.OutOfScope != 1 {
-		t.Fatalf("summary = %+v, want total 2 / match 1 / diverge 1 / oos 1", rep.Summary)
+	if rep.Summary.Total != 2 || rep.Summary.Match != 1 || rep.Summary.Diverge != 1 ||
+		rep.Summary.OutOfScope != 1 || rep.Summary.HarvestSkipped != 1 {
+		t.Fatalf("summary = %+v, want total 2 / match 1 / diverge 1 / oos 1 / harvest-skipped 1", rep.Summary)
 	}
 	if !rep.Failed() {
 		t.Error("a run with a divergence must fail the gate")
@@ -296,6 +298,9 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 	if back.Summary != rep.Summary {
 		t.Errorf("round-tripped summary = %+v, want %+v", back.Summary, rep.Summary)
 	}
+	if len(back.HarvestSkipped) != 1 || back.HarvestSkipped[0].Source != "rule:broken.yml" {
+		t.Errorf("round-tripped harvest-skipped = %+v, want the one broken-rule skip", back.HarvestSkipped)
+	}
 
 	var text strings.Builder
 	if err := rep.WriteText(&text); err != nil {
@@ -306,5 +311,9 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 	}
 	if !strings.Contains(text.String(), "out of scope") {
 		t.Errorf("text report must account for out-of-scope entries, got:\n%s", text.String())
+	}
+	if !strings.Contains(text.String(), "harvest-skipped") ||
+		!strings.Contains(text.String(), "rule:broken.yml") {
+		t.Errorf("text report must account for harvest-skipped entries, got:\n%s", text.String())
 	}
 }

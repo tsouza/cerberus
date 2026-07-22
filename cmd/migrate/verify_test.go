@@ -142,3 +142,46 @@ func TestRunVerify_EnvFallback(t *testing.T) {
 		t.Errorf("expected PASS via env-driven run, got:\n%s", out.String())
 	}
 }
+
+// TestRunVerify_BadToleranceEnv: a set-but-unparseable CERBERUS_VERIFY_TOLERANCE
+// is a loud error, not a silent fallback to the tiny default that would tighten
+// the gate into spurious divergences.
+func TestRunVerify_BadToleranceEnv(t *testing.T) {
+	dir := t.TempDir()
+	corpus := writeCorpus(t, dir)
+	ref := promServer(t, map[string]string{"up": upMatrix})
+	cer := promServer(t, map[string]string{"up": upMatrix})
+	t.Setenv("CERBERUS_VERIFY_CORPUS", corpus)
+	t.Setenv("CERBERUS_VERIFY_REF", ref.URL)
+	t.Setenv("CERBERUS_VERIFY_CERBERUS", cer.URL)
+	t.Setenv("CERBERUS_VERIFY_TOLERANCE", "not-a-float")
+
+	var out, errOut bytes.Buffer
+	err := runVerify(nil, &out, &errOut)
+	if err == nil {
+		t.Fatal("runVerify should reject an unparseable CERBERUS_VERIFY_TOLERANCE")
+	}
+	if !strings.Contains(err.Error(), "CERBERUS_VERIFY_TOLERANCE") {
+		t.Errorf("error should name the offending variable, got: %v", err)
+	}
+}
+
+// TestEnvFloat covers the unset / valid / unparseable branches directly.
+func TestEnvFloat(t *testing.T) {
+	const key = "CERBERUS_VERIFY_TOLERANCE_TESTKEY"
+
+	t.Setenv(key, "")
+	if got, err := envFloat(key, 1e-9); err != nil || got != 1e-9 {
+		t.Errorf("unset: got %v, %v; want 1e-9, nil", got, err)
+	}
+
+	t.Setenv(key, "0.25")
+	if got, err := envFloat(key, 1e-9); err != nil || got != 0.25 {
+		t.Errorf("valid: got %v, %v; want 0.25, nil", got, err)
+	}
+
+	t.Setenv(key, "banana")
+	if _, err := envFloat(key, 1e-9); err == nil {
+		t.Error("unparseable: envFloat should error, not fall back to the default")
+	}
+}

@@ -31,6 +31,10 @@ const verifyExitFail = 2
 func runVerify(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("migrate verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	tolDefault, err := envFloat("CERBERUS_VERIFY_TOLERANCE", defaultVerifyTolerance)
+	if err != nil {
+		return err
+	}
 	var (
 		corpus    = fs.String("corpus", envOr("CERBERUS_VERIFY_CORPUS", ""), "corpus.json produced by `migrate harvest`")
 		ref       = fs.String("ref", envOr("CERBERUS_VERIFY_REF", ""), "reference Prometheus base URL")
@@ -38,7 +42,7 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		startStr  = fs.String("start", envOr("CERBERUS_VERIFY_START", "-1h"), "range start (RFC3339, Unix seconds, or relative like -1h/now)")
 		endStr    = fs.String("end", envOr("CERBERUS_VERIFY_END", "now"), "range end (RFC3339, Unix seconds, or relative like -1h/now)")
 		stepStr   = fs.String("step", envOr("CERBERUS_VERIFY_STEP", "60s"), "range step (e.g. 60s)")
-		tolerance = fs.Float64("tolerance", envFloat("CERBERUS_VERIFY_TOLERANCE", defaultVerifyTolerance), "absolute value tolerance for a match")
+		tolerance = fs.Float64("tolerance", tolDefault, "absolute value tolerance for a match")
 		asJSON    = fs.Bool("json", false, "emit the machine-readable JSON report instead of the text report")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -105,15 +109,18 @@ func envOr(key, def string) string {
 }
 
 // envFloat returns the float parsed from the environment value for key, or def
-// when unset or unparseable.
-func envFloat(key string, def float64) float64 {
+// when the variable is unset. A set-but-unparseable value is an error, not a
+// silent fallback to def: because the tolerance default is deliberately tiny, a
+// fat-fingered value would otherwise silently tighten the gate into spurious
+// divergences instead of surfacing the misconfiguration.
+func envFloat(key string, def float64) (float64, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("%s=%q is not a valid float: %w", key, v, err)
 	}
-	return f
+	return f, nil
 }

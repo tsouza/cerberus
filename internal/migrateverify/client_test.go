@@ -64,9 +64,10 @@ func TestBuildParams(t *testing.T) {
 	}
 }
 
-// TestLoadCorpus writes a v1 corpus with a PromQL query and a LogQL panel, then
-// checks that verify picks up the PromQL query and carries the LogQL one through
-// as out-of-scope (never silently dropped).
+// TestLoadCorpus writes a v1 corpus with a PromQL query, a LogQL panel, and a
+// harvest-time skip, then checks that verify picks up the PromQL query, carries
+// the LogQL one through as out-of-scope, and surfaces the harvest skip — every
+// entry accounted for, none silently dropped.
 func TestLoadCorpus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corpus.json")
@@ -76,7 +77,9 @@ func TestLoadCorpus(t *testing.T) {
     {"expr": "up", "source": "rule:a", "kind": "record", "lang": "promql"},
     {"expr": "{app=\"x\"}", "source": "panel:logs", "kind": "panel", "lang": "logql"}
   ],
-  "skipped": []
+  "skipped": [
+    {"source": "rule:broken.yml", "reason": "rule has an empty expr"}
+  ]
 }`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -90,6 +93,29 @@ func TestLoadCorpus(t *testing.T) {
 	}
 	if len(c.OutOfScope) != 1 || c.OutOfScope[0].Lang != "logql" {
 		t.Errorf("OutOfScope = %+v, want the one logql panel", c.OutOfScope)
+	}
+	if len(c.HarvestSkipped) != 1 || c.HarvestSkipped[0].Source != "rule:broken.yml" ||
+		c.HarvestSkipped[0].Reason != "rule has an empty expr" {
+		t.Errorf("HarvestSkipped = %+v, want the one broken-rule skip", c.HarvestSkipped)
+	}
+}
+
+// TestFormatStep pins that the step is sent with sub-second precision instead of
+// being truncated to whole seconds — a 1500ms step must replay as "1.5", not "1".
+func TestFormatStep(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{60 * time.Second, "60"},
+		{1500 * time.Millisecond, "1.5"},
+		{500 * time.Millisecond, "0.5"},
+		{90 * time.Second, "90"},
+	}
+	for _, c := range cases {
+		if got := formatStep(c.in); got != c.want {
+			t.Errorf("formatStep(%s) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
