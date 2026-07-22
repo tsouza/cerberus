@@ -374,6 +374,44 @@ func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals 
 	return nil
 }
 
+// RenderAll returns, in execution order, the CREATE statements
+// ApplyWithConfig would run for the given signals — WITHOUT a ClickHouse
+// connection. It exists so offline tooling (the migration preview) can show
+// operators the exact schema cerberus expects before they provision anything.
+//
+// The statement text, their order, the CREATE DATABASE gating, and the
+// Replicated-engine validation are identical to ApplyWithConfig; the only
+// difference is that the statements are returned instead of Exec'd. Keeping
+// the two in lockstep is the contract TestRenderAll_MatchesApply pins: it runs
+// ApplyWithConfig against a recording conn and asserts the recorded statements
+// equal RenderAll's output.
+func RenderAll(cfg Config, signals []Signal) ([]string, error) {
+	cfg = cfg.withDefaults()
+	// Validate eagerly — before the empty-signals short-circuit — so a
+	// Replicated database engine with no ZooKeeper/Keeper path is rejected the
+	// same way whether the caller renders or applies (mirrors ApplyWithConfig).
+	if !cfg.SkipDatabaseCreate && cfg.DatabaseEngine.Replicated && cfg.DatabaseEngine.ReplicatedZooPath == "" {
+		return nil, fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	}
+	// No signals → no tables → no database. Return before emitting a stray
+	// CREATE DATABASE, matching ApplyWithConfig's nil-conn no-op contract.
+	if len(signals) == 0 {
+		return nil, nil
+	}
+	var stmts []string
+	if !cfg.SkipDatabaseCreate {
+		stmts = append(stmts, renderCreateDatabase(cfg))
+	}
+	for _, s := range signals {
+		sig, err := renderSignal(cfg, s)
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, sig...)
+	}
+	return stmts, nil
+}
+
 // renderCreateDatabase renders the `CREATE DATABASE IF NOT EXISTS <database>`
 // statement via the typed chsql.CreateDatabase builder, mirroring upstream's
 // exporter createDatabase. The database name is emitted bare (the upstream
