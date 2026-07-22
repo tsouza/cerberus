@@ -10,6 +10,8 @@
 //	  --dashboards <dir> --out corpus.json     #   rule files + exported Grafana dashboards
 //	migrate explain --corpus corpus.json       # explain a previously-harvested corpus
 //	migrate classify --corpus corpus.json      # bucket each corpus query by PromQL support
+//	migrate rulegraph --rules <glob> \          # recording-rule output -> consumer dependency
+//	  --corpus corpus.json                       #   graph (what MUST stay materialized)
 //	migrate verify --corpus corpus.json \       # replay the corpus against a reference
 //	  --ref <prom-url> --cerberus <url>          #   Prometheus and cerberus and diff (parity gate)
 //	migrate inventory --source <prom-url>        # probe the LIVE source Prometheus for the
@@ -39,6 +41,16 @@
 // named), flags supported-but-risky queries, and prints per-bucket counts as
 // text or --json. "supported" means the query TRANSLATES, not that cerberus
 // returns the same numbers as Prometheus — only verify proves parity.
+//
+// rulegraph builds the recording-rule-output -> consumer dependency graph.
+// Because cerberus has NO ruler, a recording rule's OUTPUT series (its record:
+// name) is not produced by cerberus — every dashboard panel or alert that reads
+// it must be re-materialized elsewhere post-cutover or the panel goes silently
+// blank. rulegraph takes the recorded names from --rules and scans every corpus
+// query (--corpus) and alerting-rule expr for references to them (a name-level
+// approximation via the PromQL parser), then marks each recorded series consumed
+// or orphan and lists the consumers that MUST keep being materialized. Text or
+// --json; anything unparseable is a counted skip, never silently dropped.
 //
 // verify is the online cutover parity gate: it replays each PromQL query in a
 // harvested corpus against a reference Prometheus AND cerberus over one
@@ -137,6 +149,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runExplainCmd(args[1:], stdout, stderr)
 		case "classify":
 			return runClassifyCmd(args[1:], stdout, stderr)
+		case "rulegraph":
+			return runRuleGraphCmd(args[1:], stdout, stderr)
 		case "verify":
 			return runVerify(args[1:], stdout, stderr)
 		case "inventory":
