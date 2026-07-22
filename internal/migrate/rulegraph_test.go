@@ -118,6 +118,41 @@ func TestBuildRuleGraphAlertingConsumer(t *testing.T) {
 	}
 }
 
+// TestBuildRuleGraphDedupsExactDuplicateConsumers pins that an identical consumer
+// entry (same source+expr+kind) scanned twice — as happens when --corpus is
+// harvested from the same rule files as --rules, so an alerting expr arrives via
+// both HarvestRuleFiles and the corpus — is collapsed to a single consumer node.
+// counts.Consumers and the recorded node's edge count stay honest instead of
+// double-counting the same consumer.
+func TestBuildRuleGraphDedupsExactDuplicateConsumers(t *testing.T) {
+	recorded := []RecordedSeries{{Name: "job:latency:p99", Source: "rule:a.yml/g/job:latency:p99"}}
+	dup := HarvestedQuery{Expr: "job:latency:p99 > 0.5", Source: "rule:a.yml/g/HighLatency", Kind: KindAlert}
+	consumers := []HarvestedQuery{dup, dup} // same consumer arriving via two overlapping inputs
+
+	g := BuildRuleGraph(recorded, consumers, PromQLMetricNames, nil)
+
+	if g.Counts.Consumers != 1 || len(g.Consumers) != 1 {
+		t.Fatalf("consumers = %d / nodes %d, want 1 (exact duplicate collapsed)", g.Counts.Consumers, len(g.Consumers))
+	}
+	if g.Counts.Consumed != 1 {
+		t.Fatalf("consumed = %d, want 1", g.Counts.Consumed)
+	}
+	if len(g.Recorded[0].Consumers) != 1 {
+		t.Errorf("recorded edges = %v, want a single de-duplicated edge", g.Recorded[0].Consumers)
+	}
+
+	// A genuinely distinct consumer that merely SHARES a source (different expr)
+	// is preserved, not folded away.
+	consumers2 := []HarvestedQuery{
+		{Expr: "job:latency:p99 > 0.5", Source: "rule:a.yml/g/HighLatency", Kind: KindAlert},
+		{Expr: "job:latency:p99 > 0.9", Source: "rule:a.yml/g/HighLatency", Kind: KindAlert},
+	}
+	g2 := BuildRuleGraph(recorded, consumers2, PromQLMetricNames, nil)
+	if g2.Counts.Consumers != 2 || len(g2.Consumers) != 2 {
+		t.Fatalf("distinct-expr consumers = %d, want 2 (not deduped)", g2.Counts.Consumers)
+	}
+}
+
 // TestBuildRuleGraphDeterministicJSON pins that the JSON output is stable and
 // carries empty slices (never null) for a graph with no consumers or skips.
 func TestBuildRuleGraphDeterministicJSON(t *testing.T) {

@@ -170,7 +170,19 @@ func BuildRuleGraph(recorded []RecordedSeries, consumers []HarvestedQuery, extra
 	copy(sk, skipped)
 
 	consumerNodes := make([]ConsumerNode, 0, len(consumers))
+	seenConsumer := map[string]struct{}{}
 	for _, c := range consumers {
+		// Collapse exact-duplicate consumer entries (same source+expr+kind):
+		// overlapping --rules / --corpus inputs (e.g. a corpus harvested from
+		// the same rule files) scan an identical consumer twice. Deduping here
+		// keeps counts.Consumers and the Consumers list honest, mirroring the
+		// sortedUnique edge-dedup on recorded nodes. Distinct consumers that
+		// merely share a source (different expr) are preserved.
+		ck := c.Source + "\x00" + c.Expr + "\x00" + c.Kind
+		if _, dup := seenConsumer[ck]; dup {
+			continue
+		}
+		seenConsumer[ck] = struct{}{}
 		names, err := extract(c.Expr)
 		if err != nil {
 			sk = append(sk, SkippedEntry{
