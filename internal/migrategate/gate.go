@@ -10,20 +10,35 @@
 // conservative) are:
 //
 //   - verify   — BLOCK if any query diverged or errored (the parity gate found
-//     cerberus returning different numbers, or a backend failing).
+//     cerberus returning different numbers, or a backend failing). WARN when the
+//     report carries UNCHECKED entries — queries that emitted SQL but returned
+//     no comparable matrix live (Unsupported), harvest-skipped entries, or
+//     out-of-scope (non-PromQL) entries — so a green parity gate never hides an
+//     unexamined input.
 //   - classify — BLOCK if any corpus query is unsupported (no cerberus
-//     equivalent). A supported-but-risky query WARNs but does not block.
+//     equivalent). A supported-but-risky query WARNs but does not block; a
+//     harvest-skipped corpus entry (never classified) also WARNs.
 //   - inventory — WARN (never block) when the source carries high-cardinality
 //     metrics or labels: an OOM candidate to review, not a correctness stop.
+//     Also WARNs on every honesty caveat the probe recorded (an optional
+//     enrichment it could not fetch), so an enrichment failure never reads clean.
 //   - rulegraph — BLOCK if any recorded series is consumed: a dashboard or
 //     alert depends on it, so it MUST keep being materialized after cutover;
 //     dropping its materializer leaves a blank panel. Orphan recorded series
-//     (nobody reads them) are safe and never block.
+//     (nobody reads them) are safe and never block — BUT any SKIPPED input (an
+//     unparseable consumer expr, an unreadable rule file) also BLOCKS, because a
+//     dropped consumer that referenced a series would have marked it consumed;
+//     with a skip, "orphan ⇒ safe to drop" is unsound and the stage can no
+//     longer prove a panel won't go blank.
 //
 // A required artifact that was not supplied is itself a BLOCK: the gate cannot
 // prove safety for a stage it never saw. verify, classify, and rulegraph are
 // required; inventory is advisory (its worst outcome is a WARN), so a missing
 // inventory artifact is reported but does not block.
+//
+// Every count each upstream block deliberately preserves — the skip/unchecked/
+// caveat tallies — is threaded into a stage's Reasons here, never silently
+// re-dropped at the aggregation layer.
 package migrategate
 
 import (
@@ -182,20 +197,60 @@ func evalVerify(path string) (StageResult, error) {
 		return StageResult{}, err
 	}
 	res.Present = true
-	if d, e := rep.Summary.Diverge, rep.Summary.Error; d > 0 || e > 0 {
+	s := rep.Summary
+	caveats := verifyCaveats(s)
+	if s.Diverge > 0 || s.Error > 0 {
 		res.Verdict = VerdictFail
 		res.Blocking = true
 		res.Reasons = append(res.Reasons,
-			fmt.Sprintf("parity gate failed: %d diverge, %d error (of %d queries)", d, e, rep.Summary.Total))
+			fmt.Sprintf("parity gate failed: %d diverge, %d error (of %d queries)", s.Diverge, s.Error, s.Total))
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	if len(caveats) > 0 {
+		res.Verdict = VerdictWarn
+		res.Reasons = append(res.Reasons, caveats...)
 		return res, nil
 	}
 	res.Verdict = VerdictPass
 	return res, nil
 }
 
+// verifyCaveats surfaces the parity counts that Report.Failed() deliberately
+// does NOT block on but that each leave a query UNCHECKED against a reference
+// backend: a query cerberus emitted SQL for whose live response was not a
+// comparable matrix (Unsupported — e.g. a non-200 or non-matrix body), a corpus
+// entry that never became a replayable query (HarvestSkipped), and a non-PromQL
+// entry with no Prometheus baseline (OutOfScope). Each is an unexamined input
+// the operator must see before trusting a green parity gate — counted here,
+// never silently dropped.
+func verifyCaveats(s migrateverify.Summary) []string {
+	var out []string
+	if s.Unsupported > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d quer%s emitted SQL but returned no comparable matrix live (unverified against the backend)",
+			s.Unsupported, plural(s.Unsupported, "y", "ies"),
+		))
+	}
+	if s.HarvestSkipped > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d harvest-skipped corpus entr%s never became a replayable query (unchecked)",
+			s.HarvestSkipped, plural(s.HarvestSkipped, "y", "ies"),
+		))
+	}
+	if s.OutOfScope > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d out-of-scope entr%s (not PromQL; no Prometheus baseline, unchecked)",
+			s.OutOfScope, plural(s.OutOfScope, "y", "ies"),
+		))
+	}
+	return out
+}
+
 // evalClassify blocks when any corpus query is unsupported (no cerberus
-// equivalent). A supported-but-risky query WARNs but does not block. classify
-// is a required artifact.
+// equivalent). A supported-but-risky query WARNs but does not block; a
+// harvest-skipped corpus entry (carried through but never classified) also
+// WARNs. classify is a required artifact.
 func evalClassify(path string) (StageResult, error) {
 	res := StageResult{Stage: StageClassify, Required: true}
 	if path == "" {
@@ -215,22 +270,53 @@ func evalClassify(path string) (StageResult, error) {
 		for _, name := range unsupportedConstructs(cl) {
 			res.Reasons = append(res.Reasons, "  unsupported: "+name)
 		}
+		res.Reasons = append(res.Reasons, classifyHarvestSkips(cl)...)
 		return res, nil
 	}
+	var warn []string
 	if cl.Counts.Risky > 0 {
+		warn = append(warn, fmt.Sprintf(
+			"%d supported quer%s carry an offline fan-out risk flag",
+			cl.Counts.Risky, plural(cl.Counts.Risky, "y", "ies"),
+		))
+	}
+	warn = append(warn, classifyHarvestSkips(cl)...)
+	if len(warn) > 0 {
 		res.Verdict = VerdictWarn
-		res.Reasons = append(res.Reasons,
-			fmt.Sprintf("%d supported quer%s carry an offline fan-out risk flag",
-				cl.Counts.Risky, plural(cl.Counts.Risky, "y", "ies")))
+		res.Reasons = append(res.Reasons, warn...)
 		return res, nil
 	}
 	res.Verdict = VerdictPass
 	return res, nil
 }
 
+// classifyHarvestSkips surfaces the corpus entries the harvester could not turn
+// into a query (an unreadable file, a YAML parse failure, a rule with no
+// expression). classify carries them through "so the skip count never gets
+// lost"; the gate must report them, because a skipped consumer is a query that
+// was NEVER classified — an unexamined input that would otherwise hide behind a
+// green classify.
+func classifyHarvestSkips(cl migrate.Classification) []string {
+	if len(cl.Skipped) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"%d harvest-skipped corpus entr%s never classified (unexamined)",
+		len(cl.Skipped), plural(len(cl.Skipped), "y", "ies"),
+	)}
+}
+
+// enrichmentUnavailable is the sentinel migrateinventory writes into a *Total
+// field when its optional enrichment probe could not be fetched: the count is
+// unknown, not zero. The gate surfaces it as a caveat so a probe that silently
+// failed an enrichment does not read as a clean inventory.
+const enrichmentUnavailable = -1
+
 // evalInventory WARNs (never blocks) when the source carries a high-cardinality
-// metric or label. inventory is advisory: its worst outcome is a WARN, so a
-// missing inventory artifact is reported but does not block the cutover.
+// metric or label, or when the probe recorded an honesty caveat (an optional
+// enrichment it could not fetch). inventory is advisory: its worst outcome is a
+// WARN, so a missing inventory artifact is reported but does not block the
+// cutover.
 func evalInventory(path string, opts Options) (StageResult, error) {
 	res := StageResult{Stage: StageInventory, Required: false}
 	if path == "" {
@@ -259,6 +345,7 @@ func evalInventory(path string, opts Options) (StageResult, error) {
 				fmt.Sprintf("high-cardinality label %q: %d values (>= %d)", l.Name, l.Value, labelLimit))
 		}
 	}
+	res.Reasons = append(res.Reasons, inventoryCaveats(inv)...)
 
 	if len(res.Reasons) > 0 {
 		res.Verdict = VerdictWarn
@@ -268,10 +355,38 @@ func evalInventory(path string, opts Options) (StageResult, error) {
 	return res, nil
 }
 
+// inventoryCaveats surfaces every honesty caveat the inventory carries: the
+// optional-enrichment failures the probe recorded in Notes (which the inventory
+// keeps "counted, never silently dropped"), plus an enrichment-not-obtained
+// signal (a -1 total) for a note-less artifact. The gate must not re-drop them:
+// an enrichment the probe could not fetch is an unchecked corner of the source,
+// not a clean bill of health.
+func inventoryCaveats(inv migrateinventory.Inventory) []string {
+	out := append([]string(nil), inv.Notes...)
+	if len(inv.Notes) > 0 {
+		// A recorded Note already explains each -1 total; the probe appends one
+		// per failed enrichment. Surfacing the notes covers the -1 case without
+		// double-reporting it.
+		return out
+	}
+	if inv.MetricNameTotal == enrichmentUnavailable {
+		out = append(out, "distinct metric-name total not obtained (enrichment unavailable)")
+	}
+	if inv.MetadataMetricTotal == enrichmentUnavailable {
+		out = append(out, "metric metadata total not obtained (enrichment unavailable)")
+	}
+	return out
+}
+
 // evalRuleGraph blocks when any recorded series is consumed: a dashboard or
 // alert reads it, so it MUST keep being materialized after cutover — dropping
 // its recording rule leaves a blank panel. Orphan recorded series (read by
-// nobody) are safe to drop and never block. rulegraph is a required artifact.
+// nobody) are safe to drop and never block — BUT any SKIPPED input also blocks:
+// the builder could not use it (an unparseable consumer expr, an unreadable rule
+// file), so a consumer that referenced a recorded series may have been dropped,
+// leaving that series wrongly classified orphan. With a skip, "orphan ⇒ safe to
+// drop" is unsound, so the gate refuses rather than green-light dropping a
+// materializer the skipped consumer needs. rulegraph is a required artifact.
 func evalRuleGraph(path string) (StageResult, error) {
 	res := StageResult{Stage: StageRuleGraph, Required: true}
 	if path == "" {
@@ -289,9 +404,17 @@ func evalRuleGraph(path string) (StageResult, error) {
 			consumed = append(consumed, n)
 		}
 	}
+	// A skip invalidates the orphan classification the whole stage rests on, so
+	// it blocks alongside any consumed series.
+	blockingSkip := g.Counts.Skipped > 0
+	if len(consumed) == 0 && !blockingSkip {
+		res.Verdict = VerdictPass
+		return res, nil
+	}
+
+	res.Verdict = VerdictFail
+	res.Blocking = true
 	if len(consumed) > 0 {
-		res.Verdict = VerdictFail
-		res.Blocking = true
 		res.Reasons = append(res.Reasons,
 			fmt.Sprintf("%d consumed recorded series must stay materialized after cutover",
 				len(consumed)))
@@ -299,9 +422,16 @@ func evalRuleGraph(path string) (StageResult, error) {
 			res.Reasons = append(res.Reasons,
 				fmt.Sprintf("  %s <- %d consumer%s", n.Name, len(n.Consumers), plural(len(n.Consumers), "", "s")))
 		}
-		return res, nil
 	}
-	res.Verdict = VerdictPass
+	if blockingSkip {
+		res.Reasons = append(res.Reasons,
+			fmt.Sprintf("%d skipped input%s make the orphan classification unsound (a dropped consumer may reference a series marked orphan)",
+				g.Counts.Skipped, plural(g.Counts.Skipped, "", "s")))
+		for _, sk := range g.Skipped {
+			res.Reasons = append(res.Reasons,
+				fmt.Sprintf("  skipped %s: %s", sk.Source, sk.Reason))
+		}
+	}
 	return res, nil
 }
 

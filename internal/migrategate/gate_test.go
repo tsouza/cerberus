@@ -45,10 +45,11 @@ func cleanClassify(t *testing.T) string {
 }
 
 // cleanInventory is an inventory whose top cardinalities are below the WARN
-// thresholds.
+// thresholds and whose optional enrichments were all obtained (non-negative
+// totals, no notes) — a genuinely clean bill of health.
 func cleanInventory(t *testing.T) string {
 	inv := migrateinventory.Inventory{
-		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1,
+		Source: "http://src", Top: 5, MetricNameTotal: 42, MetadataMetricTotal: 40,
 		TopMetricsBySeries: []migrateinventory.NameValue{{Name: "up", Value: 12}},
 		TopLabelsByValues:  []migrateinventory.NameValue{{Name: "instance", Value: 30}},
 	}
@@ -229,7 +230,7 @@ func TestEvaluateBlocksOnMissingRequiredArtifact(t *testing.T) {
 
 func TestEvaluateWarnsButPassesOnHighCardinality(t *testing.T) {
 	inv := migrateinventory.Inventory{
-		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1,
+		Source: "http://src", Top: 5, MetricNameTotal: 100, MetadataMetricTotal: 90,
 		TopMetricsBySeries: []migrateinventory.NameValue{{Name: "http_requests_total", Value: 250_000}},
 		TopLabelsByValues:  []migrateinventory.NameValue{{Name: "user_id", Value: 80_000}},
 	}
@@ -386,6 +387,166 @@ func TestDecisionWriteJSONRoundTrips(t *testing.T) {
 	}
 	if len(got.Stages) != 4 {
 		t.Errorf("want 4 stages in JSON, got %d", len(got.Stages))
+	}
+}
+
+func TestEvaluateWarnsOnVerifyUnsupportedButPasses(t *testing.T) {
+	// A query that emitted SQL offline but returned no comparable matrix live is
+	// counted only in Summary.Unsupported. Report.Failed() does not block on it,
+	// but the gate must surface it: it is a query UNVERIFIED against the backend,
+	// not a clean pass.
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 3, Match: 2, Unsupported: 1, HarvestSkipped: 2, OutOfScope: 1},
+	}
+	in := migrategate.Inputs{
+		Verify:    writeArtifact(t, "verify.json", rep.WriteJSON),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	v := stageByName(t, dec, migrategate.StageVerify)
+	if v.Verdict != migrategate.VerdictWarn || v.Blocking {
+		t.Fatalf("verify with unchecked entries must WARN not block, got verdict=%q blocking=%v", v.Verdict, v.Blocking)
+	}
+	if !containsSubstr(v.Reasons, "unverified") {
+		t.Errorf("verify reasons should surface the unverified query, got %v", v.Reasons)
+	}
+	if !containsSubstr(v.Reasons, "harvest-skipped") || !containsSubstr(v.Reasons, "out-of-scope") {
+		t.Errorf("verify reasons should surface harvest-skipped and out-of-scope entries, got %v", v.Reasons)
+	}
+	if !dec.Pass || dec.Overall != migrategate.OverallPass {
+		t.Fatalf("a WARN-only verify should PASS overall, got pass=%v overall=%q", dec.Pass, dec.Overall)
+	}
+}
+
+func TestEvaluateWarnsOnClassifySkippedButPasses(t *testing.T) {
+	// A corpus entry the harvester could not turn into a query is carried in
+	// Skipped but never classified. It must WARN — a green classify that hides an
+	// unexamined 40%-of-corpus is the exact "hollow green" the gate exists to
+	// prevent — yet it does not block (it is unexamined, not proven-unsupported).
+	cl := migrate.Classification{
+		Counts:  migrate.BucketCounts{Total: 2, Supported: 2},
+		Queries: []migrate.ClassifiedQuery{{Bucket: migrate.BucketSupported}, {Bucket: migrate.BucketSupported}},
+		Skipped: []migrate.SkippedEntry{
+			{Source: "rules-a.yml", Reason: "parse: unexpected token"},
+			{Source: "rules-b.yml", Reason: "read: permission denied"},
+		},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  writeArtifact(t, "classify.json", cl.WriteJSON),
+		Inventory: cleanInventory(t),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	c := stageByName(t, dec, migrategate.StageClassify)
+	if c.Verdict != migrategate.VerdictWarn || c.Blocking {
+		t.Fatalf("classify with skips must WARN not block, got verdict=%q blocking=%v", c.Verdict, c.Blocking)
+	}
+	if !containsSubstr(c.Reasons, "2 harvest-skipped") {
+		t.Errorf("classify reasons should surface the skip count, got %v", c.Reasons)
+	}
+	if !dec.Pass || dec.Overall != migrategate.OverallPass {
+		t.Fatalf("a skip-only classify should PASS overall, got pass=%v overall=%q", dec.Pass, dec.Overall)
+	}
+}
+
+func TestEvaluateBlocksOnRuleGraphSkipped(t *testing.T) {
+	// Every recorded series is orphan (nobody consumes it) so the naive verdict
+	// is "safe to drop" — but the builder SKIPPED a consumer expr it could not
+	// parse. That skipped consumer might have referenced the orphan, which would
+	// then be needed after cutover. "orphan ⇒ safe to drop" is unsound with any
+	// skip, so the gate BLOCKS rather than green-light a possibly-blank panel.
+	g := migrate.RuleGraph{
+		Counts:   migrate.RuleGraphCounts{Recorded: 1, Orphan: 1, Skipped: 1},
+		Recorded: []migrate.RecordedNode{{Name: "job:foo:rate", Source: "rules.yml", Status: migrate.StatusOrphan}},
+		Skipped:  []migrate.SkippedEntry{{Source: "dash.json", Reason: "parse: unexpected token in consumer expr"}},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: writeArtifact(t, "rulegraph.json", g.WriteJSON),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	r := stageByName(t, dec, migrategate.StageRuleGraph)
+	if dec.Pass || r.Verdict != migrategate.VerdictFail || !r.Blocking {
+		t.Fatalf("rulegraph with a skip must FAIL+block, got pass=%v verdict=%q blocking=%v", dec.Pass, r.Verdict, r.Blocking)
+	}
+	if !containsSubstr(r.Reasons, "unsound") || !containsSubstr(r.Reasons, "dash.json") {
+		t.Errorf("rulegraph reasons should surface the skip and its source, got %v", r.Reasons)
+	}
+}
+
+func TestEvaluateWarnsOnInventoryNotesButPasses(t *testing.T) {
+	// An enrichment the probe could not fetch lands in Notes. The gate must
+	// surface it: a probe that silently failed an enrichment is an unchecked
+	// corner of the source, not a clean inventory — but it stays advisory (WARN).
+	inv := migrateinventory.Inventory{
+		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: 40,
+		TopMetricsBySeries: []migrateinventory.NameValue{{Name: "up", Value: 12}},
+		TopLabelsByValues:  []migrateinventory.NameValue{{Name: "instance", Value: 30}},
+		Notes:              []string{"metric-name total unavailable (/api/v1/label/__name__/values): 503"},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: writeArtifact(t, "inventory.json", inv.WriteJSON),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	iv := stageByName(t, dec, migrategate.StageInventory)
+	if iv.Verdict != migrategate.VerdictWarn || iv.Blocking {
+		t.Fatalf("inventory with a note must WARN not block, got verdict=%q blocking=%v", iv.Verdict, iv.Blocking)
+	}
+	if !containsSubstr(iv.Reasons, "metric-name total unavailable") {
+		t.Errorf("inventory reasons should surface the enrichment note, got %v", iv.Reasons)
+	}
+	if !dec.Pass || dec.Overall != migrategate.OverallPass {
+		t.Fatalf("a note-only inventory should PASS overall, got pass=%v overall=%q", dec.Pass, dec.Overall)
+	}
+}
+
+func TestEvaluateWarnsOnInventoryEnrichmentUnavailableWithoutNotes(t *testing.T) {
+	// A -1 total with no explaining note (an enrichment silently not obtained)
+	// must still surface a caveat, so the note-less path cannot read as clean.
+	inv := migrateinventory.Inventory{
+		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1,
+		TopMetricsBySeries: []migrateinventory.NameValue{{Name: "up", Value: 12}},
+		TopLabelsByValues:  []migrateinventory.NameValue{{Name: "instance", Value: 30}},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: writeArtifact(t, "inventory.json", inv.WriteJSON),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	iv := stageByName(t, dec, migrategate.StageInventory)
+	if iv.Verdict != migrategate.VerdictWarn || iv.Blocking {
+		t.Fatalf("inventory with unobtained enrichment must WARN not block, got verdict=%q blocking=%v", iv.Verdict, iv.Blocking)
+	}
+	if !containsSubstr(iv.Reasons, "not obtained") {
+		t.Errorf("inventory reasons should surface the enrichment-not-obtained caveat, got %v", iv.Reasons)
+	}
+	if !dec.Pass {
+		t.Errorf("an enrichment-caveat-only inventory should still PASS overall")
 	}
 }
 
