@@ -190,6 +190,45 @@ groups:
 	}
 }
 
+// TestExplainToOutFile pins that `explain --out <file>` writes the report to the
+// named file (checked, via os.WriteFile) rather than only to stdout: the file
+// carries the emitted SQL and nothing is written to stdout on the file path.
+func TestExplainToOutFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "rules.yml")
+	const rules = `
+groups:
+  - name: probe
+    rules:
+      - record: job:up
+        expr: up
+`
+	if err := os.WriteFile(file, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reportFile := filepath.Join(dir, "report.txt")
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{"explain", "--rules", file, "--out", reportFile}, &out, &errOut); err != nil {
+		t.Fatalf("explain --out: %v (stderr: %s)", err, errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("explain --out should not write the report to stdout, got: %q", out.String())
+	}
+
+	data, err := os.ReadFile(reportFile) //nolint:gosec // test-controlled temp path.
+	if err != nil {
+		t.Fatalf("read report file: %v", err)
+	}
+	report := string(data)
+	if !strings.Contains(report, "SELECT") {
+		t.Errorf("report file should contain the emitted SQL, got:\n%s", report)
+	}
+	if !strings.Contains(report, "cardinality is NOT knowable offline") {
+		t.Errorf("report file should carry the offline-cardinality honesty note, got:\n%s", report)
+	}
+}
+
 // TestWriteSchema pins the render path end to end (offline): a config with a
 // database + table overrides produces pipeable DDL that creates the database
 // first and the overridden tables after, each statement ';'-terminated.

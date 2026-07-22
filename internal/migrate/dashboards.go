@@ -20,20 +20,31 @@ const datasourceTypePrometheus = "prometheus"
 const dashboardFileExt = ".json"
 
 // DashboardSource harvests PromQL from a directory tree of exported Grafana
-// dashboard JSON files. It walks every panel's targets (including targets on
-// panels nested inside collapsed rows, panels[].panels[]) and keeps only the
-// targets whose datasource is Prometheus-typed. Everything else — an unreadable
-// or unparseable file, a target with an empty expression, or a target on a
-// non-Prometheus datasource — is recorded as a counted SkippedEntry, never
-// silently dropped.
+// dashboard JSON files. It walks every panel's targets — targets on top-level
+// panels[], targets on panels nested inside collapsed rows (panels[].panels[]),
+// and targets on panels under the legacy pre-v16 rows[].panels[] schema — and
+// keeps only the targets whose datasource resolves to the Prometheus type.
+// Everything else — an unreadable or unparseable file, a target with an empty
+// expression, a target on a non-Prometheus datasource, or a legacy name-form
+// datasource that cannot be type-resolved offline — is recorded as a counted
+// SkippedEntry, never silently dropped.
 type DashboardSource struct {
 	Dir string
 }
 
 // dashboardDoc is the minimal slice of the Grafana dashboard schema the harvest
-// needs: a title (for provenance) and a tree of panels.
+// needs: a title (for provenance) and the panel tree. Modern exports carry a
+// flat panels[]; the legacy pre-v16 (Grafana v4) schema nests panels under
+// rows[].panels[] instead, so both are decoded and walked.
 type dashboardDoc struct {
 	Title  string           `json:"title"`
+	Panels []dashboardPanel `json:"panels"`
+	Rows   []dashboardRow   `json:"rows"`
+}
+
+// dashboardRow is one row of the legacy pre-v16 dashboard schema, where panels
+// live under rows[].panels[] rather than a flat top-level panels[].
+type dashboardRow struct {
 	Panels []dashboardPanel `json:"panels"`
 }
 
@@ -101,29 +112,33 @@ func harvestDashboardFile(file string) ([]HarvestedQuery, []SkippedEntry) {
 		skipped []SkippedEntry
 	)
 	// A panel's default datasource is empty at the top level; each panel's own
-	// datasource becomes the default its targets inherit.
-	walkPanels(file, doc.Panels, "", &queries, &skipped)
+	// datasource becomes the default its targets inherit. Both the modern flat
+	// panels[] and the legacy rows[].panels[] trees are walked.
+	walkPanels(file, doc.Panels, datasourceRef{}, &queries, &skipped)
+	for _, row := range doc.Rows {
+		walkPanels(file, row.Panels, datasourceRef{}, &queries, &skipped)
+	}
 	return queries, skipped
 }
 
 // walkPanels recursively flattens a panel list, threading each panel's
 // datasource down as the inherited default for its targets and its nested
 // (collapsed-row) child panels.
-func walkPanels(file string, panels []dashboardPanel, inherited string, queries *[]HarvestedQuery, skipped *[]SkippedEntry) {
+func walkPanels(file string, panels []dashboardPanel, inherited datasourceRef, queries *[]HarvestedQuery, skipped *[]SkippedEntry) {
 	for _, p := range panels {
-		panelDS := resolveDatasourceType(p.Datasource)
-		if panelDS == "" {
+		panelDS := resolveDatasource(p.Datasource)
+		if !panelDS.set() {
 			panelDS = inherited
 		}
 		panelKey := panelIdent(p)
 		for i, t := range p.Targets {
 			source := fmt.Sprintf("dashboard:%s/%s/%s", file, panelKey, targetIdent(t, i))
-			dsType := resolveDatasourceType(t.Datasource)
-			if dsType == "" {
-				dsType = panelDS
+			ds := resolveDatasource(t.Datasource)
+			if !ds.set() {
+				ds = panelDS
 			}
-			if dsType != datasourceTypePrometheus {
-				*skipped = append(*skipped, SkippedEntry{Source: source, Reason: nonPromReason(dsType)})
+			if ds.typ != datasourceTypePrometheus {
+				*skipped = append(*skipped, SkippedEntry{Source: source, Reason: ds.dropReason()})
 				continue
 			}
 			if strings.TrimSpace(t.Expr) == "" {
@@ -137,35 +152,65 @@ func walkPanels(file string, panels []dashboardPanel, inherited string, queries 
 	}
 }
 
-// nonPromReason describes why a target was dropped for its datasource: either it
-// names a concrete non-Prometheus type, or its datasource could not be resolved
-// to any type at all.
-func nonPromReason(dsType string) string {
-	if dsType == "" {
-		return "target datasource is unresolved (not Prometheus-typed)"
-	}
-	return fmt.Sprintf("non-prometheus datasource: %s", dsType)
+// datasourceRef is a resolved Grafana `datasource` reference. At most one of typ
+// / name is populated; both empty means the field was absent and the datasource
+// is inherited from the enclosing panel/row. The object form
+// ({"type":"prometheus","uid":...}) yields a concrete typ. The legacy bare
+// string form is a datasource NAME, not a type — a name that case-folds to
+// "prometheus" is the one name safely resolvable to the prometheus type offline;
+// any other name (Loki, Mimir, Cortex, a custom name, a "${var}" template)
+// cannot be mapped to a type without querying Grafana, so it is carried as name
+// and dropped-with-count rather than silently miscategorised as a type.
+type datasourceRef struct {
+	typ  string
+	name string
 }
 
-// resolveDatasourceType extracts the datasource type from a Grafana `datasource`
-// field, which may be an object ({"type":"prometheus","uid":...}) or a bare
-// string (the legacy form, where the string itself is the type token). An
-// absent, null, or shapeless datasource resolves to "".
-func resolveDatasourceType(raw json.RawMessage) string {
+// set reports whether the field named a datasource at all; an unset ref inherits
+// the enclosing panel/row default.
+func (r datasourceRef) set() bool { return r.typ != "" || r.name != "" }
+
+// dropReason explains why a non-Prometheus target was dropped: a concrete
+// non-Prometheus type, a name-form datasource that cannot be type-resolved
+// offline, or a datasource that resolved to no type at all.
+func (r datasourceRef) dropReason() string {
+	switch {
+	case r.name != "":
+		return fmt.Sprintf("legacy name-form datasource %q cannot be type-resolved offline", r.name)
+	case r.typ == "":
+		return "target datasource is unresolved (not Prometheus-typed)"
+	default:
+		return fmt.Sprintf("non-prometheus datasource: %s", r.typ)
+	}
+}
+
+// resolveDatasource resolves a Grafana `datasource` field, which may be an object
+// ({"type":"prometheus","uid":...}) or a legacy bare string (a datasource NAME).
+// An absent, null, or shapeless datasource yields an unset ref (inherit).
+func resolveDatasource(raw json.RawMessage) datasourceRef {
 	if len(raw) == 0 || string(raw) == "null" {
-		return ""
+		return datasourceRef{}
 	}
 	var obj struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type != "" {
-		return obj.Type
+		return datasourceRef{typ: obj.Type}
 	}
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
-		return strings.TrimSpace(str)
+		switch s := strings.TrimSpace(str); {
+		case s == "":
+			return datasourceRef{}
+		case strings.EqualFold(s, datasourceTypePrometheus):
+			// The only datasource NAME safely resolvable to a type offline: the
+			// conventional default Prometheus datasource name ("Prometheus").
+			return datasourceRef{typ: datasourceTypePrometheus}
+		default:
+			return datasourceRef{name: s}
+		}
 	}
-	return ""
+	return datasourceRef{}
 }
 
 // panelIdent names a panel for provenance: its title when set, else panel-<id>.

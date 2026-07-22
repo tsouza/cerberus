@@ -29,6 +29,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -53,6 +54,10 @@ import (
 // — are deterministic regardless of when the tool runs. The exact instant is
 // arbitrary; only its stability matters.
 const explainEvalUnix = 1_700_000_000
+
+// outFileMode is the permission for files written by --out (corpus / explain
+// report): owner read-write only, since a corpus can name internal metric paths.
+const outFileMode = 0o600
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -191,12 +196,14 @@ func runExplainCmd(args []string, stdout, stderr io.Writer) error {
 	if out == "" {
 		return runExplainReport(stdout, src)
 	}
-	f, err := os.Create(out) //nolint:gosec // operator-supplied report path; offline CLI.
-	if err != nil {
-		return fmt.Errorf("create report file %q: %w", out, err)
+	// Render into a buffer, then commit with a checked os.WriteFile (via
+	// writeOut). A streaming os.Create with an unchecked Close would swallow a
+	// flush-at-close failure and report a truncated report as success.
+	var buf bytes.Buffer
+	if err := runExplainReport(&buf, src); err != nil {
+		return err
 	}
-	defer f.Close()
-	return runExplainReport(f, src)
+	return writeOut(stdout, out, buf.Bytes())
 }
 
 // harvestSources assembles the corpus sources from the provided inputs. Order is
@@ -235,16 +242,18 @@ func runExplainReport(w io.Writer, src migrate.CorpusSource) error {
 	return rep.Write(w)
 }
 
-// writeOut writes data to the named file, or to stdout when out is empty.
+// writeOut writes data to the named file, or to stdout when out is empty. The
+// file write is checked end to end (os.WriteFile), so a flush failure surfaces
+// as an error rather than a silently truncated corpus or report.
 func writeOut(stdout io.Writer, out string, data []byte) error {
 	if out == "" {
 		if _, err := stdout.Write(data); err != nil {
-			return fmt.Errorf("write corpus: %w", err)
+			return fmt.Errorf("write output: %w", err)
 		}
 		return nil
 	}
-	if err := os.WriteFile(out, data, 0o600); err != nil {
-		return fmt.Errorf("write corpus file %q: %w", out, err)
+	if err := os.WriteFile(out, data, outFileMode); err != nil {
+		return fmt.Errorf("write output file %q: %w", out, err)
 	}
 	return nil
 }
