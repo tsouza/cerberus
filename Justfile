@@ -68,6 +68,13 @@ gen-opt-docs:
 route-rules *ARGS:
     go run ./cmd/route-rules {{ARGS}}
 
+# Pre-cutover migration preview. Renders the ClickHouse schema cerberus expects
+# from the current CERBERUS_* environment — offline, no database connection —
+# so you can review it before provisioning. Pipeable into clickhouse-client:
+#   just migrate --schema | clickhouse-client -h ...
+migrate *ARGS:
+    go run ./cmd/migrate {{ARGS}}
+
 # === Test ===
 
 # Run unit + spec tests with race detector.

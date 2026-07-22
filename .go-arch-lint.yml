@@ -108,6 +108,10 @@ components:
   # Cross-cutting utility packages — see commonComponents below.
   schema:         { in: schema }
   schema-ddl:     { in: schema/ddl }
+  # Maps runtime config → typed ddl.Config. The single place that translation
+  # lives, shared by the server's auto-create hook and cmd/migrate's offline
+  # schema preview, so the previewed schema matches what the server applies.
+  schemaboot:     { in: schemaboot }
   cerbtrace:      { in: cerbtrace }
   telemetry:      { in: telemetry }
   httperr:        { in: api/httperr }
@@ -348,3 +352,12 @@ deps:
   schema-ddl:
     mayDependOn:
       - chsql
+
+  # schemaboot is the wiring layer that maps runtime config into ddl.Config, so
+  # it sits above both config and schema-ddl (and reads schema.KV). One-way
+  # deps only — config/schema/schema-ddl never import schemaboot back.
+  schemaboot:
+    mayDependOn:
+      - config
+      - schema
+      - schema-ddl
