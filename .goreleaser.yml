@@ -23,9 +23,47 @@ builds:
       - amd64
       - arm64
 
+  # migrate — the offline pre-cutover migration preview CLI (./cmd/migrate).
+  # Shipped as its own released binary + tar.gz archive alongside cerberus,
+  # with an identical build profile (static CGO-off, -trimpath, stripped).
+  - id: migrate
+    main: ./cmd/migrate
+    binary: migrate
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - id: cerberus
+    ids:
+      - cerberus
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+  # migrate CLI archive — same tar.gz shape + doc set as the cerberus archive,
+  # scoped to the migrate build so each archive carries exactly one binary.
+  - id: migrate
+    ids:
+      - migrate
+    name_template: "migrate_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
     format_overrides:
