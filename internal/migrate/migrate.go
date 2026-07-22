@@ -79,7 +79,7 @@ func (s FileSource) Harvest(_ context.Context) ([]HarvestedQuery, []SkippedEntry
 			continue
 		}
 		for _, file := range matches {
-			data, err := os.ReadFile(file)
+			data, err := os.ReadFile(file) //nolint:gosec // operator-supplied rule-file path; offline CLI.
 			if err != nil {
 				skipped = append(skipped, SkippedEntry{Source: file, Reason: fmt.Sprintf("read: %v", err)})
 				continue
