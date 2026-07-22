@@ -69,6 +69,7 @@ func TestRequireScanTimeBound_RejectsUnboundedInstantLeaf(t *testing.T) {
 	})
 	if v == nil {
 		t.Fatal("RequireScanTimeBound must reject an unbounded instant windowed-array leaf")
+		return
 	}
 	if v.Func != "rate" {
 		t.Errorf("violation Func = %q, want %q", v.Func, "rate")

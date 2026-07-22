@@ -206,6 +206,7 @@ func TestFromEnv_CHTLS_mTLS(t *testing.T) {
 	tlsCfg := cfg.ClickHouse.TLS
 	if tlsCfg == nil {
 		t.Fatal("TLS = nil; want non-nil when enabled")
+		return
 	}
 	if tlsCfg.ServerName != "clickhouse.internal" {
 		t.Errorf("ServerName = %q; want clickhouse.internal", tlsCfg.ServerName)

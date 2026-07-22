@@ -194,6 +194,7 @@ func TestGet_NoopMeterProviderProducesNonNilInstruments(t *testing.T) {
 	inst := telemetry.Get()
 	if inst == nil {
 		t.Fatal("Get = nil under noop provider")
+		return
 	}
 	if inst.QueriesTotal == nil || inst.QueryDuration == nil ||
 		inst.StageDuration == nil || inst.RulesApplied == nil ||

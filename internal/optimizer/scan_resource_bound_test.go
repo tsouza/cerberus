@@ -83,6 +83,7 @@ func TestRequireScanResourceBound_PanicsWhenGateStripped(t *testing.T) {
 	})
 	if v == nil {
 		t.Fatalf("TraceLimit>0 NestedSetAnnotate without a BoundedTraceScope leaf must panic ScanResourceBoundViolation")
+		return
 	}
 	if v.Table != "otel_traces" {
 		t.Errorf("violation Table = %q, want otel_traces", v.Table)
