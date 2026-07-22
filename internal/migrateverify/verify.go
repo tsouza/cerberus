@@ -417,6 +417,11 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	if r.Failed() {
 		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d matched (of %d)\n\n",
 			r.Summary.Diverge, r.Summary.Error, r.Summary.Match, r.Summary.Total)
+	} else if r.Summary.Unsupported > 0 {
+		// Unsupported queries pass the gate but are NOT matches; the banner must
+		// not equate Total with matched or it overstates what agreed.
+		bw.printf("VERIFICATION PASSED — %d matched, %d unsupported, 0 diverged (of %d)\n\n",
+			r.Summary.Match, r.Summary.Unsupported, r.Summary.Total)
 	} else {
 		bw.printf("VERIFICATION PASSED — all %d queries matched\n\n", r.Summary.Total)
 	}

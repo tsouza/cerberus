@@ -137,6 +137,40 @@ func TestWriteText_VerdictBanner(t *testing.T) {
 	if !strings.HasPrefix(firstPass, "VERIFICATION PASSED") || !strings.Contains(firstPass, "all 5") {
 		t.Errorf("passing report must lead with VERIFICATION PASSED — all 5, got: %q", firstPass)
 	}
+
+	// Unsupported queries pass the gate but are NOT matches: the banner must not
+	// claim "all N matched" when only some agreed (mixed pass) or none did.
+	mixed := Report{Summary: Summary{Total: 5, Match: 3, Unsupported: 2}}
+	var mb strings.Builder
+	if err := mixed.WriteText(&mb); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	firstMixed := strings.SplitN(mb.String(), "\n", 2)[0]
+	if !strings.HasPrefix(firstMixed, "VERIFICATION PASSED") {
+		t.Errorf("mixed-unsupported report must still lead with VERIFICATION PASSED, got: %q", firstMixed)
+	}
+	if strings.Contains(firstMixed, "all 5 queries matched") {
+		t.Errorf("mixed-unsupported banner must NOT claim all 5 matched, got: %q", firstMixed)
+	}
+	if !strings.Contains(firstMixed, "3 matched") || !strings.Contains(firstMixed, "2 unsupported") ||
+		!strings.Contains(firstMixed, "of 5") {
+		t.Errorf("mixed-unsupported banner must split match/unsupported/total, got: %q", firstMixed)
+	}
+
+	// All-unsupported: zero matched, yet the gate passes — the banner must not
+	// claim every query matched.
+	allUnsup := Report{Summary: Summary{Total: 5, Unsupported: 5}}
+	var ab strings.Builder
+	if err := allUnsup.WriteText(&ab); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	firstAll := strings.SplitN(ab.String(), "\n", 2)[0]
+	if strings.Contains(firstAll, "all 5 queries matched") {
+		t.Errorf("all-unsupported banner must NOT claim all 5 matched, got: %q", firstAll)
+	}
+	if !strings.Contains(firstAll, "0 matched") || !strings.Contains(firstAll, "5 unsupported") {
+		t.Errorf("all-unsupported banner must report 0 matched / 5 unsupported, got: %q", firstAll)
+	}
 }
 
 // TestWriteTextGuided_BugReport: a failing report ends with the "Report this to
