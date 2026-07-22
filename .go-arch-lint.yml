@@ -158,6 +158,10 @@ components:
   # (promrules) and assembles the explain report over the chplan IR. Wired from
   # cmd/migrate only.
   migrate:        { in: migrate }
+  # Online cutover parity gate: replays a harvested corpus against a reference
+  # Prometheus + cerberus and diffs the query_range results. Reuses the migrate
+  # corpus format to read the harvested corpus.json. Wired from cmd/migrate only.
+  migrateverify:  { in: migrateverify }
   # Leaf yaml.v3 decode of Prometheus rule files (record/alert exprs). No
   # internal deps — deliberately avoids prometheus/rulefmt's ~112-package pull.
   promrules:      { in: promrules }
@@ -292,6 +296,14 @@ deps:
     mayDependOn:
       - chplan
       - promrules
+
+  # migrateverify is the online parity gate. It only needs the migrate corpus
+  # format (Corpus / CorpusQuery / LangPromQL) to read a harvested corpus.json;
+  # the comparator and HTTP client are net-new and stdlib-only. It must NOT reach
+  # into the engine / chsql / handler layers — it talks to both backends over HTTP.
+  migrateverify:
+    mayDependOn:
+      - migrate
 
   # config is wired from cmd/ to build chclient + schema at boot.
   config:
