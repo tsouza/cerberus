@@ -1,29 +1,49 @@
-// Command migrate is cerberus's pre-cutover migration preview tool. It renders
-// the ClickHouse schema cerberus expects — offline, without a database
-// connection — so an operator can review exactly what cerberus will create
-// before provisioning anything.
+// Command migrate is cerberus's pre-cutover migration preview tool. It runs
+// offline — without a ClickHouse connection — so an operator can review exactly
+// what cerberus will do before provisioning anything.
 //
 // Usage:
 //
-//	migrate --schema      # print the CREATE statements cerberus expects, to stdout
+//	migrate --schema             # print the CREATE statements cerberus expects
+//	migrate --rules <path/glob>  # explain the ClickHouse SQL for each PromQL
+//	                             # query in the given Prometheus rule files
 //
-// Configuration is read from the SAME CERBERUS_* environment the server uses
+// --schema reads the SAME CERBERUS_* environment the server uses
 // (config.FromEnv), so the previewed schema is byte-identical to what the
-// server would apply on startup. The rendered DDL is directly pipeable into
-// clickhouse-client.
+// server would apply on startup, and pipes straight into clickhouse-client.
+//
+// --rules harvests every recording/alerting rule's PromQL, dry-runs it through
+// the exact read-side pipeline the server runs (parse → project → optimize →
+// emit, via engine.DryRunSQL — the ClickHouse client is never touched), and
+// prints the emitted SQL, the physical tables each query scans, and
+// conservative offline risk flags, or marks the query UNSUPPORTED. Row
+// cardinality is data-dependent and is deliberately NOT estimated offline.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/migrate"
+	"github.com/tsouza/cerberus/internal/optimizer"
+	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 )
+
+// explainEvalUnix pins the offline explain's instant-evaluation anchor to a
+// fixed wall-clock (Unix seconds) so the emitted SQL — and any goldens over it
+// — are deterministic regardless of when the tool runs. The exact instant is
+// arbitrary; only its stability matters.
+const explainEvalUnix = 1_700_000_000
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -32,10 +52,26 @@ func main() {
 	}
 }
 
-// options holds the parsed flags. It grows as the tool gains subcommands
-// (explain, verify); for now --schema is the only capability.
+// stringList is a repeatable + comma-separated flag value. `--rules a,b --rules
+// c` accumulates ["a", "b", "c"].
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			*l = append(*l, p)
+		}
+	}
+	return nil
+}
+
+// options holds the parsed flags. --schema renders the expected ClickHouse
+// schema; --rules switches to the offline PromQL explain over rule files.
 type options struct {
 	schema bool
+	rules  stringList
 }
 
 // run is the testable entrypoint: it parses args, then dispatches. Splitting it
@@ -47,20 +83,58 @@ func run(args []string, stdout, stderr io.Writer) error {
 	var opts options
 	fs.BoolVar(&opts.schema, "schema", false,
 		"print the ClickHouse schema (CREATE statements) cerberus expects, then exit")
+	fs.Var(&opts.rules, "rules",
+		"explain the ClickHouse SQL for each PromQL query in these Prometheus rule "+
+			"files (repeatable or comma-separated paths/globs)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if !opts.schema {
+	switch {
+	case len(opts.rules) > 0:
+		return runExplain(stdout, opts.rules)
+	case opts.schema:
+		cfg, err := config.FromEnv()
+		if err != nil {
+			return fmt.Errorf("load config from environment: %w", err)
+		}
+		return writeSchema(stdout, cfg)
+	default:
 		fs.Usage()
-		return fmt.Errorf("nothing to do: pass --schema to print the expected ClickHouse schema")
+		return fmt.Errorf("nothing to do: pass --schema to print the expected schema, " +
+			"or --rules <path> to explain PromQL rule files")
 	}
+}
 
-	cfg, err := config.FromEnv()
+// runExplain harvests PromQL from the given rule files, dry-runs each query
+// through the read-side pipeline, and writes the explain report to w. It is
+// fully offline: the engine has no Client and DryRunSQL never executes.
+func runExplain(w io.Writer, rulePaths []string) error {
+	metrics := schema.DefaultOTelMetricsFromEnv()
+	eng := &engine.Engine{Optimizer: optimizer.Default()}
+	lang := prom.NewExplainLang(metrics, time.Unix(explainEvalUnix, 0).UTC())
+
+	src := migrate.FileSource{RulePaths: rulePaths}
+	ex := dryRunExplainer{eng: eng, lang: lang}
+	rep, err := migrate.BuildReport(context.Background(), src, ex)
 	if err != nil {
-		return fmt.Errorf("load config from environment: %w", err)
+		return fmt.Errorf("build explain report: %w", err)
 	}
-	return writeSchema(stdout, cfg)
+	return rep.Write(w)
+}
+
+// dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it
+// reports is byte-identical to what the server would send to ClickHouse for the
+// same query — DryRunSQL runs the identical parse → project → optimize → emit
+// stages, minus Execute.
+type dryRunExplainer struct {
+	eng  *engine.Engine
+	lang engine.Lang
+}
+
+func (d dryRunExplainer) Explain(ctx context.Context, query string) migrate.Explanation {
+	dr, err := d.eng.DryRunSQL(ctx, d.lang, query)
+	return migrate.Explanation{SQL: dr.SQL, Plan: dr.Plan, Err: err}
 }
 
 // writeSchema renders the schema cerberus expects for cfg and writes it to w.
