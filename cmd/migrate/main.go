@@ -11,6 +11,8 @@
 //	migrate explain --corpus corpus.json       # explain a previously-harvested corpus
 //	migrate verify --corpus corpus.json \       # replay the corpus against a reference
 //	  --ref <prom-url> --cerberus <url>          #   Prometheus and cerberus and diff (parity gate)
+//	migrate inventory --source <prom-url>        # probe the LIVE source Prometheus for the
+//	  --top 50                                    #   cardinality that drives OOM risk
 //
 // --schema reads the SAME CERBERUS_* environment the server uses
 // (config.FromEnv), so the previewed schema is byte-identical to what the
@@ -33,6 +35,15 @@
 // harvested corpus against a reference Prometheus AND cerberus over one
 // query_range window and diffs the results series-by-series. It exits non-zero
 // if any query diverges or errors — a divergence is never allow-listed.
+//
+// inventory probes the LIVE source Prometheus for the runtime cardinality facts
+// config can't reveal offline: it calls /api/v1/status/tsdb (plus optional
+// /api/v1/label/__name__/values and /api/v1/metadata) and ranks the top-N
+// metrics by series count and labels by cardinality — the OOM candidates
+// cerberus can't see before cutover. It refuses to infer from prometheus.yml
+// (scrape config is not realized cardinality). The numbers RANK RISK; they do
+// not predict cerberus's exact memory. A source that 404s the status endpoint
+// exits non-zero.
 package main
 
 import (
@@ -117,6 +128,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runExplainCmd(args[1:], stdout, stderr)
 		case "verify":
 			return runVerify(args[1:], stdout, stderr)
+		case "inventory":
+			return runInventory(args[1:], stdout, stderr)
 		}
 	}
 

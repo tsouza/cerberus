@@ -162,6 +162,10 @@ components:
   # Prometheus + cerberus and diffs the query_range results. Reuses the migrate
   # corpus format to read the harvested corpus.json. Wired from cmd/migrate only.
   migrateverify:  { in: migrateverify }
+  # Live cardinality probe: reads the source Prometheus TSDB status over HTTP and
+  # ranks the top-N metrics/labels by cardinality (the offline-invisible OOM
+  # risk). Leaf, stdlib-only — no internal deps. Wired from cmd/migrate only.
+  migrateinventory: { in: migrateinventory }
   # Leaf yaml.v3 decode of Prometheus rule files (record/alert exprs). No
   # internal deps — deliberately avoids prometheus/rulefmt's ~112-package pull.
   promrules:      { in: promrules }
