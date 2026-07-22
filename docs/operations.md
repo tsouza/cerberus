@@ -950,7 +950,11 @@ data already persisted.
   container images) from a Git tag. Source code is compiled, the binary
   is statically linked (`CGO_ENABLED=0` in release builds), and the
   version string is injected via `-ldflags` so `Version` in
-  `cmd/cerberus/main.go` reflects the tag.
+  `cmd/cerberus/main.go` reflects the tag. Two binaries ship per release:
+  the `cerberus` gateway and the `migrate` offline migration-preview CLI
+  (`./cmd/migrate`), each as its own `tar.gz` archive
+  (`cerberus_<ver>_<os>_<arch>.tar.gz` / `migrate_<ver>_<os>_<arch>.tar.gz`)
+  and both baked into the container image under `/usr/local/bin/`.
 - **Release** — the build output is combined with the deployment
   configuration. In Kubernetes that means a specific image tag/SHA in the
   Helm values (`test/e2e/k3s/cerberus-values.yaml` for the e2e stack) plus
@@ -1002,6 +1006,17 @@ toggle) ships by bumping `version:` alone, and an app-only release bumps
 publish gates handle either or both. The `:latest` image tag advances only for
 the highest stable `v*` release (a prerelease or a stable backport never drags
 it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
+
+#### Homebrew tap (future)
+
+The release currently ships raw `tar.gz` archives + container images. A Homebrew
+formula can be added later by giving goreleaser a `brews:` block that points at a
+`tsouza/homebrew-tap` repo (the tap must exist first, and the release token must
+be able to push to it). It was deliberately left out of the initial `migrate` +
+`cerberus` binary release: a `brews:` block whose tap repo does not yet exist
+fails the goreleaser release step, so wiring it up is gated on creating that
+repo. Add the block — one entry per binary that should be `brew install`-able —
+in a follow-up once `tsouza/homebrew-tap` exists.
 
 #### Maintenance lines (hotfix backports)
 
