@@ -135,6 +135,7 @@ func TestVerify_ValueDivergence(t *testing.T) {
 	fd := res.FirstDiff
 	if fd == nil {
 		t.Fatal("diverge must carry a first-diff")
+		return
 	}
 	if fd.Timestamp != 1_700_000_060 {
 		t.Errorf("first-diff ts = %v, want 1700000060 (the first mismatching step)", fd.Timestamp)
