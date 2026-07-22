@@ -615,6 +615,7 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 			}
 			if observed == nil {
 				t.Fatalf("no sample matches stubbed timestamp %d: %+v", midMs, body.Series[0].Samples)
+				return
 			}
 			if observed.Value != 0.5 {
 				t.Errorf("expected sub-second value 0.5 to pass through unchanged, got %v", observed.Value)

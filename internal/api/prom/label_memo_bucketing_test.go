@@ -113,6 +113,7 @@ func TestMatrixFromCursor_MemoPreservesBucketing(t *testing.T) {
 		r := refBy[k]
 		if r == nil {
 			t.Fatalf("series %v not in reference", ms.Metric)
+			return
 		}
 		if len(ms.Values) != len(r.vals) {
 			t.Fatalf("series %v: got %d values, want %d", ms.Metric, len(ms.Values), len(r.vals))
