@@ -24,11 +24,18 @@ import (
 	"github.com/tsouza/cerberus/internal/promrules"
 )
 
-// Kind classifies a harvested query by the rule that produced it.
+// Kind classifies a harvested query by the corpus entry that produced it: a
+// recording rule, an alerting rule, or a Grafana dashboard panel target.
 const (
 	KindRecord = "record"
 	KindAlert  = "alert"
+	KindPanel  = "panel"
 )
+
+// LangPromQL tags every harvested query's source language. The corpus is
+// PromQL-only today; the field is carried explicitly so a future LogQL/TraceQL
+// corpus can share the same schema without a version bump breaking readers.
+const LangPromQL = "promql"
 
 // HarvestedQuery is one PromQL expression pulled from a corpus source, tagged
 // with where it came from and whether it backs a recording or alerting rule.
@@ -42,8 +49,8 @@ type HarvestedQuery struct {
 // an unreadable file, a YAML parse failure, a rule with no expression. Every
 // dropped entry is reported here; the harvester never silently discards input.
 type SkippedEntry struct {
-	Source string
-	Reason string
+	Source string `json:"source"`
+	Reason string `json:"reason"`
 }
 
 // CorpusSource yields the PromQL queries to explain, plus the entries it had to
