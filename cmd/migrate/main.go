@@ -9,6 +9,8 @@
 //	migrate harvest --rules <glob> \           # build a machine-readable query corpus from
 //	  --dashboards <dir> --out corpus.json     #   rule files + exported Grafana dashboards
 //	migrate explain --corpus corpus.json       # explain a previously-harvested corpus
+//	migrate verify --corpus corpus.json \       # replay the corpus against a reference
+//	  --ref <prom-url> --cerberus <url>          #   Prometheus and cerberus and diff (parity gate)
 //
 // --schema reads the SAME CERBERUS_* environment the server uses
 // (config.FromEnv), so the previewed schema is byte-identical to what the
@@ -26,6 +28,11 @@
 // emitted SQL, the physical tables each query scans, and conservative offline
 // risk flags, or marks the query UNSUPPORTED. Row cardinality is data-dependent
 // and is deliberately NOT estimated offline.
+//
+// verify is the online cutover parity gate: it replays each PromQL query in a
+// harvested corpus against a reference Prometheus AND cerberus over one
+// query_range window and diffs the results series-by-series. It exits non-zero
+// if any query diverges or errors — a divergence is never allow-listed.
 package main
 
 import (
@@ -60,10 +67,18 @@ const explainEvalUnix = 1_700_000_000
 const outFileMode = 0o600
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "migrate:", err)
-		os.Exit(1)
+	err := run(os.Args[1:], os.Stdout, os.Stderr)
+	if err == nil {
+		return
 	}
+	fmt.Fprintln(os.Stderr, "migrate:", err)
+	// A failed parity gate is a real, expected outcome (cerberus diverged) — it
+	// gets its own exit code so callers can tell it apart from a tool error.
+	var gate verifyFailedError
+	if errors.As(err, &gate) {
+		os.Exit(verifyExitFail)
+	}
+	os.Exit(1)
 }
 
 // stringList is a repeatable + comma-separated flag value. `--rules a,b --rules
@@ -100,6 +115,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runHarvest(args[1:], stdout, stderr)
 		case "explain":
 			return runExplainCmd(args[1:], stdout, stderr)
+		case "verify":
+			return runVerify(args[1:], stdout, stderr)
 		}
 	}
 
