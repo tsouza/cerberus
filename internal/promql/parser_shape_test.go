@@ -61,6 +61,7 @@ func TestParserShape_InstantSelector(t *testing.T) {
 	}
 	if nameMatcher == nil {
 		t.Fatal("no __name__ matcher in LabelMatchers")
+		return
 	}
 	if nameMatcher.Type != labels.MatchEqual {
 		t.Errorf("__name__ matcher Type = %v; want MatchEqual", nameMatcher.Type)
@@ -180,6 +181,7 @@ func TestParserShape_MatcherAndOffset(t *testing.T) {
 	}
 	if jobMatcher == nil {
 		t.Fatal("no job matcher in LabelMatchers")
+		return
 	}
 	if jobMatcher.Type != labels.MatchEqual {
 		t.Errorf("job matcher Type = %v; want MatchEqual", jobMatcher.Type)
