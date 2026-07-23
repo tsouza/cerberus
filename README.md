@@ -15,6 +15,7 @@ _Keep Grafana, alerting, and your CLI tooling. Swap the backend._
 <a href="#why-cerberus">Why cerberus</a> &nbsp;·&nbsp;
 <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
 <a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
+<a href="#migrating-from-prometheus">Migrating</a> &nbsp;·&nbsp;
 <a href="#compatibility">Compatibility</a> &nbsp;·&nbsp;
 <a href="#documentation">Docs</a>
 </sub>
@@ -178,6 +179,25 @@ ClickHouse / OTLP / schema / admit blocks plus full escape hatches
 the [chart README](deploy/helm/cerberus/README.md) for the complete values
 reference and a production HA example.
 
+## Migrating from Prometheus
+
+Already running Prometheus? Cerberus is built to **replace its storage and
+query engine — not your dashboards, alerts, or ruler.** Cerberus has no rule
+engine and never ingests, so your recording/alerting rules keep being evaluated
+by whatever evaluates them today; the move is ultimately a datasource **URL
+swap**. But you only earn that swap after _proving_, query by query, that
+cerberus returns the same numbers on your own data.
+
+The release binary ships a `migrate` CLI for exactly that. It **harvests** your
+real PromQL from rule files and exported dashboards, **previews** the ClickHouse
+SQL and schema offline, then **replays the corpus against both Prometheus and
+cerberus and diffs the results** — and folds every artifact into one go/no-go
+**gate** that refuses the cutover while a single query still diverges. Nothing
+is allow-listed; the gate earns the flip.
+
+**→ Follow the step-by-step operator playbook in
+[`docs/migration.md`](docs/migration.md).**
+
 ## Version requirements
 
 Two things decide whether a deployment is compatible: the **ClickHouse
@@ -284,7 +304,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | Doc                                                                      | What's in it                                                                                                                  |
 | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | [`docs/engine.md`](docs/engine.md)                                       | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                  |
-| [`docs/migration.md`](docs/migration.md)                                 | The pre-cutover migration playbook: harvest your real queries, preview the SQL + schema, verify parity, then flip traffic.    |
+| [`docs/migration.md`](docs/migration.md)                                 | The operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.    |
 | [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                  |
 | [`docs/configuration.md`](docs/configuration.md)                         | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults.                               |
 | [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                           |
