@@ -170,7 +170,7 @@ groups:
 // corpus from a rules file plus a dashboard (with a Prometheus panel, a nested
 // row, and a Loki panel harvested as LogQL) to a file, then explain that corpus
 // file. The corpus is deterministic and the explain reads it back; the LogQL
-// query is carried into the corpus but reported as not-previewed-offline.
+// query is carried into the corpus and previewed as real SQL over the logs table.
 func TestHarvestThenExplainCorpus(t *testing.T) {
 	dir := t.TempDir()
 
@@ -270,14 +270,18 @@ groups:
 	if !strings.Contains(report, "node_load1") {
 		t.Errorf("explain report should include the nested-row panel query, got:\n%s", report)
 	}
-	// The LogQL query is carried into the corpus (4 queries, 0 skips) but the
-	// offline SQL preview covers PromQL only, so it is reported UNSUPPORTED with an
-	// honest reason rather than parsed as PromQL.
+	// The LogQL panel query (`{app="x"}`) is carried into the corpus (4 queries, 0
+	// skips) and now previews REAL ClickHouse SQL over the logs table — the offline
+	// explainer routes LogQL to the logs schema, so it is no longer reported as
+	// unsupported.
 	if !strings.Contains(report, "4 queries, 0 skipped") {
 		t.Errorf("explain report should report 4 queries and 0 skips, got:\n%s", report)
 	}
-	if !strings.Contains(report, "offline SQL preview covers PromQL only") {
-		t.Errorf("explain report should flag the LogQL query as not previewed offline, got:\n%s", report)
+	if strings.Contains(report, "UNSUPPORTED") {
+		t.Errorf("explain report should not mark any query UNSUPPORTED now that LogQL is previewed, got:\n%s", report)
+	}
+	if !strings.Contains(report, "otel_logs") {
+		t.Errorf("explain report should preview the LogQL panel query over otel_logs, got:\n%s", report)
 	}
 }
 

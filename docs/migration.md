@@ -86,6 +86,14 @@ enabled (auto-selected on CH 25.9+) lowers those differently, so the previewed
 range SQL **may differ** from what such a deployment runs. The tool is offline and
 cannot know the target's ClickHouse version.
 
+The SQL preview covers the **PromQL and LogQL** heads: a PromQL corpus query
+lowers against the metrics schema and a LogQL query against the logs schema
+(`otel_logs`), each emitting real ClickHouse SQL. TraceQL corpus entries are
+still harvested (so the report and classify counts account for them), but they
+have no offline SQL preview yet — `explain` reports them `UNSUPPORTED` with the
+language named, and `classify` buckets them unsupported, rather than mis-parsing
+a TraceQL string against another head.
+
 ## The migration lifecycle
 
 ```text
