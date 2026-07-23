@@ -433,12 +433,17 @@ func (n NativePredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, s
 // nativePredictLinearHorizonEligible reports whether rw's predict_linear
 // horizon t can be threaded into timeSeriesPredictLinearToGrid's 5th parametric
 // arg: exactly one literal scalar (no computed ScalarExprs) whose value is a
-// whole number of seconds. A fractional or computed horizon is byte-exact only
-// on the fan-out's `intercept + slope*t` Float64 arithmetic, so it delegates.
+// non-negative whole number of seconds. A fractional or computed horizon is
+// byte-exact only on the fan-out's `intercept + slope*t` Float64 arithmetic, so
+// it delegates. A negative t (legal PromQL backward projection) also delegates:
+// the aggregate's predict_offset parameter is not verified to accept a signed
+// offset on the >= 25.9 substrate, and the fan-out's `intercept + slope*t`
+// evaluates negative t exactly, so the native path stays inside the verified
+// non-negative domain rather than risk a signed-literal rejection at query time.
 func nativePredictLinearHorizonEligible(rw *chplan.RangeWindow) bool {
 	if len(rw.ScalarExprs) != 0 || len(rw.Scalars) != 1 {
 		return false
 	}
 	t := rw.Scalars[0]
-	return t == math.Trunc(t)
+	return t >= 0 && t == math.Trunc(t)
 }

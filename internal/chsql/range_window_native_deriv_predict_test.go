@@ -169,6 +169,38 @@ func TestNativePredictLinearFractionalFallsBack(t *testing.T) {
 	}
 }
 
+// TestNativePredictLinearNegativeHorizonFallsBack pins the eligibility carve-out
+// for a NEGATIVE horizon t (-3600s, a legal PromQL backward projection). Even
+// with the native feature ENABLED the lowering delegates to the fan-out: the
+// aggregate's 5th parametric (predict_offset) arg is not verified to accept a
+// signed offset on the >= 25.9 substrate, so a negative literal would be a
+// silent query-time rejection the sub-25.9 CI cannot catch. The fan-out's
+// `intercept + slope*t` evaluates negative t byte-exactly, so the fallback is
+// the correct home for it.
+func TestNativePredictLinearNegativeHorizonFallsBack(t *testing.T) {
+	t.Parallel()
+
+	lowerers := promql.RangeLowerers{
+		PredictLinear: promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}},
+	}
+	plan := lowerRangeNative(t, "sum by(host) (predict_linear(disk_used_bytes[10m], -3600))", lowerers)
+
+	if native := findNativeNode(plan); native != nil {
+		t.Fatalf("negative-horizon predict_linear MUST stay on the fan-out, but got a RangeWindowNative (Func=%q, Scalars=%v)",
+			native.Func, native.Scalars)
+	}
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(sqlStr, "simpleLinearRegression") {
+		t.Errorf("negative-horizon predict_linear fan-out missing simpleLinearRegression:\n%s", sqlStr)
+	}
+	if strings.Contains(sqlStr, "timeSeriesPredictLinearToGrid(") {
+		t.Errorf("negative-horizon predict_linear must NOT emit the native aggregate:\n%s", sqlStr)
+	}
+}
+
 // TestNativeDerivPredictFeatureDisabledStaysFanout pins the default (feature
 // OFF) path: with the all-fan-out table, neither deriv nor predict_linear
 // produces a RangeWindowNative — the byte-identical fallback the < 25.9
