@@ -54,7 +54,7 @@ groups:
 	})
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"rulegraph", "--rules", ruleFile, "--corpus", corpusFile}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"rulegraph", "--rules", ruleFile, "--corpus", corpusFile}, &out, &errOut); err != nil {
 		t.Fatalf("rulegraph: %v (stderr: %s)", err, errOut.String())
 	}
 	report := out.String()
@@ -100,7 +100,7 @@ groups:
 	})
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"rulegraph", "--rules", ruleFile, "--corpus", corpusFile, "--json"}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"rulegraph", "--rules", ruleFile, "--corpus", corpusFile, "--json"}, &out, &errOut); err != nil {
 		t.Fatalf("rulegraph --json: %v (stderr: %s)", err, errOut.String())
 	}
 
@@ -133,7 +133,7 @@ groups:
 // nor --corpus rather than emitting an empty graph.
 func TestRuleGraphNoInputs(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if err := run([]string{"rulegraph"}, &out, &errOut); err == nil {
+	if err := runMigrate([]string{"rulegraph"}, &out, &errOut); err == nil {
 		t.Fatal("rulegraph with no inputs should error")
 	}
 }
@@ -156,7 +156,7 @@ groups:
 	graphFile := filepath.Join(dir, "graph.txt")
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"rulegraph", "--rules", ruleFile, "--out", graphFile}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"rulegraph", "--rules", ruleFile, "--out", graphFile}, &out, &errOut); err != nil {
 		t.Fatalf("rulegraph --out: %v (stderr: %s)", err, errOut.String())
 	}
 	if out.Len() != 0 {

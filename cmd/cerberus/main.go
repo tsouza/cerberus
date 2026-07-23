@@ -206,8 +206,13 @@ func enabledHeadNames(cfg config.Config) []string {
 }
 
 func main() {
+	// --version / -v / version is resolved BEFORE cobra is constructed and is the
+	// SOLE authority for a version dump: the distroless container healthcheck
+	// (PR #297) probes the binary this way and depends on the output being the
+	// bare Version string. cobra's built-in .Version mechanism is deliberately
+	// NOT used — it reformats the output and would claim -v for itself.
 	if isVersionFlag(os.Args) {
-		fmt.Fprintln(os.Stdout, Version)
+		printVersion(os.Stdout)
 		return
 	}
 
@@ -217,9 +222,13 @@ func main() {
 	bootstrap := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(bootstrap)
 
-	if err := run(); err != nil {
+	// Bare `cerberus` (no subcommand) starts the server via the root RunE; the
+	// subcommands cover migrate + the doc/analysis generators. main() owns the
+	// slog.Error + os.Exit: cobra runs with SilenceErrors so the error is logged
+	// once here, and the typed migration errors are mapped to their exit codes.
+	if err := newRootCmd(run).Execute(); err != nil {
 		slog.Default().Error("cerberus exited with error", "err", err)
-		os.Exit(1)
+		os.Exit(exitCodeForError(err))
 	}
 }
 

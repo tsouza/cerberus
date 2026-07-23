@@ -122,7 +122,7 @@ groups:
 	}
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"explain", "--rules", file}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"explain", "--rules", file}, &out, &errOut); err != nil {
 		t.Fatalf("run explain: %v (stderr: %s)", err, errOut.String())
 	}
 	got := out.String()

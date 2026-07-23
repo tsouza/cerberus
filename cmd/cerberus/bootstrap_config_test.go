@@ -12,7 +12,7 @@ import (
 // the rest of the connection config untouched.
 //
 // The runtime-config → ddl.Config mapping that used to live here moved to
-// internal/schemaboot (shared with cmd/migrate); its tests live there now.
+// internal/schemaboot (shared with cmd/cerberus); its tests live there now.
 func TestBootstrapClickHouseConfig(t *testing.T) {
 	in := chclient.Config{Addr: "ch:9000", Database: "otel", Username: "u", Password: "p"}
 	got := bootstrapClickHouseConfig(in)

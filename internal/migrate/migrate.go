@@ -5,7 +5,7 @@
 // UNSUPPORTED when the engine cannot emit it.
 //
 // The whole flow is read-only and offline. Corpus harvesting reads rule files;
-// explanation is delegated to an Explainer (wired in cmd/migrate over
+// explanation is delegated to an Explainer (wired in cmd/cerberus over
 // engine.DryRunSQL, which never touches a ClickHouse connection). Nothing here
 // estimates cardinality — row counts are data-dependent and cannot be known
 // without a database, so the report says so explicitly rather than guessing.
@@ -147,7 +147,7 @@ type Explanation struct {
 // the whole HarvestedQuery (not just the expr) so it can model the query's
 // evaluation MODE: a rule (record/alert) evaluates instantly, while a dashboard
 // panel runs as a query_range — previewing a panel as an instant query would
-// emit SQL the server never runs. The cmd/migrate adapter implements it over
+// emit SQL the server never runs. The cmd/cerberus adapter implements it over
 // engine.DryRunSQL so the SQL is byte-identical to what the server would send to
 // ClickHouse.
 type Explainer interface {

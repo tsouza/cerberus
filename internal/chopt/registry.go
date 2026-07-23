@@ -3,8 +3,8 @@ package chopt
 // The structural feature table in docs/clickhouse-optimizations.md (id /
 // minVersion / stability) is generated from this registry. Regenerate it with
 // `just gen-opt-docs`; CI fails any PR whose generated block drifts. See
-// cmd/optdocs.
-//go:generate go run github.com/tsouza/cerberus/cmd/optdocs -doc ../../docs/clickhouse-optimizations.md
+// the optdocs subcommand under cmd/cerberus.
+//go:generate go run github.com/tsouza/cerberus/cmd/cerberus optdocs -doc ../../docs/clickhouse-optimizations.md
 
 // Feature id constants. Exported so internal/config and internal/engine
 // reference the registry by symbol rather than a stringly-typed literal that

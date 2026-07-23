@@ -1,12 +1,3 @@
-// Command route-rules is the offline operator entrypoint for the router-rules
-// catalog. It mines the cerberus_router_corpus table (or its per-pod JSONL
-// fallback) and prints findings: shape classes where the recorded A/B routing
-// decision is paying an observable cost the corpus shows the other route would
-// avoid. It changes no routing — it is a report generator.
-//
-// The shipped catalog carries only generic drivers (rule structure + named
-// parameters); every threshold is resolved at runtime, per-deployment, from the
-// deployment's own corpus aggregates or its config. See docs/router-rules.md.
 package main
 
 import (
@@ -15,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -22,28 +14,45 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/routerrules"
 )
 
-func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "route-rules:", err)
-		os.Exit(1)
+// newRouteRulesCmd is the offline operator entrypoint for the router-rules
+// catalog. It mines the cerberus_router_corpus table (or its per-pod JSONL
+// fallback) and prints findings where the recorded A/B routing decision is paying
+// an observable cost the corpus shows the other route would avoid. It changes no
+// routing — it is a report generator. Flag parsing is delegated to the std flag
+// package (DisableFlagParsing) so the historical single-dash flags and the
+// `benchmark` pseudo-subcommand keep working exactly as before.
+func newRouteRulesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "route-rules",
+		Short: "Offline router-rules catalog analysis (report generator; changes no routing)",
+		Long: "Mine the cerberus_router_corpus table (or its per-pod JSONL fallback) and\n" +
+			"print findings where the recorded A/B route is paying a cost the corpus\n" +
+			"shows the other route would avoid. The nested `benchmark` verb scores the\n" +
+			"catalog against a fabricated labeled corpus.\n\n" +
+			"Usage: cerberus route-rules [-source jsonl|chtable] [-corpus-path PATH] [-validate-only] ...\n" +
+			"       cerberus route-rules benchmark [-seed N] [-min-support N]",
+		DisableFlagParsing: true,
+		SilenceUsage:       true,
+		SilenceErrors:      true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return routeRulesRun(args, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
 	}
 }
 
-// benchmarkSubcommand is the offline detection-fidelity benchmark: it scores the
-// catalog against a fabricated, seed-deterministic labeled corpus and prints the
-// per-rule precision/recall/F1 table. It takes no corpus path — the corpus is
-// generated — so an operator (or CI) can quantify how consistently the rules
-// detect their planted pathologies (and guard against regressions) with nothing
-// to set up. The labels share provenance with the rules' thresholds, so this
-// measures detection consistency, not real-world rule effectiveness.
-const benchmarkSubcommand = "benchmark"
+// rrBenchmarkSubcommand is the offline detection-fidelity benchmark verb: it
+// scores the catalog against a fabricated, seed-deterministic labeled corpus and
+// prints the per-rule precision/recall/F1 table. It takes no corpus path.
+const rrBenchmarkSubcommand = "benchmark"
 
-type options struct {
+type routeRulesOptions struct {
 	catalogPath  string
 	source       string
 	corpusPath   string
@@ -51,14 +60,14 @@ type options struct {
 	format       string
 	validateOnly bool
 	experimental bool
-	params       paramFlags
+	params       rrParamFlags
 }
 
-type paramFlags map[string]string
+type rrParamFlags map[string]string
 
-func (p paramFlags) String() string { return fmt.Sprintf("%v", map[string]string(p)) }
+func (p rrParamFlags) String() string { return fmt.Sprintf("%v", map[string]string(p)) }
 
-func (p paramFlags) Set(v string) error {
+func (p rrParamFlags) Set(v string) error {
 	k, val, ok := strings.Cut(v, "=")
 	if !ok {
 		return fmt.Errorf("--param expects KEY=VALUE, got %q", v)
@@ -67,12 +76,12 @@ func (p paramFlags) Set(v string) error {
 	return nil
 }
 
-func run(args []string, stdout, stderr *os.File) error {
-	if len(args) > 0 && args[0] == benchmarkSubcommand {
-		return runBenchmark(args[1:], stdout, stderr)
+func routeRulesRun(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 && args[0] == rrBenchmarkSubcommand {
+		return routeRulesRunBenchmark(args[1:], stdout, stderr)
 	}
 
-	opts := options{params: paramFlags{}}
+	opts := routeRulesOptions{params: rrParamFlags{}}
 	fs := flag.NewFlagSet("route-rules", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&opts.catalogPath, "catalog", "", "path to a router-rules catalog YAML (default: embedded)")
@@ -87,7 +96,7 @@ func run(args []string, stdout, stderr *os.File) error {
 		return err
 	}
 
-	cat, err := loadCatalog(opts.catalogPath)
+	cat, err := rrLoadCatalog(opts.catalogPath)
 	if err != nil {
 		return err
 	}
@@ -98,8 +107,8 @@ func run(args []string, stdout, stderr *os.File) error {
 		return nil
 	}
 
-	cfg := newConfigLookup(opts.params)
-	src, err := buildSource(opts)
+	cfg := rrNewConfigLookup(opts.params)
+	src, err := rrBuildSource(opts)
 	if err != nil {
 		return err
 	}
@@ -112,19 +121,19 @@ func run(args []string, stdout, stderr *os.File) error {
 
 	switch opts.format {
 	case "json":
-		return writeJSON(stdout, report)
+		return rrWriteJSON(stdout, report)
 	case "table":
-		return writeTable(stdout, report)
+		return rrWriteTable(stdout, report)
 	default:
 		return fmt.Errorf("unknown --format %q (want table|json)", opts.format)
 	}
 }
 
-// benchDefaultConfig is the nominal operating point the benchmark scores at: a
-// p95 watermark on both percentile knobs and a min_rows_per_class of 5. These
-// are benchmark settings, not catalog thresholds (the shipped catalog stays
-// number-free); an operator can override any of them with --param.
-var benchDefaultConfig = map[string]string{
+// rrBenchDefaultConfig is the nominal operating point the benchmark scores at: a
+// p95 watermark on both percentile knobs and a min_rows_per_class of 5. These are
+// benchmark settings, not catalog thresholds; an operator can override any with
+// --param.
+var rrBenchDefaultConfig = map[string]string{
 	"router_rules.watermark_percentile":     "0.95",
 	"router_rules.cumulative_d_percentile":  "0.95",
 	"router_rules.min_rows_per_class":       "5",
@@ -133,8 +142,8 @@ var benchDefaultConfig = map[string]string{
 	"query.max_samples":                     "50000000",
 }
 
-func runBenchmark(args []string, stdout, stderr *os.File) error {
-	params := paramFlags{}
+func routeRulesRunBenchmark(args []string, stdout, stderr io.Writer) error {
+	params := rrParamFlags{}
 	fs := flag.NewFlagSet("route-rules benchmark", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	catalogPath := fs.String("catalog", "", "path to a router-rules catalog YAML (default: embedded)")
@@ -145,13 +154,13 @@ func runBenchmark(args []string, stdout, stderr *os.File) error {
 		return err
 	}
 
-	cat, err := loadCatalog(*catalogPath)
+	cat, err := rrLoadCatalog(*catalogPath)
 	if err != nil {
 		return err
 	}
 
 	cfg := routerrules.BenchConfig{}
-	for k, v := range benchDefaultConfig {
+	for k, v := range rrBenchDefaultConfig {
 		cfg[k] = v
 	}
 	cfg["router_rules.min_rows_per_class"] = strconv.Itoa(*minSupport)
@@ -171,7 +180,7 @@ func runBenchmark(args []string, stdout, stderr *os.File) error {
 	return nil
 }
 
-func loadCatalog(path string) (*routerrules.Catalog, error) {
+func rrLoadCatalog(path string) (*routerrules.Catalog, error) {
 	if path == "" {
 		return routerrules.LoadEmbeddedCatalog()
 	}
@@ -182,7 +191,7 @@ func loadCatalog(path string) (*routerrules.Catalog, error) {
 	return routerrules.LoadCatalog(data)
 }
 
-func buildSource(opts options) (routerrules.CorpusSource, error) {
+func rrBuildSource(opts routeRulesOptions) (routerrules.CorpusSource, error) {
 	sinceUnix := float64(0)
 	if opts.since > 0 {
 		sinceUnix = float64(time.Now().Add(-opts.since).Unix())
@@ -194,7 +203,7 @@ func buildSource(opts options) (routerrules.CorpusSource, error) {
 		}
 		return routerrules.NewJSONLCorpusSource(opts.corpusPath, sinceUnix), nil
 	case "chtable":
-		conn, err := connectClickHouse()
+		conn, err := rrConnectClickHouse()
 		if err != nil {
 			return nil, err
 		}
@@ -204,11 +213,9 @@ func buildSource(opts options) (routerrules.CorpusSource, error) {
 	}
 }
 
-// configEnvKeys maps the catalog's dotted config keys to the deployment env vars
-// that carry their values. A --param override takes precedence over the env. The
-// router-rules-specific keys have no cerberus env yet, so they are supplied
-// exclusively via --param (or a future env), keeping zero numbers in the repo.
-var configEnvKeys = map[string]string{
+// rrConfigEnvKeys maps the catalog's dotted config keys to the deployment env
+// vars that carry their values. A --param override takes precedence over the env.
+var rrConfigEnvKeys = map[string]string{
 	"query.max_memory_bytes":                "CERBERUS_CH_QUERY_MAX_MEMORY",
 	"query.max_samples":                     "CERBERUS_QUERY_MAX_SAMPLES",
 	"router_rules.watermark_percentile":     "ROUTER_RULES_WATERMARK_PERCENTILE",
@@ -216,17 +223,15 @@ var configEnvKeys = map[string]string{
 	"router_rules.memory_near_cap_fraction": "ROUTER_RULES_MEMORY_NEAR_CAP_FRACTION",
 }
 
-// newConfigLookup resolves a catalog config key from --param overrides first,
+// rrNewConfigLookup resolves a catalog config key from --param overrides first,
 // then from the mapped deployment env var. routerrules never imports
-// internal/config; the CLI is the single boundary where deployment numbers
-// enter, so a reviewer confirms the invariant by checking that no number is
-// hard-coded here either.
-func newConfigLookup(overrides paramFlags) routerrules.ConfigLookup {
+// internal/config; the CLI is the single boundary where deployment numbers enter.
+func rrNewConfigLookup(overrides rrParamFlags) routerrules.ConfigLookup {
 	return func(key string) (string, bool) {
 		if v, ok := overrides[key]; ok {
 			return v, true
 		}
-		if env, ok := configEnvKeys[key]; ok {
+		if env, ok := rrConfigEnvKeys[key]; ok {
 			if v, ok := os.LookupEnv(env); ok {
 				return v, true
 			}
@@ -235,10 +240,9 @@ func newConfigLookup(overrides paramFlags) routerrules.ConfigLookup {
 	}
 }
 
-// connectClickHouse builds a CH connection for the chtable source from the
-// deployment's own environment (the same CERBERUS_CH_* knobs cerberus boots
-// with), returning the narrow driver.Conn the source needs.
-func connectClickHouse() (routerrules.CHConn, error) {
+// rrConnectClickHouse builds a CH connection for the chtable source from the
+// deployment's own environment, returning the narrow driver.Conn the source needs.
+func rrConnectClickHouse() (routerrules.CHConn, error) {
 	cfg, err := config.FromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
@@ -250,13 +254,13 @@ func connectClickHouse() (routerrules.CHConn, error) {
 	return client.Conn(), nil
 }
 
-func writeJSON(out *os.File, report *routerrules.Report) error {
+func rrWriteJSON(out io.Writer, report *routerrules.Report) error {
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)
 }
 
-func writeTable(out *os.File, report *routerrules.Report) error {
+func rrWriteTable(out io.Writer, report *routerrules.Report) error {
 	if len(report.Findings) == 0 {
 		fmt.Fprintln(out, "no findings")
 	} else {
@@ -264,7 +268,7 @@ func writeTable(out *os.File, report *routerrules.Report) error {
 		fmt.Fprintln(tw, "SEVERITY\tRULE\tCLASS\tSUPPORT\tACTION\tMESSAGE")
 		for _, f := range report.Findings {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				f.Severity, f.RuleID, formatClass(f.GroupKey), strconv.FormatInt(f.Support, 10), f.Action, f.Message)
+				f.Severity, f.RuleID, rrFormatClass(f.GroupKey), strconv.FormatInt(f.Support, 10), f.Action, f.Message)
 		}
 		if err := tw.Flush(); err != nil {
 			return err
@@ -278,7 +282,7 @@ func writeTable(out *os.File, report *routerrules.Report) error {
 	return nil
 }
 
-func formatClass(gk map[string]string) string {
+func rrFormatClass(gk map[string]string) string {
 	keys := make([]string, 0, len(gk))
 	for k := range gk {
 		keys = append(keys, k)
