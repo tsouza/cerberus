@@ -105,13 +105,21 @@ type tsdbStatusResponse struct {
 	Error     string `json:"error"`
 }
 
+// InventoryVersion is the schema version stamped into every emitted Inventory.
+// WriteJSON stamps it and the cutover gate refuses an inventory whose version it
+// does not understand, so a schema-drifted or wrong-type artifact blocks rather
+// than zero-filling to a silent PASS. Bump it on any breaking change to the JSON
+// shape.
+const InventoryVersion = 1
+
 // Inventory is the ranked risk picture of the source Prometheus head block.
 // Every field is a source-Prometheus runtime fact; none predicts cerberus's
 // memory. It ranks candidates worth reviewing before cutover.
 type Inventory struct {
-	Source string `json:"source"`
-	Window string `json:"window,omitempty"`
-	Top    int    `json:"top"`
+	SchemaVersion int    `json:"schema_version"`
+	Source        string `json:"source"`
+	Window        string `json:"window,omitempty"`
+	Top           int    `json:"top"`
 
 	Head HeadStats `json:"head"`
 
@@ -168,6 +176,7 @@ func (c *Client) Probe(ctx context.Context, opts Options) (Inventory, error) {
 	}
 
 	inv := Inventory{
+		SchemaVersion:       InventoryVersion,
 		Source:              c.BaseURL,
 		Window:              opts.Window,
 		Top:                 opts.Top,

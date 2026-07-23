@@ -550,6 +550,110 @@ func TestEvaluateWarnsOnInventoryEnrichmentUnavailableWithoutNotes(t *testing.T)
 	}
 }
 
+// rawArtifact writes verbatim bytes to a temp file and returns its path, for the
+// artifact shapes a producer's WriteJSON would never emit — a version-less,
+// version-mismatched, or field-drifted file — so the gate's strict decode +
+// schema-version check can be exercised against them.
+func rawArtifact(t *testing.T, name, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return p
+}
+
+// TestEvaluateBlocksOnVersionMismatch pins that a verify.json stamped with a
+// schema_version this gate build does not understand is a hard error (a block),
+// never a zero-filled struct that reads as a silent PASS.
+func TestEvaluateBlocksOnVersionMismatch(t *testing.T) {
+	verify := rawArtifact(t, "verify.json",
+		`{"schema_version":999,"params":{"tolerance":1e-9},"summary":{"total":3,"match":3},"results":[]}`)
+	in := migrategate.Inputs{Verify: verify, Classify: cleanClassify(t), RuleGraph: cleanRuleGraph(t)}
+	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
+		t.Fatal("a version-mismatched verify artifact must hard error, not silently PASS")
+	}
+}
+
+// TestEvaluateBlocksOnMissingVersion pins that a version-less artifact (which
+// zero-fills schema_version to 0) is rejected, not trusted.
+func TestEvaluateBlocksOnMissingVersion(t *testing.T) {
+	verify := rawArtifact(t, "verify.json",
+		`{"params":{"tolerance":1e-9},"summary":{"total":3,"match":3},"results":[]}`)
+	in := migrategate.Inputs{Verify: verify, Classify: cleanClassify(t), RuleGraph: cleanRuleGraph(t)}
+	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
+		t.Fatal("a version-less verify artifact must hard error")
+	}
+}
+
+// TestEvaluateBlocksOnDriftedUnknownField pins that the strict decoder rejects an
+// unknown field (schema drift) rather than ignoring it — a drifted producer
+// cannot slip a zero-filled struct past the gate.
+func TestEvaluateBlocksOnDriftedUnknownField(t *testing.T) {
+	verify := rawArtifact(t, "verify.json",
+		`{"schema_version":1,"summary":{"total":3,"match":3},"bogus_new_field":42}`)
+	in := migrategate.Inputs{Verify: verify, Classify: cleanClassify(t), RuleGraph: cleanRuleGraph(t)}
+	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
+		t.Fatal("a drifted verify artifact with an unknown field must hard error")
+	}
+}
+
+// TestEvaluateBlocksOnWrongTypeArtifact pins that a classify.json handed to
+// --verify is rejected: its fields are unknown to the verify Report, so the
+// strict decoder blocks rather than zero-filling verify's counts to a bogus PASS.
+func TestEvaluateBlocksOnWrongTypeArtifact(t *testing.T) {
+	in := migrategate.Inputs{Verify: cleanClassify(t), Classify: cleanClassify(t), RuleGraph: cleanRuleGraph(t)}
+	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
+		t.Fatal("a classify artifact fed to --verify must hard error (wrong type), not PASS")
+	}
+}
+
+// TestEvaluateBlocksOnZeroQueryVerify pins that a parity run that replayed zero
+// queries blocks: an empty harvest proves nothing and must not green-light cutover.
+func TestEvaluateBlocksOnZeroQueryVerify(t *testing.T) {
+	rep := migrateverify.Report{Summary: migrateverify.Summary{Total: 0}}
+	in := migrategate.Inputs{
+		Verify:    writeArtifact(t, "verify.json", rep.WriteJSON),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	v := stageByName(t, dec, migrategate.StageVerify)
+	if dec.Pass || v.Verdict != migrategate.VerdictFail || !v.Blocking {
+		t.Fatalf("zero-query verify must FAIL+block, got pass=%v verdict=%q blocking=%v", dec.Pass, v.Verdict, v.Blocking)
+	}
+	if !containsSubstr(v.Reasons, "nothing verified") {
+		t.Errorf("verify reasons should say nothing verified, got %v", v.Reasons)
+	}
+}
+
+// TestEvaluateBlocksOnZeroQueryClassify pins the same for classify: bucketing
+// zero queries proves no support coverage and must block.
+func TestEvaluateBlocksOnZeroQueryClassify(t *testing.T) {
+	cl := migrate.Classification{Counts: migrate.BucketCounts{Total: 0}}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  writeArtifact(t, "classify.json", cl.WriteJSON),
+		Inventory: cleanInventory(t),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	c := stageByName(t, dec, migrategate.StageClassify)
+	if dec.Pass || c.Verdict != migrategate.VerdictFail || !c.Blocking {
+		t.Fatalf("zero-query classify must FAIL+block, got pass=%v verdict=%q blocking=%v", dec.Pass, c.Verdict, c.Blocking)
+	}
+	if !containsSubstr(c.Reasons, "nothing classified") {
+		t.Errorf("classify reasons should say nothing classified, got %v", c.Reasons)
+	}
+}
+
 // containsSubstr reports whether any element of ss contains sub.
 func containsSubstr(ss []string, sub string) bool {
 	for _, s := range ss {

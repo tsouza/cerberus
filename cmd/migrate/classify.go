@@ -35,7 +35,7 @@ func runClassifyCmd(args []string, stdout, stderr io.Writer) error {
 		"classify a corpus.json previously written by `migrate harvest`")
 	fs.StringVar(&out, "out", "", "write the classification here (default: stdout)")
 	fs.BoolVar(&asJSON, "json", false, "emit the classification ledger as JSON instead of text")
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 

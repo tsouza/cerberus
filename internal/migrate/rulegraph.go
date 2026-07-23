@@ -77,23 +77,36 @@ type RuleGraphCounts struct {
 	Skipped   int `json:"skipped"`
 }
 
+// RuleGraphVersion is the schema version stamped into every emitted RuleGraph.
+// WriteJSON stamps it and the cutover gate refuses a graph whose version it does
+// not understand, so a schema-drifted or wrong-type artifact blocks rather than
+// zero-filling to a silent PASS. Bump it on any breaking change to the JSON shape.
+const RuleGraphVersion = 1
+
 // RuleGraph is the full recording-rule-output → consumer dependency graph:
-// per-recorded-series consumed/orphan classification with edges, the flat list
-// of consumers that reference a recorded series, and everything the builder had
-// to skip. It marshals deterministically so the same inputs always produce
-// byte-identical output.
+// the schema version, the per-recorded-series consumed/orphan classification with
+// edges, the flat list of consumers that reference a recorded series, and
+// everything the builder had to skip. It marshals deterministically so the same
+// inputs always produce byte-identical output.
 //
 // HONESTY: this is a NAME-LEVEL dependency approximation. A consumer is linked
 // to a recorded series when it references that series' metric NAME (via a vector
 // selector); label matchers, value equality, and rule-to-rule chains are not
 // analysed. A name collision (an unrelated metric that happens to share a
 // recorded name) would over-link; that is the safe direction (it keeps a series
-// marked "must materialize" rather than dropping one that is needed).
+// marked "must materialize" rather than dropping one that is needed). A consumer
+// whose matched name set CANNOT be statically reduced — a regex or negated
+// `__name__` matcher, or a selector with no name constraint at all — is NOT
+// under-linked to "references nothing" (which would be the UNSAFE direction: it
+// could hide a real consumer and leave a needed series wrongly orphan). It is
+// counted as a skip instead, which blocks the gate, keeping the over-link (never
+// under-link) invariant honest.
 type RuleGraph struct {
-	Counts    RuleGraphCounts `json:"counts"`
-	Recorded  []RecordedNode  `json:"recorded"`
-	Consumers []ConsumerNode  `json:"consumers"`
-	Skipped   []SkippedEntry  `json:"skipped"`
+	SchemaVersion int             `json:"schema_version"`
+	Counts        RuleGraphCounts `json:"counts"`
+	Recorded      []RecordedNode  `json:"recorded"`
+	Consumers     []ConsumerNode  `json:"consumers"`
+	Skipped       []SkippedEntry  `json:"skipped"`
 }
 
 // MetricNameExtractor pulls the set of metric-name references out of one query
@@ -114,22 +127,39 @@ var ruleGraphParser = promparser.NewParser(promparser.Options{EnableExperimental
 // selector, collecting the metric name each one reads (from an explicit
 // `__name__` equality matcher, or the selector's bare name). An expression that
 // does not parse is returned as an error so BuildRuleGraph records it as a skip.
+//
+// A selector whose matched name set cannot be statically reduced to concrete
+// names — a regex or negated `__name__` matcher, or a selector with no name
+// constraint at all — also returns an error: linking it to "references nothing"
+// would UNDER-link (the unsafe direction, potentially leaving a truly-consumed
+// recorded series marked orphan), so the whole consumer is recorded as a skip
+// instead, which blocks the gate.
 func PromQLMetricNames(expr string) ([]string, error) {
 	ast, err := ruleGraphParser.ParseExpr(expr)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]struct{}{}
+	var unreducible error
 	promparser.Inspect(ast, func(node promparser.Node, _ []promparser.Node) error {
 		vs, ok := node.(*promparser.VectorSelector)
 		if !ok {
 			return nil
 		}
-		if name := metricNameOf(vs); name != "" {
-			seen[name] = struct{}{}
+		name, reducible := metricNameOf(vs)
+		if !reducible {
+			unreducible = fmt.Errorf(
+				"consumer selects __name__ non-statically (regex/negated matcher or no name constraint): %s",
+				vs.String(),
+			)
+			return unreducible // stop the walk; the whole consumer is a skip
 		}
+		seen[name] = struct{}{}
 		return nil
 	})
+	if unreducible != nil {
+		return nil, unreducible
+	}
 	names := make([]string, 0, len(seen))
 	for n := range seen {
 		names = append(names, n)
@@ -138,17 +168,29 @@ func PromQLMetricNames(expr string) ([]string, error) {
 	return names, nil
 }
 
-// metricNameOf returns the metric name a vector selector reads: the value of its
-// `__name__` equality matcher when present, else the selector's bare Name. A
-// selector with only a regex `__name__` matcher (no single concrete name) yields
-// "" — it names no single recorded series to link.
-func metricNameOf(vs *promparser.VectorSelector) string {
+// metricNameOf returns the single recorded-series name a vector selector reads
+// and whether that name is statically reducible. A `__name__` equality matcher
+// (or the selector's bare Name) yields a concrete name and reducible=true. A
+// regex or negated `__name__` matcher, or a selector with no name constraint at
+// all (e.g. `{job="x"}`, which matches every metric), yields reducible=false: its
+// matched name set is not a single concrete name, so the caller must count it as a
+// skip rather than under-link it to nothing.
+func metricNameOf(vs *promparser.VectorSelector) (name string, reducible bool) {
 	for _, m := range vs.LabelMatchers {
-		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual {
-			return m.Value
+		if m.Name != model.MetricNameLabel {
+			continue
 		}
+		if m.Type == labels.MatchEqual {
+			return m.Value, true
+		}
+		// A regex/negated __name__ matcher selects a name SET, not one name.
+		return "", false
 	}
-	return vs.Name
+	if vs.Name != "" {
+		return vs.Name, true
+	}
+	// No name constraint: the selector matches every metric name.
+	return "", false
 }
 
 // BuildRuleGraph is the pure, offline core: given the recording-rule outputs and
@@ -358,7 +400,9 @@ func (g RuleGraph) Write(w io.Writer) error {
 	bw.printf("# HONESTY: this is a NAME-LEVEL dependency approximation — a consumer links to\n")
 	bw.printf("# a recorded series when it references that series' metric NAME. Label matchers,\n")
 	bw.printf("# value equality, and rule-to-rule chains are not analysed. Unparseable consumer\n")
-	bw.printf("# exprs are counted as skips below, never silently ignored.\n")
+	bw.printf("# exprs — and consumers whose __name__ set can't be statically reduced (a regex or\n")
+	bw.printf("# negated __name__ matcher, or no name constraint) — are counted as skips below\n")
+	bw.printf("# (never under-linked to nothing), so the over-link direction stays honest.\n")
 	bw.printf("#\n")
 	bw.printf("# %d recorded series: %d consumed, %d orphan; %d consumers; %d skipped\n\n",
 		g.Counts.Recorded, g.Counts.Consumed, g.Counts.Orphan, g.Counts.Consumers, g.Counts.Skipped)
@@ -402,6 +446,7 @@ func (g RuleGraph) Write(w io.Writer) error {
 // newline. Nil slices become empty slices so the graph always carries `[]` rather
 // than `null`, matching the corpus/classify JSON convention.
 func (g RuleGraph) WriteJSON(w io.Writer) error {
+	g.SchemaVersion = RuleGraphVersion
 	if g.Recorded == nil {
 		g.Recorded = []RecordedNode{}
 	}

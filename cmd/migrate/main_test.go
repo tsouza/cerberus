@@ -34,6 +34,75 @@ func TestRun_UnknownFlagIsError(t *testing.T) {
 	}
 }
 
+// TestRunHelpExitsCleanToStdout pins that -h/--help prints usage to stdout and
+// returns no error (exit 0), with no spurious "flag: help requested" error line
+// on stderr.
+func TestRunHelpExitsCleanToStdout(t *testing.T) {
+	for _, flagArg := range []string{"-h", "--help"} {
+		var out, errOut bytes.Buffer
+		if err := run([]string{flagArg}, &out, &errOut); err != nil {
+			t.Fatalf("run %s should exit cleanly, got error: %v", flagArg, err)
+		}
+		if out.Len() == 0 {
+			t.Errorf("run %s should print usage to stdout", flagArg)
+		}
+		if errOut.Len() != 0 {
+			t.Errorf("run %s should write nothing to stderr, got: %q", flagArg, errOut.String())
+		}
+	}
+}
+
+// TestSubcommandHelpExitsClean pins that every subcommand's -h likewise exits 0
+// with usage on stdout and nothing on stderr — the fix applies to every flagset.
+func TestSubcommandHelpExitsClean(t *testing.T) {
+	for _, sc := range []string{"harvest", "explain", "classify", "rulegraph", "verify", "inventory", "gate"} {
+		var out, errOut bytes.Buffer
+		if err := run([]string{sc, "-h"}, &out, &errOut); err != nil {
+			t.Errorf("run %s -h should exit cleanly, got: %v", sc, err)
+		}
+		if out.Len() == 0 {
+			t.Errorf("run %s -h should print usage to stdout", sc)
+		}
+		if errOut.Len() != 0 {
+			t.Errorf("run %s -h should write nothing to stderr, got: %q", sc, errOut.String())
+		}
+	}
+}
+
+// TestRunUnknownSubcommand pins that a mistyped subcommand is a clear error (not a
+// silent fall-through to the root flags that prints "nothing to do").
+func TestRunUnknownSubcommand(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := run([]string{"verifyy"}, &out, &errOut)
+	if err == nil {
+		t.Fatal("an unknown subcommand should error")
+	}
+	if !strings.Contains(err.Error(), "unknown subcommand") || !strings.Contains(err.Error(), "verifyy") {
+		t.Errorf("error should name the unknown subcommand, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "nothing to do") {
+		t.Errorf("unknown subcommand must not fall through to the root 'nothing to do', got: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("unknown subcommand should write nothing to stdout, got: %q", out.String())
+	}
+}
+
+// TestRootUsageListsSubcommands pins that the root usage names every subcommand so
+// an operator can discover them.
+func TestRootUsageListsSubcommands(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if err := run([]string{"-h"}, &out, &errOut); err != nil {
+		t.Fatalf("run -h: %v", err)
+	}
+	usage := out.String()
+	for _, name := range []string{"schema", "harvest", "explain", "classify", "rulegraph", "verify", "inventory", "gate"} {
+		if !strings.Contains(usage, name) {
+			t.Errorf("root usage should list subcommand %q, got:\n%s", name, usage)
+		}
+	}
+}
+
 // TestStringListFlag pins that --rules accumulates both repeated flags and
 // comma-separated values, trimming blanks.
 func TestStringListFlag(t *testing.T) {

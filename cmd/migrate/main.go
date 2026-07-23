@@ -165,13 +165,89 @@ type options struct {
 	rules  stringList
 }
 
+// subcommand is one dispatchable `migrate` verb: its name and a one-line
+// description for the root usage listing.
+type subcommand struct {
+	name string
+	desc string
+}
+
+// subcommands is the full, ordered list the root usage prints. schema is invoked
+// as the `--schema` root flag rather than a verb, but it is listed here so the
+// operator sees every capability in one place.
+var subcommands = []subcommand{
+	{"schema", "print the ClickHouse schema cerberus expects (invoke as: migrate --schema)"},
+	{"harvest", "build a machine-readable PromQL query corpus from rule files + dashboards"},
+	{"explain", "dry-run corpus queries through the read pipeline (offline emitted SQL)"},
+	{"classify", "bucket each corpus query by how cleanly it maps onto cerberus PromQL support"},
+	{"rulegraph", "map recording-rule outputs to the consumers that must stay materialized"},
+	{"verify", "replay the corpus against reference Prometheus + cerberus (parity gate)"},
+	{"inventory", "probe a live source Prometheus for cardinality / OOM-risk facts"},
+	{"gate", "fold the artifacts into one cutover go/no-go decision"},
+}
+
+// writeRootUsage prints the root help: what the tool is, how to invoke it, the
+// full subcommand listing, and the root flag defaults. It sets the flagset output
+// to w so PrintDefaults lands on the same writer as the rest of the usage.
+func writeRootUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprintln(w, "migrate — cerberus pre-cutover migration preview tool (offline)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  migrate <subcommand> [flags]")
+	fmt.Fprintln(w, "  migrate --schema | --rules <path/glob>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Subcommands:")
+	for _, sc := range subcommands {
+		fmt.Fprintf(w, "  %-10s %s\n", sc.name, sc.desc)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Root flags (no subcommand):")
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+}
+
+// parseFlags parses fs, routing a -h/--help request cleanly to stdout (exit 0, no
+// error line) and a genuine flag error to stderr (non-zero). It buffers the
+// flagset's own output so the destination is chosen AFTER the parse outcome is
+// known. handled is true only for a help request, telling the caller to return
+// without running the command.
+func parseFlags(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) (handled bool, err error) {
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+	switch parseErr := fs.Parse(args); {
+	case errors.Is(parseErr, flag.ErrHelp):
+		_, _ = io.Copy(stdout, &buf)
+		return true, nil
+	case parseErr != nil:
+		_, _ = io.Copy(stderr, &buf)
+		return false, parseErr
+	default:
+		// Restore stderr so any post-parse validation usage (fs.Usage) a
+		// subcommand prints lands on stderr, not the now-discarded buffer.
+		fs.SetOutput(stderr)
+		return false, nil
+	}
+}
+
 // run is the testable entrypoint: it parses args, then dispatches. Splitting it
 // from main() (mirroring cmd/route-rules) keeps flag parsing and dispatch unit
-// -testable without spawning a process. The first arg selects a subcommand
-// (harvest / explain); anything else falls back to the legacy top-level
-// --schema / --rules flags so existing invocations keep working.
+// -testable without spawning a process. A non-flag first arg selects a subcommand
+// (an unrecognized one is a clear error, never a silent fall-through); otherwise
+// the top-level --schema / --rules flags run.
 func run(args []string, stdout, stderr io.Writer) error {
-	if len(args) > 0 {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	var opts options
+	fs.BoolVar(&opts.schema, "schema", false,
+		"print the ClickHouse schema (CREATE statements) cerberus expects, then exit")
+	fs.Var(&opts.rules, "rules",
+		"explain the ClickHouse SQL for each PromQL query in these Prometheus rule "+
+			"files (repeatable or comma-separated paths/globs)")
+	fs.Usage = func() { writeRootUsage(fs.Output(), fs) }
+
+	// A first arg that is not a flag is a subcommand selector: dispatch a known
+	// one, and fail a mistyped one loudly rather than letting it fall through to
+	// the root flags and print a misleading "nothing to do".
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "harvest":
 			return runHarvest(args[1:], stdout, stderr)
@@ -187,18 +263,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runInventory(args[1:], stdout, stderr)
 		case "gate":
 			return runGate(args[1:], stdout, stderr)
+		default:
+			writeRootUsage(stderr, fs)
+			return fmt.Errorf("unknown subcommand %q", args[0])
 		}
 	}
 
-	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	var opts options
-	fs.BoolVar(&opts.schema, "schema", false,
-		"print the ClickHouse schema (CREATE statements) cerberus expects, then exit")
-	fs.Var(&opts.rules, "rules",
-		"explain the ClickHouse SQL for each PromQL query in these Prometheus rule "+
-			"files (repeatable or comma-separated paths/globs)")
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 
@@ -213,9 +284,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return writeSchema(stdout, cfg)
 	default:
-		fs.Usage()
-		return fmt.Errorf("nothing to do: pass --schema to print the expected schema, " +
-			"--rules <path> to explain PromQL rule files, or the harvest/explain subcommand")
+		writeRootUsage(stderr, fs)
+		return errors.New("nothing to do: pass a subcommand, --schema to print the expected " +
+			"schema, or --rules <path> to explain PromQL rule files")
 	}
 }
 
@@ -234,7 +305,7 @@ func runHarvest(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&dashboards, "dashboards", "",
 		"harvest PromQL from exported Grafana dashboard JSON under this directory (walked recursively)")
 	fs.StringVar(&out, "out", "", "write the corpus JSON here (default: stdout)")
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 
@@ -272,7 +343,7 @@ func runExplainCmd(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&corpus, "corpus", "",
 		"explain a corpus.json previously written by `migrate harvest`")
 	fs.StringVar(&out, "out", "", "write the explain report here (default: stdout)")
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 

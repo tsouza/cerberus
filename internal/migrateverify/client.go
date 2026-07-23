@@ -332,7 +332,10 @@ func LoadCorpus(path string) (Corpus, error) {
 }
 
 // WriteJSON renders the report as machine-readable JSON with a trailing newline.
+// It stamps the current schema version so every artifact on disk is self-describing
+// and the cutover gate can refuse a report shape it does not understand.
 func (r Report) WriteJSON(w io.Writer) error {
+	r.SchemaVersion = ReportVersion
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(r); err != nil {

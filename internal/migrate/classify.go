@@ -53,13 +53,22 @@ type BucketCounts struct {
 	Risky       int `json:"risky"`
 }
 
-// Classification is the full classify ledger: per-bucket counts, one
-// ClassifiedQuery per harvested query, and the entries the harvester skipped
-// (carried straight through from the report so the skip count never gets lost).
+// ClassificationVersion is the schema version stamped into every emitted
+// Classification. WriteJSON stamps it and the cutover gate refuses a ledger whose
+// version it does not understand, so a schema-drifted or wrong-type artifact
+// blocks rather than zero-filling to a silent PASS. Bump it on any breaking
+// change to the JSON shape.
+const ClassificationVersion = 1
+
+// Classification is the full classify ledger: the schema version, per-bucket
+// counts, one ClassifiedQuery per harvested query, and the entries the harvester
+// skipped (carried straight through from the report so the skip count never gets
+// lost).
 type Classification struct {
-	Counts  BucketCounts      `json:"counts"`
-	Queries []ClassifiedQuery `json:"queries"`
-	Skipped []SkippedEntry    `json:"skipped"`
+	SchemaVersion int               `json:"schema_version"`
+	Counts        BucketCounts      `json:"counts"`
+	Queries       []ClassifiedQuery `json:"queries"`
+	Skipped       []SkippedEntry    `json:"skipped"`
 }
 
 // Classify turns an already-built explain Report into a bucketed ledger. It does
@@ -69,8 +78,9 @@ type Classification struct {
 // query carrying offline Lint risks is additionally flagged risky.
 func Classify(rep Report) Classification {
 	cl := Classification{
-		Queries: make([]ClassifiedQuery, 0, len(rep.Queries)),
-		Skipped: rep.Skipped,
+		SchemaVersion: ClassificationVersion,
+		Queries:       make([]ClassifiedQuery, 0, len(rep.Queries)),
+		Skipped:       rep.Skipped,
 	}
 	for _, q := range rep.Queries {
 		cq := ClassifiedQuery{
@@ -152,6 +162,7 @@ func (c Classification) Write(w io.Writer) error {
 // trailing newline. Nil slices become empty slices so the ledger always carries
 // `[]` rather than `null`, matching the corpus JSON convention.
 func (c Classification) WriteJSON(w io.Writer) error {
+	c.SchemaVersion = ClassificationVersion
 	if c.Queries == nil {
 		c.Queries = []ClassifiedQuery{}
 	}

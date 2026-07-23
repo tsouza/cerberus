@@ -35,7 +35,7 @@ func runRuleGraphCmd(args []string, stdout, stderr io.Writer) error {
 		"harvested corpus.json (from `migrate harvest`) whose queries are scanned as consumers")
 	fs.StringVar(&out, "out", "", "write graph here (default: stdout)")
 	fs.BoolVar(&asJSON, "json", false, "emit the graph as JSON instead of text")
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 	if len(rules) == 0 && corpus == "" {

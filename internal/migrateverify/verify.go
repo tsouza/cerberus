@@ -355,10 +355,19 @@ type ReportParams struct {
 	Tolerance float64 `json:"tolerance"`
 }
 
-// Report is the full parity result: the resolved comparison params, per-query
-// verdicts, the out-of-scope accounting, the harvest-time skips, and the roll-up
-// summary.
+// ReportVersion is the schema version stamped into the gate-consumed `--json`
+// report (the plain Report, distinct from the richer `--report` VerifyReport
+// diagnostic). WriteJSON stamps it and the cutover gate refuses a report whose
+// version it does not understand, so a schema-drifted or wrong-type artifact
+// blocks rather than zero-filling to a silent PASS. Bump it on any breaking
+// change to the on-disk Report shape.
+const ReportVersion = 1
+
+// Report is the full parity result: the schema version, the resolved comparison
+// params, per-query verdicts, the out-of-scope accounting, the harvest-time
+// skips, and the roll-up summary.
 type Report struct {
+	SchemaVersion  int                   `json:"schema_version"`
 	Params         ReportParams          `json:"params"`
 	Summary        Summary               `json:"summary"`
 	Results        []QueryResult         `json:"results"`
@@ -403,6 +412,7 @@ type RangeResult struct {
 //   - otherwise → the comparator's match/diverge verdict.
 func Verify(ctx context.Context, corpus Corpus, ref, cerberus Backend, p Params) Report {
 	rep := Report{
+		SchemaVersion:  ReportVersion,
 		Params:         ReportParams{Tolerance: p.Tolerance},
 		OutOfScope:     corpus.OutOfScope,
 		HarvestSkipped: corpus.HarvestSkipped,

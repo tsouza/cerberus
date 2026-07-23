@@ -37,7 +37,7 @@ func runGate(args []string, stdout, stderr io.Writer) error {
 		highCardLabels = fs.Int64("high-card-label-values", migrategate.DefaultHighCardLabelValues,
 			"WARN when a label's distinct-value count reaches this threshold")
 	)
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 

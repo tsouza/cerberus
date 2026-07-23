@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -27,8 +28,9 @@ func runInventory(args []string, stdout, stderr io.Writer) error {
 		window = fs.String("window", envOr("CERBERUS_INVENTORY_WINDOW", ""),
 			"optional observation window (duration like 1h) recorded as report context")
 		asJSON = fs.Bool("json", false, "emit the machine-readable JSON report instead of text")
+		out    = fs.String("out", "", "write the inventory here (default: stdout)")
 	)
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 	if *source == "" {
@@ -44,8 +46,27 @@ func runInventory(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if *asJSON {
-		return inv.WriteJSON(stdout)
+	return writeInventory(stdout, *out, inv, *asJSON)
+}
+
+// writeInventory renders the inventory (text or JSON) to --out, or stdout when
+// out is empty. When writing to a file it renders into a buffer first, then
+// commits with the checked writeOut, so a flush-at-close error surfaces rather
+// than truncating the report silently — the same file-output convention every
+// other gate-input producer follows.
+func writeInventory(stdout io.Writer, out string, inv migrateinventory.Inventory, asJSON bool) error {
+	render := func(w io.Writer) error {
+		if asJSON {
+			return inv.WriteJSON(w)
+		}
+		return inv.WriteText(w)
 	}
-	return inv.WriteText(stdout)
+	if out == "" {
+		return render(stdout)
+	}
+	var buf bytes.Buffer
+	if err := render(&buf); err != nil {
+		return err
+	}
+	return writeOut(stdout, out, buf.Bytes())
 }
