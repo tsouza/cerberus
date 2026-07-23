@@ -15,7 +15,12 @@
 // Prometheus-pinned funcPredictLinear value (the spec corpus is
 // reference-Prometheus-pinned), so native == fan-out transitively proves
 // native == Prometheus on the predict_linear shape FOR WHOLE-SECOND-ALIGNED
-// SAMPLES (see the scope note below). We compare the DECODED float64 (never a
+// SAMPLES; the sub-second membership gap this test does not exercise is pinned by
+// TestNativeTSGridPredictLinear_SubSecondMembershipPin
+// (range_window_regression_subsecond_chdb_test.go), and note that predict_linear
+// cannot be made sub-second-correct via the native aggregate at all (its absolute
+// forecast loses precision on a raw-ns axis — see nativeGridTsAxisFrag). We
+// compare the DECODED float64 (never a
 // string render) at full precision.
 //
 // Horizon literal, not computed. The native path only fires when the horizon t

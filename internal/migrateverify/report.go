@@ -75,8 +75,8 @@ const (
 		"membership: a sub-second-offset sample straddling a range-window boundary can " +
 		"land in a different window than real Prometheus, shifting the slope/forecast. " +
 		"This is a KNOWN limitation of that path (default-off, CERBERUS_EXPERIMENTAL_TS_GRID_RANGE); " +
-		"re-run with it disabled — the portable fan-out uses raw-ts membership and " +
-		"should match Prometheus — before reporting a bug."
+		"re-run with it disabled — the portable fan-out uses raw-ts membership and is the " +
+		"more-correct path here — before reporting a bug."
 	ingestArtifactNote = "a series present on only one backend may reflect an ingestion " +
 		"difference (relabeling, scrape timing) rather than a compute bug."
 	dataWindowGapNote = "a missing step or series may reflect a data-availability window " +

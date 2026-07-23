@@ -147,19 +147,46 @@ var nativeTSGridFn = map[string]string{
 //     native DateTime64(9) column untouched — no golden churn, no change to
 //     their sub-second sample-membership behaviour.
 //
-// LIMITATION (regression path only): the returned axis is the aggregate's ts
-// argument, which drives BOTH the least-squares x-axis AND the window-membership
-// bucketing. Truncating to whole seconds therefore also quantises membership: a
-// sub-second sample straddling a grid-window boundary buckets by its floored
-// second here, whereas the fan-out (and Prometheus) decide membership on the raw
-// timestamp, so such a boundary sample can land in a different window between the
-// two paths. Feeding the raw nanosecond column instead would match membership but
-// is numerically worse (a fit over ~10^18 timestamps overruns float64's exact
-// range) and breaks predict_linear's whole-second horizon unit — hence the
-// whole-second axis, with the sub-second membership gap left as the gate before
-// this experimental (CERBERUS_EXPERIMENTAL_TS_GRID_RANGE, default-off) path is
-// promoted. The dual-emit parity tests prove bit-identity on whole-second-aligned
-// seeds only.
+// LIMITATION (regression path only) — the sub-second membership gap. The
+// returned axis is the aggregate's ts argument, and the aggregate accepts only a
+// DateTime/DateTime64 timestamp (it rejects Float64/Decimal), so that ONE
+// argument drives BOTH the least-squares x-axis AND the window-membership
+// bucketing. There is therefore no way to keep a whole-second x-axis while
+// bucketing membership on the raw timestamp: whole-second (toDateTime) floors
+// both, and any sub-second type (DateTime64) makes both sub-second. Truncating to
+// whole seconds quantises membership — a sub-second sample straddling a
+// grid-window boundary buckets by its floored second here, whereas the fan-out
+// (and Prometheus) decide membership on the raw timestamp — so such a boundary
+// sample can land in a different window between the two paths. The gap is pinned
+// by TestNativeTSGrid{Deriv,PredictLinear}_SubSecondMembershipPin.
+//
+// Why whole-second is nonetheless the chosen axis, and why the family stays
+// experimental (CERBERUS_EXPERIMENTAL_TS_GRID_RANGE, default-off):
+//
+//   - deriv: feeding the raw DateTime64(9) axis and scaling the slope by 1e9
+//     (per-nanosecond -> per-second) actually yields the MORE correct answer —
+//     raw-ts membership + fractional-second x, i.e. exactly Prometheus's deriv —
+//     and it is numerically sound at production ns magnitude (~1.77e18), because
+//     the least-squares slope is a centered difference, not an absolute-magnitude
+//     sum, so it does NOT overrun float64's exact range (empirically raw-ns * 1e9
+//     equals the closed-form slope to full precision; see the sub-second pin).
+//     The whole-second axis is kept only because it stays BIT-IDENTICAL to the
+//     fan-out, whose own x-axis is the floored dateDiff('second', anchor, ts) —
+//     the raw-ns form diverges from that fan-out by ~2 ULP (the 1e9 multiply
+//     rounds). Switching deriv to raw-ns would thus improve correctness but
+//     require relaxing the bit-identical guard, and would not promote the family
+//     on its own (see predict_linear).
+//   - predict_linear: raw-ns is genuinely BROKEN, not merely a guard mismatch.
+//     Its result is an ABSOLUTE forecast (intercept + slope*(anchor + offset)),
+//     evaluated at ~1.77e18 ns, where catastrophic cancellation destroys all
+//     precision (empirically ~6.6e11 for a true value in the hundreds). There is
+//     no scale trick to recover it, so predict_linear cannot be made
+//     sub-second-correct via the native aggregate at all. Because the flag gates
+//     the whole regression family, this inherent predict_linear limitation is
+//     what keeps the family default-off.
+//
+// The dual-emit parity tests prove bit-identity on whole-second-aligned seeds
+// only; the sub-second pins characterise the divergence beyond that.
 func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 	if fn == "deriv" || fn == "predict_linear" {
 		return Call("toDateTime", Col(tsColumn))

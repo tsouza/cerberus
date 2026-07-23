@@ -33,9 +33,11 @@
 // regression axis AND the aggregate's window bucketing, so a boundary sample
 // buckets by its floored second here while the fan-out keeps raw-ts membership
 // (see nativeGridTsAxisFrag's LIMITATION note). This test therefore proves
-// bit-identity for whole-second-aligned data; the native regression path stays
-// experimental/default-off until the sub-second membership gap is closed or
-// pinned.
+// bit-identity for whole-second-aligned data; the sub-second membership gap it
+// deliberately does not exercise is characterised and pinned separately by
+// TestNativeTSGridDeriv_SubSecondMembershipPin
+// (range_window_regression_subsecond_chdb_test.go), and keeps the native
+// regression path experimental/default-off.
 //
 // Substrate: exercised on CI. timeSeriesDerivToGrid shipped in CH 25.8
 // (PR #84328) and is floor-pinned to 25.9 in internal/chopt (a uniform
