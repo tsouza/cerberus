@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -830,13 +831,17 @@ func newExplainEngine(cfg config.Config) *engine.Engine {
 // newDryRunExplainer wires the offline explainer: one engine (with the prod
 // sample budget) plus a per-head pair of langs — an instant lang for rules and a
 // range lang for dashboard panels — so each query previews in the evaluation mode
-// the server would run it in. Both the PromQL head (metrics schema) and the LogQL
-// head (logs schema) are wired; the corpus is three-headed and each query routes
-// to the lang matching its Lang tag. Every lang shares the same fixed evalTime and
-// window so the emitted SQL stays deterministic.
+// the server would run it in. All three heads are wired — PromQL (metrics
+// schema), LogQL (logs schema), and TraceQL (traces schema) — and the
+// three-headed corpus routes each query to the lang matching its Lang tag. Every
+// lang shares the same fixed evalTime and window so the emitted SQL stays
+// deterministic. The TraceQL head has a single lang: a search query and a
+// metrics-pipeline query are distinguished by the query shape, not by rule-vs-
+// panel kind, so its Parse routes internally.
 func newDryRunExplainer(cfg config.Config) dryRunExplainer {
 	metrics := schema.DefaultOTelMetricsFromEnv()
 	logs := schema.DefaultOTelLogsFromEnv()
+	traces := schema.DefaultOTelTracesFromEnv()
 	evalTime := time.Unix(explainEvalUnix, 0).UTC()
 	rangeStart := evalTime.Add(-explainRangeWindow)
 	return dryRunExplainer{
@@ -845,32 +850,45 @@ func newDryRunExplainer(cfg config.Config) dryRunExplainer {
 		promRange:    prom.NewExplainLangRange(metrics, rangeStart, evalTime, explainRangeStep),
 		logqlInstant: &logql.Lang{Schema: logs, Start: evalTime, End: evalTime},
 		logqlRange:   &logql.Lang{Schema: logs, Start: rangeStart, End: evalTime, Step: explainRangeStep},
+		traceqlLang:  tempo.NewExplainLang(traces, explainRangeStep),
+		traceStart:   rangeStart,
+		traceEnd:     evalTime,
 	}
 }
 
 // dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it
 // reports is byte-identical to what the server would send to ClickHouse for the
-// same query. It picks the lang matching the query's source language (PromQL vs
-// LogQL) AND its evaluation mode: a panel previews as a range query, a rule as an
-// instant query. TraceQL corpus entries have no offline SQL preview yet, so they
-// are reported UNSUPPORTED with the language named rather than mis-parsed.
+// same query. It picks the lang matching the query's source language (PromQL /
+// LogQL / TraceQL) AND, for the metrics heads, its evaluation mode: a panel
+// previews as a range query, a rule as an instant query.
 type dryRunExplainer struct {
 	eng          *engine.Engine
 	promInstant  engine.Lang
 	promRange    engine.Lang
 	logqlInstant engine.Lang
 	logqlRange   engine.Lang
+	// traceqlLang previews both TraceQL modes (search + metrics-range); the
+	// window it bounds each scan to is threaded onto ctx from traceStart/traceEnd.
+	traceqlLang engine.Lang
+	traceStart  time.Time
+	traceEnd    time.Time
 }
 
 func (d dryRunExplainer) Explain(ctx context.Context, q migrate.HarvestedQuery) migrate.Explanation {
+	if q.Lang == migrate.LangTraceQL {
+		// TraceQL lowering reads its search window + trace limit off the ctx; without
+		// the thread the plan lowers to an unbounded otel_traces scan the emit gate
+		// rejects (a bogus UNSUPPORTED). Thread the fixed explain window so the
+		// preview bounds every spans scan deterministically.
+		ctx = tempo.ExplainContext(ctx, d.traceStart, d.traceEnd, tempo.DefaultSearchLimit)
+		dr, err := d.eng.DryRunSQL(ctx, d.traceqlLang, q.Expr)
+		return migrate.Explanation{SQL: dr.SQL, Plan: dr.Plan, Err: err}
+	}
 	instant, rangeLang, ok := d.langsFor(q.Lang)
 	if !ok {
-		// The offline SQL preview models the PromQL and LogQL read pipelines. A
-		// TraceQL query is still harvested into the corpus (so the report accounts
-		// for it), but its SQL is not previewed offline in this wave — report that
-		// honestly rather than parsing a TraceQL string as PromQL and surfacing a
-		// mislabelled parse error.
-		return migrate.Explanation{Err: fmt.Errorf("offline SQL preview covers PromQL and LogQL only; %s query harvested but not previewed here", q.Lang)}
+		// Defensive: every harvested Lang is covered above. An unknown tag is
+		// reported honestly rather than parsed against the wrong head.
+		return migrate.Explanation{Err: fmt.Errorf("offline SQL preview does not cover %s queries", q.Lang)}
 	}
 	evalLang := instant
 	if q.Kind == migrate.KindPanel {
@@ -880,9 +898,11 @@ func (d dryRunExplainer) Explain(ctx context.Context, q migrate.HarvestedQuery) 
 	return migrate.Explanation{SQL: dr.SQL, Plan: dr.Plan, Err: err}
 }
 
-// langsFor returns the (instant, range) lang pair for a harvested query's source
-// language and whether that language has an offline SQL preview. An empty Lang is
-// treated as PromQL for corpora written before the corpus went three-headed.
+// langsFor returns the (instant, range) lang pair for a metrics-head query's
+// source language and whether that language has an instant/range lang pair. An
+// empty Lang is treated as PromQL for corpora written before the corpus went
+// three-headed. TraceQL is handled directly in Explain (single lang, shape-
+// routed) and never reaches here.
 func (d dryRunExplainer) langsFor(lang string) (instant, rangeLang engine.Lang, ok bool) {
 	switch lang {
 	case "", migrate.LangPromQL:

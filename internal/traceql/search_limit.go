@@ -53,6 +53,12 @@ func searchTraceLimit(ctx context.Context) int64 {
 // node plain search already gets. 0 = unbounded.
 func SearchTraceLimit(ctx context.Context) int64 { return searchTraceLimit(ctx) }
 
+// SearchWindow exposes the /api/search request window (WithSearchWindow) to
+// adapters that build the plan outside this package — the offline explain Lang
+// reads it to bound a metrics-range preview's RangeWindow to the same window a
+// plain search scan gets. Two zero times = no window threaded.
+func SearchWindow(ctx context.Context) (time.Time, time.Time) { return searchWindowFromCtx(ctx) }
+
 // stampNestedSetTraceLimit walks the lowered plan and sets TraceLimit on
 // every NestedSetAnnotate whose input plan guarantees each returned trace's
 // root span is in the result set — the precondition under which ranking the
