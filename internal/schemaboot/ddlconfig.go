@@ -1,7 +1,7 @@
 // Package schemaboot maps cerberus's runtime config into the typed
 // internal/schema/ddl Config used to create ClickHouse tables. It is the single
 // place that translation lives, shared by the server's auto-create startup hook
-// (cmd/cerberus) and the offline migration preview tool (cmd/migrate), so the
+// (cmd/cerberus) and the offline migration preview tool (cmd/cerberus), so the
 // schema the tool previews is byte-identical to the schema the server applies.
 package schemaboot
 

@@ -313,7 +313,7 @@ var envDocs = []EnvDoc{
 
 // EnvDocs returns the documentation metadata for every CERBERUS_* key the
 // viper loader resolves, in document order. The returned slice is a copy so
-// callers (the cmd/config-docs generator, tests) cannot mutate the package
+// callers (the cmd/cerberus generator, tests) cannot mutate the package
 // state.
 func EnvDocs() []EnvDoc {
 	out := make([]EnvDoc, len(envDocs))

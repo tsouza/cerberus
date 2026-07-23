@@ -35,7 +35,7 @@ groups:
 	}
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"classify", "--rules", file}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"classify", "--rules", file}, &out, &errOut); err != nil {
 		t.Fatalf("classify: %v (stderr: %s)", err, errOut.String())
 	}
 	report := out.String()
@@ -75,7 +75,7 @@ groups:
 	}
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"classify", "--rules", file, "--json"}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"classify", "--rules", file, "--json"}, &out, &errOut); err != nil {
 		t.Fatalf("classify --json: %v (stderr: %s)", err, errOut.String())
 	}
 
@@ -119,7 +119,7 @@ groups:
 	ledger := filepath.Join(dir, "classify.txt")
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"classify", "--rules", file, "--out", ledger}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"classify", "--rules", file, "--out", ledger}, &out, &errOut); err != nil {
 		t.Fatalf("classify --out: %v (stderr: %s)", err, errOut.String())
 	}
 	if out.Len() != 0 {
