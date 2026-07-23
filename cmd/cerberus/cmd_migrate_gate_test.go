@@ -205,7 +205,7 @@ func TestRunGate_UnparseableArtifactIsError(t *testing.T) {
 func TestRun_GateDispatch(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	err := run([]string{
+	err := runMigrate([]string{
 		"gate",
 		"--verify", cleanVerifyFile(t, dir),
 		"--classify", cleanClassifyFile(t, dir),

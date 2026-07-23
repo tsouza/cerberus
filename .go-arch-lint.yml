@@ -109,7 +109,7 @@ components:
   schema:         { in: schema }
   schema-ddl:     { in: schema/ddl }
   # Maps runtime config → typed ddl.Config. The single place that translation
-  # lives, shared by the server's auto-create hook and cmd/migrate's offline
+  # lives, shared by the server's auto-create hook and cmd/cerberus's offline
   # schema preview, so the previewed schema matches what the server applies.
   schemaboot:     { in: schemaboot }
   cerbtrace:      { in: cerbtrace }
@@ -149,26 +149,26 @@ components:
   # cmd only (off by default).
   optcorpus:      { in: optcorpus }
   # Offline router-rules catalog analysis engine: mines the router corpus and
-  # emits findings. Leaf; wired from cmd/route-rules only. Re-declares its own
+  # emits findings. Leaf; wired from cmd/cerberus only. Re-declares its own
   # narrow CHConn + column contract rather than importing optcorpus/chclient, so
   # it depends only on chsql for typed SQL composition.
   routerrules:    { in: routerrules }
   autotune:       { in: autotune }
   # Offline migration preview support: harvests a PromQL corpus from rule files
   # (promrules) and assembles the explain report over the chplan IR. Wired from
-  # cmd/migrate only.
+  # cmd/cerberus only.
   migrate:        { in: migrate }
   # Online cutover parity gate: replays a harvested corpus against a reference
   # Prometheus + cerberus and diffs the query_range results. Reuses the migrate
-  # corpus format to read the harvested corpus.json. Wired from cmd/migrate only.
+  # corpus format to read the harvested corpus.json. Wired from cmd/cerberus only.
   migrateverify:  { in: migrateverify }
   # Live cardinality probe: reads the source Prometheus TSDB status over HTTP and
   # ranks the top-N metrics/labels by cardinality (the offline-invisible OOM
-  # risk). Leaf, stdlib-only — no internal deps. Wired from cmd/migrate only.
+  # risk). Leaf, stdlib-only — no internal deps. Wired from cmd/cerberus only.
   migrateinventory: { in: migrateinventory }
   # Offline cutover go/no-go aggregator: reads the JSON artifacts the other
   # migration blocks emit and folds them into one PASS/FAIL decision. Depends
-  # only on the blocks whose JSON contracts it reuses. Wired from cmd/migrate.
+  # only on the blocks whose JSON contracts it reuses. Wired from cmd/cerberus.
   migrategate:    { in: migrategate }
   # Leaf yaml.v3 decode of Prometheus rule files (record/alert exprs). No
   # internal deps — deliberately avoids prometheus/rulefmt's ~112-package pull.
@@ -255,7 +255,7 @@ deps:
 
   # routerrules composes its corpus-mining SQL via the typed chsql Frag API, so
   # it depends on chsql (chsql → chplan, no cycle). It must NOT depend on
-  # optcorpus, engine, or chclient — the CLI (cmd/route-rules, arch-lint-exempt)
+  # optcorpus, engine, or chclient — the CLI (cmd/cerberus, arch-lint-exempt)
   # supplies the resolved config + the narrow CHConn at boot, so routerrules
   # takes only values, not those layers.
   routerrules:
@@ -298,7 +298,7 @@ deps:
 
   # migrate builds the offline explain report. It walks the chplan IR (Tables /
   # Lint) and harvests its corpus via promrules. Explanation is delegated to an
-  # Explainer interface — the engine/DryRunSQL wiring lives in cmd/migrate
+  # Explainer interface — the engine/DryRunSQL wiring lives in cmd/cerberus
   # (arch-lint-exempt), so migrate itself takes only chplan + promrules.
   migrate:
     mayDependOn:

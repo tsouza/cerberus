@@ -163,7 +163,7 @@ jobs:
 
       # opt-feature-table drift gate. The structural feature table (id /
       # minVersion / stability) in docs/clickhouse-optimizations.md is
-      # GENERATED from internal/chopt/registry.go by cmd/optdocs. Regenerate
+      # GENERATED from internal/chopt/registry.go by `cerberus optdocs`. Regenerate
       # and fail if the committed block differs from what the registry
       # produces, so a new registry feature can never go missing from the doc
       # (the ts_grid_changes / ts_grid_resets audit gap, made structurally

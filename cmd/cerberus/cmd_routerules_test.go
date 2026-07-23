@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// runCapture invokes run with temp files for stdout/stderr and returns their
-// contents plus the error, so a test can assert on the CLI's real output the way
-// an operator would see it.
+// runCapture invokes routeRulesRun with temp files for stdout/stderr and returns
+// their contents plus the error, so a test can assert on the CLI's real output
+// the way an operator would see it.
 func runCapture(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	outF, e := os.CreateTemp(t.TempDir(), "out")
@@ -19,7 +19,7 @@ func runCapture(t *testing.T, args ...string) (stdout, stderr string, err error)
 	if e != nil {
 		t.Fatalf("temp err: %v", e)
 	}
-	err = run(args, outF, errF)
+	err = routeRulesRun(args, outF, errF)
 	_ = outF.Close()
 	_ = errF.Close()
 	ob, _ := os.ReadFile(outF.Name())

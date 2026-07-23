@@ -18,6 +18,7 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.152.0
 	github.com/prometheus/common v0.70.1
 	github.com/prometheus/prometheus v0.311.3
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.43.0
@@ -178,6 +179,7 @@ require (
 	github.com/hashicorp/serf v0.10.2 // indirect
 	github.com/huandu/go-sqlbuilder v1.27.3 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/influxdata/tdigest v0.0.2-0.20210216194612-fc98d27c9e8b // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jaegertracing/jaeger-idl v0.6.0 // indirect

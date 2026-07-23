@@ -1,6 +1,6 @@
 # Router-rules catalog
 
-`internal/routerrules` + `cmd/route-rules` is an **offline analysis** tool. It
+`internal/routerrules` + `cmd/cerberus` is an **offline analysis** tool. It
 mines the router corpus — the `cerberus_router_corpus` table, or its per-pod
 JSONL fallback — and emits **findings**: shape classes where the recorded route
 A/B decision is paying an observable cost the corpus shows the other route would
@@ -9,7 +9,7 @@ avoid. It changes no routing. It is a report an operator runs.
 The same corpus and the same `routerrules` fit primitives also feed the
 **online** self-driving loop (`internal/autotune`, see `docs/solver.md` §"Stage 1
 — self-driving thresholds"), which lowers the solver's live auto-gate thresholds
-toward the observed OOM line. The `cmd/route-rules` CLI here remains purely a
+toward the observed OOM line. The `cmd/cerberus` CLI here remains purely a
 report; the loop is the component that actually moves thresholds.
 
 - **Route A** is a single ClickHouse query.

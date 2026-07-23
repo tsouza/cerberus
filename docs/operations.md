@@ -950,11 +950,12 @@ data already persisted.
   container images) from a Git tag. Source code is compiled, the binary
   is statically linked (`CGO_ENABLED=0` in release builds), and the
   version string is injected via `-ldflags` so `Version` in
-  `cmd/cerberus/main.go` reflects the tag. Two binaries ship per release:
-  the `cerberus` gateway and the `migrate` offline migration-preview CLI
-  (`./cmd/migrate`), each as its own `tar.gz` archive
-  (`cerberus_<ver>_<os>_<arch>.tar.gz` / `migrate_<ver>_<os>_<arch>.tar.gz`)
-  and both baked into the container image under `/usr/local/bin/`.
+  `cmd/cerberus/main.go` reflects the tag. A single `cerberus` binary
+  (`./cmd/cerberus`) ships per release as a `tar.gz` archive
+  (`cerberus_<ver>_<os>_<arch>.tar.gz`) and is baked into the container
+  image under `/usr/local/bin/`. Every CLI — the server plus the offline
+  migration preview (`cerberus migrate …`) and the doc/analysis generators
+  — is a subcommand of that one cobra-based binary.
 - **Release** — the build output is combined with the deployment
   configuration. In Kubernetes that means a specific image tag/SHA in the
   Helm values (`test/e2e/k3s/cerberus-values.yaml` for the e2e stack) plus

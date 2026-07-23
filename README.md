@@ -188,7 +188,7 @@ by whatever evaluates them today; the move is ultimately a datasource **URL
 swap**. But you only earn that swap after _proving_, query by query, that
 cerberus returns the same numbers on your own data.
 
-The release binary ships a `migrate` CLI for exactly that. It **harvests** your
+The release `cerberus` binary ships a `migrate` subcommand for exactly that. It **harvests** your
 real PromQL from rule files and exported dashboards, **previews** the ClickHouse
 SQL and schema offline, then **replays the corpus against both Prometheus and
 cerberus and diffs the results** — and folds every artifact into one go/no-go

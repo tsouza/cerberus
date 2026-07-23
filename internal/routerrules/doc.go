@@ -2,7 +2,7 @@
 // cerberus_router_corpus table (or its per-pod JSONL fallback) and emits
 // findings: shape classes where the recorded route A/B decision is paying an
 // observable cost the corpus shows the other route would avoid. It changes no
-// routing — it is a report generator the operator runs (via cmd/route-rules).
+// routing — it is a report generator the operator runs (via cmd/cerberus).
 //
 // # The hard invariant
 //

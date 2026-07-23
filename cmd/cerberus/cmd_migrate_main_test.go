@@ -17,7 +17,7 @@ import (
 // an error (and prints usage) rather than silently succeeding.
 func TestRun_NoFlagsIsError(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if err := run(nil, &out, &errOut); err == nil {
+	if err := runMigrate(nil, &out, &errOut); err == nil {
 		t.Fatal("run with no flags should error")
 	}
 	if out.Len() != 0 {
@@ -29,7 +29,7 @@ func TestRun_NoFlagsIsError(t *testing.T) {
 // package's parse error instead of proceeding.
 func TestRun_UnknownFlagIsError(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if err := run([]string{"--nope"}, &out, &errOut); err == nil {
+	if err := runMigrate([]string{"--nope"}, &out, &errOut); err == nil {
 		t.Fatal("run with an unknown flag should error")
 	}
 }
@@ -40,7 +40,7 @@ func TestRun_UnknownFlagIsError(t *testing.T) {
 func TestRunHelpExitsCleanToStdout(t *testing.T) {
 	for _, flagArg := range []string{"-h", "--help"} {
 		var out, errOut bytes.Buffer
-		if err := run([]string{flagArg}, &out, &errOut); err != nil {
+		if err := runMigrate([]string{flagArg}, &out, &errOut); err != nil {
 			t.Fatalf("run %s should exit cleanly, got error: %v", flagArg, err)
 		}
 		if out.Len() == 0 {
@@ -57,7 +57,7 @@ func TestRunHelpExitsCleanToStdout(t *testing.T) {
 func TestSubcommandHelpExitsClean(t *testing.T) {
 	for _, sc := range []string{"harvest", "explain", "classify", "rulegraph", "verify", "inventory", "gate"} {
 		var out, errOut bytes.Buffer
-		if err := run([]string{sc, "-h"}, &out, &errOut); err != nil {
+		if err := runMigrate([]string{sc, "-h"}, &out, &errOut); err != nil {
 			t.Errorf("run %s -h should exit cleanly, got: %v", sc, err)
 		}
 		if out.Len() == 0 {
@@ -73,11 +73,11 @@ func TestSubcommandHelpExitsClean(t *testing.T) {
 // silent fall-through to the root flags that prints "nothing to do").
 func TestRunUnknownSubcommand(t *testing.T) {
 	var out, errOut bytes.Buffer
-	err := run([]string{"verifyy"}, &out, &errOut)
+	err := runMigrate([]string{"verifyy"}, &out, &errOut)
 	if err == nil {
 		t.Fatal("an unknown subcommand should error")
 	}
-	if !strings.Contains(err.Error(), "unknown subcommand") || !strings.Contains(err.Error(), "verifyy") {
+	if !strings.Contains(err.Error(), "unknown command") || !strings.Contains(err.Error(), "verifyy") {
 		t.Errorf("error should name the unknown subcommand, got: %v", err)
 	}
 	if strings.Contains(err.Error(), "nothing to do") {
@@ -92,7 +92,7 @@ func TestRunUnknownSubcommand(t *testing.T) {
 // an operator can discover them.
 func TestRootUsageListsSubcommands(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if err := run([]string{"-h"}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"-h"}, &out, &errOut); err != nil {
 		t.Fatalf("run -h: %v", err)
 	}
 	usage := out.String()
@@ -110,28 +110,23 @@ func TestRootUsageListsSubcommands(t *testing.T) {
 func TestCorpusCommandsPrintUsageOnMissingInput(t *testing.T) {
 	for _, sc := range []string{"harvest", "explain", "classify"} {
 		var out, errOut bytes.Buffer
-		if err := run([]string{sc}, &out, &errOut); err == nil {
+		if err := runMigrate([]string{sc}, &out, &errOut); err == nil {
 			t.Errorf("%s with no inputs should error", sc)
 		}
-		if !strings.Contains(errOut.String(), "Usage of migrate "+sc) {
+		if !strings.Contains(errOut.String(), "Usage:") || !strings.Contains(errOut.String(), "migrate "+sc) {
 			t.Errorf("%s with no inputs should print usage on stderr, got: %q", sc, errOut.String())
 		}
 	}
 }
 
-// TestStringListFlag pins that --rules accumulates both repeated flags and
-// comma-separated values, trimming blanks.
-func TestStringListFlag(t *testing.T) {
-	var l stringList
-	if err := l.Set("a.yml, b.yml"); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.Set(" c.yml "); err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join([]string(l), "|")
+// TestNormalizeList pins that the --rules normalizer reproduces the legacy
+// stringList semantics on top of cobra's StringSlice accumulation: each element
+// is trimmed and blanks are dropped, so a repeatable + comma-separated flag
+// (which cobra splits into raw elements) accumulates a clean list.
+func TestNormalizeList(t *testing.T) {
+	got := strings.Join(normalizeList([]string{"a.yml", " b.yml", " c.yml ", ""}), "|")
 	if got != "a.yml|b.yml|c.yml" {
-		t.Errorf("stringList = %q, want a.yml|b.yml|c.yml", got)
+		t.Errorf("normalizeList = %q, want a.yml|b.yml|c.yml", got)
 	}
 }
 
@@ -155,8 +150,8 @@ groups:
 	}
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"--rules", file}, &out, &errOut); err != nil {
-		t.Fatalf("run --rules: %v (stderr: %s)", err, errOut.String())
+	if err := runMigrate([]string{"explain", "--rules", file}, &out, &errOut); err != nil {
+		t.Fatalf("explain --rules: %v (stderr: %s)", err, errOut.String())
 	}
 	got := out.String()
 
@@ -214,7 +209,7 @@ groups:
 
 	// harvest → corpus.json
 	var hOut, hErr bytes.Buffer
-	if err := run([]string{"harvest", "--rules", rulesFile, "--dashboards", dashDir, "--out", corpusFile}, &hOut, &hErr); err != nil {
+	if err := runMigrate([]string{"harvest", "--rules", rulesFile, "--dashboards", dashDir, "--out", corpusFile}, &hOut, &hErr); err != nil {
 		t.Fatalf("harvest: %v (stderr: %s)", err, hErr.String())
 	}
 
@@ -246,7 +241,7 @@ groups:
 	// Harvest is deterministic: a second harvest to a fresh file is byte-identical.
 	corpusFile2 := filepath.Join(dir, "corpus2.json")
 	var h2Out, h2Err bytes.Buffer
-	if err := run([]string{"harvest", "--rules", rulesFile, "--dashboards", dashDir, "--out", corpusFile2}, &h2Out, &h2Err); err != nil {
+	if err := runMigrate([]string{"harvest", "--rules", rulesFile, "--dashboards", dashDir, "--out", corpusFile2}, &h2Out, &h2Err); err != nil {
 		t.Fatalf("harvest (2): %v (stderr: %s)", err, h2Err.String())
 	}
 	data2, err := os.ReadFile(corpusFile2) //nolint:gosec // test-controlled temp path.
@@ -259,7 +254,7 @@ groups:
 
 	// explain --corpus reads the harvested corpus back and dry-runs it.
 	var eOut, eErr bytes.Buffer
-	if err := run([]string{"explain", "--corpus", corpusFile}, &eOut, &eErr); err != nil {
+	if err := runMigrate([]string{"explain", "--corpus", corpusFile}, &eOut, &eErr); err != nil {
 		t.Fatalf("explain --corpus: %v (stderr: %s)", err, eErr.String())
 	}
 	report := eOut.String()
@@ -294,7 +289,7 @@ groups:
 	reportFile := filepath.Join(dir, "report.txt")
 
 	var out, errOut bytes.Buffer
-	if err := run([]string{"explain", "--rules", file, "--out", reportFile}, &out, &errOut); err != nil {
+	if err := runMigrate([]string{"explain", "--rules", file, "--out", reportFile}, &out, &errOut); err != nil {
 		t.Fatalf("explain --out: %v (stderr: %s)", err, errOut.String())
 	}
 	if out.Len() != 0 {

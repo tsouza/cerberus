@@ -57,7 +57,7 @@ clean:
 # hand-authored columns (experimental setting, effect prose) stay outside the
 # markers and are untouched. Same as `go generate ./internal/chopt/`.
 gen-opt-docs:
-    go run ./cmd/optdocs -doc docs/clickhouse-optimizations.md
+    go run ./cmd/cerberus optdocs -doc docs/clickhouse-optimizations.md
 
 # Run the router-rules catalog against a corpus (offline analysis). Mines the
 # cerberus_router_corpus table (or its per-pod JSONL fallback) and prints
@@ -66,14 +66,14 @@ gen-opt-docs:
 #   just route-rules --source jsonl --corpus-path /var/lib/cerberus/router-corpus
 #   just route-rules --validate-only
 route-rules *ARGS:
-    go run ./cmd/route-rules {{ARGS}}
+    go run ./cmd/cerberus route-rules {{ARGS}}
 
 # Pre-cutover migration preview. Renders the ClickHouse schema cerberus expects
 # from the current CERBERUS_* environment — offline, no database connection —
 # so you can review it before provisioning. Pipeable into clickhouse-client:
-#   just migrate --schema | clickhouse-client -h ...
+#   just migrate schema | clickhouse-client -h ...
 migrate *ARGS:
-    go run ./cmd/migrate {{ARGS}}
+    go run ./cmd/cerberus migrate {{ARGS}}
 
 # === Test ===
 
@@ -351,11 +351,11 @@ bench-report:
 # internal/config: the CERBERUS_* env-key metadata (config.EnvDocs) and the
 # LIVE viper loader defaults (config.DocDefaults). docs/configuration.md is a
 # GENERATED file — do not hand-edit it; edit the EnvDoc metadata in
-# internal/config/envdocs.go (or the preamble in cmd/config-docs/template.go)
+# internal/config/envdocs.go (or the preamble in cmd/cerberus/cmd_configdocs.go)
 # and rerun this. The config-docs CI gate runs `git diff --exit-code` on the
 # regenerated file, so a stale doc (or an undocumented new env var) fails CI.
 gen-config-docs:
-    go run ./cmd/config-docs -out docs/configuration.md
+    go run ./cmd/cerberus config-docs -out docs/configuration.md
     @echo
     @echo "Diff of regenerated configuration document:"
     @git --no-pager diff --stat docs/configuration.md || true
