@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,12 @@ const queryRangePath = "/api/v1/query_range"
 // stall the whole gate.
 const defaultHTTPTimeout = 30 * time.Second
 
+// maxResponseBytes caps how much of a backend response body verify will buffer.
+// A range response is bounded in practice (matrix JSON over one window), so a
+// body beyond this is a misbehaving or wrong endpoint, not a valid parity
+// response; failing loudly beats letting an unbounded stream OOM the gate.
+const maxResponseBytes = 256 << 20 // 256 MiB
+
 // Params are the shared query_range parameters replayed identically against both
 // backends, plus the comparison tolerance.
 type Params struct {
@@ -36,14 +43,54 @@ type Params struct {
 type HTTPBackend struct {
 	BaseURL string
 	HTTP    *http.Client
+	// bearerToken, when set, is sent as an Authorization: Bearer header — the
+	// credential-clean alternative to embedding user:pass@ in BaseURL (which
+	// would leak into repro lines and report artifacts).
+	bearerToken string
+}
+
+// BackendOption configures an HTTPBackend at construction.
+type BackendOption func(*HTTPBackend)
+
+// WithBearerToken sends an "Authorization: Bearer <token>" header on every
+// request. It is the clean auth path: credentials travel in a header, never in
+// the URL, so they cannot leak into the repro command or the report JSON. An
+// empty token is a no-op, so a caller can pass a possibly-unset flag value
+// unconditionally.
+func WithBearerToken(token string) BackendOption {
+	return func(b *HTTPBackend) { b.bearerToken = token }
 }
 
 // NewHTTPBackend builds a backend for baseURL with a bounded default client.
-func NewHTTPBackend(baseURL string) *HTTPBackend {
-	return &HTTPBackend{
+func NewHTTPBackend(baseURL string, opts ...BackendOption) *HTTPBackend {
+	b := &HTTPBackend{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTP:    &http.Client{Timeout: defaultHTTPTimeout},
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
+
+// redactedUserinfo is the placeholder that replaces any user:pass@ userinfo in a
+// redacted URL: it removes the secret while keeping the redaction visible (an
+// operator can see credentials WERE present, just not what they were).
+const redactedUserinfo = "REDACTED"
+
+// RedactURL strips any userinfo (user:pass@) from a URL so basic-auth
+// credentials embedded in --ref / --cerberus can never leak into a printed repro
+// line, the --report JSON, or any other artifact. Credentials belong in the
+// Authorization header (see WithBearerToken); when an operator nonetheless puts
+// them in the URL, this keeps them out of every artifact. A string that does not
+// parse as a URL, or carries no userinfo, is returned unchanged.
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User(redactedUserinfo)
+	return u.String()
 }
 
 // promRangeResponse is the standard Prometheus range-query JSON envelope.
@@ -79,20 +126,38 @@ func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (Ra
 	if err != nil {
 		return RangeResult{}, fmt.Errorf("build request: %w", err)
 	}
+	if b.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+b.bearerToken)
+	}
 	resp, err := b.HTTP.Do(req)
 	if err != nil {
 		return RangeResult{}, fmt.Errorf("do request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readCappedBody(resp.Body, maxResponseBytes)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("read body: %w", err)
+		return RangeResult{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		return RangeResult{Status: resp.StatusCode}, nil
 	}
 	return parseRangeBody(resp.StatusCode, body)
+}
+
+// readCappedBody reads r fully but no further than limit bytes, erroring rather
+// than buffering an unbounded stream: it reads one byte past the limit so an
+// over-limit body is detected instead of silently truncated into a mis-parse.
+// This bounds cerberus-process memory against a misbehaving or wrong backend.
+func readCappedBody(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("response body exceeds the %d-byte cap", limit)
+	}
+	return body, nil
 }
 
 // parseRangeBody decodes a 200 range body into a RangeResult. A body that is not
@@ -209,7 +274,28 @@ func BuildParams(startStr, endStr, stepStr string, tolerance float64, now time.T
 	if step <= 0 {
 		return Params{}, fmt.Errorf("step must be positive, got %s", step)
 	}
+	if err := validateTolerance(tolerance); err != nil {
+		return Params{}, err
+	}
 	return Params{Start: start, End: end, Step: step, Tolerance: tolerance}, nil
+}
+
+// validateTolerance rejects a tolerance that would corrupt the gate rather than
+// merely loosen it: a NaN/Inf comparison never holds (or always holds), a
+// negative tolerance makes every value diverge, and an absurdly large one
+// (>= maxVerifyTolerance) silently blesses real divergences. A fat-fingered
+// --tolerance must fail loudly here, never ride through into a clean-looking
+// verify.json the cutover gate then trusts.
+func validateTolerance(tol float64) error {
+	switch {
+	case math.IsNaN(tol) || math.IsInf(tol, 0):
+		return fmt.Errorf("tolerance must be a finite number, got %v", tol)
+	case tol < 0:
+		return fmt.Errorf("tolerance must be non-negative, got %v", tol)
+	case tol >= maxVerifyTolerance:
+		return fmt.Errorf("tolerance %v is too loose (must be < %v): a tolerance this large would bless real divergences", tol, maxVerifyTolerance)
+	}
+	return nil
 }
 
 // LoadCorpus reads a corpus.json produced by `migrate harvest`, splits it into

@@ -106,6 +106,18 @@ import (
 // arbitrary; only its stability matters.
 const explainEvalUnix = 1_700_000_000
 
+// explainRangeWindow / explainRangeStep pin the representative query_range
+// window used to preview PANEL-kind queries. Dashboard panels run as ranges
+// (unlike rules, which evaluate at a single instant), so previewing them as
+// instant queries would emit SQL the server never runs. The window ends at
+// explainEvalUnix and spans explainRangeWindow at explainRangeStep resolution;
+// the exact span is arbitrary — only its stability (deterministic SQL) and the
+// fact that it is a range (non-zero step) matter.
+const (
+	explainRangeWindow = time.Hour
+	explainRangeStep   = time.Minute
+)
+
 // outFileMode is the permission for files written by --out (corpus / explain
 // report): owner read-write only, since a corpus can name internal metric paths.
 const outFileMode = 0o600
@@ -303,18 +315,49 @@ func harvestSources(corpus string, rules []string, dashboards string) (migrate.C
 
 // runExplainReport dry-runs every query from src through the read-side pipeline
 // and writes the explain report to w. It is fully offline: the engine has no
-// Client and DryRunSQL never executes.
+// Client and DryRunSQL never executes. It loads config.FromEnv() so the preview
+// engine carries the SAME resolved per-query sample budget the server enforces
+// (see newExplainEngine) — otherwise a budget-busting subquery would preview as
+// clean SQL offline yet 422 in production.
 func runExplainReport(w io.Writer, src migrate.CorpusSource) error {
-	metrics := schema.DefaultOTelMetricsFromEnv()
-	eng := &engine.Engine{Optimizer: optimizer.Default()}
-	lang := prom.NewExplainLang(metrics, time.Unix(explainEvalUnix, 0).UTC())
-
-	ex := dryRunExplainer{eng: eng, lang: lang}
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return fmt.Errorf("load config from environment: %w", err)
+	}
+	ex := newDryRunExplainer(cfg)
 	rep, err := migrate.BuildReport(context.Background(), src, ex)
 	if err != nil {
 		return fmt.Errorf("build explain report: %w", err)
 	}
 	return rep.Write(w)
+}
+
+// newExplainEngine builds the offline preview engine, applying the SAME resolved
+// per-query sample budget the server runs with (config.FromEnv coerces the
+// CERBERUS_QUERY_MAX_SAMPLES zero-value back to the 5M default via
+// resolveQueryMaxSamples). Without this the engine's MaxQuerySamples would be 0,
+// which DISABLES the subquery sample-budget gate — so an anchor-grid-busting
+// subquery would preview as clean SQL and classify Supported offline while the
+// live server 422s it. The engine has no Client: DryRunSQL never executes.
+func newExplainEngine(cfg config.Config) *engine.Engine {
+	return &engine.Engine{
+		Optimizer:       optimizer.Default(),
+		MaxQuerySamples: cfg.ClickHouse.MaxQuerySamples,
+	}
+}
+
+// newDryRunExplainer wires the offline explainer: one engine (with the prod
+// sample budget) plus two langs — an instant lang for rules and a range lang for
+// dashboard panels — so each query previews in the evaluation mode the server
+// would actually run it in.
+func newDryRunExplainer(cfg config.Config) dryRunExplainer {
+	metrics := schema.DefaultOTelMetricsFromEnv()
+	evalTime := time.Unix(explainEvalUnix, 0).UTC()
+	return dryRunExplainer{
+		eng:         newExplainEngine(cfg),
+		instantLang: prom.NewExplainLang(metrics, evalTime),
+		rangeLang:   prom.NewExplainLangRange(metrics, evalTime.Add(-explainRangeWindow), evalTime, explainRangeStep),
+	}
 }
 
 // writeOut writes data to the named file, or to stdout when out is empty. The
@@ -336,14 +379,21 @@ func writeOut(stdout io.Writer, out string, data []byte) error {
 // dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it
 // reports is byte-identical to what the server would send to ClickHouse for the
 // same query — DryRunSQL runs the identical parse → project → optimize → emit
-// stages, minus Execute.
+// stages, minus Execute. It holds two langs and picks the one matching the
+// query's evaluation mode: a dashboard panel previews as a range query, a rule
+// as an instant query.
 type dryRunExplainer struct {
-	eng  *engine.Engine
-	lang engine.Lang
+	eng         *engine.Engine
+	instantLang engine.Lang
+	rangeLang   engine.Lang
 }
 
-func (d dryRunExplainer) Explain(ctx context.Context, query string) migrate.Explanation {
-	dr, err := d.eng.DryRunSQL(ctx, d.lang, query)
+func (d dryRunExplainer) Explain(ctx context.Context, q migrate.HarvestedQuery) migrate.Explanation {
+	lang := d.instantLang
+	if q.Kind == migrate.KindPanel {
+		lang = d.rangeLang
+	}
+	dr, err := d.eng.DryRunSQL(ctx, lang, q.Expr)
 	return migrate.Explanation{SQL: dr.SQL, Plan: dr.Plan, Err: err}
 }
 

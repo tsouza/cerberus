@@ -50,6 +50,8 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		corpus    = fs.String("corpus", envOr("CERBERUS_VERIFY_CORPUS", ""), "corpus.json produced by `migrate harvest`")
 		ref       = fs.String("ref", envOr("CERBERUS_VERIFY_REF", ""), "reference Prometheus base URL")
 		cerberus  = fs.String("cerberus", envOr("CERBERUS_VERIFY_CERBERUS", ""), "cerberus base URL")
+		refToken  = fs.String("ref-token", envOr("CERBERUS_VERIFY_REF_TOKEN", ""), "bearer token for the reference (sent as an Authorization header; keeps credentials out of the URL and every artifact)")
+		cerToken  = fs.String("cerberus-token", envOr("CERBERUS_VERIFY_CERBERUS_TOKEN", ""), "bearer token for cerberus (sent as an Authorization header; keeps credentials out of the URL and every artifact)")
 		startStr  = fs.String("start", envOr("CERBERUS_VERIFY_START", "-1h"), "range start (RFC3339, Unix seconds, or relative like -1h/now)")
 		endStr    = fs.String("end", envOr("CERBERUS_VERIFY_END", "now"), "range end (RFC3339, Unix seconds, or relative like -1h/now)")
 		stepStr   = fs.String("step", envOr("CERBERUS_VERIFY_STEP", "60s"), "range step (e.g. 60s)")
@@ -79,15 +81,19 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	refBackend := migrateverify.NewHTTPBackend(*ref)
-	cerBackend := migrateverify.NewHTTPBackend(*cerberus)
+	refBackend := migrateverify.NewHTTPBackend(*ref, migrateverify.WithBearerToken(*refToken))
+	cerBackend := migrateverify.NewHTTPBackend(*cerberus, migrateverify.WithBearerToken(*cerToken))
 	rep := migrateverify.Verify(context.Background(), c, refBackend, cerBackend, params)
 
 	// The resolved run params drive both the JSON diagnostic and the copy-pasteable
-	// repro command, so the two always describe the exact same window.
+	// repro command, so the two always describe the exact same window. The backend
+	// URLs are REDACTED here (the live requests above already used the real URLs):
+	// any user:pass@ basic-auth credential must never reach the repro line, the
+	// report JSON, or the text output — the operator re-supplies auth via
+	// --ref-token / --cerberus-token (or their own URL) on replay.
 	reportParams := migrateverify.VerifyReportParams{
-		RefURL:      *ref,
-		CerberusURL: *cerberus,
+		RefURL:      migrateverify.RedactURL(*ref),
+		CerberusURL: migrateverify.RedactURL(*cerberus),
 		Start:       params.Start.UTC().Format(time.RFC3339),
 		End:         params.End.UTC().Format(time.RFC3339),
 		Step:        params.Step.String(),
