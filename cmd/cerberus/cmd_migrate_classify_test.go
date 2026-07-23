@@ -44,7 +44,7 @@ groups:
 	for _, want := range []string{
 		"2 queries: 1 supported (0 risky), 1 unsupported; 0 skipped",
 		"job:up",
-		"only `migrate verify` proves parity",
+		"only `cerberus migrate verify` proves parity",
 		// The unsupported query must NAME its offending construct (the engine
 		// error), under the unsupported bucket — never silently dropped.
 		"construct:",

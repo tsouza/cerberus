@@ -14,7 +14,7 @@ import (
 //   - BucketSupported   — the query PARSES, LOWERS, and EMITS ClickHouse SQL
 //     cleanly. This is the "PromQL-pure / rewritable" bucket: cerberus has a
 //     translation for it. It does NOT assert result parity (see the honesty
-//     note in Write): only `migrate verify` proves the numbers match.
+//     note in Write): only `cerberus migrate verify` proves the numbers match.
 //   - BucketUnsupported — the offline pipeline rejected the query (a parse,
 //     lower, or emit error). This is the "no-equivalent" bucket; the offending
 //     construct/error is captured verbatim in ClassifiedQuery.Construct so the
@@ -122,7 +122,7 @@ func (c Classification) Write(w io.Writer) error {
 	bw.printf("#   risky       — a SUPPORTED query that also carries an offline fan-out risk flag\n")
 	bw.printf("#\n")
 	bw.printf("# HONESTY: \"supported\" means the query TRANSLATES to SQL, NOT that cerberus\n")
-	bw.printf("# returns the same numbers as Prometheus — only `migrate verify` proves parity.\n")
+	bw.printf("# returns the same numbers as Prometheus — only `cerberus migrate verify` proves parity.\n")
 	bw.printf("#\n")
 	bw.printf("# %d queries: %d supported (%d risky), %d unsupported; %d skipped\n\n",
 		c.Counts.Total, c.Counts.Supported, c.Counts.Risky, c.Counts.Unsupported, len(c.Skipped))

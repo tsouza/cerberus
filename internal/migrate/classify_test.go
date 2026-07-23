@@ -86,7 +86,7 @@ func TestClassifyBuckets(t *testing.T) {
 	out := sb.String()
 	for _, want := range []string{
 		"3 queries: 2 supported (1 risky), 1 unsupported; 1 skipped",
-		"only `migrate verify` proves parity",
+		"only `cerberus migrate verify` proves parity",
 		"unexpected character inside braces",
 		"RISKY:",
 		"rule has an empty expr",

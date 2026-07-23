@@ -207,7 +207,7 @@ func TestWriteTextGuided_BugReport(t *testing.T) {
 			Attribution: attributeDivergence("rate(x[1m])", &FirstDiff{Reason: "value differs beyond tolerance"}),
 		}},
 	}
-	const repro = "migrate verify --corpus c.json --ref http://ref --cerberus http://cer --report verify-report.json"
+	const repro = "cerberus migrate verify --corpus c.json --ref http://ref --cerberus http://cer --report verify-report.json"
 	var b strings.Builder
 	if err := rep.WriteTextGuided(&b, TextGuidance{ReproCommand: repro}); err != nil {
 		t.Fatalf("WriteTextGuided: %v", err)
