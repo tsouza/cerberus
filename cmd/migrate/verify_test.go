@@ -217,6 +217,36 @@ func TestRunVerify_ReportFile(t *testing.T) {
 	}
 }
 
+// TestRunVerify_OutFile: --out writes the report to a file (checked, via
+// writeOut) instead of stdout, following the file-output convention every other
+// gate-input producer uses.
+func TestRunVerify_OutFile(t *testing.T) {
+	dir := t.TempDir()
+	corpus := writeCorpus(t, dir)
+	ref := promServer(t, map[string]string{"up": upMatrix})
+	cer := promServer(t, map[string]string{"up": upMatrix})
+	outPath := filepath.Join(dir, "verify.json")
+
+	var out, errOut bytes.Buffer
+	if err := runVerify([]string{
+		"--corpus", corpus, "--ref", ref.URL, "--cerberus", cer.URL,
+		"--start", "1700000000", "--end", "1700000600", "--step", "60s",
+		"--json", "--out", outPath,
+	}, &out, &errOut); err != nil {
+		t.Fatalf("runVerify --out: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("verify --out should not write the report to stdout, got: %q", out.String())
+	}
+	data, err := os.ReadFile(outPath) //nolint:gosec // test-controlled temp path.
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	if !strings.Contains(string(data), `"verdict": "match"`) {
+		t.Errorf("out file should carry the JSON report, got:\n%s", data)
+	}
+}
+
 // TestReproCommand_ShellQuoting: a URL with special characters is single-quoted so
 // the repro command stays copy-pasteable.
 func TestReproCommand_ShellQuoting(t *testing.T) {

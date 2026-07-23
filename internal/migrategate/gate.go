@@ -10,13 +10,15 @@
 // conservative) are:
 //
 //   - verify   — BLOCK if any query diverged or errored (the parity gate found
-//     cerberus returning different numbers, or a backend failing). WARN when the
-//     report carries UNCHECKED entries — queries that emitted SQL but returned
-//     no comparable matrix live (Unsupported), harvest-skipped entries, or
-//     out-of-scope (non-PromQL) entries — so a green parity gate never hides an
-//     unexamined input.
+//     cerberus returning different numbers, or a backend failing), or if the run
+//     verified ZERO queries (an empty harvest proves nothing and must not
+//     green-light a cutover). WARN when the report carries UNCHECKED entries —
+//     queries that emitted SQL but returned no comparable matrix live
+//     (Unsupported), harvest-skipped entries, or out-of-scope (non-PromQL)
+//     entries — so a green parity gate never hides an unexamined input.
 //   - classify — BLOCK if any corpus query is unsupported (no cerberus
-//     equivalent). A supported-but-risky query WARNs but does not block; a
+//     equivalent), or if ZERO queries were classified (an empty harvest cannot
+//     prove support). A supported-but-risky query WARNs but does not block; a
 //     harvest-skipped corpus entry (never classified) also WARNs.
 //   - inventory — WARN (never block) when the source carries high-cardinality
 //     metrics or labels: an OOM candidate to review, not a correctness stop.
@@ -36,12 +38,18 @@
 // required; inventory is advisory (its worst outcome is a WARN), so a missing
 // inventory artifact is reported but does not block.
 //
+// Every artifact is decoded strictly (unknown fields rejected) and its stamped
+// schema_version is checked against the version this gate build understands. A
+// schema-drifted, wrong-type, or version-mismatched artifact is a hard error, not
+// a struct that zero-fills its counts to a silent PASS.
+//
 // Every count each upstream block deliberately preserves — the skip/unchecked/
 // caveat tallies — is threaded into a stage's Reasons here, never silently
 // re-dropped at the aggregation layer.
 package migrategate
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -196,9 +204,21 @@ func evalVerify(path string) (StageResult, error) {
 	if err := readArtifact(path, &rep); err != nil {
 		return StageResult{}, err
 	}
+	if err := requireSchemaVersion(path, rep.SchemaVersion, migrateverify.ReportVersion); err != nil {
+		return StageResult{}, err
+	}
 	res.Present = true
 	s := rep.Summary
 	caveats := verifyCaveats(s)
+	if s.Total == 0 {
+		// A parity run that replayed zero queries proves nothing — an empty
+		// harvest must never green-light a cutover with nothing verified.
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
 	if s.Diverge > 0 || s.Error > 0 {
 		res.Verdict = VerdictFail
 		res.Blocking = true
@@ -260,7 +280,19 @@ func evalClassify(path string) (StageResult, error) {
 	if err := readArtifact(path, &cl); err != nil {
 		return StageResult{}, err
 	}
+	if err := requireSchemaVersion(path, cl.SchemaVersion, migrate.ClassificationVersion); err != nil {
+		return StageResult{}, err
+	}
 	res.Present = true
+	if cl.Counts.Total == 0 {
+		// Classifying zero queries proves no cerberus-support coverage — an empty
+		// harvest must never green-light a cutover with nothing classified.
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, "nothing classified: 0 corpus queries were bucketed (an empty corpus cannot prove support)")
+		res.Reasons = append(res.Reasons, classifyHarvestSkips(cl)...)
+		return res, nil
+	}
 	if cl.Counts.Unsupported > 0 {
 		res.Verdict = VerdictFail
 		res.Blocking = true
@@ -329,6 +361,9 @@ func evalInventory(path string, opts Options) (StageResult, error) {
 	if err := readArtifact(path, &inv); err != nil {
 		return StageResult{}, err
 	}
+	if err := requireSchemaVersion(path, inv.SchemaVersion, migrateinventory.InventoryVersion); err != nil {
+		return StageResult{}, err
+	}
 	res.Present = true
 
 	seriesLimit := opts.highCardSeries()
@@ -394,6 +429,9 @@ func evalRuleGraph(path string) (StageResult, error) {
 	}
 	var g migrate.RuleGraph
 	if err := readArtifact(path, &g); err != nil {
+		return StageResult{}, err
+	}
+	if err := requireSchemaVersion(path, g.SchemaVersion, migrate.RuleGraphVersion); err != nil {
 		return StageResult{}, err
 	}
 	res.Present = true
@@ -471,16 +509,36 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// readArtifact reads and JSON-decodes one artifact file into v. A read or
-// decode failure is wrapped with the path so the operator can tell which
-// artifact is at fault.
+// readArtifact reads and strictly JSON-decodes one artifact file into v. A read
+// or decode failure is wrapped with the path so the operator can tell which
+// artifact is at fault. Decoding uses DisallowUnknownFields so a schema-drifted
+// or wrong-type artifact (e.g. a classify.json handed to --verify) is a hard
+// error the operator must fix, never a struct that silently zero-fills its
+// counts to a bogus PASS.
 func readArtifact(path string, v any) error {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied artifact path; offline CLI input.
 	if err != nil {
 		return fmt.Errorf("read artifact %q: %w", path, err)
 	}
-	if err := json.Unmarshal(data, v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("parse artifact %q: %w", path, err)
+	}
+	return nil
+}
+
+// requireSchemaVersion rejects an artifact whose stamped schema_version is not the
+// one this gate build understands. A missing version zero-fills to 0 and a drifted
+// producer stamps a different number; either way the gate cannot trust the file's
+// shape, so it is a hard error (a block, never a silent PASS on a misread
+// artifact), consistent with the unreadable/unparseable contract.
+func requireSchemaVersion(path string, got, want int) error {
+	if got != want {
+		return fmt.Errorf(
+			"artifact %q: unsupported schema_version %d (this gate understands %d); regenerate it with a matching `migrate` build",
+			path, got, want,
+		)
 	}
 	return nil
 }

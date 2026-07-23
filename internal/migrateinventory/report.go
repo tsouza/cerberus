@@ -8,8 +8,10 @@ import (
 )
 
 // WriteJSON renders the inventory as machine-readable JSON with a trailing
-// newline.
+// newline. It stamps the current schema version so the artifact is self-describing
+// and the cutover gate can refuse an inventory shape it does not understand.
 func (inv Inventory) WriteJSON(w io.Writer) error {
+	inv.SchemaVersion = InventoryVersion
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(inv); err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -58,8 +59,9 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		tolerance = fs.Float64("tolerance", tolDefault, "absolute value tolerance for a match")
 		asJSON    = fs.Bool("json", false, "emit the machine-readable JSON report instead of the text report")
 		report    = fs.String("report", envOr("CERBERUS_VERIFY_REPORT", ""), "write the full JSON diagnostics to this file (additive; the text report still prints)")
+		out       = fs.String("out", "", "write the report here (default: stdout); same content (text or --json) as stdout")
 	)
-	if err := fs.Parse(args); err != nil {
+	if handled, err := parseFlags(fs, args, stdout, stderr); err != nil || handled {
 		return err
 	}
 
@@ -109,7 +111,15 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
-	if err := writeReport(stdout, rep, *asJSON, repro); err != nil {
+	// Render into a buffer, then commit via the checked writeOut so a flush error
+	// surfaces rather than truncating the report. --out follows the file-output
+	// convention (file when set, stdout when empty); the parity-gate exit verdict
+	// below fires regardless of where the report landed.
+	var buf bytes.Buffer
+	if err := writeReport(&buf, rep, *asJSON, repro); err != nil {
+		return err
+	}
+	if err := writeOut(stdout, *out, buf.Bytes()); err != nil {
 		return err
 	}
 	if rep.Failed() {

@@ -211,3 +211,58 @@ groups:
 		t.Fatalf("skipped = %+v, want 2 (empty-expr alert + no-name rule)", skipped)
 	}
 }
+
+// TestPromQLMetricNamesRegexNameIsSkip pins that a consumer selecting __name__ by
+// regex (a name set that cannot be statically reduced) is returned as an error, so
+// BuildRuleGraph records it as a skip rather than under-linking it to nothing.
+func TestPromQLMetricNamesRegexNameIsSkip(t *testing.T) {
+	cases := []string{
+		`sum({__name__=~"job:.*"})`, // regex __name__ matcher
+		`{__name__!="up"}`,          // negated __name__ matcher
+		`sum({job="api"})`,          // no name constraint at all (matches every metric)
+	}
+	for _, expr := range cases {
+		if _, err := PromQLMetricNames(expr); err == nil {
+			t.Errorf("PromQLMetricNames(%q) should error (name set not statically reducible), got nil", expr)
+		}
+	}
+
+	// A concrete-name selector (even with label matchers) stays reducible.
+	names, err := PromQLMetricNames(`sum(job:http:rate5m{env="prod"})`)
+	if err != nil {
+		t.Fatalf("concrete-name selector should reduce, got error: %v", err)
+	}
+	if len(names) != 1 || names[0] != "job:http:rate5m" {
+		t.Errorf("names = %v, want [job:http:rate5m]", names)
+	}
+}
+
+// TestBuildRuleGraphRegexConsumerCountsAsSkip pins the honesty invariant: a regex
+// __name__ consumer that WOULD match a recorded series is counted as a skip
+// (blocking the gate), never silently under-linked so that a truly-consumed
+// recorded series is left wrongly orphan.
+func TestBuildRuleGraphRegexConsumerCountsAsSkip(t *testing.T) {
+	recorded := []RecordedSeries{
+		{Name: "job:http_requests:rate5m", Source: "rule:a.yml/api/job:http_requests:rate5m"},
+	}
+	consumers := []HarvestedQuery{
+		// This regex would match the recorded series by name, but the match set is
+		// not statically reducible — it must become a skip, not a silent non-link.
+		{Expr: `sum({__name__=~"job:http_requests:.*"})`, Source: "dash:overview/panel-1", Kind: KindPanel},
+	}
+
+	g := BuildRuleGraph(recorded, consumers, PromQLMetricNames, nil)
+
+	if g.Counts.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the regex consumer)", g.Counts.Skipped)
+	}
+	if g.Counts.Consumers != 0 {
+		t.Errorf("consumers = %d, want 0 (regex consumer is a skip, not a link)", g.Counts.Consumers)
+	}
+	if len(g.Skipped) != 1 || g.Skipped[0].Source != "dash:overview/panel-1" {
+		t.Fatalf("skipped entry = %+v, want the regex consumer source", g.Skipped)
+	}
+	if !strings.Contains(g.Skipped[0].Reason, "__name__") {
+		t.Errorf("skip reason should explain the non-reducible __name__ selection, got %q", g.Skipped[0].Reason)
+	}
+}
