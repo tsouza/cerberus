@@ -43,6 +43,12 @@ func runConstruct(t *testing.T, c Construct) {
 		t.Fatalf("construct %q: set exactly one of Seed / Reseed", c.Name)
 	}
 
+	if c.KnownSuperlinear != "" && c.WallAxisLinearByDesign != "" {
+		t.Fatalf("construct %q: set at most one of KnownSuperlinear / WallAxisLinearByDesign — "+
+			"the first quarantines a tracked super-linear bug, the second records a permanently "+
+			"uninformative wall axis; a construct is one or the other, not both.", c.Name)
+	}
+
 	// Each construct gets its own connection / session so a seed or DROP in
 	// one never bleeds into another's row set.
 	db := openChDB(t)
@@ -151,7 +157,18 @@ func runConstruct(t *testing.T, c Construct) {
 		t.Fatalf("construct %q: parameter did not grow across the sweep (%.2fx) — the sweep is mis-built; "+
 			"a sub-linearity assertion is meaningless without a growing parameter.", c.Name, paramGrowth)
 	}
-	if wallGrowth >= gate {
+	switch {
+	case c.WallAxisLinearByDesign != "":
+		// The wall axis is uninformative for this construct by construction:
+		// its bounded shape and its fan-out shape are BOTH linear in the
+		// parameter (see WallAxisLinearByDesign), so no wall gate separates
+		// them. Measure and log for visibility, but delegate the fan-out gate
+		// entirely to the deterministic cardinality invariant (b) below.
+		t.Logf("WALL-AXIS-DELEGATED %s: wall grew %.2fx while %s grew %.2fx (reference gate %.2fx) — "+
+			"wall cannot discriminate the bounded shape from a fan-out here; the cardinality axis (b) is the gate.",
+			c.Name, wallGrowth, c.Param, paramGrowth, gate)
+		t.Logf("  reason: %s", c.WallAxisLinearByDesign)
+	case wallGrowth >= gate:
 		msg := func(verb string) string {
 			return verb + ": compute-scaling violation in " + c.Name + " (" + c.Why + "): wall-time grew " +
 				ftoa(wallGrowth) + "x while " + c.Param + " grew only " + ftoa(paramGrowth) + "x (slack=" +
@@ -169,7 +186,7 @@ func runConstruct(t *testing.T, c Construct) {
 			t.Errorf("%s The %s fan-out regressed back in. first: %s=%d wall=%v   last: %s=%d wall=%v",
 				msg("regression"), c.Why, c.Param, first.param, first.wall, c.Param, last.param, last.wall)
 		}
-	} else if c.KnownSuperlinear != "" {
+	case c.KnownSuperlinear != "":
 		// The quarantined construct is now sub-linear — the tracked bug may
 		// be FIXED. Surface it so the flag gets removed (flip back to a hard
 		// gate) rather than lingering as dead quarantine.

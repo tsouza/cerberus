@@ -55,7 +55,11 @@
 //
 // It MUST pass on current main: every registered shape is bounded there.
 // If a registered shape is NOT sub-linear on main, that is a real finding
-// — the assertion is not weakened to make it pass.
+// — the wall assertion is not weakened to make it pass. The one exception
+// is a shape whose bounded AND fan-out forms are BOTH linear in the
+// parameter (so the wall axis cannot separate them by construction); such a
+// construct sets [Construct.WallAxisLinearByDesign] and is gated solely by
+// the deterministic cardinality invariant (b), never by a slack fudge.
 //
 // Build-tagged `chdb`; runs in the `perf-chdb` lane (./test/perf/...).
 package scaling
@@ -182,6 +186,27 @@ type Construct struct {
 	// REMOVE this flag (flip the wall axis back to a hard gate) once the
 	// tracked bug is fixed.
 	KnownSuperlinear string
+
+	// WallAxisLinearByDesign delegates this construct's fan-out detection
+	// ENTIRELY to the cardinality invariant (b), because the wall-time axis
+	// (a) cannot discriminate its bounded shape from its fan-out shape — BOTH
+	// are linear in the parameter, so no wall gate (at any slack) separates
+	// them. The canonical case is traceql_compare: a flat WHERE evaluating K
+	// conjunctive map-probes per row is inherently O(rows x K) CPU, and a
+	// per-attribute JOIN/arrayJoin fan-out is ALSO O(rows x K) (rows is fixed,
+	// K varies), so wall tracks K ~1:1 EITHER WAY. The discriminator is
+	// cardinality: the flat filter keeps the peak intermediate at ~scan_rows
+	// (flat in K) while a fan-out inflates it to rows x K. The driver still
+	// MEASURES and LOGS wall every run (the data stays visible) but does not
+	// gate on it; invariant (b) and the construct's own emitted-SQL-shape
+	// precondition are the hard fan-out gates. A non-empty reason is required.
+	//
+	// This is NOT KnownSuperlinear. KnownSuperlinear quarantines a REAL,
+	// separately-tracked super-linear BUG pending a fix (remove the flag when
+	// fixed). WallAxisLinearByDesign records a PERMANENT property of the shape
+	// — the wall axis is uninformative by construction; there is no bug and
+	// nothing to un-flag. Mutually exclusive with KnownSuperlinear.
+	WallAxisLinearByDesign string
 }
 
 // register adds c to the package registry. Called from each construct

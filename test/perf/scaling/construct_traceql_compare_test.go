@@ -13,10 +13,21 @@
 //
 // On current main the conjunction lowers to a SINGLE flat WHERE — K map
 // lookups on one scan, no fan-out — so the intermediate equals the scan
-// rows (a Filter only reduces) and the wall stays sub-linear in K (K cheap
-// map probes per row). Param = K, swept 2 -> 8 -> 32. The bound pins that
-// the path STAYS scan-bound: peak intermediate <= ~1x scan_rows,
+// rows (a Filter only reduces). Param = K, swept 2 -> 8 -> 32. The bound
+// pins that the path STAYS scan-bound: peak intermediate <= ~1x scan_rows,
 // independent of K.
+//
+// The WALL axis is deliberately NOT gated for this construct
+// (WallAxisLinearByDesign): evaluating K conjunctive map-probes per row is
+// inherently O(rows x K) CPU, so wall grows ~linearly in K even on the
+// flat, non-fan-out shape — and a per-attribute JOIN/arrayJoin fan-out is
+// ALSO O(rows x K), so the wall axis cannot separate the two by
+// construction. (The old 25.8 CI substrate was scan-dominated enough to
+// mask the per-probe cost, so wall looked sub-linear; the 26.5 substrate
+// surfaces the true linearity.) The discriminator is the CARDINALITY axis
+// (b): the flat filter keeps the peak intermediate at ~scan_rows, flat in
+// K, while a fan-out inflates it to rows x K — plus the emitted-SQL-shape
+// precondition below that rejects a JOIN/arrayJoin outright.
 package scaling
 
 import (
@@ -43,7 +54,13 @@ func init() {
 		// arrayJoin regression (rows x K) blows straight past, while the
 		// scan-bound shape sits at <=1x.
 		CardinalityBound: 1.1,
-		SubLinearSlack:   0.9,
+		SubLinearSlack:   0.9, // informational only — the wall axis is delegated (see below)
+		// K conjunctive map-probes per row is inherently O(rows x K), and so
+		// is a per-attribute fan-out; the wall axis cannot tell them apart, so
+		// fan-out detection is delegated to the cardinality bound (b) + the
+		// emitted-SQL-shape precondition. See the file header for the full why.
+		WallAxisLinearByDesign: "flat K-probe filter and a per-attribute fan-out are both O(rows x K); " +
+			"wall cannot separate them — the cardinality bound (b) is the fan-out gate",
 		Seed: func() string {
 			ddl := `DROP TABLE IF EXISTS otel_traces;
 			CREATE TABLE otel_traces (
