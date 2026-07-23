@@ -6,13 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"time"
 
-	"github.com/tsouza/cerberus/internal/api/prom"
-	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/migrate"
-	"github.com/tsouza/cerberus/internal/optimizer"
-	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // runClassifyCmd harvests a corpus (from --corpus, --rules and/or --dashboards),
@@ -62,13 +58,16 @@ func runClassifyCmd(args []string, stdout, stderr io.Writer) error {
 
 // runClassifyReport dry-runs every query in src through the read-side pipeline,
 // buckets the resulting explain report, and writes it to w. It is fully offline:
-// the engine has no Client and DryRunSQL never executes.
+// the engine has no Client and DryRunSQL never executes. Like explain, it loads
+// config.FromEnv() so the preview engine carries the prod per-query sample budget
+// (see newExplainEngine) — otherwise a budget-busting subquery would classify
+// Supported offline yet 422 in production.
 func runClassifyReport(w io.Writer, src migrate.CorpusSource, asJSON bool) error {
-	metrics := schema.DefaultOTelMetricsFromEnv()
-	eng := &engine.Engine{Optimizer: optimizer.Default()}
-	lang := prom.NewExplainLang(metrics, time.Unix(explainEvalUnix, 0).UTC())
-
-	ex := dryRunExplainer{eng: eng, lang: lang}
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return fmt.Errorf("load config from environment: %w", err)
+	}
+	ex := newDryRunExplainer(cfg)
 	rep, err := migrate.BuildReport(context.Background(), src, ex)
 	if err != nil {
 		return fmt.Errorf("build classify report: %w", err)

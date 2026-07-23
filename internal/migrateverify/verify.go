@@ -32,12 +32,46 @@ import (
 // DefaultTolerance is the absolute epsilon two sample values may differ by and
 // still count as equal. It is deliberately tiny — parity means the same number,
 // and this only absorbs float round-trips through JSON string encoding, not real
-// numeric drift.
+// numeric drift. At large magnitudes a fixed absolute epsilon cannot express
+// last-ULP equality, so valuesEqual also applies relativeTolerance (see there).
 const DefaultTolerance = 1e-9
+
+// relativeTolerance is the fractional epsilon combined with the absolute
+// tolerance so a match survives at large magnitudes. A float64 counter near 1e9
+// carries an intrinsic ULP of ~2e-7 — far above DefaultTolerance — so two
+// backends that agree to the last representable digit still differ by more than
+// an absolute 1e-9. valuesEqual accepts a diff within max(absTol, relTol·|max|),
+// so "the same number" holds across the whole float range, not just near zero.
+const relativeTolerance = 1e-9
+
+// maxVerifyTolerance caps the absolute --tolerance BuildParams accepts. The gate
+// proves the SAME number on both backends; the absolute tolerance exists only to
+// absorb float round-trips (large-magnitude equality is handled by
+// relativeTolerance). A value at or above 1.0 is already looser than any
+// round-trip slack and reads as a fat-finger (e.g. tolerance=1000) that would
+// silently bless real divergences, so it is rejected rather than recorded.
+const maxVerifyTolerance = 1.0
 
 // resultTypeMatrix is the only Prometheus resultType a range query can return;
 // anything else from cerberus means it could not serve the query as a range.
 const resultTypeMatrix = "matrix"
+
+// HTTP status-class boundaries verify treats differently. A cerberus 4xx is an
+// honest "I can't serve this query" (unsupported, non-blocking); a 5xx — or any
+// other non-200, non-4xx status — is a half-broken backend (e.g. its ClickHouse
+// is down, 503 on every query) that MUST fail the gate, consistent with a
+// connection refusal already failing it. Reporting a half-broken backend as a
+// non-blocking WARN would let "VERIFICATION PASSED" ship over a dead backend.
+const (
+	minClientErrorStatus = 400
+	minServerErrorStatus = 500
+)
+
+// isClientReject reports whether status is a 4xx — the only non-200 class verify
+// treats as a non-blocking "unsupported" query rejection.
+func isClientReject(status int) bool {
+	return status >= minClientErrorStatus && status < minServerErrorStatus
+}
 
 // Verdict is the classification of a single query's parity check.
 type Verdict string
@@ -47,12 +81,15 @@ const (
 	VerdictMatch Verdict = "match"
 	// VerdictDiverge: both backends returned matrix data, but the results differ.
 	VerdictDiverge Verdict = "diverge"
-	// VerdictUnsupported: cerberus returned a non-200 status or a non-matrix
-	// result — it could not serve the query as a range at all.
+	// VerdictUnsupported: cerberus ANSWERED but could not serve the query as a
+	// range — a 4xx rejection, or a 200 whose body is not a matrix. This is a
+	// non-blocking coverage gap, NOT a half-broken backend (a 5xx is VerdictError).
 	VerdictUnsupported Verdict = "unsupported"
-	// VerdictError: the reference failed, or a transport/parse error prevented a
-	// comparison. Distinct from unsupported: the fault is not cerberus rejecting
-	// the query, so there is nothing to compare.
+	// VerdictError: the reference failed, a transport/parse error prevented a
+	// comparison, or cerberus returned a 5xx / other non-200, non-4xx status (a
+	// half-broken backend, e.g. its ClickHouse is down). Distinct from
+	// unsupported: there is either nothing to compare, or the backend is broken
+	// rather than honestly rejecting the query — both must fail the gate.
 	VerdictError Verdict = "error"
 )
 
@@ -108,15 +145,32 @@ func formatValue(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
-// valuesEqual reports whether two sample values agree within tol, treating two
-// NaNs as equal (both backends declaring "no value here" is agreement, not a
-// divergence).
+// valuesEqual reports whether two sample values agree, treating two NaNs as
+// equal (both backends declaring "no value here" is agreement, not a divergence)
+// and two like-signed infinities as equal by exact, sign-aware comparison.
+//
+// Infinities are handled BEFORE the abs-diff test: math.Abs(+Inf - +Inf) is NaN,
+// and NaN <= tol is false, so a 1/0-style query returning byte-identical +Inf on
+// both backends would otherwise be reported divergent. Exact equality gets it
+// right in every direction: +Inf==+Inf and -Inf==-Inf match, while +Inf vs -Inf
+// and +Inf vs a finite value diverge.
+//
+// For finite values the match limit combines the absolute tol with a relative
+// term so equality holds at large magnitudes where a fixed epsilon cannot
+// express last-ULP agreement (see relativeTolerance).
 func valuesEqual(a, b, tol float64) bool {
 	aNaN, bNaN := math.IsNaN(a), math.IsNaN(b)
 	if aNaN || bNaN {
 		return aNaN && bNaN
 	}
-	return math.Abs(a-b) <= tol
+	if math.IsInf(a, 0) || math.IsInf(b, 0) {
+		return a == b
+	}
+	limit := tol
+	if rel := relativeTolerance * math.Max(math.Abs(a), math.Abs(b)); rel > limit {
+		limit = rel
+	}
+	return math.Abs(a-b) <= limit
 }
 
 // Compare matches ref and cerberus series by canonical label set and returns the
@@ -292,9 +346,20 @@ type Summary struct {
 	HarvestSkipped int `json:"harvest_skipped"`
 }
 
-// Report is the full parity result: per-query verdicts, the out-of-scope
-// accounting, the harvest-time skips, and the roll-up summary.
+// ReportParams records the comparison parameters the gate and humans need to
+// judge how strict the parity check actually was — chiefly the tolerance, since
+// a loosened tolerance silently weakens every "match" verdict. Recording it in
+// the gate-consumed Report (not only the --report diagnostic) means a verify.json
+// produced with a fat-fingered tolerance can no longer be blessed blind.
+type ReportParams struct {
+	Tolerance float64 `json:"tolerance"`
+}
+
+// Report is the full parity result: the resolved comparison params, per-query
+// verdicts, the out-of-scope accounting, the harvest-time skips, and the roll-up
+// summary.
 type Report struct {
+	Params         ReportParams          `json:"params"`
 	Summary        Summary               `json:"summary"`
 	Results        []QueryResult         `json:"results"`
 	OutOfScope     []OutOfScopeEntry     `json:"out_of_scope,omitempty"`
@@ -330,12 +395,18 @@ type RangeResult struct {
 // deterministic output. Each query is issued to the reference and to cerberus
 // with identical parameters; the verdict is derived as:
 //
-//   - transport/decode failure on either backend, or a reference that did not
-//     return a 200 matrix → error (nothing to compare against);
-//   - cerberus non-200 or non-matrix → unsupported;
+//   - transport/decode failure on either backend, a reference that did not
+//     return a 200 matrix, or a cerberus 5xx / other non-200-non-4xx status (a
+//     half-broken backend) → error (nothing to compare, or the backend is broken);
+//   - cerberus 4xx, or a 200 non-matrix body → unsupported (answered, but could
+//     not serve the query as a range);
 //   - otherwise → the comparator's match/diverge verdict.
 func Verify(ctx context.Context, corpus Corpus, ref, cerberus Backend, p Params) Report {
-	rep := Report{OutOfScope: corpus.OutOfScope, HarvestSkipped: corpus.HarvestSkipped}
+	rep := Report{
+		Params:         ReportParams{Tolerance: p.Tolerance},
+		OutOfScope:     corpus.OutOfScope,
+		HarvestSkipped: corpus.HarvestSkipped,
+	}
 	rep.Summary.OutOfScope = len(corpus.OutOfScope)
 	rep.Summary.HarvestSkipped = len(corpus.HarvestSkipped)
 
@@ -369,7 +440,16 @@ func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) Qu
 		out.Verdict, out.Detail = VerdictError, fmt.Sprintf("reference request failed: %v", refErr)
 	case cerErr != nil:
 		out.Verdict, out.Detail = VerdictError, fmt.Sprintf("cerberus request failed: %v", cerErr)
+	case cerRes.Status != http.StatusOK && !isClientReject(cerRes.Status):
+		// A 5xx (or any other non-200, non-4xx) means cerberus is half-broken —
+		// e.g. its ClickHouse is down and it 503s every query. That is a BLOCKING
+		// failure, not a query it honestly could not serve; classing it as
+		// unsupported would let "VERIFICATION PASSED" ship over a dead backend.
+		out.Verdict = VerdictError
+		out.Detail = fmt.Sprintf("cerberus returned status=%d (backend error, not a query rejection)", cerRes.Status)
 	case cerRes.Status != http.StatusOK || cerRes.ResultType != resultTypeMatrix:
+		// A 4xx rejection or a 200 non-matrix body: cerberus answered but could
+		// not serve the query as a range. Non-blocking coverage gap.
 		out.Verdict = VerdictUnsupported
 		out.Detail = fmt.Sprintf("cerberus returned status=%d resultType=%q", cerRes.Status, cerRes.ResultType)
 	case refRes.Status != http.StatusOK || refRes.ResultType != resultTypeMatrix:
@@ -434,6 +514,11 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	bw.printf("# or errors.\n")
 	bw.printf("#\n")
 	bw.printf("# Note: %s\n", ExperimentalNote)
+	bw.printf("#\n")
+	// Surface the tolerance the matches were judged at: a loosened tolerance
+	// silently weakens every "match", so the operator must see how strict the
+	// comparison actually was.
+	bw.printf("# Match tolerance: %s (absolute; relative granularity also applied at large magnitudes)\n", formatValue(r.Params.Tolerance))
 	bw.printf("#\n")
 	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d out of scope, +%d harvest-skipped)\n\n",
 		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error, r.Summary.OutOfScope, r.Summary.HarvestSkipped)

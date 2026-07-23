@@ -27,3 +27,20 @@ func NewExplainLang(s schema.Metrics, evalTime time.Time) engine.Lang {
 		End:    evalTime, // Step stays 0 => instant evaluation
 	}
 }
+
+// NewExplainLangRange builds an engine.Lang for offline RANGE explain — the
+// preview path for dashboard-panel queries, which the server runs as a
+// query_range (a non-zero Step lowers the outer step grid), not as the instant
+// evaluation NewExplainLang models for rules. It reuses the same lang adapter, so
+// Parse and ProjectSamples stay byte-identical to production; only the [start,
+// end, step] window differs. Callers pin a fixed, representative window so the
+// emitted SQL — and any goldens over it — stay deterministic.
+func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Duration) engine.Lang {
+	return &lang{
+		Parser: promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
+		Schema: s,
+		Start:  start,
+		End:    end,
+		Step:   step,
+	}
+}

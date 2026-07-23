@@ -143,11 +143,15 @@ type Explanation struct {
 	Err  error
 }
 
-// Explainer turns a PromQL query into an Explanation, offline. The cmd/migrate
-// adapter implements it over engine.DryRunSQL so the SQL is byte-identical to
-// what the server would send to ClickHouse.
+// Explainer turns one harvested query into an Explanation, offline. It receives
+// the whole HarvestedQuery (not just the expr) so it can model the query's
+// evaluation MODE: a rule (record/alert) evaluates instantly, while a dashboard
+// panel runs as a query_range — previewing a panel as an instant query would
+// emit SQL the server never runs. The cmd/migrate adapter implements it over
+// engine.DryRunSQL so the SQL is byte-identical to what the server would send to
+// ClickHouse.
 type Explainer interface {
-	Explain(ctx context.Context, query string) Explanation
+	Explain(ctx context.Context, q HarvestedQuery) Explanation
 }
 
 // Tables walks plan and returns the physical ClickHouse tables it scans —
@@ -244,7 +248,7 @@ func BuildReport(ctx context.Context, src CorpusSource, ex Explainer) (Report, e
 	rep := Report{Skipped: skipped}
 	for _, q := range queries {
 		qr := QueryReport{Query: q}
-		ex := ex.Explain(ctx, q.Expr)
+		ex := ex.Explain(ctx, q)
 		if ex.Err != nil {
 			qr.Unsupported = ex.Err.Error()
 		} else {

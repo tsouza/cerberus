@@ -18,8 +18,8 @@ type fakeExplainer struct {
 	byQuery map[string]Explanation
 }
 
-func (f fakeExplainer) Explain(_ context.Context, query string) Explanation {
-	if ex, ok := f.byQuery[query]; ok {
+func (f fakeExplainer) Explain(_ context.Context, q HarvestedQuery) Explanation {
+	if ex, ok := f.byQuery[q.Expr]; ok {
 		return ex
 	}
 	return Explanation{Err: errors.New("no canned explanation")}
