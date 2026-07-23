@@ -1,177 +1,287 @@
 # Migrating to cerberus
 
-This guide walks you through moving a Prometheus-backed setup onto cerberus
-(ClickHouse) **without rebuilding dashboards or rewriting alert rules**, and —
-just as important — how to check what will change *before* you send real
+This is the operator playbook for moving a Prometheus-backed setup onto
+cerberus (ClickHouse) **without rebuilding dashboards or rewriting alerts** —
+and, just as important, for *proving* what will change **before** you send real
 traffic.
 
-The tool that supports this guide is the `migrate` CLI. It is **read-only** and
-**offline-first**: it never writes to Prometheus, Grafana, or ClickHouse.
+The whole journey is driven by the `migrate` CLI, built into the release
+binary. It is **read-only and offline-first**: it never writes to Prometheus,
+Grafana, or ClickHouse. The only mutating steps in this guide — applying the
+schema and flipping the datasource — are things **you** run by hand,
+deliberately.
 
----
+## What cerberus replaces — and what it does not
 
-## The one idea to hold onto
+Cerberus replaces Prometheus's **storage and query engine**. It does **not**
+replace two things, and getting this straight up front is the difference
+between a smooth cutover and a blank dashboard:
 
-Your `prometheus.yml` does **not** tell you whether a migration will be smooth.
-Metric names, label sets, and — the big one — **label cardinality** are produced
-by your exporters at runtime, not declared in config.
+- **It has no ruler.** Cerberus evaluates ad-hoc PromQL that Grafana (or your
+  CLI) sends it; it does **not** evaluate your `recording` / `alerting` rules on
+  a schedule. The `record:` output series a recording rule produces are not
+  created by cerberus. Whatever evaluates your rules today must keep doing so,
+  writing its output where cerberus can read it (into ClickHouse via your
+  collector). Keep the ruler.
+- **It does not ingest.** Your OpenTelemetry Collector already writes telemetry
+  into ClickHouse through its ClickHouse exporter; cerberus only reads it back.
+  You do **not** point any writer at cerberus.
 
-So the migration is organised around your **real queries** (the PromQL in your
-recording rules, alerting rules, and Grafana panels), not your config files.
-The plan is: **lint your queries offline, then prove them against live data.**
-
----
+So the migration is organised around your **real queries** — the PromQL in
+recording rules, alerting rules, and Grafana panels — not around
+`prometheus.yml`. A config file cannot tell you whether a query will translate
+cleanly or blow up on cardinality; only the queries and the live data can.
 
 ## Before you start
 
-You need three things:
+You need three things in place:
 
-1. **A ClickHouse instance** receiving your telemetry via the OpenTelemetry
-   Collector's ClickHouse exporter (the same OTel-shaped tables cerberus reads).
-2. **A dual-write / shadow period.** For a while, your data flows to Prometheus
-   **and** to ClickHouse at the same time. This overlap is what makes a real
-   before/after comparison possible. You never cut over cold.
-3. **Your real queries**, reachable either as local files or through the Grafana
-   API (see [Step 1](#step-1-harvest-your-real-queries)).
+1. **ClickHouse receiving your telemetry** via the OpenTelemetry Collector's
+   ClickHouse exporter — the same OTel-shaped tables cerberus reads (see the
+   [version requirements](../README.md#version-requirements)).
+2. **A dual-write / shadow window.** For a period, data flows into **both**
+   Prometheus **and** ClickHouse at the same time. This overlap is what makes a
+   real before/after comparison possible. You never cut over cold.
+3. **Your real queries as files** — Prometheus recording/alerting rule YAML and
+   exported Grafana dashboard JSON. These are the harvest inputs. (Harvesting
+   from a live Grafana API is **not** a shipped capability today; export the
+   dashboards to JSON first.)
 
----
+## The `migrate` tool
 
-## The migration in five steps
+There are eight capabilities: seven subcommands plus one root flag.
+
+| Command             | What it does                                                            | Key flags                                                                                                                                        | Network             |
+| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- |
+| `migrate --schema`  | Print the `CREATE` statements cerberus expects, from `CERBERUS_*` env   | *(root flag; reads `CERBERUS_*`)*                                                                                                                | offline             |
+| `migrate harvest`   | Build a machine-readable PromQL corpus from your files                  | `--rules`, `--dashboards`, `--out`                                                                                                               | offline             |
+| `migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL      | `--corpus` (or `--rules`/`--dashboards`), `--out`                                                                                                | offline             |
+| `migrate classify`  | Bucket each query as supported / unsupported / risky                    | `--corpus` (or `--rules`/`--dashboards`), `--json`, `--out`                                                                                      | offline             |
+| `migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline             |
+| `migrate verify`    | Replay the corpus against **both** backends and diff (parity gate)      | `--corpus`, `--ref`, `--cerberus`, `--ref-token`, `--cerberus-token`, `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out` | live (two backends) |
+| `migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk    | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)  |
+| `migrate gate`      | Fold the artifacts into one cutover go/no-go decision                   | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline             |
+
+The offline preview commands (`explain`, `classify`) load `config.FromEnv()`
+so the preview runs with the **same per-query sample budget** the production
+server enforces — a query that would trip a runtime guard is not previewed as
+clean. `verify` and `inventory` also read `CERBERUS_VERIFY_*` /
+`CERBERUS_INVENTORY_*` environment fallbacks for their connection, window, and
+credential flags — not the output flags (`--json` / `--out`, and for inventory
+not `--top`) — so the same run can be driven from flags or env.
+
+## The migration lifecycle
 
 ```text
-1. Harvest  →  2. Explain  →  3. Schema  →  4. Verify  →  5. Cut over
-   (queries)    (offline)      (offline)     (live diff)    (flip URLs)
+ASSESS            VALIDATE      VERIFY         DECIDE      CUT OVER       DECOMMISSION
+harvest           --schema      verify         gate        (manual:       (manual:
+ → inventory      (render +     (diff both      (go/        flip the       after the
+ → classify        review)      backends,       no-go)      datasource     retention
+ → rulegraph                    diverge→zero)                URL)          runway)
 ```
 
-### Step 1: Harvest your real queries
+The offline stages (`ASSESS`, `VALIDATE`) you can run today, before cerberus is
+even provisioned. `VERIFY` and `DECIDE` need the dual-write window live. The
+last two stages are **operator actions, not commands** — the tool deliberately
+stops at the go/no-go and hands you the flip.
 
-Point the tool at where your queries live. Two options — pick whichever fits.
+### Assess: harvest, inventory, classify, rulegraph
 
-**Option A — local files** (works fully offline, air-gapped friendly):
+**Harvest** collapses every rule file and exported dashboard into one
+deterministic `corpus.json`. Every dropped item (unreadable file, non-Prometheus
+panel) is counted and reported — nothing is silently discarded.
 
-```bash
-migrate explain --rules ./prometheus/rules/ --dashboards ./grafana/dashboards/
-```
+**Inventory** probes the **live** source Prometheus's
+`/api/v1/status/tsdb` endpoint and ranks the top head-block series and label
+cardinality. This is the number that drives OOM risk, and it exists **only** at
+runtime — it is not in any config or dashboard. Inventory refuses to infer it
+from `prometheus.yml`. A source that 404s the status endpoint is a hard error.
 
-- `--rules` — a file or directory of Prometheus recording/alerting rule files.
-- `--dashboards` — a directory of exported Grafana dashboard JSON.
+**Classify** buckets each corpus query: *supported* (parses, lowers, and emits
+SQL cleanly), *unsupported* (the offending construct is named), or
+supported-but-**risky**. Read "supported" precisely: it means the query
+**translates**, not that cerberus returns the same numbers — only `verify`
+proves that.
 
-**Option B — live Grafana** (recommended — it sees the queries your teams
-*actually* run, which files often miss):
+**Rulegraph** links each recording rule's `record:` output series to the
+dashboard/alert consumers that read it. Because cerberus has no ruler, any
+**consumed** recorded series must keep being materialized after cutover, or the
+panel that reads it goes silently blank. Rulegraph tells you exactly which ones;
+materializing them elsewhere is a manual operator step.
 
-```bash
-export CERBERUS_GRAFANA_TOKEN=<service-account-token>   # Viewer role is enough
-migrate explain --grafana-url https://grafana.internal --grafana-datasource prometheus-prod
-```
+### Validate: render the schema
 
-- The token is **read-only** and is **never** printed or logged.
-- `--grafana-datasource` scopes harvesting to the Prometheus datasource you are
-  migrating. Panels pointing at other datasources (Loki, Tempo, …) are dropped
-  with a count, never silently mixed in.
-
-### Step 2: Read the explain report
-
-For every query it harvested, `explain` shows:
-
-- **The exact ClickHouse SQL** cerberus will run — byte-for-byte what the live
-  server would execute.
-- **The physical tables** the query touches.
-- **A risk flag**, if the query's shape is dangerous (for example, an unbounded
-  time window).
-- Or an **`UNSUPPORTED`** marker, if the query cannot be translated yet.
-
-Each row is labelled with where it came from (`grafana:<dashboard>`,
-`grafana-alert`, or `rules-file`), so when something needs fixing you know
-exactly which dashboard or rule to open.
-
-The goal of this step is a clean list: everything either `OK`, flagged with a
-reason you understand, or on the `UNSUPPORTED` list to address before cutover.
-
-### Step 3: Render the schema
-
-See the exact tables cerberus expects — offline, no database connection:
-
-```bash
-migrate --schema
-```
-
-This prints the `CREATE` statements cerberus would apply, straight from your
-`CERBERUS_*` environment. It is pipeable into `clickhouse-client`:
+Preview the exact tables cerberus expects — offline, no database connection.
+The output is byte-identical to what the server applies at startup, because it
+reads the same `CERBERUS_*` environment, and it pipes straight into
+`clickhouse-client`:
 
 ```bash
 migrate --schema | clickhouse-client -h clickhouse.internal --multiquery
 ```
 
-Because it is rendered from the same code path the server uses at startup, what
-you preview is exactly what you would get.
+Applying the DDL is a **deliberate, separate step you run yourself** — the tool
+only renders it.
 
-### Step 4: Verify against live data (the cutover gate)
+### Verify: replay against both backends
 
-Once your dual-write period is running, replay your harvested queries against
-**both** backends over the same time window and diff the answers:
+This is the parity gate. Over the dual-write window, `verify` replays every
+corpus query against reference Prometheus **and** cerberus over one
+`query_range` window and diffs the results series-by-series. Each replayed
+PromQL query lands as `match`, `diverge`, `unsupported`, or `error`; two further
+buckets record inputs that were **not** examined — `out_of_scope` (a
+non-PromQL entry with no Prometheus baseline) and `harvest_skipped` (a corpus
+entry that never became a replayable query). A green run means the replayed
+queries matched, not that every input was checked — read those two buckets too.
+On divergence it shows the first differing point (series, timestamp, reference
+value, cerberus value).
+
+`verify` exits **non-zero (code 2)** if a single query diverges or errors —
+divergence is **never** allow-listed. Run it, fix each divergence at the source,
+re-run. **You are done when the diverge count reaches zero.** That number is
+your permission to flip traffic — not a leap of faith.
+
+For a failing run, add `--report diagnostics.json` to capture the full
+machine-readable diagnostics (with a copy-pasteable repro command; backend URLs
+and credentials are redacted) — that file is what you attach to a bug report.
+
+> If the cerberus you verify against has experimental native ClickHouse
+> aggregates enabled (the `timeSeries*ToGrid` family, auto-selected on CH 25.9+),
+> a sub-observable last-bit rounding difference can surface as a `diverge`.
+> Verify against the exact configuration you intend to run, and see the
+> [exactness-vs-scale tradeoff](performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
+> Raise `--tolerance` only as a deliberate decision, never to paper over a real diff.
+
+### Decide: the cutover gate
+
+`gate` is a pure-offline aggregator. It reads the JSON artifacts the other
+stages emit (`--verify`, `--classify`, `--rulegraph`, `--inventory`) and folds
+them into **one** PASS/FAIL verdict with a per-stage checklist. It **refuses**
+(exits **code 3**), it never merely warns, on any blocking input:
+
+- **verify** — any divergence or error blocks; a parity run that replayed **zero
+  queries** also blocks (an empty corpus proves nothing).
+- **classify** — any unsupported query blocks (risky ones WARN); classifying
+  **zero queries** also blocks (an empty corpus proves no support coverage).
+- **rulegraph** — any *consumed* recorded series blocks (it must stay
+  materialized); an unparseable consumer expression also blocks, because
+  "orphan ⇒ safe to drop" is unsound once a consumer was dropped.
+- A **missing required artifact** blocks — `verify`, `classify`, and
+  `rulegraph` are required; `inventory` is advisory (high cardinality WARNs,
+  never blocks).
+
+Exit 0 — and only exit 0 — means you are cleared to cut over.
+
+### Cut over: flip the datasource (manual)
+
+This is an operator action, not a command:
+
+- Point the Grafana Prometheus **datasource URL** at cerberus (or swap DNS /
+  the service in front of it). Dashboards and alert rules are unchanged — that
+  is the whole point.
+- Flip your read-path panels first; leave anything that pages **for last**, once
+  you have watched the read path stay green.
+- Keep dual-write running as a safety net.
+
+### Decommission: retire Prometheus (manual)
+
+Also manual, and not urgent. Keep Prometheus's write/storage path until your
+ClickHouse retention covers the longest window your dashboards and alerts look
+back over — that runway is your rollback. Only then retire the old storage.
+
+## A full transcript
+
+The commands pipe together into one assess → verify → gate flow:
 
 ```bash
-export CERBERUS_VERIFY_REFERENCE_URL=http://prometheus.internal:9090
-export CERBERUS_VERIFY_CERBERUS_URL=http://cerberus.internal:9090
-migrate verify --rules ./prometheus/rules/ --start -1h --end now --step 1m
+# ── ASSESS ────────────────────────────────────────────────────────────
+# Harvest every real query into one deterministic corpus.
+migrate harvest \
+  --rules './prometheus/rules/*.yml' \
+  --dashboards ./grafana/dashboards \
+  --out corpus.json
+
+# How cleanly does each map onto cerberus PromQL?
+migrate classify --corpus corpus.json --json --out classify.json
+
+# Which recording-rule outputs must stay materialized after cutover?
+migrate rulegraph \
+  --rules './prometheus/rules/*.yml' \
+  --corpus corpus.json \
+  --json --out rulegraph.json
+
+# Probe the LIVE Prometheus for the cardinality that drives OOM risk.
+migrate inventory \
+  --source http://prometheus.internal:9090 \
+  --top 50 --json --out inventory.json
+
+# ── VALIDATE ──────────────────────────────────────────────────────────
+# Render the schema cerberus expects (byte-identical to server startup).
+migrate --schema | clickhouse-client -h clickhouse.internal --multiquery
+
+# ── VERIFY ────────────────────────────────────────────────────────────
+# Replay the corpus against BOTH backends over one window. Exits 2 on any diverge.
+migrate verify \
+  --corpus corpus.json \
+  --ref http://prometheus.internal:9090 \
+  --cerberus http://cerberus.internal:8080 \
+  --start -1h --end now --step 60s \
+  --json --out verify.json \
+  --report verify-diagnostics.json
+
+# ── DECIDE ────────────────────────────────────────────────────────────
+# Fold every artifact into one go/no-go. Exit 0 = cleared; exit 3 = no-go.
+migrate gate \
+  --verify verify.json \
+  --classify classify.json \
+  --rulegraph rulegraph.json \
+  --inventory inventory.json
 ```
 
-For each query you get one of: `match`, `diverge`, `unsupported`, or `error`.
-On a divergence it shows the **first** differing point (`series`, `timestamp`,
-`reference value`, `cerberus value`) so you can chase it down.
+`verify`'s window flags default to `--start -1h --end now --step 60s`, so they
+are optional; supply them when you want a specific window.
 
-Run it, fix each divergence, and re-run. **You are done when the diverge count
-reaches zero.** That number is your permission to flip traffic — not a leap of
-faith.
+## What the tool will not tell you
 
-### Step 5: Cut over
+Being honest about the blind spots is the whole point of the tool. It never
+pretends to know these:
 
-- Point your Grafana datasource URL at cerberus (or swap the DNS / service in
-  front of it). Dashboards and alert rules are unchanged — that is the whole
-  point.
-- Keep the dual-write running for a bit as a safety net.
-- Monitor, then decommission the Prometheus write path when you are confident.
+- **Cardinality is runtime, not config.** A query whose *shape* looks fine can
+  still exhaust memory on a metric with millions of label combinations. That
+  number lives only in the running TSDB; `inventory` reads it to **rank risk**,
+  but it does **not** predict cerberus's exact memory, and `explain`/`classify`
+  flag dangerous *shapes*, never row counts.
+- **Translate ≠ match.** `classify` proving a query is *supported* proves it
+  translates and emits SQL — it is **not** proof the results match your old
+  Prometheus. Only `verify` proves parity.
+- **Only `verify` earns the flip.** The diverge-count-zero result is the
+  permission to cut over. Nothing upstream of it is.
+- **The gates refuse; they don't warn.** `verify` exits non-zero on any
+  divergence (never allow-listed); `gate` exits non-zero on any blocking stage,
+  an empty corpus, or a missing required artifact. There is no escape hatch.
+- **Experimental ClickHouse paths may deviate.** Verify against the exact
+  configuration you will run in production (see the note under *Verify*).
 
----
+Anything the tool cannot resolve — an unreadable file, a non-Prometheus panel,
+an unparseable expression — is **counted and reported**, never silently skipped.
 
-## What this tool will NOT tell you
+## Continuous verification
 
-Being honest about the blind spots is the point of the tool. It will never
-pretend to know these:
-
-- **Cardinality.** A query whose *shape* looks fine can still run out of memory
-  on a metric with millions of label combinations. That number is not in any
-  config or dashboard — it is runtime data. `explain` flags dangerous *shapes*;
-  it never estimates row counts. For the real inventory, point cerberus at your
-  running Prometheus's `/api/v1/metadata` and `/api/v1/status/tsdb`.
-- **Whether the numbers match.** `explain` proving a query *translates* is not
-  proof the *results* match your old Prometheus. Only **Step 4 (`verify`)**
-  proves that — and only where both backends hold overlapping data.
-- **Retention.** TTL is set by a launch flag, not by `prometheus.yml`, so the
-  rendered schema uses no retention unless you pass one.
-
-When a query is dropped, a variable can't be resolved, or a translation isn't
-supported, the tool **counts and reports it**. It never silently skips.
-
----
-
-## Troubleshooting
-
-| Symptom                                                   | What it means                                                    | What to do                                                                |
-| --------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| A query is on the `UNSUPPORTED` list                      | cerberus can't translate that PromQL shape yet                   | Note the panel/rule; raise it — it's a real gap to fix at the source      |
-| A panel is reported as `skipped: unresolved-template-var` | A Grafana `$variable` or macro couldn't be resolved              | Pass the variable's value, or accept that panel is checked at verify time |
-| Non-Prometheus panels are dropped                         | They target Loki/Tempo/etc., not the datasource you're migrating | Expected — v1 harvests PromQL only                                        |
-| `verify` shows a divergence                               | Real result difference between Prometheus and cerberus           | Read the first-diff point; fix the cause; re-run until zero               |
-| An `explain` query errors at emit time                    | The query hit a resource-bound guard (e.g. unbounded window)     | That's cerberus refusing an unsafe query honestly — bound the query       |
-
----
+Migration is not a one-shot. The scheduled **Layer 14** end-to-end lane turns
+the whole operator journey — harvest → explain → classify → rulegraph → schema →
+verify → gate — into executable scenarios against real ClickHouse and a real
+reference Prometheus across eight archetypes. Its design, the 26 user-stories,
+and the tier/build plan live in
+[`docs/migration-testing.md`](migration-testing.md).
 
 ## Scope (v1)
 
-- **PromQL only.** LogQL and TraceQL panels are dropped with a count, not
+- **PromQL only.** LogQL and TraceQL panels are counted and dropped, not
   migrated.
-- **Query-result parity**, not alert-firing parity. `verify` diffs query
-  results — it does not re-implement `for:` durations or Alertmanager routing.
+- **Query-result parity, not alert-firing parity.** `verify` diffs query
+  results; it does not re-implement `for:` durations or Alertmanager routing.
+- **File-based harvest.** Harvest inputs are rule YAML and exported dashboard
+  JSON; there is no live Grafana-API source.
 - **Read-only.** The tool never provisions schema or mutates Grafana; applying
-  the rendered DDL is a deliberate, separate step you run yourself.
+  the rendered DDL and flipping the datasource are deliberate steps you run
+  yourself.
