@@ -404,7 +404,7 @@ labels grounded in real incident outcomes, which this corpus does not have.
   severe-recall is floored at 1.0 across the whole grid including off-nominal
   prevalence. Adversarial corpora (monochrome-healthy, distribution-shifted
   across seeds) and a multi-rule-interaction test guard the edges.
-- `route-rules benchmark` runs the whole thing from the CLI: it scores the
+- `cerberus route-rules benchmark` runs the whole thing from the CLI: it scores the
   embedded catalog over the generated corpus and prints the metric table, no
   corpus file required (`--seed`, `--min-support`, and `--param` tune it). The
   `chdb`-tagged parity test re-runs the benchmark through the CH SQL backend and
