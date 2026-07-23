@@ -77,6 +77,18 @@ differ from a naive reading:
   live inside `verify`; it needs a dedicated harness comparator outside the
   zero-diverge gate.
 
+> **Harness comparator — reuse, don't reinvent.** The verify-tier scenarios
+> drive the shipped `verify` command, whose differential engine is
+> `internal/migrateverify` (`Compare` / `Verify`). That package **is** the
+> single in-process Go comparator, shared by the operator's `verify` command and
+> this lane — do not write a second comparator inside the harness. This is
+> deliberately kept separate from the CI compatibility gate
+> (`compatibility/{prometheus,loki,tempo}`), which grades cerberus with the
+> **upstream `promql-compliance-tester`** as an *independent* compliance oracle.
+> Two comparators exist on purpose: cerberus's own (operator + this migration
+> lane) and an outside oracle (compliance) — never fold the compat gate onto
+> cerberus's own comparator, or it would grade cerberus with cerberus's code.
+
 ## 3. Three infrastructure tiers
 
 **Tier 0 — offline fixtures (no backend).** Pure `migrate` CLI over checked-in
