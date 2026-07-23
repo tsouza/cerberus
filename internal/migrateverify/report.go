@@ -24,7 +24,20 @@ const VerifyReportVersion = 1
 // deviate from real Prometheus. A divergence on one of these is not proof of an
 // experimental path — verify sees only two HTTP backends and cannot introspect
 // cerberus config — so it is surfaced as a CANDIDATE cause, never a detection.
-var hotspotFuncs = []string{"rate", "irate", "increase", "histogram_quantile"}
+//
+// deriv/predict_linear are included: their native path
+// (timeSeriesDerivToGrid / timeSeriesPredictLinearToGrid) fits the per-window
+// least-squares regression on a WHOLE-SECOND timestamp axis, which also
+// quantises the aggregate's window membership. On sub-second-offset samples
+// straddling a window boundary that can shift a sample between grid windows
+// relative to real Prometheus (raw-ts membership) — see regressionMembershipNote.
+var hotspotFuncs = []string{"rate", "irate", "increase", "histogram_quantile", "deriv", "predict_linear"}
+
+// regressionHotspotFuncs are the subset of hotspotFuncs whose experimental
+// native path carries the additional whole-second window-membership quirk, so a
+// divergence on them gets a MORE SPECIFIC candidate-cause note than the generic
+// experimental-CH one (see regressionMembershipNote).
+var regressionHotspotFuncs = []string{"deriv", "predict_linear"}
 
 // Attribution candidate categories. Each is a HINT about what MIGHT explain a
 // divergence, never a claim that verify detected the cause: verify only compares
@@ -56,6 +69,14 @@ const (
 	experimentalCHNote = "cerberus may compute this via an experimental CH path; " +
 		"re-run cerberus with experimental features disabled to isolate a cerberus bug " +
 		"from an experimental-feature deviation."
+	regressionMembershipNote = "deriv/predict_linear have an experimental native CH " +
+		"path (timeSeriesDerivToGrid / timeSeriesPredictLinearToGrid) that fits the " +
+		"regression on a whole-second timestamp axis, which also quantises window " +
+		"membership: a sub-second-offset sample straddling a range-window boundary can " +
+		"land in a different window than real Prometheus, shifting the slope/forecast. " +
+		"This is a KNOWN limitation of that path (default-off, CERBERUS_EXPERIMENTAL_TS_GRID_RANGE); " +
+		"re-run with it disabled — the portable fan-out uses raw-ts membership and " +
+		"should match Prometheus — before reporting a bug."
 	ingestArtifactNote = "a series present on only one backend may reflect an ingestion " +
 		"difference (relabeling, scrape timing) rather than a compute bug."
 	dataWindowGapNote = "a missing step or series may reflect a data-availability window " +
@@ -110,6 +131,18 @@ func isHotspotExpr(expr string) bool {
 	return false
 }
 
+// isRegressionHotspotExpr reports whether expr invokes deriv/predict_linear — the
+// hotspot subset whose experimental native path carries the whole-second
+// window-membership quirk, warranting the more specific regressionMembershipNote.
+func isRegressionHotspotExpr(expr string) bool {
+	for _, fn := range regressionHotspotFuncs {
+		if containsCall(expr, fn) {
+			return true
+		}
+	}
+	return false
+}
+
 // containsCall reports whether fn appears in expr as a function call: bounded on
 // the left by a non-identifier char (or start of string) and followed on the
 // right — after optional whitespace — by '('.
@@ -142,7 +175,14 @@ func containsCall(expr, fn string) bool {
 func attributeDivergence(expr string, fd *FirstDiff) []AttributionCandidate {
 	cands := []AttributionCandidate{{Category: AttribCerberusBug, Note: cerberusBugNote}}
 	if isHotspotExpr(expr) {
-		cands = append(cands, AttributionCandidate{Category: AttribExperimentalCHFeature, Note: experimentalCHNote})
+		// deriv/predict_linear get the sub-second window-membership note; the rest
+		// get the generic experimental-CH note. Both are the same category — a
+		// candidate experimental-feature deviation — just worded to the actual path.
+		note := experimentalCHNote
+		if isRegressionHotspotExpr(expr) {
+			note = regressionMembershipNote
+		}
+		cands = append(cands, AttributionCandidate{Category: AttribExperimentalCHFeature, Note: note})
 	}
 	if fd != nil && isCoverageGap(fd.Reason) {
 		cands = append(cands,

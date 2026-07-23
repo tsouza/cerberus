@@ -138,14 +138,28 @@ var nativeTSGridFn = map[string]string{
 //     fan-out too. The fan-out computes BOTH regression functions through
 //     windowPairsSLRFrag, whose x-axis is dateDiff('second', anchor, ts) — a
 //     whole-second grid. Matching that exact quantisation (rather than the raw
-//     sub-second column) is what makes native == fan-out == Prometheus here; on
-//     the raw axis predict_linear only diverged by float-order noise, but the
-//     whole-second axis makes it exact.
+//     sub-second column) is what makes native == fan-out == Prometheus for
+//     whole-second-aligned samples; on the raw axis predict_linear only diverged
+//     by float-order noise, but the whole-second axis makes it exact.
 //   - rate is window-normalised (its result is an increase divided by the
 //     window seconds param, not a raw per-tick slope) and changes/resets are
 //     integer counts, so all three are timestamp-tick-invariant and keep the
 //     native DateTime64(9) column untouched — no golden churn, no change to
 //     their sub-second sample-membership behaviour.
+//
+// LIMITATION (regression path only): the returned axis is the aggregate's ts
+// argument, which drives BOTH the least-squares x-axis AND the window-membership
+// bucketing. Truncating to whole seconds therefore also quantises membership: a
+// sub-second sample straddling a grid-window boundary buckets by its floored
+// second here, whereas the fan-out (and Prometheus) decide membership on the raw
+// timestamp, so such a boundary sample can land in a different window between the
+// two paths. Feeding the raw nanosecond column instead would match membership but
+// is numerically worse (a fit over ~10^18 timestamps overruns float64's exact
+// range) and breaks predict_linear's whole-second horizon unit — hence the
+// whole-second axis, with the sub-second membership gap left as the gate before
+// this experimental (CERBERUS_EXPERIMENTAL_TS_GRID_RANGE, default-off) path is
+// promoted. The dual-emit parity tests prove bit-identity on whole-second-aligned
+// seeds only.
 func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 	if fn == "deriv" || fn == "predict_linear" {
 		return Call("toDateTime", Col(tsColumn))

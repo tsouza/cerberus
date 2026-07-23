@@ -13,8 +13,8 @@
 // Why this is the parity proof. The fan-out's per-window slope is the
 // Prometheus-pinned funcDeriv value (the spec corpus is reference-Prometheus-
 // pinned), so native == fan-out transitively proves native == Prometheus on the
-// deriv shape. We compare the DECODED float64 (never a string render) at full
-// precision.
+// deriv shape FOR WHOLE-SECOND-ALIGNED SAMPLES (see the scope note below). We
+// compare the DECODED float64 (never a string render) at full precision.
 //
 // Bit-identical, not tolerant. The fan-out computes the slope through
 // windowPairsSLRFrag, whose x-axis is dateDiff('second', anchor, ts) — a
@@ -26,6 +26,16 @@
 // strictness the changes/resets count parity tests use. A regression (e.g. the
 // axis-unit bug this test was written to catch) diverges by billions of ULP, far
 // outside the bit-identical bound.
+//
+// Scope: whole-second-aligned only. The seed timestamps are whole minutes, so
+// toDateTime(ts) == ts and the native and fan-out window MEMBERSHIP coincide.
+// On sub-second-offset samples they need not: toDateTime(ts) drives both the
+// regression axis AND the aggregate's window bucketing, so a boundary sample
+// buckets by its floored second here while the fan-out keeps raw-ts membership
+// (see nativeGridTsAxisFrag's LIMITATION note). This test therefore proves
+// bit-identity for whole-second-aligned data; the native regression path stays
+// experimental/default-off until the sub-second membership gap is closed or
+// pinned.
 //
 // Substrate: exercised on CI. timeSeriesDerivToGrid shipped in CH 25.8
 // (PR #84328) and is floor-pinned to 25.9 in internal/chopt (a uniform
@@ -157,7 +167,7 @@ func TestNativeTSGridDeriv_DualEmitParity(t *testing.T) {
 		}
 	}
 	t.Logf("deriv dual-emit parity: %d/%d cells bit-identical. "+
-		"native == fan-out == Prometheus on the deriv shape.", len(fanout), len(fanout))
+		"native == fan-out == Prometheus on the deriv shape (whole-second-aligned samples).", len(fanout), len(fanout))
 }
 
 // runDerivEmit lowers + emits the deriv query with the native-deriv strategy set

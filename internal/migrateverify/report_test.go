@@ -30,6 +30,8 @@ func TestIsHotspotExpr(t *testing.T) {
 		{"irate(x[1m])", true},
 		{"increase(x[5m])", true},
 		{"histogram_quantile(0.9, sum(x))", true},
+		{"deriv(x[5m])", true},                // native-regression hotspot
+		{"predict_linear(x[5m], 3600)", true}, // native-regression hotspot
 		{"sum(rate(http_requests_total[1m]))", true},
 		{"rate (x[1m])", true}, // whitespace before '(' still a call
 		{"up", false},
@@ -38,6 +40,8 @@ func TestIsHotspotExpr(t *testing.T) {
 		{"my_irate_helper(x)", false}, // 'irate' inside a longer identifier
 		{"sum(node_increase)", false}, // 'increase' inside a longer identifier
 		{"histogram_quantiles(x)", false},
+		{"my_deriv_helper(x)", false},   // 'deriv' inside a longer identifier
+		{"predict_linear_v2(x)", false}, // 'predict_linear' inside a longer identifier
 	}
 	for _, c := range cases {
 		if got := isHotspotExpr(c.expr); got != c.want {
@@ -89,6 +93,33 @@ func TestAttribution_HistogramQuantileHotspot(t *testing.T) {
 	res := runVerifyOne(t, refBody, cerBody, Query{Expr: expr, Source: "panel:p"})
 	if !hasAttrib(res.Attribution, AttribExperimentalCHFeature) {
 		t.Errorf("histogram_quantile divergence must carry the experimental-ch-feature candidate, got %+v", res.Attribution)
+	}
+}
+
+// TestAttribution_RegressionHotspotNote: deriv/predict_linear divergences carry
+// the experimental-ch-feature candidate with the SPECIFIC sub-second
+// window-membership note, not the generic experimental-CH one — so an operator
+// mid-cutover recognises the known regression-path limitation instead of
+// mis-filing it as a cerberus bug.
+func TestAttribution_RegressionHotspotNote(t *testing.T) {
+	noteFor := func(cands []AttributionCandidate, cat string) string {
+		for _, c := range cands {
+			if c.Category == cat {
+				return c.Note
+			}
+		}
+		return ""
+	}
+	for _, expr := range []string{"deriv(x[5m])", "predict_linear(x[5m], 3600)"} {
+		refBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}})}
+		cerBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "2"}}})}
+		res := runVerifyOne(t, refBody, cerBody, Query{Expr: expr, Source: "rule:r"})
+		if !hasAttrib(res.Attribution, AttribExperimentalCHFeature) {
+			t.Errorf("%s divergence must carry the experimental-ch-feature candidate, got %+v", expr, res.Attribution)
+		}
+		if note := noteFor(res.Attribution, AttribExperimentalCHFeature); note != regressionMembershipNote {
+			t.Errorf("%s divergence must carry the regression-membership note, got %q", expr, note)
+		}
 	}
 }
 

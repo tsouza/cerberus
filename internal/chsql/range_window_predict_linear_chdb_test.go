@@ -14,8 +14,9 @@
 // Why this is the parity proof. The fan-out's per-window forecast is the
 // Prometheus-pinned funcPredictLinear value (the spec corpus is
 // reference-Prometheus-pinned), so native == fan-out transitively proves
-// native == Prometheus on the predict_linear shape. We compare the DECODED
-// float64 (never a string render) at full precision.
+// native == Prometheus on the predict_linear shape FOR WHOLE-SECOND-ALIGNED
+// SAMPLES (see the scope note below). We compare the DECODED float64 (never a
+// string render) at full precision.
 //
 // Horizon literal, not computed. The native path only fires when the horizon t
 // is a single whole-second literal (nativePredictLinearHorizonEligible): the CH
