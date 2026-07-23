@@ -45,12 +45,10 @@ type Corpus struct {
 func BuildCorpus(queries []HarvestedQuery, skipped []SkippedEntry) Corpus {
 	cqs := make([]CorpusQuery, 0, len(queries))
 	for _, q := range queries {
-		cqs = append(cqs, CorpusQuery{
-			Expr:   q.Expr,
-			Source: q.Source,
-			Kind:   q.Kind,
-			Lang:   LangPromQL,
-		})
+		// HarvestedQuery and CorpusQuery share the same fields (the latter adds
+		// only json tags), so a struct conversion carries every field — including
+		// Lang — without a field-by-field copy that could silently drop one.
+		cqs = append(cqs, CorpusQuery(q))
 	}
 	sort.SliceStable(cqs, func(i, j int) bool {
 		if cqs[i].Source != cqs[j].Source {
@@ -108,7 +106,8 @@ func (s CorpusFileSource) Harvest(_ context.Context) ([]HarvestedQuery, []Skippe
 	}
 	queries := make([]HarvestedQuery, 0, len(c.Queries))
 	for _, q := range c.Queries {
-		queries = append(queries, HarvestedQuery{Expr: q.Expr, Source: q.Source, Kind: q.Kind})
+		// Struct conversion (identical fields) carries Kind + Lang back out intact.
+		queries = append(queries, HarvestedQuery(q))
 	}
 	return queries, c.Skipped, nil
 }

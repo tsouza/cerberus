@@ -11,8 +11,8 @@ import (
 
 // TestHarvestRulesAndDashboardsIntoCorpus drives the full harvest → corpus flow
 // over a temp rules file and a temp Grafana dashboard: a Prometheus panel and a
-// Prometheus target inside a nested collapsed row are kept, a Loki panel is
-// dropped-with-count, and the corpus marshals deterministically.
+// Prometheus target inside a nested collapsed row are harvested as PromQL, a Loki
+// panel is harvested as LogQL, and the corpus marshals deterministically.
 func TestHarvestRulesAndDashboardsIntoCorpus(t *testing.T) {
 	dir := t.TempDir()
 
@@ -87,16 +87,13 @@ groups:
 		t.Fatalf("Harvest: %v", err)
 	}
 
-	// Two rules + two Prometheus panel targets (top-level + nested row).
-	if len(queries) != 4 {
-		t.Fatalf("expected 4 harvested queries, got %d: %+v", len(queries), queries)
+	// Two rules + two Prometheus panel targets + one Loki panel target, all
+	// harvested now that the corpus is three-headed — nothing dropped.
+	if len(queries) != 5 {
+		t.Fatalf("expected 5 harvested queries, got %d: %+v", len(queries), queries)
 	}
-	// Exactly one drop: the Loki panel target.
-	if len(skipped) != 1 {
-		t.Fatalf("expected 1 skip (the Loki panel), got %d: %+v", len(skipped), skipped)
-	}
-	if !strings.Contains(skipped[0].Reason, "non-prometheus datasource: loki") {
-		t.Errorf("Loki panel should be dropped with a datasource reason, got: %+v", skipped[0])
+	if len(skipped) != 0 {
+		t.Fatalf("expected 0 skips (Loki panel is now harvested as LogQL), got %d: %+v", len(skipped), skipped)
 	}
 
 	corpus := BuildCorpus(queries, skipped)
@@ -104,16 +101,28 @@ groups:
 		t.Errorf("corpus version = %d, want %d", corpus.Version, CorpusVersion)
 	}
 
-	// Every query is PromQL-tagged; kinds cover record, alert, and panel.
+	// Kinds cover record, alert, and panel; langs cover PromQL (rules + prom
+	// panels) and LogQL (the Loki panel).
 	kinds := map[string]int{}
+	langs := map[string]int{}
 	for _, q := range corpus.Queries {
-		if q.Lang != LangPromQL {
-			t.Errorf("query %q lang = %q, want %q", q.Expr, q.Lang, LangPromQL)
+		if q.Lang == "" {
+			t.Errorf("query %q carries no lang tag", q.Expr)
 		}
 		kinds[q.Kind]++
+		langs[q.Lang]++
 	}
-	if kinds[KindRecord] != 1 || kinds[KindAlert] != 1 || kinds[KindPanel] != 2 {
+	if kinds[KindRecord] != 1 || kinds[KindAlert] != 1 || kinds[KindPanel] != 3 {
 		t.Errorf("unexpected kind distribution: %+v", kinds)
+	}
+	if langs[LangPromQL] != 4 || langs[LangLogQL] != 1 {
+		t.Errorf("unexpected lang distribution: %+v", langs)
+	}
+	// The Loki panel query is LogQL-tagged with panel provenance.
+	for _, q := range corpus.Queries {
+		if strings.Contains(q.Expr, `|= "error"`) && q.Lang != LangLogQL {
+			t.Errorf("Loki panel query should be LogQL-tagged, got: %+v", q)
+		}
 	}
 
 	// The nested-row Prometheus target must be present with panel provenance.
@@ -162,11 +171,12 @@ groups:
 // `harvest --out` composes with `explain --corpus`.
 func TestCorpusRoundTripThroughFileSource(t *testing.T) {
 	queries := []HarvestedQuery{
-		{Expr: "up", Source: "rule:f/g/up_rec", Kind: KindRecord},
-		{Expr: "rate(x[5m])", Source: "dashboard:d/p/A", Kind: KindPanel},
+		{Expr: "up", Source: "rule:f/g/up_rec", Kind: KindRecord, Lang: LangPromQL},
+		{Expr: `{app="x"}`, Source: "dashboard:d/logs/A", Kind: KindPanel, Lang: LangLogQL},
+		{Expr: "rate(x[5m])", Source: "dashboard:d/p/A", Kind: KindPanel, Lang: LangPromQL},
 	}
 	skipped := []SkippedEntry{
-		{Source: "dashboard:d/logs/A", Reason: "non-prometheus datasource: loki"},
+		{Source: "dashboard:d/traces/A", Reason: `unsupported datasource type "elasticsearch" (not prometheus/loki/tempo)`},
 	}
 
 	data, err := BuildCorpus(queries, skipped).Marshal()
@@ -183,19 +193,22 @@ func TestCorpusRoundTripThroughFileSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CorpusFileSource.Harvest: %v", err)
 	}
-	if len(gotQueries) != 2 {
-		t.Fatalf("round-trip queries = %d, want 2: %+v", len(gotQueries), gotQueries)
+	if len(gotQueries) != 3 {
+		t.Fatalf("round-trip queries = %d, want 3: %+v", len(gotQueries), gotQueries)
 	}
 	if len(gotSkipped) != 1 {
 		t.Fatalf("round-trip skips = %d, want 1: %+v", len(gotSkipped), gotSkipped)
 	}
-	// Kinds are preserved; sort order is by source, so up_rec comes before the
-	// dashboard entry.
-	if gotQueries[0].Kind != KindPanel {
-		// dashboard:d/p/A sorts before rule:f/g/up_rec ("d" < "r").
-		t.Errorf("first round-tripped query kind = %q, want %q", gotQueries[0].Kind, KindPanel)
+	// Sort order is by source: dashboard:d/logs/A ("logs") < dashboard:d/p/A
+	// ("p") < rule:f/g/up_rec ("r"). Kind AND lang round-trip intact — the LogQL
+	// panel keeps its language.
+	if gotQueries[0].Kind != KindPanel || gotQueries[0].Lang != LangLogQL {
+		t.Errorf("first round-tripped query = %+v, want a LogQL panel", gotQueries[0])
 	}
-	if gotSkipped[0].Reason != "non-prometheus datasource: loki" {
+	if gotQueries[1].Lang != LangPromQL || gotQueries[2].Lang != LangPromQL {
+		t.Errorf("PromQL queries lost their lang tag on round-trip: %+v", gotQueries)
+	}
+	if !strings.Contains(gotSkipped[0].Reason, "unsupported datasource type") {
 		t.Errorf("round-tripped skip reason = %q", gotSkipped[0].Reason)
 	}
 }
