@@ -33,10 +33,19 @@
 //	like UNION DISTINCT did, not double-count via UNION ALL.
 //
 //	PRONG 2 (cost): on a wide-row corpus (the nested Events/Links arrays) at
-//	scale, the cerberus-emitted `||` must cost no more than a small multiple
-//	of a bare UNION ALL over the same arms — i.e. it must NOT carry the
-//	wide-row-dedup tax. The committed ratio bound has generous headroom; the
-//	pre-fix UNION DISTINCT blew it by ~5-35x on the chDB runner.
+//	scale, the cerberus-emitted `||` must cost a FRACTION of the full-row
+//	UNION DISTINCT it replaced — i.e. it must NOT carry the wide-row-dedup
+//	tax. The yardstick is the regression shape itself (full-row UNION
+//	DISTINCT over the same two arms), not a bare UNION ALL: both the emit and
+//	the yardstick do real materialize+dedup work, so the ratio is stable
+//	across ClickHouse versions and runners. (An earlier yardstick — ratio vs
+//	a `count()` over bare UNION ALL — was fragile: CH answers that count
+//	WITHOUT materializing the wide array columns, so the denominator is a
+//	near-free ~5ms and the ratio swung with server version even though the
+//	emit was byte-identical. It broke on the 25.8→26.5 substrate bump with no
+//	code change. Measured on 26.5: cerberus `||` ~= 0.23x the full-row UNION
+//	DISTINCT cost; a regression back to full-row dedup makes the two queries
+//	identical, ratio ~= 1.0x.)
 //
 // Build-tagged chdb; rides the perf-guards job.
 package perf
@@ -67,12 +76,13 @@ const setUnionWideDDL = `CREATE TABLE otel_traces (
     "Links.TraceId" Array(String), "Links.SpanId" Array(String), "Links.TraceState" Array(String), "Links.Attributes" Array(Map(String,String))
 ) ENGINE = MergeTree() ORDER BY (Timestamp);`
 
-// setUnionDedupTax is the max (cerberus `||` wall / bare UNION ALL wall)
-// ratio PRONG 2 tolerates. Identity dedup via LIMIT 1 BY carries a small
-// constant over UNION ALL; the pre-fix wide-row UNION DISTINCT was ~5-35x.
-// Generous headroom keeps it from flapping while still failing a return to
-// wide-row dedup.
-const setUnionDedupTax = 12.0
+// setUnionMaxFractionOfUnionDistinct is the max (cerberus `||` wall /
+// full-row UNION DISTINCT wall) ratio PRONG 2 tolerates. Identity dedup via
+// LIMIT 1 BY does a fraction of the wide-row dedup work: measured ~0.23x on
+// the 26.5 substrate. A regression back to full-row dedup makes the emit
+// identical to the yardstick (ratio ~= 1.0x), so a bound comfortably below 1
+// catches it while leaving generous headroom for runner noise.
+const setUnionMaxFractionOfUnionDistinct = 0.6
 
 const setUnionScaleRows = 400_000
 
@@ -160,9 +170,13 @@ func TestSetUnion_IdentityDedup_Cost(t *testing.T) {
 
 	sqlText, args := emitSpansetUnionSQL(t, `{ kind = producer } || { kind = consumer }`)
 
-	// Bare UNION ALL over the same two arms — the cheapest possible shape
-	// (no dedup). The cerberus emit adds only identity dedup on top.
-	bareUnionAll := `(SELECT * FROM otel_traces WHERE SpanKind = 'Producer') UNION ALL (SELECT * FROM otel_traces WHERE SpanKind = 'Consumer')`
+	// Full-row UNION DISTINCT over the same two arms — the regression shape
+	// this guard exists to reject (dedup on every wide column INCLUDING the
+	// nested Events/Links arrays). The cerberus emit must cost a fraction of
+	// it. Both do real materialize+dedup work, so the ratio is stable across
+	// ClickHouse versions — unlike a bare-UNION-ALL count, whose wide columns
+	// CH never materializes.
+	unionDistinct := `(SELECT * FROM otel_traces WHERE SpanKind = 'Producer') UNION DISTINCT (SELECT * FROM otel_traces WHERE SpanKind = 'Consumer')`
 
 	best := func(q string, a []any) time.Duration {
 		// warm-up
@@ -182,14 +196,14 @@ func TestSetUnion_IdentityDedup_Cost(t *testing.T) {
 	}
 
 	emitWall := best(stripTrailingSemi(sqlText), args)
-	bareWall := best(bareUnionAll, nil)
-	ratio := float64(emitWall) / float64(bareWall)
-	t.Logf("cerberus `||` wall=%s / bare UNION ALL wall=%s = %.2fx (bound %.1fx)",
-		emitWall.Round(time.Microsecond), bareWall.Round(time.Microsecond), ratio, setUnionDedupTax)
-	if ratio > setUnionDedupTax {
-		t.Errorf("cerberus `||` is %.2fx the cost of a bare UNION ALL over the same arms, over the "+
-			"committed %.1fx bound. The spanset-union emit is carrying a wide-row-dedup tax again — "+
+	distinctWall := best(unionDistinct, nil)
+	ratio := float64(emitWall) / float64(distinctWall)
+	t.Logf("cerberus `||` wall=%s / full-row UNION DISTINCT wall=%s = %.2fx (bound %.2fx)",
+		emitWall.Round(time.Microsecond), distinctWall.Round(time.Microsecond), ratio, setUnionMaxFractionOfUnionDistinct)
+	if ratio > setUnionMaxFractionOfUnionDistinct {
+		t.Errorf("cerberus `||` is %.2fx the cost of the full-row UNION DISTINCT it replaced, over the "+
+			"committed %.2fx bound. The spanset-union emit is carrying a wide-row-dedup tax again — "+
 			"it must dedup on (TraceId, SpanId) via `LIMIT 1 BY`, not on the full row tuple "+
-			"(UNION DISTINCT). See chsql.emitSetOperation.", ratio, setUnionDedupTax)
+			"(UNION DISTINCT). See chsql.emitSetOperation.", ratio, setUnionMaxFractionOfUnionDistinct)
 	}
 }
