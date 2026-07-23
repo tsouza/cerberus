@@ -46,4 +46,4 @@ quickstart_clickhouse: "26.6"
 # the compatibility (prometheus / loki / tempo) and e2e ClickHouse services
 # pin. The differential harnesses are the source of truth for all three heads,
 # so this is the version the validated SQL is actually exercised on.
-chdb_substrate: "25.8"
+chdb_substrate: "26.5"

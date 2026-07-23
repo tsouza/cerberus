@@ -19,7 +19,7 @@
 // Feature-detect, not a test-skip. timeSeriesRateToGrid is gated behind
 // a ClickHouse version floor (v25.6.0). The chDB substrate is probed once
 // per run via system.functions; the native assertion only fires when the
-// function is present (true on the current 25.8 substrate). When absent,
+// function is present (true on the current 26.5 substrate). When absent,
 // the fan-out half still runs and a notice is logged so the coverage
 // loss is never silent. The forbid-skip CI gate bans the test-skip API,
 // so this is a documented runtime conditional that always executes.

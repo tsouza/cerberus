@@ -17,25 +17,23 @@
 // are exact integers in float64, so the assertion is BIT-IDENTICAL (no ULP
 // tolerance, unlike the rate path's extrapolation arithmetic).
 //
-// VERSION-GATED, NOT auto-proven on this substrate. Unlike timeSeriesRateToGrid
-// (v25.6, present on the 25.8 chDB substrate), timeSeriesChangesToGrid shipped
-// in v25.9 (PR #86010) and is EMPIRICALLY ABSENT on the chdb-go v1.12.0 / CH
-// 25.8 substrate. The test feature-detects via system.functions and, when the
-// function is absent, logs a NOTICE and validates ONLY the fan-out half — the
-// native==fan-out parity assertion is bypassed here; it runs only on a >= 25.9
-// server (prod/e2e differential lane or a future chDB substrate bump that
-// restores the auto-proof). The forbid-skip CI gate bans the test-skip API, so this is a
-// documented runtime conditional that ALWAYS executes; coverage loss is never
-// silent.
+// Substrate: exercised on CI. timeSeriesChangesToGrid shipped in v25.9
+// (PR #86010, floor-pinned 25.9 in internal/chopt). The chDB parity substrate is
+// chdb-core v26.5.0 (CH 26.5.1.1, versions.yaml chdb_substrate), so the function
+// is PRESENT and the native half fires in the `chdb` CI lane. The feature-detect
+// guard below remains so the fan-out half still validates on an older local
+// libchdb (a developer who has not run `just chdb-install` at the pinned
+// version); the forbid-skip CI gate bans the test-skip API, so this is a
+// documented runtime conditional that ALWAYS executes and never silently loses
+// coverage.
 //
-// Semantic parity to confirm on a >= 25.9 server (documented here so a future
-// fixture reads as intended, not a regression): native timeSeriesChangesToGrid
+// Semantic parity, exercised on the CI substrate: native timeSeriesChangesToGrid
 // requires >= 1 sample/window and returns a 0 count for a single-sample window
 // (NULL -> ABSENT only for an EMPTY window via WHERE grid_val IS NOT NULL),
 // matching the fan-out's `length(window_vals) >= 1` + per-pair `c != p` count.
 // Prom's funcChanges additionally carves out NaN-on-both-sides pairs; both the
-// fan-out and (presumably) the native fn accept divergence there, so the seed
-// below is deliberately finite-valued.
+// fan-out and the native fn accept divergence there, so the seed below is
+// deliberately finite-valued.
 package chsql_test
 
 import (
@@ -109,10 +107,11 @@ func TestNativeTSGridChanges_DualEmitParity(t *testing.T) {
 
 	fanout := runChangesEmit(t, db, false, false)
 	if !changesFnPresent(t, db) {
-		t.Logf("NOTICE: timeSeriesChangesToGrid absent on this chDB substrate (CH 25.8 < 25.9 floor) — " +
-			"native parity assertion bypassed (fan-out half still validated). Parity is VERSION-GATED: " +
-			"prove it on a >= 25.9 server (prod/e2e) or a newer chDB substrate. The always-on SQL-shape " +
-			"golden (native_changes_range_step.txtar) still pins the emit.")
+		t.Logf("NOTICE: timeSeriesChangesToGrid absent on this local chDB substrate " +
+			"(older libchdb than the pinned chdb-core v26.5.0) — native parity assertion " +
+			"bypassed (fan-out half still validated). Run `just chdb-install` at the pinned " +
+			"version to exercise the native half; it runs in the `chdb` CI lane on CH 26.5. " +
+			"The always-on SQL-shape golden (native_changes_range_step.txtar) still pins the emit.")
 		return
 	}
 	native := runChangesEmit(t, db, true, false)

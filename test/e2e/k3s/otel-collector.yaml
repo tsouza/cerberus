@@ -471,7 +471,7 @@ spec:
         # the exporter's `create database` takes — so a green probe proves the
         # exporter's first Start() will succeed.
         - name: wait-for-clickhouse
-          image: clickhouse/clickhouse-server:25.8-alpine
+          image: clickhouse/clickhouse-server:26.5-alpine
           command:
             - sh
             - -c

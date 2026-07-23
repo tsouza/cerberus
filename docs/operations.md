@@ -200,9 +200,9 @@ the SQL array machinery leaves at high cardinality. See
   sample sitting exactly on `anchor-window`, so 25.6–25.8 emit a rate at grid
   points where reference Prometheus emits nothing — a systematic divergence, not
   a measure-zero edge. So the auto floor for the whole family is **25.9**. The
-  compose / e2e / compatibility deployment runs **25.8** (matching the chDB test
-  substrate), which is BELOW that floor, so the native path stays on the fan-out
-  there. The auto-picker gates on this floor automatically — it enables
+  compose / e2e / compatibility deployment and the chDB test substrate now run
+  **26.5**, ABOVE that floor, so the native path is genuinely exercised there.
+  The auto-picker gates on this floor automatically — it enables
   `ts_grid_range` only when the probed server is ≥ 25.9, so a connected older
   server keeps the fan-out and never diverges. (Force-enabling via the legacy
   `=true` flag against a < 25.9 server is still rejected at startup per mode.)
@@ -233,14 +233,16 @@ the SQL array machinery leaves at high cardinality. See
   existing golden, the compat 718/718 corpus, and the compose / e2e lanes are
   structurally the fan-out shape.
 
-**Parity.** Validated on the chDB substrate (25.8) by a dual-emit test
+**Parity.** Validated on the chDB substrate (26.5) by a dual-emit test
 (`internal/chsql/range_window_native_chdb_test.go`) that runs the fan-out and
-the native path on the same seed and compares decoded float64 grids. The seed is
-a linear ramp with samples away from the window edges, so the closed-vs-left-open
-boundary difference of the 25.8 substrate (fixed at 25.9, the auto floor) does
-not affect the compared values — the test pins the emit shape and the
-extrapolation arithmetic, while the boundary correctness is what the 25.9 floor
-guarantees. On the pinned 12-sample ramp 8 of 9 grid cells are bit-identical and
+the native path on the same seed and compares decoded float64 grids. The 26.5
+substrate is above the 25.9 auto floor, so it already carries the left-open
+window fix and the native path exercised here uses the same half-open membership
+as PromQL — there is no closed-vs-left-open boundary difference to work around.
+The seed keeps samples away from the window edges as belt-and-suspenders; the
+test pins the emit shape and the extrapolation arithmetic, while the 25.9 floor
+is what guarantees the boundary correctness in production. On the pinned
+12-sample ramp 8 of 9 grid cells are bit-identical and
 1 diverges by exactly 1 ULP (the native value is the next double up from the
 correctly-rounded fan-out value — a sub-observable float-order difference, both
 render `0.12`).

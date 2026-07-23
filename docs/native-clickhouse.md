@@ -31,11 +31,31 @@ the portable SQL path. What it currently exploits:
   intercept` projection is `predict_linear`, retiring the
   `simpleLinearRegression`/`arrayReduce` fan-out. `predict_linear` threads its
   whole-second horizon `t` as the aggregate's 5th parametric arg; a computed or
-  fractional `t` stays on the fan-out. The native == fan-out numeric parity is a
-  Float64 fit (ULP-close, not bit-identical), proven on a `>= 25.9` server in
-  the prod/e2e differential lane — the sub-25.9 chDB CI substrate lacks the
-  aggregates, so it runs the fan-out and the always-on SQL-shape goldens pin the
-  native emit.
+  fractional `t` stays on the fan-out. Both regression aggregates are fed a
+  whole-second timestamp axis (`toDateTime(ts)`) that matches the fan-out's
+  `dateDiff('second', anchor, ts)` regression x-axis — without it
+  `timeSeriesDerivToGrid` computes a per-nanosecond slope (1e9× too small) off
+  the raw `DateTime64(9)` column. (The whole-second axis is also the
+  numerically sound choice: a least-squares fit over absolute nanosecond
+  timestamps — ~10¹⁸, squared past float64's 2⁵³ exact range — loses precision,
+  and it keeps `predict_linear`'s whole-second horizon `t` unit-consistent.)
+  With the matching axis native == fan-out is **bit-identical for
+  whole-second-aligned samples**, proven directly on the chDB CI substrate by
+  the dual-emit parity tests (`range_window_deriv_chdb_test.go` /
+  `range_window_predict_linear_chdb_test.go`): the substrate is ClickHouse 26.5,
+  above the 25.9 floor, so it ships the aggregates and the native half genuinely
+  fires in the `chdb` lane.
+  - **Known limitation (why the native regression path stays experimental,
+    default-off behind `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`):** the
+    `toDateTime(ts)` argument feeds both the regression x-axis *and* the
+    aggregate's window-membership bucketing. On sub-second-offset samples that
+    straddle a window boundary, the native path buckets by the floored second
+    while the fan-out (and Prometheus) decide membership on the raw timestamp,
+    so a boundary sample can land in a different grid window between the two
+    paths. Bit-identical parity is therefore established only for
+    whole-second-aligned data; closing the sub-second membership gap (or pinning
+    the whole-second-only guarantee with a dedicated characterization seed) is
+    the gate before this path is promoted past experimental.
 - **`timeSeriesResampleToGridWithStaleness`** — native instant-vector
   selection with Prometheus staleness, retiring the staleness fan-out.
 - **`condition_cache`** and **`aggregation_in_order`** — server-side

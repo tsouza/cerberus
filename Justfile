@@ -429,22 +429,27 @@ deps-tidy:
 
 # === chDB (in-process ClickHouse engine probe) ===
 
-CHDB_VERSION := "v4.0.2"
+CHDB_VERSION := "v26.5.0"
 CHDB_INSTALL_PATH := "/usr/local/lib/libchdb.so"
 
 # Install libchdb.so (the in-process ClickHouse engine shared library)
 # used by the chdb-go database/sql driver. Required only for tests that
-# carry the `chdb` build tag — currently the engine-probe test under
-# `internal/chclient/`. Production builds never link against this; the
+# carry the `chdb` build tag — the engine-probe test under
+# `internal/chclient/` and the native-family parity tests under
+# `internal/chsql/`. Production builds never link against this; the
 # release binary stays CGO_ENABLED=0.
 #
-# Pinned to v4.0.2 because that is the last upstream release that ships
-# the standalone `<platform>-libchdb.tar.gz` assets the chdb-go driver
-# expects; v4.1.x releases bundle libchdb inside Python wheels only.
+# Pinned to chdb-core v26.5.0 (ClickHouse 26.5). The standalone
+# `<platform>-libchdb.tar.gz` assets the chdb-go driver expects moved
+# from the `chdb-io/chdb` repo (which stopped shipping them after v4.0.2,
+# bundling libchdb inside Python wheels only) to `chdb-io/chdb-core`,
+# whose release tags track the ClickHouse version directly. v26.5.0 is
+# the newest stable that clears the 25.9 native-timeSeries*ToGrid floor
+# while staying below the 26.7 aggregate-state serialization change.
 # Mirror update_libchdb.sh shipped inside chdb-go.
 #
 # Idempotent: skips download if the install path already exists. Override
-# CHDB_VERSION at the recipe call (`just chdb-install CHDB_VERSION=v4.0.2`).
+# CHDB_VERSION at the recipe call (`just chdb-install CHDB_VERSION=v26.5.0`).
 chdb-install:
     @if [ -f "{{CHDB_INSTALL_PATH}}" ]; then \
         echo "==> libchdb already present at {{CHDB_INSTALL_PATH}} (delete to reinstall)"; \
@@ -465,7 +470,7 @@ chdb-install:
                 esac ;; \
             *) echo "unsupported platform: $os" >&2; exit 1 ;; \
         esac; \
-        url="https://github.com/chdb-io/chdb/releases/download/{{CHDB_VERSION}}/$asset"; \
+        url="https://github.com/chdb-io/chdb-core/releases/download/{{CHDB_VERSION}}/$asset"; \
         echo "==> downloading $url"; \
         tmp="$(mktemp -d)"; \
         curl -fsSL -o "$tmp/libchdb.tar.gz" "$url"; \
@@ -511,7 +516,7 @@ CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
 # MUST stay in lock-step with the image pins in test/e2e/k3s/*.yaml —
 # a stale entry here means the pod pulls straight from the registry at
 # start-up (no pre-pull, no import, full Docker-Hub-flake exposure).
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:25.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.5-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
 
 # Extra images the bundled-ClickHouse ("bwc") object-storage lane needs on top
 # of E2E_EXTERNAL_IMAGES: the MinIO object store + its `mc` client (the
