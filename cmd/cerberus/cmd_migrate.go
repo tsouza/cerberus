@@ -17,6 +17,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/migrate"
 	"github.com/tsouza/cerberus/internal/migrategate"
 	"github.com/tsouza/cerberus/internal/migrateinventory"
@@ -827,44 +828,70 @@ func newExplainEngine(cfg config.Config) *engine.Engine {
 }
 
 // newDryRunExplainer wires the offline explainer: one engine (with the prod
-// sample budget) plus an instant lang for rules and a range lang for dashboard
-// panels, so each query previews in the evaluation mode the server would run it in.
+// sample budget) plus a per-head pair of langs — an instant lang for rules and a
+// range lang for dashboard panels — so each query previews in the evaluation mode
+// the server would run it in. Both the PromQL head (metrics schema) and the LogQL
+// head (logs schema) are wired; the corpus is three-headed and each query routes
+// to the lang matching its Lang tag. Every lang shares the same fixed evalTime and
+// window so the emitted SQL stays deterministic.
 func newDryRunExplainer(cfg config.Config) dryRunExplainer {
 	metrics := schema.DefaultOTelMetricsFromEnv()
+	logs := schema.DefaultOTelLogsFromEnv()
 	evalTime := time.Unix(explainEvalUnix, 0).UTC()
+	rangeStart := evalTime.Add(-explainRangeWindow)
 	return dryRunExplainer{
-		eng:         newExplainEngine(cfg),
-		instantLang: prom.NewExplainLang(metrics, evalTime),
-		rangeLang:   prom.NewExplainLangRange(metrics, evalTime.Add(-explainRangeWindow), evalTime, explainRangeStep),
+		eng:          newExplainEngine(cfg),
+		promInstant:  prom.NewExplainLang(metrics, evalTime),
+		promRange:    prom.NewExplainLangRange(metrics, rangeStart, evalTime, explainRangeStep),
+		logqlInstant: &logql.Lang{Schema: logs, Start: evalTime, End: evalTime},
+		logqlRange:   &logql.Lang{Schema: logs, Start: rangeStart, End: evalTime, Step: explainRangeStep},
 	}
 }
 
 // dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it
 // reports is byte-identical to what the server would send to ClickHouse for the
-// same query. It picks the lang matching the query's evaluation mode: a panel
-// previews as a range query, a rule as an instant query.
+// same query. It picks the lang matching the query's source language (PromQL vs
+// LogQL) AND its evaluation mode: a panel previews as a range query, a rule as an
+// instant query. TraceQL corpus entries have no offline SQL preview yet, so they
+// are reported UNSUPPORTED with the language named rather than mis-parsed.
 type dryRunExplainer struct {
-	eng         *engine.Engine
-	instantLang engine.Lang
-	rangeLang   engine.Lang
+	eng          *engine.Engine
+	promInstant  engine.Lang
+	promRange    engine.Lang
+	logqlInstant engine.Lang
+	logqlRange   engine.Lang
 }
 
 func (d dryRunExplainer) Explain(ctx context.Context, q migrate.HarvestedQuery) migrate.Explanation {
-	// The offline SQL preview models the PromQL read pipeline. LogQL and TraceQL
-	// queries are still harvested into the corpus (so the report accounts for
-	// them), but their SQL is not previewed offline in this wave — report that
-	// honestly rather than parsing a LogQL/TraceQL string as PromQL and surfacing a
-	// mislabelled parse error. An empty Lang is treated as PromQL for corpora
-	// written before the corpus went three-headed.
-	if q.Lang != "" && q.Lang != migrate.LangPromQL {
-		return migrate.Explanation{Err: fmt.Errorf("offline SQL preview covers PromQL only; %s query harvested but not previewed here", q.Lang)}
+	instant, rangeLang, ok := d.langsFor(q.Lang)
+	if !ok {
+		// The offline SQL preview models the PromQL and LogQL read pipelines. A
+		// TraceQL query is still harvested into the corpus (so the report accounts
+		// for it), but its SQL is not previewed offline in this wave — report that
+		// honestly rather than parsing a TraceQL string as PromQL and surfacing a
+		// mislabelled parse error.
+		return migrate.Explanation{Err: fmt.Errorf("offline SQL preview covers PromQL and LogQL only; %s query harvested but not previewed here", q.Lang)}
 	}
-	evalLang := d.instantLang
+	evalLang := instant
 	if q.Kind == migrate.KindPanel {
-		evalLang = d.rangeLang
+		evalLang = rangeLang
 	}
 	dr, err := d.eng.DryRunSQL(ctx, evalLang, q.Expr)
 	return migrate.Explanation{SQL: dr.SQL, Plan: dr.Plan, Err: err}
+}
+
+// langsFor returns the (instant, range) lang pair for a harvested query's source
+// language and whether that language has an offline SQL preview. An empty Lang is
+// treated as PromQL for corpora written before the corpus went three-headed.
+func (d dryRunExplainer) langsFor(lang string) (instant, rangeLang engine.Lang, ok bool) {
+	switch lang {
+	case "", migrate.LangPromQL:
+		return d.promInstant, d.promRange, true
+	case migrate.LangLogQL:
+		return d.logqlInstant, d.logqlRange, true
+	default:
+		return nil, nil, false
+	}
 }
 
 // writeSchema renders the schema cerberus expects for cfg and writes it to w. It
