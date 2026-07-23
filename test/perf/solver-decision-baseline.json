@@ -1332,6 +1332,18 @@
     "reason": "routed"
   },
   {
+    "query": "native_deriv_range_step",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "native_predict_linear_range_step",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
     "query": "native_rate_range_step",
     "routed": true,
     "k": 8,

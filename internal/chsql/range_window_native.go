@@ -29,31 +29,40 @@ const (
 
 // nativeTSGridFn maps a PromQL range function to its ClickHouse-native
 // timeSeries*ToGrid aggregate. The map is the single extension point for the
-// rest of the family (timeSeriesDeltaToGrid, timeSeriesDerivToGrid, …) once
-// each is differentially proven equivalent to its PromQL counterpart.
+// rest of the family (timeSeriesDeltaToGrid, …) once each is differentially
+// proven equivalent to its PromQL counterpart.
 //
 // Every entry renders through the IDENTICAL emitRangeWindowNative shape — the
-// `(start, end, step_s, Range_s)(ts, value)` parametric aggregate paired with a
-// lockstep timeSeriesRange axis — because the whole family shares one paren/arg
-// signature. The per-func difference is purely the aggregate NAME and the
-// ClickHouse version floor at which it first shipped:
+// `(start, end, step_s, Range_s[, predict_offset_s])(ts, value)` parametric
+// aggregate paired with a lockstep timeSeriesRange axis — because the whole
+// family shares one paren/arg signature. The per-func difference is the
+// aggregate NAME, the ClickHouse version floor at which it first shipped, and
+// (predict_linear only) one extra trailing parametric arg:
 //
-//   - rate    -> timeSeriesRateToGrid    (shipped v25.6, >= 2 samples/window)
-//   - changes -> timeSeriesChangesToGrid (v25.9 — PR #86010, >= 1 sample/window)
-//   - resets  -> timeSeriesResetsToGrid  (v25.9 — PR #86010, >= 1 sample/window)
+//   - rate           -> timeSeriesRateToGrid          (shipped v25.6, >= 2 samples/window)
+//   - changes        -> timeSeriesChangesToGrid       (v25.9 — PR #86010, >= 1 sample/window)
+//   - resets         -> timeSeriesResetsToGrid        (v25.9 — PR #86010, >= 1 sample/window)
+//   - deriv          -> timeSeriesDerivToGrid         (v25.8 — PR #84328, >= 2 samples/window)
+//   - predict_linear -> timeSeriesPredictLinearToGrid (v25.8 — PR #84328, >= 2 samples/window, +predict_offset)
 //
 // changes/resets are COUNT functions (Array(Nullable(Float64)) one count per
-// grid point, NULL where no in-window sample), so the same
+// grid point, NULL where no in-window sample); rate/deriv/predict_linear return
+// one Nullable(Float64) value per grid point (NULL where the window has < 2
+// samples, mirroring PromQL's drop-series). Either way the same
 // `WHERE grid_val IS NOT NULL` filter and `toFloat64` cast apply verbatim. The
 // whole family is gated to a 25.9 floor by the chopt registry: changes/resets
 // because the aggregates only ship at 25.9, rate because its membership window
 // was CLOSED until 25.9 (PR #86588 made it left-open / right-closed to match
-// PromQL — see internal/chopt FeatureTSGridRange). The emitter is
-// version-agnostic and only needs the name.
+// PromQL — see internal/chopt FeatureTSGridRange), and deriv/predict_linear
+// (which shipped a quarter earlier at 25.8) pinned to the same 25.9 floor for
+// one uniform capability verdict. The emitter is version-agnostic and only
+// needs the name (plus predict_linear's offset scalar).
 var nativeTSGridFn = map[string]string{
-	"rate":    "timeSeriesRateToGrid",
-	"changes": "timeSeriesChangesToGrid",
-	"resets":  "timeSeriesResetsToGrid",
+	"rate":           "timeSeriesRateToGrid",
+	"changes":        "timeSeriesChangesToGrid",
+	"resets":         "timeSeriesResetsToGrid",
+	"deriv":          "timeSeriesDerivToGrid",
+	"predict_linear": "timeSeriesPredictLinearToGrid",
 }
 
 // emitRangeWindowNative renders a chplan.RangeWindowNative — the
@@ -124,7 +133,19 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	}
 	fnName, ok := nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowNative func %q (supported: rate, changes, resets)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: RangeWindowNative func %q (supported: rate, changes, resets, deriv, predict_linear)", ErrUnsupported, r.Func)
+	}
+	// predict_linear threads its future-offset horizon t (whole seconds) as the
+	// 5th parametric arg of timeSeriesPredictLinearToGrid. The PromQL lowering
+	// only wires the native path for a single whole-second literal t (computed /
+	// fractional horizons stay on the fan-out), so a predict_linear node must
+	// carry exactly one Scalar; any other func must carry none.
+	if r.Func == "predict_linear" {
+		if len(r.Scalars) != 1 {
+			return fmt.Errorf("%w: RangeWindowNative predict_linear requires exactly 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
+		}
+	} else if len(r.Scalars) != 0 {
+		return fmt.Errorf("%w: RangeWindowNative func %q takes no scalar, got %d", ErrUnsupported, r.Func, len(r.Scalars))
 	}
 
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
@@ -146,12 +167,18 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	windowSeconds := int64(r.Range.Seconds())
 
 	// timeSeriesRateToGrid(start, end, step_s, window_s)(ts, value) — the
-	// compiled C++ aggregate that returns the per-grid-point
-	// extrapolatedRate as Array(Nullable(Float64)). Note the TWO paren
-	// groups (params then args), rendered by Parametric.
+	// compiled C++ aggregate that returns the per-grid-point value as
+	// Array(Nullable(Float64)). Note the TWO paren groups (params then args),
+	// rendered by Parametric. predict_linear appends its whole-second horizon t
+	// as a 5th param: timeSeriesPredictLinearToGrid(start, end, step_s,
+	// window_s, predict_offset_s)(ts, value).
+	gridParams := []Frag{startFrag, endFrag, InlineLit(stepSeconds), InlineLit(windowSeconds)}
+	if r.Func == "predict_linear" {
+		gridParams = append(gridParams, InlineLit(int64(r.Scalars[0])))
+	}
 	gridAgg := Parametric(
 		fnName,
-		[]Frag{startFrag, endFrag, InlineLit(stepSeconds), InlineLit(windowSeconds)},
+		gridParams,
 		Col(r.TimestampColumn),
 		Col(r.ValueColumn),
 	)

@@ -96,6 +96,33 @@ const (
 	// AUTO-SELECTED on capable servers, same 25.9 floor and same experimental
 	// gate as FeatureTSGridChanges (the two are siblings from PR #86010).
 	FeatureTSGridResets = "ts_grid_resets"
+
+	// FeatureTSGridDeriv opts eligible deriv(<gauge>[<range>]) query_range
+	// shapes onto the native timeSeriesDerivToGrid aggregate (the per-window
+	// simple-linear-regression slope), retiring the
+	// simpleLinearRegression/arrayReduce fan-out
+	// (internal/chsql.emitRangeWindowDeriv). Experimental maturity but
+	// AUTO-SELECTED on capable servers, same experimental gate and the same
+	// 25.9 floor as the rest of the family.
+	//
+	// IMPORTANT — the floor is 25.9, shared with the family. The deriv/
+	// predict_linear ToGrid aggregates first shipped in ClickHouse 25.8
+	// (PR #84328); the registry pins them to the family's 25.9 floor for
+	// consistency (the shared left-open-window fix, PR #86588), so a single
+	// probed capability verdict governs every timeSeries*ToGrid member.
+	FeatureTSGridDeriv = "ts_grid_deriv"
+
+	// FeatureTSGridPredictLinear opts eligible predict_linear(<gauge>[<range>], t)
+	// query_range shapes onto the native timeSeriesPredictLinearToGrid aggregate
+	// (the per-window slope*t + intercept forecast), retiring the
+	// simpleLinearRegression/arrayReduce fan-out
+	// (internal/chsql.emitRangeWindowPredictLinear). The native path only fires
+	// for a single whole-second literal horizon t (the aggregate's 5th
+	// parametric arg); computed/fractional horizons stay on the fan-out.
+	// Experimental maturity, AUTO-SELECTED on capable servers, same 25.9 floor
+	// and same experimental gate as FeatureTSGridDeriv (the two are siblings
+	// from PR #84328).
+	FeatureTSGridPredictLinear = "ts_grid_predict_linear"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -224,11 +251,28 @@ var registry = []Feature{
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "opt eligible resets(<counter>[<range>]) shapes onto native timeSeriesResetsToGrid (experimental maturity, auto-enabled on server >= 25.9)",
 	},
+	{
+		ID:                         FeatureTSGridDeriv,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible deriv(<gauge>[<range>]) shapes onto native timeSeriesDerivToGrid (experimental maturity, auto-enabled on server >= 25.9)",
+	},
+	{
+		ID:                         FeatureTSGridPredictLinear,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible predict_linear(<gauge>[<range>], t) shapes (whole-second literal t) onto native timeSeriesPredictLinearToGrid (experimental maturity, auto-enabled on server >= 25.9)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
-// columnar_result_decode, ts_grid_changes, ts_grid_resets). The copy keeps the
+// columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
+// ts_grid_predict_linear). The copy keeps the
 // canonical entries immutable from the caller's side. Exposed so tests can
 // enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {

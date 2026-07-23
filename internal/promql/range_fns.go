@@ -85,7 +85,14 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		rw.Step = ctx.step
 		rw.OuterRange = ctx.end.Sub(ctx.start)
 	}
-	return rw, nil
+	// Route through the boot-wired PredictLinear strategy: the native impl
+	// emits a RangeWindowNative (timeSeriesPredictLinearToGrid) for an eligible
+	// range-mode window with a whole-second literal horizon, the fan-out impl
+	// returns rw unchanged. The feature/version decision lives in WHICH strategy
+	// cmd/cerberus wired — there is NO feature-flag / version read here, and the
+	// strategy always returns a valid lowering (never nil). Mirrors the
+	// rate/changes/resets dispatch in lowerRangeVectorCall.
+	return ctx.lowerers.PredictLinear.LowerPredictLinear(rw, s), nil
 }
 
 // lowerHoltWinters handles `holt_winters(v range-vector, sf scalar, tf

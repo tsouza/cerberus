@@ -1954,6 +1954,8 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 			node = ctx.lowerers.Changes.LowerChanges(rw, s)
 		case "resets":
 			node = ctx.lowerers.Resets.LowerResets(rw, s)
+		case "deriv":
+			node = ctx.lowerers.Deriv.LowerDeriv(rw, s)
 		default:
 			node = ctx.lowerers.Rate.LowerRate(rw, s)
 		}
@@ -2077,6 +2079,12 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 		TimestampColumn: rw.TimestampColumn,
 		ValueColumn:     rw.ValueColumn,
 		GroupBy:         rw.GroupBy,
+		// Scalars carries predict_linear's literal horizon t (empty for
+		// rate/changes/resets/deriv). The native emitter threads it into
+		// timeSeriesPredictLinearToGrid's 5th parametric arg; the caller
+		// (NativePredictLinearLowerer) gates eligibility to a whole-second
+		// literal before reaching here, so any element present is native-safe.
+		Scalars: rw.Scalars,
 	}
 }
 

@@ -90,6 +90,16 @@ type RangeWindowNative struct {
 	// `[ColumnRef("Attributes")]` for OTel-CH). May be empty, in which
 	// case all rows form one series. Same semantics as RangeWindow.GroupBy.
 	GroupBy []Expr
+
+	// Scalars carries the literal scalar arguments the native aggregate takes
+	// beyond the shared (start, end, step, window) parametric prefix. Only
+	// predict_linear uses it today: a single whole-second horizon t threaded
+	// into timeSeriesPredictLinearToGrid's 5th parametric arg. Empty for
+	// rate / changes / resets / deriv, which take no extra parameter. Mirrors
+	// RangeWindow.Scalars; the PromQL lowering gates predict_linear to a
+	// whole-second literal before populating it (computed / fractional horizons
+	// stay on the fan-out RangeWindow).
+	Scalars []float64
 }
 
 func (*RangeWindowNative) planNode() {}
@@ -109,6 +119,14 @@ func (r *RangeWindowNative) Equal(other Node) bool {
 	}
 	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn {
 		return false
+	}
+	if len(r.Scalars) != len(o.Scalars) {
+		return false
+	}
+	for i := range r.Scalars {
+		if r.Scalars[i] != o.Scalars[i] {
+			return false
+		}
 	}
 	if len(r.GroupBy) != len(o.GroupBy) {
 		return false
