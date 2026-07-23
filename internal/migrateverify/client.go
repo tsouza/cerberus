@@ -3,6 +3,7 @@ package migrateverify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -93,6 +94,23 @@ func RedactURL(raw string) string {
 	return u.String()
 }
 
+// redactTransportErr strips any basic-auth userinfo from a backend transport
+// error before it can reach an artifact. Go's http client wraps a request
+// failure in a *url.Error whose URL keeps the USERNAME (only the password is
+// masked by stripPassword), so a token-as-username embedded in --ref / --cerberus
+// would leak in full into the error string — which lands in the gate-consumed
+// verify.json AND the --report file operators attach to bug reports. Rebuilding
+// the *url.Error with a RedactURL'd URL removes it; a non-url.Error carries no
+// URL and is returned unchanged. Redacting here, at the client boundary, means
+// every error string a verdict Detail can quote is already clean.
+func redactTransportErr(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return &url.Error{Op: uerr.Op, URL: RedactURL(uerr.URL), Err: uerr.Err}
+	}
+	return err
+}
+
 // promRangeResponse is the standard Prometheus range-query JSON envelope.
 type promRangeResponse struct {
 	Status string `json:"status"`
@@ -124,14 +142,14 @@ func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (Ra
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("build request: %w", err)
+		return RangeResult{}, fmt.Errorf("build request: %w", redactTransportErr(err))
 	}
 	if b.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+b.bearerToken)
 	}
 	resp, err := b.HTTP.Do(req)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("do request: %w", err)
+		return RangeResult{}, fmt.Errorf("do request: %w", redactTransportErr(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 

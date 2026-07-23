@@ -482,8 +482,15 @@ type TextGuidance struct {
 	ReproCommand string
 }
 
-// WriteText renders the human report with no CLI-derived bug-report guidance. It
-// is the entrypoint for callers (and tests) that only have the Report in hand.
+// WriteText renders the human report with no CLI-derived bug-report guidance.
+//
+// It is output-identical to WriteTextGuided with an empty TextGuidance, but it is
+// deliberately KEPT (not dead): it is the Report-only entrypoint used by callers
+// and tests that hold a Report without the CLI's repro-command context — the
+// verify unit tests and the guided/unguided writeText parity checks drive it
+// directly. The production CLI always calls WriteTextGuided so a failing run ends
+// with a copy-pasteable reproduction; this variant keeps the guidance-free path
+// exercised so the two never silently diverge.
 func (r Report) WriteText(w io.Writer) error {
 	return r.writeText(w, nil)
 }

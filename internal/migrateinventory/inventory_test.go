@@ -3,6 +3,7 @@ package migrateinventory
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -253,5 +254,54 @@ func TestWriteText(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("text report missing %q, got:\n%s", want, out)
 		}
+	}
+}
+
+// TestWriteText_EmptyHeadNoGarbageSpan pins the empty-head guard: an empty TSDB
+// head reports sentinel bounds (MinTime = math.MaxInt64, MaxTime = math.MinInt64,
+// so MinTime > MaxTime). The head-span line must be OMITTED rather than printing
+// garbage year-292-billion timestamps. A populated head still prints its span.
+func TestWriteText_EmptyHeadNoGarbageSpan(t *testing.T) {
+	empty := Inventory{
+		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1,
+		Head: HeadStats{NumSeries: 0, MinTime: math.MaxInt64, MaxTime: math.MinInt64},
+	}
+	var eb strings.Builder
+	if err := empty.WriteText(&eb); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	if strings.Contains(eb.String(), "head span:") {
+		t.Errorf("empty head must not print a head-span line, got:\n%s", eb.String())
+	}
+
+	populated := Inventory{
+		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1,
+		Head: HeadStats{NumSeries: 10, MinTime: 1_700_000_000_000, MaxTime: 1_700_003_600_000},
+	}
+	var pb strings.Builder
+	if err := populated.WriteText(&pb); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	if !strings.Contains(pb.String(), "head span:") {
+		t.Errorf("populated head must print a head-span line, got:\n%s", pb.String())
+	}
+}
+
+// TestReadCappedBody pins the response-body cap: a body within the limit is
+// returned whole, and a body past the limit errors rather than buffering an
+// unbounded stream into memory.
+func TestReadCappedBody(t *testing.T) {
+	const limit = 16
+	got, err := readCappedBody(strings.NewReader("small"), limit)
+	if err != nil {
+		t.Fatalf("under-limit read errored: %v", err)
+	}
+	if string(got) != "small" {
+		t.Errorf("under-limit body = %q, want %q", got, "small")
+	}
+
+	oversize := strings.Repeat("x", limit+1)
+	if _, err := readCappedBody(strings.NewReader(oversize), limit); err == nil {
+		t.Errorf("over-limit read should error, got nil for a %d-byte body (cap %d)", len(oversize), limit)
 	}
 }

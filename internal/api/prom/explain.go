@@ -32,9 +32,20 @@ func NewExplainLang(s schema.Metrics, evalTime time.Time) engine.Lang {
 // preview path for dashboard-panel queries, which the server runs as a
 // query_range (a non-zero Step lowers the outer step grid), not as the instant
 // evaluation NewExplainLang models for rules. It reuses the same lang adapter, so
-// Parse and ProjectSamples stay byte-identical to production; only the [start,
-// end, step] window differs. Callers pin a fixed, representative window so the
-// emitted SQL — and any goldens over it — stay deterministic.
+// Parse and ProjectSamples stay identical to production for the shared pipeline
+// stages. Callers pin a fixed, representative window so the emitted SQL — and any
+// goldens over it — stay deterministic.
+//
+// HONESTY — a range preview is NOT guaranteed byte-identical to what a live
+// deployment runs. Lowerers is left at its zero value (the all-fan-out default),
+// but the production query_range path AUTO-ENABLES the native timeSeries*ToGrid
+// lowerers on ClickHouse >= 25.9 (the default "auto" mode). This tool is offline
+// and cannot know the target's CH version, so for the range-window operators
+// (rate / changes / resets / *_over_time and staleness panels) the previewed SQL
+// uses fan-out lowering and MAY DIFFER from a deployment with native
+// timeSeries*ToGrid enabled. Unlike the instant/rule preview — where the handler
+// likewise threads no native lowerers, so NewExplainLang stays faithful — the
+// range preview trades that fidelity for offline determinism.
 func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Duration) engine.Lang {
 	return &lang{
 		Parser: promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),

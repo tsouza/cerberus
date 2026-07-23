@@ -91,8 +91,10 @@ const RuleGraphVersion = 1
 //
 // HONESTY: this is a NAME-LEVEL dependency approximation. A consumer is linked
 // to a recorded series when it references that series' metric NAME (via a vector
-// selector); label matchers, value equality, and rule-to-rule chains are not
-// analysed. A name collision (an unrelated metric that happens to share a
+// selector); label matchers and value equality are not analysed. Rule-to-rule
+// chains ARE analysed: each recording rule's own expr is fed in as a consumer, so
+// a recorded series read by another recording rule is linked, not left orphan. A
+// name collision (an unrelated metric that happens to share a
 // recorded name) would over-link; that is the safe direction (it keeps a series
 // marked "must materialize" rather than dropping one that is needed). A consumer
 // whose matched name set CANNOT be statically reduced — a regex or negated
@@ -319,12 +321,14 @@ func sortedUnique(in []string) []string {
 }
 
 // HarvestRuleFiles reads the recording/alerting rule files matched by rulePaths
-// and splits them into the two things the graph needs: the recording-rule OUTPUT
-// series (RecordedSeries) and the alerting-rule exprs (as consumer queries). Any
-// input it cannot use — a bad glob, an unreadable file, a YAML parse failure, a
-// rule that is neither a record nor an alert — is returned as a counted skip
-// rather than dropped. Recording-rule exprs themselves are NOT returned as
-// consumers: v1 scans corpus queries + alerting exprs, not rule-to-rule chains.
+// and splits them into what the graph needs: the recording-rule OUTPUT series
+// (RecordedSeries), and every rule expr — both alerting exprs AND recording-rule
+// exprs — as consumer queries. Feeding recording-rule exprs as consumers links
+// rule-to-rule chains (a recorded series consumed by another recording rule),
+// keeping the over-link-never-under-link invariant honest. Any input it cannot
+// use — a bad glob, an unreadable file, a YAML parse failure, a rule that is
+// neither a record nor an alert, a rule with an empty expr — is returned as a
+// counted skip rather than dropped.
 func HarvestRuleFiles(rulePaths []string) (recorded []RecordedSeries, consumers []HarvestedQuery, skipped []SkippedEntry) {
 	for _, pattern := range rulePaths {
 		matches, err := filepath.Glob(pattern)
@@ -357,9 +361,16 @@ func HarvestRuleFiles(rulePaths []string) (recorded []RecordedSeries, consumers 
 }
 
 // splitRuleGroups walks one parsed rule file: a rule with a `record:` name is a
-// recorded output series; a rule with an `alert:` name and a non-empty expr is a
-// consumer query; a rule that is neither is a counted skip. An alerting rule with
-// an empty expr is a skip (there is nothing to scan for references).
+// recorded output series AND a consumer (its own expr reads whatever series it
+// aggregates — a rule-to-rule chain); a rule with an `alert:` name and a
+// non-empty expr is a consumer query; a rule that is neither is a counted skip.
+// A rule with an empty expr is a skip (there is nothing to scan for references).
+//
+// Feeding the recording rule's expr into the consumer set is what keeps a
+// rule-to-rule chain honest: for `record: top / expr: sum(inter)`, the recorded
+// series `inter` is referenced by `top`'s expr, so without this it would be
+// misclassified orphan ("safe to drop") while a live chain still depends on it —
+// an UNDER-link that violates the over-link-never-under-link invariant.
 func splitRuleGroups(file string, rg promrules.RuleGroups) (recorded []RecordedSeries, consumers []HarvestedQuery, skipped []SkippedEntry) {
 	for _, g := range rg.Groups {
 		for _, r := range g.Rules {
@@ -367,6 +378,11 @@ func splitRuleGroups(file string, rg promrules.RuleGroups) (recorded []RecordedS
 			case r.Record != "":
 				source := fmt.Sprintf("rule:%s/%s/%s", file, g.Name, r.Record)
 				recorded = append(recorded, RecordedSeries{Name: r.Record, Source: source})
+				if strings.TrimSpace(r.Expr) == "" {
+					skipped = append(skipped, SkippedEntry{Source: source, Reason: "recording rule has empty expr"})
+					continue
+				}
+				consumers = append(consumers, HarvestedQuery{Expr: r.Expr, Source: source, Kind: KindRecord})
 			case r.Alert != "":
 				source := fmt.Sprintf("rule:%s/%s/%s", file, g.Name, r.Alert)
 				if strings.TrimSpace(r.Expr) == "" {
@@ -398,8 +414,9 @@ func (g RuleGraph) Write(w io.Writer) error {
 	bw.printf("# blank. This graph links each recorded series to the queries that consume it.\n")
 	bw.printf("#\n")
 	bw.printf("# HONESTY: this is a NAME-LEVEL dependency approximation — a consumer links to\n")
-	bw.printf("# a recorded series when it references that series' metric NAME. Label matchers,\n")
-	bw.printf("# value equality, and rule-to-rule chains are not analysed. Unparseable consumer\n")
+	bw.printf("# a recorded series when it references that series' metric NAME. Label matchers\n")
+	bw.printf("# and value equality are not analysed; rule-to-rule chains ARE (a recording\n")
+	bw.printf("# rule's own expr is scanned as a consumer). Unparseable consumer\n")
 	bw.printf("# exprs — and consumers whose __name__ set can't be statically reduced (a regex or\n")
 	bw.printf("# negated __name__ matcher, or no name constraint) — are counted as skips below\n")
 	bw.printf("# (never under-linked to nothing), so the over-link direction stays honest.\n")

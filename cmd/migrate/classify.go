@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -41,6 +42,9 @@ func runClassifyCmd(args []string, stdout, stderr io.Writer) error {
 
 	src, err := harvestSources(corpus, rules, dashboards)
 	if err != nil {
+		if errors.Is(err, errNothingToHarvest) {
+			fs.Usage()
+		}
 		return err
 	}
 	if out == "" {

@@ -111,6 +111,30 @@ func TestAttribution_CoverageGap(t *testing.T) {
 	}
 }
 
+// TestAttribution_ValueDivergenceDialect is the positive counterpart to the
+// coverage-gap case: a same-series value difference (not a missing series) IS a
+// dialect-semantics candidate — the two engines evaluated the same shape to
+// different numbers. Non-hotspot, so it must NOT also carry the experimental-CH
+// candidate.
+func TestAttribution_ValueDivergenceDialect(t *testing.T) {
+	refBody := map[string]string{"up": matrix(
+		seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}},
+	)}
+	cerBody := map[string]string{"up": matrix(
+		seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "2"}}},
+	)}
+	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "s"})
+	if res.Verdict != VerdictDiverge {
+		t.Fatalf("verdict = %q, want diverge", res.Verdict)
+	}
+	if !hasAttrib(res.Attribution, AttribDialectSemantics) {
+		t.Errorf("a same-series value divergence must carry the dialect-semantics candidate, got %+v", res.Attribution)
+	}
+	if hasAttrib(res.Attribution, AttribDataWindowGap) {
+		t.Errorf("a value divergence (not a coverage gap) should not carry data-window-gap, got %+v", res.Attribution)
+	}
+}
+
 // TestWriteText_VerdictBanner: the text report LEADS with an unmistakable verdict
 // banner — FAILED on a diverging run, PASSED on a clean one.
 func TestWriteText_VerdictBanner(t *testing.T) {

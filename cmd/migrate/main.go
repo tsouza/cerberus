@@ -311,6 +311,9 @@ func runHarvest(args []string, stdout, stderr io.Writer) error {
 
 	src, err := harvestSources("", rules, dashboards)
 	if err != nil {
+		if errors.Is(err, errNothingToHarvest) {
+			fs.Usage()
+		}
 		return err
 	}
 	queries, skipped, err := src.Harvest(context.Background())
@@ -349,6 +352,9 @@ func runExplainCmd(args []string, stdout, stderr io.Writer) error {
 
 	src, err := harvestSources(corpus, rules, dashboards)
 	if err != nil {
+		if errors.Is(err, errNothingToHarvest) {
+			fs.Usage()
+		}
 		return err
 	}
 	if out == "" {
@@ -379,10 +385,16 @@ func harvestSources(corpus string, rules []string, dashboards string) (migrate.C
 		src = append(src, migrate.DashboardSource{Dir: dashboards})
 	}
 	if len(src) == 0 {
-		return nil, errors.New("nothing to harvest: pass --rules, --dashboards, and/or --corpus")
+		return nil, errNothingToHarvest
 	}
 	return src, nil
 }
+
+// errNothingToHarvest is returned by harvestSources when no corpus-input flag was
+// supplied. The corpus subcommands (harvest / explain / classify) treat it as a
+// usage error — print the flag help before returning — mirroring how rulegraph
+// handles its own missing-input case, so every corpus command is consistent.
+var errNothingToHarvest = errors.New("nothing to harvest: pass --rules, --dashboards, and/or --corpus")
 
 // runExplainReport dry-runs every query from src through the read-side pipeline
 // and writes the explain report to w. It is fully offline: the engine has no

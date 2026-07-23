@@ -103,6 +103,22 @@ func TestRootUsageListsSubcommands(t *testing.T) {
 	}
 }
 
+// TestCorpusCommandsPrintUsageOnMissingInput pins that the corpus subcommands
+// (harvest / explain / classify), like rulegraph, print flag usage on stderr
+// when no corpus-input flag is supplied — a consistent usage-error UX rather than
+// a bare error line.
+func TestCorpusCommandsPrintUsageOnMissingInput(t *testing.T) {
+	for _, sc := range []string{"harvest", "explain", "classify"} {
+		var out, errOut bytes.Buffer
+		if err := run([]string{sc}, &out, &errOut); err == nil {
+			t.Errorf("%s with no inputs should error", sc)
+		}
+		if !strings.Contains(errOut.String(), "Usage of migrate "+sc) {
+			t.Errorf("%s with no inputs should print usage on stderr, got: %q", sc, errOut.String())
+		}
+	}
+}
+
 // TestStringListFlag pins that --rules accumulates both repeated flags and
 // comma-separated values, trimming blanks.
 func TestStringListFlag(t *testing.T) {

@@ -11,8 +11,10 @@
 //
 //   - verify   — BLOCK if any query diverged or errored (the parity gate found
 //     cerberus returning different numbers, or a backend failing), or if the run
-//     verified ZERO queries (an empty harvest proves nothing and must not
-//     green-light a cutover). WARN when the report carries UNCHECKED entries —
+//     COMPARED ZERO queries (Match+Diverge+Error==0): an empty harvest (Total==0)
+//     or an all-unsupported run (Total>0 but nothing returned a comparable matrix
+//     live) proves nothing and must not green-light a cutover. WARN when the run
+//     did compare something but the report also carries UNCHECKED entries —
 //     queries that emitted SQL but returned no comparable matrix live
 //     (Unsupported), harvest-skipped entries, or out-of-scope (non-PromQL)
 //     entries — so a green parity gate never hides an unexamined input.
@@ -210,12 +212,25 @@ func evalVerify(path string) (StageResult, error) {
 	res.Present = true
 	s := rep.Summary
 	caveats := verifyCaveats(s)
-	if s.Total == 0 {
-		// A parity run that replayed zero queries proves nothing — an empty
-		// harvest must never green-light a cutover with nothing verified.
+	// A run proves parity only if at least one query was actually COMPARED against
+	// the reference backend — matched, diverged, or errored. Unsupported replays
+	// (emitted SQL but returned no comparable matrix live) and out-of-scope /
+	// harvest-skipped entries inflate Total without comparing anything, so keying
+	// the "nothing verified" guard on Total alone lets an ALL-UNSUPPORTED run
+	// (Match+Diverge+Error==0, Total>0) fall through to a WARN and a green gate,
+	// proving nothing. Block whenever nothing was compared: the empty corpus
+	// (Total==0) is one subcase; an all-unsupported run (Total>0) is the other.
+	if compared := s.Match + s.Diverge + s.Error; compared == 0 {
 		res.Verdict = VerdictFail
 		res.Blocking = true
-		res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
+		if s.Total == 0 {
+			res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
+		} else {
+			res.Reasons = append(res.Reasons, fmt.Sprintf(
+				"nothing actually compared: 0 of %d queries returned a comparable matrix live (all unsupported/unchecked); the parity gate compared nothing",
+				s.Total,
+			))
+		}
 		res.Reasons = append(res.Reasons, caveats...)
 		return res, nil
 	}

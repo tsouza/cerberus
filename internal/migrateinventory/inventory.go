@@ -40,6 +40,12 @@ const DefaultTop = 50
 // stall the whole inventory.
 const defaultHTTPTimeout = 30 * time.Second
 
+// maxResponseBytes caps how much of a probe response body the inventory will
+// buffer. The TSDB-status and enrichment responses are bounded in practice, so a
+// body beyond this cap signals a misbehaving or wrong endpoint, not a valid
+// reply; failing loudly beats letting an unbounded stream OOM the process.
+const maxResponseBytes = 256 << 20 // 256 MiB
+
 // Prometheus HTTP API paths the probe talks to. status/tsdb is the mandatory
 // cardinality source; the label-names and metadata endpoints are optional
 // enrichment.
@@ -288,12 +294,28 @@ func (c *Client) getOK(ctx context.Context, path string) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readCappedBody(resp.Body, maxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read %s body: %w", path, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
+	}
+	return body, nil
+}
+
+// readCappedBody reads r fully but no further than limit bytes, erroring rather
+// than buffering an unbounded stream (it reads one byte past limit so an
+// over-limit body is detected, never silently truncated into a mis-parse). This
+// bounds the inventory-process memory against a misbehaving or wrong source —
+// the same capped-read discipline the verify client applies to backend bodies.
+func readCappedBody(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("response body exceeds %d-byte cap", limit)
 	}
 	return body, nil
 }
