@@ -1,0 +1,80 @@
+# Negative-horizon guard for the ClickHouse-native timeSeriesPredictLinearToGrid
+# lowering. This fixture opts INTO the feature (the
+# `experimental_ts_grid_predict_linear` section installs
+# RangeLowerers.PredictLinear = NativePredictLinearLowerer), yet the query uses a
+# NEGATIVE horizon t (-3600s, a legal PromQL backward projection), so lowering
+# MUST fall back to the simpleLinearRegression/arrayReduce fan-out (a plain
+# chplan.RangeWindow, NOT a RangeWindowNative).
+#
+# Why the fallback: timeSeriesPredictLinearToGrid threads t as its 5th parametric
+# (predict_offset) arg, and that parameter is not verified to accept a signed
+# offset on the >= 25.9 substrate. A negative literal spliced into the aggregate
+# would be a silent query-time rejection the sub-25.9 chDB CI cannot catch, so
+# nativePredictLinearHorizonEligible pins the native path to the non-negative
+# whole-second domain. The fan-out's `intercept + slope*t` evaluates negative t
+# byte-exactly, so the result is correct — this fixture roundtrips it on chDB to
+# prove the backward projection still computes.
+#
+# Sibling of native_predict_linear_range_step.txtar (which exercises the native
+# path with a non-negative t) and predict_linear_scalar_horizon.txtar (the
+# computed-horizon fan-out shape).
+
+-- query.promql --
+sum by(host) (predict_linear(disk_used_bytes[10m], -3600))
+-- range_step --
+30s
+-- experimental_ts_grid_predict_linear --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+  MetricName String,
+  Attributes Map(String, String),
+  ResourceAttributes Map(String, String) DEFAULT map(),
+  TimeUnix DateTime64(9),
+  Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- ramp: value increases 100 every 30 seconds -> slope 10/3 per second.
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 200.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 300.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 400.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 500.0);
+-- expected_rows --
+[
+  ["", {"host": "a"}, "2026-01-01T00:00:30Z", -11800],
+  ["", {"host": "a"}, "2026-01-01T00:01:00Z", -11700],
+  ["", {"host": "a"}, "2026-01-01T00:01:30Z", -11600],
+  ["", {"host": "a"}, "2026-01-01T00:02:00Z", -11500],
+  ["", {"host": "a"}, "2026-01-01T00:02:30Z", -11400],
+  ["", {"host": "a"}, "2026-01-01T00:03:00Z", -11300],
+  ["", {"host": "a"}, "2026-01-01T00:03:30Z", -11200],
+  ["", {"host": "a"}, "2026-01-01T00:04:00Z", -11100],
+  ["", {"host": "a"}, "2026-01-01T00:04:30Z", -11000],
+  ["", {"host": "a"}, "2026-01-01T00:05:00Z", -10900]
+]
+-- args --
+[0] string = ""
+[1] string = "host"
+[2] string = "host"
+[3] float64 = -3600
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "disk_used_bytes"
+[9] string = "disk.used.bytes"
+[10] string = "disk.used/bytes"
+[11] string = "disk.used_bytes"
+[12] string = "disk/used/bytes"
+[13] string = "disk/used_bytes"
+[14] string = "disk_used.bytes"
+[15] string = "host"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("host", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["host"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+    RangeWindow func=predict_linear range=10m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] scalars=[-3600] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("disk_used_bytes", "disk.used.bytes", "disk.used/bytes", "disk.used_bytes", "disk/used/bytes", "disk/used_bytes", "disk_used.bytes"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', anchor_ts, tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', anchor_ts, tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS window_pairs FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 600000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 600000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(600000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`) WHERE length(`window_pairs`) >= 2) GROUP BY `Attributes`[?], `TimeUnix`)

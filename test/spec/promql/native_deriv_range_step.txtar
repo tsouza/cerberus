@@ -1,0 +1,69 @@
+# Experimental: ClickHouse-native timeSeriesDerivToGrid lowering for
+# `sum by (X) (deriv(gauge[range]))` in range mode (Step > 0). This is the
+# always-on SQL-shape coverage floor for the `ts_grid_deriv` feature: the
+# `experimental_ts_grid_deriv` section opts the fixture into
+# RangeLowerers.Deriv = NativeDerivLowerer, so the lowering emits a
+# chplan.RangeWindowNative (Func=deriv -> timeSeriesDerivToGrid parametric
+# aggregate + parallel timeSeriesRange axis + ARRAY JOIN + IS NOT NULL filter)
+# instead of the simpleLinearRegression/arrayReduce fan-out. The wrapping
+# outer-sum Aggregate is byte-identical to the fan-out; only the windowed
+# per-grid-point subquery differs.
+#
+# VERSION FLOOR 25.9 (registry-pinned). timeSeriesDerivToGrid shipped in
+# PR #84328 (ClickHouse 25.8), one quarter before changes/resets, but the chopt
+# registry pins the whole family to a single 25.9 capability verdict — the
+# shared left-open-window fix (PR #86588) — so a sub-25.9 substrate stays on the
+# fan-out. The native SQL below is a SHAPE golden pinned unconditionally; the
+# native==fan-out numeric differential is proven on a >= 25.9 server (prod/e2e
+# lane), not on the current chDB substrate.
+#
+# deriv() is the per-second slope of a least-squares linear fit over the samples
+# in the window. Native timeSeriesDerivToGrid returns NULL for a window with
+# < 2 samples, filtered to ABSENT rows by `WHERE grid_val IS NOT NULL`,
+# mirroring the fan-out's `length(window_pairs) >= 2` + NaN-drop guard.
+
+-- query.promql --
+sum by(host) (deriv(disk_used_bytes[5m]))
+-- range_step --
+30s
+-- experimental_ts_grid_deriv --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+  MetricName String,
+  Attributes Map(String, String),
+  ResourceAttributes Map(String, String) DEFAULT map(),
+  TimeUnix DateTime64(9),
+  Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- ramp: value increases 100 every 30 seconds -> slope 10/3 per second.
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 200.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 300.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 400.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 500.0);
+-- args --
+[0] string = ""
+[1] string = "host"
+[2] string = "host"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "disk_used_bytes"
+[8] string = "disk.used.bytes"
+[9] string = "disk.used/bytes"
+[10] string = "disk.used_bytes"
+[11] string = "disk/used/bytes"
+[12] string = "disk/used_bytes"
+[13] string = "disk_used.bytes"
+[14] string = "host"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("host", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["host"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+    RangeWindowNative func=deriv range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("disk_used_bytes", "disk.used.bytes", "disk.used/bytes", "disk.used_bytes", "disk/used/bytes", "disk/used_bytes", "disk_used.bytes"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`, timeSeriesDerivToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY `Attributes`[?], `TimeUnix`)

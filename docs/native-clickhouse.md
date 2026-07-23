@@ -24,6 +24,18 @@ the portable SQL path. What it currently exploits:
 - **`timeSeriesChangesToGrid` / `timeSeriesResetsToGrid`**
   (`changes` / `resets`, ClickHouse 25.9) — same one-pass shape for the
   adjacent-pair counters.
+- **`timeSeriesDerivToGrid` / `timeSeriesPredictLinearToGrid`**
+  (`deriv` / `predict_linear`, ClickHouse 25.8, registry-pinned to the family's
+  25.9 floor) — the last members of the family to adopt the native path: a
+  per-window least-squares fit whose slope is `deriv` and whose `slope*t +
+  intercept` projection is `predict_linear`, retiring the
+  `simpleLinearRegression`/`arrayReduce` fan-out. `predict_linear` threads its
+  whole-second horizon `t` as the aggregate's 5th parametric arg; a computed or
+  fractional `t` stays on the fan-out. The native == fan-out numeric parity is a
+  Float64 fit (ULP-close, not bit-identical), proven on a `>= 25.9` server in
+  the prod/e2e differential lane — the sub-25.9 chDB CI substrate lacks the
+  aggregates, so it runs the fan-out and the always-on SQL-shape goldens pin the
+  native emit.
 - **`timeSeriesResampleToGridWithStaleness`** — native instant-vector
   selection with Prometheus staleness, retiring the staleness fan-out.
 - **`condition_cache`** and **`aggregation_in_order`** — server-side

@@ -381,12 +381,13 @@ func clampU8(v int64) uint8 {
 // experimental timeSeries*ToGrid family anywhere in the tree — either a
 // chplan.RangeWindowNative (timeSeriesRateToGrid for Func="rate",
 // timeSeriesChangesToGrid for Func="changes", timeSeriesResetsToGrid for
-// Func="resets") or a chplan.RangeWindowResample
-// (timeSeriesResampleToGridWithStaleness). All share the
-// allow_experimental_time_series_aggregate_functions gate, so the engine stamps
-// the experimental setting on a query carrying ANY such node — the changes /
-// resets matrix functions ride the RangeWindowNative match with no engine
-// change.
+// Func="resets", timeSeriesDerivToGrid for Func="deriv",
+// timeSeriesPredictLinearToGrid for Func="predict_linear") or a
+// chplan.RangeWindowResample (timeSeriesResampleToGridWithStaleness). All share
+// the allow_experimental_time_series_aggregate_functions gate, so the engine
+// stamps the experimental setting on a query carrying ANY such node — the
+// changes / resets / deriv / predict_linear matrix functions ride the
+// RangeWindowNative match with no engine change.
 func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.Walk(plan, func(n chplan.Node) bool {

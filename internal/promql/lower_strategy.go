@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"math"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -109,6 +110,33 @@ type ResetsLowerer interface {
 	LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
+// chplan node, mirroring [ChangesLowerer]: the native impl emits a
+// RangeWindowNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
+// simple-linear-regression slope) for an eligible window, the fan-out fallback
+// otherwise. It never returns nil.
+type DerivLowerer interface {
+	// LowerDeriv returns the chplan node for rw — the native RangeWindowNative
+	// for a shape the impl handles, or the fan-out lowering otherwise. It never
+	// returns nil.
+	LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
+// PredictLinearLowerer lowers a range-mode predict_linear(<gauge>[range], t)
+// RangeWindow to a chplan node, mirroring [ChangesLowerer]: the native impl
+// emits a RangeWindowNative (Func="predict_linear" ->
+// timeSeriesPredictLinearToGrid, the per-window slope*t + intercept forecast)
+// for an eligible window, the fan-out fallback otherwise. Only a single
+// whole-second literal horizon t is native-eligible — the aggregate's 5th
+// parametric arg is a constant, so computed / fractional horizons delegate to
+// the fan-out. It never returns nil.
+type PredictLinearLowerer interface {
+	// LowerPredictLinear returns the chplan node for rw — the native
+	// RangeWindowNative for a shape the impl handles, or the fan-out lowering
+	// otherwise. It never returns nil.
+	LowerPredictLinear(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // RangeLowerers is the boot-wired dispatch table the lowering reads. Each field
 // is the CONCRETE strategy for one promql function family, decided once at
 // boot. Every field is ALWAYS non-nil on the lowering path — a fan-out-only
@@ -133,6 +161,14 @@ type RangeLowerers struct {
 	// timeSeriesResetsToGrid, server >= 25.9). Concrete fan-out impl when the
 	// native path is off; never nil on the lowering path.
 	Resets ResetsLowerer
+	// Deriv handles range-mode deriv(...) shapes (native timeSeriesDerivToGrid,
+	// server >= 25.9). Concrete fan-out impl when the native path is off; never
+	// nil on the lowering path.
+	Deriv DerivLowerer
+	// PredictLinear handles range-mode predict_linear(..., t) shapes (native
+	// timeSeriesPredictLinearToGrid, server >= 25.9). Concrete fan-out impl when
+	// the native path is off; never nil on the lowering path.
+	PredictLinear PredictLinearLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -153,6 +189,12 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.Resets == nil {
 		l.Resets = FanoutResetsLowerer{}
+	}
+	if l.Deriv == nil {
+		l.Deriv = FanoutDerivLowerer{}
+	}
+	if l.PredictLinear == nil {
+		l.PredictLinear = FanoutPredictLinearLowerer{}
 	}
 	return l
 }
@@ -312,4 +354,96 @@ func (n NativeResetsLowerer) LowerResets(rw *chplan.RangeWindow, s schema.Metric
 		return native
 	}
 	return n.Fallback.LowerResets(rw, s)
+}
+
+// FanoutDerivLowerer is the concrete DEFAULT DerivLowerer: it returns the
+// generic fan-out RangeWindow (the simpleLinearRegression slope) unchanged. It
+// is the fallback the native impl embeds AND the strategy a fan-out-only
+// deployment wires directly.
+type FanoutDerivLowerer struct{}
+
+// LowerDeriv returns the fan-out RangeWindow rw unchanged.
+func (FanoutDerivLowerer) LowerDeriv(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeDerivLowerer is the boot-wired DerivLowerer that emits the native
+// timeSeriesDerivToGrid lowering (a chplan.RangeWindowNative with Func="deriv")
+// for shape-eligible deriv range-windows. cmd/cerberus wires it ONLY when the
+// chopt resolved the ts_grid_deriv feature (server >= 25.9) at boot. It embeds
+// a concrete Fallback for shapes it cannot handle, so the interface method
+// always yields a valid lowering and the dispatch site stays branch-free.
+type NativeDerivLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutDerivLowerer{}.
+	Fallback DerivLowerer
+}
+
+// LowerDeriv returns a RangeWindowNative for an eligible range-mode deriv
+// shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
+// check as changes/resets (deriv func, materialised grid, plain Scan/Filter
+// input) — deriv takes no scalar, so no extra parameter gate applies.
+func (n NativeDerivLowerer) LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "deriv", s); native != nil {
+		return native
+	}
+	return n.Fallback.LowerDeriv(rw, s)
+}
+
+// FanoutPredictLinearLowerer is the concrete DEFAULT PredictLinearLowerer: it
+// returns the generic fan-out RangeWindow (the simpleLinearRegression
+// intercept + slope*t forecast) unchanged. It is the fallback the native impl
+// embeds AND the strategy a fan-out-only deployment wires directly.
+type FanoutPredictLinearLowerer struct{}
+
+// LowerPredictLinear returns the fan-out RangeWindow rw unchanged.
+func (FanoutPredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativePredictLinearLowerer is the boot-wired PredictLinearLowerer that emits
+// the native timeSeriesPredictLinearToGrid lowering (a chplan.RangeWindowNative
+// with Func="predict_linear") for shape-eligible predict_linear range-windows.
+// cmd/cerberus wires it ONLY when the chopt resolved the ts_grid_predict_linear
+// feature (server >= 25.9) at boot. It embeds a concrete Fallback for shapes it
+// cannot handle, so the interface method always yields a valid lowering and the
+// dispatch site stays branch-free.
+type NativePredictLinearLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutPredictLinearLowerer{}.
+	Fallback PredictLinearLowerer
+}
+
+// LowerPredictLinear returns a RangeWindowNative for an eligible range-mode
+// predict_linear shape, or delegates to the embedded Fallback otherwise. On top
+// of the shared shape check (predict_linear func, materialised grid, plain
+// Scan/Filter input) the horizon t must be a single whole-second literal:
+// timeSeriesPredictLinearToGrid takes the offset as its 5th parametric arg (a
+// constant), so a computed horizon (ScalarExprs) or a fractional t cannot ride
+// the native aggregate and stays on the exact fan-out arithmetic.
+func (n NativePredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if nativePredictLinearHorizonEligible(rw) {
+		if native := nativeTSGridMatrixNode(rw, "predict_linear", s); native != nil {
+			return native
+		}
+	}
+	return n.Fallback.LowerPredictLinear(rw, s)
+}
+
+// nativePredictLinearHorizonEligible reports whether rw's predict_linear
+// horizon t can be threaded into timeSeriesPredictLinearToGrid's 5th parametric
+// arg: exactly one literal scalar (no computed ScalarExprs) whose value is a
+// non-negative whole number of seconds. A fractional or computed horizon is
+// byte-exact only on the fan-out's `intercept + slope*t` Float64 arithmetic, so
+// it delegates. A negative t (legal PromQL backward projection) also delegates:
+// the aggregate's predict_offset parameter is not verified to accept a signed
+// offset on the >= 25.9 substrate, and the fan-out's `intercept + slope*t`
+// evaluates negative t exactly, so the native path stays inside the verified
+// non-negative domain rather than risk a signed-literal rejection at query time.
+func nativePredictLinearHorizonEligible(rw *chplan.RangeWindow) bool {
+	if len(rw.ScalarExprs) != 0 || len(rw.Scalars) != 1 {
+		return false
+	}
+	t := rw.Scalars[0]
+	return t >= 0 && t == math.Trunc(t)
 }
