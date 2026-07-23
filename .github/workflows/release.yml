@@ -288,6 +288,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_IS_LATEST: ${{ env.RELEASE_IS_LATEST }}
+          # Cross-repo push to tsouza/homebrew-tap for the brews block. The
+          # default GITHUB_TOKEN cannot push to another repo; this PAT can.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       # SLSA build provenance for the release binaries. Lets downstream
       # consumers verify an artifact was built in this repo at this commit via
