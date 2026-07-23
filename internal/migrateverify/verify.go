@@ -269,13 +269,16 @@ type Corpus struct {
 	HarvestSkipped []HarvestSkippedEntry
 }
 
-// QueryResult is the parity verdict for a single replayed query.
+// QueryResult is the parity verdict for a single replayed query. On a divergence
+// it also carries Attribution: a list of CANDIDATE causes (never a detection —
+// verify cannot introspect either backend) to steer triage.
 type QueryResult struct {
-	Source    string     `json:"source"`
-	Expr      string     `json:"expr"`
-	Verdict   Verdict    `json:"verdict"`
-	FirstDiff *FirstDiff `json:"first_diff,omitempty"`
-	Detail    string     `json:"detail,omitempty"`
+	Source      string                 `json:"source"`
+	Expr        string                 `json:"expr"`
+	Verdict     Verdict                `json:"verdict"`
+	FirstDiff   *FirstDiff             `json:"first_diff,omitempty"`
+	Detail      string                 `json:"detail,omitempty"`
+	Attribution []AttributionCandidate `json:"attribution,omitempty"`
 }
 
 // Summary counts verdicts across the whole run.
@@ -375,22 +378,62 @@ func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) Qu
 	default:
 		verdict, fd := Compare(refRes.Series, cerRes.Series, p.Tolerance)
 		out.Verdict, out.FirstDiff = verdict, fd
+		if verdict == VerdictDiverge {
+			out.Attribution = attributeDivergence(out.Expr, fd)
+		}
 	}
 	return out
 }
 
-// WriteText renders the report as a scannable, human-readable gate report: a
-// header, one block per non-matching query (matches are summarised, not listed,
-// so a diverging result is not buried), the out-of-scope accounting, and the
-// roll-up counts. It ends with an explicit PASS / FAIL line.
+// TextGuidance carries the CLI context the internal report cannot know on its
+// own — the exact, copy-pasteable command that regenerates this diagnostic — so
+// the failing text report can tell an operator precisely how to file a bug.
+type TextGuidance struct {
+	ReproCommand string
+}
+
+// WriteText renders the human report with no CLI-derived bug-report guidance. It
+// is the entrypoint for callers (and tests) that only have the Report in hand.
 func (r Report) WriteText(w io.Writer) error {
+	return r.writeText(w, nil)
+}
+
+// WriteTextGuided renders the human report and, on failure, a bug-report section
+// built from the CLI context in g (the repro command). The CLI uses this so a
+// failing run ends with a copy-pasteable reproduction.
+func (r Report) WriteTextGuided(w io.Writer, g TextGuidance) error {
+	return r.writeText(w, &g)
+}
+
+// writeText renders the report as a scannable, human-readable gate report. It
+// LEADS with an unmistakable PASSED / FAILED verdict banner, then a header (with
+// the one-time experimental-feature note), one block per non-matching query (with
+// its candidate-cause attribution), the out-of-scope accounting, the roll-up
+// counts, and — on failure — a "Report this to cerberus" bug-report section.
+func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	bw := &errWriter{w: w}
+
+	// R1: lead with a prominent, unmistakable verdict line.
+	if r.Failed() {
+		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d matched (of %d)\n\n",
+			r.Summary.Diverge, r.Summary.Error, r.Summary.Match, r.Summary.Total)
+	} else if r.Summary.Unsupported > 0 {
+		// Unsupported queries pass the gate but are NOT matches; the banner must
+		// not equate Total with matched or it overstates what agreed.
+		bw.printf("VERIFICATION PASSED — %d matched, %d unsupported, 0 diverged (of %d)\n\n",
+			r.Summary.Match, r.Summary.Unsupported, r.Summary.Total)
+	} else {
+		bw.printf("VERIFICATION PASSED — all %d queries matched\n\n", r.Summary.Total)
+	}
+
 	bw.printf("# cerberus migrate verify\n")
 	bw.printf("#\n")
 	bw.printf("# Parity gate: each corpus query replayed against the reference Prometheus\n")
 	bw.printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
 	bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
 	bw.printf("# or errors.\n")
+	bw.printf("#\n")
+	bw.printf("# Note: %s\n", ExperimentalNote)
 	bw.printf("#\n")
 	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d out of scope, +%d harvest-skipped)\n\n",
 		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error, r.Summary.OutOfScope, r.Summary.HarvestSkipped)
@@ -408,6 +451,9 @@ func (r Report) WriteText(w io.Writer) error {
 			fd := res.FirstDiff
 			bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
 				fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
+		}
+		for _, a := range res.Attribution {
+			bw.printf("   candidate-cause [%s]: %s\n", a.Category, a.Note)
 		}
 		bw.printf("\n")
 	}
@@ -430,10 +476,32 @@ func (r Report) WriteText(w io.Writer) error {
 
 	if r.Failed() {
 		bw.printf("FAIL: %d diverge, %d error\n", r.Summary.Diverge, r.Summary.Error)
+		r.writeBugReport(bw, g)
 	} else {
 		bw.printf("PASS: %d match, %d unsupported (no divergence)\n", r.Summary.Match, r.Summary.Unsupported)
 	}
 	return bw.err
+}
+
+// writeBugReport prints the "Report this to cerberus" section shown after a
+// failing run: it frames a divergence as a possible cerberus bug, points at the
+// issues tracker, prints the exact copy-pasteable command to regenerate the
+// diagnostic (when the CLI supplied it), and asks the operator to attach the JSON.
+func (r Report) writeBugReport(bw *errWriter, g *TextGuidance) {
+	bw.printf("\n")
+	bw.printf("== Report this to cerberus\n")
+	bw.printf("   A divergence may indicate a cerberus bug. If the candidate causes above\n")
+	bw.printf("   (especially experimental-CH-feature deviations) are ruled out, please\n")
+	bw.printf("   open an issue so it can be fixed at the source:\n")
+	bw.printf("     %s\n", IssuesURL)
+	if g != nil && g.ReproCommand != "" {
+		bw.printf("   Regenerate the full JSON diagnostic with this exact command:\n")
+		bw.printf("     %s\n", g.ReproCommand)
+		bw.printf("   Then attach the resulting verify-report.json to the issue.\n")
+	} else {
+		bw.printf("   Re-run with --report verify-report.json to capture the full JSON\n")
+		bw.printf("   diagnostic, and attach it to the issue.\n")
+	}
 }
 
 // errWriter collapses the repeated Fprintf error checks into a single

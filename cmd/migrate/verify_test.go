@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tsouza/cerberus/internal/migrateverify"
 )
 
 // promServer answers /api/v1/query_range with a fixed matrix for known queries
@@ -70,8 +73,6 @@ func TestRunVerify_MatchPasses(t *testing.T) {
 func TestRunVerify_DivergeFails(t *testing.T) {
 	dir := t.TempDir()
 	corpus := writeCorpus(t, dir)
-	const cerMatrix = `{"status":"success","data":{"resultType":"matrix","result":[` +
-		`{"metric":{"__name__":"up","job":"api"},"values":[[1700000000,"1"],[1700000060,"0"]]}]}}`
 	ref := promServer(t, map[string]string{"up": upMatrix})
 	cer := promServer(t, map[string]string{"up": cerMatrix})
 
@@ -105,6 +106,133 @@ func TestRunVerify_JSON(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"verdict": "match"`) {
 		t.Errorf("expected JSON report with a match verdict, got:\n%s", out.String())
+	}
+}
+
+// cerMatrix is a divergent up matrix (second point differs from upMatrix), used
+// by the failure-path tests.
+const cerMatrix = `{"status":"success","data":{"resultType":"matrix","result":[` +
+	`{"metric":{"__name__":"up","job":"api"},"values":[[1700000000,"1"],[1700000060,"0"]]}]}}`
+
+// TestRunVerify_DivergeStdoutGuidance: a diverging run's stdout leads with the
+// FAILED verdict and ends with the bug-report guidance — the issues URL and a
+// copy-pasteable repro command.
+func TestRunVerify_DivergeStdoutGuidance(t *testing.T) {
+	dir := t.TempDir()
+	corpus := writeCorpus(t, dir)
+	ref := promServer(t, map[string]string{"up": upMatrix})
+	cer := promServer(t, map[string]string{"up": cerMatrix})
+
+	var out, errOut bytes.Buffer
+	err := runVerify([]string{
+		"--corpus", corpus, "--ref", ref.URL, "--cerberus", cer.URL,
+		"--start", "1700000000", "--end", "1700000600", "--step", "60s",
+	}, &out, &errOut)
+	var gate verifyFailedError
+	if !errors.As(err, &gate) {
+		t.Fatalf("runVerify should fail the gate on divergence, got: %v", err)
+	}
+	s := out.String()
+	if !strings.HasPrefix(s, "VERIFICATION FAILED") {
+		t.Errorf("stdout must lead with VERIFICATION FAILED, got:\n%s", s)
+	}
+	if !strings.Contains(s, "https://github.com/tsouza/cerberus/issues") {
+		t.Errorf("stdout must carry the cerberus issues URL, got:\n%s", s)
+	}
+	if !strings.Contains(s, "migrate verify --corpus") || !strings.Contains(s, "--report verify-report.json") {
+		t.Errorf("stdout must carry a copy-pasteable repro command with --report, got:\n%s", s)
+	}
+}
+
+// TestRunVerify_ReportFile: --report writes valid, parseable JSON carrying the
+// schema version, tool version, run params, summary, and per-query verdicts.
+func TestRunVerify_ReportFile(t *testing.T) {
+	dir := t.TempDir()
+	corpus := writeCorpus(t, dir)
+	ref := promServer(t, map[string]string{"up": upMatrix})
+	cer := promServer(t, map[string]string{"up": cerMatrix})
+	reportPath := filepath.Join(dir, "verify-report.json")
+
+	var out, errOut bytes.Buffer
+	err := runVerify([]string{
+		"--corpus", corpus, "--ref", ref.URL, "--cerberus", cer.URL,
+		"--start", "1700000000", "--end", "1700000600", "--step", "60s",
+		"--report", reportPath,
+	}, &out, &errOut)
+	var gate verifyFailedError
+	if !errors.As(err, &gate) {
+		t.Fatalf("runVerify should fail the gate on divergence, got: %v", err)
+	}
+
+	data, readErr := os.ReadFile(reportPath) //nolint:gosec // test-controlled temp path.
+	if readErr != nil {
+		t.Fatalf("--report file was not written: %v", readErr)
+	}
+	var diag struct {
+		SchemaVersion int    `json:"schema_version"`
+		ToolVersion   string `json:"tool_version"`
+		GeneratedAt   string `json:"generated_at"`
+		Note          string `json:"note"`
+		Params        struct {
+			RefURL      string  `json:"ref_url"`
+			CerberusURL string  `json:"cerberus_url"`
+			Start       string  `json:"start"`
+			End         string  `json:"end"`
+			Step        string  `json:"step"`
+			Tolerance   float64 `json:"tolerance"`
+			Corpus      string  `json:"corpus"`
+		} `json:"params"`
+		Summary struct {
+			Total   int `json:"total"`
+			Diverge int `json:"diverge"`
+		} `json:"summary"`
+		Results []struct {
+			Expr    string `json:"expr"`
+			Verdict string `json:"verdict"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(data, &diag); err != nil {
+		t.Fatalf("--report must be valid JSON: %v\n%s", err, string(data))
+	}
+	if diag.SchemaVersion != 1 {
+		t.Errorf("schema_version = %d, want 1", diag.SchemaVersion)
+	}
+	if diag.ToolVersion == "" {
+		t.Error("tool_version must be populated")
+	}
+	if diag.GeneratedAt == "" || diag.Note == "" {
+		t.Errorf("generated_at and note must be populated, got %q / %q", diag.GeneratedAt, diag.Note)
+	}
+	if diag.Params.RefURL != ref.URL || diag.Params.CerberusURL != cer.URL || diag.Params.Corpus != corpus {
+		t.Errorf("params did not capture the run inputs: %+v", diag.Params)
+	}
+	if diag.Params.Step != "1m0s" || diag.Params.Tolerance == 0 {
+		t.Errorf("params step/tolerance not captured: step=%q tol=%v", diag.Params.Step, diag.Params.Tolerance)
+	}
+	if diag.Summary.Total != 1 || diag.Summary.Diverge != 1 {
+		t.Errorf("summary = %+v, want total 1 / diverge 1", diag.Summary)
+	}
+	if len(diag.Results) != 1 || diag.Results[0].Verdict != "diverge" {
+		t.Errorf("results = %+v, want one diverge result", diag.Results)
+	}
+}
+
+// TestReproCommand_ShellQuoting: a URL with special characters is single-quoted so
+// the repro command stays copy-pasteable.
+func TestReproCommand_ShellQuoting(t *testing.T) {
+	cmd := reproCommand(migrateverify.VerifyReportParams{
+		RefURL: "http://ref:9090", CerberusURL: "http://cer/path?x=1&y=2",
+		Start: "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z",
+		Step: "1m0s", Tolerance: migrateverify.DefaultTolerance, Corpus: "corpus.json",
+	})
+	if !strings.Contains(cmd, "'http://cer/path?x=1&y=2'") {
+		t.Errorf("URL with shell-special chars must be single-quoted, got:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, "http://ref:9090") {
+		t.Errorf("safe URL should appear bare, got:\n%s", cmd)
+	}
+	if !strings.HasPrefix(cmd, "migrate verify ") || !strings.Contains(cmd, "--report verify-report.json") {
+		t.Errorf("repro must be a full migrate verify invocation ending in --report, got:\n%s", cmd)
 	}
 }
 

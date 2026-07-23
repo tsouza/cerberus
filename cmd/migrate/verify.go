@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/migrateverify"
@@ -22,6 +24,15 @@ const defaultVerifyTolerance = migrateverify.DefaultTolerance
 // diverges or errors). It is distinct from the code Go uses for an internal
 // error so a divergence reads as "the gate did its job", not "the tool broke".
 const verifyExitFail = 2
+
+// reportFileMode is the permission for the --report JSON diagnostic: operator-
+// readable, not world-writable.
+const reportFileMode = 0o600
+
+// unknownToolVersion is the tool_version stamped into the diagnostic when the
+// binary carries no VCS/module build stamp (e.g. a `go test` binary or a
+// -buildvcs=false build).
+const unknownToolVersion = "unknown"
 
 // runVerify replays a harvested PromQL corpus against a reference Prometheus and
 // cerberus over one query_range window and diffs the results. It is the cutover
@@ -44,6 +55,7 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		stepStr   = fs.String("step", envOr("CERBERUS_VERIFY_STEP", "60s"), "range step (e.g. 60s)")
 		tolerance = fs.Float64("tolerance", tolDefault, "absolute value tolerance for a match")
 		asJSON    = fs.Bool("json", false, "emit the machine-readable JSON report instead of the text report")
+		report    = fs.String("report", envOr("CERBERUS_VERIFY_REPORT", ""), "write the full JSON diagnostics to this file (additive; the text report still prints)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -71,7 +83,27 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 	cerBackend := migrateverify.NewHTTPBackend(*cerberus)
 	rep := migrateverify.Verify(context.Background(), c, refBackend, cerBackend, params)
 
-	if err := writeReport(stdout, rep, *asJSON); err != nil {
+	// The resolved run params drive both the JSON diagnostic and the copy-pasteable
+	// repro command, so the two always describe the exact same window.
+	reportParams := migrateverify.VerifyReportParams{
+		RefURL:      *ref,
+		CerberusURL: *cerberus,
+		Start:       params.Start.UTC().Format(time.RFC3339),
+		End:         params.End.UTC().Format(time.RFC3339),
+		Step:        params.Step.String(),
+		Tolerance:   params.Tolerance,
+		Corpus:      *corpus,
+	}
+	repro := reproCommand(reportParams)
+
+	if *report != "" {
+		diag := migrateverify.NewVerifyReport(rep, reportParams, toolVersion(), time.Now().UTC())
+		if err := writeReportFile(*report, diag); err != nil {
+			return err
+		}
+	}
+
+	if err := writeReport(stdout, rep, *asJSON, repro); err != nil {
 		return err
 	}
 	if rep.Failed() {
@@ -80,12 +112,90 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// writeReport renders the report in the requested form.
-func writeReport(w io.Writer, rep migrateverify.Report, asJSON bool) error {
+// writeReport renders the report in the requested form. The text report is guided
+// by the repro command so a failing run ends with a copy-pasteable reproduction.
+func writeReport(w io.Writer, rep migrateverify.Report, asJSON bool, repro string) error {
 	if asJSON {
 		return rep.WriteJSON(w)
 	}
-	return rep.WriteText(w)
+	return rep.WriteTextGuided(w, migrateverify.TextGuidance{ReproCommand: repro})
+}
+
+// writeReportFile marshals the full JSON diagnostic to path, buffering first so a
+// marshal failure never leaves a half-written file behind.
+func writeReportFile(path string, diag migrateverify.VerifyReport) error {
+	var buf strings.Builder
+	if err := diag.WriteJSON(&buf); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(buf.String()), reportFileMode); err != nil {
+		return fmt.Errorf("write report file %q: %w", path, err)
+	}
+	return nil
+}
+
+// reproCommand reconstructs the exact, copy-pasteable `migrate verify …`
+// invocation that regenerates this diagnostic, using the RESOLVED window (so a
+// relative -1h/now input reproduces the same instants) and suggesting --report so
+// the operator captures the JSON to attach to a bug report.
+func reproCommand(p migrateverify.VerifyReportParams) string {
+	return strings.Join([]string{
+		"migrate verify",
+		"--corpus", shellQuote(p.Corpus),
+		"--ref", shellQuote(p.RefURL),
+		"--cerberus", shellQuote(p.CerberusURL),
+		"--start", shellQuote(p.Start),
+		"--end", shellQuote(p.End),
+		"--step", shellQuote(p.Step),
+		"--tolerance", strconv.FormatFloat(p.Tolerance, 'g', -1, 64),
+		"--report", "verify-report.json",
+	}, " ")
+}
+
+// shellQuote renders s as a single copy-pasteable shell word: bare when it holds
+// only safe characters, single-quoted otherwise (with embedded single quotes
+// escaped), so a URL or path with special characters survives a paste.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	safe := true
+	for i := 0; i < len(s); i++ {
+		if !isShellSafe(s[i]) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// isShellSafe reports whether c can appear unquoted in a shell word.
+func isShellSafe(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_' || c == '-' || c == '.' || c == '/' || c == ':' || c == '=' || c == '@' || c == '%' || c == '+':
+		return true
+	default:
+		return false
+	}
+}
+
+// toolVersion returns the migrate binary's version for the diagnostic, read from
+// the embedded module build info. It is "unknown" when the build carries no such
+// stamp (e.g. a `go test` binary).
+func toolVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return unknownToolVersion
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return unknownToolVersion
 }
 
 // verifyFailedError signals a failed parity gate: the run completed and the
