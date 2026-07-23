@@ -11,17 +11,17 @@
 // compares the per-(series, anchor) reset-count values. Counts are exact
 // integers in float64, so the assertion is BIT-IDENTICAL.
 //
-// VERSION-GATED, NOT auto-proven on this substrate. timeSeriesResetsToGrid
-// shipped in v25.9 (PR #86010, the sibling of timeSeriesChangesToGrid) and is
-// EMPIRICALLY ABSENT on the chdb-go v1.12.0 / CH 25.8 substrate. The test
-// feature-detects via system.functions and, when the function is absent, logs a
-// NOTICE and validates ONLY the fan-out half — the native==fan-out parity
-// assertion is bypassed here; it runs only on a >= 25.9 server. The forbid-skip CI gate
-// bans the test-skip API, so this is a documented runtime conditional that
-// ALWAYS executes; coverage loss is never silent. See the changes sibling test
-// for the full version-gating rationale.
+// Substrate: exercised on CI. timeSeriesResetsToGrid shipped in v25.9
+// (PR #86010, the sibling of timeSeriesChangesToGrid, floor-pinned 25.9 in
+// internal/chopt). The chDB parity substrate is chdb-core v26.5.0 (CH 26.5.1.1,
+// versions.yaml chdb_substrate), so the function is PRESENT and the native half
+// fires in the `chdb` CI lane. The test feature-detects via system.functions so
+// the fan-out half still validates on an older local libchdb; the forbid-skip CI
+// gate bans the test-skip API, so this is a documented runtime conditional that
+// ALWAYS executes and never silently loses coverage. See the changes sibling test
+// for the full rationale.
 //
-// Semantic parity to confirm on a >= 25.9 server: native timeSeriesResetsToGrid
+// Semantic parity, exercised on the CI substrate: native timeSeriesResetsToGrid
 // requires >= 1 sample/window (a single-sample window is a 0 count, not absent),
 // matching the fan-out's `length(window_vals) >= 1` + per-pair `c < p` count.
 // The half-open `(t-range, t]` vs closed-window left-edge distinction is
@@ -97,10 +97,11 @@ func TestNativeTSGridResets_DualEmitParity(t *testing.T) {
 
 	fanout := runResetsEmit(t, db, false, false)
 	if !resetsFnPresent(t, db) {
-		t.Logf("NOTICE: timeSeriesResetsToGrid absent on this chDB substrate (CH 25.8 < 25.9 floor) — " +
-			"native parity assertion bypassed (fan-out half still validated). Parity is VERSION-GATED: " +
-			"prove it on a >= 25.9 server (prod/e2e) or a newer chDB substrate. The always-on SQL-shape " +
-			"golden (native_resets_range_step.txtar) still pins the emit.")
+		t.Logf("NOTICE: timeSeriesResetsToGrid absent on this local chDB substrate " +
+			"(older libchdb than the pinned chdb-core v26.5.0) — native parity assertion " +
+			"bypassed (fan-out half still validated). Run `just chdb-install` at the pinned " +
+			"version to exercise the native half; it runs in the `chdb` CI lane on CH 26.5. " +
+			"The always-on SQL-shape golden (native_resets_range_step.txtar) still pins the emit.")
 		return
 	}
 	native := runResetsEmit(t, db, true, false)

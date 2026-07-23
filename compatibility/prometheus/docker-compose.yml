@@ -24,13 +24,13 @@ name: cerberus-compatibility
 services:
   clickhouse:
     # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding,
-    # `clickhouse/clickhouse-server:25.8-alpine` on GH Actions runners
+    # `clickhouse/clickhouse-server:26.5-alpine` on GH Actions runners
     # stalls in the entrypoint script for 5+ min (never starts the
     # server, never binds 8123). The Ubuntu-base variant boots in
     # ~10-20s on the same runners. A future maintainer: do not
     # innocently switch back to -alpine here without re-validating
     # against the GH-runner musl/scheduling regression.
-    image: clickhouse/clickhouse-server:25.8
+    image: clickhouse/clickhouse-server:26.5
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus

@@ -1031,7 +1031,7 @@ func TestRangeWindowResampleInnerScanTimeBound(t *testing.T) {
 // Decimal(18, 9) representation with room for only 9 INTEGER digits; any
 // Unix-second count past 2001-09-09 already needs 10. On ClickHouse server
 // versions where that coercion path is exercised (reproduced against a live
-// deployment; NOT reproducible on this repo's pinned chDB 25.8.2.1
+// deployment; NOT reproducible on this repo's pinned chDB 26.5.1.1
 // substrate — see TestNativeTSGridRate_DualEmitParity /
 // TestNativeTSGridResample_DualEmitParity, which exercise the identical
 // literal shape and pass there regardless) this 502s every real-world

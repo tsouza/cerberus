@@ -1197,7 +1197,7 @@ jobs:
     concurrency:
       group: e2e-startup-bench-${{ github.ref }}
       cancel-in-progress: false
-    # Why not `services:`? `clickhouse/clickhouse-server:25.8-alpine`'s
+    # Why not `services:`? `clickhouse/clickhouse-server:26.5-alpine`'s
     # two-phase entrypoint (temp server → create user+DB → restart) takes
     # 120–200s under GH Actions runner load, and GH's `services:` retry
     # mechanism kills the container on the first window expiry. Running
@@ -1227,7 +1227,7 @@ jobs:
             -e CLICKHOUSE_DB=otel \
             -e CLICKHOUSE_USER=cerberus \
             -e CLICKHOUSE_PASSWORD=cerberus \
-            clickhouse/clickhouse-server:25.8
+            clickhouse/clickhouse-server:26.5
 
       - name: Wait for ClickHouse
         run: |

@@ -121,6 +121,38 @@ var nativeTSGridFn = map[string]string{
 // detects the RangeWindowNative node in the plan and stamps the setting
 // onto the per-query ClickHouse context (see internal/engine +
 // internal/chclient).
+// nativeGridTsAxisFrag renders the timestamp axis fed as the FIRST aggregate
+// argument to the timeSeries*ToGrid family, selecting the unit the aggregate
+// must see per function.
+//
+// The regression pair (deriv / predict_linear) needs a WHOLE-SECOND axis;
+// everything else keeps the schema's native DateTime64(9) column.
+//
+//   - deriv -> timeSeriesDerivToGrid returns the least-squares slope in
+//     value-per-(timestamp tick). Fed the raw DateTime64(9) column the tick is a
+//     NANOSECOND, so the slope comes out 1e9x too small vs Prometheus's
+//     per-second deriv (empirically 1.8e-10 where the fan-out yields 0.18).
+//     Truncating the axis to whole seconds via toDateTime makes the tick a
+//     second, so the slope is per-second — byte-identical to the fan-out.
+//   - predict_linear -> the same whole-second axis makes it byte-match the
+//     fan-out too. The fan-out computes BOTH regression functions through
+//     windowPairsSLRFrag, whose x-axis is dateDiff('second', anchor, ts) — a
+//     whole-second grid. Matching that exact quantisation (rather than the raw
+//     sub-second column) is what makes native == fan-out == Prometheus here; on
+//     the raw axis predict_linear only diverged by float-order noise, but the
+//     whole-second axis makes it exact.
+//   - rate is window-normalised (its result is an increase divided by the
+//     window seconds param, not a raw per-tick slope) and changes/resets are
+//     integer counts, so all three are timestamp-tick-invariant and keep the
+//     native DateTime64(9) column untouched — no golden churn, no change to
+//     their sub-second sample-membership behaviour.
+func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
+	if fn == "deriv" || fn == "predict_linear" {
+		return Call("toDateTime", Col(tsColumn))
+	}
+	return Col(tsColumn)
+}
+
 func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindowNative.TimestampColumn unset", ErrUnsupported)
@@ -179,7 +211,7 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	gridAgg := Parametric(
 		fnName,
 		gridParams,
-		Col(r.TimestampColumn),
+		nativeGridTsAxisFrag(r.Func, r.TimestampColumn),
 		Col(r.ValueColumn),
 	)
 	// timeSeriesRange(start, end, step_s) — the parallel anchor-timestamp

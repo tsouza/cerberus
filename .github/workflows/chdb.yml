@@ -168,7 +168,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: /usr/local/lib/libchdb.so
-          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v4.0.2
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
 
       - name: Install libchdb.so
         run: just chdb-install
@@ -350,7 +350,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: /usr/local/lib/libchdb.so
-          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v4.0.2
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
 
       - name: Install libchdb.so
         run: just chdb-install

@@ -75,7 +75,7 @@ spec:
             claimName: clickhouse-data
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:25.8-alpine
+          image: clickhouse/clickhouse-server:26.5-alpine
           ports:
             - name: native
               containerPort: 9000

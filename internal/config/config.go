@@ -99,7 +99,7 @@ type Config struct {
 	// RequirementsCheck, when true (the default), runs the boot-time
 	// requirements check after the schema-create step: it inspects the
 	// connected ClickHouse server version against the config-derived
-	// minimum (CH 25.8 base, raised to max(base, native-rate floor) when
+	// minimum (CH 24.8 base, raised to max(base, native-rate floor) when
 	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE is enabled) AND validates the
 	// deployed schema shape (the configured tables' essential columns and
 	// the attribute-map column types) via system.columns. A FATAL finding —
@@ -124,10 +124,10 @@ type Config struct {
 	// was introduced in ClickHouse v25.6.0 but used a CLOSED membership
 	// window until v25.9 (PR #86588 made it left-open / right-closed to
 	// match PromQL), so the auto floor is 25.9; the compose / e2e /
-	// compatibility lanes run ClickHouse 25.8 (matching the chDB test
-	// substrate, chdb-go v1.11.0 = 25.8.2.1-lts), BELOW that floor, so the
-	// native path stays on the fan-out there — but the path stays
-	// experimental even on 25.9+ because it
+	// compatibility lanes and the chDB test substrate now run ClickHouse
+	// 26.5 (versions.yaml chdb_substrate, chdb-core v26.5.0 = 26.5.1.1),
+	// ABOVE that floor, so the native path is genuinely exercised there —
+	// but the path stays experimental even on 25.9+ because it
 	// depends on the experimental setting
 	// `allow_experimental_time_series_aggregate_functions=1`, sent only
 	// on the queries that actually use the native node (see
@@ -699,7 +699,7 @@ const configFileBaseName = "cerberus"
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
 //	    >= 25.9 (the left-open window fix, PR #86588; the 25.6 aggregate used a
 //	    closed window that diverges from PromQL on grid-aligned data). compose /
-//	    e2e run 25.8, BELOW this floor, so the native path stays on fan-out
+//	    e2e run 26.5, ABOVE this floor, so the native path is genuinely exercised
 //	    there; on servers below 25.6 the native query 500s with UNKNOWN_FUNCTION
 //	CERBERUS_LOG_COMMENT_SHAPE     default "false" — stamp a compact, literal-
 //	    free cerberus shape id into ClickHouse log_comment so query_log rows
