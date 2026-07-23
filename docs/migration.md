@@ -86,13 +86,17 @@ enabled (auto-selected on CH 25.9+) lowers those differently, so the previewed
 range SQL **may differ** from what such a deployment runs. The tool is offline and
 cannot know the target's ClickHouse version.
 
-The SQL preview covers the **PromQL and LogQL** heads: a PromQL corpus query
-lowers against the metrics schema and a LogQL query against the logs schema
-(`otel_logs`), each emitting real ClickHouse SQL. TraceQL corpus entries are
-still harvested (so the report and classify counts account for them), but they
-have no offline SQL preview yet — `explain` reports them `UNSUPPORTED` with the
-language named, and `classify` buckets them unsupported, rather than mis-parsing
-a TraceQL string against another head.
+The SQL preview covers all **three heads**: a PromQL corpus query lowers against
+the metrics schema, a LogQL query against the logs schema (`otel_logs`), and a
+TraceQL query against the traces schema (`otel_traces`) — each emitting real
+ClickHouse SQL. A TraceQL search query (`{ span.http.status_code = 500 }`)
+previews as the bounded `/api/search` scan; a TraceQL metrics query
+(`{ } | rate()`) previews as the `/api/metrics/query_range` matrix. Both are
+bounded to a fixed lookback window so the emitted scan is partition-pruned, the
+same shape the server runs. `classify` additionally flags a TraceQL
+structural-join query (`{...} >> {...}`) **risky**: it lowers cleanly (so it is
+supported) but runs a per-trace recursive closure — the fan-out worth reviewing
+before cutover.
 
 ## The migration lifecycle
 

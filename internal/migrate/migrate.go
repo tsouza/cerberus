@@ -212,8 +212,16 @@ func qualify(db, table string) string {
 // Lint returns conservative, offline risk flags read straight off the IR. It
 // deliberately does NOT estimate cardinality — row counts depend on data the
 // preview cannot see. It flags only structural fan-out that is a fact of the
-// plan shape: a PromQL subquery RangeWindow evaluates its inner expression at
-// many anchors per series, a work multiplier worth surfacing before cutover.
+// plan shape, the same across all three heads:
+//
+//   - a PromQL subquery RangeWindow evaluates its inner expression at many
+//     anchors per series, a work multiplier worth surfacing before cutover;
+//   - a TraceQL structural join (`>>` / `<<` / `>` / `<` / `~`) runs a
+//     per-trace parent/child/descendant closure over the matched span set —
+//     the recursive-CTE fan-out that dominates a structure-tab query's cost.
+//
+// Neither is a cardinality estimate: both are multipliers the plan shape makes
+// certain regardless of the data.
 func Lint(plan chplan.Node) []string {
 	seen := map[string]struct{}{}
 	var risks []string
@@ -225,15 +233,16 @@ func Lint(plan chplan.Node) []string {
 		risks = append(risks, msg)
 	}
 	chplan.Walk(plan, func(n chplan.Node) bool {
-		rw, ok := n.(*chplan.RangeWindow)
-		if !ok {
-			return true
-		}
-		if rw.OuterRange > 0 && rw.Step > 0 {
-			// anchors = OuterRange/Step + 1 (end-inclusive grid). This is a
-			// structural fan-out factor from the plan, not a data estimate.
-			anchors := int64(rw.OuterRange/rw.Step) + 1
-			add(fmt.Sprintf("subquery fan-out: inner expression evaluated at %d anchors per series", anchors))
+		switch v := n.(type) {
+		case *chplan.RangeWindow:
+			if v.OuterRange > 0 && v.Step > 0 {
+				// anchors = OuterRange/Step + 1 (end-inclusive grid). This is a
+				// structural fan-out factor from the plan, not a data estimate.
+				anchors := int64(v.OuterRange/v.Step) + 1
+				add(fmt.Sprintf("subquery fan-out: inner expression evaluated at %d anchors per series", anchors))
+			}
+		case *chplan.StructuralJoin:
+			add(fmt.Sprintf("structural-join fan-out: %s closure evaluated per matched trace", v.Op))
 		}
 		return true
 	})

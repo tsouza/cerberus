@@ -121,25 +121,3 @@ func TestClassifyLogQLUnsupported(t *testing.T) {
 		t.Error("unsupported LogQL query must name its offending construct, got empty")
 	}
 }
-
-// TestExplainTraceQLCorpusHonestlyUnsupported pins that a TraceQL corpus entry —
-// which has no offline SQL preview in this wave — is reported UNSUPPORTED with the
-// language named, rather than mis-parsed as PromQL/LogQL and surfaced as a
-// confusing parse error.
-func TestExplainTraceQLCorpusHonestlyUnsupported(t *testing.T) {
-	corpus := writeLogQLCorpus(t, []migrate.CorpusQuery{
-		{Expr: `{ span.http.status_code = 500 }`, Source: "corpus:trace", Kind: migrate.KindPanel, Lang: migrate.LangTraceQL},
-	})
-
-	var out, errOut bytes.Buffer
-	if err := runMigrate([]string{"explain", "--corpus", corpus}, &out, &errOut); err != nil {
-		t.Fatalf("explain: %v (stderr: %s)", err, errOut.String())
-	}
-	report := out.String()
-	if !strings.Contains(report, "UNSUPPORTED") {
-		t.Fatalf("TraceQL corpus entry must report UNSUPPORTED, got:\n%s", report)
-	}
-	if !strings.Contains(report, migrate.LangTraceQL) {
-		t.Errorf("UNSUPPORTED reason must name the traceql language, got:\n%s", report)
-	}
-}
