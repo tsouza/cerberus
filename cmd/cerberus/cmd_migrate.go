@@ -901,12 +901,12 @@ func writeReportFile(path string, diag migrateverify.VerifyReport) error {
 	return nil
 }
 
-// reproCommand reconstructs the exact, copy-pasteable `migrate verify …`
+// reproCommand reconstructs the exact, copy-pasteable `cerberus migrate verify …`
 // invocation that regenerates this diagnostic, using the RESOLVED window (so a
 // relative -1h/now input reproduces the same instants) and suggesting --report.
 func reproCommand(p migrateverify.VerifyReportParams) string {
 	return strings.Join([]string{
-		"migrate verify",
+		"cerberus migrate verify",
 		"--corpus", shellQuote(p.Corpus),
 		"--ref", shellQuote(p.RefURL),
 		"--cerberus", shellQuote(p.CerberusURL),

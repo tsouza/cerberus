@@ -139,7 +139,7 @@ func TestRunVerify_DivergeStdoutGuidance(t *testing.T) {
 	if !strings.Contains(s, "https://github.com/tsouza/cerberus/issues") {
 		t.Errorf("stdout must carry the cerberus issues URL, got:\n%s", s)
 	}
-	if !strings.Contains(s, "migrate verify --corpus") || !strings.Contains(s, "--report verify-report.json") {
+	if !strings.Contains(s, "cerberus migrate verify --corpus") || !strings.Contains(s, "--report verify-report.json") {
 		t.Errorf("stdout must carry a copy-pasteable repro command with --report, got:\n%s", s)
 	}
 }
@@ -261,8 +261,8 @@ func TestReproCommand_ShellQuoting(t *testing.T) {
 	if !strings.Contains(cmd, "http://ref:9090") {
 		t.Errorf("safe URL should appear bare, got:\n%s", cmd)
 	}
-	if !strings.HasPrefix(cmd, "migrate verify ") || !strings.Contains(cmd, "--report verify-report.json") {
-		t.Errorf("repro must be a full migrate verify invocation ending in --report, got:\n%s", cmd)
+	if !strings.HasPrefix(cmd, "cerberus migrate verify ") || !strings.Contains(cmd, "--report verify-report.json") {
+		t.Errorf("repro must be a full cerberus migrate verify invocation ending in --report, got:\n%s", cmd)
 	}
 }
 
