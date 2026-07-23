@@ -39,6 +39,32 @@ archives:
       - README.md
       - CHANGELOG.md
 
+# Homebrew formula published to the tsouza/homebrew-tap tap, so operators can
+# `brew install tsouza/tap/cerberus`. skip_upload: auto means prereleases
+# (rc.*) never write a formula — only stable releases publish. The cross-repo
+# push needs a PAT (the default GITHUB_TOKEN cannot push to another repo); it is
+# supplied by the HOMEBREW_TAP_GITHUB_TOKEN secret wired in release.yml.
+#
+# We use `brews:` (a Homebrew FORMULA), not `homebrew_casks:`, on purpose:
+# goreleaser is nudging toward casks, but casks are macOS-only, and cerberus is
+# a Linux-first server binary — a formula installs on both Linuxbrew and macOS.
+brews:
+  - name: cerberus
+    ids:
+      - cerberus
+    repository:
+      owner: tsouza
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/tsouza/cerberus"
+    description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+    license: "Apache-2.0"
+    skip_upload: auto
+    install: |
+      bin.install "cerberus"
+    test: |
+      system "#{bin}/cerberus", "--version"
+
 checksum:
   name_template: "checksums.txt"
 

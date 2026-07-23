@@ -1008,16 +1008,28 @@ publish gates handle either or both. The `:latest` image tag advances only for
 the highest stable `v*` release (a prerelease or a stable backport never drags
 it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
 
-#### Homebrew tap (future)
+#### Homebrew tap
 
-The release currently ships raw `tar.gz` archives + container images. A Homebrew
-formula can be added later by giving goreleaser a `brews:` block that points at a
-`tsouza/homebrew-tap` repo (the tap must exist first, and the release token must
-be able to push to it). It was deliberately left out of the initial `migrate` +
-`cerberus` binary release: a `brews:` block whose tap repo does not yet exist
-fails the goreleaser release step, so wiring it up is gated on creating that
-repo. Add the block — one entry per binary that should be `brew install`-able —
-in a follow-up once `tsouza/homebrew-tap` exists.
+Stable releases publish a Homebrew formula to the
+[`tsouza/homebrew-tap`](https://github.com/tsouza/homebrew-tap) tap, so operators
+can install the single `cerberus` binary with:
+
+```sh
+brew install tsouza/tap/cerberus
+```
+
+This is wired via the goreleaser `brews:` block (a Homebrew *formula*, not a
+cask, so it installs on Linuxbrew as well as macOS). `skip_upload: auto` means
+`rc.*` prereleases never write a formula — only stable releases publish.
+
+Two prerequisites make the push work, and both are one-time:
+
+1. The tap repo `tsouza/homebrew-tap` exists (public).
+2. A PAT with push (`contents: write`) access to that tap is stored as the
+   `HOMEBREW_TAP_GITHUB_TOKEN` repository secret on `tsouza/cerberus`. The
+   default workflow `GITHUB_TOKEN` **cannot** push to another repo, so this
+   secret is mandatory — without it the brew push on the next stable release
+   fails.
 
 #### Maintenance lines (hotfix backports)
 
