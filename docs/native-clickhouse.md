@@ -35,27 +35,40 @@ the portable SQL path. What it currently exploits:
   whole-second timestamp axis (`toDateTime(ts)`) that matches the fan-out's
   `dateDiff('second', anchor, ts)` regression x-axis — without it
   `timeSeriesDerivToGrid` computes a per-nanosecond slope (1e9× too small) off
-  the raw `DateTime64(9)` column. (The whole-second axis is also the
-  numerically sound choice: a least-squares fit over absolute nanosecond
-  timestamps — ~10¹⁸, squared past float64's 2⁵³ exact range — loses precision,
-  and it keeps `predict_linear`'s whole-second horizon `t` unit-consistent.)
-  With the matching axis native == fan-out is **bit-identical for
-  whole-second-aligned samples**, proven directly on the chDB CI substrate by
-  the dual-emit parity tests (`range_window_deriv_chdb_test.go` /
+  the raw `DateTime64(9)` column. The whole-second axis is chosen so that native
+  stays **bit-identical to the fan-out**, whose own x-axis is that floored
+  `dateDiff('second', …)`. With the matching axis native == fan-out is
+  **bit-identical for whole-second-aligned samples**, proven directly on the chDB
+  CI substrate by the dual-emit parity tests (`range_window_deriv_chdb_test.go` /
   `range_window_predict_linear_chdb_test.go`): the substrate is ClickHouse 26.5,
   above the 25.9 floor, so it ships the aggregates and the native half genuinely
   fires in the `chdb` lane.
   - **Known limitation (why the native regression path stays experimental,
-    default-off behind `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`):** the
-    `toDateTime(ts)` argument feeds both the regression x-axis *and* the
-    aggregate's window-membership bucketing. On sub-second-offset samples that
-    straddle a window boundary, the native path buckets by the floored second
-    while the fan-out (and Prometheus) decide membership on the raw timestamp,
-    so a boundary sample can land in a different grid window between the two
-    paths. Bit-identical parity is therefore established only for
-    whole-second-aligned data; closing the sub-second membership gap (or pinning
-    the whole-second-only guarantee with a dedicated characterization seed) is
-    the gate before this path is promoted past experimental.
+    default-off behind `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`):** the aggregate
+    accepts only a `DateTime`/`DateTime64` timestamp (it rejects `Float64` /
+    `Decimal`), so its single ts argument drives both the regression x-axis *and*
+    the window-membership bucketing — there is no way to keep a whole-second
+    x-axis while bucketing membership on the raw timestamp. On sub-second-offset
+    samples that straddle a window boundary, the native path buckets by the
+    floored second while the fan-out (and Prometheus) decide membership on the raw
+    timestamp, so a boundary sample can land in a different grid window between the
+    two paths. This gap is characterised and pinned by
+    `range_window_regression_subsecond_chdb_test.go`. The per-function outlook:
+    - `deriv`: feeding the raw `DateTime64(9)` axis and scaling the slope by 1e9
+      is actually **more** correct (raw-ts membership + fractional-second x =
+      Prometheus's deriv) and is numerically sound at production ns magnitude —
+      the least-squares slope is a centered difference, not an absolute-magnitude
+      sum, so it does not overrun float64's exact range. It is kept on the
+      whole-second axis only to stay bit-identical to the (floored) fan-out;
+      moving it to raw-ns would improve correctness at the cost of that guard.
+    - `predict_linear`: raw-ns is genuinely broken — its result is an *absolute*
+      forecast (`intercept + slope*(anchor + offset)`) evaluated at ~10¹⁸ ns,
+      where catastrophic cancellation destroys all precision, and no scale trick
+      recovers it. It cannot be made sub-second-correct via the native aggregate.
+    Because the flag gates the whole family, that inherent `predict_linear`
+    limitation is what keeps the native regression path default-off; closing (or
+    formally accepting) the sub-second membership gap is the gate before it is
+    promoted.
 - **`timeSeriesResampleToGridWithStaleness`** — native instant-vector
   selection with Prometheus staleness, retiring the staleness fan-out.
 - **`condition_cache`** and **`aggregation_in_order`** — server-side
