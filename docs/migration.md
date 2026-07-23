@@ -49,26 +49,39 @@ You need three things in place:
 
 ## The `migrate` tool
 
-There are eight capabilities: seven subcommands plus one root flag.
+There are nine capabilities: seven subcommands plus two root flags (`--schema`
+and `--rules`).
 
-| Command             | What it does                                                            | Key flags                                                                                                                                        | Network             |
-| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- |
-| `migrate --schema`  | Print the `CREATE` statements cerberus expects, from `CERBERUS_*` env   | *(root flag; reads `CERBERUS_*`)*                                                                                                                | offline             |
-| `migrate harvest`   | Build a machine-readable PromQL corpus from your files                  | `--rules`, `--dashboards`, `--out`                                                                                                               | offline             |
-| `migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL      | `--corpus` (or `--rules`/`--dashboards`), `--out`                                                                                                | offline             |
-| `migrate classify`  | Bucket each query as supported / unsupported / risky                    | `--corpus` (or `--rules`/`--dashboards`), `--json`, `--out`                                                                                      | offline             |
-| `migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline             |
-| `migrate verify`    | Replay the corpus against **both** backends and diff (parity gate)      | `--corpus`, `--ref`, `--cerberus`, `--ref-token`, `--cerberus-token`, `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out` | live (two backends) |
-| `migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk    | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)  |
-| `migrate gate`      | Fold the artifacts into one cutover go/no-go decision                   | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline             |
+| Command             | What it does                                                                          | Key flags                                                                                                                                        | Network             |
+| ------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- |
+| `migrate --schema`  | Print the `CREATE` statements cerberus expects, from `CERBERUS_*` env                 | *(root flag; reads `CERBERUS_*`)*                                                                                                                | offline             |
+| `migrate --rules`   | Explain the SQL for each PromQL query in rule files (shorthand for `explain --rules`) | `--rules` *(root flag)*                                                                                                                          | offline             |
+| `migrate harvest`   | Build a machine-readable PromQL corpus from your files                                | `--rules`, `--dashboards`, `--out`                                                                                                               | offline             |
+| `migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL                    | `--corpus` (or `--rules`/`--dashboards`), `--out`                                                                                                | offline             |
+| `migrate classify`  | Bucket each query as supported / unsupported / risky                                  | `--corpus` (or `--rules`/`--dashboards`), `--json`, `--out`                                                                                      | offline             |
+| `migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized               | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline             |
+| `migrate verify`    | Replay the corpus against **both** backends and diff (parity gate)                    | `--corpus`, `--ref`, `--cerberus`, `--ref-token`, `--cerberus-token`, `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out` | live (two backends) |
+| `migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk                  | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)  |
+| `migrate gate`      | Fold the artifacts into one cutover go/no-go decision                                 | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline             |
 
 The offline preview commands (`explain`, `classify`) load `config.FromEnv()`
 so the preview runs with the **same per-query sample budget** the production
 server enforces — a query that would trip a runtime guard is not previewed as
 clean. `verify` and `inventory` also read `CERBERUS_VERIFY_*` /
-`CERBERUS_INVENTORY_*` environment fallbacks for their connection, window, and
-credential flags — not the output flags (`--json` / `--out`, and for inventory
-not `--top`) — so the same run can be driven from flags or env.
+`CERBERUS_INVENTORY_*` environment fallbacks for their connection, window,
+credential, and (for `verify`) `--report` flags — `--report` has a
+`CERBERUS_VERIFY_REPORT` fallback too — but not the stdout output flags (`--json`
+/ `--out`, and for inventory not `--top`), so the same run can be driven from
+flags or env.
+
+`explain` previews the SQL for a query as an *instant* evaluation for rules and a
+*range* (`query_range`) evaluation for panels. The instant/rule SQL matches what
+the server runs. The range/panel SQL uses the **fan-out** lowering for the
+range-window operators (`rate` / `changes` / `resets` / `*_over_time`, staleness);
+a live deployment with the experimental native `timeSeries*ToGrid` aggregates
+enabled (auto-selected on CH 25.9+) lowers those differently, so the previewed
+range SQL **may differ** from what such a deployment runs. The tool is offline and
+cannot know the target's ClickHouse version.
 
 ## The migration lifecycle
 

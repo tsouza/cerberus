@@ -177,8 +177,9 @@ func TestBuildRuleGraphDeterministicJSON(t *testing.T) {
 }
 
 // TestHarvestRuleFilesSplitsRecordAndAlert pins the file harvester: a recording
-// rule becomes a recorded series, an alerting rule becomes a consumer, an empty
-// alert expr is a counted skip, and a no-name rule is a counted skip.
+// rule becomes a recorded series AND a KindRecord consumer (its own expr — so
+// rule-to-rule chains link), an alerting rule becomes a KindAlert consumer, an
+// empty expr is a counted skip, and a no-name rule is a counted skip.
 func TestHarvestRuleFilesSplitsRecordAndAlert(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "rules.yml")
@@ -203,12 +204,72 @@ groups:
 	if len(recorded) != 1 || recorded[0].Name != "job:up:rate5m" {
 		t.Fatalf("recorded = %+v, want one job:up:rate5m", recorded)
 	}
-	if len(consumers) != 1 || consumers[0].Kind != KindAlert {
-		t.Fatalf("consumers = %+v, want one alert consumer", consumers)
+	// The recording rule's own expr is now a consumer too (KindRecord), so a
+	// rule-to-rule chain can be detected — two consumers: the record expr and the
+	// alert expr.
+	kinds := map[string]int{}
+	for _, c := range consumers {
+		kinds[c.Kind]++
+	}
+	if len(consumers) != 2 || kinds[KindRecord] != 1 || kinds[KindAlert] != 1 {
+		t.Fatalf("consumers = %+v, want one KindRecord + one KindAlert", consumers)
 	}
 	// One empty-expr alert + one no-name rule = two skips.
 	if len(skipped) != 2 {
 		t.Fatalf("skipped = %+v, want 2 (empty-expr alert + no-name rule)", skipped)
+	}
+}
+
+// TestHarvestRuleFilesRecordToRecordChain pins the honesty fix: when one
+// recording rule's expr reads ANOTHER recording rule's output (a rule-to-rule
+// chain), the intermediate recorded series is linked as CONSUMED — never left
+// wrongly orphan ("safe to drop") while a live chain still depends on it. The
+// empty-expr recording rule is a counted skip, not a silent false orphan.
+func TestHarvestRuleFilesRecordToRecordChain(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "rules.yml")
+	const rules = `
+groups:
+  - name: chain
+    rules:
+      - record: job:top:sum
+        expr: sum(job:inter:rate5m)
+      - record: job:inter:rate5m
+        expr: rate(http_requests_total[5m])
+      - record: job:broken:noexpr
+        expr: ""
+`
+	if err := os.WriteFile(file, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, consumers, skipped := HarvestRuleFiles([]string{file})
+	g := BuildRuleGraph(recorded, consumers, PromQLMetricNames, skipped)
+
+	byName := map[string]RecordedNode{}
+	for _, n := range g.Recorded {
+		byName[n.Name] = n
+	}
+
+	inter, ok := byName["job:inter:rate5m"]
+	if !ok {
+		t.Fatalf("job:inter:rate5m missing from recorded set %+v", g.Recorded)
+	}
+	if inter.Status != StatusConsumed {
+		t.Errorf("intermediate recorded series job:inter:rate5m status = %q, want consumed (read by job:top:sum)", inter.Status)
+	}
+
+	top, ok := byName["job:top:sum"]
+	if !ok {
+		t.Fatalf("job:top:sum missing from recorded set %+v", g.Recorded)
+	}
+	if top.Status != StatusOrphan {
+		t.Errorf("top-of-chain job:top:sum status = %q, want orphan (nobody reads it)", top.Status)
+	}
+
+	// The empty-expr recording rule is a counted skip, never a silent false orphan.
+	if g.Counts.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1 (the empty-expr recording rule)", g.Counts.Skipped)
 	}
 }
 

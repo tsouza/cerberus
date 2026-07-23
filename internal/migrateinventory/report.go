@@ -43,7 +43,7 @@ func (inv Inventory) WriteText(w io.Writer) error {
 	bw.printf("  series:      %d\n", inv.Head.NumSeries)
 	bw.printf("  label pairs: %d\n", inv.Head.NumLabelPairs)
 	bw.printf("  chunks:      %d\n", inv.Head.ChunkCount)
-	if inv.Head.MinTime != 0 || inv.Head.MaxTime != 0 {
+	if hasHeadSpan(inv.Head) {
 		bw.printf("  head span:   %s .. %s\n", formatMillis(inv.Head.MinTime), formatMillis(inv.Head.MaxTime))
 	}
 	if inv.MetricNameTotal >= 0 {
@@ -87,6 +87,15 @@ func writeRanked(bw *errWriter, title string, rows []NameValue, unit string) {
 // rankNameWidth pads the name column so the value column lines up in the ranked
 // tables. It is a cosmetic alignment width, not a data limit.
 const rankNameWidth = 48
+
+// hasHeadSpan reports whether the head block carries a real time span worth
+// printing. An EMPTY head is not all-zero: Prometheus reports it with sentinel
+// bounds (MinTime = math.MaxInt64, MaxTime = math.MinInt64), so MinTime > MaxTime.
+// Printing those verbatim yields garbage year-292-billion timestamps, so a span
+// is shown only when MaxTime >= MinTime and at least one bound is non-zero.
+func hasHeadSpan(h HeadStats) bool {
+	return h.MaxTime >= h.MinTime && (h.MinTime != 0 || h.MaxTime != 0)
+}
 
 // formatMillis renders a Prometheus millisecond epoch as an RFC3339 UTC instant.
 func formatMillis(ms int64) string {

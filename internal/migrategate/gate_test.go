@@ -631,6 +631,31 @@ func TestEvaluateBlocksOnZeroQueryVerify(t *testing.T) {
 	}
 }
 
+// TestEvaluateBlocksOnAllUnsupportedVerify pins that a run that replayed queries
+// but COMPARED none — every query unsupported (Match+Diverge+Error==0, Total>0) —
+// blocks. Keying "nothing verified" on Total alone would let an all-unsupported
+// run WARN through to a green gate, proving nothing.
+func TestEvaluateBlocksOnAllUnsupportedVerify(t *testing.T) {
+	rep := migrateverify.Report{Summary: migrateverify.Summary{Total: 4, Unsupported: 4}}
+	in := migrategate.Inputs{
+		Verify:    writeArtifact(t, "verify.json", rep.WriteJSON),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	v := stageByName(t, dec, migrategate.StageVerify)
+	if dec.Pass || v.Verdict != migrategate.VerdictFail || !v.Blocking {
+		t.Fatalf("all-unsupported verify must FAIL+block, got pass=%v verdict=%q blocking=%v", dec.Pass, v.Verdict, v.Blocking)
+	}
+	if !containsSubstr(v.Reasons, "nothing actually compared") {
+		t.Errorf("verify reasons should say nothing actually compared, got %v", v.Reasons)
+	}
+}
+
 // TestEvaluateBlocksOnZeroQueryClassify pins the same for classify: bucketing
 // zero queries proves no support coverage and must block.
 func TestEvaluateBlocksOnZeroQueryClassify(t *testing.T) {

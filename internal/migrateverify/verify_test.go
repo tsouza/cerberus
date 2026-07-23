@@ -318,3 +318,137 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 		t.Errorf("text report must account for harvest-skipped entries, got:\n%s", text.String())
 	}
 }
+
+// nonMatrixServer answers every /api/v1/query_range with a 200 body whose
+// resultType is NOT "matrix" (a scalar/vector reply cerberus cannot serve as a
+// range). The backend parses it fine but carries the non-matrix resultType
+// through for the caller to classify.
+func nonMatrixServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// deadBackendURL returns the URL of an httptest server that has already been
+// closed, so any request against it fails at the transport layer (connection
+// refused) — a deterministic way to exercise the transport-error branches.
+func deadBackendURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	u := srv.URL
+	srv.Close()
+	return u
+}
+
+// TestVerify_Cerberus200NonMatrix: cerberus answers 200 but with a non-matrix
+// resultType — it cannot serve the query as a range. That is a non-blocking
+// coverage gap (unsupported), not a gate failure.
+func TestVerify_Cerberus200NonMatrix(t *testing.T) {
+	refBody := map[string]string{
+		"scalar(up)": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
+	}
+	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
+	cer := NewHTTPBackend(nonMatrixServer(t).URL)
+	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "scalar(up)", Source: "panel:s"}}}, ref, cer, testParams())
+	res := rep.Results[0]
+	if res.Verdict != VerdictUnsupported {
+		t.Fatalf("verdict = %q, want unsupported (cerberus 200 non-matrix)", res.Verdict)
+	}
+	if !strings.Contains(res.Detail, `resultType="vector"`) {
+		t.Errorf("unsupported detail should name the non-matrix resultType, got %q", res.Detail)
+	}
+	if (Report{Summary: Summary{Total: 1, Unsupported: 1}}).Failed() {
+		t.Error("a lone unsupported query must not fail the gate")
+	}
+}
+
+// TestVerify_Reference200NonMatrix: the reference answers 200 with a non-matrix
+// resultType, so there is no baseline to compare — an error verdict that DOES
+// fail the gate (never silently passed).
+func TestVerify_Reference200NonMatrix(t *testing.T) {
+	cerBody := map[string]string{
+		"q": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
+	}
+	ref := NewHTTPBackend(nonMatrixServer(t).URL)
+	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
+	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cer, testParams())
+	res := rep.Results[0]
+	if res.Verdict != VerdictError {
+		t.Fatalf("verdict = %q, want error (reference 200 non-matrix)", res.Verdict)
+	}
+	if !(Report{Summary: Summary{Total: 1, Error: 1}}).Failed() {
+		t.Error("a reference-error verdict must fail the gate")
+	}
+}
+
+// TestVerify_ReferenceTransportError: the reference is unreachable (transport
+// error, refErr branch) → error verdict, gate fails.
+func TestVerify_ReferenceTransportError(t *testing.T) {
+	cerBody := map[string]string{
+		"q": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
+	}
+	ref := NewHTTPBackend(deadBackendURL(t))
+	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
+	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cer, testParams())
+	res := rep.Results[0]
+	if res.Verdict != VerdictError {
+		t.Fatalf("verdict = %q, want error (reference transport failure)", res.Verdict)
+	}
+	if !strings.Contains(res.Detail, "reference request failed") {
+		t.Errorf("detail should name the reference transport failure, got %q", res.Detail)
+	}
+}
+
+// TestVerify_CerberusTransportError: cerberus is unreachable (transport error,
+// cerErr branch) → error verdict, gate fails. The reference is healthy, proving
+// the cerErr branch is what fires.
+func TestVerify_CerberusTransportError(t *testing.T) {
+	refBody := map[string]string{
+		"q": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
+	}
+	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
+	cer := NewHTTPBackend(deadBackendURL(t))
+	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cer, testParams())
+	res := rep.Results[0]
+	if res.Verdict != VerdictError {
+		t.Fatalf("verdict = %q, want error (cerberus transport failure)", res.Verdict)
+	}
+	if !strings.Contains(res.Detail, "cerberus request failed") {
+		t.Errorf("detail should name the cerberus transport failure, got %q", res.Detail)
+	}
+}
+
+// TestVerify_TransportErrorRedactsCredentials pins the security fix: a transport
+// error against a user:pass@ backend URL must NOT leak the basic-auth userinfo
+// (Go's *url.Error keeps the username, so a token-as-username would leak in full)
+// into the verdict Detail — which lands in gate-consumed verify.json and the
+// --report file operators attach to bug reports.
+func TestVerify_TransportErrorRedactsCredentials(t *testing.T) {
+	const (
+		user = "s3cr3t-token"
+		pass = "hunter2-pw"
+	)
+	addr := strings.TrimPrefix(deadBackendURL(t), "http://")
+	badURL := "http://" + user + ":" + pass + "@" + addr
+
+	cerBody := map[string]string{
+		"up": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
+	}
+	ref := NewHTTPBackend(badURL)
+	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
+	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "up", Source: "s"}}}, ref, cer, testParams())
+	res := rep.Results[0]
+	if res.Verdict != VerdictError {
+		t.Fatalf("verdict = %q, want error", res.Verdict)
+	}
+	if strings.Contains(res.Detail, user) || strings.Contains(res.Detail, pass) {
+		t.Fatalf("verdict Detail leaked credentials: %q", res.Detail)
+	}
+	if !strings.Contains(res.Detail, redactedUserinfo) {
+		t.Errorf("verdict Detail should show the userinfo was redacted (%q), got %q", redactedUserinfo, res.Detail)
+	}
+}
