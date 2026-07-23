@@ -168,8 +168,9 @@ groups:
 
 // TestHarvestThenExplainCorpus drives the composed flow end to end: harvest a
 // corpus from a rules file plus a dashboard (with a Prometheus panel, a nested
-// row, and a Loki panel that is dropped-with-count) to a file, then explain that
-// corpus file. The corpus is deterministic and the explain reads it back.
+// row, and a Loki panel harvested as LogQL) to a file, then explain that corpus
+// file. The corpus is deterministic and the explain reads it back; the LogQL
+// query is carried into the corpus but reported as not-previewed-offline.
 func TestHarvestThenExplainCorpus(t *testing.T) {
 	dir := t.TempDir()
 
@@ -224,18 +225,23 @@ groups:
 	if corpus.Version != migrate.CorpusVersion {
 		t.Errorf("corpus version = %d, want %d", corpus.Version, migrate.CorpusVersion)
 	}
-	// 1 rule + 2 prometheus panel targets (top-level + nested row) = 3 queries.
-	if len(corpus.Queries) != 3 {
-		t.Fatalf("corpus queries = %d, want 3: %+v", len(corpus.Queries), corpus.Queries)
+	// 1 rule + 2 prometheus panel targets (top-level + nested row) + 1 Loki panel
+	// = 4 queries; nothing dropped now that the corpus is three-headed.
+	if len(corpus.Queries) != 4 {
+		t.Fatalf("corpus queries = %d, want 4: %+v", len(corpus.Queries), corpus.Queries)
 	}
-	// The Loki panel target is dropped-with-count.
-	if len(corpus.Skipped) != 1 || !strings.Contains(corpus.Skipped[0].Reason, "loki") {
-		t.Fatalf("expected 1 Loki skip, got %+v", corpus.Skipped)
+	if len(corpus.Skipped) != 0 {
+		t.Fatalf("expected 0 skips (Loki panel harvested as LogQL), got %+v", corpus.Skipped)
 	}
+	langs := map[string]int{}
 	for _, q := range corpus.Queries {
-		if q.Lang != migrate.LangPromQL {
-			t.Errorf("query %q lang = %q, want %q", q.Expr, q.Lang, migrate.LangPromQL)
+		if q.Lang == "" {
+			t.Errorf("query %q carries no lang tag", q.Expr)
 		}
+		langs[q.Lang]++
+	}
+	if langs[migrate.LangPromQL] != 3 || langs[migrate.LangLogQL] != 1 {
+		t.Errorf("unexpected lang distribution: %+v", langs)
 	}
 
 	// Harvest is deterministic: a second harvest to a fresh file is byte-identical.
@@ -264,9 +270,14 @@ groups:
 	if !strings.Contains(report, "node_load1") {
 		t.Errorf("explain report should include the nested-row panel query, got:\n%s", report)
 	}
-	// The harvest-time Loki skip is carried into the explain report's skip count.
-	if !strings.Contains(report, "1 skipped") {
-		t.Errorf("explain report should carry the 1 harvest-time skip, got:\n%s", report)
+	// The LogQL query is carried into the corpus (4 queries, 0 skips) but the
+	// offline SQL preview covers PromQL only, so it is reported UNSUPPORTED with an
+	// honest reason rather than parsed as PromQL.
+	if !strings.Contains(report, "4 queries, 0 skipped") {
+		t.Errorf("explain report should report 4 queries and 0 skips, got:\n%s", report)
+	}
+	if !strings.Contains(report, "offline SQL preview covers PromQL only") {
+		t.Errorf("explain report should flag the LogQL query as not previewed offline, got:\n%s", report)
 	}
 }
 

@@ -206,34 +206,40 @@ func newMigrateSchemaCmd() *cobra.Command {
 func newMigrateHarvestCmd() *cobra.Command {
 	var (
 		rules      []string
+		lokiRules  []string
 		dashboards string
 		out        string
 	)
 	cmd := &cobra.Command{
 		Use:   "harvest",
-		Short: "Build a machine-readable PromQL query corpus from rule files + dashboards",
-		Long: "Scan Prometheus rule files (--rules) and exported Grafana dashboard JSON\n" +
-			"(--dashboards) and emit a versioned, deterministic corpus.json of the\n" +
-			"operator's real PromQL. Every dropped item (unreadable file, non-Prometheus\n" +
-			"panel, empty expr) is counted, never silently discarded.",
-		Example:       "  cerberus migrate harvest --rules 'rules/*.yml' --dashboards dashboards/ --out corpus.json",
+		Short: "Build a machine-readable three-headed query corpus from rule files + dashboards",
+		Long: "Scan Prometheus rule files (--rules), Loki rule files (--loki-rules), and\n" +
+			"exported Grafana dashboard JSON (--dashboards) and emit a versioned,\n" +
+			"deterministic corpus.json of the operator's real PromQL, LogQL, and TraceQL —\n" +
+			"each query tagged with its language and provenance. Dashboard Prometheus\n" +
+			"panels (PromQL), Loki panels (LogQL), and Tempo panels (TraceQL, read from the\n" +
+			"panel's `query` field) are all harvested. Every dropped item (unreadable file,\n" +
+			"unsupported datasource, empty expr) is counted, never silently discarded.",
+		Example:       "  cerberus migrate harvest --rules 'rules/*.yml' --loki-rules 'loki/*.yml' --dashboards dashboards/ --out corpus.json",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runHarvestCommand(cmd, normalizeList(rules), dashboards, out)
+			return runHarvestCommand(cmd, normalizeList(rules), normalizeList(lokiRules), dashboards, out)
 		},
 	}
 	cmd.Flags().StringSliceVar(&rules, "rules", nil,
 		"harvest PromQL from these Prometheus rule files (repeatable or comma-separated paths/globs)")
+	cmd.Flags().StringSliceVar(&lokiRules, "loki-rules", nil,
+		"harvest LogQL from these Loki rule files, which share the Prometheus rule-file YAML shape (repeatable or comma-separated paths/globs)")
 	cmd.Flags().StringVar(&dashboards, "dashboards", "",
-		"harvest PromQL from exported Grafana dashboard JSON under this directory (walked recursively)")
+		"harvest PromQL/LogQL/TraceQL from exported Grafana dashboard JSON under this directory (walked recursively)")
 	cmd.Flags().StringVar(&out, "out", "", "write the corpus JSON here (default: stdout)")
 	return cmd
 }
 
-func runHarvestCommand(cmd *cobra.Command, rules []string, dashboards, out string) error {
-	src, err := harvestSources("", rules, dashboards)
+func runHarvestCommand(cmd *cobra.Command, rules, lokiRules []string, dashboards, out string) error {
+	src, err := harvestSources("", rules, lokiRules, dashboards)
 	if err != nil {
 		if errors.Is(err, errNothingToHarvest) {
 			printUsageToStderr(cmd)
@@ -258,6 +264,7 @@ func runHarvestCommand(cmd *cobra.Command, rules []string, dashboards, out strin
 func newMigrateExplainCmd() *cobra.Command {
 	var (
 		rules      []string
+		lokiRules  []string
 		dashboards string
 		corpus     string
 		out        string
@@ -278,21 +285,23 @@ func newMigrateExplainCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runExplainCommand(cmd, normalizeList(rules), dashboards, corpus, out)
+			return runExplainCommand(cmd, normalizeList(rules), normalizeList(lokiRules), dashboards, corpus, out)
 		},
 	}
 	cmd.Flags().StringSliceVar(&rules, "rules", nil,
 		"explain PromQL from these Prometheus rule files (repeatable or comma-separated paths/globs)")
+	cmd.Flags().StringSliceVar(&lokiRules, "loki-rules", nil,
+		"explain LogQL from these Loki rule files, which share the Prometheus rule-file YAML shape (repeatable or comma-separated paths/globs)")
 	cmd.Flags().StringVar(&dashboards, "dashboards", "",
-		"explain PromQL from exported Grafana dashboard JSON under this directory (walked recursively)")
+		"explain PromQL/LogQL/TraceQL from exported Grafana dashboard JSON under this directory (walked recursively)")
 	cmd.Flags().StringVar(&corpus, "corpus", "",
 		"explain a corpus.json previously written by `cerberus migrate harvest`")
 	cmd.Flags().StringVar(&out, "out", "", "write the explain report here (default: stdout)")
 	return cmd
 }
 
-func runExplainCommand(cmd *cobra.Command, rules []string, dashboards, corpus, out string) error {
-	src, err := harvestSources(corpus, rules, dashboards)
+func runExplainCommand(cmd *cobra.Command, rules, lokiRules []string, dashboards, corpus, out string) error {
+	src, err := harvestSources(corpus, rules, lokiRules, dashboards)
 	if err != nil {
 		if errors.Is(err, errNothingToHarvest) {
 			printUsageToStderr(cmd)
@@ -318,6 +327,7 @@ func runExplainCommand(cmd *cobra.Command, rules []string, dashboards, corpus, o
 func newMigrateClassifyCmd() *cobra.Command {
 	var (
 		rules      []string
+		lokiRules  []string
 		dashboards string
 		corpus     string
 		out        string
@@ -336,13 +346,15 @@ func newMigrateClassifyCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runClassifyCommand(cmd, normalizeList(rules), dashboards, corpus, out, asJSON)
+			return runClassifyCommand(cmd, normalizeList(rules), normalizeList(lokiRules), dashboards, corpus, out, asJSON)
 		},
 	}
 	cmd.Flags().StringSliceVar(&rules, "rules", nil,
 		"classify PromQL in Prometheus rule files (repeatable or comma-separated paths/globs)")
+	cmd.Flags().StringSliceVar(&lokiRules, "loki-rules", nil,
+		"classify LogQL in Loki rule files, which share the Prometheus rule-file YAML shape (repeatable or comma-separated paths/globs)")
 	cmd.Flags().StringVar(&dashboards, "dashboards", "",
-		"classify PromQL in exported Grafana dashboard JSON under a directory (walked recursively)")
+		"classify PromQL/LogQL/TraceQL in exported Grafana dashboard JSON under a directory (walked recursively)")
 	cmd.Flags().StringVar(&corpus, "corpus", "",
 		"classify a corpus.json previously written by `cerberus migrate harvest`")
 	cmd.Flags().StringVar(&out, "out", "", "write the classification here (default: stdout)")
@@ -350,8 +362,8 @@ func newMigrateClassifyCmd() *cobra.Command {
 	return cmd
 }
 
-func runClassifyCommand(cmd *cobra.Command, rules []string, dashboards, corpus, out string, asJSON bool) error {
-	src, err := harvestSources(corpus, rules, dashboards)
+func runClassifyCommand(cmd *cobra.Command, rules, lokiRules []string, dashboards, corpus, out string, asJSON bool) error {
+	src, err := harvestSources(corpus, rules, lokiRules, dashboards)
 	if err != nil {
 		if errors.Is(err, errNothingToHarvest) {
 			printUsageToStderr(cmd)
@@ -671,15 +683,21 @@ func newMigrateGateCmd() *cobra.Command {
 }
 
 // harvestSources assembles the corpus sources from the provided inputs. Order is
-// stable (corpus, then rules, then dashboards) but the corpus itself is sorted
-// deterministically, and the explain report renders in that same stable order.
-func harvestSources(corpus string, rules []string, dashboards string) (migrate.CorpusSource, error) {
+// stable (corpus, then Prometheus rules, then Loki rules, then dashboards) but the
+// corpus itself is sorted deterministically, and the explain report renders in
+// that same stable order. Prometheus rules harvest as PromQL; Loki rules share
+// the identical YAML shape and harvest as LogQL; dashboards harvest all three
+// heads from their panel datasource types.
+func harvestSources(corpus string, rules, lokiRules []string, dashboards string) (migrate.CorpusSource, error) {
 	var src migrate.MultiSource
 	if corpus != "" {
 		src = append(src, migrate.CorpusFileSource{Path: corpus})
 	}
 	if len(rules) > 0 {
-		src = append(src, migrate.FileSource{RulePaths: rules})
+		src = append(src, migrate.FileSource{RulePaths: rules, Lang: migrate.LangPromQL})
+	}
+	if len(lokiRules) > 0 {
+		src = append(src, migrate.FileSource{RulePaths: lokiRules, Lang: migrate.LangLogQL})
 	}
 	if dashboards != "" {
 		src = append(src, migrate.DashboardSource{Dir: dashboards})
@@ -693,7 +711,7 @@ func harvestSources(corpus string, rules []string, dashboards string) (migrate.C
 // errNothingToHarvest is returned by harvestSources when no corpus-input flag was
 // supplied. The corpus subcommands treat it as a usage error — print the flag
 // help before returning — so every corpus command is consistent.
-var errNothingToHarvest = errors.New("nothing to harvest: pass --rules, --dashboards, and/or --corpus")
+var errNothingToHarvest = errors.New("nothing to harvest: pass --rules, --loki-rules, --dashboards, and/or --corpus")
 
 // runExplainReport dry-runs every query from src through the read-side pipeline
 // and writes the explain report to w. It is fully offline: the engine has no
@@ -832,11 +850,20 @@ type dryRunExplainer struct {
 }
 
 func (d dryRunExplainer) Explain(ctx context.Context, q migrate.HarvestedQuery) migrate.Explanation {
-	lang := d.instantLang
-	if q.Kind == migrate.KindPanel {
-		lang = d.rangeLang
+	// The offline SQL preview models the PromQL read pipeline. LogQL and TraceQL
+	// queries are still harvested into the corpus (so the report accounts for
+	// them), but their SQL is not previewed offline in this wave — report that
+	// honestly rather than parsing a LogQL/TraceQL string as PromQL and surfacing a
+	// mislabelled parse error. An empty Lang is treated as PromQL for corpora
+	// written before the corpus went three-headed.
+	if q.Lang != "" && q.Lang != migrate.LangPromQL {
+		return migrate.Explanation{Err: fmt.Errorf("offline SQL preview covers PromQL only; %s query harvested but not previewed here", q.Lang)}
 	}
-	dr, err := d.eng.DryRunSQL(ctx, lang, q.Expr)
+	evalLang := d.instantLang
+	if q.Kind == migrate.KindPanel {
+		evalLang = d.rangeLang
+	}
+	dr, err := d.eng.DryRunSQL(ctx, evalLang, q.Expr)
 	return migrate.Explanation{SQL: dr.SQL, Plan: dr.Plan, Err: err}
 }
 

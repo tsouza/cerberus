@@ -10,24 +10,47 @@ import (
 	"strings"
 )
 
-// datasourceTypePrometheus is the Grafana datasource `type` that marks a panel
-// target as PromQL. Only targets resolving to this type are harvested; targets
-// on any other datasource (Loki, Tempo, mixed, …) are dropped with a count.
-const datasourceTypePrometheus = "prometheus"
+// The Grafana datasource `type` strings for the three gateway heads. Each maps
+// to the query language its panel targets are written in — Prometheus→PromQL,
+// Loki→LogQL, Tempo→TraceQL. A target on any other datasource type (a table/logs
+// plugin, an unknown backend, a mixed source) is dropped-with-count.
+const (
+	datasourceTypePrometheus = "prometheus"
+	datasourceTypeLoki       = "loki"
+	datasourceTypeTempo      = "tempo"
+)
 
 // dashboardFileExt is the extension of an exported Grafana dashboard file. The
 // dashboard source walks a directory tree and considers only these files.
 const dashboardFileExt = ".json"
 
-// DashboardSource harvests PromQL from a directory tree of exported Grafana
-// dashboard JSON files. It walks every panel's targets — targets on top-level
-// panels[], targets on panels nested inside collapsed rows (panels[].panels[]),
-// and targets on panels under the legacy pre-v16 rows[].panels[] schema — and
-// keeps only the targets whose datasource resolves to the Prometheus type.
-// Everything else — an unreadable or unparseable file, a target with an empty
-// expression, a target on a non-Prometheus datasource, or a legacy name-form
-// datasource that cannot be type-resolved offline — is recorded as a counted
-// SkippedEntry, never silently dropped.
+// langForDatasourceType maps a resolved Grafana datasource `type` to the query
+// language its panel targets carry. The three heads — Prometheus (PromQL), Loki
+// (LogQL), Tempo (TraceQL) — are the only types the harvest keeps; any other type
+// yields ok=false and the target is dropped-with-count.
+func langForDatasourceType(typ string) (lang string, ok bool) {
+	switch typ {
+	case datasourceTypePrometheus:
+		return LangPromQL, true
+	case datasourceTypeLoki:
+		return LangLogQL, true
+	case datasourceTypeTempo:
+		return LangTraceQL, true
+	default:
+		return "", false
+	}
+}
+
+// DashboardSource harvests queries from a directory tree of exported Grafana
+// dashboard JSON files across all three heads. It walks every panel's targets —
+// targets on top-level panels[], targets on panels nested inside collapsed rows
+// (panels[].panels[]), and targets on panels under the legacy pre-v16
+// rows[].panels[] schema — and keeps every target whose datasource resolves to a
+// Prometheus (PromQL), Loki (LogQL), or Tempo (TraceQL) type, tagged with its
+// language. Everything else — an unreadable or unparseable file, a target with an
+// empty expression, a target on an unsupported datasource type, or a legacy
+// name-form datasource that cannot be type-resolved offline — is recorded as a
+// counted SkippedEntry, never silently dropped.
 type DashboardSource struct {
 	Dir string
 }
@@ -61,17 +84,21 @@ type dashboardPanel struct {
 }
 
 // dashboardTarget is one query target on a panel. `datasource` overrides the
-// panel default when present.
+// panel default when present. Prometheus and Loki targets carry their query in
+// `expr`; Tempo targets carry TraceQL in `query` instead — both are decoded and
+// the right one is read per the resolved datasource language.
 type dashboardTarget struct {
 	RefID      string          `json:"refId"`
 	Expr       string          `json:"expr"`
+	Query      string          `json:"query"`
 	Datasource json.RawMessage `json:"datasource"`
 }
 
 // Harvest walks the dashboard directory, decoding each JSON file and flattening
-// its Prometheus panel targets into HarvestedQuery entries. It never returns a
-// per-item hard error: a missing directory, an unreadable file, a parse
-// failure, an empty expr, or a non-Prometheus target all become counted skips.
+// its Prometheus / Loki / Tempo panel targets into lang-tagged HarvestedQuery
+// entries. It never returns a per-item hard error: a missing directory, an
+// unreadable file, a parse failure, an empty expr/query, or an
+// unsupported-datasource target all become counted skips.
 func (s DashboardSource) Harvest(_ context.Context) ([]HarvestedQuery, []SkippedEntry, error) {
 	var (
 		queries []HarvestedQuery
@@ -137,15 +164,22 @@ func walkPanels(file string, panels []dashboardPanel, inherited datasourceRef, q
 			if !ds.set() {
 				ds = panelDS
 			}
-			if ds.typ != datasourceTypePrometheus {
+			lang, ok := langForDatasourceType(ds.typ)
+			if !ok {
 				*skipped = append(*skipped, SkippedEntry{Source: source, Reason: ds.dropReason()})
 				continue
 			}
-			if strings.TrimSpace(t.Expr) == "" {
-				*skipped = append(*skipped, SkippedEntry{Source: source, Reason: "target has an empty expr"})
+			// Tempo panels carry TraceQL in `query`; Prometheus/Loki panels carry
+			// their query in `expr`. Read the field that matches the resolved head.
+			expr, field := t.Expr, "expr"
+			if lang == LangTraceQL {
+				expr, field = t.Query, "query"
+			}
+			if strings.TrimSpace(expr) == "" {
+				*skipped = append(*skipped, SkippedEntry{Source: source, Reason: "target has an empty " + field})
 				continue
 			}
-			*queries = append(*queries, HarvestedQuery{Expr: t.Expr, Source: source, Kind: KindPanel})
+			*queries = append(*queries, HarvestedQuery{Expr: expr, Source: source, Kind: KindPanel, Lang: lang})
 		}
 		// Recurse into collapsed-row child panels, inheriting this panel's ds.
 		walkPanels(file, p.Panels, panelDS, queries, skipped)
@@ -156,11 +190,11 @@ func walkPanels(file string, panels []dashboardPanel, inherited datasourceRef, q
 // / name is populated; both empty means the field was absent and the datasource
 // is inherited from the enclosing panel/row. The object form
 // ({"type":"prometheus","uid":...}) yields a concrete typ. The legacy bare
-// string form is a datasource NAME, not a type — a name that case-folds to
-// "prometheus" is the one name safely resolvable to the prometheus type offline;
-// any other name (Loki, Mimir, Cortex, a custom name, a "${var}" template)
-// cannot be mapped to a type without querying Grafana, so it is carried as name
-// and dropped-with-count rather than silently miscategorised as a type.
+// string form is a datasource NAME, not a type — a name that case-folds to one of
+// the head type names ("prometheus" / "loki" / "tempo") is safely resolvable to
+// that type offline; any other name (Mimir, Cortex, a custom name, a "${var}"
+// template) cannot be mapped to a type without querying Grafana, so it is carried
+// as name and dropped-with-count rather than silently miscategorised as a type.
 type datasourceRef struct {
 	typ  string
 	name string
@@ -170,17 +204,17 @@ type datasourceRef struct {
 // the enclosing panel/row default.
 func (r datasourceRef) set() bool { return r.typ != "" || r.name != "" }
 
-// dropReason explains why a non-Prometheus target was dropped: a concrete
-// non-Prometheus type, a name-form datasource that cannot be type-resolved
-// offline, or a datasource that resolved to no type at all.
+// dropReason explains why a target was dropped: a name-form datasource that
+// cannot be type-resolved offline, a datasource that resolved to no type at all,
+// or a concrete type that is none of the three supported heads.
 func (r datasourceRef) dropReason() string {
 	switch {
 	case r.name != "":
 		return fmt.Sprintf("legacy name-form datasource %q cannot be type-resolved offline", r.name)
 	case r.typ == "":
-		return "target datasource is unresolved (not Prometheus-typed)"
+		return "target datasource is unresolved (no prometheus/loki/tempo type)"
 	default:
-		return fmt.Sprintf("non-prometheus datasource: %s", r.typ)
+		return fmt.Sprintf("unsupported datasource type %q (not prometheus/loki/tempo)", r.typ)
 	}
 }
 
@@ -199,18 +233,34 @@ func resolveDatasource(raw json.RawMessage) datasourceRef {
 	}
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
-		switch s := strings.TrimSpace(str); {
-		case s == "":
+		s := strings.TrimSpace(str)
+		if s == "" {
 			return datasourceRef{}
-		case strings.EqualFold(s, datasourceTypePrometheus):
-			// The only datasource NAME safely resolvable to a type offline: the
-			// conventional default Prometheus datasource name ("Prometheus").
-			return datasourceRef{typ: datasourceTypePrometheus}
-		default:
-			return datasourceRef{name: s}
 		}
+		if typ, ok := resolveDatasourceName(s); ok {
+			return datasourceRef{typ: typ}
+		}
+		return datasourceRef{name: s}
 	}
 	return datasourceRef{}
+}
+
+// resolveDatasourceName resolves a legacy bare-string datasource NAME to a head
+// type when the name is one of the conventional default datasource names
+// ("Prometheus" / "Loki" / "Tempo", any case) — the only names safely mapped to a
+// type offline. Any other name needs a live Grafana lookup, so it is left
+// unresolved and dropped-with-count.
+func resolveDatasourceName(name string) (typ string, ok bool) {
+	switch strings.ToLower(name) {
+	case datasourceTypePrometheus:
+		return datasourceTypePrometheus, true
+	case datasourceTypeLoki:
+		return datasourceTypeLoki, true
+	case datasourceTypeTempo:
+		return datasourceTypeTempo, true
+	default:
+		return "", false
+	}
 }
 
 // panelIdent names a panel for provenance: its title when set, else panel-<id>.

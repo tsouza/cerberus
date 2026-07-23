@@ -32,17 +32,24 @@ const (
 	KindPanel  = "panel"
 )
 
-// LangPromQL tags every harvested query's source language. The corpus is
-// PromQL-only today; the field is carried explicitly so a future LogQL/TraceQL
-// corpus can share the same schema without a version bump breaking readers.
-const LangPromQL = "promql"
+// Lang tags every harvested query's source query language. The corpus is
+// three-headed: a query resolves to PromQL, LogQL, or TraceQL from the
+// datasource / rule-file it was harvested from, and the tag rides through the
+// corpus so downstream readers route each query to the right engine.
+const (
+	LangPromQL  = "promql"
+	LangLogQL   = "logql"
+	LangTraceQL = "traceql"
+)
 
-// HarvestedQuery is one PromQL expression pulled from a corpus source, tagged
-// with where it came from and whether it backs a recording or alerting rule.
+// HarvestedQuery is one query expression pulled from a corpus source, tagged
+// with where it came from, whether it backs a recording/alerting rule or a
+// dashboard panel, and its source query language.
 type HarvestedQuery struct {
 	Expr   string
 	Source string // e.g. "rule:<file>/<group>/<name>"
-	Kind   string // KindRecord | KindAlert
+	Kind   string // KindRecord | KindAlert | KindPanel
+	Lang   string // LangPromQL | LangLogQL | LangTraceQL
 }
 
 // SkippedEntry records a corpus entry the harvester could not turn into a query —
@@ -59,11 +66,24 @@ type CorpusSource interface {
 	Harvest(ctx context.Context) ([]HarvestedQuery, []SkippedEntry, error)
 }
 
-// FileSource harvests queries from Prometheus rule files. RulePaths holds file
-// paths or globs; each match is read and parsed as a rule file, and one
-// HarvestedQuery is emitted per recording/alerting rule.
+// FileSource harvests queries from Prometheus-shaped rule files. RulePaths holds
+// file paths or globs; each match is read and parsed as a rule file, and one
+// HarvestedQuery is emitted per recording/alerting rule. Loki recording/alerting
+// rule files use the identical YAML shape, so the same parser harvests them —
+// Lang selects the tag every emitted query carries (PromQL for Prometheus rules,
+// LogQL for Loki rules). An empty Lang defaults to PromQL.
 type FileSource struct {
 	RulePaths []string
+	Lang      string
+}
+
+// lang returns the source's query-language tag, defaulting an unset Lang to
+// PromQL so the zero-value FileSource keeps harvesting Prometheus rules.
+func (s FileSource) lang() string {
+	if s.Lang == "" {
+		return LangPromQL
+	}
+	return s.Lang
 }
 
 // Harvest expands every RulePaths entry, reads and parses each matched rule
@@ -96,7 +116,7 @@ func (s FileSource) Harvest(_ context.Context) ([]HarvestedQuery, []SkippedEntry
 				skipped = append(skipped, SkippedEntry{Source: file, Reason: err.Error()})
 				continue
 			}
-			q, sk := harvestFile(file, rg)
+			q, sk := harvestFile(file, rg, s.lang())
 			queries = append(queries, q...)
 			skipped = append(skipped, sk...)
 		}
@@ -105,9 +125,9 @@ func (s FileSource) Harvest(_ context.Context) ([]HarvestedQuery, []SkippedEntry
 }
 
 // harvestFile flattens one parsed rule file's groups into HarvestedQuery /
-// SkippedEntry entries. A rule with no name or no expression is skipped (counted),
-// never emitted as an empty query.
-func harvestFile(file string, rg promrules.RuleGroups) ([]HarvestedQuery, []SkippedEntry) {
+// SkippedEntry entries, tagging each emitted query with lang. A rule with no name
+// or no expression is skipped (counted), never emitted as an empty query.
+func harvestFile(file string, rg promrules.RuleGroups, lang string) ([]HarvestedQuery, []SkippedEntry) {
 	var (
 		queries []HarvestedQuery
 		skipped []SkippedEntry
@@ -127,7 +147,7 @@ func harvestFile(file string, rg promrules.RuleGroups) ([]HarvestedQuery, []Skip
 				skipped = append(skipped, SkippedEntry{Source: source, Reason: "rule has an empty expr"})
 				continue
 			}
-			queries = append(queries, HarvestedQuery{Expr: r.Expr, Source: source, Kind: kind})
+			queries = append(queries, HarvestedQuery{Expr: r.Expr, Source: source, Kind: kind, Lang: lang})
 		}
 	}
 	return queries, skipped

@@ -382,14 +382,14 @@ func splitRuleGroups(file string, rg promrules.RuleGroups) (recorded []RecordedS
 					skipped = append(skipped, SkippedEntry{Source: source, Reason: "recording rule has empty expr"})
 					continue
 				}
-				consumers = append(consumers, HarvestedQuery{Expr: r.Expr, Source: source, Kind: KindRecord})
+				consumers = append(consumers, HarvestedQuery{Expr: r.Expr, Source: source, Kind: KindRecord, Lang: LangPromQL})
 			case r.Alert != "":
 				source := fmt.Sprintf("rule:%s/%s/%s", file, g.Name, r.Alert)
 				if strings.TrimSpace(r.Expr) == "" {
 					skipped = append(skipped, SkippedEntry{Source: source, Reason: "alerting rule has empty expr"})
 					continue
 				}
-				consumers = append(consumers, HarvestedQuery{Expr: r.Expr, Source: source, Kind: KindAlert})
+				consumers = append(consumers, HarvestedQuery{Expr: r.Expr, Source: source, Kind: KindAlert, Lang: LangPromQL})
 			default:
 				source := fmt.Sprintf("rule:%s/%s/?", file, g.Name)
 				skipped = append(skipped, SkippedEntry{Source: source, Reason: "rule is neither a record nor an alert"})
