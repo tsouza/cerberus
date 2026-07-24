@@ -1,16 +1,25 @@
 // Package migrateverify is cerberus's cutover parity gate. It replays a
-// harvested PromQL corpus against a reference Prometheus AND cerberus over one
-// query_range window and diffs the results, so an operator can prove — before
-// flipping a datasource — that cerberus returns the same numbers Prometheus
-// does for the queries they actually run.
+// harvested corpus against the reference backend for each head — Prometheus,
+// Loki, Tempo — AND against cerberus over one query_range window and diffs the
+// results, so an operator can prove, before flipping a datasource, that cerberus
+// returns the same numbers their current stack does for the queries they actually
+// run.
 //
-// The flow is read-only against both backends: for each query it issues an
-// identical GET /api/v1/query_range to the reference and to cerberus, parses the
-// standard Prometheus matrix response, matches series by their canonical label
+// The gate covers the METRIC lane of each head: PromQL, LogQL metric queries, and
+// TraceQL metrics queries all return matrix-shaped results, so one comparator
+// judges all three. A query whose shape is not a metric matrix — a LogQL log
+// stream, a TraceQL trace search, a compare() — has no matrix baseline to diff
+// and is reported out of scope with the specific reason it was not judged, never
+// dropped and never guessed at.
+//
+// The flow is read-only against every backend: for each query it issues an
+// identical range request to that head's reference and to cerberus, decodes the
+// response into the shared matrix shape, matches series by their canonical label
 // set, step-aligns the samples, and compares values within a tolerance (with
-// NaN==NaN treated as equal). Every query lands in exactly one verdict — match,
-// diverge, unsupported, or error — and a divergence is never allow-listed: the
-// gate exits non-zero if any query diverges or errors.
+// NaN==NaN treated as equal). Every replayed query lands in exactly one verdict —
+// match, diverge, unsupported, or error — and a divergence is never allow-listed:
+// the gate exits non-zero if any query diverges or errors, or if a head with
+// replayable queries had no backend pair configured to judge them.
 //
 // Honesty is the whole point: the comparator only claims a match where both
 // backends returned data that agrees. A series present in one backend but not
@@ -289,19 +298,40 @@ func samplesByTS(samples []Sample) map[float64]float64 {
 	return out
 }
 
-// Query is one PromQL expression from the corpus to replay.
+// Query is one corpus expression to replay, tagged with the head lane that owns
+// it and the language it came from.
 type Query struct {
 	Expr   string `json:"expr"`
 	Source string `json:"source"`
+	Head   string `json:"head"`
+	Lang   string `json:"lang"`
 }
 
-// OutOfScopeEntry records a corpus entry that is not PromQL (e.g. a LogQL
-// dashboard panel). A Prometheus parity gate cannot judge it, so it is reported
-// and counted here rather than dropped — its parity belongs to a different head's
-// gate, and pretending otherwise would be a silent omission.
+// OutOfScopeEntry records a corpus entry no metric-lane parity check can judge —
+// a LogQL log-stream query, a TraceQL trace search, a compare(), an expression
+// the parser rejected, or a language this build has no lane for. Kind names the
+// query SHAPE and Reason states, in the operator's words, exactly why the gate
+// did not judge it. Reported and counted here, never dropped: pretending a query
+// was covered when it was not is the failure this accounting exists to prevent.
 type OutOfScopeEntry struct {
 	Source string `json:"source"`
+	Expr   string `json:"expr"`
+	Head   string `json:"head,omitempty"`
 	Lang   string `json:"lang"`
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
+}
+
+// UnconfiguredEntry records a replayable query whose head lane had no backend
+// pair. This is a property of the INVOCATION, not of the query — which is why it
+// is kept separate from OutOfScope (a property of the QUERY) and why it BLOCKS:
+// the gate cannot claim parity for a query it never ran.
+type UnconfiguredEntry struct {
+	Source string `json:"source"`
+	Expr   string `json:"expr"`
+	Head   string `json:"head"`
+	Lang   string `json:"lang"`
+	Reason string `json:"reason"`
 }
 
 // HarvestSkippedEntry records a corpus entry that `migrate harvest` could not
@@ -314,19 +344,21 @@ type HarvestSkippedEntry struct {
 	Reason string `json:"reason"`
 }
 
-// Corpus is the verify input: the PromQL queries to replay, the non-PromQL
-// entries carried through for honest accounting, and the harvest-time skips the
+// Corpus is the verify input: every replayable query in corpus order tagged with
+// its lane, the entries no metric lane can judge, and the harvest-time skips the
 // corpus recorded (queries that never became replayable at all).
 type Corpus struct {
-	PromQL         []Query
+	Queries        []Query
 	OutOfScope     []OutOfScopeEntry
 	HarvestSkipped []HarvestSkippedEntry
 }
 
-// QueryResult is the parity verdict for a single replayed query. On a divergence
-// it also carries Attribution: a list of CANDIDATE causes (never a detection —
-// verify cannot introspect either backend) to steer triage.
+// QueryResult is the parity verdict for a single replayed query, tagged with the
+// head lane it ran on. On a divergence it also carries Attribution: a list of
+// CANDIDATE causes (never a detection — verify cannot introspect either backend)
+// to steer triage.
 type QueryResult struct {
+	Head        string                 `json:"head"`
 	Source      string                 `json:"source"`
 	Expr        string                 `json:"expr"`
 	Verdict     Verdict                `json:"verdict"`
@@ -335,15 +367,26 @@ type QueryResult struct {
 	Attribution []AttributionCandidate `json:"attribution,omitempty"`
 }
 
-// Summary counts verdicts across the whole run.
+// Summary counts verdicts. Total counts REPLAYED queries only: Unconfigured
+// entries were never issued to any backend, so folding them into Total would
+// inflate the denominator of a claim the gate did not make.
 type Summary struct {
 	Total          int `json:"total"`
 	Match          int `json:"match"`
 	Diverge        int `json:"diverge"`
 	Unsupported    int `json:"unsupported"`
 	Error          int `json:"error"`
+	Unconfigured   int `json:"unconfigured"`
 	OutOfScope     int `json:"out_of_scope"`
 	HarvestSkipped int `json:"harvest_skipped"`
+}
+
+// HeadSummary is one lane's counts, carried alongside the roll-up so a healthy
+// head can never mask a dead one: an aggregate "40 matched" reads green even when
+// a second lane compared nothing at all.
+type HeadSummary struct {
+	Head    string  `json:"head"`
+	Summary Summary `json:"summary"`
 }
 
 // ReportParams records the comparison parameters the gate and humans need to
@@ -361,27 +404,37 @@ type ReportParams struct {
 // version it does not understand, so a schema-drifted or wrong-type artifact
 // blocks rather than zero-filling to a silent PASS. Bump it on any breaking
 // change to the on-disk Report shape.
-const ReportVersion = 1
+//
+// Version 2 carries the per-head lane split (Heads) and the Unconfigured bucket.
+// A version-1 artifact decoded by this build would zero-fill both into a bogus
+// "0 non-Prometheus queries, all lanes configured" — precisely the silent
+// zero-fill the version check exists to stop — so the bump is enforcing, not
+// cosmetic.
+const ReportVersion = 2
 
 // Report is the full parity result: the schema version, the resolved comparison
-// params, per-query verdicts, the out-of-scope accounting, the harvest-time
-// skips, and the roll-up summary.
+// params, the roll-up summary, the per-head lane summaries, per-query verdicts,
+// the queries whose lane had no backends, the out-of-scope accounting, and the
+// harvest-time skips.
 type Report struct {
 	SchemaVersion  int                   `json:"schema_version"`
 	Params         ReportParams          `json:"params"`
 	Summary        Summary               `json:"summary"`
+	Heads          []HeadSummary         `json:"heads"`
 	Results        []QueryResult         `json:"results"`
+	Unconfigured   []UnconfiguredEntry   `json:"unconfigured,omitempty"`
 	OutOfScope     []OutOfScopeEntry     `json:"out_of_scope,omitempty"`
 	HarvestSkipped []HarvestSkippedEntry `json:"harvest_skipped,omitempty"`
 }
 
 // Failed reports whether the gate should exit non-zero: any diverging or erroring
-// query fails it. Unsupported queries are reported but do not fail the gate — an
-// unsupported query is a coverage gap surfaced for the operator, not a wrong
-// answer. Out-of-scope and harvest-skipped entries never affect the gate: they
-// carry no replayable query, so there is nothing for the comparator to judge.
+// query, or any replayable query whose head lane was never configured — the gate
+// cannot claim parity for a query it never ran, and reporting that as a
+// non-blocking caveat would let "VERIFICATION PASSED" ship on zero evidence for a
+// whole head. Unsupported, out-of-scope and harvest-skipped entries are reported
+// but do not fail: each is a surfaced coverage gap, not a wrong answer.
 func (r Report) Failed() bool {
-	return r.Summary.Diverge > 0 || r.Summary.Error > 0
+	return r.Summary.Diverge > 0 || r.Summary.Error > 0 || r.Summary.Unconfigured > 0
 }
 
 // Backend issues a range query against one backend and returns the parsed
@@ -399,10 +452,18 @@ type RangeResult struct {
 	Series     []Series
 }
 
-// Verify replays every PromQL query in the corpus against both backends and
-// assembles the parity report. Queries are processed in corpus order for
-// deterministic output. Each query is issued to the reference and to cerberus
-// with identical parameters; the verdict is derived as:
+// Lane is one head's reference/cerberus backend pair. Both sides speak that
+// head's dialect, so the same query is replayed identically against the
+// operator's current stack and against cerberus.
+type Lane struct {
+	Ref      Backend
+	Cerberus Backend
+}
+
+// Verify replays every corpus query against the lane its head names and assembles
+// one report covering all heads. Queries are processed in corpus order for
+// deterministic output. Each query is issued to that head's reference and to
+// cerberus with identical parameters; the verdict is derived as:
 //
 //   - transport/decode failure on either backend, a reference that did not
 //     return a 200 matrix, or a cerberus 5xx / other non-200-non-4xx status (a
@@ -410,7 +471,11 @@ type RangeResult struct {
 //   - cerberus 4xx, or a 200 non-matrix body → unsupported (answered, but could
 //     not serve the query as a range);
 //   - otherwise → the comparator's match/diverge verdict.
-func Verify(ctx context.Context, corpus Corpus, ref, cerberus Backend, p Params) Report {
+//
+// A query whose head has no configured lane is recorded as UNCONFIGURED: never
+// replayed against another head's backend (which would compare two unrelated
+// APIs), never silently dropped, and blocking — see Report.Failed.
+func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params) Report {
 	rep := Report{
 		SchemaVersion:  ReportVersion,
 		Params:         ReportParams{Tolerance: p.Tolerance},
@@ -420,27 +485,73 @@ func Verify(ctx context.Context, corpus Corpus, ref, cerberus Backend, p Params)
 	rep.Summary.OutOfScope = len(corpus.OutOfScope)
 	rep.Summary.HarvestSkipped = len(corpus.HarvestSkipped)
 
-	for _, q := range corpus.PromQL {
-		res := verifyOne(ctx, q, ref, cerberus, p)
+	byHead := map[string]*Summary{}
+	headSummary := func(head string) *Summary {
+		s, ok := byHead[head]
+		if !ok {
+			s = &Summary{}
+			byHead[head] = s
+		}
+		return s
+	}
+
+	for _, q := range corpus.Queries {
+		hs := headSummary(q.Head)
+		lane, ok := lanes[q.Head]
+		if !ok {
+			rep.Unconfigured = append(rep.Unconfigured, UnconfiguredEntry{
+				Source: q.Source, Expr: q.Expr, Head: q.Head, Lang: q.Lang,
+				Reason: fmt.Sprintf(
+					"head=%s has replayable %s queries but no reference/cerberus backend pair was configured for it; the gate did not judge them",
+					q.Head, q.Lang,
+				),
+			})
+			rep.Summary.Unconfigured++
+			hs.Unconfigured++
+			continue
+		}
+		res := verifyOne(ctx, q, lane.Ref, lane.Cerberus, p)
 		rep.Results = append(rep.Results, res)
 		rep.Summary.Total++
+		hs.Total++
 		switch res.Verdict {
 		case VerdictMatch:
 			rep.Summary.Match++
+			hs.Match++
 		case VerdictDiverge:
 			rep.Summary.Diverge++
+			hs.Diverge++
 		case VerdictUnsupported:
 			rep.Summary.Unsupported++
+			hs.Unsupported++
 		case VerdictError:
 			rep.Summary.Error++
+			hs.Error++
 		}
 	}
+	rep.Heads = sortedHeadSummaries(byHead)
 	return rep
 }
 
-// verifyOne runs the parity check for a single query.
+// sortedHeadSummaries flattens the per-head counters into a head-token-sorted
+// slice so the JSON report is byte-deterministic across runs (Go map iteration
+// order is not).
+func sortedHeadSummaries(byHead map[string]*Summary) []HeadSummary {
+	heads := make([]string, 0, len(byHead))
+	for h := range byHead {
+		heads = append(heads, h)
+	}
+	sort.Strings(heads)
+	out := make([]HeadSummary, 0, len(heads))
+	for _, h := range heads {
+		out = append(out, HeadSummary{Head: h, Summary: *byHead[h]})
+	}
+	return out
+}
+
+// verifyOne runs the parity check for a single query on its head's lane.
 func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) QueryResult {
-	out := QueryResult{Source: q.Source, Expr: q.Expr}
+	out := QueryResult{Head: q.Head, Source: q.Source, Expr: q.Expr}
 
 	refRes, refErr := ref.QueryRange(ctx, q.Expr, p)
 	cerRes, cerErr := cerberus.QueryRange(ctx, q.Expr, p)
@@ -468,7 +579,12 @@ func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) Qu
 	default:
 		verdict, fd := Compare(refRes.Series, cerRes.Series, p.Tolerance)
 		out.Verdict, out.FirstDiff = verdict, fd
-		if verdict == VerdictDiverge {
+		// Attribution is PromQL-shaped: its hotspot matcher keys on bare
+		// rate / increase / histogram_quantile tokens, which also occur verbatim
+		// in LogQL and TraceQL, and its regression note describes a PromQL-only
+		// experimental CH path. Firing it on another head would print a
+		// confidently wrong candidate cause, so it is gated to the prom lane.
+		if verdict == VerdictDiverge && q.Head == HeadProm {
 			out.Attribution = attributeDivergence(out.Expr, fd)
 		}
 	}
@@ -512,8 +628,11 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 
 	// R1: lead with a prominent, unmistakable verdict line.
 	if r.Failed() {
-		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d matched (of %d)\n\n",
-			r.Summary.Diverge, r.Summary.Error, r.Summary.Match, r.Summary.Total)
+		// Unconfigured is named in the banner: a run that failed ONLY because a
+		// head lane was never configured must not read as "0 diverged, 0 errored"
+		// with no visible cause.
+		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d unjudged (unconfigured lane), %d matched (of %d replayed)\n\n",
+			r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured, r.Summary.Match, r.Summary.Total)
 	} else if r.Summary.Unsupported > 0 {
 		// Unsupported queries pass the gate but are NOT matches; the banner must
 		// not equate Total with matched or it overstates what agreed.
@@ -525,10 +644,10 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 
 	bw.printf("# cerberus migrate verify\n")
 	bw.printf("#\n")
-	bw.printf("# Parity gate: each corpus query replayed against the reference Prometheus\n")
+	bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
 	bw.printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
 	bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
-	bw.printf("# or errors.\n")
+	bw.printf("# or errors, or if a head's replayable queries had no backend pair to judge them.\n")
 	bw.printf("#\n")
 	bw.printf("# Note: %s\n", ExperimentalNote)
 	bw.printf("#\n")
@@ -537,14 +656,17 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	// comparison actually was.
 	bw.printf("# Match tolerance: %s (absolute; relative granularity also applied at large magnitudes)\n", formatValue(r.Params.Tolerance))
 	bw.printf("#\n")
-	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d out of scope, +%d harvest-skipped)\n\n",
-		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error, r.Summary.OutOfScope, r.Summary.HarvestSkipped)
+	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d unconfigured, +%d out of scope, +%d harvest-skipped)\n\n",
+		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error,
+		r.Summary.Unconfigured, r.Summary.OutOfScope, r.Summary.HarvestSkipped)
+
+	r.writeHeadTable(bw)
 
 	for _, res := range r.Results {
 		if res.Verdict == VerdictMatch {
 			continue
 		}
-		bw.printf("== [%s] %s\n", res.Verdict, res.Source)
+		bw.printf("== [%s] %s %s\n", res.Verdict, res.Head, res.Source)
 		bw.printf("   expr:   %s\n", res.Expr)
 		if res.Detail != "" {
 			bw.printf("   detail: %s\n", res.Detail)
@@ -560,10 +682,22 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 		bw.printf("\n")
 	}
 
+	// Unconfigured prints BEFORE out-of-scope because it blocks: an operator
+	// scanning a failing report must reach the lane they forgot to configure
+	// before the non-blocking accounting.
+	if len(r.Unconfigured) > 0 {
+		bw.printf("== unconfigured (%d) — replayable queries whose head lane had no backend pair; the gate did not judge them\n", len(r.Unconfigured))
+		for _, e := range r.Unconfigured {
+			bw.printf("   %s  %s\n", e.Head, e.Source)
+			bw.printf("        %s\n", e.Reason)
+		}
+		bw.printf("\n")
+	}
+
 	if len(r.OutOfScope) > 0 {
-		bw.printf("== out of scope (%d) — not PromQL, no Prometheus baseline\n", len(r.OutOfScope))
+		bw.printf("== out of scope (%d) — no metric-lane parity is definable for these queries\n", len(r.OutOfScope))
 		for _, e := range r.OutOfScope {
-			bw.printf("   %s: lang=%s\n", e.Source, e.Lang)
+			bw.printf("   %s %s %s: %s\n", outOfScopeLane(e), e.Kind, e.Source, e.Reason)
 		}
 		bw.printf("\n")
 	}
@@ -577,12 +711,39 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	}
 
 	if r.Failed() {
-		bw.printf("FAIL: %d diverge, %d error\n", r.Summary.Diverge, r.Summary.Error)
+		bw.printf("FAIL: %d diverge, %d error, %d unconfigured\n", r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured)
 		r.writeBugReport(bw, g)
 	} else {
 		bw.printf("PASS: %d match, %d unsupported (no divergence)\n", r.Summary.Match, r.Summary.Unsupported)
 	}
 	return bw.err
+}
+
+// writeHeadTable prints the per-lane roll-up in head-token order. It exists so a
+// healthy head cannot mask a dead one: the aggregate line above can read
+// "40 match" while a second lane compared nothing, and only the per-head split
+// makes that visible.
+func (r Report) writeHeadTable(bw *errWriter) {
+	if len(r.Heads) == 0 {
+		return
+	}
+	bw.printf("# per-head lanes:\n")
+	for _, h := range r.Heads {
+		s := h.Summary
+		bw.printf("#   %-6s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured\n",
+			h.Head, s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured)
+	}
+	bw.printf("\n")
+}
+
+// outOfScopeLane renders an out-of-scope entry's lane label. An unknown-language
+// entry has no head, so it is labelled by language alone rather than printing an
+// empty head slot.
+func outOfScopeLane(e OutOfScopeEntry) string {
+	if e.Head == "" {
+		return "lang=" + e.Lang
+	}
+	return e.Head + "/" + e.Lang
 }
 
 // writeBugReport prints the "Report this to cerberus" section shown after a

@@ -526,9 +526,13 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 		return err
 	}
 
-	refBackend := migrateverify.NewHTTPBackend(in.ref, migrateverify.WithBearerToken(in.refToken))
-	cerBackend := migrateverify.NewHTTPBackend(in.cerberus, migrateverify.WithBearerToken(in.cerToken))
-	rep := migrateverify.Verify(context.Background(), c, refBackend, cerBackend, params)
+	lanes := map[string]migrateverify.Lane{
+		migrateverify.HeadProm: {
+			Ref:      migrateverify.NewHTTPBackend(in.ref, migrateverify.WithBearerToken(in.refToken)),
+			Cerberus: migrateverify.NewHTTPBackend(in.cerberus, migrateverify.WithBearerToken(in.cerToken)),
+		},
+	}
+	rep := migrateverify.Verify(context.Background(), c, lanes, params)
 
 	// The resolved run params drive both the JSON diagnostic and the copy-pasteable
 	// repro command, so the two always describe the exact same window. The backend

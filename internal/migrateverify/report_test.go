@@ -62,7 +62,7 @@ func TestAttribution_HotspotVsNonHotspot(t *testing.T) {
 	}
 	refBody, cerBody := mk("1"), mk("2")
 
-	hotspot := runVerifyOne(t, refBody, cerBody, Query{Expr: "rate(x[1m])", Source: "rule:r"})
+	hotspot := runVerifyOne(t, refBody, cerBody, promQuery("rate(x[1m])", "rule:r"))
 	if hotspot.Verdict != VerdictDiverge {
 		t.Fatalf("hotspot verdict = %q, want diverge", hotspot.Verdict)
 	}
@@ -73,7 +73,7 @@ func TestAttribution_HotspotVsNonHotspot(t *testing.T) {
 		t.Errorf("every divergence must carry the cerberus-bug candidate, got %+v", hotspot.Attribution)
 	}
 
-	plain := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "rule:u"})
+	plain := runVerifyOne(t, refBody, cerBody, promQuery("up", "rule:u"))
 	if plain.Verdict != VerdictDiverge {
 		t.Fatalf("non-hotspot verdict = %q, want diverge", plain.Verdict)
 	}
@@ -90,7 +90,7 @@ func TestAttribution_HistogramQuantileHotspot(t *testing.T) {
 	const expr = "histogram_quantile(0.9, x)"
 	refBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"le": "1"}, points: []pointSpec{{1_700_000_000, "1"}}})}
 	cerBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"le": "1"}, points: []pointSpec{{1_700_000_000, "2"}}})}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: expr, Source: "panel:p"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery(expr, "panel:p"))
 	if !hasAttrib(res.Attribution, AttribExperimentalCHFeature) {
 		t.Errorf("histogram_quantile divergence must carry the experimental-ch-feature candidate, got %+v", res.Attribution)
 	}
@@ -113,7 +113,7 @@ func TestAttribution_RegressionHotspotNote(t *testing.T) {
 	for _, expr := range []string{"deriv(x[5m])", "predict_linear(x[5m], 3600)"} {
 		refBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}})}
 		cerBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "2"}}})}
-		res := runVerifyOne(t, refBody, cerBody, Query{Expr: expr, Source: "rule:r"})
+		res := runVerifyOne(t, refBody, cerBody, promQuery(expr, "rule:r"))
 		if !hasAttrib(res.Attribution, AttribExperimentalCHFeature) {
 			t.Errorf("%s divergence must carry the experimental-ch-feature candidate, got %+v", expr, res.Attribution)
 		}
@@ -133,7 +133,7 @@ func TestAttribution_CoverageGap(t *testing.T) {
 	cerBody := map[string]string{"up": matrix(
 		seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}},
 	)}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "s"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery("up", "s"))
 	if !hasAttrib(res.Attribution, AttribDataWindowGap) || !hasAttrib(res.Attribution, AttribIngestArtifact) {
 		t.Errorf("coverage-gap divergence must carry data-window-gap + ingest-artifact, got %+v", res.Attribution)
 	}
@@ -154,7 +154,7 @@ func TestAttribution_ValueDivergenceDialect(t *testing.T) {
 	cerBody := map[string]string{"up": matrix(
 		seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "2"}}},
 	)}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "s"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery("up", "s"))
 	if res.Verdict != VerdictDiverge {
 		t.Fatalf("verdict = %q, want diverge", res.Verdict)
 	}
@@ -275,8 +275,8 @@ func TestVerifyReport_JSON(t *testing.T) {
 	}
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
-	corpus := Corpus{PromQL: []Query{{Expr: "up", Source: "s1"}, {Expr: "rate(x[1m])", Source: "s2"}}}
-	rep := Verify(context.Background(), corpus, ref, cer, testParams())
+	corpus := Corpus{Queries: []Query{promQuery("up", "s1"), promQuery("rate(x[1m])", "s2")}}
+	rep := Verify(context.Background(), corpus, promLanes(ref, cer), testParams())
 
 	params := VerifyReportParams{
 		RefURL: "http://ref", CerberusURL: "http://cer",

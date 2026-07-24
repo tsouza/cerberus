@@ -591,7 +591,7 @@ func TestEvaluateBlocksOnMissingVersion(t *testing.T) {
 // cannot slip a zero-filled struct past the gate.
 func TestEvaluateBlocksOnDriftedUnknownField(t *testing.T) {
 	verify := rawArtifact(t, "verify.json",
-		`{"schema_version":1,"summary":{"total":3,"match":3},"bogus_new_field":42}`)
+		`{"schema_version":2,"summary":{"total":3,"match":3},"bogus_new_field":42}`)
 	in := migrategate.Inputs{Verify: verify, Classify: cleanClassify(t), RuleGraph: cleanRuleGraph(t)}
 	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
 		t.Fatal("a drifted verify artifact with an unknown field must hard error")
