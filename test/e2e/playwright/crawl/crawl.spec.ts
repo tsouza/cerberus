@@ -116,6 +116,7 @@ import {
   generateSelfTraffic,
   iterateDashboards,
   readPanelExpectation,
+  resolveInitRaceConsoleTwins,
   sweepDepth,
   tolerateRepaintFlicker,
 } from '../helpers/index.js';
@@ -131,7 +132,7 @@ import {
   harvestLinks,
   inventoryPath,
   isSupersededDsQueryFailure,
-  isTransientMalformedTraceQLFailure,
+  isTransientInitRaceFailure,
   loadExclusions,
   loadInventory,
   marshalInventory,
@@ -997,12 +998,20 @@ type FailFn = (rule: string, detail: string) => void;
  * Oracles 2a + 2b over a settled wire capture: non-2xx on the
  * datasource API families, and tunneled per-target errors in 2xx
  * ds/query bodies. Sanctioned only via declared-error contracts.
+ *
+ * Returns how many non-2xx were reconciled as Traces-Drilldown init-race
+ * artifacts. Each of those ALSO reaches the browser as an anonymous "Failed to
+ * load resource: … status of 400" console line, which oracle 1 would otherwise
+ * report as a fresh failure — the wire and console oracles look at the same
+ * response through two windows. The count is the budget oracle 1 spends
+ * resolving those twins; see resolveInitRaceConsoleTwins.
  */
 function evaluateWireOracles(
   captured: ReadonlyArray<CapturedDsResponse>,
   contracts: OracleContracts,
   fail: FailFn,
-): void {
+): number {
+  let reconciledInitRace = 0;
   // Signatures of every ds/query request that ultimately succeeded
   // (2xx) in this capture window. A non-2xx whose signature lands here
   // was a Grafana-aborted, superseded in-flight request — last-write-
@@ -1031,8 +1040,11 @@ function evaluateWireOracles(
     // cerberus correctly 400s (reference Tempo rejects the identical
     // syntax error). Distinct expr → no 2xx sibling, so the
     // supersession reconciler above can't catch it; this one keys on
-    // the malformed shape itself. See isTransientMalformedTraceQLFailure.
-    if (isTransientMalformedTraceQLFailure(resp)) {
+    // the malformed shape itself. Covers both transports the app uses:
+    // the ds/query POST and the datasource-proxy /api/search GET.
+    // See isTransientInitRaceFailure.
+    if (isTransientInitRaceFailure({ ...resp, responseBody: resp.body })) {
+      reconciledInitRace++;
       continue;
     }
     fail(
@@ -1064,6 +1076,8 @@ function evaluateWireOracles(
       );
     }
   }
+
+  return reconciledInitRace;
 }
 
 /**
@@ -1165,15 +1179,20 @@ async function visitAndAudit(
     stopConsole();
   }
   await wire.stop();
-  evaluateWireOracles(wire.captured, contracts, fail);
+  const reconciledInitRace = evaluateWireOracles(wire.captured, contracts, fail);
 
-  // Oracle 1 — console errors. Zero, with no noise filter (see the
-  // file header for the escalation path if a Grafana bump ever makes
-  // one unavoidable).
-  if (consoleErrors.length > 0) {
+  // Oracle 1 — console errors. Zero, with no noise filter beyond the
+  // browser twins oracle 2a already accounted for (see the file header
+  // for the escalation path if a Grafana bump ever makes a real filter
+  // unavoidable).
+  const reportableErrors = resolveInitRaceConsoleTwins(
+    consoleErrors,
+    reconciledInitRace,
+  );
+  if (reportableErrors.length > 0) {
     fail(
       'console-error',
-      `${consoleErrors.length} console error(s):\n${consoleErrors
+      `${reportableErrors.length} console error(s):\n${reportableErrors
         .map((m) => `  - ${truncate(m, 400)}`)
         .join('\n')}`,
     );
@@ -1344,12 +1363,20 @@ async function sweepInteractions(
 
     // In-place deviation → full oracle set, keyed by the state
     // notation, pinned into the inventory.
-    evaluateWireOracles(wire.captured, contracts, fail);
+    const reconciledInitRace = evaluateWireOracles(
+      wire.captured,
+      contracts,
+      fail,
+    );
     await evaluateDomOracles(page, contracts, entry.concrete, fail);
-    if (consoleErrors.length > 0) {
+    const reportableErrors = resolveInitRaceConsoleTwins(
+      consoleErrors,
+      reconciledInitRace,
+    );
+    if (reportableErrors.length > 0) {
       fail(
         'console-error',
-        `${consoleErrors.length} console error(s):\n${consoleErrors
+        `${reportableErrors.length} console error(s):\n${reportableErrors
           .map((m) => `  - ${truncate(m, 400)}`)
           .join('\n')}`,
       );

@@ -31,7 +31,9 @@ import { expect, test } from '@playwright/test';
 import {
   dsQuerySignature,
   isSupersededDsQueryFailure,
+  isTransientInitRaceFailure,
   isTransientMalformedTraceQLFailure,
+  isTransientMalformedTraceQLSearch,
   refIdToExpr,
   succeededDsQuerySignatures,
   type DsResponseView,
@@ -40,6 +42,7 @@ import {
   isClientSideFetchAbort,
   isResourceStatusTwin,
   reportableConsoleErrors,
+  resolveInitRaceConsoleTwins,
   TRACES_DRILLDOWN_APP_ID,
   UNREADABLE_BODY_SENTINEL,
 } from '../helpers/reconcile.js';
@@ -447,6 +450,115 @@ test.describe('isTransientMalformedTraceQLFailure', () => {
 });
 
 /**
+ * isTransientMalformedTraceQLSearch — the SAME primarySignal-init race on the
+ * OTHER transport (push-to-main run 30047606867, `shard-crawl`).
+ *
+ * The Traces Drilldown trace list reaches Tempo through Grafana's datasource
+ * PROXY (`GET /api/datasources/proxy/uid/<uid>/api/search?q=…`) rather than
+ * through `/api/ds/query`, so the pre-effect `{ && …}` spanset rides the `q`
+ * URL parameter and the ds/query-shaped reconciler never sees it. cerberus
+ * 400s it exactly as reference Tempo does (`syntax error: unexpected &&`).
+ */
+const proxySearch = (
+  q: string,
+  status: number,
+  responseBody?: string,
+): DsResponseView => ({
+  url: `/api/datasources/proxy/uid/cerberus-tempo/api/search?q=${encodeURIComponent(q)}&limit=200&spss=10`,
+  status,
+  requestBody: '',
+  ...(responseBody === undefined ? {} : { responseBody }),
+});
+
+test.describe('isTransientMalformedTraceQLSearch', () => {
+  test('reconciles the empty-primarySignal proxy-search 400', () => {
+    for (const q of ['{ && true}', '{ && }', '{true && }', '{ || true}']) {
+      expect(isTransientMalformedTraceQLSearch(proxySearch(q, 400))).toBe(true);
+    }
+  });
+
+  test('reconciles the undefined-groupBy proxy-search 400', () => {
+    expect(
+      isTransientMalformedTraceQLSearch(proxySearch('{undefined != nil}', 400)),
+    ).toBe(true);
+  });
+
+  test('does NOT reconcile a well-formed search 400 (real wrong-rejection)', () => {
+    for (const q of [
+      '{nestedSetParent<0 && true}',
+      '{}',
+      '{kind=server && status=error}',
+    ]) {
+      expect(isTransientMalformedTraceQLSearch(proxySearch(q, 400))).toBe(
+        false,
+      );
+    }
+  });
+
+  test('does NOT reconcile a 2xx, or a non-search proxy path', () => {
+    expect(isTransientMalformedTraceQLSearch(proxySearch('{ && true}', 200))).toBe(
+      false,
+    );
+    expect(
+      isTransientMalformedTraceQLSearch({
+        url: '/api/datasources/proxy/uid/cerberus-tempo/api/v2/search/tags?q=%7B%20%26%26%20true%7D',
+        status: 400,
+        requestBody: '',
+      }),
+    ).toBe(false);
+  });
+
+  test('falls back to the cerberus rejection body when `q` is absent', () => {
+    // A capture that recorded the path without its query string still has the
+    // 400 body, which names the syntax error verbatim.
+    const noQ = (responseBody: string): DsResponseView => ({
+      url: '/api/datasources/proxy/uid/cerberus-tempo/api/search',
+      status: 400,
+      requestBody: '',
+      responseBody,
+    });
+    expect(
+      isTransientMalformedTraceQLSearch(
+        noQ('{"error":true,"message":"traceql parse stage: parse error at line 1, col 3: syntax error: unexpected \\u0026\\u0026, expecting an attribute"}'),
+      ),
+    ).toBe(true);
+    expect(
+      isTransientMalformedTraceQLSearch(
+        noQ('{"error":true,"message":"traceql parse stage: unsupported aggregate"}'),
+      ),
+    ).toBe(false);
+    // No `q` and no body at all: nothing proves the shape, so it reports.
+    expect(
+      isTransientMalformedTraceQLSearch({
+        url: '/api/datasources/proxy/uid/cerberus-tempo/api/search',
+        status: 400,
+        requestBody: '',
+      }),
+    ).toBe(false);
+  });
+});
+
+test.describe('isTransientInitRaceFailure', () => {
+  test('covers BOTH transports the drilldown app uses', () => {
+    expect(
+      isTransientInitRaceFailure(dsqTempo('{ && true} | rate()', 400)),
+    ).toBe(true);
+    expect(isTransientInitRaceFailure(proxySearch('{ && true}', 400))).toBe(
+      true,
+    );
+  });
+
+  test('still reports a well-formed failure on either transport', () => {
+    expect(
+      isTransientInitRaceFailure(dsqTempo('{true && true} | rate()', 400)),
+    ).toBe(false);
+    expect(
+      isTransientInitRaceFailure(proxySearch('{nestedSetParent<0}', 400)),
+    ).toBe(false);
+  });
+});
+
+/**
  * isClientSideFetchAbort — the lokiexplore "Detected fields" / RxJS
  * network-abort class (k3d dashboard-shard, 2026-06-16; ~60% of runs).
  *
@@ -584,5 +696,38 @@ test.describe('reportableConsoleErrors', () => {
     const twin500 =
       'Failed to load resource: the server responded with a status of 500';
     expect(reportableConsoleErrors([twin500], 0)).toEqual([twin500]);
+  });
+});
+
+/**
+ * resolveInitRaceConsoleTwins — the STRICT half the crawl lane consumes.
+ *
+ * The crawl deliberately carries no console-noise filter, so it must resolve
+ * ONLY the twins of 400s the wire oracle already judged transient, and keep
+ * everything else — including the `Failed to fetch` abort class that
+ * reportableConsoleErrors drops for the drilldown-apps lane.
+ */
+test.describe('resolveInitRaceConsoleTwins', () => {
+  const twin =
+    'Failed to load resource: the server responded with a status of 400 (Bad Request)';
+
+  test('resolves twins only up to the reconciled-400 budget', () => {
+    expect(resolveInitRaceConsoleTwins([twin], 1)).toEqual([]);
+    expect(resolveInitRaceConsoleTwins([twin, twin], 1)).toEqual([twin]);
+    expect(resolveInitRaceConsoleTwins([twin], 0)).toEqual([twin]);
+  });
+
+  test('KEEPS the fetch-abort class the lenient variant drops', () => {
+    // The crawl's whole contract is "no noise filter"; only the double-counted
+    // twin is resolved, never a class of message.
+    const abort = 'TypeError: Failed to fetch';
+    expect(resolveInitRaceConsoleTwins([abort], 5)).toEqual([abort]);
+    expect(reportableConsoleErrors([abort], 0)).toEqual([]);
+  });
+
+  test('keeps every substantive error regardless of budget', () => {
+    expect(
+      resolveInitRaceConsoleTwins(['ChunkLoadError: boom', twin], 9),
+    ).toEqual(['ChunkLoadError: boom']);
   });
 });
