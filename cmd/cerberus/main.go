@@ -1267,6 +1267,12 @@ func runRequirementsCheck(
 		Traces:            cfg.Traces,
 	}
 	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
+	// Logged BEFORE the fatal check: a warning describes the server cerberus is
+	// pointed at, and an operator debugging a failed boot needs it just as much
+	// as one whose boot succeeds.
+	for _, w := range res.Warnings {
+		logger.Warn(w)
+	}
 	if res.Fatal != nil {
 		// Wrong-shape / too-old / unreadable — never self-heals. Exit even if
 		// some tables are also absent: a too-old server won't fix itself by
@@ -1397,6 +1403,11 @@ func reprobeSchema(
 ) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// A boot that started ahead of ClickHouse (or ahead of its database) never
+	// got to read version(), so the re-probe is the FIRST place a server-level
+	// warning can surface. Log each distinct warning once — the loop ticks every
+	// few seconds and the findings are stable, so re-logging would be noise.
+	warned := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1404,6 +1415,12 @@ func reprobeSchema(
 		case <-ticker.C:
 		}
 		res := preflight.Run(ctx, client, req)
+		for _, w := range res.Warnings {
+			if !warned[w] {
+				warned[w] = true
+				logger.Warn(w)
+			}
+		}
 		if res.Fatal != nil {
 			logger.Warn("schema re-probe found a fatal requirement; staying unready and retrying", "err", res.Fatal)
 			continue

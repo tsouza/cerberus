@@ -270,6 +270,39 @@ no correctness floor here (the SQL is 24.8-safe), so it stays a **recommendation
 not a requirement**: trace-heavy deployments leaning on the structure tab should
 prefer 26.6+, everyone else is unaffected.
 
+### ClickHouse 26.5 — known-defective line
+
+**Do not run cerberus on ClickHouse 26.5.x.** The 26.5 line (reproduced on
+26.5.1 through 26.5.6, and on the chDB build of the same line) carries an
+upstream query-execution regression in the top-K prefilter that backs
+`ORDER BY <sorting-key column> … LIMIT n`: when the same attribute map appears
+in both the `WHERE` predicate and the projection, the prefilter is handed the
+map column where it expects the sort key and the server aborts the query with
+
+```text
+Code: 53. Type mismatch in IN or VALUES section. Expected: DateTime64(9).
+Got: Map: while executing 'FUNCTION __topKFilter(Timestamp) …'
+```
+
+26.4 and earlier are unaffected (the optimisation does not exist), and
+**26.6 fixes it**. The defect is gated on `LIMIT n` with
+`n <= query_plan_max_limit_for_top_k_optimization` (default 1000).
+
+For cerberus the blast radius is the Loki **`/loki/api/v1/detected_fields`**
+endpoint — its peek projects `Body` + both attribute maps while the stream
+selector filters on `ResourceAttributes`, and its default `line_limit` is
+exactly 1000 — so Grafana's Logs Drilldown renders "Fields: 0" and the endpoint
+returns 502 on every request. Sibling surfaces are clear: `/patterns` projects
+the timestamp alongside the body (which sidesteps the prefilter), and the log
+query path filters inside a subquery, so both keep working. Nothing is silently
+wrong — the defect always aborts the query rather than returning bad rows.
+
+Cerberus does not work around this in emitted SQL: the shapes that avoid it do
+so incidentally, so pinning a golden to one would encode an upstream bug as a
+cerberus invariant. The boot-time requirements check instead **warns** when it
+sees a 26.5 server (it does not refuse to start — the rest of the gateway is
+healthy), and the k3d e2e substrate is pinned to 26.6.
+
 ### Prometheus resource-attribute labels
 
 The Prometheus head projects each metric row's OTel `ResourceAttributes` map as
