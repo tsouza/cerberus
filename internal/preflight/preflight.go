@@ -93,6 +93,35 @@ var minCHBase = chopt.Version{Major: 24, Minor: 8}
 // above the base raises the requirement, and the base wins otherwise.
 var minCHNativeRate = chopt.Version{Major: 25, Minor: 9}
 
+// defectiveCHLines maps a ClickHouse minor line to the symptom an operator
+// running it will see. These are versions ABOVE the floor whose SQL cerberus
+// emits correctly but whose SERVER mis-executes it — an upstream regression,
+// not a cerberus requirement — so they are reported as WARNINGS: the rest of
+// the gateway is healthy and refusing to boot would cost far more than the
+// degraded surface. The version gate is the only place that already reads
+// version(), so the check rides along with it rather than re-probing.
+//
+// Keyed by major.minor because that is the granularity a regression lands and
+// is fixed at (the whole line is affected until the next minor). Each entry is
+// removed once no supported deployment can still be on it.
+var defectiveCHLines = map[chopt.Version]string{
+	{Major: 26, Minor: 5}: "the top-K prefilter behind `ORDER BY … LIMIT n` mis-types its input " +
+		"(`__topKFilter` / server error 53) when an attribute map is both filtered on and projected, " +
+		"which fails every /loki/api/v1/detected_fields request (Logs Drilldown renders \"Fields: 0\"); " +
+		"fixed in ClickHouse 26.6 — 26.4 and earlier are unaffected",
+}
+
+// defectNote renders the operator-facing warning for a known-defective server
+// line, naming the version actually connected to (not just the line) so the
+// log line is self-contained. Returns "" when got sits on no defective line.
+func defectNote(raw string, got chopt.Version) string {
+	symptom, bad := defectiveCHLines[got]
+	if !bad {
+		return ""
+	}
+	return fmt.Sprintf("clickhouse %s is a known-defective line for cerberus: %s", raw, symptom)
+}
+
 // attrMapType is the ClickHouse type the OTel-CH attribute-map columns
 // (Attributes / ResourceAttributes / ScopeAttributes) must carry. Stored
 // canonical (no spaces); the deployed type read from system.columns is
@@ -161,6 +190,11 @@ type Querier interface {
 //     is the "boot ahead of ClickHouse" race: the caller boots NOT READY and
 //     re-probes rather than exiting. UnreachableErr carries the underlying
 //     transport error for the /readyz reason + logs.
+//   - Warnings carries non-fatal findings the operator should act on but that
+//     must not stop the gateway — today, a connected server sitting on a
+//     known-defective ClickHouse line (see defectiveCHLines). A warning never
+//     gates readiness and never coexists exclusively: a Result can carry both
+//     Warnings and a Fatal, and the caller logs the warnings either way.
 //   - DatabaseAbsent is set when ClickHouse is reachable but the configured
 //     database does not exist yet (UNKNOWN_DATABASE / code 81). Because the
 //     connection carries the database as its session default, even SELECT
@@ -179,6 +213,7 @@ type Querier interface {
 // introspected) so neither ever coexists with a Fatal wrong-shape finding.
 type Result struct {
 	Fatal             error
+	Warnings          []string
 	AbsentTables      []string
 	Unreachable       bool
 	UnreachableErr    error
@@ -266,7 +301,7 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	// database does not exist yet (the connection carries it as the session
 	// default, so even version() fails) — equally transient, so short-circuit to
 	// a DatabaseAbsent Result rather than mislabelling it a fatal version-read.
-	versionProblems, unreachable, dbAbsent := checkVersion(ctx, q, req)
+	versionProblems, warnings, unreachable, dbAbsent := checkVersion(ctx, q, req)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
@@ -281,7 +316,7 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 
 	problems := append(versionProblems, schemaProblems...)
 
-	res := Result{AbsentTables: absent}
+	res := Result{Warnings: warnings, AbsentTables: absent}
 	if len(problems) == 0 {
 		return res
 	}
@@ -393,7 +428,11 @@ func matchesTransportPhrase(err error) bool {
 // dbAbsent. An unreadable-but-reachable response against an existing database
 // (other server-side query error, empty result, or unparseable / too-old
 // version) is a fatal problem (never a silent pass).
-func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []string, unreachable, dbAbsent error) {
+//
+// A server that clears the floor but sits on a known-defective line (an
+// upstream regression cerberus cannot emit around) yields no problem and a
+// warning instead — the gateway boots, degraded on the named surface only.
+func checkVersion(ctx context.Context, q Querier, req Requirements) (problems, warnings []string, unreachable, dbAbsent error) {
 	min := req.minVersion()
 	rateNote := "native rate disabled"
 	if req.NativeRateEnabled {
@@ -404,25 +443,28 @@ func checkVersion(ctx context.Context, q Querier, req Requirements) (problems []
 	rows, err := q.QueryStrings(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {
-			return nil, err, nil
+			return nil, nil, err, nil
 		}
 		if isDatabaseAbsent(err) {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return []string{fmt.Sprintf("could not read clickhouse version: %v", err)}, nil, nil
+		return []string{fmt.Sprintf("could not read clickhouse version: %v", err)}, nil, nil, nil
 	}
 	if len(rows) == 0 {
-		return []string{"clickhouse version query returned no rows"}, nil, nil
+		return []string{"clickhouse version query returned no rows"}, nil, nil, nil
 	}
 	raw := strings.TrimSpace(rows[0])
 	got, ok := chopt.ParseVersion(raw)
 	if !ok {
-		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}, nil, nil
+		return []string{fmt.Sprintf("clickhouse version %q is unparseable; required minimum %s (%s)", raw, min, rateNote)}, nil, nil, nil
 	}
 	if !got.AtLeast(min) {
-		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}, nil, nil
+		return []string{fmt.Sprintf("clickhouse version %s is below the required minimum %s (%s)", raw, min, rateNote)}, nil, nil, nil
 	}
-	return nil, nil, nil
+	if note := defectNote(raw, got); note != "" {
+		return nil, []string{note}, nil, nil
+	}
+	return nil, nil, nil, nil
 }
 
 // tableReq describes the shape required of one configured table: its

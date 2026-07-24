@@ -225,6 +225,87 @@ func TestRunVersionOKAllPass(t *testing.T) {
 	}
 }
 
+// A known-defective ClickHouse line WARNS but never blocks: the server clears
+// the floor, the schema is healthy, and the defect degrades one endpoint rather
+// than the gateway. The pins below are the contract the boot log and
+// docs/operations.md both rest on — a defective server must not be fatal, and a
+// healthy one must not warn.
+func TestRunDefectiveLineWarnsButPasses(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{Version: "26.5.6.64", Columns: healthyColumns()}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("a defective-line server must still boot, got fatal: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+	w := res.Warnings[0]
+	// The raw server string (not just the line) so the log is self-contained,
+	// the affected endpoint so the operator can match it to what they see, and
+	// the fixed version so the message says where to go.
+	for _, want := range []string{"26.5.6.64", "detected_fields", "26.6"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning missing %q: %s", want, w)
+		}
+	}
+}
+
+// The adjacent lines on both sides of the defect are clean — the regression
+// does not exist below 26.5 and is fixed above it — so neither may warn.
+func TestRunAdjacentLinesDoNotWarn(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"26.4.5.143", "26.6.2.81", "25.8.2.1-lts"} {
+		q := &stubQuerier{Version: v, Columns: healthyColumns()}
+		res := Run(context.Background(), q, defaultReq())
+		if len(res.Warnings) != 0 {
+			t.Errorf("version %s must not warn, got: %v", v, res.Warnings)
+		}
+	}
+}
+
+// A too-old server is rejected on the floor gate and never reaches the
+// defect lookup, so it carries the fatal alone — no warning noise on a boot
+// that is already failing for a different reason.
+func TestRunTooOldCarriesNoWarning(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{Version: "24.3.1.2557-stable", Columns: healthyColumns()}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal == nil {
+		t.Fatal("expected fatal for too-old version")
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("too-old version must not also warn, got: %v", res.Warnings)
+	}
+}
+
+// A defective server with a wrong-shape schema must report BOTH: the fatal
+// stops the boot, and the warning still explains the server the operator is
+// pointed at. Warnings are not swallowed by an unrelated fatal.
+func TestRunDefectiveLineWarnsAlongsideFatal(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	// Drop Body from otel_logs so the shape gate has something fatal to say.
+	l := schema.DefaultOTelLogs()
+	pruned := cols[l.LogsTable][:0:0]
+	for _, c := range cols[l.LogsTable] {
+		if c.Name == l.BodyColumn {
+			continue
+		}
+		pruned = append(pruned, c)
+	}
+	cols[l.LogsTable] = pruned
+
+	q := &stubQuerier{Version: "26.5.6.64", Columns: cols}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal == nil {
+		t.Fatal("expected fatal for the missing body column")
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("want the defect warning alongside the fatal, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+}
+
 func TestRunVersionExactlyAtFloor(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "24.8.0.0", Columns: healthyColumns()}
