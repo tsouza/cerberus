@@ -3,6 +3,7 @@ package migrateverify
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -279,8 +280,8 @@ func TestVerifyReport_JSON(t *testing.T) {
 	rep := Verify(context.Background(), corpus, promLanes(ref, cer), testParams())
 
 	params := VerifyReportParams{
-		RefURL: "http://ref", CerberusURL: "http://cer",
-		Start: "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z",
+		Backends: []VerifyReportBackend{{Head: HeadProm, RefURL: "http://ref", CerberusURL: "http://cer"}},
+		Start:    "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z",
 		Step: "1m0s", Tolerance: DefaultTolerance, Corpus: "corpus.json",
 	}
 	genAt := time.Unix(1_700_000_600, 0).UTC()
@@ -308,11 +309,16 @@ func TestVerifyReport_JSON(t *testing.T) {
 	if back.Note != ExperimentalNote {
 		t.Errorf("note = %q, want the experimental-feature note", back.Note)
 	}
-	if back.Params != params {
+	if !reflect.DeepEqual(back.Params, params) {
 		t.Errorf("params = %+v, want %+v", back.Params, params)
 	}
 	if back.Summary != rep.Summary {
 		t.Errorf("summary = %+v, want %+v", back.Summary, rep.Summary)
+	}
+	// The per-head lane split must survive into the diagnostic: without it a
+	// --report artifact cannot tell an operator which head a divergence lived on.
+	if !reflect.DeepEqual(back.Heads, rep.Heads) {
+		t.Errorf("heads = %+v, want %+v", back.Heads, rep.Heads)
 	}
 	if len(back.Results) != 2 {
 		t.Fatalf("results = %d, want 2", len(back.Results))
@@ -339,5 +345,62 @@ func TestVerifyReport_JSON(t *testing.T) {
 	}
 	if buf.String() != buf2.String() {
 		t.Errorf("diagnostic marshaling must be deterministic; got two different encodings")
+	}
+}
+
+// v1ReportSchemaVersion is the schema version whose on-disk shape the multi-lane
+// gate replaced: one flat ref_url / cerberus_url pair, no per-head lanes, no
+// unconfigured bucket. Both current versions must sit above it.
+const v1ReportSchemaVersion = 1
+
+// TestSchemaVersionsAreBumpedOffTheSingleLaneShape pins the two version constants
+// to concrete values AND to the reason they moved.
+//
+// Asserting only "the marshaled version equals the constant" is self-satisfying:
+// reverting either constant to 1 keeps every such test green while handing a
+// version-1 consumer a body with no ref_url in it, and handing this build a
+// version-1 artifact whose missing heads / unconfigured fields zero-fill into
+// "every lane configured, none dead" — the silent zero-fill the version check
+// exists to stop. So this test checks the literal, and checks that the shape the
+// number describes really did break.
+func TestSchemaVersionsAreBumpedOffTheSingleLaneShape(t *testing.T) {
+	if ReportVersion <= v1ReportSchemaVersion {
+		t.Errorf("ReportVersion = %d: the gate-consumed report gained Heads + Unconfigured, so it must sit above %d",
+			ReportVersion, v1ReportSchemaVersion)
+	}
+	if VerifyReportVersion <= v1ReportSchemaVersion {
+		t.Errorf("VerifyReportVersion = %d: the diagnostic's params became per-head, so it must sit above %d",
+			VerifyReportVersion, v1ReportSchemaVersion)
+	}
+
+	// The breaking change itself: params no longer carries a single flat backend
+	// pair, and the report carries the per-head split.
+	var buf strings.Builder
+	diag := NewVerifyReport(
+		Report{Heads: []HeadSummary{{Head: HeadProm}}},
+		VerifyReportParams{Backends: []VerifyReportBackend{{Head: HeadProm, RefURL: "http://ref", CerberusURL: "http://cer"}}},
+		"v1.2.3", time.Unix(0, 0).UTC(),
+	)
+	if err := diag.WriteJSON(&buf); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(buf.String()), &decoded); err != nil {
+		t.Fatalf("diagnostic must be JSON: %v", err)
+	}
+	params, ok := decoded["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostic carries no params object: %s", buf.String())
+	}
+	for _, gone := range []string{"ref_url", "cerberus_url"} {
+		if _, present := params[gone]; present {
+			t.Errorf("params still carries the single-lane %q field, so the version bump describes no real shape change: %s", gone, buf.String())
+		}
+	}
+	if _, present := params["backends"]; !present {
+		t.Errorf("params must carry the per-head backends list: %s", buf.String())
+	}
+	if _, present := decoded["heads"]; !present {
+		t.Errorf("the diagnostic must carry the per-head lane split: %s", buf.String())
 	}
 }
