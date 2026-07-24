@@ -47,11 +47,19 @@ import type { CrawlStackConfig } from './stacks.js';
 // existing consumers (crawl.spec.ts, reconcile.spec.ts) keep their import path.
 import {
   type DsResponseView,
+  isTransientInitRaceFailure,
   isTransientMalformedTraceQLFailure,
+  isTransientMalformedTraceQLSearch,
   refIdToExpr,
 } from '../helpers/reconcile.js';
 
-export { type DsResponseView, isTransientMalformedTraceQLFailure, refIdToExpr };
+export {
+  type DsResponseView,
+  isTransientInitRaceFailure,
+  isTransientMalformedTraceQLFailure,
+  isTransientMalformedTraceQLSearch,
+  refIdToExpr,
+};
 
 /**
  * The scope slice of a stack config the canonicalizer consumes:

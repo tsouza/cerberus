@@ -238,6 +238,66 @@ export function isTransientMalformedTraceQLFailure(
 }
 
 /**
+ * Matches Grafana's datasource-PROXY path for Tempo's `/api/search`, i.e.
+ * `/api/datasources/proxy/uid/<uid>/api/search`. The Traces Drilldown app
+ * reaches the trace list through this proxy rather than through
+ * `/api/ds/query`, so the SAME primarySignal-init race surfaces on a GET whose
+ * TraceQL rides the `q` URL parameter instead of a JSON request body.
+ */
+const TEMPO_PROXY_SEARCH_PATH =
+  /\/api\/datasources\/proxy\/uid\/[^/]+\/api\/search(?:$|\?)/;
+
+/**
+ * True iff `resp` is a non-2xx Tempo proxy `/api/search` whose forwarded
+ * TraceQL carries a known Traces-Drilldown init-race shape — the GET twin of
+ * isTransientMalformedTraceQLFailure.
+ *
+ * Same race, same evidence, different transport: the app builds
+ * `{ ${primarySignal} && ${filters} }` for the trace list too, so before the
+ * PrimarySignalVariable effect fires it issues `?q={ && true}` and cerberus
+ * (like reference Tempo) rejects it with `syntax error: unexpected &&`.
+ *
+ * Narrow by construction: the `q` parameter is a SINGLE query, so there is no
+ * mixed-request case to guard — either that one query carries a known-race
+ * shape or the 400 reports loudly. A well-formed query that cerberus wrongly
+ * rejects still fails: it matches neither the request-side shapes nor the
+ * response-side rejection messages.
+ */
+export function isTransientMalformedTraceQLSearch(
+  resp: DsResponseView,
+): boolean {
+  if (!TEMPO_PROXY_SEARCH_PATH.test(resp.url)) return false;
+  if (resp.status >= 200 && resp.status <= 299) return false;
+  const q = new URL(resp.url, 'http://x').searchParams.get('q') ?? '';
+  if (q !== '') {
+    return (
+      DANGLING_TRACEQL_OPERAND.test(q) || UNDEFINED_GROUPBY_TRACEQL.test(q)
+    );
+  }
+  // No `q` to vet (a torn-down request, or a URL the capture recorded without
+  // its query string). Fall back to cerberus's 400 body, which names the
+  // known-race syntax error verbatim.
+  return (
+    resp.responseBody !== undefined &&
+    (DANGLING_TRACEQL_REJECTION.test(resp.responseBody) ||
+      UNDEFINED_GROUPBY_REJECTION.test(resp.responseBody))
+  );
+}
+
+/**
+ * True iff `resp` is a non-2xx the Traces Drilldown init races explain, on
+ * EITHER transport the app uses: the `/api/ds/query` POST (breakdown panels)
+ * or the datasource-proxy `/api/search` GET (trace list). One predicate so a
+ * lane cannot accidentally reconcile one transport and report the other.
+ */
+export function isTransientInitRaceFailure(resp: DsResponseView): boolean {
+  return (
+    isTransientMalformedTraceQLFailure(resp) ||
+    isTransientMalformedTraceQLSearch(resp)
+  );
+}
+
+/**
  * Resolve the browser-side twins of the reconciled init-race 400s and return
  * the console errors that remain REPORTABLE.
  *
@@ -263,16 +323,32 @@ export function reportableConsoleErrors(
   //    cerberus HTTP failures are owned by the wire-status sweep, not this rule.
   const afterAbort = consoleErrors.filter((m) => !isClientSideFetchAbort(m));
 
-  // 2. Resolve the browser TWINS of the reconciled dangling-operand 400s: each
-  //    reconciled init-race 400 surfaces to the console either as an empty-text
-  //    message or as the generic "Failed to load resource: … status of 400"
-  //    twin. Resolve up to `reconciledInitRace` such twins (the wire-sweep
-  //    already accounted for the underlying 400); everything else is kept, so a
-  //    genuine app error or more twins than the init race explains still
-  //    reports.
+  // 2. Resolve the browser twins of the wire-reconciled init-race 400s.
+  return resolveInitRaceConsoleTwins(afterAbort, reconciledInitRace);
+}
+
+/**
+ * Resolve ONLY the browser twins of the already-wire-reconciled init-race
+ * 400s, leaving every other console error — including the `Failed to fetch`
+ * network-abort class — reportable.
+ *
+ * Each 400 the wire oracle reconciled is observed a SECOND time through the
+ * console window, as an empty-text message or the anonymous "Failed to load
+ * resource: … status of 400" line. Without this the two oracles double-count
+ * the same response and the console one reports a failure the wire one already
+ * judged transient. The budget is exactly the reconciled count, so a twin
+ * beyond what the wire oracle accounted for still reports.
+ *
+ * This is the strict half of reportableConsoleErrors, for lanes (the crawl)
+ * that deliberately carry no other console-noise filter.
+ */
+export function resolveInitRaceConsoleTwins(
+  consoleErrors: ReadonlyArray<string>,
+  reconciledInitRace: number,
+): string[] {
   let twinsBudget = Math.max(0, reconciledInitRace);
   const reportable: string[] = [];
-  for (const m of afterAbort) {
+  for (const m of consoleErrors) {
     const isTwin = m.trim() === '' || isResourceStatusTwin(m);
     if (isTwin && twinsBudget > 0) {
       twinsBudget--;
