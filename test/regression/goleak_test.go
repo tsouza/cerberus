@@ -489,14 +489,14 @@ func TestNoGoroutineLeak_RouteMemo(t *testing.T) {
 
 	// A single route-A resource failure must not yet corroborate into a
 	// probe: one transient rejection teaches the memo nothing on its own.
-	if _, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
+	if _, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
 		t.Fatalf("single resource failure must not admit a probe")
 	}
 
 	// A second consecutive failure on the same key crosses the
 	// corroboration floor and admits a probe dispatch under the
 	// process-wide dispatch-token budget.
-	release, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 	if !ok {
 		t.Fatalf("second consecutive resource failure must admit a probe")
 	}
@@ -521,7 +521,7 @@ func TestNoGoroutineLeak_RouteMemo(t *testing.T) {
 	// key takes when route B does not, in fact, help.
 	other := routememo.Key{RootKind: "*chplan.RangeWindow"}
 	m.Observe(other, routememo.RouteA, routememo.OutcomeResourceFailure)
-	otherRelease, otherOK := m.ObserveRouteAFailureAndMaybeBeginProbe(other)
+	otherRelease, otherOK, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(other)
 	if !otherOK {
 		t.Fatalf("second consecutive resource failure on a distinct key must admit a probe")
 	}

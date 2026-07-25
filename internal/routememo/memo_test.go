@@ -282,7 +282,7 @@ func TestReValidationRescue_AdmitsStalePreferBFailure(t *testing.T) {
 		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
 	}
 
-	rescueRelease, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	rescueRelease, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 	if !ok {
 		t.Fatal("ObserveRouteAFailureAndMaybeBeginProbe did not rescue a stale PreferB entry's re-validation failure")
 	}
@@ -315,7 +315,7 @@ func TestReValidationRescue_FreshPreferBNotAdmitted(t *testing.T) {
 		t.Fatalf("expected a fresh (non-stale) PreferB entry, got (%v, stale=%v)", state, stale)
 	}
 
-	_, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	_, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 	if ok {
 		t.Fatal("rescued a FRESH PreferB entry's failure — re-probing an already-trusted, non-stale verdict is unnecessary and wasteful")
 	}
@@ -329,7 +329,7 @@ func TestReValidationRescue_UnknownKeyCorroborationStillWorks(t *testing.T) {
 	m, _ := newTestMemo()
 	k := testKey("A")
 
-	release1, ok1 := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	release1, ok1, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 	if ok1 {
 		t.Fatal("admitted on the FIRST failure — corroboration requires more than one")
 	}
@@ -337,7 +337,7 @@ func TestReValidationRescue_UnknownKeyCorroborationStillWorks(t *testing.T) {
 		release1()
 	}
 
-	release2, ok2 := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	release2, ok2, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 	if !ok2 {
 		t.Fatal("did not admit on the 2nd consecutive failure (minCorroboratingFailures)")
 	}

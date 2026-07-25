@@ -138,3 +138,13 @@ jobs:
       # test/spec/traces_scan_resource_bound_integration_test.go.
       - name: Run TraceQL spans-scan resource-bound differential (real ClickHouse)
         run: just traces-scan-bound-integration
+
+      # The failure-driven route memo's mandatory per-shard memory
+      # apportionment (Executor.runShard) stamps a max_memory_usage override
+      # via chclient.WithQuerySetting. chDB is known-lenient about settings
+      # in ways the real clickhouse-go/v2 driver isn't (the same class of
+      # blind spot this lane documents for type coercion), so only a real
+      # ClickHouse server can prove the setting is actually forwarded AND
+      # enforced server-side. See internal/solver/executor_realch_integration_test.go.
+      - name: Run solver memory-apportionment differential (real ClickHouse)
+        run: just solver-memory-apportion-integration

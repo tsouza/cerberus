@@ -54,7 +54,7 @@ func TestAmplificationBound_ConcurrentSameKeyFailuresCapAtDispatchBudget(t *test
 	for i := 0; i < burstSize; i++ {
 		go func() {
 			defer wg.Done()
-			release, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+			release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 			if ok {
 				atomic.AddInt32(&admitted, 1)
 				releasesMu.Lock()
@@ -134,7 +134,7 @@ func TestClusterPressureBound_ConcurrentDistinctKeyFailuresBlockAllDispatch(t *t
 		i, k := i, k
 		go func() {
 			defer wg.Done()
-			_, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+			_, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
 			admittedOK[i] = ok // each goroutine owns a distinct index — no shared write
 		}()
 	}

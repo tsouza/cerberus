@@ -253,19 +253,16 @@ func (e *Engine) retryOnRouteAResourceFailure(
 		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineBreakerOpen)
 		return nil, nil, nil, nil, false
 	}
-	// Under cluster-wide pressure, ObserveRouteAFailureAndMaybeBeginProbe
-	// itself suppresses BOTH the state write and the probe admission (its
-	// own doc), so sample it here first purely to give the decline an
-	// honest, distinct reason instead of folding it into the generic
-	// probe-not-admitted bucket below.
-	underPressure := e.RouteMemo.UnderPressure()
 	// Record the failure AND decide probe admission atomically — see
 	// ObserveRouteAFailureAndMaybeBeginProbe's doc for why this must not be
 	// two separate calls (a stale PreferB entry's re-validation rescue
-	// depends on the admission check seeing pre-refresh staleness).
-	release, ok := e.RouteMemo.ObserveRouteAFailureAndMaybeBeginProbe(d.key)
+	// depends on the admission check seeing pre-refresh staleness). The
+	// method reports pressureDeclined atomically with the decision itself,
+	// so the decline reason never has to re-sample UnderPressure()
+	// separately and race the very transition this call just made.
+	release, ok, pressureDeclined := e.RouteMemo.ObserveRouteAFailureAndMaybeBeginProbe(d.key)
 	if !ok {
-		if underPressure {
+		if pressureDeclined {
 			telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineUnderPressure)
 		} else {
 			telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineProbeNotAdmitted)

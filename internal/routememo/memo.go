@@ -283,7 +283,7 @@ func (m *Memo) BeginProbe(k Key) (release func(), ok bool) {
 // OutcomeResourceFailure) followed by BeginProbe(k) — for a route-A
 // resource-exhaustion failure. release must be called exactly once,
 // whenever ok is true, when the resulting probe/rescue dispatch finishes.
-func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok bool) {
+func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok, pressureDeclined bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -293,7 +293,11 @@ func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok
 		// Cluster-wide pressure: no state write (Observe's own contract),
 		// no probe admitted either — the damper suppresses both action and
 		// learning uniformly, regardless of which path would have admitted.
-		return noopRelease, false
+		// pressureDeclined is reported atomically with the decision itself,
+		// so a caller labeling a decline metric never has to re-sample
+		// UnderPressure() separately and race the very transition this
+		// method just made.
+		return noopRelease, false, true
 	}
 
 	v, live := m.getLiveLocked(k, now)
@@ -309,9 +313,9 @@ func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok
 		// refreshed, no longer "stale") post-transition state.
 		select {
 		case m.dispatchTokens <- struct{}{}:
-			return m.releaseToken, true
+			return m.releaseToken, true, false
 		default:
-			return noopRelease, false
+			return noopRelease, false, false
 		}
 	}
 
@@ -319,13 +323,13 @@ func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok
 	// has now reached the corroboration floor.
 	v, live = m.getLiveLocked(k, now)
 	if !live || v.state != Unknown || v.corroboration < minCorroboratingFailures {
-		return noopRelease, false
+		return noopRelease, false, false
 	}
 	select {
 	case m.dispatchTokens <- struct{}{}:
-		return m.releaseToken, true
+		return m.releaseToken, true, false
 	default:
-		return noopRelease, false
+		return noopRelease, false, false
 	}
 }
 

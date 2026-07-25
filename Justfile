@@ -186,6 +186,18 @@ router-corpus-integration:
 traces-scan-bound-integration:
     go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
 
+# Run the solver's mandatory per-shard memory-apportionment real-CH guard:
+# proves Executor.runShard's max_memory_usage WithQuerySetting override is
+# actually honored by a real ClickHouse over clickhouse-go/v2, not just
+# accepted and silently ignored (chDB is known-lenient about settings, the
+# same class of blind spot the strict-scan lane documents for type
+# coercion). A deliberately tiny per-shard budget must fail with CH's own
+# memory-limit error; a generous one on the identical query must succeed.
+# Requires Docker; gated behind the `integration` build tag. See
+# internal/solver/executor_realch_integration_test.go and strict-scan.yml.
+solver-memory-apportion-integration:
+    go test -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
