@@ -41,7 +41,7 @@
       "blocking": true,
       "reasons": [
         "1 consumed recorded series must stay materialized after cutover",
-        "  svc:http_requests:rate5m \u003c- 2 consumers",
+        "  svc:http_requests:rate5m (rule:test/e2e/migration/archetypes/three-signal/rules/service-recording.yaml/three-signal/svc:http_requests:rate5m) \u003c- 2 consumers",
         "3 skipped inputs make the orphan classification unsound (a dropped consumer may reference a series marked orphan)",
         "  skipped dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Error log rate/A: unparseable consumer expr: 1:55: parse error: unexpected character: '|'",
         "  skipped dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Left on the old search backend/A: unsupported datasource type \"elasticsearch\" (not prometheus/loki/tempo)",

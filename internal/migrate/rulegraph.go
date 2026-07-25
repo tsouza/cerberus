@@ -399,6 +399,89 @@ func splitRuleGroups(file string, rg promrules.RuleGroups) (recorded []RecordedS
 	return recorded, consumers, skipped
 }
 
+// lokiRuleSourcePrefix tags a RecordedSeries harvested from a Loki ruler rule
+// file, distinguishing it from a Prometheus "rule:" source using the same
+// free-form Source string the schema already carries — no new JSON field, so
+// a --rules-only invocation is byte-for-byte unchanged.
+const lokiRuleSourcePrefix = "loki-rule:"
+
+// HarvestLokiRuleFiles reads Loki ruler rule files matched by rulePaths and
+// extracts ONLY their recording-rule OUTPUT series (record: names). Loki
+// alerting- and recording-rule EXPRESSIONS are LogQL over log streams; LogQL
+// has no operator that re-selects a previously remote-written metric name, so
+// a Loki rule's own expr can never reference another recorded series the way
+// a Prometheus rule's expr can — it is therefore never fed into the
+// PromQL-based consumer/extractor pipeline. The only consumers a
+// Loki-recorded series can have are the PromQL-shaped queries already
+// harvested from --rules/--corpus (a dashboard panel or Prometheus rule
+// reading the remote-written metric by name); BuildRuleGraph links them
+// unmodified.
+//
+// Any input this cannot use — bad glob, unreadable file, YAML parse failure,
+// a rule with an empty record name — is returned as a SkippedEntry, never
+// silently dropped: a --loki-rules glob that matches zero files BLOCKS the
+// gate exactly like an equivalent --rules miss does today, so "nothing
+// configured" is never read as "no rules, all clear."
+func HarvestLokiRuleFiles(rulePaths []string) (recorded []RecordedSeries, skipped []SkippedEntry) {
+	for _, pattern := range rulePaths {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			skipped = append(skipped, SkippedEntry{Source: pattern, Reason: fmt.Sprintf("bad path pattern: %v", err)})
+			continue
+		}
+		if len(matches) == 0 {
+			skipped = append(skipped, SkippedEntry{Source: pattern, Reason: "no files matched"})
+			continue
+		}
+		for _, file := range matches {
+			data, err := os.ReadFile(file) //nolint:gosec // operator-supplied rule-file path; offline CLI.
+			if err != nil {
+				skipped = append(skipped, SkippedEntry{Source: file, Reason: fmt.Sprintf("read: %v", err)})
+				continue
+			}
+			rg, err := promrules.Parse(data)
+			if err != nil {
+				skipped = append(skipped, SkippedEntry{Source: file, Reason: fmt.Sprintf("parse: %v", err)})
+				continue
+			}
+			rec, sk := splitLokiRuleGroups(file, rg)
+			recorded = append(recorded, rec...)
+			skipped = append(skipped, sk...)
+		}
+	}
+	return recorded, skipped
+}
+
+// splitLokiRuleGroups walks one parsed Loki rule file: a rule with a `record:`
+// name and a non-empty expr becomes a RecordedSeries tagged with
+// lokiRuleSourcePrefix; a rule with an `alert:` name is deliberately not
+// harvested at all (see HarvestLokiRuleFiles — a Loki alerting expr is LogQL
+// over log streams and structurally cannot reference a recorded metric
+// series, so feeding it into the consumer pipeline would only manufacture
+// spurious unparseable-consumer skips); a rule with an empty expr, or neither
+// a record nor an alert name, is a counted skip.
+func splitLokiRuleGroups(file string, rg promrules.RuleGroups) (recorded []RecordedSeries, skipped []SkippedEntry) {
+	for _, g := range rg.Groups {
+		for _, r := range g.Rules {
+			switch {
+			case r.Record != "":
+				source := fmt.Sprintf("%s%s/%s/%s", lokiRuleSourcePrefix, file, g.Name, r.Record)
+				if strings.TrimSpace(r.Expr) == "" {
+					skipped = append(skipped, SkippedEntry{Source: source, Reason: "recording rule has empty expr"})
+					continue
+				}
+				recorded = append(recorded, RecordedSeries{Name: r.Record, Source: source})
+			case r.Alert != "":
+				// Deliberately not harvested as a consumer: see HarvestLokiRuleFiles.
+			default:
+				source := fmt.Sprintf("%s%s/%s/?", lokiRuleSourcePrefix, file, g.Name)
+				skipped = append(skipped, SkippedEntry{Source: source, Reason: "rule is neither a record nor an alert"})
+			}
+		}
+	}
+	return recorded, skipped
+}
+
 // Write renders the graph as scannable, human-readable text. It leads with the
 // name-level-approximation honesty note, then the headline counts, then the
 // orphan recorded series (the ones nothing reads — drop candidates), then the

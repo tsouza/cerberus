@@ -59,9 +59,9 @@ subcommands.
 | `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files       | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                               | offline                                 |
 | `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL             | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                                 | offline                                 |
 | `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                       | offline                                 |
-| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline                                 |
+| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--loki-rules`, `--corpus`, `--json`, `--out`                                                                                         | offline                                 |
 | `cerberus migrate verify`    | Replay the corpus against each head's reference backend and diff (parity gate) | `--corpus`, per-head `--ref*`/`--cerberus*` pairs (see below), `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out`        | live (two backends per configured head) |
-| `cerberus migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk           | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)                      |
+| `cerberus migrate inventory` | Probe live sources for the cardinality that drives OOM risk                    | `--source`, `--top`, `--window`, `--loki-source`, `--loki-selector`, `--tempo-source`, `--json`, `--out`                                         | live (Prometheus always; Loki optional) |
 | `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline                                 |
 
 The legacy `migrate --schema` root flag is now the `schema` subcommand, and the
@@ -151,6 +151,14 @@ silently discarded.
 cardinality. This is the number that drives OOM risk, and it exists **only** at
 runtime — it is not in any config or dashboard. Inventory refuses to infer it
 from `prometheus.yml`. A source that 404s the status endpoint is a hard error.
+`--loki-source` optionally adds a per-selector section, ranking the
+`--loki-selector` set the operator supplies by streams matched via Loki's
+`/loki/api/v1/index/stats` endpoint — Loki exposes no whole-tenant top-N
+cardinality call the way Prometheus's TSDB status does, so the operator names
+what to rank instead of the tool guessing. `--tempo-source` records a fixed,
+specifically-reasoned out-of-scope entry rather than a fabricated number:
+Tempo's span/block storage has no head-block or ranked-cardinality-stats API
+analogous to either of the other two heads, so no such proxy is computed.
 
 **Classify** buckets each corpus query: *supported* (parses, lowers, and emits
 SQL cleanly), *unsupported* (the offending construct is named), or
@@ -162,7 +170,19 @@ proves that.
 dashboard/alert consumers that read it. Because cerberus has no ruler, any
 **consumed** recorded series must keep being materialized after cutover, or the
 panel that reads it goes silently blank. Rulegraph tells you exactly which ones;
-materializing them elsewhere is a manual operator step.
+materializing them elsewhere is a manual operator step. `--loki-rules` extends
+this to Loki's ruler, which has a real recording/alerting rule format of its
+own: only `record:` output series are harvested from it, tagged with a
+`loki-rule:` source so they're distinguishable from Prometheus-sourced ones,
+and linked by the same PromQL-shaped consumers (a dashboard panel or a
+Prometheus rule reading the remote-written metric by name) rulegraph already
+scans. Loki `alert:` rules are never harvested for this graph — a LogQL
+alerting expr is a log-stream selector, not a metric-name reference, so it can
+never itself consume a recorded series, and feeding it through the PromQL
+extractor would only manufacture spurious unparseable-consumer skips. Tempo
+has no rule concept in this sense: its metrics-generator is a fixed-shape,
+config-driven span-metric emitter with no user-authored recording/alerting
+rule file for a `--tempo-rules` flag to point at, so no such flag exists.
 
 ### Validate: render the schema
 
@@ -373,7 +393,19 @@ them into **one** PASS/FAIL verdict with a per-stage checklist. It **refuses**
   **zero queries** also blocks (an empty corpus proves no support coverage).
 - **rulegraph** — any *consumed* recorded series blocks (it must stay
   materialized); an unparseable consumer expression also blocks, because
-  "orphan ⇒ safe to drop" is unsound once a consumer was dropped.
+  "orphan ⇒ safe to drop" is unsound once a consumer was dropped. A
+  Loki-ruler-sourced recorded series (from `--loki-rules`) is the identical
+  `RecordedNode` shape as a Prometheus one, distinguished only by its
+  `loki-rule:` source prefix, and blocks through this exact same rule — the
+  reported reason names the source, so the two are never visually
+  indistinguishable.
+- **inventory** — advisory everywhere: high cardinality WARNs and never
+  blocks, uniformly across every head the operator asked about. A
+  high-cardinality Loki stream selector (from `--loki-source`) WARNs exactly
+  like a high-cardinality Prometheus metric; a present Tempo section (from
+  `--tempo-source`) always WARNs with its fixed out-of-scope reason. A head
+  the operator never asked about is simply absent from the decision — never
+  presented as "checked, nothing found."
 - A **missing required artifact** blocks — `verify`, `classify`, and
   `rulegraph` are required; `inventory` is advisory (high cardinality WARNs,
   never blocks).
@@ -416,6 +448,7 @@ cerberus migrate classify --corpus corpus.json --json --out classify.json
 # Which recording-rule outputs must stay materialized after cutover?
 cerberus migrate rulegraph \
   --rules './prometheus/rules/*.yml' \
+  --loki-rules './loki/rules/*.yml' \
   --corpus corpus.json \
   --json --out rulegraph.json
 
