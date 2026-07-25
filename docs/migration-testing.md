@@ -331,7 +331,8 @@ test/e2e/migration          # created by the Phase-1/2 build PRs
   steps/                     # godog step definitions — the assertion library
   lib/                       # assertion + artifact-collection helpers (JSON diff, first-blocker extract)
   tolerances/                # declared epsilons + their derivations (see 6.2)
-  cmd/scenarios/             # enumerator: features -> {id, tiers, archetypes} JSON
+  cmd/
+    scenarios/               # enumerator: features -> {id, tiers, archetypes} JSON
 ```
 
 Scenarios are **Gherkin feature files driven by `godog`** (the Cucumber
