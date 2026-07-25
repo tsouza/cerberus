@@ -66,14 +66,14 @@ func TestBuildParams(t *testing.T) {
 
 // TestLoadCorpus writes a v1 corpus holding one entry of each shape the router
 // must distinguish — a PromQL rule, a LogQL log-stream panel, a LogQL metric
-// panel, a TraceQL metrics panel, a TraceQL search panel — plus a harvest-time
-// skip, and pins that each lands in exactly one bucket with the right head and
-// result kind, that corpus order survives, and that the buckets account for every
-// input entry.
+// panel, a TraceQL metrics panel, a TraceQL search panel, a TraceQL compare()
+// panel — plus a harvest-time skip, and pins that each lands in exactly one
+// bucket with the right head and result kind, that corpus order survives, and
+// that the buckets account for every input entry.
 func TestLoadCorpus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corpus.json")
-	const corpusEntries = 5
+	const corpusEntries = 6
 	const body = `{
   "version": 1,
   "queries": [
@@ -81,7 +81,8 @@ func TestLoadCorpus(t *testing.T) {
     {"expr": "{app=\"x\"}", "source": "panel:logs", "kind": "panel", "lang": "logql"},
     {"expr": "sum(rate({app=\"x\"}[5m]))", "source": "panel:lograte", "kind": "panel", "lang": "logql"},
     {"expr": "{} | rate()", "source": "panel:spanrate", "kind": "panel", "lang": "traceql"},
-    {"expr": "{ span.a = \"b\" }", "source": "panel:search", "kind": "panel", "lang": "traceql"}
+    {"expr": "{ span.a = \"b\" }", "source": "panel:search", "kind": "panel", "lang": "traceql"},
+    {"expr": "{} | compare({status=error})", "source": "panel:breakdown", "kind": "panel", "lang": "traceql"}
   ],
   "skipped": [
     {"source": "rule:broken.yml", "reason": "rule has an empty expr"}
@@ -103,9 +104,10 @@ func TestLoadCorpus(t *testing.T) {
 		{Expr: `{app="x"}`, Source: "panel:logs", Head: HeadLoki, Lang: "logql", Kind: KindLogStream},
 		{Expr: `sum(rate({app="x"}[5m]))`, Source: "panel:lograte", Head: HeadLoki, Lang: "logql", Kind: KindMetricMatrix},
 		{Expr: "{} | rate()", Source: "panel:spanrate", Head: HeadTempo, Lang: "traceql", Kind: KindMetricMatrix},
+		{Expr: `{ span.a = "b" }`, Source: "panel:search", Head: HeadTempo, Lang: "traceql", Kind: KindTraceSearch},
 	}
 	if len(c.Queries) != len(wantQueries) {
-		t.Fatalf("Queries = %+v, want the 4 queries a comparator can judge", c.Queries)
+		t.Fatalf("Queries = %+v, want the 5 queries a comparator can judge", c.Queries)
 	}
 	for i, want := range wantQueries {
 		if c.Queries[i] != want {
@@ -114,14 +116,14 @@ func TestLoadCorpus(t *testing.T) {
 	}
 
 	if len(c.OutOfScope) != 1 {
-		t.Fatalf("OutOfScope = %+v, want the trace search", c.OutOfScope)
+		t.Fatalf("OutOfScope = %+v, want the compare() panel", c.OutOfScope)
 	}
 	wantOOS := []struct {
 		source string
 		head   string
 		kind   string
 	}{
-		{"panel:search", HeadTempo, KindTraceSearch},
+		{"panel:breakdown", HeadTempo, KindMetricsCompare},
 	}
 	for i, want := range wantOOS {
 		got := c.OutOfScope[i]

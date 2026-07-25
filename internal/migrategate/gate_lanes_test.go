@@ -196,10 +196,15 @@ func TestEvalVerify_OutOfScopeCaveatNamesTheShapes(t *testing.T) {
 	if st.Verdict != migrategate.VerdictWarn {
 		t.Errorf("out-of-scope entries WARN (they are not a wrong answer), got %q", st.Verdict)
 	}
-	if !containsSubstr(st.Reasons, "trace-search / compare / unparseable / unknown-language") {
+	if !containsSubstr(st.Reasons, "compare / unparseable / unknown-language") {
 		t.Errorf("the caveat must name the shapes with no comparator, got %+v", st.Reasons)
 	}
 	if containsSubstr(st.Reasons, "not PromQL") {
 		t.Errorf("the caveat must not claim non-PromQL is out of scope — those lanes are judged, got %+v", st.Reasons)
+	}
+	// A trace search has a comparator, so naming it here would tell the operator
+	// their Tempo search panels went unchecked when the gate in fact judged them.
+	if containsSubstr(st.Reasons, migrateverify.KindTraceSearch) {
+		t.Errorf("the caveat must not name trace-search — that shape is judged, got %+v", st.Reasons)
 	}
 }

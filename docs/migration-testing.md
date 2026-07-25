@@ -76,8 +76,9 @@ differ from a naive reading:
 - **`verify --tolerance` is a single flat absolute epsilon.** It is the
   definition of "the same float", not a counter-aware or downsample-aware mode,
   and it is shared by every head lane so no lane can be judged loosely out of
-  view. It has no per-shape sibling: a log line, a stream label set and a
-  timestamp have no float axis, so those are compared exactly. A structural,
+  view. It has no per-shape sibling: a log line, a stream label set, a trace ID,
+  a span set and a timestamp have no float axis, so those are compared exactly.
+  A structural,
   counter-aware long-range delta (downsampling) therefore cannot live inside
   `verify`; it needs a dedicated harness comparator outside the zero-diverge
   gate.
@@ -292,7 +293,7 @@ The lane exists to tell the truth about a migration, so it inherits every
 no-escape-hatch rule the rest of cerberus enforces. The apparent tension
 between "diverge count must reach zero" and "histogram/downsample tolerance" is
 resolved by making the comparator explicit per scenario. There are exactly
-four comparison modes, and no scenario mixes them silently:
+five comparison modes, and no scenario mixes them silently:
 
 1. **Exact parity — `cerberus migrate verify`, diverge count zero.** The default
    `--tolerance` is a *tiny* absolute epsilon: it is the definition of "the same
@@ -336,6 +337,20 @@ four comparison modes, and no scenario mixes them silently:
    `verify` says so with the count of entries that statement covers. This is
    `cerberus migrate verify` under the same zero-diverge rule as mode 1.
 
+5. **Two-regime trace-set parity — TraceQL searches.** A search result is a set
+   of trace summaries with no float axis, so no epsilon applies to it either.
+   When neither backend hit the request limit, both answered completely and
+   equality is exact trace-ID set equality plus exact field equality on every
+   returned summary — including `durationMs`, which is an integer millisecond
+   count on both sides and is therefore compared with `==` rather than through
+   an epsilon that would be exact equality wearing a tolerance's clothes. When
+   either backend hit the limit, its result is a prefix of a ranking neither wire
+   contract fixes, so membership is *undecidable* and is reported as such with
+   both side counts and the exact residue; every trace both backends returned is
+   still field-diffed, so a field bug is never masked by truncation. Order is not
+   a compared dimension in either regime. This is `cerberus migrate verify` under
+   the same zero-diverge rule as mode 1.
+
 **Alert-firing parity is eval-interval-quantized (MIG-18).** Two independent
 rulers on independent evaluation schedules produce sub-interval fire/resolve
 skew that is not a cerberus artifact. The comparator quantizes fire/resolve
@@ -351,7 +366,8 @@ equal, a lane whose backend rejected every query has no disagreements to report,
 and a corpus whose every entry is out of scope has no queries at all — all three
 would read as a clean zero-diverge run. `verify` therefore counts the *comparison
 units it actually diffed* per `(head, result shape)` family — series for a matrix,
-log entries for a stream — and both `verify` and `gate` refuse a run that replayed
+log entries for a stream, traces for a search — and both `verify` and `gate`
+refuse a run that replayed
 nothing, or a family that replayed units and compared none of them. The split is
 per family, not per head, because one lane judges more than one shape and a
 family's evidence must not vouch for its sibling's absence. Treating absence
@@ -361,7 +377,8 @@ every query at once.
 **A dimension that cannot be compared is named and counted, never ignored.** Two
 backends sometimes make no wire-contract promise about something — the order of
 entries within a log stream, the members of a truncated result below its
-boundary. The honest answer is neither to diff it (manufacturing a divergence
+boundary, which matched spans survive a spans-per-set cap. The honest answer is
+neither to diff it (manufacturing a divergence
 that means nothing) nor to drop it silently. `verify` reports each such dimension
 as a **limitation**: a code, the exact count of comparison units it covers, and
 a sentence stating what was and was not judged. It is the opposite of an
@@ -369,14 +386,21 @@ allow-list — it widens no definition of equality and suppresses no difference 
 and it cannot green-light anything, because a limitation that swallowed a whole
 result leaves the evidence counter at zero and the run blocks.
 
-**Trace-search results have no comparison mode.** A TraceQL search returns trace
-summaries in a relevance ranking neither backend's wire contract fixes, so two
-correct backends may legitimately return different subsets and none of the four
-modes above can express equality for them. They are **out-of-scope accounting**,
-not a fifth mode: `verify` reports them with the specific reason no comparator is
-registered for that shape, and the count is part of what an operator reads before
-trusting a green gate. Inventing a tolerant overlap-threshold comparator to make
-them "pass" would be an allow-list wearing a comparator's clothes.
+**A truncated trace search is undecidable, not tolerated.** A TraceQL search
+returns trace summaries in a ranking neither backend's wire contract fixes, so
+once a limit truncates the result two correct backends may legitimately return
+different subsets. Mode 5 splits on exactly that: under the limit both answers
+are complete and set equality is a real assertion; at the limit no interior is
+provable, so membership gets a verdict of its own — `undecidable` — carrying both
+side counts and the residue, rather than a claim in either direction. Undecidable
+is non-blocking on its own and can green-light nothing: the family's evidence
+counter is the traces actually field-diffed, so a search whose overlap is empty
+compares zero traces and blocks like any other dead family. Inventing a tolerant
+overlap threshold — "call it equal if 90% of the IDs match" — would be an
+allow-list wearing a comparator's clothes, and asserting exact set equality
+across a truncated pair would manufacture a permanent false divergence that an
+operator learns to ignore. Neither is a definition of equality; the two-regime
+rule is.
 
 **No three-way `verify`.** For a non-Prometheus source (VictoriaMetrics, a SaaS
 export) the semantic oracle is a **reference Prometheus fed the same synthetic

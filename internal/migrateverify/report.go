@@ -218,7 +218,7 @@ func attributeDivergence(expr string, fd *FirstDiff) []AttributionCandidate {
 // data-window / ingest candidate causes.
 func isCoverageGap(reasonCode string) bool {
 	switch reasonCode {
-	case ReasonSeriesMissing, ReasonNoSampleAtStep, ReasonEntryMissing:
+	case ReasonSeriesMissing, ReasonNoSampleAtStep, ReasonEntryMissing, ReasonTraceMissing, ReasonSpanMissing:
 		return true
 	default:
 		return false
@@ -269,8 +269,10 @@ type VerifyReportParams struct {
 // They are recorded for the same reason Tolerance is: an artifact must be
 // self-describing about how strict the run that produced it actually was.
 type VerifyReportReplay struct {
-	LogStreamLimit     int    `json:"log_stream_limit"`
-	LogStreamDirection string `json:"log_stream_direction"`
+	LogStreamLimit         int    `json:"log_stream_limit"`
+	LogStreamDirection     string `json:"log_stream_direction"`
+	TraceSearchLimit       int    `json:"trace_search_limit"`
+	TraceSearchSpansPerSet int    `json:"trace_search_spans_per_set"`
 }
 
 // ReplayParams returns the pinned non-matrix replay parameters, so the CLI can
@@ -278,8 +280,10 @@ type VerifyReportReplay struct {
 // actually send.
 func ReplayParams() VerifyReportReplay {
 	return VerifyReportReplay{
-		LogStreamLimit:     logStreamReplayLimit,
-		LogStreamDirection: logStreamReplayDirection,
+		LogStreamLimit:         logStreamReplayLimit,
+		LogStreamDirection:     logStreamReplayDirection,
+		TraceSearchLimit:       traceSearchReplayLimit,
+		TraceSearchSpansPerSet: traceSearchReplaySpansPerSet,
 	}
 }
 

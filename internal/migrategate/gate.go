@@ -369,7 +369,7 @@ func verifyCaveats(s migrateverify.Summary) []string {
 	}
 	if s.OutOfScope > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d out-of-scope entr%s whose result shape has no comparator (trace-search / compare / unparseable / unknown-language, unchecked)",
+			"%d out-of-scope entr%s whose result shape has no comparator (compare / unparseable / unknown-language, unchecked)",
 			s.OutOfScope, plural(s.OutOfScope, "y", "ies"),
 		))
 	}

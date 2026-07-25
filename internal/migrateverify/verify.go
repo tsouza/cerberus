@@ -9,9 +9,10 @@
 // shape has its own definition of equality and its own comparator. PromQL, LogQL
 // metric queries and TraceQL metrics queries all return matrix-shaped results, so
 // one comparator judges all three; a LogQL log stream returns log lines and is
-// judged on the entry multiset. A shape with no definition of equality is
-// reported out of scope with the specific reason it was not judged, never
-// dropped and never guessed at.
+// judged on the entry multiset; a TraceQL search returns trace summaries and is
+// judged on trace identity plus exact field equality. A shape with no definition
+// of equality is reported out of scope with the specific reason it was not
+// judged, never dropped and never guessed at.
 //
 // The flow is read-only against every backend: for each comparison unit it
 // issues an identical request to that head's reference and to cerberus, decodes
@@ -130,6 +131,16 @@ const (
 	// ReasonEntryMultiplicity: both backends returned this log entry, a different
 	// number of times.
 	ReasonEntryMultiplicity = "entry-multiplicity"
+	// ReasonTraceMissing: a trace summary one backend returned and the other did not.
+	ReasonTraceMissing = "trace-missing"
+	// ReasonTraceFieldDiffers: both backends returned this trace, disagreeing on one
+	// of its summary fields.
+	ReasonTraceFieldDiffers = "trace-field-differs"
+	// ReasonSpanMissing: a matched span one backend returned and the other did not.
+	ReasonSpanMissing = "span-missing"
+	// ReasonSpanFieldDiffers: both backends returned this span, disagreeing on one of
+	// its fields.
+	ReasonSpanFieldDiffers = "span-field-differs"
 )
 
 // Sample is one point of a range result: a Unix-seconds timestamp and its value.
@@ -154,7 +165,9 @@ type Series struct {
 //
 // A log-stream timestamp lives in TimestampNano as a DECIMAL STRING, not in
 // Timestamp: a nanosecond epoch exceeds float64's exact-integer range, so the
-// float slot cannot carry one without silently losing precision.
+// float slot cannot carry one without silently losing precision. A trace-search
+// timestamp rides in RefValue / CerberusValue as a decimal string for the same
+// reason.
 type FirstDiff struct {
 	Kind          string  `json:"kind"`
 	Series        string  `json:"series"`
@@ -166,6 +179,9 @@ type FirstDiff struct {
 
 	Stream        string `json:"stream,omitempty"`
 	TimestampNano string `json:"timestamp_nano,omitempty"`
+	TraceID       string `json:"trace_id,omitempty"`
+	SpanID        string `json:"span_id,omitempty"`
+	Field         string `json:"field,omitempty"`
 }
 
 // canonicalLabels renders a label set as a stable, order-independent key so the
@@ -368,8 +384,8 @@ type Query struct {
 }
 
 // OutOfScopeEntry records a corpus entry no comparator can judge — a TraceQL
-// trace search, a compare(), an expression the parser rejected, or a language
-// this build has no lane for. Kind names the query SHAPE, in the same vocabulary
+// compare(), an expression the parser rejected, or a language this build has no
+// lane for. Kind names the query SHAPE, in the same vocabulary
 // a replayed query's Kind uses, and Reason states, in the operator's words,
 // exactly why the gate did not judge it. Reported and counted here, never
 // dropped: pretending a query was covered when it was not is the failure this
@@ -1208,15 +1224,35 @@ func (r Report) hasNonMatrixFamily() bool {
 // came from. The matrix anchor is a series and a step; a log-stream anchor is a
 // stream and a nanosecond timestamp, which is printed from its decimal string —
 // routing it through formatValue's float rendering would print a present-day
-// nanosecond epoch as "1.78e+18" and lose the entry it points at.
+// nanosecond epoch as "1.78e+18" and lose the entry it points at. A trace-search
+// anchor is a trace, optionally a span within it, and the field that differed.
 func writeFirstDiff(bw *errWriter, fd *FirstDiff) {
-	if fd.Kind == KindLogStream {
+	switch fd.Kind {
+	case KindLogStream:
 		bw.printf("   first-diff: stream=%s ts=%sns ref=%s cerberus=%s (%s)\n",
 			fd.Stream, fd.TimestampNano, fd.RefValue, fd.CerberusValue, fd.Reason)
-		return
+	case KindTraceSearch:
+		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
+			traceDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
+	default:
+		bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
+			fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
 	}
-	bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
-		fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
+}
+
+// traceDiffAnchor names the exact place a trace-search divergence sits. The span
+// and field clauses appear only when the diff actually has one, so a whole-trace
+// difference is never printed with an empty "span=" or "field=" that reads as a
+// missing value rather than an inapplicable one.
+func traceDiffAnchor(fd *FirstDiff) string {
+	anchor := "trace=" + fd.TraceID
+	if fd.SpanID != "" {
+		anchor += " span=" + fd.SpanID
+	}
+	if fd.Field != "" {
+		anchor += " field=" + fd.Field
+	}
+	return anchor
 }
 
 // writeHeadTable prints the per-lane roll-up in head-token order. It exists so a

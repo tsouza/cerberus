@@ -605,9 +605,10 @@ var verifyHeads = []verifyHeadFlags{
 		refFlag: "--ref-tempo", cerFlag: "--cerberus-tempo",
 		refEnv: "CERBERUS_VERIFY_REF_TEMPO", cerEnv: "CERBERUS_VERIFY_CERBERUS_TEMPO",
 		refAuthFlag: "--ref-tempo-token", cerAuthFlag: "--cerberus-tempo-token",
-		orgFlag: "--ref-tempo-org-id",
-		dialect: migrateverify.TempoDialect(),
-		pair:    func(in *verifyInputs) *headPair { return &in.tempo },
+		orgFlag:      "--ref-tempo-org-id",
+		dialect:      migrateverify.TempoDialect(),
+		kindDialects: []migrateverify.KindDialect{migrateverify.TempoSearchDialect()},
+		pair:         func(in *verifyInputs) *headPair { return &in.tempo },
 	},
 }
 

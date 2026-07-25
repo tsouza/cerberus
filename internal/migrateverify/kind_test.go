@@ -106,14 +106,14 @@ func TestVerify_QueryWithNoComparatorIsAnError(t *testing.T) {
 	body := logStreamBody()
 	srv := newLogStreamServer(t, body, http.StatusOK)
 	lanes := logStreamLanes(srv, srv)
-	q := Query{Expr: `{ span.a = "b" }`, Source: "panel:x", Head: HeadLoki, Lang: "traceql", Kind: KindTraceSearch}
+	q := Query{Expr: `{} | compare({status=error})`, Source: "panel:x", Head: HeadLoki, Lang: "traceql", Kind: KindMetricsCompare}
 
 	rep := Verify(context.Background(), Corpus{Queries: []Query{q}}, lanes, testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error: no comparator judged this shape", res.Verdict)
 	}
-	if !strings.Contains(res.Detail, KindTraceSearch) {
+	if !strings.Contains(res.Detail, KindMetricsCompare) {
 		t.Errorf("detail = %q, want it to name the shape that has no comparator", res.Detail)
 	}
 	if !rep.Failed() {

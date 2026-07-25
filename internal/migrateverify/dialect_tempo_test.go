@@ -1,9 +1,13 @@
 package migrateverify
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDecodeTempoMetrics_ReferenceAndCerberusShapes pins that the decoder reads
@@ -364,5 +368,66 @@ func TestDecodeTempoMetrics_ToleratesUnknownFields(t *testing.T) {
 func TestDecodeTempoMetrics_MalformedBodyErrors(t *testing.T) {
 	if _, err := decodeTempoMetrics([]byte(`{not json`)); err == nil {
 		t.Error("a malformed body must error: an empty result would compare as a match against an empty cerberus result")
+	}
+}
+
+// TestTempoSearchDialect_PinsTheReplayEncoding pins every parameter of a
+// trace-search probe, because each wrong choice fails SILENTLY — by returning a
+// comparable-looking result that answers a different question:
+//
+//   - RFC3339 start/end: upstream Tempo's search request parser reads an integer
+//     instant only, so an RFC3339 value is rejected or read as zero and BOTH sides
+//     come back empty — which the comparator scores as agreement having compared
+//     nothing. This is the single most dangerous encoding mistake in the lane, and
+//     it is a property of THIS endpoint, not of the tempo head: the metrics lane on
+//     the same head does send RFC3339Nano.
+//   - no window at all: cerberus silently re-bounds a windowless search to the last
+//     hour, so the two backends would answer different questions.
+//   - `query` instead of `q`: cerberus 400s a search that carries no `q`.
+//   - an unpinned limit or spss: the two backends default independently, so how much
+//     of the result is truncated stops being a property of the replay.
+func TestTempoSearchDialect_PinsTheReplayEncoding(t *testing.T) {
+	body := traceSearchBody(completeMetrics, fixtureTrace(1))
+	ref := newTraceSearchServer(t, body, http.StatusOK)
+	cer := newTraceSearchServer(t, body, http.StatusOK)
+	p := testParams()
+	rep := Verify(context.Background(),
+		Corpus{Queries: []Query{searchQuery(`{ span.http.status_code = 500 }`)}},
+		traceSearchLanes(ref, cer), p)
+	if rep.Results[0].Verdict != VerdictMatch {
+		t.Fatalf("fixture must produce a comparison, got %q (%s)", rep.Results[0].Verdict, rep.Results[0].Detail)
+	}
+
+	for _, side := range []struct {
+		name string
+		srv  *traceSearchServer
+	}{{"reference", ref}, {"cerberus", cer}} {
+		q := side.srv.params
+		if got := q.Get("q"); got != `{ span.http.status_code = 500 }` {
+			t.Errorf("%s: q = %q, want the corpus expression under `q`", side.name, got)
+		}
+		if q.Has("query") {
+			t.Errorf("%s: query=%q sent; Tempo reads the expression from `q` and 400s without it", side.name, q.Get("query"))
+		}
+		for _, bound := range []struct {
+			param string
+			want  time.Time
+		}{{"start", p.Start}, {"end", p.End}} {
+			got := q.Get(bound.param)
+			if want := strconv.FormatInt(bound.want.Unix(), 10); got != want {
+				t.Errorf("%s: %s = %q, want Unix SECONDS %q — Tempo's search parser reads no RFC3339 here",
+					side.name, bound.param, got, want)
+			}
+			if strings.ContainsAny(got, "TZ:-") {
+				t.Errorf("%s: %s = %q looks like an RFC3339 instant; that silently yields an empty result on BOTH sides",
+					side.name, bound.param, got)
+			}
+		}
+		if got := q.Get("limit"); got != strconv.Itoa(traceSearchReplayLimit) {
+			t.Errorf("%s: limit = %q, want the pinned %d", side.name, got, traceSearchReplayLimit)
+		}
+		if got := q.Get("spss"); got != strconv.Itoa(traceSearchReplaySpansPerSet) {
+			t.Errorf("%s: spss = %q, want the pinned %d", side.name, got, traceSearchReplaySpansPerSet)
+		}
 	}
 }

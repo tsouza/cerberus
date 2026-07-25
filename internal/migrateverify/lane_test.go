@@ -102,9 +102,14 @@ func TestRouteQuery(t *testing.T) {
 			wantHead: HeadTempo, wantReplay: true, wantKind: KindMetricMatrix,
 		},
 		{
+			// A spanset filter with no metrics pipeline returns trace summaries, which
+			// the trace-search comparator judges on trace identity plus field equality.
 			name: "traceql trace search", lang: "traceql", expr: `{ span.foo = "bar" }`,
-			wantHead: HeadTempo, wantKind: KindTraceSearch,
-			reasonHasAll: []string{"lang=traceql", "kind=trace-search", "no comparator is registered"},
+			wantHead: HeadTempo, wantReplay: true, wantKind: KindTraceSearch,
+		},
+		{
+			name: "traceql trace search with structural operator", lang: "traceql", expr: `{ span.foo = "bar" } >> { span.baz = "qux" }`,
+			wantHead: HeadTempo, wantReplay: true, wantKind: KindTraceSearch,
 		},
 		{
 			name: "traceql compare", lang: "traceql", expr: `{} | compare({status=error})`,

@@ -82,7 +82,11 @@ func routeLogQL(expr string) LaneRouting {
 
 // routeTraceQL splits TraceQL into the metrics lane (the scalar/bucket
 // first-stage aggregates, whose results are genuine labelled matrices), the
-// trace-search shape, and compare().
+// trace-search shape (a spanset filter with no metrics pipeline, which returns
+// trace summaries), and compare().
+//
+// Both the metrics and the search shapes have a comparator, so both are replayed;
+// only compare() is left without one.
 func routeTraceQL(expr string) LaneRouting {
 	root, err := ast.Parse(expr)
 	if err != nil {
@@ -94,12 +98,7 @@ func routeTraceQL(expr string) LaneRouting {
 		}
 	}
 	if root.MetricsPipeline == nil && root.MetricsSecondStage == nil {
-		return LaneRouting{
-			Head: HeadTempo,
-			Kind: KindTraceSearch,
-			Reason: "lang=traceql kind=trace-search: this query returns trace summaries, whose result order is a " +
-				"relevance ranking neither backend's wire contract fixes; no comparator is registered for that shape",
-		}
+		return LaneRouting{Head: HeadTempo, Replayable: true, Kind: KindTraceSearch}
 	}
 	if _, ok := root.MetricsPipeline.(*ast.MetricsCompare); ok {
 		return LaneRouting{

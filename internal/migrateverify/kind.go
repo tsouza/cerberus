@@ -41,6 +41,7 @@ const (
 const (
 	UnitSeries     = "series"
 	UnitLogEntries = "log entries"
+	UnitTraces     = "traces"
 	// UnitComparisons is the shape-agnostic noun, used when a report attributed no
 	// shape to a head's replays and nothing says what its units were.
 	UnitComparisons = "comparison units"
@@ -113,6 +114,16 @@ const (
 	// LimitLogTruncationBand: entries at or below the truncation boundary, where
 	// the two results cover different depths.
 	LimitLogTruncationBand = "log-truncation-band"
+	// LimitSearchTruncated: a trace search cut at the replay limit on at least one
+	// side, so neither result is the complete answer to the query and set
+	// membership is not a judgeable dimension.
+	LimitSearchTruncated = "trace-search-truncated"
+	// LimitSpanSetCapped: a matched spanset cut at the spans-per-set cap, where
+	// upstream leaves unspecified WHICH matched spans survive.
+	LimitSpanSetCapped = "trace-search-spanset-capped"
+	// LimitSearchRefPartial: a search the REFERENCE itself reported as partial, so
+	// the traces it did not return are not evidence of absence.
+	LimitSearchRefPartial = "trace-search-reference-partial"
 )
 
 // limitationDetails is the canonical, invariant explanation for each limitation
@@ -132,6 +143,19 @@ var limitationDetails = map[string]string{
 	LimitLogTruncationBand: "entries at or below the truncation boundary were not judged: both results were cut at " +
 		"the replay limit, the two backends break a timestamp tie differently (reference Loki on streamHash then " +
 		"labels, cerberus on ClickHouse row order), and below the boundary the two results cover different depths.",
+	LimitSearchTruncated: "trace-set membership was not judged: at least one side returned exactly the replay limit " +
+		"of summaries, so each result is a PREFIX of a ranking neither backend's wire contract fixes (cerberus ranks " +
+		"newest-first by trace start time; reference Tempo returns what its block search reached before the limit), " +
+		"and a trace returned by only one of them can be a legitimate ranking difference rather than a defect. The " +
+		"count is the number of trace IDs exactly one backend returned; every trace BOTH returned was still " +
+		"field-diffed, and a field difference there still blocks.",
+	LimitSpanSetCapped: "which matched spans survive the spans-per-set cap is unspecified upstream, so a capped " +
+		"spanset was judged on its uncapped matched total and its kept-span count only, never on which spans it " +
+		"kept. The count is the number of traces whose spanset was capped on at least one side.",
+	LimitSearchRefPartial: "the reference reported its OWN search as partial (it completed fewer jobs than it " +
+		"started), so the traces it did not return are not evidence of absence and set membership was not judged " +
+		"against cerberus's complete answer. The count is the number of searches the reference answered partially; " +
+		"the traces both backends returned were still field-diffed.",
 }
 
 // limitation builds one limitation from its code and count, carrying the
@@ -205,7 +229,8 @@ type kindHandler struct {
 // routed to a kind with no entry here is an ERROR, never a silent pass: the gate
 // cannot claim parity for a shape it has no definition of equality for.
 var kindHandlers = map[string]kindHandler{
-	KindLogStream: {kind: KindLogStream, unit: UnitLogEntries, compare: compareLogStreams},
+	KindLogStream:   {kind: KindLogStream, unit: UnitLogEntries, compare: compareLogStreams},
+	KindTraceSearch: {kind: KindTraceSearch, unit: UnitTraces, compare: compareTraceSearch},
 }
 
 // kindUnit returns the comparison unit a result kind counts in. The matrix kind

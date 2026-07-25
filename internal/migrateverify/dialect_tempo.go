@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -91,6 +92,70 @@ func (tempoDialect) Encode(expr string, p Params) url.Values {
 }
 
 func (tempoDialect) Decode(body []byte) (RangeResult, error) { return decodeTempoMetrics(body) }
+
+// tempoSearchPath is Tempo's TraceQL search endpoint, served identically by the
+// reference and by cerberus's own Tempo head.
+const tempoSearchPath = "/api/search"
+
+// traceSearchReplayLimit is the `limit` BOTH sides receive on a trace-search
+// replay. It sits AT cerberus's MaxSearchLimit ceiling, which is the highest
+// value both backends honour verbatim (above it cerberus clamps, so the two would
+// answer different questions) and therefore the value that maximises how many
+// searches answer UNDER the limit — the only regime in which set parity is
+// decidable at all.
+//
+// It is pinned rather than exposed as a flag, for the same reason the log-stream
+// limit is: the limit decides how much of a result is truncated, i.e. how much
+// the gate can judge, and a smaller one hides divergence in the tail.
+const traceSearchReplayLimit = 1000
+
+// traceSearchReplaySpansPerSet is the `spss` BOTH sides receive. It sits far
+// above Tempo's default of 3 so a realistic trace's matched spanset arrives
+// complete and its span MEMBERS are comparable; which spans survive a cap is
+// unspecified upstream, so a capped spanset is comparable on counts alone.
+const traceSearchReplaySpansPerSet = 100
+
+// TempoSearchDialect speaks Tempo's TraceQL search API: /api/search with the
+// query under `q`, limit and spans-per-set pinned, and a trace-summary envelope
+// decoded into the flat summary list the trace-search comparator judges.
+func TempoSearchDialect() KindDialect { return tempoSearchDialect{} }
+
+type tempoSearchDialect struct{}
+
+func (tempoSearchDialect) Kind() string { return KindTraceSearch }
+
+func (tempoSearchDialect) Head() string { return HeadTempo }
+
+func (tempoSearchDialect) Path(Query) string { return tempoSearchPath }
+
+// Encode sends q/start/end/limit/spss.
+//
+// start/end are Unix SECONDS, NOT the RFC3339Nano the metrics lane sends: upstream
+// Tempo's search request parser accepts only an integer instant here (its own
+// client emits strconv.FormatInt seconds), and an RFC3339 value is rejected or
+// read as zero. That failure is silent in the worst possible way — an empty
+// result on both sides, which the comparator scores as agreement while comparing
+// nothing — so the unit is a property of THIS endpoint, not of the head.
+//
+// A window is always stamped, on both sides: cerberus silently re-bounds a
+// windowless search to the last hour, so replaying a corpus expression verbatim
+// with no bounds would compare two different questions.
+func (tempoSearchDialect) Encode(q Query, p Params) url.Values {
+	v := url.Values{}
+	v.Set("q", q.Expr)
+	v.Set("start", formatTimestamp(p.Start))
+	v.Set("end", formatTimestamp(p.End))
+	v.Set("limit", strconv.Itoa(traceSearchReplayLimit))
+	v.Set("spss", strconv.Itoa(traceSearchReplaySpansPerSet))
+	return v
+}
+
+// Header sends none: both backends serve /api/search as JSON by default, and a
+// per-kind header is a request for a different encoding, which is exactly what
+// the log-stream lane learned not to ask for.
+func (tempoSearchDialect) Header() http.Header { return nil }
+
+func (tempoSearchDialect) Decode(body []byte) (any, error) { return decodeTraceSearch(body) }
 
 // tempoRangeResponse is the subset of Tempo's metrics range envelope this lane
 // reads. Unknown fields (metrics, exemplars, …) are deliberately tolerated: the

@@ -182,9 +182,8 @@ only renders it.
 
 This is the parity gate. Over the dual-write window, `verify` replays every
 corpus query against the reference backend for **its own head** — PromQL against
-reference Prometheus, LogQL against reference Loki, TraceQL metrics queries
-against reference Tempo — **and** against cerberus over one window, then diffs
-the two results.
+reference Prometheus, LogQL against reference Loki, TraceQL against reference
+Tempo — **and** against cerberus over one window, then diffs the two results.
 
 Each query is judged by the comparator its **result shape** selects, because
 different shapes have different definitions of equality:
@@ -196,6 +195,14 @@ different shapes have different definitions of equality:
   returns log lines. Two backends agree when, for every `(stream label set,
   nanosecond timestamp, log line)` triple, both returned it the **same number of
   times**, over the part of the window both fully cover.
+- **`trace-search`** — a TraceQL spanset filter that returns trace summaries.
+  When neither backend hit the request limit, both answered completely and
+  agreement means exact **trace-ID set equality** plus exact field equality on
+  every returned summary. When either hit the limit, its result is a prefix of a
+  ranking neither wire contract fixes, so the gate does **not** claim set parity:
+  it reports both side counts and the residue by name, and still field-diffs
+  every trace both backends returned, so a real field bug is never masked by
+  truncation. Result order is never a compared dimension.
 
 Each replayed query lands as `match`, `diverge`, `undecidable`, `unsupported`, or
 `error`, and the report carries a **per-head roll-up** alongside the aggregate,
@@ -204,7 +211,7 @@ what stops a healthy family masking a quiet one: a Loki lane that diffed 412 log
 entries has not thereby proved its metric panels. Every lane you configured gets
 a row, including one whose corpus entries all landed out of scope — a configured
 lane is never silently absent from the table. Each family row also carries a
-`compared` count in **its own unit** (series, log entries), which is the only
+`compared` count in **its own unit** (series, log entries, traces), which is the only
 number that is *evidence*: two empty results agree, so a family can record
 nothing but matches while the comparator diffed nothing at all.
 
@@ -227,6 +234,30 @@ lane there are up to three:
   provably complete on both sides and *is* compared, so a real divergence in the
   interior still blocks.
 
+On the trace-search lane there are three more:
+
+- `trace-search-truncated` — at least one side returned exactly the replay limit,
+  so each result is a prefix of a ranking neither backend fixes and set
+  membership is not judged. The count is the number of trace IDs exactly one
+  backend returned; every trace **both** returned is still field-diffed, and a
+  field difference there still blocks.
+- `trace-search-spanset-capped` — which matched spans survive the spans-per-set
+  cap is unspecified upstream, so a capped spanset is judged on its uncapped
+  `matched` total and its kept-span count, never on which spans it kept.
+- `trace-search-reference-partial` — the reference reported its *own* search as
+  partial (it completed fewer jobs than it started), so the traces it did not
+  return are not evidence of absence and membership is not judged against
+  cerberus's complete answer.
+
+The search response's aggregate `metrics` block is not diffed at all: cerberus's
+`inspectedTraces` is a ClickHouse row count and its `inspectedBytes` /
+`totalBlocks` are hard zeros, while the reference's counters describe a sharded
+block search cerberus has no analogue for. The one counter pair that *is* read is
+the reference's own job accounting, which is what raises
+`trace-search-reference-partial`. `serviceStats` and a spanset's per-span
+`attributes` are likewise not comparable — cerberus does not model them — and are
+named here rather than diffed into a permanent divergence.
+
 Three further buckets record inputs that were **not** examined:
 
 - `unconfigured` — a replayable query whose head lane had no backend pair, or no
@@ -234,20 +265,23 @@ Three further buckets record inputs that were **not** examined:
   not of the query, and it **blocks**: the gate cannot claim parity for a query it
   never ran. Supply that head's pair, or harvest a narrower corpus.
 - `out_of_scope` — a query whose *shape* has no definition of equality at all: a
-  TraceQL trace search, a `compare()`, an expression the parser rejects. Each
-  entry names its `kind` and the specific `reason` the gate did not judge it.
+  TraceQL `compare()`, an expression the parser rejects, a query language this
+  build has no lane for. Each entry names its `kind` and the specific `reason`
+  the gate did not judge it.
 - `harvest_skipped` — a corpus entry that never became a replayable query.
 
 A green run means the replayed queries matched, not that every input was checked
 — read those buckets too. On divergence the report shows the first differing
 point, anchored in the vocabulary of the shape it came from (a series and a step,
-or a stream and a nanosecond timestamp) and the lane it happened on.
+a stream and a nanosecond timestamp, or a trace, a span within it and the field
+that differed) and the lane it happened on.
 
 The non-matrix replay parameters — the log-stream `limit` of 5000 and its
-`backward` direction — are **pinned constants, not flags**, and are recorded in
-the `--report` artifact. They decide how much of a result is truncated, i.e. how
-much the gate can judge, so an operator knob would silently change what parity
-*means* between two runs.
+`backward` direction, the trace-search `limit` of 1000 and its spans-per-set of
+100 — are **pinned constants, not flags**, and are recorded in the `--report`
+artifact. They decide how much of a result is truncated, i.e. how much the gate
+can judge, so an operator knob would silently change what parity *means* between
+two runs.
 
 `verify` exits **non-zero (code 2)** if a single query diverges or errors, if a
 head with replayable queries had no backend pair to judge them, if the run
@@ -426,14 +460,13 @@ and the tier/build plan live in
 
 ## Scope (v1)
 
-- **Two comparison families.** `verify` judges the **metric matrix** — PromQL,
-  LogQL metric queries, TraceQL metrics queries — and the **LogQL log stream**,
-  each under its own definition of equality. A TraceQL **trace search** returns
-  trace summaries in a relevance ranking neither backend's wire contract fixes,
-  and a `compare()` selects its attribute inventory by a topN ranking neither
-  specifies; no definition of equality holds for either, so they are counted and
-  reported `out_of_scope` with the reason, never silently dropped and never
-  guessed at.
+- **Three comparison families.** `verify` judges the **metric matrix** — PromQL,
+  LogQL metric queries, TraceQL metrics queries — the **LogQL log stream**, and
+  the **TraceQL trace search**, each under its own definition of equality. A
+  TraceQL `compare()` selects its attribute inventory by a topN ranking neither
+  backend's wire contract specifies, so no definition of equality holds for it;
+  it is counted and reported `out_of_scope` with the reason, never silently
+  dropped and never guessed at.
 - **Query-result parity, not alert-firing parity.** `verify` diffs query
   results; it does not re-implement `for:` durations or Alertmanager routing.
 - **File-based harvest.** Harvest inputs are rule YAML and exported dashboard
