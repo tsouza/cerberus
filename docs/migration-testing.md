@@ -76,9 +76,11 @@ differ from a naive reading:
 - **`verify --tolerance` is a single flat absolute epsilon.** It is the
   definition of "the same float", not a counter-aware or downsample-aware mode,
   and it is shared by every head lane so no lane can be judged loosely out of
-  view. A structural, counter-aware long-range delta (downsampling) therefore
-  cannot live inside `verify`; it needs a dedicated harness comparator outside
-  the zero-diverge gate.
+  view. It has no per-shape sibling: a log line, a stream label set and a
+  timestamp have no float axis, so those are compared exactly. A structural,
+  counter-aware long-range delta (downsampling) therefore cannot live inside
+  `verify`; it needs a dedicated harness comparator outside the zero-diverge
+  gate.
 
 > **Harness comparator — reuse, don't reinvent.** The verify-tier scenarios
 > drive the shipped `verify` command, whose differential engine is
@@ -290,7 +292,7 @@ The lane exists to tell the truth about a migration, so it inherits every
 no-escape-hatch rule the rest of cerberus enforces. The apparent tension
 between "diverge count must reach zero" and "histogram/downsample tolerance" is
 resolved by making the comparator explicit per scenario. There are exactly
-three comparison modes, and no scenario mixes them silently:
+four comparison modes, and no scenario mixes them silently:
 
 1. **Exact parity — `cerberus migrate verify`, diverge count zero.** The default
    `--tolerance` is a *tiny* absolute epsilon: it is the definition of "the same
@@ -323,6 +325,17 @@ three comparison modes, and no scenario mixes them silently:
    `verify` gate**. It is not an allow-list: the accepted band is declared up
    front from the aggregation math, and any excursion beyond it fails.
 
+4. **Entry-multiset equality — LogQL log streams.** A log result is not a matrix
+   and has no float axis, so no epsilon applies to it at all. Two backends agree
+   when, for every `(stream label set, nanosecond timestamp, log line)` triple,
+   both returned it the same number of times, over the part of the window both
+   fully cover. Multiplicity is compared, not collapsed: a line returned once by
+   one backend and twice by the other is a real double-emit, and a set comparison
+   would hide it. Order is excluded from the *definition* of equality — not
+   tolerated — because it is provably non-informative on at least one side, and
+   `verify` says so with the count of entries that statement covers. This is
+   `cerberus migrate verify` under the same zero-diverge rule as mode 1.
+
 **Alert-firing parity is eval-interval-quantized (MIG-18).** Two independent
 rulers on independent evaluation schedules produce sub-interval fire/resolve
 skew that is not a cerberus artifact. The comparator quantizes fire/resolve
@@ -336,20 +349,34 @@ something.** Every mode above defines what "equal" means; none of them says
 anything about a query that produced nothing to compare. Two empty matrices are
 equal, a lane whose backend rejected every query has no disagreements to report,
 and a corpus whose every entry is out of scope has no queries at all — all three
-would read as a clean zero-diverge run. `verify` therefore counts the *series it
-actually diffed* per lane, and both `verify` and `gate` refuse a run that replayed
-nothing, or a lane that replayed queries and diffed zero series. Treating absence
+would read as a clean zero-diverge run. `verify` therefore counts the *comparison
+units it actually diffed* per `(head, result shape)` family — series for a matrix,
+log entries for a stream — and both `verify` and `gate` refuse a run that replayed
+nothing, or a family that replayed units and compared none of them. The split is
+per family, not per head, because one lane judges more than one shape and a
+family's evidence must not vouch for its sibling's absence. Treating absence
 of evidence as parity would be the largest allow-list of all: one that covers
 every query at once.
 
-**Log-stream and trace-search results have no comparison mode.** A LogQL bare
-selector returns log lines and a TraceQL search returns trace summaries — neither
-is matrix-shaped, so none of the three modes above can express equality for them.
-They are **out-of-scope accounting**, not a fourth mode: `verify` reports them
-with the specific reason no metric-lane baseline is definable, and the count is
-part of what an operator reads before trusting a green gate. Inventing a tolerant
-line-by-line comparator to make them "pass" would be an allow-list wearing a
-comparator's clothes.
+**A dimension that cannot be compared is named and counted, never ignored.** Two
+backends sometimes make no wire-contract promise about something — the order of
+entries within a log stream, the members of a truncated result below its
+boundary. The honest answer is neither to diff it (manufacturing a divergence
+that means nothing) nor to drop it silently. `verify` reports each such dimension
+as a **limitation**: a code, the exact count of comparison units it covers, and
+a sentence stating what was and was not judged. It is the opposite of an
+allow-list — it widens no definition of equality and suppresses no difference —
+and it cannot green-light anything, because a limitation that swallowed a whole
+result leaves the evidence counter at zero and the run blocks.
+
+**Trace-search results have no comparison mode.** A TraceQL search returns trace
+summaries in a relevance ranking neither backend's wire contract fixes, so two
+correct backends may legitimately return different subsets and none of the four
+modes above can express equality for them. They are **out-of-scope accounting**,
+not a fifth mode: `verify` reports them with the specific reason no comparator is
+registered for that shape, and the count is part of what an operator reads before
+trusting a green gate. Inventing a tolerant overlap-threshold comparator to make
+them "pass" would be an allow-list wearing a comparator's clothes.
 
 **No three-way `verify`.** For a non-Prometheus source (VictoriaMetrics, a SaaS
 export) the semantic oracle is a **reference Prometheus fed the same synthetic

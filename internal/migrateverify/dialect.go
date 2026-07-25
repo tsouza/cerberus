@@ -1,7 +1,9 @@
 package migrateverify
 
 import (
+	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -86,9 +88,9 @@ func (lokiDialect) Name() string { return HeadLoki }
 func (lokiDialect) Path() string { return lokiQueryRangePath }
 
 // Encode sends only query/start/end/step. `limit` and `direction` are
-// deliberately omitted: they steer the log-stream branch, which this lane never
-// reaches (log-stream queries are routed out of scope before a request is
-// issued), and both backends default them.
+// deliberately omitted: they steer the log-stream branch, which a metric query
+// never reaches, and both backends default them. The log-stream lane, which does
+// reach that branch, pins both explicitly — see lokiLogStreamDialect.
 func (lokiDialect) Encode(expr string, p Params) url.Values {
 	q := url.Values{}
 	q.Set("query", expr)
@@ -99,6 +101,65 @@ func (lokiDialect) Encode(expr string, p Params) url.Values {
 }
 
 func (lokiDialect) Decode(body []byte) (RangeResult, error) { return decodePromMatrix(body) }
+
+// logStreamReplayLimit is the `limit` BOTH sides receive on a log-stream replay.
+// It sits AT upstream Loki's max_entries_limit_per_query default, which is also
+// cerberus's own maxLogQueryLimit: above it reference Loki 400s while cerberus
+// silently clamps, so the two backends would answer different questions.
+//
+// It is pinned rather than exposed as a flag, because the limit decides how much
+// of a result is truncated — i.e. how much the gate can judge — and an operator
+// knob would silently change what "parity" means between two runs.
+const logStreamReplayLimit = 5000
+
+// logStreamReplayDirection is Loki's documented default and the direction its
+// log-query path assumes: the newest entries first. Both sides receive it
+// explicitly so a default change on either backend cannot quietly re-point the
+// truncation boundary.
+const logStreamReplayDirection = "backward"
+
+// LokiLogStreamDialect speaks Loki's log-query API: the same
+// /loki/api/v1/query_range endpoint the metric lane uses, with limit and
+// direction pinned, and a streams envelope decoded into a flat entry list.
+func LokiLogStreamDialect() KindDialect { return lokiLogStreamDialect{} }
+
+type lokiLogStreamDialect struct{}
+
+func (lokiLogStreamDialect) Kind() string { return KindLogStream }
+
+func (lokiLogStreamDialect) Head() string { return HeadLoki }
+
+func (lokiLogStreamDialect) Path(Query) string { return lokiQueryRangePath }
+
+// Encode sends query/start/end/limit/direction and nothing else.
+//
+// `step` and `interval` are deliberately absent: cerberus's log path parses no
+// `interval` at all, so sending one would encode a request only the reference
+// backend understands — a guaranteed difference that says nothing about parity.
+// start/end are RFC3339Nano for the same reason the metric lane uses it: an
+// integer instant is disambiguated by digit count upstream and by magnitude in
+// cerberus, and a window misread by orders of magnitude returns empty on both
+// sides, which scores as agreement while comparing nothing.
+func (lokiLogStreamDialect) Encode(q Query, p Params) url.Values {
+	v := url.Values{}
+	v.Set("query", q.Expr)
+	v.Set("start", formatInstantRFC3339(p.Start))
+	v.Set("end", formatInstantRFC3339(p.End))
+	v.Set("limit", strconv.Itoa(logStreamReplayLimit))
+	v.Set("direction", logStreamReplayDirection)
+	return v
+}
+
+// Header sends none. In particular it does NOT send
+// X-Loki-Response-Encoding-Flags: categorize-labels — under that flag the two
+// backends emit structurally different third elements (reference Loki omits an
+// empty structuredMetadata and can carry a parsed sub-object; cerberus always
+// emits the key and never emits parsed), so requesting it would manufacture a
+// difference on every entry. Without it both sides emit the byte-identical
+// two-element [ts, line] value.
+func (lokiLogStreamDialect) Header() http.Header { return nil }
+
+func (lokiLogStreamDialect) Decode(body []byte) (any, error) { return decodeLogStreams(body) }
 
 // formatInstantRFC3339 renders an instant for the Loki and Tempo lanes.
 //

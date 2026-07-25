@@ -558,17 +558,24 @@ func newMigrateVerifyCmd() *cobra.Command {
 // refAuthFlag / cerAuthFlag name that lane's bearer-token flags; orgFlag names its
 // reference tenant flag and is empty for a head with no tenant concept (the prom
 // lane), so nothing is invented for it in a diagnostic or a repro line.
+//
+// kindDialects are the non-matrix wire contracts that head serves. They add no
+// flags: every one of them hangs off the SAME base URL, token and tenant the
+// operator already supplied for the lane, so a shape is judged whenever its head
+// is configured. An opt-in would make a lane silently absent by default, which is
+// exactly what the per-head Configured accounting exists to prevent.
 type verifyHeadFlags struct {
-	head        string
-	refFlag     string
-	cerFlag     string
-	refEnv      string
-	cerEnv      string
-	refAuthFlag string
-	cerAuthFlag string
-	orgFlag     string
-	dialect     migrateverify.Dialect
-	pair        func(*verifyInputs) *headPair
+	head         string
+	refFlag      string
+	cerFlag      string
+	refEnv       string
+	cerEnv       string
+	refAuthFlag  string
+	cerAuthFlag  string
+	orgFlag      string
+	dialect      migrateverify.Dialect
+	kindDialects []migrateverify.KindDialect
+	pair         func(*verifyInputs) *headPair
 }
 
 // verifyHeads is the head lane table, in head-token order so every artifact the
@@ -580,9 +587,10 @@ var verifyHeads = []verifyHeadFlags{
 		refFlag: "--ref-loki", cerFlag: "--cerberus-loki",
 		refEnv: "CERBERUS_VERIFY_REF_LOKI", cerEnv: "CERBERUS_VERIFY_CERBERUS_LOKI",
 		refAuthFlag: "--ref-loki-token", cerAuthFlag: "--cerberus-loki-token",
-		orgFlag: "--ref-loki-org-id",
-		dialect: migrateverify.LokiDialect(),
-		pair:    func(in *verifyInputs) *headPair { return &in.loki },
+		orgFlag:      "--ref-loki-org-id",
+		dialect:      migrateverify.LokiDialect(),
+		kindDialects: []migrateverify.KindDialect{migrateverify.LokiLogStreamDialect()},
+		pair:         func(in *verifyInputs) *headPair { return &in.loki },
 	},
 	{
 		head:    migrateverify.HeadProm,
@@ -693,14 +701,21 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 		if !p.configured() {
 			continue
 		}
+		// One backend per side serves every shape this head judges: the matrix
+		// Backend contract and the non-matrix KindBackend contract are two views of
+		// the same connection, so auth, tenancy and redaction are configured once.
+		refBackend := migrateverify.NewHTTPBackend(p.ref,
+			migrateverify.WithDialect(h.dialect),
+			migrateverify.WithKindDialects(h.kindDialects...),
+			migrateverify.WithBearerToken(p.refToken),
+			migrateverify.WithOrgID(p.refOrgID))
+		cerBackend := migrateverify.NewHTTPBackend(p.cerberus,
+			migrateverify.WithDialect(h.dialect),
+			migrateverify.WithKindDialects(h.kindDialects...),
+			migrateverify.WithBearerToken(p.cerberusToken))
 		lanes[h.head] = migrateverify.Lane{
-			Ref: migrateverify.NewHTTPBackend(p.ref,
-				migrateverify.WithDialect(h.dialect),
-				migrateverify.WithBearerToken(p.refToken),
-				migrateverify.WithOrgID(p.refOrgID)),
-			Cerberus: migrateverify.NewHTTPBackend(p.cerberus,
-				migrateverify.WithDialect(h.dialect),
-				migrateverify.WithBearerToken(p.cerberusToken)),
+			Ref: refBackend, Cerberus: cerBackend,
+			RefKind: refBackend, CerberusKind: cerBackend,
 		}
 		backends = append(backends, migrateverify.VerifyReportBackend{
 			Head:        h.head,
@@ -717,6 +732,7 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 		End:       params.End.UTC().Format(time.RFC3339),
 		Step:      params.Step.String(),
 		Tolerance: params.Tolerance,
+		Replay:    migrateverify.ReplayParams(),
 		Corpus:    in.corpus,
 	}
 	repro := reproCommand(reportParams)

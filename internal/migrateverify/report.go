@@ -17,13 +17,15 @@ const IssuesURL = "https://github.com/tsouza/cerberus/issues"
 // diagnostic. Bump it when the on-disk shape changes so a consumer can refuse a
 // diagnostic it does not understand.
 //
-// Version 2 records the backend pair PER HEAD (Params.Backends) instead of one
-// ref/cerberus URL pair, and carries the per-head lane summaries plus the
-// unconfigured bucket. A version-1 consumer reading a version-2 diagnostic would
-// find no ref_url at all; a version-2 consumer reading a version-1 one would
-// zero-fill Backends into "no backends were configured". Both are breaking, so
-// the version states it outright.
-const VerifyReportVersion = 2
+// Version 3 partitions each head lane by result kind, records the replay
+// parameters the non-matrix probes are pinned to (Params.Replay), and carries the
+// counted limitations each comparison could not judge. An older consumer reading
+// it would find families and limitations it cannot render; this build reading an
+// older one would zero-fill them into "no families, nothing unjudged", which is
+// the silent zero-fill the version check exists to stop. It moves in lock-step
+// with ReportVersion because the diagnostic embeds the same Summary, Heads and
+// Results.
+const VerifyReportVersion = 3
 
 // hotspotFuncs are the PromQL functions whose cerberus results are most likely to
 // be computed via an EXPERIMENTAL ClickHouse path (native timeSeries*ToGrid /
@@ -196,7 +198,7 @@ func attributeDivergence(expr string, fd *FirstDiff) []AttributionCandidate {
 		}
 		cands = append(cands, AttributionCandidate{Category: AttribExperimentalCHFeature, Note: note})
 	}
-	if fd != nil && isCoverageGap(fd.Reason) {
+	if fd != nil && isCoverageGap(fd.ReasonCode) {
 		cands = append(cands,
 			AttributionCandidate{Category: AttribDataWindowGap, Note: dataWindowGapNote},
 			AttributionCandidate{Category: AttribIngestArtifact, Note: ingestArtifactNote})
@@ -206,11 +208,21 @@ func attributeDivergence(expr string, fd *FirstDiff) []AttributionCandidate {
 	return cands
 }
 
-// isCoverageGap reports whether a first-diff reason describes a series/step that
-// exists on only one backend (a coverage gap), as opposed to a value that differs
-// where both backends have data.
-func isCoverageGap(reason string) bool {
-	return strings.Contains(reason, "present in") || strings.Contains(reason, "no sample")
+// isCoverageGap reports whether a first-diff describes a series/step that exists
+// on only one backend (a coverage gap), as opposed to a value that differs where
+// both backends have data.
+//
+// It switches on the reason CODE, not on the prose: a substring match written for
+// the matrix lane's wording silently fails open on every comparator whose prose
+// differs, and "fails open" here means a divergence quietly loses its
+// data-window / ingest candidate causes.
+func isCoverageGap(reasonCode string) bool {
+	switch reasonCode {
+	case ReasonSeriesMissing, ReasonNoSampleAtStep, ReasonEntryMissing:
+		return true
+	default:
+		return false
+	}
 }
 
 // VerifyReportBackend is one head lane's configured backend pair. Both URLs are
@@ -246,7 +258,29 @@ type VerifyReportParams struct {
 	End       string                `json:"end"`
 	Step      string                `json:"step"`
 	Tolerance float64               `json:"tolerance"`
+	Replay    VerifyReportReplay    `json:"replay"`
 	Corpus    string                `json:"corpus"`
+}
+
+// VerifyReportReplay records the pinned parameters the non-matrix probes are
+// issued with. They are compile-time constants, not flags, precisely because they
+// decide how much of a result is truncated — i.e. how much the gate could judge —
+// so an operator knob would silently change what parity MEANS between two runs.
+// They are recorded for the same reason Tolerance is: an artifact must be
+// self-describing about how strict the run that produced it actually was.
+type VerifyReportReplay struct {
+	LogStreamLimit     int    `json:"log_stream_limit"`
+	LogStreamDirection string `json:"log_stream_direction"`
+}
+
+// ReplayParams returns the pinned non-matrix replay parameters, so the CLI can
+// stamp them into the diagnostic without re-declaring the values the dialects
+// actually send.
+func ReplayParams() VerifyReportReplay {
+	return VerifyReportReplay{
+		LogStreamLimit:     logStreamReplayLimit,
+		LogStreamDirection: logStreamReplayDirection,
+	}
 }
 
 // VerifyReport is the versioned, self-describing --report diagnostic: the full

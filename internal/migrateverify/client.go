@@ -53,6 +53,10 @@ type HTTPBackend struct {
 	orgID string
 	// dialect is the head wire contract this backend speaks.
 	dialect Dialect
+	// kinds are the non-matrix wire contracts this backend speaks, keyed by
+	// result kind. A backend asked for a kind it has no dialect for fails
+	// loudly rather than issuing a request to a guessed endpoint.
+	kinds map[string]KindDialect
 }
 
 // BackendOption configures an HTTPBackend at construction.
@@ -63,6 +67,21 @@ type BackendOption func(*HTTPBackend)
 // Prometheus dialect.
 func WithDialect(d Dialect) BackendOption {
 	return func(b *HTTPBackend) { b.dialect = d }
+}
+
+// WithKindDialects teaches the backend the non-matrix wire contracts it speaks.
+// The SAME backend serves them: log-stream, trace and discovery probes hang off
+// the same base URL, token and tenant the operator already supplied for that
+// head, so a lane never needs a second connection or a second flag.
+func WithKindDialects(ds ...KindDialect) BackendOption {
+	return func(b *HTTPBackend) {
+		if b.kinds == nil {
+			b.kinds = map[string]KindDialect{}
+		}
+		for _, d := range ds {
+			b.kinds[d.Kind()] = d
+		}
+	}
 }
 
 // WithOrgID sends an "X-Scope-OrgID: <id>" header on every request, so a
@@ -155,11 +174,55 @@ type promRawSeries struct {
 // (no series) rather than an error, so the caller can classify it as unsupported
 // vs error; only transport and decode failures are returned as err.
 func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (RangeResult, error) {
-	reqURL := b.BaseURL + b.dialect.Path() + "?" + b.dialect.Encode(expr, p).Encode()
+	status, body, err := b.do(ctx, b.dialect.Path(), b.dialect.Encode(expr, p), nil)
+	if err != nil {
+		return RangeResult{}, err
+	}
+	if status != http.StatusOK {
+		return RangeResult{Status: status}, nil
+	}
+	res, err := b.dialect.Decode(body)
+	if err != nil {
+		return RangeResult{}, err
+	}
+	res.Status = status
+	return res, nil
+}
+
+// Fetch issues one non-matrix probe. It routes through the SAME request helper
+// QueryRange uses, so auth headers, the response cap, credential redaction and
+// the non-200 rule hold identically on every surface. A non-200 is returned as
+// FetchResult{Status: code} with no payload, so the caller classifies
+// unsupported vs error by the same rule the matrix path applies.
+func (b *HTTPBackend) Fetch(ctx context.Context, q Query, p Params) (FetchResult, error) {
+	d, ok := b.kinds[q.Kind]
+	if !ok {
+		return FetchResult{}, fmt.Errorf("this backend speaks no wire contract for result kind %q", q.Kind)
+	}
+	status, body, err := b.do(ctx, d.Path(q), d.Encode(q, p), d.Header())
+	if err != nil {
+		return FetchResult{}, err
+	}
+	if status != http.StatusOK {
+		return FetchResult{Status: status}, nil
+	}
+	payload, err := d.Decode(body)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	return FetchResult{Status: status, Payload: payload}, nil
+}
+
+// do issues one GET against the backend and returns the status and the capped
+// body. It is the single place every request passes through, so the auth header,
+// the tenant header, credential redaction and the response-size cap are written
+// once and hold for every endpoint any dialect names.
+func (b *HTTPBackend) do(ctx context.Context, path string, params url.Values, extra http.Header) (int, []byte, error) {
+	reqURL := b.BaseURL + path + "?" + params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("build request: %w", redactTransportErr(err))
+		return 0, nil, fmt.Errorf("build request: %w", redactTransportErr(err))
 	}
 	if b.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+b.bearerToken)
@@ -167,25 +230,22 @@ func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (Ra
 	if b.orgID != "" {
 		req.Header.Set(scopeOrgIDHeader, b.orgID)
 	}
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	resp, err := b.HTTP.Do(req)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("do request: %w", redactTransportErr(err))
+		return 0, nil, fmt.Errorf("do request: %w", redactTransportErr(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readCappedBody(resp.Body, maxResponseBytes)
 	if err != nil {
-		return RangeResult{}, err
+		return 0, nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return RangeResult{Status: resp.StatusCode}, nil
-	}
-	res, err := b.dialect.Decode(body)
-	if err != nil {
-		return RangeResult{}, err
-	}
-	res.Status = resp.StatusCode
-	return res, nil
+	return resp.StatusCode, body, nil
 }
 
 // readCappedBody reads r fully but no further than limit bytes, erroring rather
@@ -348,17 +408,17 @@ func validateTolerance(tol float64) error {
 }
 
 // LoadCorpus reads a corpus.json produced by `migrate harvest`, routes every
-// entry to its head's metric lane or to the out-of-scope accounting, carries
-// through the harvest-time skips the corpus recorded, and rejects a corpus whose
-// version this build does not understand.
+// entry to its head's lane or to the out-of-scope accounting, carries through
+// the harvest-time skips the corpus recorded, and rejects a corpus whose version
+// this build does not understand.
 //
 // Every entry is accounted for — none is silently dropped. A query whose shape a
-// metric lane can judge is replayed and tagged with its head; a log-stream, trace
-// search, compare(), unparseable expression, or unknown language is counted out
-// of scope with the specific reason it was not judged; and the harvester's own
-// skips are surfaced so the operator also sees queries that never became
-// replayable at all. Corpus order is preserved so the report reads in the order
-// the operator's sources were harvested.
+// comparator can judge is replayed and tagged with its head and its result kind;
+// a shape with no definition of equality is counted out of scope with the
+// specific reason it was not judged; and the harvester's own skips are surfaced
+// so the operator also sees queries that never became replayable at all. Corpus
+// order is preserved so the report reads in the order the operator's sources
+// were harvested.
 func LoadCorpus(path string) (Corpus, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied corpus path; offline CLI input.
 	if err != nil {
@@ -375,7 +435,10 @@ func LoadCorpus(path string) (Corpus, error) {
 	for _, q := range c.Queries {
 		r := RouteQuery(q.Lang, q.Expr)
 		if r.Replayable {
-			out.Queries = append(out.Queries, Query{Expr: q.Expr, Source: q.Source, Head: r.Head, Lang: q.Lang})
+			// The routed KIND is carried through, not discarded: it is what selects
+			// the comparator that judges this entry's shape, and it is the same
+			// vocabulary the out-of-scope accounting below names shapes with.
+			out.Queries = append(out.Queries, Query{Expr: q.Expr, Source: q.Source, Head: r.Head, Lang: q.Lang, Kind: r.Kind})
 			continue
 		}
 		out.OutOfScope = append(out.OutOfScope, OutOfScopeEntry{

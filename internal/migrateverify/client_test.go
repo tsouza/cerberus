@@ -67,8 +67,9 @@ func TestBuildParams(t *testing.T) {
 // TestLoadCorpus writes a v1 corpus holding one entry of each shape the router
 // must distinguish — a PromQL rule, a LogQL log-stream panel, a LogQL metric
 // panel, a TraceQL metrics panel, a TraceQL search panel — plus a harvest-time
-// skip, and pins that each lands in exactly one bucket with the right head, that
-// corpus order survives, and that the buckets account for every input entry.
+// skip, and pins that each lands in exactly one bucket with the right head and
+// result kind, that corpus order survives, and that the buckets account for every
+// input entry.
 func TestLoadCorpus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corpus.json")
@@ -94,13 +95,17 @@ func TestLoadCorpus(t *testing.T) {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
 
+	// The routed KIND rides on every replayable query: it is what selects the
+	// comparator, so a corpus loader that dropped it would silently hand a log
+	// stream to the matrix comparator.
 	wantQueries := []Query{
-		{Expr: "up", Source: "rule:a", Head: HeadProm, Lang: "promql"},
-		{Expr: `sum(rate({app="x"}[5m]))`, Source: "panel:lograte", Head: HeadLoki, Lang: "logql"},
-		{Expr: "{} | rate()", Source: "panel:spanrate", Head: HeadTempo, Lang: "traceql"},
+		{Expr: "up", Source: "rule:a", Head: HeadProm, Lang: "promql", Kind: KindMetricMatrix},
+		{Expr: `{app="x"}`, Source: "panel:logs", Head: HeadLoki, Lang: "logql", Kind: KindLogStream},
+		{Expr: `sum(rate({app="x"}[5m]))`, Source: "panel:lograte", Head: HeadLoki, Lang: "logql", Kind: KindMetricMatrix},
+		{Expr: "{} | rate()", Source: "panel:spanrate", Head: HeadTempo, Lang: "traceql", Kind: KindMetricMatrix},
 	}
 	if len(c.Queries) != len(wantQueries) {
-		t.Fatalf("Queries = %+v, want the 3 metric-lane queries", c.Queries)
+		t.Fatalf("Queries = %+v, want the 4 queries a comparator can judge", c.Queries)
 	}
 	for i, want := range wantQueries {
 		if c.Queries[i] != want {
@@ -108,15 +113,14 @@ func TestLoadCorpus(t *testing.T) {
 		}
 	}
 
-	if len(c.OutOfScope) != 2 {
-		t.Fatalf("OutOfScope = %+v, want the log-stream panel and the trace search", c.OutOfScope)
+	if len(c.OutOfScope) != 1 {
+		t.Fatalf("OutOfScope = %+v, want the trace search", c.OutOfScope)
 	}
 	wantOOS := []struct {
 		source string
 		head   string
 		kind   string
 	}{
-		{"panel:logs", HeadLoki, KindLogStream},
 		{"panel:search", HeadTempo, KindTraceSearch},
 	}
 	for i, want := range wantOOS {

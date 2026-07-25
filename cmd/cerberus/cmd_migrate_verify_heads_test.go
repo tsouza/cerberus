@@ -130,10 +130,57 @@ func headTableRows(t *testing.T, report string) map[string]string {
 	return rows
 }
 
+// promOnlyReport is the ENTIRE text report a diverging prom-only run prints,
+// with the three run-specific paths left as verbs. It is a transcription of the
+// output the single-lane gate produced, kept here so the multi-shape comparators
+// can be added without any of them leaking a word into an invocation that judged
+// only metric matrices.
+//
+// A substring check would not hold that line: "contains VERIFICATION FAILED"
+// stays green while a stray family row, a "not judged" section or a reworded
+// header appears above it. Only the whole string pins the whole output.
+const promOnlyReport = `VERIFICATION FAILED — 1 diverged, 0 errored, 0 unjudged (unconfigured lane), 0 matched (of 1 replayed)
+
+# cerberus migrate verify
+#
+# Parity gate: each corpus query replayed against its head's reference backend
+# and cerberus over one query_range window, results diffed series-by-series.
+# A divergence is never allow-listed — the gate fails if any query diverges
+# or errors, if a head's replayable queries had no backend pair to judge them,
+# if nothing was replayable at all, or if any lane diffed zero series.
+#
+# Note: %s
+#
+# Match tolerance: %s (absolute; relative granularity also applied at large magnitudes)
+#
+# 1 queries: 0 match, 1 diverge, 0 unsupported, 0 error (+0 unconfigured, +0 out of scope, +0 harvest-skipped)
+
+# per-head lanes:
+#   prom   [configured]   1 replayed: 0 match, 1 diverge, 0 unsupported, 0 error, 0 unconfigured; 1 series compared, 0 out of scope
+
+== [diverge] prom rule:up
+   expr:   up
+   first-diff: series={__name__="up",job="api"} ts=1.70000006e+09 ref=1 cerberus=0 (value differs beyond tolerance)
+   candidate-cause [cerberus-bug]: a divergence may indicate a genuine cerberus bug; if the other candidates below are ruled out, report it.
+   candidate-cause [dialect-semantics]: a value difference may stem from a query-language semantic difference between the reference and cerberus rather than a bug.
+
+FAIL: 1 diverge, 0 error, 0 unconfigured
+
+== Report this to cerberus
+   A divergence may indicate a cerberus bug. If the candidate causes above
+   (especially experimental-CH-feature deviations) are ruled out, please
+   open an issue so it can be fixed at the source:
+     %s
+   Regenerate the full JSON diagnostic with this exact command:
+     %s
+   Then attach the resulting verify-report.json to the issue.
+`
+
 // TestRunVerify_PromOnlyInvocationUnchanged pins that the existing single-head
-// invocation is byte-identical in meaning AND in its repro line: same flags, same
-// exit, and — critically — no mention of the two new lanes. An operator's pinned
-// prom-only command must not start emitting flags they never supplied.
+// invocation is byte-identical: same flags, same exit, same report to the byte,
+// and — critically — no mention of any lane or shape the operator did not ask
+// for. An operator's pinned prom-only command must not start emitting flags they
+// never supplied, nor sentences about comparators that never ran.
 func TestRunVerify_PromOnlyInvocationUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	corpus := writeCorpus(t, dir)
@@ -156,18 +203,15 @@ func TestRunVerify_PromOnlyInvocationUnchanged(t *testing.T) {
 		corpus, ref.URL, cer.URL,
 		strconv.FormatFloat(migrateverify.DefaultTolerance, 'g', -1, 64),
 	)
-	if !strings.Contains(s, wantRepro) {
-		t.Errorf("prom-only repro line must be exactly the prom-only invocation.\nwant: %s\ngot:\n%s", wantRepro, s)
-	}
-	for _, unwanted := range []string{"--ref-loki", "--cerberus-loki", "--ref-tempo", "--cerberus-tempo"} {
-		if strings.Contains(s, unwanted) {
-			t.Errorf("a prom-only run must not mention %s anywhere in its report, got:\n%s", unwanted, s)
-		}
-	}
-	// The per-head table must show exactly the one lane that ran, and no other.
-	rows := headTableRows(t, s)
-	if len(rows) != 1 || !strings.Contains(rows[migrateverify.HeadProm], "1 replayed: 0 match, 1 diverge") {
-		t.Errorf("prom-only run must report exactly one prom lane with its divergence, got rows %+v", rows)
+	want := fmt.Sprintf(
+		promOnlyReport,
+		migrateverify.ExperimentalNote,
+		strconv.FormatFloat(migrateverify.DefaultTolerance, 'g', -1, 64),
+		migrateverify.IssuesURL,
+		wantRepro,
+	)
+	if s != want {
+		t.Errorf("a prom-only run's report must be byte-identical.\n--- want ---\n%s\n--- got ---\n%s", want, s)
 	}
 }
 
@@ -611,6 +655,47 @@ func TestReproCommand_UnknownHeadIsNotGuessedOntoAnotherLane(t *testing.T) {
 // for every head the parity gate can route a query to. A head with no flags could
 // only ever be reported unconfigured, so the gate would be permanently unable to
 // judge it — a silent dead end rather than a usable lane.
+// routerProbeExprs is one expression per query shape the corpus router must
+// distinguish, per language. It is the input to nonMatrixKindsFor, which derives
+// what the CLI must be able to FETCH from what the router actually ROUTES —
+// rather than from a hand-kept list that would drift silently the moment a new
+// shape became replayable.
+var routerProbeExprs = map[string][]string{
+	"promql": {"up", "rate(http_requests_total[5m])"},
+	"logql": {
+		`sum(rate({job="api"}[5m]))`,
+		`{job="api"}`,
+		`{job="api"} |= "boom" | json`,
+	},
+	"traceql": {
+		"{} | rate()",
+		`{ span.foo = "bar" }`,
+		`{} | compare({status=error})`,
+	},
+}
+
+// nonMatrixKindsFor returns every non-matrix shape the router sends to head as a
+// REPLAYABLE query — i.e. every shape that head's backends must have a wire
+// contract for.
+func nonMatrixKindsFor(t *testing.T, head string) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var out []string
+	for lang, exprs := range routerProbeExprs {
+		for _, expr := range exprs {
+			r := migrateverify.RouteQuery(lang, expr)
+			if !r.Replayable || r.Head != head || r.Kind == migrateverify.KindMetricMatrix {
+				continue
+			}
+			if !seen[r.Kind] {
+				seen[r.Kind] = true
+				out = append(out, r.Kind)
+			}
+		}
+	}
+	return out
+}
+
 func TestVerifyHeadsCoversEveryHeadToken(t *testing.T) {
 	want := map[string]bool{
 		migrateverify.HeadProm:  false,
@@ -628,6 +713,24 @@ func TestVerifyHeadsCoversEveryHeadToken(t *testing.T) {
 		}
 		if h.dialect.Name() != h.head {
 			t.Errorf("head %q is wired to the %q dialect", h.head, h.dialect.Name())
+		}
+		// A kind dialect wired to the wrong head would send that shape's probe to
+		// the wrong base URL, and a duplicate would silently shadow one contract.
+		seenKinds := map[string]bool{}
+		for _, kd := range h.kindDialects {
+			if kd.Head() != h.head {
+				t.Errorf("head %q carries a %q kind dialect for shape %q", h.head, kd.Head(), kd.Kind())
+			}
+			if seenKinds[kd.Kind()] {
+				t.Errorf("head %q registers shape %q twice", h.head, kd.Kind())
+			}
+			seenKinds[kd.Kind()] = true
+		}
+		for _, kind := range nonMatrixKindsFor(t, h.head) {
+			if !seenKinds[kind] {
+				t.Errorf("head %q routes corpus entries to shape %q but its backends speak no wire contract for it: "+
+					"every such query could only ever be reported unconfigured", h.head, kind)
+			}
 		}
 	}
 	for head, covered := range want {

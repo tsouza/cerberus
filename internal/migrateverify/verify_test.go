@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -253,10 +254,11 @@ func TestVerify_CerberusUnsupported(t *testing.T) {
 		t.Errorf("unsupported detail should name the cerberus status, got %q", res.Detail)
 	}
 	alongsideEvidence := Report{
-		Summary: Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3},
+		Summary: Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3, ComparedUnits: 3},
 		Heads: []HeadSummary{{
 			Head: HeadProm, Configured: true,
-			Summary: Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3},
+			Summary:  Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3, ComparedUnits: 3},
+			Families: []FamilySummary{{Kind: KindMetricMatrix, Unit: UnitSeries, Total: 2, Match: 1, Unsupported: 1, Compared: 3}},
 		}},
 	}
 	if alongsideEvidence.Failed() {
@@ -266,7 +268,8 @@ func TestVerify_CerberusUnsupported(t *testing.T) {
 		Summary: Summary{Total: 1, Unsupported: 1},
 		Heads: []HeadSummary{{
 			Head: HeadProm, Configured: true,
-			Summary: Summary{Total: 1, Unsupported: 1},
+			Summary:  Summary{Total: 1, Unsupported: 1},
+			Families: []FamilySummary{{Kind: KindMetricMatrix, Unit: UnitSeries, Total: 1, Unsupported: 1}},
 		}},
 	}
 	if !onlyUnsupported.Failed() {
@@ -329,7 +332,7 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(buf.String()), &back); err != nil {
 		t.Fatalf("JSON report should round-trip: %v", err)
 	}
-	if back.Summary != rep.Summary {
+	if !reflect.DeepEqual(back.Summary, rep.Summary) {
 		t.Errorf("round-tripped summary = %+v, want %+v", back.Summary, rep.Summary)
 	}
 	if len(back.HarvestSkipped) != 1 || back.HarvestSkipped[0].Source != "rule:broken.yml" {

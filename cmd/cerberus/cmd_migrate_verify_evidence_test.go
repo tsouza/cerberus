@@ -10,26 +10,31 @@ import (
 	"testing"
 )
 
-// logStreamSelector is the commonest LogQL panel shape and the commonest TraceQL
-// one: a bare stream selector and a bare spanset search. Both return rows, not a
-// metric matrix, so both route out of scope — which is honest, and is exactly why a
-// corpus made only of them must not read as a passing parity gate.
+// logStreamSelector is the commonest LogQL panel shape: a bare stream selector
+// with a line filter, which returns log lines rather than a metric matrix.
+//
+// traceSearchQuery and compareQuery are the TraceQL shapes no comparator judges —
+// a bare spanset search, whose result order is a ranking neither backend's wire
+// contract fixes, and a compare(), whose attribute inventory is chosen by a topN
+// ranking. Both route out of scope, which is honest, and is exactly why a corpus
+// made only of them must not read as a passing parity gate.
 const (
 	logStreamSelector = `{job="api"} |= "error"`
 	traceSearchQuery  = `{ span.http.status_code = 500 }`
+	compareQuery      = `{} | compare({status=error})`
 )
 
-// writeAllOutOfScopeCorpus writes a corpus whose every entry is a shape no metric
-// lane can judge — the realistic output of harvesting a Loki/Tempo-heavy Grafana
-// export.
+// writeAllOutOfScopeCorpus writes a corpus whose every entry is a shape no
+// comparator judges — the realistic output of harvesting a Tempo-heavy Grafana
+// export whose panels are all searches and compare() breakdowns.
 func writeAllOutOfScopeCorpus(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "corpus.json")
 	body := fmt.Sprintf(`{"version":1,"queries":[`+
-		`{"expr":%s,"source":"panel:api-logs","kind":"panel","lang":"logql"},`+
-		`{"expr":%s,"source":"panel:errors","kind":"panel","lang":"traceql"}`+
+		`{"expr":%s,"source":"panel:errors","kind":"panel","lang":"traceql"},`+
+		`{"expr":%s,"source":"panel:breakdown","kind":"panel","lang":"traceql"}`+
 		`],"skipped":[]}`,
-		strconv.Quote(logStreamSelector), strconv.Quote(traceSearchQuery))
+		strconv.Quote(traceSearchQuery), strconv.Quote(compareQuery))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,20 +42,20 @@ func writeAllOutOfScopeCorpus(t *testing.T, dir string) string {
 }
 
 // TestRunVerify_AllOutOfScopeCorpusExitsNonZero pins the CLI end of the
-// judged-nothing rule. An operator whose dashboards are all log-stream panels ran
-// verify with a complete loki pair, every entry routed out of scope, and the
+// judged-nothing rule. An operator whose dashboards are all trace-search panels
+// ran verify with a complete tempo pair, every entry routed out of scope, and the
 // command printed "VERIFICATION PASSED — all 0 queries matched" and exited 0 — a
 // CI job gating the cutover on that exit code goes green having judged nothing.
 func TestRunVerify_AllOutOfScopeCorpusExitsNonZero(t *testing.T) {
 	dir := t.TempDir()
 	corpus := writeAllOutOfScopeCorpus(t, dir)
-	lokiRef := pathServer(t, "/loki/api/v1/query_range", "query", map[string]string{})
-	lokiCer := pathServer(t, "/loki/api/v1/query_range", "query", map[string]string{})
+	tempoRef := pathServer(t, "/api/metrics/query_range", "q", map[string]string{})
+	tempoCer := pathServer(t, "/api/metrics/query_range", "q", map[string]string{})
 
 	var out, errOut bytes.Buffer
 	args := append([]string{
 		"--corpus", corpus,
-		"--ref-loki", lokiRef.URL, "--cerberus-loki", lokiCer.URL,
+		"--ref-tempo", tempoRef.URL, "--cerberus-tempo", tempoCer.URL,
 	}, windowArgs()...)
 	err := runVerify(args, &out, &errOut)
 	if err == nil {
@@ -64,7 +69,7 @@ func TestRunVerify_AllOutOfScopeCorpusExitsNonZero(t *testing.T) {
 	}
 	// The out-of-scope entries are still enumerated with their reasons: the run
 	// blocks BECAUSE nothing was judged, not by pretending the entries vanished.
-	for _, want := range []string{"kind=log-stream", "kind=trace-search"} {
+	for _, want := range []string{"kind=trace-search", "kind=metrics-compare"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the report must still name the out-of-scope shapes (%q), got:\n%s", want, out.String())
 		}
