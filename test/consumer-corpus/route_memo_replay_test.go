@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,13 +106,17 @@ func (q *routeMemoRetryQuerierA) QueryCursor(context.Context, string, ...any) (c
 // wired as the Solver's Executor.Client — a structurally separate data
 // plane from route A, so counting its opens unambiguously proves the
 // retry dispatched route B rather than a silent route-A success.
+// opens is atomic because Executor.Execute fans the K shards out onto
+// concurrent goroutines (errgroup), each calling QueryCursor on this
+// SAME shared querier -- a plain int here is a real, race-detector-
+// confirmed data race, not just a theoretical one.
 type routeMemoRetryQuerierB struct {
-	opens int
+	opens atomic.Int64
 	rows  []chclient.Sample
 }
 
 func (q *routeMemoRetryQuerierB) QueryCursor(context.Context, string, ...any) (chclient.Cursor, error) {
-	q.opens++
+	q.opens.Add(1)
 	return &sliceCursor{samples: q.rows}, nil
 }
 
@@ -199,8 +204,8 @@ func TestConsumerCorpus_RouteMemoRetry_PreservesConsumerDecodeContract(t *testin
 	if primeResp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("priming response status = %d, want %d (plain memory-limit rejection, no retry yet)", primeResp.StatusCode, http.StatusUnprocessableEntity)
 	}
-	if routeB.opens != 0 {
-		t.Fatalf("route-B opens after priming request = %d, want 0 — retry must not have fired yet", routeB.opens)
+	if got := routeB.opens.Load(); got != 0 {
+		t.Fatalf("route-B opens after priming request = %d, want 0 — retry must not have fired yet", got)
 	}
 
 	// Second request, identical query/grid (same routememo.Key):
@@ -210,8 +215,8 @@ func TestConsumerCorpus_RouteMemoRetry_PreservesConsumerDecodeContract(t *testin
 	for _, replayErr := range Replay(srv.Client(), srv.URL, *entry, nil, false) {
 		t.Errorf("%v", replayErr)
 	}
-	if routeB.opens != routeMemoRetryK {
-		t.Errorf("route-B shard opens on the retry request = %d, want %d (Executor.Execute fanned into K=%d shards)", routeB.opens, routeMemoRetryK, routeMemoRetryK)
+	if got := routeB.opens.Load(); got != routeMemoRetryK {
+		t.Errorf("route-B shard opens on the retry request = %d, want %d (Executor.Execute fanned into K=%d shards)", got, routeMemoRetryK, routeMemoRetryK)
 	}
 	if routeA.opens != 2 {
 		t.Errorf("route-A opens across both requests = %d, want 2 (one per request; the retry dispatches route B, it does not re-attempt route A)", routeA.opens)

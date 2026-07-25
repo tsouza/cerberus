@@ -14,7 +14,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "cerberus-prom" },
-          "expr": "rate(up[5m])",
+          "expr": "rate(cerberus_query_inflight[5m])",
           "instant": false,
           "range": true
         }
@@ -25,7 +25,7 @@
     "method": "GET",
     "path": "/api/v1/query_range",
     "query": {
-      "query": "rate(up[5m])",
+      "query": "rate(cerberus_query_inflight[5m])",
       "start": "1781002800",
       "end": "1781003400",
       "step": "15"
