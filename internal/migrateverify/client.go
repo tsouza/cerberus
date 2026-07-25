@@ -448,6 +448,14 @@ func LoadCorpus(path string) (Corpus, error) {
 	for _, s := range c.Skipped {
 		out.HarvestSkipped = append(out.HarvestSkipped, HarvestSkippedEntry{Source: s.Source, Reason: s.Reason})
 	}
+	// Tag/label discovery probes are corpus-ANCHORED, not corpus entries
+	// themselves: no query language names a tag enumeration, so they are always
+	// derived here rather than routed from c.Queries. Anchoring on the already-
+	// routed out.Queries (not c.Queries) means a head only gets discovery probes
+	// when it has at least one REPLAYABLE query — an all-out-of-scope Loki corpus
+	// adds no Loki discovery probes either, the same "no query, no probe" rule
+	// discoveryProbesForCorpus documents for the head-absent case.
+	out.Queries = append(out.Queries, discoveryProbesForCorpus(out.Queries)...)
 	return out, nil
 }
 

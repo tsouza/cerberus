@@ -293,7 +293,7 @@ The lane exists to tell the truth about a migration, so it inherits every
 no-escape-hatch rule the rest of cerberus enforces. The apparent tension
 between "diverge count must reach zero" and "histogram/downsample tolerance" is
 resolved by making the comparator explicit per scenario. There are exactly
-five comparison modes, and no scenario mixes them silently:
+seven comparison modes, and no scenario mixes them silently:
 
 1. **Exact parity — `cerberus migrate verify`, diverge count zero.** The default
    `--tolerance` is a *tiny* absolute epsilon: it is the definition of "the same
@@ -350,6 +350,38 @@ five comparison modes, and no scenario mixes them silently:
    still field-diffed, so a field bug is never masked by truncation. Order is not
    a compared dimension in either regime. This is `cerberus migrate verify` under
    the same zero-diverge rule as mode 1.
+
+6. **Structural span-set equality — trace-by-id.** A trace is a set of spans,
+   not a sequence and not a batch layout, so span order and the resource/scope
+   batch partition a backend happens to render it in are never compared. Two
+   backends agree on a trace when they return the same span-ID set, the same
+   total span count (so a duplicate span on either side surfaces rather than
+   silently collapsing), and, for every span, the same name, kind, parent,
+   start, duration and status, plus the same attribute KEY set. An attribute's
+   VALUE is compared only when its type round-trips deterministically through
+   the OTel-CH string-map carrier (string, int, bool); a double/array/kvlist/
+   bytes value is counted, never diffed, but its KEY is still compared, so a
+   genuinely missing attribute is still caught. There is no top-level corpus
+   entry for this mode — no query language names a trace ID — so every
+   trace-by-id fetch is DERIVED from a trace-search result: one fetch per trace
+   ID both backends returned, bounded per search so a corpus of broad searches
+   cannot turn one run into thousands of round-trips. This is
+   `cerberus migrate verify` under the same zero-diverge rule as mode 1, judged
+   against evidence the run itself derives rather than the corpus supplies.
+
+7. **Tag/label set equality — discovery.** Tag-name and tag-value enumeration
+   is set equality, scoped where the wire contract scopes it (Tempo's v2
+   tag-names surface is diffed per scope — resource, span, intrinsic — rather
+   than as one flat set). Every tag name or value present on one side and
+   absent from the other is a divergence; the only exception is a reference
+   response the reference ITSELF reports as partial, which is declined by name
+   with both job counts rather than diffed against cerberus's complete answer
+   (cerberus is never partial: one ClickHouse query, complete or errored).
+   These probes are corpus-ANCHORED rather than harvested: an unfiltered
+   tag-name enumeration runs once per head the corpus touches, and a
+   tag-VALUE probe runs once per distinct label or attribute key that head's
+   own queries reference. This is `cerberus migrate verify` under the same
+   zero-diverge rule as mode 1.
 
 **Alert-firing parity is eval-interval-quantized (MIG-18).** Two independent
 rulers on independent evaluation schedules produce sub-interval fire/resolve

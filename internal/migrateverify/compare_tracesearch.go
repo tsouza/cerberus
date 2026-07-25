@@ -251,7 +251,7 @@ func canonicalHexID(id string, width int) string {
 // relative epsilon over it would be exact equality wearing a tolerance's
 // clothing, and --tolerance stays what it is: an absolute epsilon over sample
 // values, of which a trace summary has none.
-func compareTraceSearch(_ Query, refAny, cerAny any, _ Params) Outcome {
+func compareTraceSearch(q Query, refAny, cerAny any, _ Params) Outcome {
 	ref, refOK := refAny.(traceSearchResult)
 	cer, cerOK := cerAny.(traceSearchResult)
 	if !refOK || !cerOK {
@@ -281,7 +281,12 @@ func compareTraceSearch(_ Query, refAny, cerAny any, _ Params) Outcome {
 	// evidence is a disagreement about membership it cannot rule on would look
 	// proven. Two empty responses therefore leave this at 0, the family dead, and
 	// the gate blocking — the ComparedSeries rule applied to a new shape.
-	out := Outcome{Verdict: VerdictMatch, Compared: len(both)}
+	//
+	// Derived is set unconditionally, before any of the early returns below, so a
+	// diverging or truncated search still spawns its trace-by-id probes: the
+	// deeper structural check is independent evidence, not contingent on the
+	// summary-level verdict.
+	out := Outcome{Verdict: VerdictMatch, Compared: len(both), Derived: deriveTraceByIDProbes(q, both)}
 
 	truncated := len(ref.Traces) == traceSearchReplayLimit || len(cer.Traces) == traceSearchReplayLimit
 	capped := 0
@@ -337,6 +342,34 @@ func compareTraceSearch(_ Query, refAny, cerAny any, _ Params) Outcome {
 		out.Verdict = VerdictDiverge
 		out.FirstDiff = missingTraceDiff(cerByID[onlyCer[0]], missingTraceValue, describeTrace(cerByID[onlyCer[0]]),
 			"trace present in cerberus only")
+	}
+	return out
+}
+
+// deriveTraceByIDProbes spawns one trace-by-id fetch per trace ID BOTH
+// backends returned, capped at maxDerivedTraceFetchesPerSearch. An ID only one
+// side returned is already reported as a divergence by THIS comparator;
+// fetching it would 404 on the side that never had it, by construction, and
+// double-count one bug as two. both is already sorted (see
+// sortedCommonTraceIDs), so the same run always derives the same fetches.
+func deriveTraceByIDProbes(q Query, both []string) []Query {
+	if len(both) == 0 {
+		return nil
+	}
+	n := len(both)
+	if n > maxDerivedTraceFetchesPerSearch {
+		n = maxDerivedTraceFetchesPerSearch
+	}
+	out := make([]Query, 0, n)
+	for _, id := range both[:n] {
+		out = append(out, Query{
+			Expr:    fmt.Sprintf("GET /api/traces/%s", id),
+			Source:  fmt.Sprintf("derived-from:%s", q.Source),
+			Head:    HeadTempo,
+			Lang:    q.Lang,
+			Kind:    KindTraceByID,
+			TraceID: id,
+		})
 	}
 	return out
 }

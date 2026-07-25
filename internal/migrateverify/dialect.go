@@ -161,6 +161,56 @@ func (lokiLogStreamDialect) Header() http.Header { return nil }
 
 func (lokiLogStreamDialect) Decode(body []byte) (any, error) { return decodeLogStreams(body) }
 
+// lokiLabelsPath / lokiLabelValuesPathPrefix are the two label-discovery
+// endpoints, served identically by the reference and by cerberus's own Loki
+// head.
+const (
+	lokiLabelsPath            = "/loki/api/v1/labels"
+	lokiLabelValuesPathPrefix = "/loki/api/v1/label/"
+)
+
+// Loki tag-discovery Surface tokens, naming which of the two endpoints a
+// KindTagDiscovery Query targets.
+const (
+	SurfaceLokiLabels      = "labels"
+	SurfaceLokiLabelValues = "label-values"
+)
+
+// LokiTagDiscoveryDialect speaks Loki's label/label-value discovery API:
+// /loki/api/v1/labels (unfiltered) and /loki/api/v1/label/{name}/values
+// (per key), selected per Query by Surface.
+func LokiTagDiscoveryDialect() KindDialect { return lokiTagDiscoveryDialect{} }
+
+type lokiTagDiscoveryDialect struct{}
+
+func (lokiTagDiscoveryDialect) Kind() string { return KindTagDiscovery }
+
+func (lokiTagDiscoveryDialect) Head() string { return HeadLoki }
+
+func (lokiTagDiscoveryDialect) Path(q Query) string {
+	if q.Surface == SurfaceLokiLabelValues {
+		return lokiLabelValuesPathPrefix + url.PathEscape(q.TagName) + "/values"
+	}
+	return lokiLabelsPath
+}
+
+// Encode sends start/end as RFC3339Nano (F7): unlike Tempo, Loki's own
+// timestamp parser (loghttp.ParseTimestamp, and cerberus's mirror in
+// internal/api/format) accepts it on every endpoint, so the discovery lane
+// needs no unit exception the way the Tempo search/trace-by-id/discovery
+// lanes do. No `query` filter is ever sent: both discovery probes are
+// unfiltered enumerations over the window.
+func (lokiTagDiscoveryDialect) Encode(_ Query, p Params) url.Values {
+	v := url.Values{}
+	v.Set("start", formatInstantRFC3339(p.Start))
+	v.Set("end", formatInstantRFC3339(p.End))
+	return v
+}
+
+func (lokiTagDiscoveryDialect) Header() http.Header { return nil }
+
+func (lokiTagDiscoveryDialect) Decode(body []byte) (any, error) { return decodeLokiDiscovery(body) }
+
 // formatInstantRFC3339 renders an instant for the Loki and Tempo lanes.
 //
 // Both upstream Loki and upstream Tempo disambiguate an INTEGER start/end by

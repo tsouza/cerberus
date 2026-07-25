@@ -68,13 +68,36 @@ func writeTracePanelCorpus(t *testing.T, dir string) string {
 	return path
 }
 
-// tempoSearchStub answers Tempo's search endpoint with a fixed body, and rejects a
-// probe that did not pin the window, the limit and the spans-per-set. The rejection
-// is load-bearing: an unpinned probe is answered by both backends, so it fails
-// silently rather than loudly unless the stub says so.
+// tempoTraceByIDStub answers the ONE derived trace-by-id fetch
+// spansetSearch's own match spawns (see compareTraceSearch's Derived): both
+// tempoRefSearch and tempoCerSearch agree the trace "…a1b2" exists, so the
+// trace-search comparator derives exactly one fetch for its canonical
+// (zero-padded) form. The body is deliberately rendered in cerberus's own flat
+// "batches" shape (see decodeTraceByID's dual-key tolerance) and served
+// IDENTICALLY by both sides, so the derived probe reports a genuine match
+// rather than leaving the trace-by-id family dead.
+const tempoTraceByIDStub = `{"batches":[{"resource":{"attributes":{}},"spans":[` +
+	`{"traceId":"0000000000000000000000000000a1b2","spanId":"00000000000000c3",` +
+	`"name":"GET /cart","startTimeUnixNano":"1780000000000000001","durationNanos":42000000}]}]}`
+
+// tempoSearchStub answers Tempo's search endpoint with a fixed body, PLUS the
+// discovery probes spansetSearch's own attribute reference anchors (see
+// serveIfDiscoveryProbe) and the one derived trace-by-id fetch (see
+// tempoTraceByIDStub) — every probe compareTraceSearch's own comparison spawns
+// or spansetSearch itself anchors, so none of them are left dead. It rejects a
+// SEARCH probe that did not pin the window, the limit and the spans-per-set.
+// The rejection is load-bearing: an unpinned probe is answered by both
+// backends, so it fails silently rather than loudly unless the stub says so.
 func tempoSearchStub(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveIfDiscoveryProbe(w, r) {
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/traces/") {
+			_, _ = w.Write([]byte(tempoTraceByIDStub))
+			return
+		}
 		if r.URL.Path != "/api/search" {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = fmt.Fprintf(w, `{"error":"this backend serves only /api/search, got %s"}`, r.URL.Path)
@@ -135,13 +158,19 @@ func TestRunVerify_TracePanelLaneReplaysAndReportsItsOwnEvidence(t *testing.T) {
 		t.Fatalf("a matching run must succeed: %v\n%s", err, out.String())
 	}
 
-	rows := headTableRows(t, out.String())
-	tempoRow, ok := rows[migrateverify.HeadTempo]
-	if !ok {
-		t.Fatalf("the report must carry a tempo lane row, got:\n%s", out.String())
+	// The tempo lane now carries THREE families: trace-search (the corpus panel
+	// itself), tag-discovery (anchored by spansetSearch's own
+	// span.http.status_code attribute reference), and trace-by-id (DERIVED from
+	// the one trace both backends returned) — so its head row omits the compact
+	// "N compared" clause (see Report.writeHeadTable) and the trace-search
+	// evidence lives on its own family sub-row instead.
+	s := out.String()
+	rows := headTableRows(t, s)
+	if _, ok := rows[migrateverify.HeadTempo]; !ok {
+		t.Fatalf("the report must carry a tempo lane row, got:\n%s", s)
 	}
-	if !strings.Contains(tempoRow, "1 trace") || !strings.Contains(tempoRow, migrateverify.UnitTraces) {
-		t.Errorf("the tempo row must count its evidence in %q, got %q", migrateverify.UnitTraces, tempoRow)
+	if !strings.Contains(s, "trace-search") || !strings.Contains(s, "1 "+migrateverify.UnitTraces+" compared") {
+		t.Errorf("the tempo trace-search family row must count its evidence in %q, got:\n%s", migrateverify.UnitTraces, s)
 	}
 	if !strings.Contains(rows[migrateverify.HeadProm], "1 series compared") {
 		t.Errorf("the prom row must still count series, got %q", rows[migrateverify.HeadProm])

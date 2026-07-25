@@ -99,15 +99,30 @@ func TestLoadCorpus(t *testing.T) {
 	// The routed KIND rides on every replayable query: it is what selects the
 	// comparator, so a corpus loader that dropped it would silently hand a log
 	// stream to the matrix comparator.
+	//
+	// The corpus itself routes to 5 replayable queries. LoadCorpus then ANCHORS
+	// one discovery probe set per head that got at least one of them: loki got
+	// two entries whose only matcher key is "app" (an unfiltered labels probe
+	// plus one label-values probe for "app"); tempo got two entries whose only
+	// referenced attribute key is "a" (two unfiltered tags probes — v1 and v2 —
+	// plus one tag-values probe per key for each of v1/v2). None of this reads
+	// the compare() panel: it never made it into the routed query list, so it
+	// contributes no discovery probes either.
 	wantQueries := []Query{
 		{Expr: "up", Source: "rule:a", Head: HeadProm, Lang: "promql", Kind: KindMetricMatrix},
 		{Expr: `{app="x"}`, Source: "panel:logs", Head: HeadLoki, Lang: "logql", Kind: KindLogStream},
 		{Expr: `sum(rate({app="x"}[5m]))`, Source: "panel:lograte", Head: HeadLoki, Lang: "logql", Kind: KindMetricMatrix},
 		{Expr: "{} | rate()", Source: "panel:spanrate", Head: HeadTempo, Lang: "traceql", Kind: KindMetricMatrix},
 		{Expr: `{ span.a = "b" }`, Source: "panel:search", Head: HeadTempo, Lang: "traceql", Kind: KindTraceSearch},
+		{Head: HeadLoki, Lang: "logql", Kind: KindTagDiscovery, Surface: SurfaceLokiLabels, Source: discoverySourceTag},
+		{Head: HeadLoki, Lang: "logql", Kind: KindTagDiscovery, Surface: SurfaceLokiLabelValues, TagName: "app", Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagsV1, Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagsV2, Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagValuesV1, TagName: "a", Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagValuesV2, TagName: "a", Source: discoverySourceTag},
 	}
 	if len(c.Queries) != len(wantQueries) {
-		t.Fatalf("Queries = %+v, want the 5 queries a comparator can judge", c.Queries)
+		t.Fatalf("Queries = %+v, want the 5 replayable queries plus their anchored discovery probes", c.Queries)
 	}
 	for i, want := range wantQueries {
 		if c.Queries[i] != want {
@@ -138,9 +153,26 @@ func TestLoadCorpus(t *testing.T) {
 		}
 	}
 
-	// The accounting invariant: every corpus entry landed in exactly one bucket.
-	if got := len(c.Queries) + len(c.OutOfScope); got != corpusEntries {
+	// The accounting invariant: every RAW corpus entry landed in exactly one
+	// bucket. Discovery probes are excluded from this count deliberately: they
+	// are corpus-ANCHORED, not corpus entries themselves — no query language
+	// names a tag enumeration — so a corpus with N entries always anchors a
+	// FIXED number of discovery probes per head it touched, not one per entry.
+	replayedFromCorpus := 0
+	discoveryProbes := 0
+	for _, q := range c.Queries {
+		if q.Kind == KindTagDiscovery {
+			discoveryProbes++
+			continue
+		}
+		replayedFromCorpus++
+	}
+	if got := replayedFromCorpus + len(c.OutOfScope); got != corpusEntries {
 		t.Errorf("replayable + out-of-scope = %d, want %d: an entry was dropped", got, corpusEntries)
+	}
+	const wantDiscoveryProbes = 6 // 2 loki (labels + 1 label-values key) + 4 tempo (tags-v1/v2 + 1 tag-values key on each)
+	if discoveryProbes != wantDiscoveryProbes {
+		t.Errorf("discovery probes = %d, want %d anchored from the loki/tempo entries", discoveryProbes, wantDiscoveryProbes)
 	}
 
 	if len(c.HarvestSkipped) != 1 || c.HarvestSkipped[0].Source != "rule:broken.yml" ||

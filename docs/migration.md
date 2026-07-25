@@ -203,6 +203,30 @@ different shapes have different definitions of equality:
   it reports both side counts and the residue by name, and still field-diffs
   every trace both backends returned, so a real field bug is never masked by
   truncation. Result order is never a compared dimension.
+- **`trace-by-id`** — a single-trace fetch. No query language names a trace ID,
+  so this shape never comes from the corpus: every trace-search comparison
+  DERIVES one fetch per trace ID both backends returned (capped, so one broad
+  search cannot balloon into thousands of round-trips), and each is judged as
+  its own comparison unit. A trace is a **set of spans**, not a sequence and not
+  a batch layout, so span order and the resource/scope batch partition a
+  backend renders it in are never compared. Two backends agree when they return
+  the same span-ID set, the same total span count (so a duplicate span
+  surfaces), and, for every span, the same name, kind, parent, start, duration
+  and status, plus the same attribute **key** set. An attribute's *value* is
+  compared only when its type round-trips deterministically through the
+  OTel-CH string-map carrier (string, int, bool); a double/array/kvlist/bytes
+  value is counted, never diffed — but its key is still compared, so a
+  genuinely missing attribute still blocks.
+- **`tag-discovery`** — a tag/label-name or tag/label-value enumeration. These
+  probes are corpus-**anchored**, not harvested: an unfiltered tag-name
+  enumeration runs once per head your corpus touches, and a tag-value probe
+  runs once per distinct label or attribute key that head's own queries
+  reference. Agreement is exact **set equality**, scoped where the wire
+  contract scopes it — Tempo's v2 tag-names surface is diffed per scope
+  (resource, span, intrinsic), not as one flat set. The only exception is a
+  reference response the reference itself reports as partial, which is
+  declined by name with both job counts rather than diffed against cerberus's
+  complete answer.
 
 Each replayed query lands as `match`, `diverge`, `undecidable`, `unsupported`, or
 `error`, and the report carries a **per-head roll-up** alongside the aggregate,
@@ -211,9 +235,13 @@ what stops a healthy family masking a quiet one: a Loki lane that diffed 412 log
 entries has not thereby proved its metric panels. Every lane you configured gets
 a row, including one whose corpus entries all landed out of scope — a configured
 lane is never silently absent from the table. Each family row also carries a
-`compared` count in **its own unit** (series, log entries, traces), which is the only
-number that is *evidence*: two empty results agree, so a family can record
-nothing but matches while the comparator diffed nothing at all.
+`compared` count in **its own unit** (series, log entries, traces, spans, tag
+values), which is the only number that is *evidence*: two empty results agree, so
+a family can record nothing but matches while the comparator diffed nothing at
+all. A head that ran trace-search but never derived a trace-by-id probe (no
+search returned a trace both backends have) carries no trace-by-id row at all —
+that is a non-blocking note in the report, not a dead family: there was nothing
+to derive from, which is different from something replayed and compared nothing.
 
 The report also names, with an exact count, every dimension no comparator could
 judge — the `not judged` section. This is the opposite of an allow-list: it
@@ -258,6 +286,21 @@ the reference's own job accounting, which is what raises
 `attributes` are likewise not comparable — cerberus does not model them — and are
 named here rather than diffed into a permanent divergence.
 
+On the trace-by-id lane there is one:
+
+- `span-attribute-value-type` — an attribute whose reference type the OTel-CH
+  string-map carrier cannot round-trip (double, array, kvlist, bytes) has its
+  *value* declined; the count is how many attributes that covers. The
+  attribute's *key* is still compared on every span, so a genuinely missing
+  attribute still blocks.
+
+On the tag-discovery lane there is one:
+
+- `tag-discovery-reference-partial` — the reference reported its *own*
+  tag/tag-value enumeration as partial (it completed fewer jobs than it
+  started), so the values it did not return are not evidence of absence and
+  set membership is not judged against cerberus's complete answer.
+
 Three further buckets record inputs that were **not** examined:
 
 - `unconfigured` — a replayable query whose head lane had no backend pair, or no
@@ -273,15 +316,17 @@ Three further buckets record inputs that were **not** examined:
 A green run means the replayed queries matched, not that every input was checked
 — read those buckets too. On divergence the report shows the first differing
 point, anchored in the vocabulary of the shape it came from (a series and a step,
-a stream and a nanosecond timestamp, or a trace, a span within it and the field
-that differed) and the lane it happened on.
+a stream and a nanosecond timestamp, a trace and a span within it and the field
+that differed, or a scope and a tag) and the lane it happened on.
 
 The non-matrix replay parameters — the log-stream `limit` of 5000 and its
 `backward` direction, the trace-search `limit` of 1000 and its spans-per-set of
 100 — are **pinned constants, not flags**, and are recorded in the `--report`
 artifact. They decide how much of a result is truncated, i.e. how much the gate
 can judge, so an operator knob would silently change what parity *means* between
-two runs.
+two runs. Trace-by-id and tag-discovery probes carry no limit of their own to
+pin: a trace-by-id fetch is a direct row-by-id lookup, and a discovery probe
+enumerates whatever the window covers.
 
 `verify` exits **non-zero (code 2)** if a single query diverges or errors, if a
 head with replayable queries had no backend pair to judge them, if the run

@@ -587,10 +587,13 @@ var verifyHeads = []verifyHeadFlags{
 		refFlag: "--ref-loki", cerFlag: "--cerberus-loki",
 		refEnv: "CERBERUS_VERIFY_REF_LOKI", cerEnv: "CERBERUS_VERIFY_CERBERUS_LOKI",
 		refAuthFlag: "--ref-loki-token", cerAuthFlag: "--cerberus-loki-token",
-		orgFlag:      "--ref-loki-org-id",
-		dialect:      migrateverify.LokiDialect(),
-		kindDialects: []migrateverify.KindDialect{migrateverify.LokiLogStreamDialect()},
-		pair:         func(in *verifyInputs) *headPair { return &in.loki },
+		orgFlag: "--ref-loki-org-id",
+		dialect: migrateverify.LokiDialect(),
+		kindDialects: []migrateverify.KindDialect{
+			migrateverify.LokiLogStreamDialect(),
+			migrateverify.LokiTagDiscoveryDialect(),
+		},
+		pair: func(in *verifyInputs) *headPair { return &in.loki },
 	},
 	{
 		head:    migrateverify.HeadProm,
@@ -605,10 +608,14 @@ var verifyHeads = []verifyHeadFlags{
 		refFlag: "--ref-tempo", cerFlag: "--cerberus-tempo",
 		refEnv: "CERBERUS_VERIFY_REF_TEMPO", cerEnv: "CERBERUS_VERIFY_CERBERUS_TEMPO",
 		refAuthFlag: "--ref-tempo-token", cerAuthFlag: "--cerberus-tempo-token",
-		orgFlag:      "--ref-tempo-org-id",
-		dialect:      migrateverify.TempoDialect(),
-		kindDialects: []migrateverify.KindDialect{migrateverify.TempoSearchDialect()},
-		pair:         func(in *verifyInputs) *headPair { return &in.tempo },
+		orgFlag: "--ref-tempo-org-id",
+		dialect: migrateverify.TempoDialect(),
+		kindDialects: []migrateverify.KindDialect{
+			migrateverify.TempoSearchDialect(),
+			migrateverify.TempoTraceByIDDialect(),
+			migrateverify.TempoTagDiscoveryDialect(),
+		},
+		pair: func(in *verifyInputs) *headPair { return &in.tempo },
 	},
 }
 

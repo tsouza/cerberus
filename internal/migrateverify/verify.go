@@ -141,6 +141,14 @@ const (
 	// ReasonSpanFieldDiffers: both backends returned this span, disagreeing on one of
 	// its fields.
 	ReasonSpanFieldDiffers = "span-field-differs"
+	// ReasonTagMissing: a tag/label NAME one backend returned and the other did not.
+	ReasonTagMissing = "tag-missing"
+	// ReasonTagValueMissing: a tag/label VALUE one backend returned and the other
+	// did not.
+	ReasonTagValueMissing = "tag-value-missing"
+	// ReasonTagTypeDiffers: both backends returned this tag value (V2 discovery),
+	// disagreeing on its type.
+	ReasonTagTypeDiffers = "tag-type-differs"
 )
 
 // Sample is one point of a range result: a Unix-seconds timestamp and its value.
@@ -182,6 +190,8 @@ type FirstDiff struct {
 	TraceID       string `json:"trace_id,omitempty"`
 	SpanID        string `json:"span_id,omitempty"`
 	Field         string `json:"field,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	Tag           string `json:"tag,omitempty"`
 }
 
 // canonicalLabels renders a label set as a stable, order-independent key so the
@@ -372,15 +382,26 @@ func samplesByTS(samples []Sample) map[float64]float64 {
 	return out
 }
 
-// Query is one comparison unit to replay: a corpus expression, tagged with the
-// head lane that owns it, the language it came from, and the result KIND that
-// selects the comparator which judges it.
+// Query is one comparison unit to replay: a corpus expression, or a probe
+// DERIVED from one (a trace-by-id fetch, a tag/tag-value enumeration), tagged
+// with the head lane that owns it, the language it came from, and the result
+// KIND that selects the comparator which judges it.
+//
+// TraceID / TagName / Surface are the probe arguments a derived query's kind
+// reads — a trace-by-id fetch reads TraceID, a tag-discovery probe reads
+// TagName (empty for an unfiltered enumeration) and Surface (which endpoint:
+// "labels" / "label-values" for loki, "tags-v1" / "tags-v2" / "tag-values-v1" /
+// "tag-values-v2" for tempo). A corpus-sourced query never sets them; no kind
+// ever reads a field it did not ask for.
 type Query struct {
-	Expr   string `json:"expr"`
-	Source string `json:"source"`
-	Head   string `json:"head"`
-	Lang   string `json:"lang"`
-	Kind   string `json:"kind"`
+	Expr    string `json:"expr"`
+	Source  string `json:"source"`
+	Head    string `json:"head"`
+	Lang    string `json:"lang"`
+	Kind    string `json:"kind"`
+	TraceID string `json:"trace_id,omitempty"`
+	TagName string `json:"tag_name,omitempty"`
+	Surface string `json:"surface,omitempty"`
 }
 
 // OutOfScopeEntry records a corpus entry no comparator can judge — a TraceQL
@@ -672,6 +693,47 @@ func (r Report) IdleLanes() []HeadSummary {
 	for _, h := range r.Heads {
 		if h.Configured && h.Summary.Total == 0 {
 			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// IdleDerivedFamilies returns every CONFIGURED head that ran the trace-search
+// family (so it is CAPABLE of deriving a trace-by-id probe) but whose
+// derived-only trace-by-id family never ran at all.
+//
+// trace-by-id is never a top-level corpus entry — no query language names a
+// trace ID — so it exists in a report ONLY when trace-search derived it. A
+// family that never derived anything leaves no row in Families at all (see
+// reportRun.family), so "never ran" cannot be read off Total==0 the way a
+// corpus-sourced family's deadness can; it has to be read off the family's
+// ABSENCE alongside its capable sibling's presence.
+//
+// It does not block: an all-out-of-scope corpus already fails via
+// JudgedNothing/DeadFamilies, and a head that legitimately never derived a
+// probe (no trace-search query returned a trace both backends have) proved
+// nothing wrong — it simply had nothing to derive from. But it is surfaced,
+// not silent: without it, a derived family that never ran once is
+// indistinguishable from one this build forgot to wire up at all, and an
+// operator reading a report that never mentions trace-by-id has no way to
+// tell "verified" from "never attempted".
+func (r Report) IdleDerivedFamilies() []FamilyRef {
+	var out []FamilyRef
+	for _, h := range r.Heads {
+		if !h.Configured {
+			continue
+		}
+		var canDerive, derived bool
+		for _, f := range h.Families {
+			switch {
+			case f.Kind == KindTraceSearch:
+				canDerive = true
+			case f.Kind == KindTraceByID && f.Total > 0:
+				derived = true
+			}
+		}
+		if canDerive && !derived {
+			out = append(out, FamilyRef{Head: h.Head, Kind: KindTraceByID, Unit: UnitSpans})
 		}
 	}
 	return out
@@ -1171,6 +1233,10 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 			bw.printf("NOTE: head %s was configured but had no replayable query (%d out of scope); "+
 				"this lane was not judged\n", h.Head, h.Summary.OutOfScope)
 		}
+		for _, f := range r.IdleDerivedFamilies() {
+			bw.printf("NOTE: head %s ran trace-search but never derived a %s probe (no trace-search result "+
+				"gave it a trace both backends have); that shape was not judged this run\n", f.Head, f.Kind)
+		}
 	}
 	return bw.err
 }
@@ -1231,9 +1297,12 @@ func writeFirstDiff(bw *errWriter, fd *FirstDiff) {
 	case KindLogStream:
 		bw.printf("   first-diff: stream=%s ts=%sns ref=%s cerberus=%s (%s)\n",
 			fd.Stream, fd.TimestampNano, fd.RefValue, fd.CerberusValue, fd.Reason)
-	case KindTraceSearch:
+	case KindTraceSearch, KindTraceByID:
 		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
 			traceDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
+	case KindTagDiscovery:
+		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
+			tagDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
 	default:
 		bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
 			fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
@@ -1251,6 +1320,16 @@ func traceDiffAnchor(fd *FirstDiff) string {
 	}
 	if fd.Field != "" {
 		anchor += " field=" + fd.Field
+	}
+	return anchor
+}
+
+// tagDiffAnchor names the exact place a tag-discovery divergence sits: the
+// scope (tempo v2 only; empty elsewhere) and the tag name or value it concerns.
+func tagDiffAnchor(fd *FirstDiff) string {
+	anchor := "tag=" + fd.Tag
+	if fd.Scope != "" {
+		anchor = "scope=" + fd.Scope + " " + anchor
 	}
 	return anchor
 }

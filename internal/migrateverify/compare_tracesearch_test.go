@@ -104,9 +104,13 @@ func traceSearchBody(m searchMetricsSpec, traces ...traceSpec) string {
 	return b.String()
 }
 
-// traceSearchServer answers Tempo's search endpoint with a fixed body and records
-// the request it was asked, so a test can assert both the comparison and the wire
-// encoding that produced it.
+// traceSearchServer answers Tempo's search endpoint with a fixed body, AND
+// /api/traces/{id} for every trace that body mentions (see
+// traceByIDBodiesFromSearch) — a trace-search comparison derives a
+// trace-by-id fetch for every trace ID both sides return, so a fake server
+// that only answered the search path would leave every derived probe 404ing
+// into a dead trace-by-id family. It records the request it was asked, so a
+// test can assert both the comparison and the wire encoding that produced it.
 type traceSearchServer struct {
 	url    string
 	params url.Values
@@ -116,9 +120,20 @@ type traceSearchServer struct {
 func newTraceSearchServer(t *testing.T, body string, status int) *traceSearchServer {
 	t.Helper()
 	rec := &traceSearchServer{}
+	byID := traceByIDBodiesFromSearch(t, body)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := strings.CutPrefix(r.URL.Path, tempoTraceByIDPathPrefix); ok {
+			traceByIDBody, ok := byID[id]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(traceByIDBody))
+			return
+		}
 		if r.URL.Path != tempoSearchPath {
-			t.Errorf("trace-search probe hit path %q, want %q", r.URL.Path, tempoSearchPath)
+			t.Errorf("trace-search probe hit path %q, want %q or %q", r.URL.Path, tempoSearchPath, tempoTraceByIDPathPrefix)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -135,11 +150,46 @@ func newTraceSearchServer(t *testing.T, body string, status int) *traceSearchSer
 	return rec
 }
 
-// traceSearchLanes wires one tempo lane whose matrix and non-matrix contracts are
-// served by the SAME backend pair, exactly as the CLI builds it.
+// traceByIDBodiesFromSearch decodes a rendered /api/search body with the SAME
+// production decoder the comparator uses, and renders one trace-by-id body per
+// trace it mentions — so a derived fetch always gets an answer that agrees
+// with whatever this same search response already claimed about that trace's
+// spans. A search body with zero traces yields no bodies at all, which is
+// correct: no common trace ID, no derived fetch, nothing to serve.
+func traceByIDBodiesFromSearch(t *testing.T, searchBody string) map[string]string {
+	t.Helper()
+	decoded, err := decodeTraceSearch([]byte(searchBody))
+	if err != nil {
+		t.Fatalf("traceByIDBodiesFromSearch: decode fixture search body: %v", err)
+	}
+	res, ok := decoded.(traceSearchResult)
+	if !ok {
+		t.Fatalf("traceByIDBodiesFromSearch: decodeTraceSearch returned %T, want traceSearchResult", decoded)
+	}
+	out := make(map[string]string, len(res.Traces))
+	for _, tr := range res.Traces {
+		var b strings.Builder
+		b.WriteString(`{"batches":[{"resource":{"attributes":{}},"spans":[`)
+		for i, sp := range tr.Spans {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"traceId":%q,"spanId":%q,"name":%q,"startTimeUnixNano":%q,"durationNanos":%d}`,
+				tr.TraceID, sp.SpanID, sp.Name, fmt.Sprintf("%d", sp.StartTimeUnixNano), sp.DurationNanos)
+		}
+		b.WriteString(`]}]}`)
+		out[tr.TraceID] = b.String()
+	}
+	return out
+}
+
+// traceSearchLanes wires one tempo lane whose matrix, trace-search, AND
+// trace-by-id contracts are served by the SAME backend pair, exactly as the
+// CLI builds it.
 func traceSearchLanes(ref, cerberus *traceSearchServer) map[string]Lane {
 	mk := func(u string) *HTTPBackend {
-		return NewHTTPBackend(u, WithDialect(TempoDialect()), WithKindDialects(TempoSearchDialect()))
+		return NewHTTPBackend(u, WithDialect(TempoDialect()),
+			WithKindDialects(TempoSearchDialect(), TempoTraceByIDDialect()))
 	}
 	r, c := mk(ref.url), mk(cerberus.url)
 	return map[string]Lane{HeadTempo: {Ref: r, Cerberus: c, RefKind: r, CerberusKind: c}}
@@ -151,8 +201,11 @@ func searchQuery(expr string) Query {
 }
 
 // runTraceSearch replays one trace-search query against two fixed bodies and
-// returns the whole report, so a test can assert the verdict AND the evidence the
-// report attributes to the trace-search family.
+// returns the whole report, so a test can assert the verdict AND the evidence
+// the report attributes to the trace-search family. It also drives the
+// trace-search comparator's derived trace-by-id fetches for every trace ID
+// both bodies mention (see traceByIDBodiesFromSearch), so a positive fixture's
+// trace-by-id family is never left dead by an unanswered derived probe.
 func runTraceSearch(t *testing.T, refBody, cerBody string) Report {
 	t.Helper()
 	ref := newTraceSearchServer(t, refBody, http.StatusOK)
@@ -178,6 +231,24 @@ func searchFamily(t *testing.T, rep Report) FamilySummary {
 		}
 	}
 	t.Fatalf("report carries no tempo trace-search family: %+v", rep.Heads)
+	return FamilySummary{}
+}
+
+// traceByIDFamily is searchFamily's sibling for the DERIVED trace-by-id
+// family.
+func traceByIDFamily(t *testing.T, rep Report) FamilySummary {
+	t.Helper()
+	for _, h := range rep.Heads {
+		if h.Head != HeadTempo {
+			continue
+		}
+		for _, f := range h.Families {
+			if f.Kind == KindTraceByID {
+				return f
+			}
+		}
+	}
+	t.Fatalf("report carries no tempo trace-by-id family: %+v", rep.Heads)
 	return FamilySummary{}
 }
 
@@ -238,8 +309,15 @@ func TestVerify_TraceSearchAgreementCountsEveryTrace(t *testing.T) {
 		traceSearchBody(completeMetrics, traces...),
 		traceSearchBody(cerberusMetrics, traces...))
 
-	if len(rep.Results) != 1 {
-		t.Fatalf("want one result, got %+v", rep.Results)
+	// One search result plus one DERIVED trace-by-id fetch per trace both
+	// backends returned (2 here, under maxDerivedTraceFetchesPerSearch): the
+	// trace-search comparator spawns a structural follow-up for every trace ID
+	// it found in common, and Verify's second phase replays them through the
+	// same accounting — see compareTraceSearch's Derived and Verify's two-phase
+	// runBatch.
+	const wantDerivedFetches = 2
+	if len(rep.Results) != 1+wantDerivedFetches {
+		t.Fatalf("want 1 search result + %d derived trace-by-id results, got %+v", wantDerivedFetches, rep.Results)
 	}
 	res := rep.Results[0]
 	if res.Verdict != VerdictMatch {
@@ -265,8 +343,20 @@ func TestVerify_TraceSearchAgreementCountsEveryTrace(t *testing.T) {
 	if f.Unit != UnitTraces || f.Compared != wantTraces || f.Match != 1 {
 		t.Errorf("trace-search family = %+v, want %d traces compared in %q on one match", f, wantTraces, UnitTraces)
 	}
+	// The trace-search comparator's own DERIVATION must actually have judged
+	// something: two derived trace-by-id fetches that all matched, each on the
+	// one span fixtureTrace gives it.
+	byID := traceByIDFamily(t, rep)
+	if byID.Total != wantDerivedFetches || byID.Match != wantDerivedFetches || byID.Compared == 0 {
+		t.Errorf("trace-by-id family = %+v, want %d replayed and matched with real evidence compared", byID, wantDerivedFetches)
+	}
+	for _, res := range rep.Results[1:] {
+		if res.Kind != KindTraceByID || res.Verdict != VerdictMatch {
+			t.Errorf("derived result = %+v, want a matching trace-by-id fetch", res)
+		}
+	}
 	if rep.Failed() {
-		t.Errorf("a trace-search lane that compared %d traces must pass", wantTraces)
+		t.Errorf("a trace-search lane that compared %d traces (and matched every derived trace-by-id fetch) must pass, got %+v", wantTraces, rep.Summary)
 	}
 }
 
@@ -367,10 +457,14 @@ func TestVerify_TruncatedTraceSearchIsUndecidableNotMatched(t *testing.T) {
 			t.Errorf("%s detail = %q, want it to state %q", LimitSearchTruncated, lim.Detail, want)
 		}
 	}
+	// One undecidable trace-search summary, plus maxDerivedTraceFetchesPerSearch
+	// derived trace-by-id fetches — each drawn from the ID overlap, where both
+	// sides render the SAME fixtureTrace(n) for a shared n, so every derived
+	// fetch matches.
 	s := rep.Summary
-	if s.Undecidable != 1 || s.Match != 0 || s.Diverge != 0 {
-		t.Errorf("summary = %d undecidable / %d match / %d diverge, want the run counted exactly one undecidable query",
-			s.Undecidable, s.Match, s.Diverge)
+	if s.Undecidable != 1 || s.Match != maxDerivedTraceFetchesPerSearch || s.Diverge != 0 {
+		t.Errorf("summary = %d undecidable / %d match / %d diverge, want one undecidable trace-search query "+
+			"plus %d matching derived trace-by-id fetches", s.Undecidable, s.Match, s.Diverge, maxDerivedTraceFetchesPerSearch)
 	}
 	// Undecidable is an honest "I could not judge this", not a failure: the lane
 	// still field-diffed 997 traces and found no difference.

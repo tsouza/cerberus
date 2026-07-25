@@ -106,6 +106,71 @@ func TestEvalVerify_HealthyLanesDoNotBlock(t *testing.T) {
 	}
 }
 
+// TestEvalVerify_DeadTraceByIDFamilyBlocks pins the family-masking rule at the
+// derived-family level: a healthy tempo trace-search family (compared 6
+// traces) must not vouch for its own trace-by-id family replaying 5 probes and
+// comparing none of them — the exact "healthy family does not vouch for a dead
+// sibling family" case Wave 3's per-family evidence counters exist to catch.
+func TestEvalVerify_DeadTraceByIDFamilyBlocks(t *testing.T) {
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 8, Match: 8, ComparedUnits: 6},
+		Heads: []migrateverify.HeadSummary{
+			{
+				Head: migrateverify.HeadTempo, Configured: true,
+				Summary: migrateverify.Summary{Total: 8, Match: 8, ComparedUnits: 6},
+				Families: []migrateverify.FamilySummary{
+					{Kind: migrateverify.KindTraceSearch, Unit: migrateverify.UnitTraces, Total: 1, Match: 1, Compared: 6},
+					{Kind: migrateverify.KindTraceByID, Unit: migrateverify.UnitSpans, Total: 5, Match: 5, Compared: 0},
+				},
+			},
+		},
+	}
+	dec := evalWithVerify(t, rep)
+	if dec.Pass {
+		t.Fatalf("a derived family that replayed 5 probes and compared none of them must fail the gate, got PASS: %+v", dec)
+	}
+	st := verifyStage(t, dec)
+	if st.Verdict != migrategate.VerdictFail || !st.Blocking {
+		t.Errorf("verify stage = %q blocking=%v, want fail + blocking", st.Verdict, st.Blocking)
+	}
+	if !containsSubstr(st.Reasons, "head tempo family trace-by-id compared nothing") {
+		t.Errorf("the blocking reason must name the dead derived family, got %+v", st.Reasons)
+	}
+	// The healthy trace-search family must not be accused: naming it here would
+	// send the operator to fix a search endpoint that answered every query.
+	if containsSubstr(st.Reasons, "head tempo family trace-search compared nothing") {
+		t.Errorf("the healthy trace-search family must not be reported dead, got %+v", st.Reasons)
+	}
+}
+
+// TestEvalVerify_IdleDerivedFamilyCaveatIsNonBlocking pins the other half: a
+// tempo lane that ran trace-search but never derived a single trace-by-id
+// probe (every search diverged on membership before a common trace ID
+// existed to derive from) has nothing wrong to report — it is a caveat, not a
+// failure, and must not block a run that is otherwise clean.
+func TestEvalVerify_IdleDerivedFamilyCaveatIsNonBlocking(t *testing.T) {
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 1, Match: 1, ComparedUnits: 3},
+		Heads: []migrateverify.HeadSummary{
+			{
+				Head: migrateverify.HeadTempo, Configured: true,
+				Summary: migrateverify.Summary{Total: 1, Match: 1, ComparedUnits: 3},
+				Families: []migrateverify.FamilySummary{
+					{Kind: migrateverify.KindTraceSearch, Unit: migrateverify.UnitTraces, Total: 1, Match: 1, Compared: 3},
+				},
+			},
+		},
+	}
+	dec := evalWithVerify(t, rep)
+	if !dec.Pass {
+		t.Fatalf("a head with nothing to derive from proved nothing wrong; want PASS, got %+v", dec)
+	}
+	st := verifyStage(t, dec)
+	if !containsSubstr(st.Reasons, "ran trace-search but never derived a "+migrateverify.KindTraceByID+" probe") {
+		t.Errorf("want a non-blocking caveat naming the idle derived family, got %+v", st.Reasons)
+	}
+}
+
 // TestEvalVerify_UnsupportedOnlyLaneStillBlocksEvenWhenItIsTheOnlyLane pins that
 // the per-lane rule is not a replacement for the aggregate one: a single lane
 // that compared nothing must still block, with the aggregate reason.

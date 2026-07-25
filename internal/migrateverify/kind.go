@@ -23,6 +23,14 @@ const (
 	KindLogStream = "log-stream"
 	// KindTraceSearch: a TraceQL query that returns trace summaries, not a metric matrix.
 	KindTraceSearch = "trace-search"
+	// KindTraceByID: a single-trace fetch, DERIVED from a trace-search result
+	// (never a top-level corpus entry — no query language names a trace ID). It
+	// returns the whole trace as a span set.
+	KindTraceByID = "trace-by-id"
+	// KindTagDiscovery: a tag/label-name or tag/label-value enumeration probe,
+	// DERIVED from the corpus's own matchers and attribute references (never a
+	// top-level corpus entry). It returns a set.
+	KindTagDiscovery = "tag-discovery"
 	// KindMetricsCompare: a TraceQL compare() query, whose baseline-vs-selection
 	// attribute split is not a comparable metric matrix.
 	KindMetricsCompare = "metrics-compare"
@@ -42,6 +50,8 @@ const (
 	UnitSeries     = "series"
 	UnitLogEntries = "log entries"
 	UnitTraces     = "traces"
+	UnitSpans      = "spans"
+	UnitTagValues  = "tag values"
 	// UnitComparisons is the shape-agnostic noun, used when a report attributed no
 	// shape to a head's replays and nothing says what its units were.
 	UnitComparisons = "comparison units"
@@ -124,6 +134,14 @@ const (
 	// LimitSearchRefPartial: a search the REFERENCE itself reported as partial, so
 	// the traces it did not return are not evidence of absence.
 	LimitSearchRefPartial = "trace-search-reference-partial"
+	// LimitSpanAttrValueType: a span attribute whose reference type is one the
+	// OTel-CH string-map carrier cannot round-trip (double / array / kvlist /
+	// bytes), so its VALUE is not compared — only that both sides carry the key.
+	LimitSpanAttrValueType = "span-attribute-value-type"
+	// LimitTagDiscoveryRefPartial: a tag/tag-value enumeration the REFERENCE
+	// itself reported as partial, so the values it did not return are not
+	// evidence of absence.
+	LimitTagDiscoveryRefPartial = "tag-discovery-reference-partial"
 )
 
 // limitationDetails is the canonical, invariant explanation for each limitation
@@ -156,6 +174,15 @@ var limitationDetails = map[string]string{
 		"started), so the traces it did not return are not evidence of absence and set membership was not judged " +
 		"against cerberus's complete answer. The count is the number of searches the reference answered partially; " +
 		"the traces both backends returned were still field-diffed.",
+	LimitSpanAttrValueType: "an attribute's VALUE was not compared: the OTel-CH string-map carrier erases a " +
+		"non-string attribute's original type, so a reference double / array / kvlist / bytes value cannot be " +
+		"round-tripped against cerberus's always-string rendering. The attribute's KEY is still compared, so a " +
+		"missing attribute is still a divergence; only its value is declined. The count is the number of " +
+		"attributes this covers.",
+	LimitTagDiscoveryRefPartial: "the reference reported its OWN tag/tag-value enumeration as partial (it " +
+		"completed fewer jobs than it started), so the values it did not return are not evidence of absence and " +
+		"set membership was not judged against cerberus's complete answer. The count is the number of probes the " +
+		"reference answered partially.",
 }
 
 // limitation builds one limitation from its code and count, carrying the
@@ -229,8 +256,10 @@ type kindHandler struct {
 // routed to a kind with no entry here is an ERROR, never a silent pass: the gate
 // cannot claim parity for a shape it has no definition of equality for.
 var kindHandlers = map[string]kindHandler{
-	KindLogStream:   {kind: KindLogStream, unit: UnitLogEntries, compare: compareLogStreams},
-	KindTraceSearch: {kind: KindTraceSearch, unit: UnitTraces, compare: compareTraceSearch},
+	KindLogStream:    {kind: KindLogStream, unit: UnitLogEntries, compare: compareLogStreams},
+	KindTraceSearch:  {kind: KindTraceSearch, unit: UnitTraces, compare: compareTraceSearch},
+	KindTraceByID:    {kind: KindTraceByID, unit: UnitSpans, compare: compareTraceByID},
+	KindTagDiscovery: {kind: KindTagDiscovery, unit: UnitTagValues, compare: compareTagDiscovery},
 }
 
 // kindUnit returns the comparison unit a result kind counts in. The matrix kind

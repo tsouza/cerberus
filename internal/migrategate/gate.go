@@ -214,6 +214,7 @@ func evalVerify(path string) (StageResult, error) {
 	s := rep.Summary
 	caveats := verifyCaveats(s)
 	caveats = append(caveats, idleLaneCaveats(rep.IdleLanes())...)
+	caveats = append(caveats, idleDerivedFamilyCaveats(rep.IdleDerivedFamilies())...)
 	// A run proves parity only if the comparator actually DIFFED something.
 	// Unsupported replays (emitted SQL but returned no comparable matrix live) and
 	// out-of-scope / harvest-skipped entries inflate Total without comparing
@@ -324,6 +325,26 @@ func idleLaneCaveats(idle []migrateverify.HeadSummary) []string {
 		out = append(out, fmt.Sprintf(
 			"head %s was configured but had no replayable query (%d corpus entries for it are out of scope); that lane was not judged",
 			h.Head, h.Summary.OutOfScope,
+		))
+	}
+	return out
+}
+
+// idleDerivedFamilyCaveats names every head that ran trace-search (so it is
+// CAPABLE of deriving a trace-by-id probe) but never derived one — no
+// trace-search result gave it a trace both backends have. It does not block:
+// a head with nothing to derive from proved nothing wrong, and blocking on it
+// would penalise a corpus whose searches all diverged on a shape trace-search
+// itself already reports. It is a caveat, not silence, for the same reason
+// idleLaneCaveats is one: an operator who expects trace-by-id structural
+// coverage should see that this run never exercised it, rather than infer
+// "verified" from an artifact that simply never mentions the shape.
+func idleDerivedFamilyCaveats(idle []migrateverify.FamilyRef) []string {
+	var out []string
+	for _, f := range idle {
+		out = append(out, fmt.Sprintf(
+			"head %s ran trace-search but never derived a %s probe (no trace-search result gave it a trace "+
+				"both backends have); that shape was not judged this run", f.Head, f.Kind,
 		))
 	}
 	return out

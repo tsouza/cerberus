@@ -42,13 +42,73 @@ const tempoRefMetrics = `{"series":[{"labels":[{"key":"job","value":{"stringValu
 const tempoCerMetrics = `{"status":"COMPLETE","series":[{"labels":[{"key":"job","value":{"stringValue":"api"}}],` +
 	`"samples":[{"timestampMs":1700000000000,"value":7},{"timestampMs":1700000060000,"value":0}]}]}`
 
-// pathServer answers only the given path, reading the query out of the given
-// parameter, and 404s anything else. The path assertion is load-bearing: a
+// discoveryStubBodies answers the UNFILTERED (no-key) tag/label discovery
+// endpoints every metric- or log-stream-lane fixture's corpus now anchors one
+// or two of (see discoveryProbesForCorpus) with a small, fixed, IDENTICAL body
+// regardless of which side (ref or cerberus) asks — so a fixture whose corpus
+// merely touches loki/tempo, without itself testing discovery, always reports
+// a healthy MATCH on those probes rather than leaving the tag-discovery family
+// dead.
+var discoveryStubBodies = map[string]string{
+	"/loki/api/v1/labels": `{"status":"success","data":["job"]}`,
+	"/api/search/tags":    `{"tagNames":["service.name"]}`,
+	"/api/v2/search/tags": `{"scopes":[{"name":"resource","tags":["service.name"]}]}`,
+}
+
+// serveIfDiscoveryProbe answers r with a small, fixed, IDENTICAL body
+// (regardless of which side — ref or cerberus — is asking) when its path is
+// one of the six tag/label discovery endpoints a corpus-anchored probe can
+// hit (see discoveryProbesForCorpus): it reports whether it handled the
+// request, so a caller's own path-specific handler runs only for its OWN
+// endpoint and never has to special-case discovery itself.
+//
+// The two tag-VALUES surfaces are matched by PREFIX (…/label/<name>/values,
+// …/tag/<name>/values, …/v2/search/tag/<name>/values) because the specific
+// key name varies per fixture (whichever LogQL matcher or TraceQL attribute
+// that fixture's corpus references) — the response's content does not depend
+// on which key was asked, since every fixture using this helper is exercising
+// its OWN lane's shape, not discovery.
+func serveIfDiscoveryProbe(w http.ResponseWriter, r *http.Request) bool {
+	if body, ok := discoveryStubBodies[r.URL.Path]; ok {
+		_, _ = w.Write([]byte(body))
+		return true
+	}
+	switch {
+	case strings.HasPrefix(r.URL.Path, lokiLabelValuesPathPrefixForTests) && strings.HasSuffix(r.URL.Path, "/values"):
+		_, _ = w.Write([]byte(`{"status":"success","data":["api"]}`))
+	case strings.HasPrefix(r.URL.Path, tempoTagValuesV2PathPrefixForTests) && strings.HasSuffix(r.URL.Path, "/values"):
+		_, _ = w.Write([]byte(`{"tagValues":[{"type":"string","value":"500"}]}`))
+	case strings.HasPrefix(r.URL.Path, tempoTagValuesV1PathPrefixForTests) && strings.HasSuffix(r.URL.Path, "/values"):
+		_, _ = w.Write([]byte(`{"tagValues":["500"]}`))
+	default:
+		return false
+	}
+	return true
+}
+
+// The three dynamic (tag-NAME-keyed) discovery path prefixes
+// serveIfDiscoveryProbe matches on, mirroring migrateverify's own unexported
+// dialect path constants so a test does not have to import an internal
+// package purely to spell a URL prefix.
+const (
+	lokiLabelValuesPathPrefixForTests  = "/loki/api/v1/label/"
+	tempoTagValuesV1PathPrefixForTests = "/api/search/tag/"
+	tempoTagValuesV2PathPrefixForTests = "/api/v2/search/tag/"
+)
+
+// pathServer answers the given path, reading the query out of the given
+// parameter, PLUS every discovery endpoint (see serveIfDiscoveryProbe) —
+// every fixture's corpus touching loki/tempo anchors those probes now,
+// whether or not the fixture is testing discovery itself. Any other path
+// 404s. The path assertion on the primary endpoint is load-bearing: a
 // wrong-path dialect would otherwise surface as a 400 → "unsupported", which
 // passes the gate while comparing nothing.
 func pathServer(t *testing.T, path, queryParam string, byQuery map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveIfDiscoveryProbe(w, r) {
+			return
+		}
 		if r.URL.Path != path {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = fmt.Fprintf(w, `{"error":"this backend serves only %s, got %s"}`, path, r.URL.Path)
@@ -103,11 +163,20 @@ func windowArgs() []string {
 	return []string{"--start", "1700000000", "--end", "1700000600", "--step", "60s"}
 }
 
-// headTableRows parses the report's per-head lane table into head → row text. It
-// keys on the row's own first field rather than a substring of the whole report,
-// so "the loki lane is absent" cannot be satisfied by the word "loki" appearing in
-// prose elsewhere, and a per-lane count assertion cannot accidentally read another
-// lane's row.
+// familyRowPrefix is the exact leading text a per-family sub-row (printed only
+// under a multi-family head — see Report.writeHeadTable) starts with. It is
+// MORE indented than a head row's "#   <head> " prefix, which is what
+// headTableRows uses to skip family rows without mistaking a family's Kind
+// token (e.g. "tag-discovery") for a head token.
+const familyRowPrefix = "#          "
+
+// headTableRows parses the report's per-head lane table into head → row text,
+// skipping each head's indented per-family sub-rows. It keys on the row's own
+// first field rather than a substring of the whole report, so "the loki lane
+// is absent" cannot be satisfied by the word "loki" appearing in prose
+// elsewhere, and a per-lane count assertion cannot accidentally read another
+// lane's row (or, now that a head can carry more than one family, one of its
+// own family rows).
 func headTableRows(t *testing.T, report string) map[string]string {
 	t.Helper()
 	rows := map[string]string{}
@@ -118,6 +187,9 @@ func headTableRows(t *testing.T, report string) map[string]string {
 			continue
 		}
 		if !inTable {
+			continue
+		}
+		if strings.HasPrefix(line, familyRowPrefix) {
 			continue
 		}
 		fields := strings.Fields(line)
@@ -242,16 +314,26 @@ func TestRunVerify_AllThreeLanesReplayOnTheirOwnEndpoints(t *testing.T) {
 	}
 
 	s := out.String()
-	if !strings.Contains(s, "VERIFICATION PASSED — all 3 queries matched") {
-		t.Errorf("want all three lanes matched, got:\n%s", s)
+	// 1 metric query per head (3) plus the discovery probes writeMixedCorpus's
+	// loki/tempo entries anchor: loki's bare aggregate matches no LogQL matcher,
+	// so it anchors only the unfiltered "labels" probe (1); tempo's bare `{}`
+	// filter references no attribute, so it anchors only the two unfiltered tags
+	// probes (2) — see discoveryProbesForCorpus. 3 metric + 1 + 2 = 6.
+	if !strings.Contains(s, "VERIFICATION PASSED — all 6 queries matched") {
+		t.Errorf("want all three lanes' metric AND discovery probes matched, got:\n%s", s)
 	}
 	rows := headTableRows(t, s)
 	if len(rows) != 3 {
 		t.Errorf("per-head table must carry exactly three lanes, got %+v", rows)
 	}
-	for _, head := range []string{migrateverify.HeadLoki, migrateverify.HeadProm, migrateverify.HeadTempo} {
-		if !strings.Contains(rows[head], "1 replayed: 1 match") {
-			t.Errorf("head %q row must read 1 replayed / 1 match, got %q (all rows %+v)", head, rows[head], rows)
+	wantReplayed := map[string]string{
+		migrateverify.HeadLoki:  "2 replayed: 2 match",
+		migrateverify.HeadProm:  "1 replayed: 1 match",
+		migrateverify.HeadTempo: "3 replayed: 3 match",
+	}
+	for head, want := range wantReplayed {
+		if !strings.Contains(rows[head], want) {
+			t.Errorf("head %q row must read %q, got %q (all rows %+v)", head, want, rows[head], rows)
 		}
 	}
 	// No lane may be reported unjudged: all three were configured.
@@ -323,22 +405,36 @@ func TestRunVerify_UnconfiguredLaneFailsTheRun(t *testing.T) {
 	if !strings.HasPrefix(s, "VERIFICATION FAILED") {
 		t.Errorf("stdout must lead with VERIFICATION FAILED, got:\n%s", s)
 	}
-	if !strings.Contains(s, "== unconfigured (1)") {
+	// 2 unconfigured: the corpus's own lokiRate metric query, PLUS the one
+	// unfiltered "labels" discovery probe it anchors (lokiRate is a bare
+	// aggregate with no LogQL matcher, so no label-values probe is anchored —
+	// see discoveryProbesForCorpus). Both share the same loki lane, so both are
+	// unjudged for the same reason: no loki backend pair was configured.
+	if !strings.Contains(s, "== unconfigured (2)") {
 		t.Errorf("the report must enumerate the unconfigured queries, got:\n%s", s)
 	}
 	if !strings.Contains(s, "panel:lograte") || !strings.Contains(s, "head=loki") {
 		t.Errorf("the unconfigured entry must name its source and head, got:\n%s", s)
 	}
+	if !strings.Contains(s, discoverySourceTagForTests) {
+		t.Errorf("the anchored discovery probe must also be enumerated as unconfigured, got:\n%s", s)
+	}
 	// The prom lane still compared its own query honestly, and the loki lane's row
-	// must account for the unjudged query rather than omitting it.
+	// must account for both unjudged queries rather than omitting them.
 	rows := headTableRows(t, s)
 	if !strings.Contains(rows[migrateverify.HeadProm], "1 replayed: 1 match") {
 		t.Errorf("the prom lane must still report its own match, got %q", rows[migrateverify.HeadProm])
 	}
-	if !strings.Contains(rows[migrateverify.HeadLoki], "0 replayed") || !strings.Contains(rows[migrateverify.HeadLoki], "1 unconfigured") {
-		t.Errorf("the loki lane row must show 0 replayed / 1 unconfigured, got %q", rows[migrateverify.HeadLoki])
+	if !strings.Contains(rows[migrateverify.HeadLoki], "0 replayed") || !strings.Contains(rows[migrateverify.HeadLoki], "2 unconfigured") {
+		t.Errorf("the loki lane row must show 0 replayed / 2 unconfigured, got %q", rows[migrateverify.HeadLoki])
 	}
 }
+
+// discoverySourceTagForTests mirrors migrateverify's unexported
+// discoverySourceTag constant: the Source every corpus-anchored discovery
+// probe carries, so a test asserting the report enumerates one does not have
+// to hardcode the literal a second time.
+const discoverySourceTagForTests = "derived:discovery"
 
 // TestRunVerify_HalfPairIsUsageError pins that supplying one side of a lane is a
 // usage error naming the missing flag, for both new heads and both directions. A
@@ -431,8 +527,11 @@ func TestRunVerify_EnvFallbackPerHead(t *testing.T) {
 		t.Fatalf("env-driven two-lane run: %v (stderr %s)", err, errOut.String())
 	}
 	s := out.String()
-	if !strings.Contains(s, "VERIFICATION PASSED — all 2 queries matched") {
-		t.Errorf("both env-configured lanes must be judged, got:\n%s", s)
+	// 1 prom query + 1 loki metric query + the one unfiltered "labels" discovery
+	// probe lokiRate anchors (it is a bare aggregate with no LogQL matcher, so no
+	// label-values probe — see discoveryProbesForCorpus).
+	if !strings.Contains(s, "VERIFICATION PASSED — all 3 queries matched") {
+		t.Errorf("both env-configured lanes (plus the anchored loki discovery probe) must be judged, got:\n%s", s)
 	}
 	if strings.Contains(s, "== unconfigured") {
 		t.Errorf("the loki lane came from the environment and must be configured, got:\n%s", s)
@@ -460,9 +559,18 @@ func TestRunVerify_RefOrgIDIsSentRecordedAndTokenIsNot(t *testing.T) {
 	promCer := promServer(t, map[string]string{"up": upMatrix})
 
 	var refTenants, cerTenants []string
+	// tenantRecorder answers BOTH requests this lane now issues — the metric
+	// query_range AND the discovery probe writeLokiLaneCorpus's lokiRate entry
+	// anchors — recording the tenant header on every one, so the assertions
+	// below can confirm it is sent (or withheld) consistently across the whole
+	// lane, not just its first request.
 	tenantRecorder := func(sink *[]string) *httptest.Server {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			*sink = append(*sink, r.Header.Get("X-Scope-OrgID"))
+			if body, ok := discoveryStubBodies[r.URL.Path]; ok {
+				_, _ = w.Write([]byte(body))
+				return
+			}
 			_, _ = w.Write([]byte(lokiMatrix))
 		}))
 		t.Cleanup(srv.Close)
@@ -485,13 +593,27 @@ func TestRunVerify_RefOrgIDIsSentRecordedAndTokenIsNot(t *testing.T) {
 		t.Fatalf("tenant-scoped run: %v\n%s", err, out.String())
 	}
 
-	if len(refTenants) != 1 || refTenants[0] != tenant {
-		t.Errorf("the reference Loki must receive X-Scope-OrgID=%q, got %v", tenant, refTenants)
+	// Two reference requests now: the metric query_range AND the discovery probe
+	// lokiRate anchors (see discoveryProbesForCorpus). The tenant header must ride
+	// on BOTH — it is a per-lane auth concern, not a per-endpoint one.
+	const wantRefRequests = 2
+	if len(refTenants) != wantRefRequests {
+		t.Fatalf("want %d reference requests (query_range + discovery), got %v", wantRefRequests, refTenants)
+	}
+	for _, got := range refTenants {
+		if got != tenant {
+			t.Errorf("the reference Loki must receive X-Scope-OrgID=%q on every request, got %v", tenant, refTenants)
+		}
 	}
 	// Cerberus reads no tenant header, so the flag is reference-side only and must
 	// not be forwarded there — sending it would advertise tenancy cerberus lacks.
-	if len(cerTenants) != 1 || cerTenants[0] != "" {
-		t.Errorf("cerberus must receive no tenant header, got %v", cerTenants)
+	if len(cerTenants) != wantRefRequests {
+		t.Fatalf("want %d cerberus requests (query_range + discovery), got %v", wantRefRequests, cerTenants)
+	}
+	for _, got := range cerTenants {
+		if got != "" {
+			t.Errorf("cerberus must receive no tenant header on any request, got %v", cerTenants)
+		}
 	}
 
 	data, err := os.ReadFile(reportPath) //nolint:gosec // test-controlled temp path.
@@ -589,11 +711,18 @@ func TestRunVerify_MultiHeadReportRecordsEveryLane(t *testing.T) {
 		t.Errorf("params.backends heads = %v, want head-token order %v", gotBackendHeads, wantHeads)
 	}
 
+	// writeMixedCorpus's own replayable queries are 1 per head; loki and tempo
+	// each additionally anchor their unfiltered discovery probes (see
+	// discoveryProbesForCorpus): loki's bare aggregate matches no LogQL matcher
+	// (+1 labels probe), tempo's bare `{}` filter references no attribute (+2
+	// unfiltered tags probes).
+	wantTotal := map[string]int{migrateverify.HeadLoki: 2, migrateverify.HeadProm: 1, migrateverify.HeadTempo: 3}
 	gotSummaryHeads := make([]string, 0, len(diag.Heads))
 	for _, h := range diag.Heads {
 		gotSummaryHeads = append(gotSummaryHeads, h.Head)
-		if h.Summary.Total != 1 || h.Summary.Match != 1 {
-			t.Errorf("head %s summary = %+v, want 1 replayed / 1 match", h.Head, h.Summary)
+		want := wantTotal[h.Head]
+		if h.Summary.Total != want || h.Summary.Match != want {
+			t.Errorf("head %s summary = %+v, want %d replayed / %d match", h.Head, h.Summary, want, want)
 		}
 	}
 	if strings.Join(gotSummaryHeads, ",") != strings.Join(wantHeads, ",") {

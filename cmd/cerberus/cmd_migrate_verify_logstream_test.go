@@ -54,6 +54,9 @@ func writeLogPanelCorpus(t *testing.T, dir string) string {
 func lokiLogServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveIfDiscoveryProbe(w, r) {
+			return
+		}
 		const path = "/loki/api/v1/query_range"
 		if r.URL.Path != path {
 			w.WriteHeader(http.StatusNotFound)
@@ -106,15 +109,23 @@ func TestRunVerify_LogPanelLaneReplaysAndReportsItsOwnEvidence(t *testing.T) {
 	}
 
 	s := out.String()
-	if !strings.Contains(s, "VERIFICATION PASSED — all 2 queries matched") {
-		t.Errorf("both the rule and the log panel must be judged, got:\n%s", s)
+	// 1 prom rule + 1 loki log panel + the two discovery probes the log panel's
+	// {job="api"} matcher anchors (an unfiltered "labels" probe, plus one
+	// "label-values" probe for the one matcher key "job" — see
+	// discoveryProbesForCorpus).
+	if !strings.Contains(s, "VERIFICATION PASSED — all 4 queries matched") {
+		t.Errorf("both the rule and the log panel (plus their anchored discovery probes) must be judged, got:\n%s", s)
 	}
 	// The per-head table states each lane's evidence in ITS OWN unit. "2 series
 	// compared" on a lane that diffed log lines would be a false statement about
 	// what was proved, and "1 log entry compared" about the prom lane equally so.
+	// Loki now carries TWO families (log-stream + the anchored tag-discovery), so
+	// its head row itself omits the compact "N compared" clause (see
+	// Report.writeHeadTable) — the log-entry count lives on the log-stream
+	// FAMILY sub-row instead, which headTableRows deliberately skips.
 	rows := headTableRows(t, s)
-	if !strings.Contains(rows[migrateverify.HeadLoki], "2 log entries compared") {
-		t.Errorf("the loki row must count log entries, got %q", rows[migrateverify.HeadLoki])
+	if !strings.Contains(s, "log-stream") || !strings.Contains(s, "2 log entries compared") {
+		t.Errorf("the loki log-stream family row must count log entries, got:\n%s", s)
 	}
 	if !strings.Contains(rows[migrateverify.HeadProm], "1 series compared") {
 		t.Errorf("the prom row must still count series, got %q", rows[migrateverify.HeadProm])
