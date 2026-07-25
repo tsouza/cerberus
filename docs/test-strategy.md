@@ -435,25 +435,33 @@ runs as its own matrix entry in `.github/workflows/mutation.yml`. The
 gate is informational on push-to-main; flipped to required when a
 phase has held the 95% efficacy floor for a stable streak.
 
-| Phase                       | Package              | Efficacy floor |
-| --------------------------- | -------------------- | -------------- |
-| `phase1`                    | `internal/chplan`    | 95%            |
-| `phase2`                    | `internal/chsql`     | 95%            |
-| `phase3-optimizer`          | `internal/optimizer` | 95%            |
-| `phase4-promql`             | `internal/promql`    | 95%            |
-| `phase4-logql-lower`        | `internal/logql`     | 95%            |
-| `phase4-logql-aggregation`  | `internal/logql`     | 93%            |
-| `phase4-logql-other-a`      | `internal/logql`     | 95%            |
-| `phase4-logql-other-b`      | `internal/logql`     | 95%            |
-| `phase4-traceql`            | `internal/traceql`   | 95%            |
-| `phase5-qlcommon`           | `internal/qlcommon`  | 95%            |
+| Phase                       | Package                  | Efficacy floor |
+| --------------------------- | ------------------------ | -------------- |
+| `phase1`                    | `internal/chplan`        | 95%            |
+| `phase2`                    | `internal/chsql`         | 95%            |
+| `phase3-optimizer`          | `internal/optimizer`     | 95%            |
+| `phase4-promql`             | `internal/promql`        | 95%            |
+| `phase4-logql-lower`        | `internal/logql`         | 95%            |
+| `phase4-logql-aggregation`  | `internal/logql`         | 93%            |
+| `phase4-logql-other-a`      | `internal/logql`         | 95%            |
+| `phase4-logql-other-b`      | `internal/logql`         | 95%            |
+| `phase4-logql-parser`       | `internal/logql/lsyntax` | 95%            |
+| `phase4-logql-lsyntax`      | `internal/logql/lsyntax` | 95%            |
+| `phase4-traceql`            | `internal/traceql`       | 95%            |
+| `phase5-qlcommon`           | `internal/qlcommon`      | 95%            |
 
 `internal/logql` is split into four sibling matrix entries (each scoped
 to `./internal/logql` but with disjoint `--exclude-files` regexes) to
 keep the `go test ./internal/logql` cycle under the ubuntu-latest memory
 ceiling; `phase4-logql-aggregation` sits one point lower at 93% to absorb
-a documented equivalent mutant. See `.github/workflows/mutation.yml` for
-the per-phase exclude sets.
+a documented equivalent mutant. Its `internal/logql/lsyntax` parser
+subpackage gets its own pair of dedicated legs (`phase4-logql-parser` /
+`phase4-logql-lsyntax`, mirroring the `internal/traceql/ast` split
+below) rather than being swept into the four `internal/logql` legs —
+gremlins recurses into every subdirectory of a scope, so leaving
+`lsyntax` unexcluded there let a relocated, heavier test file bloat
+every one of those legs' `go test` cycles (2026-07-25 incident). See
+`.github/workflows/mutation.yml` for the per-phase exclude sets.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs
