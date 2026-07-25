@@ -62,41 +62,6 @@ type RuleQuery struct {
 	Env       Env
 }
 
-// OOMFloor is the observed route-A OOM cost floor: the minimum fan-out and
-// minimum anchor count over the eligible corpus population the cost gate can
-// actually protect — route-A queries that OOM'd AFTER being gated below the cost
-// thresholds (decision_reason = below-threshold). That predicate excludes the
-// OOMs lowering the gate cannot move to route B (instant / not-sliceable / high-D
-// were rejected for eligibility, not by the cost gate). The additional
-// fanout > 0 AND n_anchors > 0 predicate is a guard against a gridless row
-// (e.g. an instant query, recorded with fanout = 0) slipping in and cratering
-// the min to 0. HasSignal is false when that population is empty (cold start).
-//
-// Alongside the floor, OOMFloor carries rolling-window outcome counts (over the
-// same corpus window) used to gauge whether the loop is doing good or bad:
-// RouteAOomCount is the eligible population the loop targets (should trend to 0
-// as it protects them), RouteBExecutions is the volume it routes to the safe
-// path, and RouteBOomCount is route-B OOMs — the mitigation itself failing, which
-// should stay 0.
-type OOMFloor struct {
-	MinFanout  int
-	MinAnchors int
-	HasSignal  bool
-
-	RouteAOomCount   int64
-	RouteBExecutions int64
-	RouteBOomCount   int64
-}
-
-// OOMFloorSource is the narrow read surface the autotune fit needs: the observed
-// route-A OOM floor over the eligible population. Only the ClickHouse-table
-// source implements it (the loop runs against CH in production); it is kept
-// separate from CorpusSource so adding it does not force every corpus fake to
-// grow a method.
-type OOMFloorSource interface {
-	OOMFloor(ctx context.Context) (OOMFloor, error)
-}
-
 // CorpusSource is the backend seam. Both the ClickHouse-table and the JSONL
 // implementations satisfy it; the evaluator never branches on backend.
 type CorpusSource interface {
