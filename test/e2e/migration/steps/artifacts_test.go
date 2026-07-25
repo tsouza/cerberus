@@ -214,6 +214,15 @@ func TestRequireArchetypesRefusesAnEmptyLoop(t *testing.T) {
 	}
 }
 
+// tier1Golden is the three-signal archetype's Tier-1 parity fixture. It is
+// read by test/e2e/migration/tier1_parity_test.go, which carries the
+// migration_tier1 build tag and lives in a different package (and module
+// import graph) than this steps package, so no assertion in this file can
+// exercise it directly. It is still a real, read fixture — not an orphan —
+// so it belongs in the known-readers set below alongside the goldens this
+// package's own steps do read.
+const tier1Golden = "tier1.json"
+
 // TestEveryCommittedArchetypeShipsItsInputsAndDecision proves no committed
 // fixture sits in the tree unread: every archetype directory carries rule
 // files, dashboards, and the cutover decision the whole-run fold pins. An
@@ -258,9 +267,18 @@ func TestEveryCommittedArchetypeShipsItsInputsAndDecision(t *testing.T) {
 			// The remaining goldens are read only by the scenarios that tag
 			// this archetype. Anything under expected/ whose name no assertion
 			// knows is a fixture nobody reads.
+			//
+			// tier1Golden is a special case: it is read, but not by this
+			// steps package. It is the three-signal archetype's Tier-1 parity
+			// golden, consumed by the migration_tier1-build-tagged
+			// test/e2e/migration/tier1_parity_test.go, which this package
+			// cannot import without pulling that build tag in. Listing it
+			// here documents the cross-package reader rather than pretending
+			// the fixture is unread.
 			read := map[string]struct{}{
 				corpusGolden: {}, explainGolden: {}, gateGolden: {},
 				classifyGolden: {}, ruleGraphGolden: {}, lookbackGolden: {},
+				tier1Golden: {},
 			}
 			entries, err := os.ReadDir(harnessPath(root, archetypeDir, a, expectedDir))
 			if err != nil {
