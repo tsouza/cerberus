@@ -151,6 +151,14 @@ jobs:
           # Honours .golangci.yml; runs across the whole module.
           args: ./...
 
+      # The Tier-0 migration runner is `migration`-tagged, so neither the
+      # test job nor golangci-lint (which sets no build-tags) compiles it —
+      # a type error there would surface only on the scheduled migration
+      # lane. `go vet` with the tag type-checks the runner plus its step
+      # library on every PR: seconds, no Docker, no binary build.
+      - name: vet the migration harness (tagged runner)
+        run: go vet -tags=migration ./test/e2e/migration/...
+
       # go-arch-lint enforces the cerberus layering (parse → lower →
       # optimize → emit → execute) declared in .go-arch-lint.yml.
       # No first-party Action exists; install via `go install` so it
