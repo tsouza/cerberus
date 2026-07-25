@@ -12,11 +12,19 @@ package steps
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/cucumber/godog"
 
+	"github.com/tsouza/cerberus/internal/migrate"
+	"github.com/tsouza/cerberus/internal/migrategate"
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 )
+
+// workspacePattern names the per-scenario temporary directory every `--out`
+// artifact is written into. It is removed after the scenario, so one scenario
+// can never read an artifact another one left behind.
+const workspacePattern = "cerberus-migration-tier0-"
 
 // World is the state one scenario accumulates: the repository root every
 // fixture path resolves against, the cerberus binary the When steps drive, the
@@ -36,7 +44,25 @@ type World struct {
 	// fails instead of reporting a green run over nothing.
 	scenariosRun int
 
-	schema schemaRender
+	// work is the per-scenario artifact workspace, created in the Before hook.
+	work string
+
+	schema    schemaRender
+	retention signalRetention
+
+	// Each map is keyed by archetype name. The raw bytes back the golden
+	// comparisons; the decoded values back every assertion on a field.
+	corpusRaw    map[string][]byte
+	corpus       map[string]migrate.Corpus
+	classifyRaw  map[string][]byte
+	classify     map[string]migrate.Classification
+	ruleGraphRaw map[string][]byte
+	ruleGraph    map[string]migrate.RuleGraph
+	explainRaw   map[string][]byte
+	explain      map[string]explainReport
+	lookback     map[string]migrate.Lookback
+
+	gate gateRun
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -56,13 +82,45 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
 		w.archetypes = ArchetypesOf(sc.Tags)
 		w.schema = schemaRender{}
-		return c, requireArchetypeFixtures(w.root, w.archetypes)
+		w.retention = signalRetention{}
+		w.gate = gateRun{}
+		w.corpusRaw, w.corpus = map[string][]byte{}, map[string]migrate.Corpus{}
+		w.classifyRaw, w.classify = map[string][]byte{}, map[string]migrate.Classification{}
+		w.ruleGraphRaw, w.ruleGraph = map[string][]byte{}, map[string]migrate.RuleGraph{}
+		w.explainRaw, w.explain = map[string][]byte{}, map[string]explainReport{}
+		w.lookback = map[string]migrate.Lookback{}
+
+		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
+			return c, err
+		}
+		dir, err := os.MkdirTemp("", workspacePattern)
+		if err != nil {
+			return c, fmt.Errorf("migration harness: create the scenario workspace: %w", err)
+		}
+		w.work = dir
+		return c, nil
 	})
 	ctx.After(func(c context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 		w.scenariosRun++
+		if w.work == "" {
+			return c, nil
+		}
+		dir := w.work
+		w.work = ""
+		if err := os.RemoveAll(dir); err != nil {
+			return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w", dir, err)
+		}
 		return c, nil
 	})
+
 	w.registerSchemaSteps(ctx)
+	w.registerFixtureSteps(ctx)
+	w.registerHarvestSteps(ctx)
+	w.registerClassifySteps(ctx)
+	w.registerRuleGraphSteps(ctx)
+	w.registerExplainSteps(ctx)
+	w.registerLookbackSteps(ctx)
+	w.registerGateSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.
@@ -82,4 +140,15 @@ func (w *World) run(extraEnv []string, args ...string) (lib.Result, error) {
 		Dir:  w.root,
 		Env:  lib.OfflineEnv(extraEnv...),
 	})
+}
+
+// gateRun is one `migrate gate` invocation: the decision it emitted and the
+// exit code it left with. The exit code is asserted on directly — the gate's
+// documented no-go status is part of its contract with the operator's cutover
+// script, not an incidental detail.
+type gateRun struct {
+	ran      bool
+	decision migrategate.Decision
+	exitCode int
+	raw      []byte
 }

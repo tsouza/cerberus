@@ -42,13 +42,32 @@ type Corpus struct {
 // lists into a stable order so the JSON is deterministic regardless of the order
 // sources were harvested in. Nil slices become empty slices so the JSON always
 // carries `[]` rather than `null`.
+//
+// An EXACT duplicate — the same expression, from the same provenance source, of
+// the same kind and language — is collapsed to one entry. Two sources scanning
+// the same input (a corpus harvested from rule files that are then passed as
+// --rules again) and a rule tree carrying a copy-pasted rule block both produce
+// them, and counting one query twice inflates every downstream tally: the
+// classify bucket counts, the parity run's denominator, the retention runway's
+// input set. Two entries that merely share an expression from DIFFERENT sources
+// are kept — provenance is the point of the corpus, and explain reports each
+// site separately.
 func BuildCorpus(queries []HarvestedQuery, skipped []SkippedEntry) Corpus {
 	cqs := make([]CorpusQuery, 0, len(queries))
+	seen := make(map[CorpusQuery]struct{}, len(queries))
 	for _, q := range queries {
 		// HarvestedQuery and CorpusQuery share the same fields (the latter adds
 		// only json tags), so a struct conversion carries every field — including
-		// Lang — without a field-by-field copy that could silently drop one.
-		cqs = append(cqs, CorpusQuery(q))
+		// Lang — without a field-by-field copy that could silently drop one. The
+		// converted value is comparable and covers every field, so it doubles as
+		// the exact-duplicate key: adding a field to the struct extends the key
+		// automatically rather than leaving a hand-written key stale.
+		cq := CorpusQuery(q)
+		if _, dup := seen[cq]; dup {
+			continue
+		}
+		seen[cq] = struct{}{}
+		cqs = append(cqs, cq)
 	}
 	sort.SliceStable(cqs, func(i, j int) bool {
 		if cqs[i].Source != cqs[j].Source {

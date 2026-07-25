@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "counts": {
+    "total": 5,
+    "supported": 2,
+    "unsupported": 3,
+    "risky": 1
+  },
+  "queries": [
+    {
+      "expr": "anomalies(avg:checkout.latency{env:prod}, 'basic', 2)",
+      "source": "dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Latency anomalies/A",
+      "kind": "panel",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:47: parse error: unexpected character inside braces: ':'",
+      "risky": false
+    },
+    {
+      "expr": "sum(rate(orders_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Order rate/A",
+      "kind": "panel",
+      "bucket": "supported",
+      "risky": true,
+      "risks": [
+        "subquery fan-out: inner expression evaluated at 61 anchors per series"
+      ]
+    },
+    {
+      "expr": "week_before(sum(rate(orders_total[5m])))",
+      "source": "dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Orders week over week/A",
+      "kind": "panel",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:1: parse error: unknown function with name \"week_before\"",
+      "risky": false
+    },
+    {
+      "expr": "avg:system.cpu.user{*}.as_rate()",
+      "source": "rule:test/e2e/migration/archetypes/saas-repatriation/rules/repatriated.yaml/repatriated/DatadogMonitorParity",
+      "kind": "alert",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:33: parse error: unexpected character inside braces: '*'",
+      "risky": false
+    },
+    {
+      "expr": "histogram_quantile(0.95, sum by (le) (rate(checkout_latency_seconds_bucket[5m])))",
+      "source": "rule:test/e2e/migration/archetypes/saas-repatriation/rules/repatriated.yaml/repatriated/saas:checkout_latency:p95",
+      "kind": "record",
+      "bucket": "supported",
+      "risky": false
+    }
+  ],
+  "skipped": [
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Placeholder never filled in/A",
+      "reason": "target has an empty expr"
+    },
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Still on the SaaS datasource/A",
+      "reason": "unsupported datasource type \"datadog\" (not prometheus/loki/tempo)"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "title": "Checkout / repatriated from SaaS",
+  "uid": "checkout-repatriated",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Orders week over week",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "week_before(sum(rate(orders_total[5m])))" }]
+    },
+    {
+      "id": 2,
+      "title": "Latency anomalies",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [
+        { "refId": "A", "expr": "anomalies(avg:checkout.latency{env:prod}, 'basic', 2)" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Order rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(orders_total[5m]))" }]
+    },
+    {
+      "id": 4,
+      "title": "Still on the SaaS datasource",
+      "type": "timeseries",
+      "datasource": { "type": "datadog", "uid": "dd" },
+      "targets": [{ "refId": "A", "expr": "avg:system.load.1{*}" }]
+    },
+    {
+      "id": 5,
+      "title": "Placeholder never filled in",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "" }]
+    }
+  ]
+}

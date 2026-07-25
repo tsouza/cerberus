@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "topk(10, tenant:cortex_ingester_active_series:sum)",
+      "source": "dashboard:test/e2e/migration/archetypes/mimir-cortex/dashboards/tenant-overview.json/Active series per tenant/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (tenant) (rate(cortex_distributor_received_samples_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/mimir-cortex/dashboards/tenant-overview.json/Distributor throughput/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "tenant:cortex_request_duration_seconds:p99",
+      "source": "dashboard:test/e2e/migration/archetypes/mimir-cortex/dashboards/tenant-overview.json/Write latency/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cortex_ring_members{state=\"Unhealthy\"} \u003e 0",
+      "source": "rule:test/e2e/migration/archetypes/mimir-cortex/rules/tenant-recording.yaml/mimir.alerts/CortexIngesterUnhealthy",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "tenant:cortex_ingester_active_series:sum \u003e 1000000",
+      "source": "rule:test/e2e/migration/archetypes/mimir-cortex/rules/tenant-recording.yaml/mimir.alerts/CortexTenantSeriesGrowth",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (tenant) (cortex_ingester_active_series)",
+      "source": "rule:test/e2e/migration/archetypes/mimir-cortex/rules/tenant-recording.yaml/mimir.tenant/tenant:cortex_ingester_active_series:sum",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "histogram_quantile(0.99, sum by (le, tenant) (rate(cortex_request_duration_seconds_bucket[5m])))",
+      "source": "rule:test/e2e/migration/archetypes/mimir-cortex/rules/tenant-recording.yaml/mimir.tenant/tenant:cortex_request_duration_seconds:p99",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

@@ -1,0 +1,56 @@
+{
+  "pass": false,
+  "overall": "FAIL",
+  "stages": [
+    {
+      "stage": "verify",
+      "present": false,
+      "required": true,
+      "verdict": "MISSING",
+      "blocking": true,
+      "reasons": [
+        "required artifact not provided (--verify); cannot prove safety"
+      ]
+    },
+    {
+      "stage": "classify",
+      "present": true,
+      "required": true,
+      "verdict": "WARN",
+      "blocking": false,
+      "reasons": [
+        "1 supported query carry an offline fan-out risk flag",
+        "1 harvest-skipped corpus entry never classified (unexamined)"
+      ]
+    },
+    {
+      "stage": "inventory",
+      "present": false,
+      "required": false,
+      "verdict": "MISSING",
+      "blocking": false,
+      "reasons": [
+        "artifact not provided (--inventory); source cardinality risk unchecked"
+      ]
+    },
+    {
+      "stage": "rulegraph",
+      "present": true,
+      "required": true,
+      "verdict": "FAIL",
+      "blocking": true,
+      "reasons": [
+        "1 consumed recorded series must stay materialized after cutover",
+        "  svc:http_requests:rate5m \u003c- 2 consumers",
+        "3 skipped inputs make the orphan classification unsound (a dropped consumer may reference a series marked orphan)",
+        "  skipped dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Error log rate/A: unparseable consumer expr: 1:55: parse error: unexpected character: '|'",
+        "  skipped dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Left on the old search backend/A: unsupported datasource type \"elasticsearch\" (not prometheus/loki/tempo)",
+        "  skipped dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Slow checkout spans/A: unparseable consumer expr: 1:11: parse error: unexpected character inside braces: '.'"
+      ]
+    }
+  ],
+  "missing": [
+    "verify",
+    "inventory"
+  ]
+}

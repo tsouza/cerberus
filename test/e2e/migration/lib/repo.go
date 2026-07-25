@@ -21,9 +21,13 @@ import (
 // has its own go.mod).
 const modulePath = "module github.com/tsouza/cerberus"
 
-// harnessDir is the harness tree's path relative to the repository root. Every
-// fixture, feature and golden path is resolved against it.
-const harnessDir = "test/e2e/migration"
+// HarnessDir is the harness tree's path relative to the repository root. Every
+// fixture, feature and golden path is resolved against it. It is exported
+// because the fixture paths handed to `cerberus migrate` must be
+// repository-RELATIVE — the commands run with the repository root as their
+// working directory, and the relative path is what lands in every artifact's
+// provenance strings, which is what makes a committed golden portable.
+const HarnessDir = "test/e2e/migration"
 
 // RepoRoot walks up from the working directory and returns the first ancestor
 // holding the cerberus go.mod. Scenarios run from the tier package's directory,
@@ -58,5 +62,5 @@ func repoRootFrom(dir string) (string, error) {
 // root, so a caller names `archetypes/<a>/rules` rather than repeating the
 // tree's location.
 func HarnessPath(root string, elem ...string) string {
-	return filepath.Join(append([]string{root, harnessDir}, elem...)...)
+	return filepath.Join(append([]string{root, HarnessDir}, elem...)...)
 }

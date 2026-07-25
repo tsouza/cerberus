@@ -1,0 +1,48 @@
+{
+  "pass": false,
+  "overall": "FAIL",
+  "stages": [
+    {
+      "stage": "verify",
+      "present": false,
+      "required": true,
+      "verdict": "MISSING",
+      "blocking": true,
+      "reasons": [
+        "required artifact not provided (--verify); cannot prove safety"
+      ]
+    },
+    {
+      "stage": "classify",
+      "present": true,
+      "required": true,
+      "verdict": "WARN",
+      "blocking": false,
+      "reasons": [
+        "2 supported queries carry an offline fan-out risk flag"
+      ]
+    },
+    {
+      "stage": "inventory",
+      "present": false,
+      "required": false,
+      "verdict": "MISSING",
+      "blocking": false,
+      "reasons": [
+        "artifact not provided (--inventory); source cardinality risk unchecked"
+      ]
+    },
+    {
+      "stage": "rulegraph",
+      "present": true,
+      "required": true,
+      "verdict": "PASS",
+      "blocking": false,
+      "reasons": []
+    }
+  ],
+  "missing": [
+    "verify",
+    "inventory"
+  ]
+}

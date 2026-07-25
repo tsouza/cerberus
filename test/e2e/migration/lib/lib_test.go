@@ -236,3 +236,52 @@ func TestBuildCerberusHonoursAPrebuiltBinary(t *testing.T) {
 		t.Fatalf("BuildCerberus accepted a directory as %s", cerberusBinEnv)
 	}
 }
+
+// TestRequireOfflineAcceptsOnlyAClosedEnvironment proves the check a scenario's
+// "contacts no network endpoint" assertion rests on actually bites. Every way an
+// environment could leave a route open — a proxy variable unset, one pointed
+// somewhere reachable, a bypass list exempting hosts — must fail it; only the
+// environment OfflineEnv builds may pass.
+func TestRequireOfflineAcceptsOnlyAClosedEnvironment(t *testing.T) {
+	if err := RequireOffline(OfflineEnv()); err != nil {
+		t.Fatalf("the harness's own offline environment was rejected: %v", err)
+	}
+
+	drop := func(name string) []string {
+		var out []string
+		for _, kv := range OfflineEnv() {
+			if k, _, _ := strings.Cut(kv, "="); k != name {
+				out = append(out, kv)
+			}
+		}
+		return out
+	}
+	for _, name := range blackholedProxyVars {
+		t.Run("unset "+name, func(t *testing.T) {
+			if err := RequireOffline(drop(name)); err == nil {
+				t.Fatalf("an environment with %s unset was accepted as offline", name)
+			}
+		})
+	}
+	// An ABSENT bypass list exempts nothing, so it is offline; only a populated
+	// one reopens a route.
+	for _, name := range bypassVars {
+		t.Run("absent "+name, func(t *testing.T) {
+			if err := RequireOffline(drop(name)); err != nil {
+				t.Fatalf("an environment with no %s bypass list was rejected: %v", name, err)
+			}
+		})
+	}
+	for _, leak := range []string{
+		"HTTP_PROXY=http://proxy.internal:3128",
+		"https_proxy=http://proxy.internal:3128",
+		"NO_PROXY=localhost,127.0.0.1",
+		"no_proxy=*",
+	} {
+		t.Run(leak, func(t *testing.T) {
+			if err := RequireOffline(OfflineEnv(leak)); err == nil {
+				t.Fatalf("an environment carrying %q was accepted as offline", leak)
+			}
+		})
+	}
+}

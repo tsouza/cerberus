@@ -1,0 +1,27 @@
+{
+  "title": "Node exporter / USE method",
+  "uid": "node-exporter-use",
+  "panels": [
+    {
+      "id": 1,
+      "title": "CPU utilisation",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "cluster:node_cpu:ratio" }]
+    },
+    {
+      "id": 2,
+      "title": "Memory utilisation",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "node:node_memory_utilisation:ratio" }]
+    },
+    {
+      "id": 3,
+      "title": "Byte counters by name pattern",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "sum({__name__=~\"node_.*_bytes_total\"})" }]
+    }
+  ]
+}

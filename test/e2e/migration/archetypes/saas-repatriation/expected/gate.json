@@ -1,0 +1,59 @@
+{
+  "pass": false,
+  "overall": "FAIL",
+  "stages": [
+    {
+      "stage": "verify",
+      "present": false,
+      "required": true,
+      "verdict": "MISSING",
+      "blocking": true,
+      "reasons": [
+        "required artifact not provided (--verify); cannot prove safety"
+      ]
+    },
+    {
+      "stage": "classify",
+      "present": true,
+      "required": true,
+      "verdict": "FAIL",
+      "blocking": true,
+      "reasons": [
+        "3 unsupported queries (no cerberus equivalent)",
+        "  unsupported: engine: parse: 1:1: parse error: unknown function with name \"week_before\"",
+        "  unsupported: engine: parse: 1:33: parse error: unexpected character inside braces: '*'",
+        "  unsupported: engine: parse: 1:47: parse error: unexpected character inside braces: ':'",
+        "2 harvest-skipped corpus entries never classified (unexamined)"
+      ]
+    },
+    {
+      "stage": "inventory",
+      "present": false,
+      "required": false,
+      "verdict": "MISSING",
+      "blocking": false,
+      "reasons": [
+        "artifact not provided (--inventory); source cardinality risk unchecked"
+      ]
+    },
+    {
+      "stage": "rulegraph",
+      "present": true,
+      "required": true,
+      "verdict": "FAIL",
+      "blocking": true,
+      "reasons": [
+        "5 skipped inputs make the orphan classification unsound (a dropped consumer may reference a series marked orphan)",
+        "  skipped dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Latency anomalies/A: unparseable consumer expr: 1:23: parse error: unexpected character: '.'",
+        "  skipped dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Orders week over week/A: unparseable consumer expr: 1:1: parse error: unknown function with name \"week_before\"",
+        "  skipped dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Placeholder never filled in/A: target has an empty expr",
+        "  skipped dashboard:test/e2e/migration/archetypes/saas-repatriation/dashboards/checkout.json/Still on the SaaS datasource/A: unsupported datasource type \"datadog\" (not prometheus/loki/tempo)",
+        "  skipped rule:test/e2e/migration/archetypes/saas-repatriation/rules/repatriated.yaml/repatriated/DatadogMonitorParity: unparseable consumer expr: 1:11: parse error: unexpected character: '.'"
+      ]
+    }
+  ],
+  "missing": [
+    "verify",
+    "inventory"
+  ]
+}

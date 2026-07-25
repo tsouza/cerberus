@@ -1,0 +1,29 @@
+{
+  "title": "Thanos / long-window SLO",
+  "uid": "thanos-slo",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability over the compliance window",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "thanos" },
+      "targets": [
+        { "refId": "A", "expr": "avg_over_time(slo:http_request_availability:ratio30d[1h:5m])[14d:1h]" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Filesystem capacity trend",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "thanos" },
+      "targets": [{ "refId": "A", "expr": "predict_linear(node_filesystem_free_bytes[6h], 345600)" }]
+    },
+    {
+      "id": 3,
+      "title": "Ingest rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "thanos" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(prometheus_tsdb_head_samples_appended_total[5m]))" }]
+    }
+  ]
+}
