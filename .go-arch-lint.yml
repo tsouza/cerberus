@@ -97,6 +97,14 @@ components:
   chclient:  { in: chclient }
   engine:    { in: engine }
   solver:    { in: solver }
+  # Bounded, in-process failure-driven route memo: records route A/B
+  # dispatch outcomes keyed by a routing-specific literal-free plan
+  # fingerprint (see internal/routememo/key.go), so a query whose route-A
+  # attempt fails with resource exhaustion can be retried once on route B
+  # and future cost-equivalent traffic routes directly. Pure leaf — needs
+  # only chplan (to build the Key) and the standard library. Importable by
+  # engine (which classifies dispatch outcomes through it) and cmd only.
+  routememo: { in: routememo }
   config:    { in: config }
   api-loki:  { in: api/loki }
   api-prom:  { in: api/prom }
@@ -197,6 +205,14 @@ deps:
   # listed `mayDependOn` to be non-empty. Omitting the entry implicitly
   # forbids all internal imports, which is what we want.
 
+  # routememo needs chplan to build the routing Key from a plan tree.
+  # Nothing else — it must never import chclient/solver/engine (the memo
+  # is a pure, dependency-free leaf the engine consults, not a component
+  # that reaches back into the dispatch stack itself).
+  routememo:
+    mayDependOn:
+      - chplan
+
   # QL layers parse upstream syntax and lower to chplan. The LogQL
   # adapter has migrated to the engine.Lang interface, so it depends
   # on `engine` for the typed contracts (engine.Meta etc); promql and
@@ -275,6 +291,7 @@ deps:
       - chclient
       - optimizer
       - solver
+      - routememo
 
   # solver is the sharded-pushdown query-solver framework (off by
   # default — Mode="single"). The Planner/Slicer classify + re-anchor

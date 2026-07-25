@@ -274,6 +274,242 @@ immediately so no connection leaks. A client disconnect propagates through the
 request ctx to the group ctx to every shard. Every handler entrypoint is
 goleak-gated with routed queries.
 
+## Failure-driven route memo
+
+`Planner` classifies a plan as route-A- or route-B-worthy from static signals
+alone (`N`, `F`, `D`) — it has no visibility into data-dependent cost:
+cardinality skew, TTL-driven part counts, concurrent load. A plan that looks
+route-A-cheap by those signals can still exhaust ClickHouse's memory cap when
+it actually runs. The failure-driven route memo (`internal/routememo`) turns
+that failure into signal instead of a dead end: when a route-A dispatch fails
+with a ClickHouse resource-exhaustion error, cerberus retries it once on route
+B, and if B succeeds, remembers the verdict against a literal-free fingerprint
+of the plan's cost shape — so a later, cost-equivalent request routes to B
+directly instead of paying the same route-A failure again.
+
+The memo is process-local (one instance per process, no cross-pod state, no
+ClickHouse-side bookkeeping) and it can only ever change WHICH route a request
+takes, never how either route computes its answer: route B's own
+output-equivalence proof (the slice-invariance markers and eligibility signals
+above) is unconditional on the memo — a stale or wrong verdict costs an extra
+retry or a request that stays on route A when B would have helped, and can
+never change a result. Wiring lives in
+`internal/engine/route_memo_wiring.go`; the outcome classifier is
+`internal/engine/route_outcome.go`; the memo itself is `internal/routememo`.
+
+### Key: a literal-free cost-shape fingerprint
+
+`routememo.Key` (`internal/routememo/key.go`) is a `comparable` struct built
+only from closed, plan-shape vocabulary: the plan root's Go type name, the
+per-level range/aggregate function names walked in tree pre-order, a bitmask
+of matcher operator KINDS (`=`, `!=`, `=~`, `!~` — operator kinds, never label
+names or values), boolean flags for join/union/limit/native/resample shape,
+and bucketed (log2, clamped) exponents for matcher count, anchor count,
+fanout, and step. Two requests share a Key when they are judged
+cost-equivalent enough to share a routing verdict — a dashboard panel
+re-querying the same PromQL shape on a rolling window keeps hitting the same
+Key across refreshes even though its anchor count drifts by one as time moves,
+because bucketing (not the raw value) is the equivalence relation. Nothing in
+Key can identify a metric name, a label value, or a timestamp: it carries no
+more information than `planShapeID` (`internal/engine/plan_shape_id.go`)
+already exposes at a coarser grain, and no more than ClickHouse's own
+normalized `query_log` text.
+
+### Verdict lifecycle
+
+`Memo.Lookup` returns one of three `LookupState` values:
+
+- **`Unknown`** — no verdict recorded (or it aged out, or route A hasn't
+  failed on this Key enough times to be probe-eligible yet). The caller takes
+  the normal route-A path; the outcome is still `Observe`d so corroboration
+  bookkeeping progresses.
+- **`PreferB`** — route A has failed on this Key at least
+  `minCorroboratingFailures` (2) consecutive times with no intervening
+  success, and a route-B probe subsequently succeeded. The caller MAY memo-hit
+  route B directly, subject to every other gate re-checked at dispatch time
+  (eligibility, freshness, breaker, admission). A `PreferB` past its
+  re-validation midpoint is reported with `stale=true`, and the caller must
+  NOT memo-hit it — it routes through plain route A instead, "as if the Key
+  were unknown", so the verdict can be honestly re-confirmed by real traffic.
+- **`BothFail`** — route B was tried for this Key and itself failed with a
+  resource failure. The caller stays on route A; no further probing is
+  attempted until the entry ages out at the memo's TTL.
+
+Requiring `minCorroboratingFailures = 2` consecutive failures (not one) exists
+so a single transient rejection never mints a verdict on its own: probing
+route B is itself a real dispatch, and the memo's premise only holds if
+repeated failure is treated as real signal rather than noise from one bad
+request.
+
+### Cluster-wide pressure damper
+
+A `pressureTracker` (`internal/routememo/pressure.go`) records every resource
+failure's Key and timestamp, independent of which route produced it.
+`Memo.UnderPressure()` reports true once more than `pressureFailureThreshold`
+(`minCorroboratingFailures + 1` = 3) DISTINCT keys have shown a resource
+failure within a pressure window. While under pressure, the memo admits no
+probe and no memo-hit dispatch — both fall back to route A — and `Observe`
+writes no verdict state at all; only the pressure tracker itself keeps
+recording, so the window decays naturally once traffic quiets. This exists
+because a correlated, cluster-wide event (e.g. every query slowing down at
+once) produces resource failures on many UNRELATED keys simultaneously;
+without the damper, one shared external cause would look like independent
+evidence against every one of those keys and stampede all of them into
+probing route B at once — exactly the wrong response to a cause that has
+nothing to do with any individual key's cost shape. `pressureFailureThreshold`
+is defined relative to `minCorroboratingFailures` specifically so a single hot
+key's own corroboration count can never trip the damper by itself — tripping
+it takes failures spread across more than one key.
+
+The pressure window is the solver's own effective wall-clock deadline
+(`Solver.EffectiveTimeout()`, wired in `cmd/cerberus/main.go`'s
+`buildRouteMemo`) — the horizon a single fan-out's resource pressure
+plausibly stays live server-side — rather than a second, independently
+configured duration that could drift out of step with it.
+
+### TTL and re-validation
+
+Every verdict is stamped with `createdAt` at the transition that created or
+last confirmed it, and expires unconditionally once
+`now - createdAt >= entryTTL` (default 30 minutes, `memoEntryTTL`) — `Lookup`
+and every internal accessor evict an aged-out entry back to `Unknown` on
+read. A live `PreferB` verdict is additionally re-validated at its TTL
+midpoint (`entryTTL / reValidationFraction`, default fraction 2, i.e. 15
+minutes): past that point `Lookup` reports it `stale=true`, declining the
+memo-hit and routing the request through plain route A instead, so the
+underlying premise ("route A still fails on this shape") gets honestly
+re-confirmed by real traffic rather than trusted forever.
+
+**The ordering bug `ObserveRouteAFailureAndMaybeBeginProbe` fixes.** The
+re-validation path depends on a route-A dispatch actually failing again while
+the entry looks stale. A naive two-call sequence —
+`Observe(k, RouteA, OutcomeResourceFailure)` (which refreshes `createdAt`,
+un-staling the entry) followed by `BeginProbe(k)` (which admits only an
+`Unknown` entry) — loses exactly the request that should trigger the rescue:
+by the time `BeginProbe` looks, `Observe`'s own side effect has already made
+the entry look fresh again, so `BeginProbe`'s Unknown-only gate refuses it.
+The caller's actual HTTP request is then stuck on the very failure the memo
+already knows how to avoid, with no rescue, even though the memo has been
+confidently routing this shape to B for the entry's entire life.
+`ObserveRouteAFailureAndMaybeBeginProbe` closes the gap by combining
+record-and-decide into one critical section: it captures whether the entry
+WAS stale before the state transition, then decides admission on that
+pre-transition snapshot rather than the post-transition one. Callers on the
+route-A failure path (`retryOnRouteAResourceFailure`) MUST use this one atomic
+method — never the two separate calls — for a route-A resource-exhaustion
+failure.
+
+### Admission: one process-wide dispatch-token semaphore
+
+`AdmitDispatch` is a single, non-blocking, process-wide semaphore of size
+`maxConcurrentRoutedDispatches` (4) covering EVERY non-baseline dispatch the
+memo can trigger — a first probe, a stale-verdict re-validation rescue, and a
+plain memo-hit all draw from the same token pool. A denied admission always
+falls back to route A; the memo never queues or blocks a request waiting for
+a token. This bounds route memo's total worst-case added ClickHouse-side
+concurrency to a small, fixed constant regardless of how many distinct keys
+are simultaneously probe-eligible: a burst of concurrent failures on the same
+hot key (a client retry storm) or spread across many distinct keys can never
+mint more admitted dispatches than the budget allows, because the
+read-decide-admit sequence holds the memo's lock for its entire span (pinned
+in `internal/routememo/concurrency_bound_test.go`).
+
+### Mandatory per-shard memory apportionment
+
+Route A's single statement runs under the client's configured
+`max_memory_usage` cap. A naive `K`-shard fan-out running every shard under
+that SAME full cap would let total server-side memory exposure reach up to
+`K` times route A's — exactly backwards from the mechanism's premise that
+sharding reduces resource use. `internal/solver/executor.go`'s `Execute`
+therefore divides the cap by the shard count it actually dispatches
+(`perShardMemoryBytes = cap / kEff`) and stamps that value onto every shard's
+`max_memory_usage` query setting. This is unconditional — there is no config
+knob to disable it — because closing an accidental resource-amplification
+hole is a correctness property of routing itself, not a togglable safety
+feature; `kEff` is already bounded above by the structural `MaxK` clamp, so
+the minimum possible per-shard cap is `cap / MaxK`, a floor the mechanism
+already guarantees. When no cap is configured
+(`Client.MaxQueryMemoryBytes() == 0`, meaning route A itself runs uncapped),
+apportionment is skipped entirely — stamping a per-shard cap in that case
+would make routed traffic MORE restrictive than route A, not merely no worse.
+Verified against a real ClickHouse instance in
+`internal/solver/executor_realch_integration_test.go`
+(`TestExecutor_PerShardMaxMemoryUsage_RealClickHouse`).
+
+### Live-edge freshness exception
+
+Route B's disjoint-anchor equivalence proof holds only once every shard's
+window has closed with respect to live ClickHouse table state — a shard
+reading a strictly newer snapshot than an earlier shard is real skew the
+proof does not cover. Because the newest grid anchor is, by construction,
+still inside the write window that produced it, anchors strictly older than
+one step have crossed the write frontier for any step-aligned ingestion
+pattern. `freshEnoughForRouteMemo` (`internal/engine/route_memo_wiring.go`)
+enforces this directly: a request whose `End` has not aged past
+`liveEdgeFreshnessMarginSteps` (1) step is never routed by the memo mechanism
+at all — probe, retry, or memo-hit alike — regardless of what the memo has
+recorded for its Key. This is a grid-relative margin, not a
+wall-clock-duration guess, and it applies independent of, and in addition to,
+the Planner's own eligibility signals. Pinned in
+`internal/solver/avb_chdb_lane_test.go`'s `TestSolver_AvsB_ChDB_LiveEdgeBoundary`.
+
+### Configuration
+
+Off by default, matching cerberus's convention for a new
+runtime-behavior-changing feature (alongside `CERBERUS_CH_OPT_CORPUS_ENABLED`,
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`): an operator opts in explicitly rather
+than picking up new ClickHouse dispatch/resource behavior on a routine
+upgrade.
+
+| Variable                                           | Type     | Default               | Description                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | -------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`               | bool     | `false`               | Wires `internal/routememo` onto the engine. Left unset (or `false`), the engine's `RouteMemo` field stays nil and every function in `route_memo_wiring.go` no-ops through its own `routeMemoActive()` guard — dispatch stays byte-unchanged.                         |
+| `CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL`             | duration | package default (30m) | Overrides how long a recorded verdict is trusted before it ages out. Zero/unset means "use the routememo package's own default", not "TTL zero" — `SetEntryTTL` treats a non-positive value as a no-op so a misconfigured value can never silently disable the memo. |
+| `CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION` | int      | package default (2)   | Overrides the divisor that places re-validation at the TTL midpoint. Same non-positive-is-no-op contract as the TTL knob.                                                                                                                                            |
+
+`cmd/cerberus/main.go`'s `buildRouteMemo` is the only constructor: it returns
+nil (feature off) unless `RouteMemoEnabled` is set and a solver is
+configured, and it always applies both setters unconditionally after
+construction — safe because both are no-ops on the Go zero value.
+
+### Metrics
+
+Four instruments (`internal/telemetry/metrics.go`):
+
+- **`cerberus_route_memo_hit_skipped_total`** (counter) — one increment per
+  real decline branch in `route_memo_wiring.go`, labeled `reason` with one
+  of: `not-eligible`, `not-fresh`, `no-preferb`, `stale`, `breaker-open`,
+  `no-dispatch-token`, `under-pressure`, `probe-not-admitted`.
+- **`cerberus_route_memo_pressure_active`** (up/down counter) — mirrors
+  `Memo.UnderPressure()`'s current level as a transition delta (+1 entering
+  pressure, −1 leaving), so it always reads the current active/inactive
+  state without double-counting repeated same-state decisions.
+- **`cerberus_routed_dispatch_inflight`** (up/down counter) — memo-triggered
+  route-B dispatches currently in flight (a memo-hit, or a probe/retry that
+  was admitted a dispatch token), distinct from the general
+  `cerberus_query_inflight`, which counts every engine query regardless of
+  route.
+- **`cerberus_route_ab_success_total`** (counter) — every
+  `classifyRouteOutcome` resolution to `OutcomeSuccess` for a memo-tracked
+  dispatch, labeled `cerberus.route_choice` = `"a"` / `"b"`.
+
+### Relationship to the retired route-threshold autotune
+
+Route memo is cerberus's current answer to "how does the solver's routing
+adapt without an operator hand-tuning it" — but it is a different mechanism
+from the self-driving threshold-fit loop it replaces, not a variant of it.
+The retired autotune loop adjusted the same static cost-threshold proxy
+(`MinFanout` / `MinAnchorPairs`) `Planner` already used, fitting its value
+against a corpus of past decisions — it could tune the number the proxy
+compares against, but not fix a proxy measuring the wrong cost dimension for
+a given shape. Route memo does not touch those thresholds at all: it is a
+per-key, per-outcome evidence ledger sitting entirely downstream of the
+Planner's classification, keyed on a request's own cost shape rather than
+fit against a corpus globally. A plan the Planner misclassifies as
+route-A-cheap can still end up on route B for that specific shape once it
+has actually failed enough times to prove the classification wrong — no
+threshold anywhere has to change for that to happen.
+
 ## Routing-decision calibration corpus (measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single

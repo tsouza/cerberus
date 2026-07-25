@@ -46,6 +46,14 @@ const (
 	// AttrStage is the pipeline stage: parse / lower / optimize /
 	// emit / execute. Cardinality is fixed at five.
 	AttrStage = attribute.Key("stage")
+	// AttrReason labels a decline/skip event with the specific gate that
+	// declined it (see RouteMemoDecline* below). Bare, not cerberus.* —
+	// internal-only, not mirrored on any cerbtrace span attribute.
+	AttrReason = attribute.Key("reason")
+	// AttrRouteChoice is "a" or "b" — which route a memo-tracked dispatch
+	// resolved to success on. Distinct from AttrRoute (the matched
+	// http.ServeMux pattern): same English word, unrelated concept.
+	AttrRouteChoice = attribute.Key("cerberus.route_choice")
 	// AttrErrorReason is the closed failure classification of a query —
 	// one of the Reason* constants. "none" on a successful query, so the
 	// label set is identical across ok and error series. Cardinality is
@@ -56,6 +64,49 @@ const (
 	// construction: derived from the status code's family, never from
 	// the code itself.
 	AttrStatusClass = attribute.Key("cerberus.status_class")
+)
+
+// RouteMemoDecline label values for AttrReason on RouteMemoHitSkippedTotal —
+// one per real decline branch the failure-driven route memo wiring
+// distinguishes in internal/engine/route_memo_wiring.go. Do not add a value
+// here that isn't backed by an actual branch condition in that file.
+const (
+	// RouteMemoDeclineNotEligible is deriveRouteMemoDispatch's
+	// Solver.Eligible verdict coming back false at dispatch time.
+	RouteMemoDeclineNotEligible = "not-eligible"
+	// RouteMemoDeclineNotFresh is freshEnoughForRouteMemo rejecting a
+	// request whose End has not aged past the live-edge margin.
+	RouteMemoDeclineNotFresh = "not-fresh"
+	// RouteMemoDeclineNoPreferB is Memo.Lookup returning a state other
+	// than PreferB — there is no live verdict to memo-hit on.
+	RouteMemoDeclineNoPreferB = "no-preferb"
+	// RouteMemoDeclineStale is Memo.Lookup returning a PreferB verdict
+	// past its re-validation midpoint — must fall through to route A.
+	RouteMemoDeclineStale = "stale"
+	// RouteMemoDeclineBreakerOpen is Solver.BreakerClosed reporting the
+	// ClickHouse circuit breaker is not closed.
+	RouteMemoDeclineBreakerOpen = "breaker-open"
+	// RouteMemoDeclineNoDispatchToken is Memo.AdmitDispatch's
+	// process-wide admission semaphore refusing a memo-hit dispatch.
+	RouteMemoDeclineNoDispatchToken = "no-dispatch-token"
+	// RouteMemoDeclineUnderPressure is Memo.UnderPressure reporting more
+	// than the pressure-failure threshold of distinct keys failed within
+	// the pressure window, sampled immediately before the atomic
+	// record-and-admit call so the pressure-caused decline is
+	// distinguishable from an ordinary admission miss.
+	RouteMemoDeclineUnderPressure = "under-pressure"
+	// RouteMemoDeclineProbeNotAdmitted is
+	// Memo.ObserveRouteAFailureAndMaybeBeginProbe refusing admission for
+	// a reason other than cluster-wide pressure (corroboration not yet
+	// met, or the shared dispatch-token semaphore full) — the wiring
+	// layer sees only the bool, so both collapse into one reason here.
+	RouteMemoDeclineProbeNotAdmitted = "probe-not-admitted"
+)
+
+// RouteChoice label values for AttrRouteChoice on RouteABSuccessTotal.
+const (
+	RouteChoiceA = "a"
+	RouteChoiceB = "b"
 )
 
 // Query-language identifiers used as the AttrQL value. The three heads'
@@ -126,6 +177,36 @@ type Instruments struct {
 	// dashboard panel queries `sum by (cerberus_ql)
 	// (cerberus_query_inflight)`.
 	QueryInflight metric.Int64UpDownCounter
+
+	// RouteMemoHitSkippedTotal counts every failure-driven route-memo
+	// decision to NOT dispatch route B — one per real decline branch in
+	// internal/engine/route_memo_wiring.go (the eligibility/freshness
+	// gate, Memo.Lookup's verdict/staleness gate, the ClickHouse breaker
+	// gate, and the two Memo admission-token gates). Attribute: reason
+	// (one of the RouteMemoDecline* constants).
+	RouteMemoHitSkippedTotal metric.Int64Counter
+
+	// RouteMemoPressureActive is the failure-driven route memo's
+	// Memo.UnderPressure() level, encoded as a transition DELTA (+1 on a
+	// false->true edge, -1 on true->false) rather than a raw per-call
+	// snapshot — the same begin/end idiom QueryInflight uses — so summing
+	// the counter always reads the CURRENT active/inactive state without
+	// double-counting repeated same-state decisions.
+	RouteMemoPressureActive metric.Int64UpDownCounter
+
+	// RoutedDispatchInflight counts memo-triggered route-B dispatches
+	// currently in flight: +1 when a memo-hit's AdmitDispatch admission
+	// or a retry's ObserveRouteAFailureAndMaybeBeginProbe admission
+	// succeeds, -1 at the same call site the memo's own admission token
+	// is released at. Distinct from QueryInflight (every engine query,
+	// any route) — this counts only the subset the failure-driven route
+	// memo itself dispatched.
+	RoutedDispatchInflight metric.Int64UpDownCounter
+
+	// RouteABSuccessTotal counts every classifyRouteOutcome resolution to
+	// OutcomeSuccess for a memo-tracked dispatch, by which route produced
+	// it. Attribute: cerberus.route_choice ("a" / "b").
+	RouteABSuccessTotal metric.Int64Counter
 }
 
 // Histogram bucket boundaries, one ladder per instrument, matched to the
@@ -281,14 +362,50 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build query_inflight: " + err.Error())
 	}
+	routeMemoHitSkipped, err := meter.Int64Counter(
+		"cerberus_route_memo_hit_skipped_total",
+		metric.WithDescription("Failure-driven route memo declines to dispatch route B, by reason."),
+		metric.WithUnit("{decision}"),
+	)
+	if err != nil {
+		panic("telemetry: build route_memo_hit_skipped_total: " + err.Error())
+	}
+	routeMemoPressureActive, err := meter.Int64UpDownCounter(
+		"cerberus_route_memo_pressure_active",
+		metric.WithDescription("Failure-driven route memo cluster-wide pressure level (0/1, transition-encoded)."),
+		metric.WithUnit("{state}"),
+	)
+	if err != nil {
+		panic("telemetry: build route_memo_pressure_active: " + err.Error())
+	}
+	routedDispatchInflight, err := meter.Int64UpDownCounter(
+		"cerberus_routed_dispatch_inflight",
+		metric.WithDescription("Currently in-flight route-B dispatches the failure-driven route memo itself triggered."),
+		metric.WithUnit("{dispatch}"),
+	)
+	if err != nil {
+		panic("telemetry: build routed_dispatch_inflight: " + err.Error())
+	}
+	routeABSuccess, err := meter.Int64Counter(
+		"cerberus_route_ab_success_total",
+		metric.WithDescription("Successful dispatches classified by classifyRouteOutcome, by route."),
+		metric.WithUnit("{query}"),
+	)
+	if err != nil {
+		panic("telemetry: build route_ab_success_total: " + err.Error())
+	}
 	return &Instruments{
-		QueriesTotal:        queriesTotal,
-		QueryDuration:       queryDuration,
-		StageDuration:       stageDuration,
-		RulesApplied:        rulesApplied,
-		ClickHouseRowsRead:  chRows,
-		ClickHouseBytesRead: chBytes,
-		QueryInflight:       queryInflight,
+		QueriesTotal:             queriesTotal,
+		QueryDuration:            queryDuration,
+		StageDuration:            stageDuration,
+		RulesApplied:             rulesApplied,
+		ClickHouseRowsRead:       chRows,
+		ClickHouseBytesRead:      chBytes,
+		QueryInflight:            queryInflight,
+		RouteMemoHitSkippedTotal: routeMemoHitSkipped,
+		RouteMemoPressureActive:  routeMemoPressureActive,
+		RoutedDispatchInflight:   routedDispatchInflight,
+		RouteABSuccessTotal:      routeABSuccess,
 	}
 }
 
@@ -433,4 +550,40 @@ func RecordClickHouseProgress(ctx context.Context, ql string, rows, bytes uint64
 	// Real CH row/byte counts never approach int64 overflow (≈9.2e18).
 	inst.ClickHouseRowsRead.Record(ctx, int64(rows), attrs)   //nolint:gosec // G115
 	inst.ClickHouseBytesRead.Record(ctx, int64(bytes), attrs) //nolint:gosec // G115
+}
+
+// RecordRouteMemoHitSkipped increments RouteMemoHitSkippedTotal for the
+// given decline reason (one of the RouteMemoDecline* constants). Caller is
+// internal/engine/route_memo_wiring.go, at each of its real decline
+// branches.
+func RecordRouteMemoHitSkipped(ctx context.Context, reason string) {
+	Get().RouteMemoHitSkippedTotal.Add(ctx, 1, metric.WithAttributes(AttrReason.String(reason)))
+}
+
+// RecordRouteMemoPressureTransition reports a false->true (delta=1) or
+// true->false (delta=-1) edge of the failure-driven route memo's
+// UnderPressure() level on RouteMemoPressureActive. Callers determine the
+// transition themselves (Get()/Swap() against their own last-seen state) so
+// this stays a pure recorder, symmetric with ObserveQueryInflight's
+// begin/end pair.
+func RecordRouteMemoPressureTransition(ctx context.Context, delta int64) {
+	Get().RouteMemoPressureActive.Add(ctx, delta)
+}
+
+// ObserveRoutedDispatchInflight increments RoutedDispatchInflight and
+// returns a closure that decrements it — the same begin/end idiom as
+// ObserveQueryInflight, scoped to memo-triggered route-B dispatches only.
+func ObserveRoutedDispatchInflight(ctx context.Context) func() {
+	inst := Get()
+	inst.RoutedDispatchInflight.Add(ctx, 1)
+	return func() {
+		inst.RoutedDispatchInflight.Add(ctx, -1)
+	}
+}
+
+// RecordRouteABSuccess increments RouteABSuccessTotal for the given route
+// choice (RouteChoiceA / RouteChoiceB) — called wherever classifyRouteOutcome
+// resolves to OutcomeSuccess for a memo-tracked dispatch.
+func RecordRouteABSuccess(ctx context.Context, route string) {
+	Get().RouteABSuccessTotal.Add(ctx, 1, metric.WithAttributes(AttrRouteChoice.String(route)))
 }
