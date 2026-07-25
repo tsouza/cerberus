@@ -380,17 +380,46 @@ func TestVerify_AttributionOnlyOnPromLane(t *testing.T) {
 	}
 }
 
+// matrixAccum builds one head's in-flight accumulator for a lane that judged only
+// metric matrices — the shape every hand-built fixture below describes. A head
+// that replayed nothing carries no family, exactly as a real run leaves it.
+func matrixAccum(s Summary) *headAccum {
+	acc := &headAccum{summary: s, families: map[string]*FamilySummary{}}
+	if s.Total > 0 {
+		acc.families[KindMetricMatrix] = &FamilySummary{
+			Kind: KindMetricMatrix, Unit: UnitSeries,
+			Total: s.Total, Match: s.Match, Diverge: s.Diverge, Undecidable: s.Undecidable,
+			Unsupported: s.Unsupported, Error: s.Error, Compared: s.ComparedUnits,
+		}
+	}
+	return acc
+}
+
 // TestReport_JSONIsDeterministic pins that two marshals of the same report are
 // byte-identical and that Heads is head-token sorted, so a re-run of the same
 // inputs produces a diffable artifact rather than churning on Go's map order.
+//
+// The fixture carries a limitation on a multi-family head, because the roll-up
+// merges limitations out of a map: a merge that left them in map order would make
+// the artifact churn between two identical runs.
 func TestReport_JSONIsDeterministic(t *testing.T) {
+	lokiAcc := matrixAccum(Summary{Total: 1, Match: 1, ComparedSeries: 1, ComparedUnits: 1})
+	lokiAcc.summary.Total = 2
+	lokiAcc.summary.ComparedUnits = 13
+	lokiAcc.summary.Limitations = mergeLimitations(nil, []Limitation{
+		limitation(LimitLogStructuredMeta, 12), limitation(LimitLogEntryOrder, 12),
+	})
+	lokiAcc.families[KindLogStream] = &FamilySummary{
+		Kind: KindLogStream, Unit: UnitLogEntries, Total: 1, Match: 1, Compared: 12,
+		Limitations: lokiAcc.summary.Limitations,
+	}
 	rep := Report{
 		SchemaVersion: ReportVersion,
-		Summary:       Summary{Total: 2, Match: 2},
-		Heads: sortedHeadSummaries(map[string]*Summary{
-			HeadTempo: {Total: 1, Match: 1, ComparedSeries: 1},
-			HeadLoki:  {Total: 1, Match: 1, ComparedSeries: 1},
-			HeadProm:  {Total: 0},
+		Summary:       Summary{Total: 3, Match: 3, ComparedUnits: 14, Limitations: lokiAcc.summary.Limitations},
+		Heads: sortedHeadSummaries(map[string]*headAccum{
+			HeadTempo: matrixAccum(Summary{Total: 1, Match: 1, ComparedSeries: 1, ComparedUnits: 1}),
+			HeadLoki:  lokiAcc,
+			HeadProm:  matrixAccum(Summary{Total: 0}),
 		}, map[string]Lane{HeadTempo: {}, HeadLoki: {}}),
 	}
 	var first, second strings.Builder
@@ -421,9 +450,9 @@ func TestWriteText_ShowsUnconfiguredAndOutOfScopeReasons(t *testing.T) {
 	rep := Report{
 		SchemaVersion: ReportVersion,
 		Summary:       Summary{Total: 1, Match: 1, Unconfigured: 1, OutOfScope: 2},
-		Heads: sortedHeadSummaries(map[string]*Summary{
-			HeadProm: {Total: 1, Match: 1, ComparedSeries: 1},
-			HeadLoki: {Unconfigured: 1},
+		Heads: sortedHeadSummaries(map[string]*headAccum{
+			HeadProm: matrixAccum(Summary{Total: 1, Match: 1, ComparedSeries: 1, ComparedUnits: 1}),
+			HeadLoki: matrixAccum(Summary{Unconfigured: 1}),
 		}, map[string]Lane{HeadProm: {}}),
 		Results: []QueryResult{{Head: HeadProm, Source: "rule:up", Expr: "up", Verdict: VerdictMatch}},
 		Unconfigured: []UnconfiguredEntry{{

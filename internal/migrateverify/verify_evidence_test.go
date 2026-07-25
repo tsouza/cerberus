@@ -25,8 +25,8 @@ const (
 // matched reads "3 replayed: 3 match" and satisfies any guard keyed on verdict
 // counts. Not one series was ever compared, so flipping those datasources on the
 // strength of it is exactly the zero-evidence cutover this report exists to
-// prevent. ComparedSeries is what makes it visible, and Failed / DeadLanes are
-// what make it block.
+// prevent. The evidence counter is what makes it visible, and Failed /
+// DeadFamilies are what make it block.
 func TestVerify_EmptyVsEmptyIsNotProvenParity(t *testing.T) {
 	promBodies := map[string]string{"up": emptyPromMatrixBody}
 	lokiBodies := map[string]string{`sum(rate({job="api"}[5m]))`: emptyLokiMatrixBody}
@@ -62,15 +62,16 @@ func TestVerify_EmptyVsEmptyIsNotProvenParity(t *testing.T) {
 	if !rep.Failed() {
 		t.Error("a run whose every lane diffed zero series proved nothing and must fail")
 	}
-	dead := rep.DeadLanes()
+	dead := rep.DeadFamilies()
 	if len(dead) != 3 {
-		t.Fatalf("DeadLanes = %+v, want all three lanes reported dead", dead)
+		t.Fatalf("DeadFamilies = %+v, want all three lanes reported dead", dead)
 	}
-	for _, h := range dead {
-		// Each dead lane here recorded a MATCH, which is precisely why a
-		// verdict-count guard cannot see it.
-		if h.Summary.Match != 1 {
-			t.Errorf("head %s summary = %+v, want the all-match shape a verdict-count guard would clear", h.Head, h.Summary)
+	for _, f := range dead {
+		if f.Kind != KindMetricMatrix || f.Unit != UnitSeries {
+			t.Errorf("dead family %+v: want the metric-matrix family named in its own unit", f)
+		}
+		if f.Total != 1 || f.Compared != 0 {
+			t.Errorf("dead family %+v: want 1 replayed, 0 compared — the all-match shape a verdict-count guard would clear", f)
 		}
 	}
 	var out strings.Builder
@@ -80,7 +81,11 @@ func TestVerify_EmptyVsEmptyIsNotProvenParity(t *testing.T) {
 	if strings.Contains(out.String(), "VERIFICATION PASSED") {
 		t.Errorf("the banner must not read PASSED when every lane compared nothing:\n%s", out.String())
 	}
-	for _, want := range []string{"head prom compared nothing", "head loki compared nothing", "head tempo compared nothing"} {
+	for _, want := range []string{
+		"prom/metric-matrix compared nothing",
+		"loki/metric-matrix compared nothing",
+		"tempo/metric-matrix compared nothing",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the report must name each dead lane (%q), got:\n%s", want, out.String())
 		}
@@ -122,18 +127,26 @@ func TestVerify_ComparedSeriesCountsTheUnion(t *testing.T) {
 // blocked on that lane — the two must never disagree.
 func TestVerify_DeadLaneFailsEvenWhenAnotherLaneIsHealthy(t *testing.T) {
 	rep := Report{
-		Summary: Summary{Total: 52, Match: 40, Unsupported: 12, ComparedSeries: 40},
+		Summary: Summary{Total: 52, Match: 40, Unsupported: 12, ComparedSeries: 40, ComparedUnits: 40},
 		Heads: []HeadSummary{
-			{Head: HeadLoki, Configured: true, Summary: Summary{Total: 12, Unsupported: 12}},
-			{Head: HeadProm, Configured: true, Summary: Summary{Total: 40, Match: 40, ComparedSeries: 40}},
+			{
+				Head: HeadLoki, Configured: true,
+				Summary:  Summary{Total: 12, Unsupported: 12},
+				Families: []FamilySummary{{Kind: KindMetricMatrix, Unit: UnitSeries, Total: 12, Unsupported: 12}},
+			},
+			{
+				Head: HeadProm, Configured: true,
+				Summary:  Summary{Total: 40, Match: 40, ComparedSeries: 40, ComparedUnits: 40},
+				Families: []FamilySummary{{Kind: KindMetricMatrix, Unit: UnitSeries, Total: 40, Match: 40, Compared: 40}},
+			},
 		},
 	}
 	if !rep.Failed() {
 		t.Fatal("a lane that replayed 12 queries and compared none of them must fail the run")
 	}
-	dead := rep.DeadLanes()
-	if len(dead) != 1 || dead[0].Head != HeadLoki {
-		t.Fatalf("DeadLanes = %+v, want exactly the loki lane", dead)
+	dead := rep.DeadFamilies()
+	if len(dead) != 1 || dead[0].Head != HeadLoki || dead[0].Kind != KindMetricMatrix {
+		t.Fatalf("DeadFamilies = %+v, want exactly the loki metric-matrix family", dead)
 	}
 	var out strings.Builder
 	if err := rep.WriteText(&out); err != nil {
@@ -142,10 +155,10 @@ func TestVerify_DeadLaneFailsEvenWhenAnotherLaneIsHealthy(t *testing.T) {
 	if strings.Contains(out.String(), "VERIFICATION PASSED") {
 		t.Errorf("the banner must not read PASSED while a lane compared nothing:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "head loki compared nothing") {
+	if !strings.Contains(out.String(), "loki/metric-matrix compared nothing") {
 		t.Errorf("the failure must name the dead lane, got:\n%s", out.String())
 	}
-	if strings.Contains(out.String(), "head prom compared nothing") {
+	if strings.Contains(out.String(), "prom/metric-matrix compared nothing") {
 		t.Errorf("the healthy prom lane must not be reported dead, got:\n%s", out.String())
 	}
 }

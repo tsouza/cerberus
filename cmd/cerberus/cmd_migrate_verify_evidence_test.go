@@ -10,26 +10,38 @@ import (
 	"testing"
 )
 
-// logStreamSelector is the commonest LogQL panel shape and the commonest TraceQL
-// one: a bare stream selector and a bare spanset search. Both return rows, not a
-// metric matrix, so both route out of scope — which is honest, and is exactly why a
-// corpus made only of them must not read as a passing parity gate.
+// The corpus expressions the CLI-level tests replay, one per shape.
+//
+// logStreamSelector is the commonest LogQL panel shape: a bare stream selector
+// with a line filter, which returns log lines. traceSearchQuery is the commonest
+// Tempo panel shape: a bare spanset filter, which returns trace summaries. Both
+// have a comparator and are replayed.
+//
+// compareQuery and unparseableTraceQL are the shapes no comparator judges — a
+// compare(), whose attribute inventory is chosen by a topN ranking neither
+// backend's wire contract specifies, and an expression cerberus's own TraceQL
+// parser rejects, whose result shape cannot be classified at all. Both route out
+// of scope, which is honest, and is exactly why a corpus made only of them must
+// not read as a passing parity gate.
 const (
-	logStreamSelector = `{job="api"} |= "error"`
-	traceSearchQuery  = `{ span.http.status_code = 500 }`
+	logStreamSelector  = `{job="api"} |= "error"`
+	traceSearchQuery   = `{ span.http.status_code = 500 }`
+	compareQuery       = `{} | compare({status=error})`
+	unparseableTraceQL = `{{{`
 )
 
-// writeAllOutOfScopeCorpus writes a corpus whose every entry is a shape no metric
-// lane can judge — the realistic output of harvesting a Loki/Tempo-heavy Grafana
-// export.
+// writeAllOutOfScopeCorpus writes a corpus whose every entry is a shape no
+// comparator judges — the realistic output of harvesting a Tempo-heavy Grafana
+// export whose panels are all compare() breakdowns and hand-edited expressions
+// the parser rejects.
 func writeAllOutOfScopeCorpus(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "corpus.json")
 	body := fmt.Sprintf(`{"version":1,"queries":[`+
-		`{"expr":%s,"source":"panel:api-logs","kind":"panel","lang":"logql"},`+
-		`{"expr":%s,"source":"panel:errors","kind":"panel","lang":"traceql"}`+
+		`{"expr":%s,"source":"panel:breakdown","kind":"panel","lang":"traceql"},`+
+		`{"expr":%s,"source":"panel:broken","kind":"panel","lang":"traceql"}`+
 		`],"skipped":[]}`,
-		strconv.Quote(logStreamSelector), strconv.Quote(traceSearchQuery))
+		strconv.Quote(compareQuery), strconv.Quote(unparseableTraceQL))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,20 +49,21 @@ func writeAllOutOfScopeCorpus(t *testing.T, dir string) string {
 }
 
 // TestRunVerify_AllOutOfScopeCorpusExitsNonZero pins the CLI end of the
-// judged-nothing rule. An operator whose dashboards are all log-stream panels ran
-// verify with a complete loki pair, every entry routed out of scope, and the
-// command printed "VERIFICATION PASSED — all 0 queries matched" and exited 0 — a
-// CI job gating the cutover on that exit code goes green having judged nothing.
+// judged-nothing rule. An operator whose dashboards are all shapes with no
+// comparator ran verify with a complete tempo pair, every entry routed out of
+// scope, and the command printed "VERIFICATION PASSED — all 0 queries matched"
+// and exited 0 — a CI job gating the cutover on that exit code goes green having
+// judged nothing.
 func TestRunVerify_AllOutOfScopeCorpusExitsNonZero(t *testing.T) {
 	dir := t.TempDir()
 	corpus := writeAllOutOfScopeCorpus(t, dir)
-	lokiRef := pathServer(t, "/loki/api/v1/query_range", "query", map[string]string{})
-	lokiCer := pathServer(t, "/loki/api/v1/query_range", "query", map[string]string{})
+	tempoRef := pathServer(t, "/api/metrics/query_range", "q", map[string]string{})
+	tempoCer := pathServer(t, "/api/metrics/query_range", "q", map[string]string{})
 
 	var out, errOut bytes.Buffer
 	args := append([]string{
 		"--corpus", corpus,
-		"--ref-loki", lokiRef.URL, "--cerberus-loki", lokiCer.URL,
+		"--ref-tempo", tempoRef.URL, "--cerberus-tempo", tempoCer.URL,
 	}, windowArgs()...)
 	err := runVerify(args, &out, &errOut)
 	if err == nil {
@@ -64,7 +77,7 @@ func TestRunVerify_AllOutOfScopeCorpusExitsNonZero(t *testing.T) {
 	}
 	// The out-of-scope entries are still enumerated with their reasons: the run
 	// blocks BECAUSE nothing was judged, not by pretending the entries vanished.
-	for _, want := range []string{"kind=log-stream", "kind=trace-search"} {
+	for _, want := range []string{"kind=metrics-compare", "kind=unparseable"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the report must still name the out-of-scope shapes (%q), got:\n%s", want, out.String())
 		}
@@ -81,8 +94,8 @@ func TestRunVerify_ConfiguredLaneWithOnlyOutOfScopeEntriesIsVisible(t *testing.T
 	path := filepath.Join(dir, "corpus.json")
 	body := fmt.Sprintf(`{"version":1,"queries":[`+
 		`{"expr":"up","source":"rule:up","kind":"record","lang":"promql"},`+
-		`{"expr":%s,"source":"panel:errors","kind":"panel","lang":"traceql"}`+
-		`],"skipped":[]}`, strconv.Quote(traceSearchQuery))
+		`{"expr":%s,"source":"panel:breakdown","kind":"panel","lang":"traceql"}`+
+		`],"skipped":[]}`, strconv.Quote(compareQuery))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
