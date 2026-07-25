@@ -1,0 +1,37 @@
+{
+  "name": "drilldown-label-values-service-name",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Metrics Drilldown (grafana-metricsdrilldown-app) — /api/v1/label/<name>/values against a resource-attribute-sourced, dedicated-column label",
+  "provenance": [
+    "Same group-by value discovery flow as drilldown-label-values-match, but targeting `service_name` —",
+    "the one Prom label the OTel-CH default schema hoists out of the Attributes map into a dedicated",
+    "top-level column (schema.Metrics.ServiceNameColumn), and the one label PromQL resolves under BOTH",
+    "the underscored (`service_name`) and OTel-canonical dotted (`service.name`) spelling. The existing",
+    "label-values/labels entries only exercise a plain Attributes-map label (cerberus_ql); none pin the",
+    "dedicated-column / resource-attribute resolution path PR #1270 rewrote to answer at the scan",
+    "(dedicatedLabelColumns / schemaTopLevelColumn in internal/promql/metadata_catalog.go +",
+    "internal/promql/resource_attributes.go) instead of rebuilding a merged per-series label map above it.",
+    "Shape reconstructed from internal/promql/schema_lookup_test.go and internal/api/prom/handler_chdb_label_values_test.go."
+  ],
+  "grafana_request": {
+    "path": "GET /api/datasources/uid/cerberus-prom/resources/api/v1/label/service_name/values",
+    "query": { "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}" }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/label/service_name/values",
+    "query": {
+      "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "prom-label-values-service-name",
+  "expect": {
+    "status": 200,
+    "decode": "prom-strings",
+    "wire": ["strings-contains:cerberus-api"],
+    "data": ["strings-contains:cerberus-loki", "strings-contains:cerberus-tempo"]
+  }
+}
