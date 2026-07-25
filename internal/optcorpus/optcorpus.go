@@ -33,7 +33,7 @@ import (
 // the route the pure classifier (internal/solver Planner.Plan) chose plus the
 // RAW cost-grid scalars it computed (N anchors, fan-out, cumulative spine
 // lookback D, outer range, step) and the decision reason. It is the
-// dispatch-side half of the route A/B calibration corpus (stage 0): the
+// dispatch-side half of the route A/B calibration corpus: the
 // reconciler joins it to the OBSERVED server-side cost so an operator can
 // replay the classifier offline (counterfactual threshold testing) and
 // measure the wrong-route overlap.
@@ -248,7 +248,7 @@ type Row struct {
 	MemoryUsage         uint64           `json:"memory_usage"`
 	ProfileEvents       map[string]int64 `json:"profile_events,omitempty"`
 
-	// Routing features (stage 0 route A/B calibration). These join each
+	// Routing features (route A/B calibration). These join each
 	// routing DECISION to its OBSERVED cost so the pure classifier can be
 	// replayed offline. They are zero-valued when the dispatch carried no
 	// routing classification (Solver off / unclassified head) — Route is then
@@ -522,7 +522,7 @@ func (r *Reconciler) Observe(rec Record) {
 // preferable to blocking a data-plane dispatch on the corpus.
 //
 // The trailing route* parameters carry the routing classifier read-out for
-// this dispatch (stage 0 route A/B calibration). They are passed as primitive
+// this dispatch (route A/B calibration). They are passed as primitive
 // scalars — not a shared struct — so neither package imports the other's types
 // (the engine declares the QueryObserver interface; optcorpus supplies the
 // concrete *Reconciler, and a shared struct would couple them and risk the
