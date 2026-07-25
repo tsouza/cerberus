@@ -1350,6 +1350,12 @@
     "reason": "routed"
   },
   {
+    "query": "native_rate_join_range_step",
+    "routed": false,
+    "k": 0,
+    "reason": "below-threshold"
+  },
+  {
     "query": "native_rate_range_step",
     "routed": true,
     "k": 8,
