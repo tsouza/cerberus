@@ -327,3 +327,152 @@ func TestBuildRuleGraphRegexConsumerCountsAsSkip(t *testing.T) {
 		t.Errorf("skip reason should explain the non-reducible __name__ selection, got %q", g.Skipped[0].Reason)
 	}
 }
+
+// TestHarvestLokiRuleFilesRecordOnlyExtraction pins the core Loki-rulegraph
+// design decision: a Loki rule file's `record:` rules become RecordedSeries
+// tagged with the loki-rule: source prefix, but `alert:` rules are NOT
+// extracted as consumers at all — LogQL alerting exprs are log-stream
+// selectors, not metric-name references, so feeding them through the
+// PromQL-based extractor would only manufacture spurious skips.
+func TestHarvestLokiRuleFilesRecordOnlyExtraction(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "loki-rules.yml")
+	const rules = `
+groups:
+  - name: g
+    rules:
+      - record: job:error_lines:rate5m
+        expr: sum(rate({app="api"} |= "ERROR" [5m]))
+      - alert: HighErrorLines
+        expr: '{app="api"} |= "ERROR"'
+`
+	if err := os.WriteFile(file, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, skipped := HarvestLokiRuleFiles([]string{file})
+
+	if len(recorded) != 1 {
+		t.Fatalf("recorded = %+v, want exactly 1 (the record: rule only)", recorded)
+	}
+	if recorded[0].Name != "job:error_lines:rate5m" {
+		t.Errorf("recorded[0].Name = %q, want job:error_lines:rate5m", recorded[0].Name)
+	}
+	if !strings.HasPrefix(recorded[0].Source, lokiRuleSourcePrefix) {
+		t.Errorf("recorded[0].Source = %q, want prefix %q", recorded[0].Source, lokiRuleSourcePrefix)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none (the alert rule is intentionally excluded, not a failure)", skipped)
+	}
+}
+
+// TestHarvestLokiRuleFilesNoFilesMatchedIsSkip pins that a --loki-rules glob
+// matching zero files is a counted skip (which trips the gate's blockingSkip
+// rule), never a silent empty result that would read as "no rules, all clear."
+func TestHarvestLokiRuleFilesNoFilesMatchedIsSkip(t *testing.T) {
+	dir := t.TempDir()
+	pattern := filepath.Join(dir, "does-not-exist-*.yml")
+
+	recorded, skipped := HarvestLokiRuleFiles([]string{pattern})
+
+	if len(recorded) != 0 {
+		t.Fatalf("recorded = %+v, want none", recorded)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %+v, want exactly 1", skipped)
+	}
+	if skipped[0].Source != pattern {
+		t.Errorf("skipped[0].Source = %q, want %q", skipped[0].Source, pattern)
+	}
+	if skipped[0].Reason != "no files matched" {
+		t.Errorf("skipped[0].Reason = %q, want %q", skipped[0].Reason, "no files matched")
+	}
+}
+
+// TestHarvestLokiRuleFilesEmptyExprRecordIsSkip pins that a record: rule with
+// an empty expr is a counted skip, not silently listed as a recorded series
+// that will never actually be materialized by Loki's ruler.
+func TestHarvestLokiRuleFilesEmptyExprRecordIsSkip(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "loki-rules.yml")
+	const rules = `
+groups:
+  - name: g
+    rules:
+      - record: job:broken:noexpr
+        expr: ""
+`
+	if err := os.WriteFile(file, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, skipped := HarvestLokiRuleFiles([]string{file})
+
+	if len(recorded) != 0 {
+		t.Fatalf("recorded = %+v, want none (empty expr is a skip, not a recorded series)", recorded)
+	}
+	if len(skipped) != 1 || skipped[0].Reason != "recording rule has empty expr" {
+		t.Fatalf("skipped = %+v, want one entry reasoning empty expr", skipped)
+	}
+}
+
+// TestBuildRuleGraphLokiRecordedSeriesLinkedByExistingConsumers pins that a
+// Loki-recorded series is linked by the SAME PromQL-based consumer pipeline a
+// Prometheus-recorded series uses — a dashboard panel or Prometheus rule
+// referencing the remote-written metric by name classifies it StatusConsumed,
+// with zero changes to BuildRuleGraph's signature or logic.
+func TestBuildRuleGraphLokiRecordedSeriesLinkedByExistingConsumers(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "loki-rules.yml")
+	const rules = `
+groups:
+  - name: g
+    rules:
+      - record: job:error_lines:rate5m
+        expr: sum(rate({app="api"} |= "ERROR" [5m]))
+      - record: job:warn_lines:rate5m
+        expr: sum(rate({app="api"} |= "WARN" [5m]))
+`
+	if err := os.WriteFile(file, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recorded, skipped := HarvestLokiRuleFiles([]string{file})
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none", skipped)
+	}
+
+	consumers := []HarvestedQuery{
+		// A Grafana dashboard panel — PromQL, reading the Loki-remote-written
+		// metric by name — is harvested exactly like any other panel consumer.
+		{Expr: `sum(job:error_lines:rate5m{env="prod"})`, Source: "dash:overview/panel-1", Kind: KindPanel},
+	}
+
+	g := BuildRuleGraph(recorded, consumers, PromQLMetricNames, nil)
+
+	byName := map[string]RecordedNode{}
+	for _, n := range g.Recorded {
+		byName[n.Name] = n
+	}
+
+	consumed, ok := byName["job:error_lines:rate5m"]
+	if !ok {
+		t.Fatal("job:error_lines:rate5m missing from graph")
+	}
+	if consumed.Status != StatusConsumed {
+		t.Errorf("job:error_lines:rate5m status = %q, want %q", consumed.Status, StatusConsumed)
+	}
+	if !strings.HasPrefix(consumed.Source, lokiRuleSourcePrefix) {
+		t.Errorf("job:error_lines:rate5m source = %q, want loki-rule: prefix preserved", consumed.Source)
+	}
+	if len(consumed.Consumers) != 1 || consumed.Consumers[0] != "dash:overview/panel-1" {
+		t.Errorf("consumed edges = %v, want [dash:overview/panel-1]", consumed.Consumers)
+	}
+
+	orphan, ok := byName["job:warn_lines:rate5m"]
+	if !ok {
+		t.Fatal("job:warn_lines:rate5m missing from graph")
+	}
+	if orphan.Status != StatusOrphan {
+		t.Errorf("job:warn_lines:rate5m status = %q, want %q (nothing references it)", orphan.Status, StatusOrphan)
+	}
+}

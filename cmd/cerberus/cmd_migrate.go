@@ -384,33 +384,46 @@ func runClassifyCommand(cmd *cobra.Command, rules, lokiRules []string, dashboard
 
 // newMigrateRuleGraphCmd builds the recording-rule-output → consumer dependency
 // graph and lists the consumers that MUST keep being materialized post-cutover.
-// Needs --rules and/or --corpus.
+// Needs --rules, --loki-rules, and/or --corpus. Tempo has no rule-file concept
+// in this sense — its metrics-generator is a fixed-shape, config-driven metric
+// emitter with no user-authored record:/expr: rule file to point a glob at —
+// so there is deliberately no --tempo-rules flag; offering one with nothing
+// behind it would itself be the silent-ignore anti-pattern this tool avoids.
 func newMigrateRuleGraphCmd() *cobra.Command {
 	var (
-		rules  []string
-		corpus string
-		out    string
-		asJSON bool
+		rules     []string
+		lokiRules []string
+		corpus    string
+		out       string
+		asJSON    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rulegraph",
 		Short: "Map recording-rule outputs to the consumers that must stay materialized",
 		Long: "Link each recording rule's recorded OUTPUT series (its record: name, from\n" +
-			"--rules) to the corpus queries and alerting exprs that reference it\n" +
-			"(--rules alerts + --corpus), classify every recorded series as consumed or\n" +
-			"orphan, and list the consumers that MUST keep being materialized after\n" +
-			"cutover (cerberus has no ruler). Fully offline; anything unparseable is a\n" +
-			"counted skip, never silently dropped.",
-		Example:       "  cerberus migrate rulegraph --rules 'rules/*.yml' --corpus corpus.json",
+			"--rules and/or --loki-rules) to the corpus queries and alerting exprs that\n" +
+			"reference it (--rules alerts + --corpus), classify every recorded series as\n" +
+			"consumed or orphan, and list the consumers that MUST keep being\n" +
+			"materialized after cutover (cerberus has no ruler). --loki-rules harvests\n" +
+			"only Loki ruler record: output series: a LogQL alerting or recording expr\n" +
+			"is a log-stream selector, not a metric reference, so it can never itself\n" +
+			"consume a recorded series and is never fed into the consumer pipeline.\n" +
+			"Tempo has no rule concept in this sense (its metrics-generator has no\n" +
+			"user-authored rule file), so there is no --tempo-rules flag. Fully\n" +
+			"offline; anything unparseable is a counted skip, never silently dropped.",
+		Example:       "  cerberus migrate rulegraph --rules 'rules/*.yml' --loki-rules 'loki/*.yml' --corpus corpus.json",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRuleGraphCommand(cmd, normalizeList(rules), corpus, out, asJSON)
+			return runRuleGraphCommand(cmd, normalizeList(rules), normalizeList(lokiRules), corpus, out, asJSON)
 		},
 	}
 	cmd.Flags().StringSliceVar(&rules, "rules", nil,
-		"recording/alerting rule files: record: names are the recorded series, alerting exprs are consumers "+
+		"Prometheus recording/alerting rule files: record: names are the recorded series, alerting exprs are consumers "+
+			"(repeatable or comma-separated paths/globs)")
+	cmd.Flags().StringSliceVar(&lokiRules, "loki-rules", nil,
+		"Loki ruler rule files: only record: names are harvested, as recorded series "+
 			"(repeatable or comma-separated paths/globs)")
 	cmd.Flags().StringVar(&corpus, "corpus", "",
 		"harvested corpus.json (from `cerberus migrate harvest`) whose queries are scanned as consumers")
@@ -419,12 +432,12 @@ func newMigrateRuleGraphCmd() *cobra.Command {
 	return cmd
 }
 
-func runRuleGraphCommand(cmd *cobra.Command, rules []string, corpus, out string, asJSON bool) error {
-	if len(rules) == 0 && corpus == "" {
+func runRuleGraphCommand(cmd *cobra.Command, rules, lokiRules []string, corpus, out string, asJSON bool) error {
+	if len(rules) == 0 && len(lokiRules) == 0 && corpus == "" {
 		_ = cmd.Usage()
-		return fmt.Errorf("rulegraph needs --rules (for recorded series) and/or --corpus (for consumers)")
+		return fmt.Errorf("rulegraph needs --rules and/or --loki-rules (for recorded series) and/or --corpus (for consumers)")
 	}
-	g, err := buildRuleGraph(rules, corpus)
+	g, err := buildRuleGraph(rules, lokiRules, corpus)
 	if err != nil {
 		return err
 	}
@@ -998,11 +1011,21 @@ func runClassifyReport(w io.Writer, src migrate.CorpusSource, asJSON bool) error
 }
 
 // buildRuleGraph assembles the graph inputs: recorded series + alerting
-// consumers from the rule files, plus every corpus query as an additional
+// consumers from the Prometheus rule files, recorded series (record: only)
+// from the Loki rule files, plus every corpus query as an additional
 // consumer. Rule-file and corpus skips are threaded through so the graph's skip
-// count accounts for every dropped input.
-func buildRuleGraph(rules []string, corpus string) (migrate.RuleGraph, error) {
+// count accounts for every dropped input. When lokiRules is empty this runs
+// the exact same code path as before it existed — no HarvestLokiRuleFiles
+// call, no output-shape change — which is what keeps MIG-04's committed
+// golden byte-identical for the existing --rules/--corpus invocation.
+func buildRuleGraph(rules, lokiRules []string, corpus string) (migrate.RuleGraph, error) {
 	recorded, consumers, skipped := migrate.HarvestRuleFiles(rules)
+
+	if len(lokiRules) > 0 {
+		lokiRecorded, lokiSkipped := migrate.HarvestLokiRuleFiles(lokiRules)
+		recorded = append(recorded, lokiRecorded...)
+		skipped = append(skipped, lokiSkipped...)
+	}
 
 	if corpus != "" {
 		cq, csk, err := migrate.CorpusFileSource{Path: corpus}.Harvest(context.Background())

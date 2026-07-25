@@ -170,3 +170,131 @@ groups:
 		t.Errorf("graph file should carry the counts line, got:\n%s", string(data))
 	}
 }
+
+// TestRuleGraphLegacyInvocationUnaffectedWithoutLokiRules pins that the
+// --loki-rules flag's mere existence on the command changes nothing: the
+// output for an invocation that never passes it is byte-identical to the
+// output before the flag was added. This is what makes MIG-04's committed
+// golden safe without regeneration.
+func TestRuleGraphLegacyInvocationUnaffectedWithoutLokiRules(t *testing.T) {
+	dir := t.TempDir()
+	ruleFile := filepath.Join(dir, "rules.yml")
+	const rules = `
+groups:
+  - name: api
+    rules:
+      - record: job:http_requests:rate5m
+        expr: rate(http_requests_total[5m])
+      - record: job:errors:rate5m
+        expr: rate(http_errors_total[5m])
+`
+	if err := os.WriteFile(ruleFile, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corpusFile := filepath.Join(dir, "corpus.json")
+	writeRuleGraphCorpus(t, corpusFile, migrate.HarvestedQuery{
+		Expr:   `sum(job:http_requests:rate5m{env="prod"})`,
+		Source: "dash:overview/reqs",
+		Kind:   migrate.KindPanel,
+	})
+
+	var out, errOut bytes.Buffer
+	if err := runMigrate([]string{"rulegraph", "--rules", ruleFile, "--corpus", corpusFile, "--json"}, &out, &errOut); err != nil {
+		t.Fatalf("rulegraph --json: %v (stderr: %s)", err, errOut.String())
+	}
+
+	var withoutFlag, withEmptyFlag bytes.Buffer
+	if err := runMigrate([]string{"rulegraph", "--rules", ruleFile, "--corpus", corpusFile, "--json"}, &withoutFlag, &errOut); err != nil {
+		t.Fatalf("rulegraph --json (rerun): %v (stderr: %s)", err, errOut.String())
+	}
+	if err := runMigrate([]string{"rulegraph", "--rules", ruleFile, "--loki-rules", "", "--corpus", corpusFile, "--json"}, &withEmptyFlag, &errOut); err != nil {
+		t.Fatalf("rulegraph --json --loki-rules '': %v (stderr: %s)", err, errOut.String())
+	}
+
+	if out.String() != withoutFlag.String() {
+		t.Fatalf("rulegraph output is not even reproducible across two runs with identical flags:\n%s\n---\n%s", out.String(), withoutFlag.String())
+	}
+	if out.String() != withEmptyFlag.String() {
+		t.Fatalf("rulegraph output changed by the mere presence of an empty --loki-rules flag:\n%s\n---\n%s", out.String(), withEmptyFlag.String())
+	}
+}
+
+// TestRuleGraphLokiRulesHarvestsRecordedSeries pins the CLI wiring: a
+// --loki-rules file's record: output is folded into the graph's recorded
+// series, tagged with the loki-rule: source prefix, and linked by a corpus
+// consumer exactly like a Prometheus-recorded series.
+func TestRuleGraphLokiRulesHarvestsRecordedSeries(t *testing.T) {
+	dir := t.TempDir()
+	lokiRuleFile := filepath.Join(dir, "loki-rules.yml")
+	const lokiRules = `
+groups:
+  - name: g
+    rules:
+      - record: job:error_lines:rate5m
+        expr: sum(rate({app="api"} |= "ERROR" [5m]))
+      - alert: HighErrorLines
+        expr: '{app="api"} |= "ERROR"'
+`
+	if err := os.WriteFile(lokiRuleFile, []byte(lokiRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corpusFile := filepath.Join(dir, "corpus.json")
+	writeRuleGraphCorpus(t, corpusFile, migrate.HarvestedQuery{
+		Expr:   `sum(job:error_lines:rate5m{env="prod"})`,
+		Source: "dash:overview/errlines",
+		Kind:   migrate.KindPanel,
+	})
+
+	var out, errOut bytes.Buffer
+	if err := runMigrate([]string{"rulegraph", "--loki-rules", lokiRuleFile, "--corpus", corpusFile, "--json"}, &out, &errOut); err != nil {
+		t.Fatalf("rulegraph --loki-rules: %v (stderr: %s)", err, errOut.String())
+	}
+
+	var g migrate.RuleGraph
+	if err := json.Unmarshal(out.Bytes(), &g); err != nil {
+		t.Fatalf("unmarshal rulegraph JSON: %v\n%s", err, out.String())
+	}
+	if g.Counts.Recorded != 1 || g.Counts.Consumed != 1 || g.Counts.Orphan != 0 {
+		t.Fatalf("counts = %+v, want recorded 1 / consumed 1 / orphan 0", g.Counts)
+	}
+	if len(g.Recorded) != 1 {
+		t.Fatalf("recorded = %+v, want exactly 1 (the alert: rule is not harvested)", g.Recorded)
+	}
+	n := g.Recorded[0]
+	if n.Name != "job:error_lines:rate5m" {
+		t.Errorf("recorded[0].Name = %q, want job:error_lines:rate5m", n.Name)
+	}
+	if !strings.HasPrefix(n.Source, "loki-rule:") {
+		t.Errorf("recorded[0].Source = %q, want loki-rule: prefix", n.Source)
+	}
+	if n.Status != migrate.StatusConsumed {
+		t.Errorf("recorded[0].Status = %q, want %q", n.Status, migrate.StatusConsumed)
+	}
+	if len(n.Consumers) != 1 || n.Consumers[0] != "dash:overview/errlines" {
+		t.Errorf("recorded[0].Consumers = %v, want [dash:overview/errlines]", n.Consumers)
+	}
+}
+
+// TestRuleGraphLokiRulesNoFilesMatchedBlocks pins that a --loki-rules glob
+// matching zero files surfaces as a counted skip, not a silent empty graph —
+// the same posture --rules already has for a missed glob.
+func TestRuleGraphLokiRulesNoFilesMatchedBlocks(t *testing.T) {
+	dir := t.TempDir()
+	pattern := filepath.Join(dir, "does-not-exist-*.yml")
+
+	var out, errOut bytes.Buffer
+	if err := runMigrate([]string{"rulegraph", "--loki-rules", pattern, "--json"}, &out, &errOut); err != nil {
+		t.Fatalf("rulegraph --loki-rules (missing glob): %v (stderr: %s)", err, errOut.String())
+	}
+
+	var g migrate.RuleGraph
+	if err := json.Unmarshal(out.Bytes(), &g); err != nil {
+		t.Fatalf("unmarshal rulegraph JSON: %v\n%s", err, out.String())
+	}
+	if g.Counts.Skipped != 1 {
+		t.Fatalf("counts.Skipped = %d, want 1", g.Counts.Skipped)
+	}
+	if len(g.Skipped) != 1 || g.Skipped[0].Source != pattern || g.Skipped[0].Reason != "no files matched" {
+		t.Fatalf("skipped = %+v, want one entry naming %q with reason %q", g.Skipped, pattern, "no files matched")
+	}
+}

@@ -59,7 +59,7 @@ subcommands.
 | `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files       | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                               | offline                                 |
 | `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL             | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                                 | offline                                 |
 | `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                       | offline                                 |
-| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline                                 |
+| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--loki-rules`, `--corpus`, `--json`, `--out`                                                                                         | offline                                 |
 | `cerberus migrate verify`    | Replay the corpus against each head's reference backend and diff (parity gate) | `--corpus`, per-head `--ref*`/`--cerberus*` pairs (see below), `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out`        | live (two backends per configured head) |
 | `cerberus migrate inventory` | Probe live sources for the cardinality that drives OOM risk                    | `--source`, `--top`, `--window`, `--loki-source`, `--loki-selector`, `--tempo-source`, `--json`, `--out`                                         | live (Prometheus always; Loki optional) |
 | `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline                                 |
@@ -170,7 +170,19 @@ proves that.
 dashboard/alert consumers that read it. Because cerberus has no ruler, any
 **consumed** recorded series must keep being materialized after cutover, or the
 panel that reads it goes silently blank. Rulegraph tells you exactly which ones;
-materializing them elsewhere is a manual operator step.
+materializing them elsewhere is a manual operator step. `--loki-rules` extends
+this to Loki's ruler, which has a real recording/alerting rule format of its
+own: only `record:` output series are harvested from it, tagged with a
+`loki-rule:` source so they're distinguishable from Prometheus-sourced ones,
+and linked by the same PromQL-shaped consumers (a dashboard panel or a
+Prometheus rule reading the remote-written metric by name) rulegraph already
+scans. Loki `alert:` rules are never harvested for this graph — a LogQL
+alerting expr is a log-stream selector, not a metric-name reference, so it can
+never itself consume a recorded series, and feeding it through the PromQL
+extractor would only manufacture spurious unparseable-consumer skips. Tempo
+has no rule concept in this sense: its metrics-generator is a fixed-shape,
+config-driven span-metric emitter with no user-authored recording/alerting
+rule file for a `--tempo-rules` flag to point at, so no such flag exists.
 
 ### Validate: render the schema
 
@@ -424,6 +436,7 @@ cerberus migrate classify --corpus corpus.json --json --out classify.json
 # Which recording-rule outputs must stay materialized after cutover?
 cerberus migrate rulegraph \
   --rules './prometheus/rules/*.yml' \
+  --loki-rules './loki/rules/*.yml' \
   --corpus corpus.json \
   --json --out rulegraph.json
 
