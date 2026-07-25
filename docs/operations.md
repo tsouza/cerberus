@@ -945,6 +945,24 @@ pays nothing for the gauge/sum arms it doesn't use. This is why a gauge
 named `*_sum`/`*_count` is queryable as its literal name rather than
 silently resolving to a non-existent histogram base and returning empty.
 
+The table above assumes a `__name__` **pinned to a literal** — the shape a
+suffix heuristic can dispatch on. A classic-histogram row is stored under
+its bare base name and exposed on the wire only as the synthetic companion
+series `foo_bucket` / `foo_count` / `foo_sum`, so a matcher that pins one
+of those names is resolved by stripping the suffix. A **regex** (or negated)
+`__name__` matcher has no suffix to strip: applied to the stored
+`MetricName` it would be tested against the base alphabet, which is not the
+alphabet the client is asking about, and no histogram-derived series could
+ever match. The metadata surfaces (`/api/v1/series`, `/api/v1/labels`,
+`/api/v1/label/<name>/values`) therefore evaluate an unpinned `__name__`
+matcher against the **synthetic name set** — the histogram base names in the
+request window, crossed with the companion suffixes the selector lowering
+serves — and re-issue each accepted name as a literal-pinned arm. The
+enumeration is the same one `/api/v1/label/__name__/values` answers from, so
+the names a client can discover and the names a matcher can select are one
+set; and because each arm carries a `MetricName` equality it prunes on the
+primary-key prefix rather than scanning the window's whole name space.
+
 A second axis of resolution is the **separator**. A PromQL `__name__`
 carries only `[a-zA-Z0-9_:]`, but the OTel-CH `MetricName` it must match can
 hold the raw instrument name with **dots** (`k8s.pod.cpu.usage`) or

@@ -411,13 +411,51 @@ func (m Metrics) IsExpHistogramMetric(metricName string) bool {
 // future config-driven extension; for the v0.1 seed the routing is
 // unconditional.
 func (m Metrics) HistogramCompanionColumn(metricName string) (bareName, valueColumn string, ok bool) {
-	if hasSuffix(metricName, "_count") {
-		return metricName[:len(metricName)-len("_count")], m.CountColumn, true
-	}
-	if hasSuffix(metricName, "_sum") {
-		return metricName[:len(metricName)-len("_sum")], m.SumColumn, true
+	for _, c := range m.histogramCompanions() {
+		if hasSuffix(metricName, c.suffix) {
+			return metricName[:len(metricName)-len(c.suffix)], c.column, true
+		}
 	}
 	return metricName, "", false
+}
+
+// histogramCompanion pairs a Prom-wire classic-histogram companion suffix
+// with the OTel-CH histogram-row column that serves it.
+type histogramCompanion struct {
+	suffix string
+	column string
+}
+
+// histogramCompanions is the single list of column-backed classic-histogram
+// companion suffixes. Every site that needs to know which `<base>_<suffix>`
+// names the histogram row serves — the suffix strip in
+// [Metrics.HistogramCompanionColumn], the candidate-table fan-out in
+// [Metrics.TablesFor], and the synthetic-name enumeration the metadata
+// surfaces drive off [Metrics.HistogramCompanionSuffixes] — reads it from
+// here, so the three can never drift apart.
+//
+// `_bucket` is deliberately absent: it is served by fanning the
+// BucketCounts × ExplicitBounds arrays into one row per boundary rather than
+// by projecting a single column, so its routing lives with the fan-out
+// lowering instead of in this pair list.
+func (m Metrics) histogramCompanions() []histogramCompanion {
+	return []histogramCompanion{
+		{suffix: "_count", column: m.CountColumn},
+		{suffix: "_sum", column: m.SumColumn},
+	}
+}
+
+// HistogramCompanionSuffixes returns the column-backed classic-histogram
+// companion suffixes in stable order — the `<base>_<suffix>` names a caller
+// must offer to [Metrics.HistogramCompanionColumn] to enumerate everything the
+// histogram row can serve through a single-column projection.
+func (m Metrics) HistogramCompanionSuffixes() []string {
+	companions := m.histogramCompanions()
+	out := make([]string, 0, len(companions))
+	for _, c := range companions {
+		out = append(out, c.suffix)
+	}
+	return out
 }
 
 // TableFor picks which metrics table a PromQL metric name belongs in. For
@@ -493,7 +531,7 @@ func (m Metrics) TablesFor(metricName string) []string {
 	// (Count/Sum on the histogram row keyed by the bare name) and
 	// hostmetrics-style Sum under the suffixed name. Fan across both
 	// physical layouts so the matcher finds rows regardless.
-	for _, suf := range []string{"_count", "_sum"} {
+	for _, suf := range m.HistogramCompanionSuffixes() {
 		if hasSuffix(metricName, suf) {
 			// Three physical layouts can carry a `_count`/`_sum`-suffixed
 			// name, so fan across all configured-and-distinct candidates:
