@@ -86,11 +86,6 @@ type Config struct {
 	// success cannot OOM the shared gateway heap.
 	MaxOutputRows int64
 
-	// MemoryApportion (CERBERUS_SHARD_MEMORY_APPORTION): when true, the
-	// per-shard max_memory_usage is cap/P (256 MiB floor), holding total
-	// exposure at exactly the single-query cap.
-	MemoryApportion bool
-
 	// Autotune enables the self-driving threshold loop
 	// (CERBERUS_SOLVER_AUTOTUNE, default true). When true AND Mode == ModeAuto,
 	// a background loop periodically refits MinFanout / MinAnchorPairs from the
@@ -134,7 +129,6 @@ func DefaultConfig() Config {
 		Parallel:           defaultParallel,
 		Timeout:            defaultTimeout,
 		MaxOutputRows:      defaultMaxOutputRows,
-		MemoryApportion:    false,
 		Autotune:           defaultAutotune,
 		AutotuneInterval:   defaultAutotuneInterval,
 	}

@@ -54,7 +54,21 @@ type fakeQuerier struct {
 	closed      atomic.Int64
 	// live tracks open-but-not-closed cursors so tests can assert no leak.
 	live atomic.Int64
+	// maxMemoryBytes is what MaxQueryMemoryBytes reports — 0 (the default)
+	// means "no cap configured", matching Execute's own "cap==0 -> leave
+	// unapportioned" behaviour, so existing tests that never set this see no
+	// per-shard settings stamped and no behaviour change.
+	maxMemoryBytes int64
+	// ctxByShard captures the ctx each shard's QueryCursor call actually
+	// received, so a test can inspect chclient.QuerySettingsFromContext to
+	// assert what Execute stamped onto it (e.g. the apportioned
+	// max_memory_usage) without threading a second observation channel
+	// through the whole dispatch path.
+	ctxByShard map[int]context.Context
 }
+
+// MaxQueryMemoryBytes satisfies the widened CursorQuerier interface.
+func (q *fakeQuerier) MaxQueryMemoryBytes() int64 { return q.maxMemoryBytes }
 
 func newFakeQuerier(rows int) *fakeQuerier {
 	return &fakeQuerier{
@@ -95,6 +109,10 @@ func (q *fakeQuerier) QueryCursor(ctx context.Context, sql string, _ ...any) (ch
 	if !ok {
 		n = q.rows
 	}
+	if q.ctxByShard == nil {
+		q.ctxByShard = make(map[int]context.Context)
+	}
+	q.ctxByShard[shard] = ctx
 	q.mu.Unlock()
 	if openErr != nil {
 		return nil, openErr

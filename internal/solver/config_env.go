@@ -21,7 +21,6 @@ const (
 	EnvParallel           = "CERBERUS_SHARD_PARALLEL"
 	EnvTimeout            = "CERBERUS_SOLVER_TIMEOUT"
 	EnvMaxOutputRows      = "CERBERUS_SHARD_MAX_OUTPUT_ROWS"
-	EnvMemoryApportion    = "CERBERUS_SHARD_MEMORY_APPORTION"
 	EnvAutotune           = "CERBERUS_SOLVER_AUTOTUNE"
 	EnvAutotuneInterval   = "CERBERUS_SOLVER_AUTOTUNE_INTERVAL"
 )
@@ -70,9 +69,6 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MaxOutputRows, err = envInt64(EnvMaxOutputRows, cfg.MaxOutputRows); err != nil {
-		return Config{}, err
-	}
-	if cfg.MemoryApportion, err = envBool(EnvMemoryApportion, cfg.MemoryApportion); err != nil {
 		return Config{}, err
 	}
 	if cfg.Autotune, err = envBool(EnvAutotune, cfg.Autotune); err != nil {

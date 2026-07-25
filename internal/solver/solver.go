@@ -96,6 +96,26 @@ func (s *Solver) Classify(plan chplan.Node, meta RequestMeta) (*Decision, bool) 
 	return s.Planner.Plan(plan, meta)
 }
 
+// BreakerClosed reports whether the ClickHouse circuit breaker is CLOSED,
+// without consuming a half-open recovery probe (the same PeekBreakerState
+// the Executor's own pre-flight already uses). It exists so a non-baseline
+// dispatch site (probe, retry, memo-hit) can decline to even ATTEMPT route
+// B — skipping an admission-budget token and an emit — when the breaker is
+// already known-not-closed, rather than discovering that only after paying
+// for both. Execute's own step-6 pre-flight is the load-bearing correctness
+// gate regardless (a caller that skips this check and dispatches anyway
+// still fails safely, classified as breaker-neutral OutcomeNoEvidence);
+// this is a pure priority optimisation on top of it.
+//
+// A nil Solver, a nil Executor, or a nil Breaker hook all report true —
+// "no breaker configured" is not "breaker open".
+func (s *Solver) BreakerClosed() bool {
+	if s == nil || s.Executor == nil || s.Executor.Breaker == nil {
+		return true
+	}
+	return s.Executor.Breaker.PeekBreakerState() == BreakerClosed
+}
+
 // LangPromQL is the head name the solver classifies. The solver routes the
 // PromQL query_range matrix family only; the other heads skip the solver
 // entirely (Classify returns not-classified for them). It mirrors the

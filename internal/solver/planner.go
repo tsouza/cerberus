@@ -68,20 +68,136 @@ func (p *Planner) CurrentThresholds() (minFanout, minAnchorPairs int) {
 //   - "auto": route iff eligible AND F >= MinFanout AND N x F >= MinAnchorPairs
 //     AND K >= 2.
 func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
+	sig, decision, k, eligible := p.classify(plan, meta)
+	if !eligible {
+		return decision, false
+	}
+
+	// "single" classifies but never routes.
+	if p.Cfg.Mode == ModeSingle {
+		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+	}
+
+	if p.Cfg.Mode == ModeAuto {
+		// Cost thresholds gate the auto path. Below threshold → route A. Read
+		// through the atomic overlay so a concurrent autotune reload is seen as
+		// one consistent (MinFanout, MinAnchorPairs) pair.
+		minFanout, minAnchorPairs := p.thresholds()
+		if sig.maxFanout < int64(minFanout) {
+			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+		}
+		if int64(sig.outerN)*sig.maxFanout < int64(minAnchorPairs) {
+			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+		}
+		if k < 2 {
+			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+		}
+	}
+	// "sharded": thresholds drop to the floor — every eligible plan routes
+	// at K_min = 2 (k is already clamped to >= 2 by classify when upper >= 2).
+
+	return p.sliceAndDecide(plan, meta, sig, k)
+}
+
+// Eligible reports whether plan is STRUCTURALLY eligible to route B —
+// independent of Cfg.Mode's PREDICTIVE cost thresholds (MinFanout,
+// MinAnchorPairs): every correctness gate below passes, a windowed anchor
+// grid exists, and the high-D floor leaves K >= 2. On success it slices and
+// returns a fully routed Decision, exactly as Plan would under ModeSharded's
+// floor semantics (K clamped to >= 2, no fanout/anchor-pair gate).
+//
+// This is the re-derivation the failure-driven route memo calls at every
+// non-baseline dispatch site (probe, retry, memo-hit): Cfg.Mode's auto-mode
+// thresholds are a PROXY for cost, and a real route-A resource failure is
+// stronger evidence than that proxy — re-applying the proxy on top of
+// empirical evidence would defeat the reason the memo mechanism exists. The
+// structural / correctness gates are NOT bypassed here: those protect
+// answer correctness, not cost policy, and every one of them still applies
+// unconditionally, via the same classify() every Plan() call already runs.
+//
+// Eligible respects ModeSingle: an operator who has explicitly disabled the
+// solver has said route B never runs, full stop, and the memo mechanism —
+// itself a form of route-B usage — honours that rather than routing around
+// it as a side channel. It does NOT gate on ModeAuto's thresholds and does
+// NOT respect a hot-swapped autotune overlay (the mechanism this method
+// replaces): CurrentThresholds/SetThresholds/tuned remain load-bearing only
+// for Plan's own ModeAuto branch above.
+//
+// Eligible answers ONLY "can this plan be sliced and answered identically
+// via route B". It makes no promise about breaker state, admission budget,
+// live-edge freshness, or corroboration — the caller applies its own gates
+// for those before dispatching.
+func (p *Planner) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
+	if p.Cfg.Mode == ModeSingle {
+		return notRouted(ReasonBelowThreshold).withGrid(signals{}, meta), false
+	}
+	sig, decision, k, eligible := p.classify(plan, meta)
+	if !eligible {
+		return decision, false
+	}
+	return p.sliceAndDecide(plan, meta, sig, k)
+}
+
+// sliceAndDecide is the shared tail of Plan and Eligible once a mode-specific
+// gate (or none, for Eligible) has cleared k >= 2: slice the plan at k shards
+// and build the routed Decision, or fall back to a non-route Decision if
+// slicing fails or collapses to a single produced slice.
+func (p *Planner) sliceAndDecide(plan chplan.Node, meta RequestMeta, sig signals, k int64) (*Decision, bool) {
+	slices, err := p.slice(plan, meta, int(k))
+	if err != nil {
+		// A slicing failure on a plan the Planner judged eligible is a
+		// construction bug, not a routing outcome: fall back to route A
+		// rather than emit a wrong shard set.
+		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
+	}
+
+	// The doc's invariant is "route iff K >= 2". The clamp upstream keeps the
+	// requested K >= 2, but the singleton-tail merge inside slice() can
+	// still collapse a tiny-N grid to a SINGLE produced slice — one shard
+	// is route A with extra machinery, not a sharded route. Report the
+	// ACTUAL produced slice count and only route when it is >= 2.
+	if len(slices) < 2 {
+		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+	}
+
+	return (&Decision{
+		Strategy: StrategyShardedTimeslice,
+		K:        len(slices),
+		Reason:   ReasonRouted,
+		Slices:   slices,
+	}).withGrid(sig, meta), true
+}
+
+// classify runs every structural/correctness gate plus the cost-grid and the
+// K clamp, independent of Cfg.Mode. It returns the eligibility signals, the
+// clamped K, and whether the plan is STRUCTURALLY eligible to route: every
+// gate passed, a windowed anchor grid exists, and the high-D floor left
+// K >= 2.
+//
+// When eligible is false, decision is the fully-built non-route Decision the
+// caller should return verbatim (carrying the Reason for the shadow header).
+// When eligible is true, decision is nil — sig and k carry everything the
+// caller needs to apply its OWN mode-specific or evidence-specific gate
+// before slicing (Plan's ModeAuto threshold check; Eligible's unconditional
+// floor). This is the single re-derivation both Plan and Eligible run: a
+// plan's eligibility is a pure function of (plan, meta, Cfg.MaxK,
+// Cfg.MinAnchorsPerSlice) — no caller trusts a Decision computed at an
+// earlier point in time or against a different plan.
+func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, decision *Decision, k int64, eligible bool) {
 	// (2)-prefix: instant queries are never time-slice routed.
 	// Step == 0 means an instant evaluation; there is no anchor grid. The
 	// analyze pass below derives the cost grid (N/F/D/OuterRange); it has not
 	// run yet here, so the only meaningful scalar is Step (zero on an instant
 	// query). costGrid threads whatever the empty signals carry plus meta.Step.
 	if meta.Step <= 0 {
-		return notRouted(ReasonInstant).withGrid(signals{}, meta), false
+		return signals{}, notRouted(ReasonInstant).withGrid(signals{}, meta), 0, false
 	}
 
-	sig := p.analyze(plan, meta)
+	sig = p.analyze(plan, meta)
 
 	// (1) Slice-invariance: any unmarked node anywhere → route A.
 	if !sig.allSliceInvariant {
-		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
+		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
 	// (1b) Routable-spine restriction: the routable spine families are the
 	// *RangeWindow matrix family and the *RangeLWR bare-selector
@@ -91,11 +207,11 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	// those fail closed to route A. Widening to those families extends
 	// ReanchorRange + adds coverage.
 	if sig.sawNonRangeWindowSpine {
-		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
+		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
 	// (3) now64 anywhere (predicate / projection / ScalarSubquery.Input).
 	if sig.sawNow64 {
-		return notRouted(ReasonNow64).withGrid(sig, meta), false
+		return sig, notRouted(ReasonNow64).withGrid(sig, meta), 0, false
 	}
 	// (3b) An instant-mode (!StepAligned) VectorJoin. The slice-invariance
 	// registry admits VectorJoin by node kind, so it ALSO admits the
@@ -109,37 +225,36 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	// can appear under a range-mode request, so this guard is both the
 	// load-bearing fail-close AND honest telemetry.
 	if sig.sawInstantVectorJoin {
-		return notRouted(ReasonInstantJoin).withGrid(sig, meta), false
+		return sig, notRouted(ReasonInstantJoin).withGrid(sig, meta), 0, false
 	}
 	// (2) Both Start and End pinned on every windowed node, and no
 	// instant-shape windowed node (OuterRange == 0 / Step == 0).
 	if sig.sawUnpinnedBound || sig.sawInstantWindow {
-		return notRouted(ReasonInstant).withGrid(sig, meta), false
+		return sig, notRouted(ReasonInstant).withGrid(sig, meta), 0, false
 	}
 	// (4) Grid-prediction check: a windowed node whose bounds diverge from
 	// the grid the request predicts at its spine depth (an @-pinned anchor).
 	if sig.sawGridMismatch {
-		return notRouted(ReasonGridMismatch).withGrid(sig, meta), false
+		return sig, notRouted(ReasonGridMismatch).withGrid(sig, meta), 0, false
 	}
 	// (5) Grid commensurability for nested spines.
 	if sig.sawIncommensurate {
-		return notRouted(ReasonIncommensurate).withGrid(sig, meta), false
+		return sig, notRouted(ReasonIncommensurate).withGrid(sig, meta), 0, false
 	}
 	// (6) A ScalarSubquery too expensive to replicate K× (and that cannot be
 	// classified safe by the cheap interior bound) → route A.
 	if sig.sawScalarHeavy {
-		return notRouted(ReasonScalarHeavy).withGrid(sig, meta), false
+		return sig, notRouted(ReasonScalarHeavy).withGrid(sig, meta), 0, false
 	}
 
 	// The plan is ELIGIBLE. Compute the cost grid and the K clamp.
 	if !sig.hasWindow {
 		// Eligible but no windowed node carries an anchor grid to slice —
 		// nothing to gain from slicing.
-		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+		return sig, notRouted(ReasonBelowThreshold).withGrid(sig, meta), 0, false
 	}
 
 	n := sig.outerN              // N = OuterRange/Step + 1
-	f := sig.maxFanout           // F = max(Range/Step or Lookback/Step)
 	outerRange := sig.outerRange // OuterRange of the outermost spine
 	d := sig.cumulativeD         // D = cumulative spine lookback
 	step := meta.Step            // the grid step
@@ -155,66 +270,21 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		upper = highBound
 	}
 	lower := int64(2)
-	k := int64(n / p.Cfg.MinAnchorsPerSlice)
-	if k < lower {
-		k = lower
+	kk := int64(n / p.Cfg.MinAnchorsPerSlice)
+	if kk < lower {
+		kk = lower
 	}
-	if k > upper {
-		k = upper
+	if kk > upper {
+		kk = upper
 	}
 
 	// If the high-D clamp ceiling fell below 2 there is no valid K — the
 	// documented high-D floor.
 	if upper < 2 {
-		return notRouted(ReasonHighD).withGrid(sig, meta), false
+		return sig, notRouted(ReasonHighD).withGrid(sig, meta), 0, false
 	}
 
-	// "single" classifies but never routes.
-	if p.Cfg.Mode == ModeSingle {
-		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
-	}
-
-	if p.Cfg.Mode == ModeAuto {
-		// Cost thresholds gate the auto path. Below threshold → route A. Read
-		// through the atomic overlay so a concurrent autotune reload is seen as
-		// one consistent (MinFanout, MinAnchorPairs) pair.
-		minFanout, minAnchorPairs := p.thresholds()
-		if f < int64(minFanout) {
-			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
-		}
-		if int64(n)*f < int64(minAnchorPairs) {
-			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
-		}
-		if k < 2 {
-			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
-		}
-	}
-	// "sharded": thresholds drop to the floor — every eligible plan routes
-	// at K_min = 2 (k is already clamped to >= 2 above when upper >= 2).
-
-	slices, err := p.slice(plan, meta, int(k))
-	if err != nil {
-		// A slicing failure on a plan the Planner judged eligible is a
-		// construction bug, not a routing outcome: fall back to route A
-		// rather than emit a wrong shard set.
-		return notRouted(ReasonNotSliceable).withGrid(sig, meta), false
-	}
-
-	// The doc's invariant is "route iff K >= 2". The clamp above keeps the
-	// requested K >= 2, but the singleton-tail merge inside slice() can
-	// still collapse a tiny-N grid to a SINGLE produced slice — one shard
-	// is route A with extra machinery, not a sharded route. Report the
-	// ACTUAL produced slice count and only route when it is >= 2.
-	if len(slices) < 2 {
-		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
-	}
-
-	return (&Decision{
-		Strategy: StrategyShardedTimeslice,
-		K:        len(slices),
-		Reason:   ReasonRouted,
-		Slices:   slices,
-	}).withGrid(sig, meta), true
+	return sig, nil, kk, true
 }
 
 // notRouted builds a non-route Decision carrying only the reason. Callers
