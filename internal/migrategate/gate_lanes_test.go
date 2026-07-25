@@ -9,6 +9,25 @@ import (
 	"github.com/tsouza/cerberus/internal/migrateverify"
 )
 
+// matrixLane builds one head row for a lane that judged only metric matrices —
+// the artifact shape every verify fixture below describes. It mirrors what a real
+// run writes: the head roll-up, the same counts partitioned into that head's
+// metric-matrix family, and the shape-agnostic evidence counter alongside the
+// series one. Building the family here rather than by hand is what keeps a
+// fixture an artifact this build could actually have produced.
+func matrixLane(head string, s migrateverify.Summary) migrateverify.HeadSummary {
+	s.ComparedUnits = s.ComparedSeries
+	h := migrateverify.HeadSummary{Head: head, Configured: true, Summary: s}
+	if s.Total > 0 {
+		h.Families = []migrateverify.FamilySummary{{
+			Kind: migrateverify.KindMetricMatrix, Unit: migrateverify.UnitSeries,
+			Total: s.Total, Match: s.Match, Diverge: s.Diverge, Undecidable: s.Undecidable,
+			Unsupported: s.Unsupported, Error: s.Error, Compared: s.ComparedSeries,
+		}}
+	}
+	return h
+}
+
 // verifyStage returns the verify stage result from a decision, failing the test
 // if the gate produced none.
 func verifyStage(t *testing.T, dec migrategate.Decision) migrategate.StageResult {
@@ -45,10 +64,10 @@ func evalWithVerify(t *testing.T, rep migrateverify.Report) migrategate.Decision
 // reason the report carries one.
 func TestEvalVerify_DeadLaneBlocks(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 52, Match: 40, Unsupported: 12, ComparedSeries: 40},
+		Summary: migrateverify.Summary{Total: 52, Match: 40, Unsupported: 12, ComparedSeries: 40, ComparedUnits: 40},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 40, Match: 40, ComparedSeries: 40}},
-			{Head: migrateverify.HeadLoki, Configured: true, Summary: migrateverify.Summary{Total: 12, Unsupported: 12}},
+			matrixLane(migrateverify.HeadProm, migrateverify.Summary{Total: 40, Match: 40, ComparedSeries: 40}),
+			matrixLane(migrateverify.HeadLoki, migrateverify.Summary{Total: 12, Unsupported: 12}),
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -59,12 +78,12 @@ func TestEvalVerify_DeadLaneBlocks(t *testing.T) {
 	if st.Verdict != migrategate.VerdictFail || !st.Blocking {
 		t.Errorf("verify stage = %q blocking=%v, want fail + blocking", st.Verdict, st.Blocking)
 	}
-	if !containsSubstr(st.Reasons, "head loki compared nothing") {
+	if !containsSubstr(st.Reasons, "head loki family metric-matrix compared nothing") {
 		t.Errorf("the blocking reason must name the dead lane, got %+v", st.Reasons)
 	}
 	// The healthy lane must not be accused: naming prom here would send the
 	// operator to fix a backend that answered every query.
-	if containsSubstr(st.Reasons, "head prom compared nothing") {
+	if containsSubstr(st.Reasons, "head prom family metric-matrix compared nothing") {
 		t.Errorf("the healthy prom lane must not be reported dead, got %+v", st.Reasons)
 	}
 }
@@ -74,16 +93,81 @@ func TestEvalVerify_DeadLaneBlocks(t *testing.T) {
 // by simply blocking every multi-head report.
 func TestEvalVerify_HealthyLanesDoNotBlock(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 5, Match: 5, ComparedSeries: 9},
+		Summary: migrateverify.Summary{Total: 5, Match: 5, ComparedSeries: 9, ComparedUnits: 9},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 5}},
-			{Head: migrateverify.HeadLoki, Configured: true, Summary: migrateverify.Summary{Total: 2, Match: 2, ComparedSeries: 4}},
+			matrixLane(migrateverify.HeadProm, migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 5}),
+			matrixLane(migrateverify.HeadLoki, migrateverify.Summary{Total: 2, Match: 2, ComparedSeries: 4}),
 		},
 	}
 	dec := evalWithVerify(t, rep)
 	st := verifyStage(t, dec)
 	if st.Verdict != migrategate.VerdictPass {
 		t.Errorf("two healthy lanes must PASS, got %q reasons=%+v", st.Verdict, st.Reasons)
+	}
+}
+
+// TestEvalVerify_DeadTraceByIDFamilyBlocks pins the family-masking rule at the
+// derived-family level: a healthy tempo trace-search family (compared 6
+// traces) must not vouch for its own trace-by-id family replaying 5 probes and
+// comparing none of them — the exact "healthy family does not vouch for a dead
+// sibling family" case Wave 3's per-family evidence counters exist to catch.
+func TestEvalVerify_DeadTraceByIDFamilyBlocks(t *testing.T) {
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 8, Match: 8, ComparedUnits: 6},
+		Heads: []migrateverify.HeadSummary{
+			{
+				Head: migrateverify.HeadTempo, Configured: true,
+				Summary: migrateverify.Summary{Total: 8, Match: 8, ComparedUnits: 6},
+				Families: []migrateverify.FamilySummary{
+					{Kind: migrateverify.KindTraceSearch, Unit: migrateverify.UnitTraces, Total: 1, Match: 1, Compared: 6},
+					{Kind: migrateverify.KindTraceByID, Unit: migrateverify.UnitSpans, Total: 5, Match: 5, Compared: 0},
+				},
+			},
+		},
+	}
+	dec := evalWithVerify(t, rep)
+	if dec.Pass {
+		t.Fatalf("a derived family that replayed 5 probes and compared none of them must fail the gate, got PASS: %+v", dec)
+	}
+	st := verifyStage(t, dec)
+	if st.Verdict != migrategate.VerdictFail || !st.Blocking {
+		t.Errorf("verify stage = %q blocking=%v, want fail + blocking", st.Verdict, st.Blocking)
+	}
+	if !containsSubstr(st.Reasons, "head tempo family trace-by-id compared nothing") {
+		t.Errorf("the blocking reason must name the dead derived family, got %+v", st.Reasons)
+	}
+	// The healthy trace-search family must not be accused: naming it here would
+	// send the operator to fix a search endpoint that answered every query.
+	if containsSubstr(st.Reasons, "head tempo family trace-search compared nothing") {
+		t.Errorf("the healthy trace-search family must not be reported dead, got %+v", st.Reasons)
+	}
+}
+
+// TestEvalVerify_IdleDerivedFamilyCaveatIsNonBlocking pins the other half: a
+// tempo lane that ran trace-search but never derived a single trace-by-id
+// probe (every search diverged on membership before a common trace ID
+// existed to derive from) has nothing wrong to report — it is a caveat, not a
+// failure, and must not block a run that is otherwise clean.
+func TestEvalVerify_IdleDerivedFamilyCaveatIsNonBlocking(t *testing.T) {
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 1, Match: 1, ComparedUnits: 3},
+		Heads: []migrateverify.HeadSummary{
+			{
+				Head: migrateverify.HeadTempo, Configured: true,
+				Summary: migrateverify.Summary{Total: 1, Match: 1, ComparedUnits: 3},
+				Families: []migrateverify.FamilySummary{
+					{Kind: migrateverify.KindTraceSearch, Unit: migrateverify.UnitTraces, Total: 1, Match: 1, Compared: 3},
+				},
+			},
+		},
+	}
+	dec := evalWithVerify(t, rep)
+	if !dec.Pass {
+		t.Fatalf("a head with nothing to derive from proved nothing wrong; want PASS, got %+v", dec)
+	}
+	st := verifyStage(t, dec)
+	if !containsSubstr(st.Reasons, "ran trace-search but never derived a "+migrateverify.KindTraceByID+" probe") {
+		t.Errorf("want a non-blocking caveat naming the idle derived family, got %+v", st.Reasons)
 	}
 }
 
@@ -94,7 +178,7 @@ func TestEvalVerify_UnsupportedOnlyLaneStillBlocks(t *testing.T) {
 	rep := migrateverify.Report{
 		Summary: migrateverify.Summary{Total: 4, Unsupported: 4},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadTempo, Configured: true, Summary: migrateverify.Summary{Total: 4, Unsupported: 4}},
+			matrixLane(migrateverify.HeadTempo, migrateverify.Summary{Total: 4, Unsupported: 4}),
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -113,9 +197,9 @@ func TestEvalVerify_UnsupportedOnlyLaneStillBlocks(t *testing.T) {
 // here would ship a green go/no-go over queries the report itself calls unjudged.
 func TestEvalVerify_UnconfiguredBlocks(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 3, Match: 3, Unconfigured: 12, ComparedSeries: 3},
+		Summary: migrateverify.Summary{Total: 3, Match: 3, Unconfigured: 12, ComparedSeries: 3, ComparedUnits: 3},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3}},
+			matrixLane(migrateverify.HeadProm, migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3}),
 			{Head: migrateverify.HeadLoki, Summary: migrateverify.Summary{Unconfigured: 12}},
 		},
 		Unconfigured: []migrateverify.UnconfiguredEntry{
@@ -167,9 +251,9 @@ func TestEvalVerify_RejectsV1Artifact(t *testing.T) {
 // baseline at all.
 func TestEvalVerify_OutOfScopeCaveatNamesTheShapes(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 2, Match: 2, OutOfScope: 3, ComparedSeries: 2},
+		Summary: migrateverify.Summary{Total: 2, Match: 2, OutOfScope: 3, ComparedSeries: 2, ComparedUnits: 2},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 2, Match: 2, ComparedSeries: 2}},
+			matrixLane(migrateverify.HeadProm, migrateverify.Summary{Total: 2, Match: 2, ComparedSeries: 2}),
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -177,10 +261,15 @@ func TestEvalVerify_OutOfScopeCaveatNamesTheShapes(t *testing.T) {
 	if st.Verdict != migrategate.VerdictWarn {
 		t.Errorf("out-of-scope entries WARN (they are not a wrong answer), got %q", st.Verdict)
 	}
-	if !containsSubstr(st.Reasons, "log-stream / trace-search / compare / unparseable") {
-		t.Errorf("the caveat must name the shapes with no metric baseline, got %+v", st.Reasons)
+	if !containsSubstr(st.Reasons, "compare / unparseable / unknown-language") {
+		t.Errorf("the caveat must name the shapes with no comparator, got %+v", st.Reasons)
 	}
 	if containsSubstr(st.Reasons, "not PromQL") {
 		t.Errorf("the caveat must not claim non-PromQL is out of scope — those lanes are judged, got %+v", st.Reasons)
+	}
+	// A trace search has a comparator, so naming it here would tell the operator
+	// their Tempo search panels went unchecked when the gate in fact judged them.
+	if containsSubstr(st.Reasons, migrateverify.KindTraceSearch) {
+		t.Errorf("the caveat must not name trace-search — that shape is judged, got %+v", st.Reasons)
 	}
 }

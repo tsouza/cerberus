@@ -12,13 +12,13 @@ import (
 // both backends returned an empty matrix over the window (a quiet window, a tenant
 // with no traces, a metrics-generator not yet enabled). Match+Diverge+Error is 3,
 // so the old predicate read the lane as alive while the comparator had diffed
-// nothing at all. Keying on ComparedSeries is what makes it block.
+// nothing at all. Keying on the evidence counter is what makes it block.
 func TestEvalVerify_AllEmptyMatricesLaneBlocks(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 8, Match: 8, ComparedSeries: 5},
+		Summary: migrateverify.Summary{Total: 8, Match: 8, ComparedSeries: 5, ComparedUnits: 5},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 5, Match: 5, ComparedSeries: 5}},
-			{Head: migrateverify.HeadTempo, Configured: true, Summary: migrateverify.Summary{Total: 3, Match: 3}},
+			matrixLane(migrateverify.HeadProm, migrateverify.Summary{Total: 5, Match: 5, ComparedSeries: 5}),
+			matrixLane(migrateverify.HeadTempo, migrateverify.Summary{Total: 3, Match: 3}),
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -29,10 +29,10 @@ func TestEvalVerify_AllEmptyMatricesLaneBlocks(t *testing.T) {
 	if st.Verdict != migrategate.VerdictFail || !st.Blocking {
 		t.Errorf("verify stage = %q blocking=%v, want fail + blocking", st.Verdict, st.Blocking)
 	}
-	if !containsSubstr(st.Reasons, "head tempo compared nothing") {
+	if !containsSubstr(st.Reasons, "head tempo family metric-matrix compared nothing") {
 		t.Errorf("the blocking reason must name the lane that proved nothing, got %+v", st.Reasons)
 	}
-	if containsSubstr(st.Reasons, "head prom compared nothing") {
+	if containsSubstr(st.Reasons, "head prom family metric-matrix compared nothing") {
 		t.Errorf("the healthy prom lane must not be reported dead, got %+v", st.Reasons)
 	}
 }
@@ -44,15 +44,15 @@ func TestEvalVerify_EveryLaneEmptyBlocksOnTheAggregate(t *testing.T) {
 	rep := migrateverify.Report{
 		Summary: migrateverify.Summary{Total: 4, Match: 4},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadLoki, Configured: true, Summary: migrateverify.Summary{Total: 4, Match: 4}},
+			matrixLane(migrateverify.HeadLoki, migrateverify.Summary{Total: 4, Match: 4}),
 		},
 	}
 	dec := evalWithVerify(t, rep)
 	if dec.Pass {
 		t.Fatalf("a run whose comparator diffed nothing must block, got PASS: %+v", dec)
 	}
-	if !containsSubstr(verifyStage(t, dec).Reasons, "nothing actually compared: 0 series were diffed") {
-		t.Errorf("the reason must say no series were diffed, got %+v", verifyStage(t, dec).Reasons)
+	if !containsSubstr(verifyStage(t, dec).Reasons, "nothing actually compared: 0 comparison units were diffed") {
+		t.Errorf("the reason must say nothing was diffed, got %+v", verifyStage(t, dec).Reasons)
 	}
 }
 
@@ -63,10 +63,10 @@ func TestEvalVerify_EveryLaneEmptyBlocksOnTheAggregate(t *testing.T) {
 // or a green gate is the entire evidence behind flipping that datasource.
 func TestEvalVerify_ConfiguredIdleLaneIsACaveatNotSilence(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3, OutOfScope: 12},
+		Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3, OutOfScope: 12, ComparedUnits: 3},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadLoki, Configured: true, Summary: migrateverify.Summary{OutOfScope: 12}},
-			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3}},
+			matrixLane(migrateverify.HeadLoki, migrateverify.Summary{OutOfScope: 12}),
+			matrixLane(migrateverify.HeadProm, migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3}),
 		},
 	}
 	dec := evalWithVerify(t, rep)

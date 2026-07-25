@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -91,6 +92,187 @@ func (tempoDialect) Encode(expr string, p Params) url.Values {
 }
 
 func (tempoDialect) Decode(body []byte) (RangeResult, error) { return decodeTempoMetrics(body) }
+
+// tempoSearchPath is Tempo's TraceQL search endpoint, served identically by the
+// reference and by cerberus's own Tempo head.
+const tempoSearchPath = "/api/search"
+
+// traceSearchReplayLimit is the `limit` BOTH sides receive on a trace-search
+// replay. It sits AT cerberus's MaxSearchLimit ceiling, which is the highest
+// value both backends honour verbatim (above it cerberus clamps, so the two would
+// answer different questions) and therefore the value that maximises how many
+// searches answer UNDER the limit — the only regime in which set parity is
+// decidable at all.
+//
+// It is pinned rather than exposed as a flag, for the same reason the log-stream
+// limit is: the limit decides how much of a result is truncated, i.e. how much
+// the gate can judge, and a smaller one hides divergence in the tail.
+const traceSearchReplayLimit = 1000
+
+// traceSearchReplaySpansPerSet is the `spss` BOTH sides receive. It sits far
+// above Tempo's default of 3 so a realistic trace's matched spanset arrives
+// complete and its span MEMBERS are comparable; which spans survive a cap is
+// unspecified upstream, so a capped spanset is comparable on counts alone.
+const traceSearchReplaySpansPerSet = 100
+
+// TempoSearchDialect speaks Tempo's TraceQL search API: /api/search with the
+// query under `q`, limit and spans-per-set pinned, and a trace-summary envelope
+// decoded into the flat summary list the trace-search comparator judges.
+func TempoSearchDialect() KindDialect { return tempoSearchDialect{} }
+
+type tempoSearchDialect struct{}
+
+func (tempoSearchDialect) Kind() string { return KindTraceSearch }
+
+func (tempoSearchDialect) Head() string { return HeadTempo }
+
+func (tempoSearchDialect) Path(Query) string { return tempoSearchPath }
+
+// Encode sends q/start/end/limit/spss.
+//
+// start/end are Unix SECONDS, NOT the RFC3339Nano the metrics lane sends: upstream
+// Tempo's search request parser accepts only an integer instant here (its own
+// client emits strconv.FormatInt seconds), and an RFC3339 value is rejected or
+// read as zero. That failure is silent in the worst possible way — an empty
+// result on both sides, which the comparator scores as agreement while comparing
+// nothing — so the unit is a property of THIS endpoint, not of the head.
+//
+// A window is always stamped, on both sides: cerberus silently re-bounds a
+// windowless search to the last hour, so replaying a corpus expression verbatim
+// with no bounds would compare two different questions.
+func (tempoSearchDialect) Encode(q Query, p Params) url.Values {
+	v := url.Values{}
+	v.Set("q", q.Expr)
+	v.Set("start", formatTimestamp(p.Start))
+	v.Set("end", formatTimestamp(p.End))
+	v.Set("limit", strconv.Itoa(traceSearchReplayLimit))
+	v.Set("spss", strconv.Itoa(traceSearchReplaySpansPerSet))
+	return v
+}
+
+// Header sends none: both backends serve /api/search as JSON by default, and a
+// per-kind header is a request for a different encoding, which is exactly what
+// the log-stream lane learned not to ask for.
+func (tempoSearchDialect) Header() http.Header { return nil }
+
+func (tempoSearchDialect) Decode(body []byte) (any, error) { return decodeTraceSearch(body) }
+
+// tempoTraceByIDPathPrefix is the endpoint /api/traces/{id} hangs off, served
+// identically by the reference and by cerberus's own Tempo head.
+const tempoTraceByIDPathPrefix = "/api/traces/"
+
+// tempoAcceptJSON is the Accept header the trace-by-id probe sends explicitly:
+// cerberus's own handler negotiates a protobuf body for
+// Accept: application/protobuf (Grafana's datasource plugin), and this lane
+// needs the JSON shape every other dialect already reads.
+var tempoAcceptJSON = http.Header{"Accept": []string{"application/json"}}
+
+// TempoTraceByIDDialect speaks Tempo's single-trace fetch API:
+// GET /api/traces/{id} decoded into the flat span list the trace-by-id
+// comparator judges. It is DERIVED-only — no corpus entry carries a trace ID,
+// so this dialect is reached only through a Query the trace-search comparator
+// produced.
+func TempoTraceByIDDialect() KindDialect { return tempoTraceByIDDialect{} }
+
+type tempoTraceByIDDialect struct{}
+
+func (tempoTraceByIDDialect) Kind() string { return KindTraceByID }
+
+func (tempoTraceByIDDialect) Head() string { return HeadTempo }
+
+func (tempoTraceByIDDialect) Path(q Query) string { return tempoTraceByIDPathPrefix + q.TraceID }
+
+// Encode sends start/end as Unix SECONDS, the same unit the search dialect
+// uses for the same reason (F6): reference Tempo's trace-by-id lookup also
+// takes start/end as an optional search-window HINT in this unit. Cerberus's
+// own handler ignores both entirely (a trace-by-id fetch is a direct
+// row-by-id lookup, unbounded by any window), so sending them is a no-op on
+// that side and a genuine hint on the reference side.
+func (tempoTraceByIDDialect) Encode(_ Query, p Params) url.Values {
+	v := url.Values{}
+	v.Set("start", formatTimestamp(p.Start))
+	v.Set("end", formatTimestamp(p.End))
+	return v
+}
+
+func (tempoTraceByIDDialect) Header() http.Header { return tempoAcceptJSON }
+
+func (tempoTraceByIDDialect) Decode(body []byte) (any, error) { return decodeTraceByID(body) }
+
+// tempoTagsV1Path / tempoTagsV2Path / tempoTagValuesV1PathPrefix /
+// tempoTagValuesV2PathPrefix are the four tag/tag-value discovery endpoints,
+// served identically by the reference and by cerberus's own Tempo head.
+const (
+	tempoTagsV1Path            = "/api/search/tags"
+	tempoTagsV2Path            = "/api/v2/search/tags"
+	tempoTagValuesV1PathPrefix = "/api/search/tag/"
+	tempoTagValuesV2PathPrefix = "/api/v2/search/tag/"
+)
+
+// Tempo tag-discovery Surface tokens, naming which of the four endpoints a
+// KindTagDiscovery Query targets.
+const (
+	SurfaceTempoTagsV1      = "tags-v1"
+	SurfaceTempoTagsV2      = "tags-v2"
+	SurfaceTempoTagValuesV1 = "tag-values-v1"
+	SurfaceTempoTagValuesV2 = "tag-values-v2"
+)
+
+// tempoTagDiscoveryScopeAll requests every scope bucket (resource, span,
+// intrinsic) on the v2 tags endpoint. The unfiltered per-scope tag-NAME diff
+// is exact and complete on its own — see corpus_tags.go — so this probe is
+// never narrowed to a single scope.
+const tempoTagDiscoveryScopeAll = "none"
+
+// TempoTagDiscoveryDialect speaks Tempo's four tag/tag-value discovery
+// endpoints, selected per Query by Surface (and, for the two tag-VALUES
+// surfaces, by TagName).
+func TempoTagDiscoveryDialect() KindDialect { return tempoTagDiscoveryDialect{} }
+
+type tempoTagDiscoveryDialect struct{}
+
+func (tempoTagDiscoveryDialect) Kind() string { return KindTagDiscovery }
+
+func (tempoTagDiscoveryDialect) Head() string { return HeadTempo }
+
+func (tempoTagDiscoveryDialect) Path(q Query) string {
+	switch q.Surface {
+	case SurfaceTempoTagsV2:
+		return tempoTagsV2Path
+	case SurfaceTempoTagValuesV1:
+		return tempoTagValuesV1PathPrefix + url.PathEscape(q.TagName) + "/values"
+	case SurfaceTempoTagValuesV2:
+		return tempoTagValuesV2PathPrefix + url.PathEscape(q.TagName) + "/values"
+	default: // SurfaceTempoTagsV1
+		return tempoTagsV1Path
+	}
+}
+
+// Encode sends start/end as Unix SECONDS (F6, same reasoning as the search
+// and trace-by-id dialects) and, for the v2 tag-NAMES surface only,
+// scope=none so every scope bucket comes back in one probe.
+func (tempoTagDiscoveryDialect) Encode(q Query, p Params) url.Values {
+	v := url.Values{}
+	v.Set("start", formatTimestamp(p.Start))
+	v.Set("end", formatTimestamp(p.End))
+	if q.Surface == SurfaceTempoTagsV2 {
+		v.Set("scope", tempoTagDiscoveryScopeAll)
+	}
+	return v
+}
+
+func (tempoTagDiscoveryDialect) Header() http.Header { return nil }
+
+// Decode is shape-agnostic: it captures whichever of the four response
+// envelopes' fields are present into one tempoDiscoveryPayload, without
+// needing to know which Surface asked for it. The comparator, which DOES
+// carry the Query and therefore its Surface, reads only the field that
+// surface's endpoint populates — see compareTagDiscovery. This is what keeps
+// KindDialect.Decode's signature (body only, no Query) sufficient here: an
+// empty "tagNames":[] and an absent "scopes" key both decode to a nil slice
+// regardless of which endpoint answered, and that ambiguity never matters
+// because the comparator never reads the field the surface did not ask for.
+func (tempoTagDiscoveryDialect) Decode(body []byte) (any, error) { return decodeTempoDiscovery(body) }
 
 // tempoRangeResponse is the subset of Tempo's metrics range envelope this lane
 // reads. Unknown fields (metrics, exemplars, …) are deliberately tolerated: the
