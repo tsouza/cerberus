@@ -74,6 +74,16 @@ jobs:
           SCENARIOS_JSON: build/migration-scenarios.json
           TIER: ${{ inputs.tier || 'all' }}
 
+      # migration-tier0 runs on a separate runner with a fresh checkout, so
+      # the enumerator output above must travel as an artifact — the job
+      # `matrix` output only carries the small tier-list JSON, not this file.
+      - name: upload migration scenarios enumeration
+        uses: actions/upload-artifact@v7
+        with:
+          name: migration-scenarios
+          path: build/migration-scenarios.json
+          retention-days: 1
+
   migration-tier0:
     name: migration-tier0 (${{ matrix.name }})
     needs: migration-setup
@@ -92,6 +102,12 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+
+      - name: download migration scenarios enumeration
+        uses: actions/download-artifact@v7
+        with:
+          name: migration-scenarios
+          path: build
 
       # The scenarios exec a real `cerberus migrate`. Building it here and
       # handing it over via CERBERUS_BIN keeps the build failure separate
