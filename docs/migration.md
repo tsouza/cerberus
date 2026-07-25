@@ -61,7 +61,7 @@ subcommands.
 | `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                       | offline                                 |
 | `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline                                 |
 | `cerberus migrate verify`    | Replay the corpus against each head's reference backend and diff (parity gate) | `--corpus`, per-head `--ref*`/`--cerberus*` pairs (see below), `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out`        | live (two backends per configured head) |
-| `cerberus migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk           | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)                      |
+| `cerberus migrate inventory` | Probe live sources for the cardinality that drives OOM risk                    | `--source`, `--top`, `--window`, `--loki-source`, `--loki-selector`, `--tempo-source`, `--json`, `--out`                                         | live (Prometheus always; Loki optional) |
 | `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline                                 |
 
 The legacy `migrate --schema` root flag is now the `schema` subcommand, and the
@@ -151,6 +151,14 @@ silently discarded.
 cardinality. This is the number that drives OOM risk, and it exists **only** at
 runtime — it is not in any config or dashboard. Inventory refuses to infer it
 from `prometheus.yml`. A source that 404s the status endpoint is a hard error.
+`--loki-source` optionally adds a per-selector section, ranking the
+`--loki-selector` set the operator supplies by streams matched via Loki's
+`/loki/api/v1/index/stats` endpoint — Loki exposes no whole-tenant top-N
+cardinality call the way Prometheus's TSDB status does, so the operator names
+what to rank instead of the tool guessing. `--tempo-source` records a fixed,
+specifically-reasoned out-of-scope entry rather than a fabricated number:
+Tempo's span/block storage has no head-block or ranked-cardinality-stats API
+analogous to either of the other two heads, so no such proxy is computed.
 
 **Classify** buckets each corpus query: *supported* (parses, lowers, and emits
 SQL cleanly), *unsupported* (the offending construct is named), or

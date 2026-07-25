@@ -287,6 +287,54 @@ func TestWriteText_EmptyHeadNoGarbageSpan(t *testing.T) {
 	}
 }
 
+// TestWriteText_NoHeadSectionsWhenAbsent pins that a bare Inventory (nil
+// Loki, nil Tempo) renders no "loki:"/"tempo:" section headers at all —
+// absence must read as visibly absent, not as an empty ranked table.
+func TestWriteText_NoHeadSectionsWhenAbsent(t *testing.T) {
+	inv := Inventory{Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1}
+	var buf strings.Builder
+	if err := inv.WriteText(&buf); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "== loki:") || strings.Contains(out, "== tempo:") {
+		t.Errorf("a bare inventory must carry no per-head sections, got:\n%s", out)
+	}
+}
+
+// TestWriteText_LokiAndTempoSections pins that populated Loki/Tempo sections
+// render their ranked selectors and the fixed out-of-scope reason.
+func TestWriteText_LokiAndTempoSections(t *testing.T) {
+	inv := Inventory{
+		Source: "http://src", Top: 5, MetricNameTotal: -1, MetadataMetricTotal: -1,
+		Loki: &LokiInventory{
+			Source: "http://loki:3100",
+			Selectors: []LokiSelectorStats{
+				{Selector: `{app="checkout"}`, Streams: 500, Chunks: 10, Entries: 1000, Bytes: 2000},
+			},
+			Notes: []string{`selector {app="broken"}: /loki/api/v1/index/stats unavailable: GET: HTTP 500`},
+		},
+		Tempo: &TempoInventory{Source: "http://tempo:3200", OutOfScope: TempoInventoryOutOfScopeReason},
+	}
+	var buf strings.Builder
+	if err := inv.WriteText(&buf); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"== loki: http://loki:3100",
+		`{app="checkout"}`,
+		"500",
+		`selector {app="broken"}`,
+		"== tempo: http://tempo:3200",
+		TempoInventoryOutOfScopeReason,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text report missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
 // TestReadCappedBody pins the response-body cap: a body within the limit is
 // returned whole, and a body past the limit errors rather than buffering an
 // unbounded stream into memory.

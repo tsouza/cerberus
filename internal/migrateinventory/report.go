@@ -67,7 +67,48 @@ func (inv Inventory) WriteText(w io.Writer) error {
 			bw.printf("  %s\n", n)
 		}
 	}
+
+	writeLokiSection(bw, inv.Loki)
+	writeTempoSection(bw, inv.Tempo)
+
 	return bw.err
+}
+
+// writeLokiSection prints the optional per-selector Loki section, or nothing
+// at all when the operator never supplied a Loki source — a nil section is
+// simply absent from the report, never rendered as an empty ranked table.
+func writeLokiSection(bw *errWriter, loki *LokiInventory) {
+	if loki == nil {
+		return
+	}
+	bw.printf("\n== loki: %s\n", loki.Source)
+	if loki.Window != "" {
+		bw.printf("  window: %s\n", loki.Window)
+	}
+	if len(loki.Selectors) == 0 {
+		bw.printf("  none reported by the source\n")
+	}
+	for i, s := range loki.Selectors {
+		bw.printf("  %3d. %-*s %d streams %d chunks %d entries %d bytes\n",
+			i+1, rankNameWidth, s.Selector, s.Streams, s.Chunks, s.Entries, s.Bytes)
+	}
+	if len(loki.Notes) > 0 {
+		bw.printf("  notes (%d):\n", len(loki.Notes))
+		for _, n := range loki.Notes {
+			bw.printf("    %s\n", n)
+		}
+	}
+}
+
+// writeTempoSection prints the optional, always-fixed Tempo out-of-scope
+// section, or nothing at all when the operator never supplied a Tempo
+// source.
+func writeTempoSection(bw *errWriter, tempo *TempoInventory) {
+	if tempo == nil {
+		return
+	}
+	bw.printf("\n== tempo: %s\n", tempo.Source)
+	bw.printf("  out of scope: %s\n", tempo.OutOfScope)
 }
 
 // writeRanked prints one ranked table, or an explicit "none reported" line so an

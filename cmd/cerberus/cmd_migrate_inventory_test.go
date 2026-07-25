@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -58,8 +59,9 @@ func TestRunInventory_JSON(t *testing.T) {
 		t.Fatalf("runInventory --json: %v (stderr: %s)", err, errOut.String())
 	}
 	got := out.String()
-	if !strings.Contains(got, `"schema_version": 1`) {
-		t.Errorf("JSON inventory should stamp schema_version, got:\n%s", got)
+	wantVer := fmt.Sprintf(`"schema_version": %d`, migrateinventory.InventoryVersion)
+	if !strings.Contains(got, wantVer) {
+		t.Errorf("JSON inventory should stamp %s, got:\n%s", wantVer, got)
 	}
 	if !strings.Contains(got, "http_requests_total") {
 		t.Errorf("JSON inventory should rank the high-cardinality metric, got:\n%s", got)
@@ -159,5 +161,136 @@ func TestRunInventory_OutFile(t *testing.T) {
 	wantVer := fmt.Sprintf(`"schema_version": %d`, migrateinventory.InventoryVersion)
 	if !strings.Contains(string(data), wantVer) {
 		t.Errorf("out file should stamp %s for the gate, got:\n%s", wantVer, data)
+	}
+}
+
+// TestRunInventory_LegacyInvocationHasNoHeadSections: a bare --source/--top/
+// --window/--json invocation (no --loki-source, no --tempo-source) must not
+// grow "loki" or "tempo" JSON keys — the per-head sections are additive, and
+// their absence must be visible absence, not an empty object.
+func TestRunInventory_LegacyInvocationHasNoHeadSections(t *testing.T) {
+	clearInventoryEnv(t)
+	t.Setenv("CERBERUS_INVENTORY_LOKI_SOURCE", "")
+	t.Setenv("CERBERUS_INVENTORY_LOKI_SELECTORS", "")
+	t.Setenv("CERBERUS_INVENTORY_TEMPO_SOURCE", "")
+	srv := tsdbServer(t)
+
+	var out, errOut bytes.Buffer
+	if err := runInventory([]string{"--source", srv.URL, "--top", "10", "--window", "1h", "--json"}, &out, &errOut); err != nil {
+		t.Fatalf("runInventory: %v (stderr: %s)", err, errOut.String())
+	}
+	got := out.String()
+	if strings.Contains(got, `"loki"`) {
+		t.Errorf("legacy invocation should carry no \"loki\" key, got:\n%s", got)
+	}
+	if strings.Contains(got, `"tempo"`) {
+		t.Errorf("legacy invocation should carry no \"tempo\" key, got:\n%s", got)
+	}
+}
+
+// lokiIndexStatsServer answers /loki/api/v1/index/stats with a fixed
+// {streams, chunks, entries, bytes} body per selector (keyed by the "query"
+// param), so the cmd-level test drives the Loki wiring over real HTTP.
+func lokiIndexStatsServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	byQuery := map[string]string{
+		`{app="checkout"}`: `{"streams":500,"chunks":900,"entries":40000,"bytes":8000000}`,
+		`{app="frontend"}`: `{"streams":50,"chunks":90,"entries":4000,"bytes":800000}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/loki/api/v1/index/stats" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, ok := byQuery[r.URL.Query().Get("query")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunInventory_LokiAndTempoSections: --loki-source/--loki-selector and
+// --tempo-source wire through the CLI into the Loki-ranked section and the
+// fixed Tempo out-of-scope section, ranked highest-streams-first.
+func TestRunInventory_LokiAndTempoSections(t *testing.T) {
+	clearInventoryEnv(t)
+	promSrv := tsdbServer(t)
+	lokiSrv := lokiIndexStatsServer(t)
+
+	var out, errOut bytes.Buffer
+	err := runInventory([]string{
+		"--source", promSrv.URL, "--json",
+		"--loki-source", lokiSrv.URL,
+		"--loki-selector", `{app="frontend"}`,
+		"--loki-selector", `{app="checkout"}`,
+		"--tempo-source", "http://tempo.example:3200",
+	}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("runInventory (loki+tempo): %v (stderr: %s)", err, errOut.String())
+	}
+
+	var inv migrateinventory.Inventory
+	if unmarshalErr := json.Unmarshal(out.Bytes(), &inv); unmarshalErr != nil {
+		t.Fatalf("decode inventory JSON: %v\n%s", unmarshalErr, out.String())
+	}
+
+	if inv.Loki == nil {
+		t.Fatalf("inventory should carry a Loki section, got:\n%s", out.String())
+	}
+	if len(inv.Loki.Selectors) != 2 {
+		t.Fatalf("loki selectors = %d, want 2, got: %+v", len(inv.Loki.Selectors), inv.Loki.Selectors)
+	}
+	if inv.Loki.Selectors[0].Selector != `{app="checkout"}` || inv.Loki.Selectors[0].Streams != 500 {
+		t.Errorf("rank #1 loki selector = %+v, want checkout (500 streams) first", inv.Loki.Selectors[0])
+	}
+	if inv.Loki.Selectors[1].Selector != `{app="frontend"}` || inv.Loki.Selectors[1].Streams != 50 {
+		t.Errorf("rank #2 loki selector = %+v, want frontend (50 streams) second", inv.Loki.Selectors[1])
+	}
+
+	if inv.Tempo == nil {
+		t.Fatalf("inventory should carry a Tempo section, got:\n%s", out.String())
+	}
+	if inv.Tempo.Source != "http://tempo.example:3200" {
+		t.Errorf("tempo source = %q, want the supplied --tempo-source", inv.Tempo.Source)
+	}
+	if inv.Tempo.OutOfScope != migrateinventory.TempoInventoryOutOfScopeReason {
+		t.Errorf("tempo out-of-scope reason = %q, want the specific reason constant", inv.Tempo.OutOfScope)
+	}
+}
+
+// TestRunInventory_LokiSelectorWithoutSourceIsValidationError: --loki-selector
+// with no --loki-source is rejected before any HTTP call, naming both flags.
+func TestRunInventory_LokiSelectorWithoutSourceIsValidationError(t *testing.T) {
+	clearInventoryEnv(t)
+	srv := tsdbServer(t)
+
+	var out, errOut bytes.Buffer
+	err := runInventory([]string{"--source", srv.URL, "--loki-selector", `{app="x"}`}, &out, &errOut)
+	if err == nil {
+		t.Fatal("runInventory should reject --loki-selector without --loki-source")
+	}
+	if !strings.Contains(err.Error(), "--loki-selector") || !strings.Contains(err.Error(), "--loki-source") {
+		t.Errorf("error should name both flags, got: %v", err)
+	}
+}
+
+// TestRunInventory_LokiSourceWithoutSelectorIsValidationError: --loki-source
+// with zero --loki-selector entries is rejected before any HTTP call — Loki
+// has no whole-tenant top-N call to rank without an operator-named selector.
+func TestRunInventory_LokiSourceWithoutSelectorIsValidationError(t *testing.T) {
+	clearInventoryEnv(t)
+	srv := tsdbServer(t)
+
+	var out, errOut bytes.Buffer
+	err := runInventory([]string{"--source", srv.URL, "--loki-source", "http://loki.example:3100"}, &out, &errOut)
+	if err == nil {
+		t.Fatal("runInventory should reject --loki-source without any --loki-selector")
+	}
+	if !strings.Contains(err.Error(), "--loki-selector") {
+		t.Errorf("error should name --loki-selector, got: %v", err)
 	}
 }
