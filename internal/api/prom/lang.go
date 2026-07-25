@@ -61,7 +61,7 @@ var _ engine.Lang = (*lang)(nil)
 
 // Name returns the stable QL identifier the engine uses for
 // progress-context keying, telemetry labels, and span attributes.
-func (l *lang) Name() string { return "promql" }
+func (l *lang) Name() string { return telemetry.QLPromQL }
 
 // parseStageError tags an error with the pipeline stage that produced
 // it so the handler-side error mapper can preserve the pre-port
@@ -89,7 +89,7 @@ func (e *parseStageError) Unwrap() error { return e.err }
 // short-circuited in the handler before the engine is invoked, so a
 // query reaching here is guaranteed to lower to chplan).
 func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
+	parseT := telemetry.ObserveStage(telemetry.StageParse, l.Name())
 	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
 		trace.WithAttributes(cerbtrace.ParseAttrs("promql", query)...))
 	// Rewrite OTel-style dotted metric names to `{__name__="..."}` form
@@ -108,7 +108,7 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	span.End()
 	parseT.Done(ctx)
 
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
+	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
 		promql.LowerOpts{Lowerers: l.Lowerers})
 	lowerT.Done(ctx)

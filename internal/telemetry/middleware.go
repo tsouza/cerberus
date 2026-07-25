@@ -94,9 +94,13 @@ type PanicRenderer func(w http.ResponseWriter, r *http.Request)
 // pattern); when it's empty (404 / unmatched) we fall back to the
 // request method so the cardinality stays bounded.
 //
-// Outcome bucketing: any status >= 400 maps to ResultError, anything
-// else (including the implicit-200 path where the handler never calls
-// WriteHeader) is ResultOK. 4xx is counted as an error because the
+// Outcome bucketing: the final status code is classified by
+// [ClassifyStatus] into the (result, reason, status class) triple —
+// any status >= 400 maps to ResultError, anything else (including the
+// implicit-200 path where the handler never calls WriteHeader) is
+// ResultOK, and the reason enum records WHY the error bucket was
+// entered so an alert can separate a caller-side rejection from a
+// gateway-side failure. 4xx is counted as an error because the
 // `cerberus_queries_total{result}` series is a query-outcome metric,
 // not an HTTP-SLO metric: a 400 parse rejection / 422 lower rejection
 // IS a failed query from the caller's point of view, and the
@@ -144,11 +148,15 @@ func QueryMiddleware(ql string, renderPanic PanicRenderer, next http.Handler) ht
 		// would skip t.Done() entirely and the failed query would never
 		// land on cerberus_queries_total / cerberus_query_duration.
 		defer func() {
-			result := ResultOK
-			if panicked || sr.status >= 400 {
-				result = ResultError
+			// A recovered panic is an internal failure whatever the
+			// handler had already put on the wire: a truncated 200 is
+			// still a failed query. Classifying it as a 500 keeps the
+			// panic path in the same reason bucket as any other defect.
+			status := sr.status
+			if panicked {
+				status = http.StatusInternalServerError
 			}
-			t.Done(r.Context(), result)
+			t.Done(r.Context(), ClassifyStatus(status))
 		}()
 
 		// Inner defer: recover a handler panic, log it via the OTLP slog

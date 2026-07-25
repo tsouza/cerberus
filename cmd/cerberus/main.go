@@ -334,6 +334,14 @@ func run() error {
 	logger = config.NewTelemetryLogger(os.Stderr, cfg.Log, providers.LoggerProvider)
 	slog.SetDefault(logger)
 
+	// Route the OTel SDK's own failures (export batches it could not
+	// ship, collect / shutdown errors) into that same structured logger
+	// at WARN. Installed right after the stage-2 logger so a failure of
+	// the pipeline carrying cerberus's metrics, traces and logs is
+	// itself visible — on stderr always, and over OTLP whenever the
+	// bridge is still up.
+	telemetry.InstallErrorHandler(logger)
+
 	if cfg.OTLP.Endpoint != "" {
 		logger.Info(
 			"OTLP exporters enabled",
