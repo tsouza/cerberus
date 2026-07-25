@@ -18,6 +18,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -454,4 +455,80 @@ func TestNoGoroutineLeak_ConcurrentRequests(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// --- Route memo -----------------------------------------------------------
+
+// routeMemoTestPressureWindow mirrors the cluster-wide pressure-damper
+// horizon a real Memo is constructed with (see docs/solver.md); its exact
+// value is immaterial here since this test never crosses the damper's
+// distinct-key threshold, but a named constant keeps the constructor call
+// self-explanatory instead of a bare duration literal.
+const routeMemoTestPressureWindow = time.Minute
+
+// TestNoGoroutineLeak_RouteMemo pins that the failure-driven route memo
+// (internal/routememo, see docs/solver.md) has no resident background
+// goroutine, by construction: Memo owns exactly one non-blocking
+// primitive — a buffered dispatch-token channel — and every exported
+// method runs synchronously on the caller's goroutine under its own
+// mutex. There is no eviction sweep, no TTL timer, and no retry loop
+// spawned anywhere in the package, so driving a Memo through activity and
+// letting it go out of scope must leave the goroutine inventory
+// unchanged.
+//
+// The sequence below simulates a handful of route-A failures, the
+// corroboration-triggered probe they earn, a retry admission against the
+// resulting memo-hit, and a second key whose own probe fails negatively —
+// the same call shapes the solver's dispatch path drives in production,
+// just without a background goroutine anywhere to leak.
+func TestNoGoroutineLeak_RouteMemo(t *testing.T) {
+	defer goleak.VerifyNone(t, goleakOpts()...)
+
+	m := routememo.New(routeMemoTestPressureWindow)
+	k := routememo.Key{RootKind: "*chplan.Aggregate"}
+
+	// A single route-A resource failure must not yet corroborate into a
+	// probe: one transient rejection teaches the memo nothing on its own.
+	if _, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k); ok {
+		t.Fatalf("single resource failure must not admit a probe")
+	}
+
+	// A second consecutive failure on the same key crosses the
+	// corroboration floor and admits a probe dispatch under the
+	// process-wide dispatch-token budget.
+	release, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if !ok {
+		t.Fatalf("second consecutive resource failure must admit a probe")
+	}
+	m.Observe(k, routememo.RouteB, routememo.OutcomeSuccess)
+	release()
+
+	// Subsequent traffic on the same key memo-hits route B directly;
+	// exercise the shared dispatch-token budget the way a memo-hit retry
+	// would, proving the token released above was actually returned to
+	// the channel rather than leaked into a stuck goroutine.
+	if state, stale := m.Lookup(k); state != routememo.PreferB || stale {
+		t.Fatalf("Lookup(k) = (%v, stale=%v), want (PreferB, stale=false)", state, stale)
+	}
+	hitRelease, hitOK := m.AdmitDispatch()
+	if !hitOK {
+		t.Fatalf("memo-hit dispatch must be admitted once the prior token is released")
+	}
+	hitRelease()
+
+	// A distinct key that corroborates and then fails its own route-B
+	// probe records the negative-evidence BothFail state — the path a
+	// key takes when route B does not, in fact, help.
+	other := routememo.Key{RootKind: "*chplan.RangeWindow"}
+	m.Observe(other, routememo.RouteA, routememo.OutcomeResourceFailure)
+	otherRelease, otherOK := m.ObserveRouteAFailureAndMaybeBeginProbe(other)
+	if !otherOK {
+		t.Fatalf("second consecutive resource failure on a distinct key must admit a probe")
+	}
+	m.Observe(other, routememo.RouteB, routememo.OutcomeResourceFailure)
+	otherRelease()
+
+	if state, _ := m.Lookup(other); state != routememo.BothFail {
+		t.Fatalf("Lookup(other) = %v, want BothFail", state)
+	}
 }
