@@ -109,8 +109,11 @@ spec-chdb:
 # default install path). Mirrors the `chdb` CI job.
 # Includes ./internal/routerrules/... so the chDB cross-backend parity test
 # (parity_chdb_test.go) actually RUNS, not just compiles.
+# Includes ./internal/solver/... so the A-vs-B route memo chDB differential
+# lane (avb_chdb_lane_test.go) actually RUNS the parity proof against a real
+# ClickHouse engine instead of only typechecking under `go vet -tags chdb`.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./test/consumer-corpus/...
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
@@ -182,6 +185,18 @@ router-corpus-integration:
 # test/spec/traces_scan_resource_bound_integration_test.go and strict-scan.yml.
 traces-scan-bound-integration:
     go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
+
+# Run the solver's mandatory per-shard memory-apportionment real-CH guard:
+# proves Executor.runShard's max_memory_usage WithQuerySetting override is
+# actually honored by a real ClickHouse over clickhouse-go/v2, not just
+# accepted and silently ignored (chDB is known-lenient about settings, the
+# same class of blind spot the strict-scan lane documents for type
+# coercion). A deliberately tiny per-shard budget must fail with CH's own
+# memory-limit error; a generous one on the identical query must succeed.
+# Requires Docker; gated behind the `integration` build tag. See
+# internal/solver/executor_realch_integration_test.go and strict-scan.yml.
+solver-memory-apportion-integration:
+    go test -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).

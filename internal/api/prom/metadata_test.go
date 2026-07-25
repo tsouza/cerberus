@@ -104,9 +104,14 @@ func TestLabels_MatchSelector(t *testing.T) {
 	if len(names) < 1 || names[0] != "__name__" {
 		t.Fatalf("expected __name__ in names, got %v", names)
 	}
-	// SQL should wrap the matched scan in `SELECT DISTINCT arrayJoin(mapKeys(...))`.
-	if !strings.Contains(q.lastSQL, "arrayJoin(mapKeys") {
-		t.Errorf("expected SQL to project mapKeys; got %q", q.lastSQL)
+	// The key fan-out is resolved at the LEAF — the matched-row subquery
+	// already emits one name per row — and the outer query only dedupes
+	// that one column.
+	if !strings.Contains(q.lastSQL, "arrayJoin(arrayConcat(mapKeys(") {
+		t.Errorf("expected the leaf to fan out map keys; got %q", q.lastSQL)
+	}
+	if !strings.HasPrefix(q.lastSQL, "SELECT DISTINCT `name` FROM") {
+		t.Errorf("expected the outer query to dedupe the name column; got %q", q.lastSQL)
 	}
 }
 

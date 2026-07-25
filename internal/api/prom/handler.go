@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
@@ -487,32 +488,68 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursor, hdr, queryID, err := h.executeRangeStreaming(ctx, q, start, end, step)
+	result, err := h.executeRangeStreaming(ctx, q, start, end, step)
 	if err != nil {
 		h.respondError(w, err)
 		return
 	}
-	defer func() {
-		if err := cursor.Close(); err != nil {
-			h.Logger.Warn("cerberus prom: cursor close failed", "err", err)
+	// Cursor ownership: sync.OnceFunc guards the close so whichever of (this
+	// deferred close, the early close below before requesting a route-B
+	// retry) runs first is the only one that actually closes the cursor —
+	// release-before-acquire, never a double Close.
+	closeOriginal := sync.OnceFunc(func() {
+		if cerr := result.Cursor.Close(); cerr != nil {
+			h.Logger.Warn("cerberus prom: cursor close failed", "err", cerr)
 		}
-	}()
+	})
+	defer closeOriginal()
 
-	result, err := matrixFromCursor(cursor, start, end, step)
-	if err != nil {
-		// A cerberus-side outcome surfaced during the drain. A sample-budget 422
-		// fires after a clean CH finish (query_log shows ok with real cost), so it
-		// is stamped onto the dispatch record (cost retained, exit overridden); a
-		// memory-cap abort is recorded terminally so the corpus does not depend on
-		// the query_log join landing a row.
-		h.Engine.ObserveDrainOutcome(queryID, "promql", err)
-		h.respondError(w, classifyDrainError(err))
+	matrixResult, drainErr := matrixFromCursor(result.Cursor, start, end, step)
+	if drainErr == nil {
+		// The failure-driven route memo's unconditional bookkeeping hook —
+		// distinct from h.Engine.ObserveDrainOutcome below (queryID-keyed
+		// corpus stamping). Non-nil only when this cursor came from a
+		// first-time route-B probe; a clean drain here is what creates the
+		// memo's first positive verdict for the Key.
+		if result.ObserveDrainOutcome != nil {
+			result.ObserveDrainOutcome(nil)
+		}
+		h.respondRangeMatrix(w, result.Headers, result.Cursor, matrixResult)
 		return
 	}
-	// Surface the streaming-path drain count (rows pulled off the cursor =
-	// the buffer matrixFromCursor accumulated) to the test-observable hook
-	// when one is installed. Mirrors the eager path's Result.Inspected /
-	// Tempo's SearchMetrics.InspectedTraces; nil in production.
+
+	// A cerberus-side outcome surfaced during the drain. Report it to the
+	// route memo (if this cursor's dispatch carries the hook) before doing
+	// anything else, then release the cursor — the caller must own no
+	// route-A resource before asking the memo for a route-B retry.
+	if result.ObserveDrainOutcome != nil {
+		result.ObserveDrainOutcome(drainErr)
+	}
+	closeOriginal()
+
+	if result.Retry != nil {
+		if retryResult, retried := result.Retry(ctx, drainErr); retried {
+			h.respondRangeRetry(w, retryResult, start, end, step)
+			return
+		}
+	}
+
+	// No retry available (RouteMemo unwired, or the retry itself declined)
+	// — surface the ORIGINAL drain error exactly as before this mechanism
+	// existed. See the comment on h.respondRangeRetry's own drain-failure
+	// path for why this is stamped onto the corpus the same way.
+	h.Engine.ObserveDrainOutcome(result.QueryID, "promql", drainErr)
+	h.respondError(w, classifyDrainError(drainErr))
+}
+
+// respondRangeMatrix writes the 200 success envelope for a drained
+// query_range cursor — shared by the ordinary path and the failure-driven
+// route memo's retry path so the two cannot drift on header / body shape.
+// It also feeds the streaming-path drain count (rows pulled off cursor) to
+// the test-observable onRangeDrain hook when one is installed, mirroring
+// the eager path's Result.Inspected / Tempo's SearchMetrics.InspectedTraces;
+// nil in production.
+func (h *Handler) respondRangeMatrix(w http.ResponseWriter, hdr map[string]string, cursor chclient.Cursor, result []MatrixSample) {
 	if h.onRangeDrain != nil {
 		h.onRangeDrain(cursor.Inspected())
 	}
@@ -521,6 +558,44 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
 	})
+}
+
+// respondRangeRetry drains the failure-driven route memo's retry cursor
+// (the CursorResult result.Retry handed back) and writes the response —
+// success or the retry's own failure. Factored out of handleQueryRange to
+// keep both callers' nesting shallow.
+//
+// retryResult.Retry is expected nil here (at most one retry per request);
+// a non-nil value is never chained — a second retry would violate that
+// structural cap — the retry's own drain error is what surfaces instead,
+// exactly as if Retry were nil.
+func (h *Handler) respondRangeRetry(w http.ResponseWriter, retryResult engine.CursorResult, start, end time.Time, step time.Duration) {
+	closeRetry := sync.OnceFunc(func() {
+		if cerr := retryResult.Cursor.Close(); cerr != nil {
+			h.Logger.Warn("cerberus prom: retry cursor close failed", "err", cerr)
+		}
+	})
+	defer closeRetry()
+
+	retryMatrix, retryErr := matrixFromCursor(retryResult.Cursor, start, end, step)
+	if retryErr == nil {
+		if retryResult.ObserveDrainOutcome != nil {
+			retryResult.ObserveDrainOutcome(nil)
+		}
+		h.respondRangeMatrix(w, retryResult.Headers, retryResult.Cursor, retryMatrix)
+		return
+	}
+	if retryResult.ObserveDrainOutcome != nil {
+		retryResult.ObserveDrainOutcome(retryErr)
+	}
+	// A cerberus-side outcome surfaced during the retry's drain. A sample-
+	// budget 422 fires after a clean CH finish (query_log shows ok with
+	// real cost), so it is stamped onto the dispatch record (cost
+	// retained, exit overridden); a memory-cap abort is recorded
+	// terminally so the corpus does not depend on the query_log join
+	// landing a row.
+	h.Engine.ObserveDrainOutcome(retryResult.QueryID, "promql", retryErr)
+	h.respondError(w, classifyDrainError(retryErr))
 }
 
 // applyQueryTimeout derives the request context every query handler runs
@@ -644,7 +719,7 @@ func (h *Handler) executeRangeStreaming(
 	query string,
 	start, end time.Time,
 	step time.Duration,
-) (chclient.Cursor, map[string]string, string, error) {
+) (engine.CursorResult, error) {
 	l := &lang{
 		Parser:   h.parser,
 		Schema:   h.Schema,
@@ -664,10 +739,10 @@ func (h *Handler) executeRangeStreaming(
 		c.add(time.Since(chStart))
 	}
 	if err != nil {
-		return nil, nil, "", classifyEngineError(err)
+		return engine.CursorResult{}, classifyEngineError(err)
 	}
 	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", res.SQL, "args", res.Args)
-	return res.Cursor, res.Headers, res.QueryID, nil
+	return res, nil
 }
 
 // executeInstant runs a PromQL query through engine.Engine and returns

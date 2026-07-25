@@ -29,11 +29,22 @@ import (
 // MetricUnit columns so the metadata handler's per-table SELECT
 // projects against a non-empty column set. Mirrors the production
 // OTel-CH gauge table's relevant subset.
+//
+// Also carries ResourceAttributes / ServiceName: the metadata-catalog
+// SELECT (dedicatedLabelColumns in internal/promql/metadata_catalog.go)
+// projects both columns unconditionally whenever schema.Metrics
+// configures ResourceAttributesColumn / ServiceNameColumn — true for
+// schema.DefaultOTelMetrics(), which every metadata-handler chDB test
+// in this file resolves against. Without them chDB fails with
+// `Unknown expression identifier` on a column the SELECT references
+// regardless of whether any row sets it.
 const metaShapedGaugeDDL = `CREATE TABLE otel_metrics_gauge (
     MetricName String,
     MetricDescription String,
     MetricUnit String,
     Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName String,
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
@@ -51,6 +62,8 @@ const metaShapedSumDDL = `CREATE TABLE otel_metrics_sum (
     MetricDescription String,
     MetricUnit String,
     Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName String,
     TimeUnix DateTime64(9),
     Value Float64,
     IsMonotonic Bool DEFAULT false
@@ -76,6 +89,8 @@ const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     MetricDescription String,
     MetricUnit String,
     Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName String,
     TimeUnix DateTime64(9),
     Count UInt64,
     Sum Float64,

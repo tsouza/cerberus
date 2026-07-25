@@ -125,7 +125,12 @@ func resourceLabelAllowed(s schema.Metrics, promLabel string) bool {
 			return true
 		}
 	}
-	return false
+	// The candidate powerset only rewrites `_` to `.`, so it cannot name a
+	// configured key that reaches promLabel through any other separator
+	// (`a-b`, `a b`). Inverting the sanitisation over the configured — and
+	// therefore closed — key set finds those; see
+	// [configuredResourceKeysFor].
+	return len(configuredResourceKeysFor(s, promLabel)) > 0
 }
 
 // sanitizeMapKeysExpr returns a chplan expression that rewrites every key of
@@ -178,7 +183,52 @@ func sanitizeMapKeysExpr(src chplan.Expr) chplan.Expr {
 // the OTel key, not the sanitized form), matching the matcher-side
 // [resourceLabelAllowed] gate.
 func sanitizeResourceKeysExpr(s schema.Metrics) chplan.Expr {
-	return sanitizeMapKeysExpr(resourceSourceMap(s))
+	src := resourceSourceMap(s)
+	// A configured allowlist makes the surviving key set CLOSED and known at
+	// plan time, so `k -> <sanitised k>` is a compile-time string operation
+	// over a handful of entries. Emitting it as a constant lookup table
+	// spares the scan a regex substitution per key per row; the rewrite is
+	// exact because mapFilter has already narrowed the map to exactly the
+	// keys in the table (the `k` default arm is therefore unreachable, and
+	// keeps the call total if that ever changes). Without an allowlist the
+	// key set is open and the regex is the only correct rewrite.
+	if keys, sanitized := sanitizedResourceKeyPairs(s); len(keys) > 0 {
+		return &chplan.FuncCall{
+			Name: "mapFromArrays",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "arrayMap",
+					Args: []chplan.Expr{
+						&chplan.Lambda{
+							Params: []string{"k"},
+							Body: &chplan.FuncCall{
+								Name: "transform",
+								Args: []chplan.Expr{
+									&chplan.BareIdent{Name: "k"},
+									stringArrayExpr(keys),
+									stringArrayExpr(sanitized),
+									&chplan.BareIdent{Name: "k"},
+								},
+							},
+						},
+						&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+					},
+				},
+				&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+			},
+		}
+	}
+	return sanitizeMapKeysExpr(src)
+}
+
+// stringArrayExpr renders a constant CH array of string literals —
+// `array('a', 'b')`, the constant-lookup-table operand `transform` needs.
+func stringArrayExpr(vs []string) chplan.Expr {
+	args := make([]chplan.Expr, 0, len(vs))
+	for _, v := range vs {
+		args = append(args, &chplan.LitString{V: v})
+	}
+	return &chplan.FuncCall{Name: "array", Args: args}
 }
 
 // resourceSourceMap returns the ResourceAttributes column ref, ALWAYS

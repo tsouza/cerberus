@@ -96,6 +96,54 @@ func (s *Solver) Classify(plan chplan.Node, meta RequestMeta) (*Decision, bool) 
 	return s.Planner.Plan(plan, meta)
 }
 
+// Eligible mirrors Classify's nil-guards and lang gate for Planner.Eligible
+// (docs §"Failure-driven route memo"): a nil Solver/Planner or a non-PromQL
+// RequestMeta.Lang both report not-eligible, exactly like Classify. Used at
+// every non-baseline dispatch site (probe, retry, memo-hit) to re-derive
+// structural eligibility independent of Cfg.Mode's predictive thresholds.
+func (s *Solver) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
+	if s == nil || s.Planner == nil {
+		return nil, false
+	}
+	if meta.Lang != LangPromQL {
+		return nil, false
+	}
+	return s.Planner.Eligible(plan, meta)
+}
+
+// EffectiveTimeout returns Cfg.Timeout, falling back to the same
+// defaultTimeout Execute itself applies when Cfg.Timeout is unset (<= 0).
+// Exported so a caller outside this package (cmd/cerberus, wiring the
+// failure-driven route memo's pressure-window horizon — see docs/solver.md
+// §"Failure-driven route memo") can read the REAL effective value without
+// duplicating the internal default as a second, driftable constant.
+func (s *Solver) EffectiveTimeout() time.Duration {
+	if s == nil || s.Cfg.Timeout <= 0 {
+		return defaultTimeout
+	}
+	return s.Cfg.Timeout
+}
+
+// BreakerClosed reports whether the ClickHouse circuit breaker is CLOSED,
+// without consuming a half-open recovery probe (the same PeekBreakerState
+// the Executor's own pre-flight already uses). It exists so a non-baseline
+// dispatch site (probe, retry, memo-hit) can decline to even ATTEMPT route
+// B — skipping an admission-budget token and an emit — when the breaker is
+// already known-not-closed, rather than discovering that only after paying
+// for both. Execute's own step-6 pre-flight is the load-bearing correctness
+// gate regardless (a caller that skips this check and dispatches anyway
+// still fails safely, classified as breaker-neutral OutcomeNoEvidence);
+// this is a pure priority optimisation on top of it.
+//
+// A nil Solver, a nil Executor, or a nil Breaker hook all report true —
+// "no breaker configured" is not "breaker open".
+func (s *Solver) BreakerClosed() bool {
+	if s == nil || s.Executor == nil || s.Executor.Breaker == nil {
+		return true
+	}
+	return s.Executor.Breaker.PeekBreakerState() == BreakerClosed
+}
+
 // LangPromQL is the head name the solver classifies. The solver routes the
 // PromQL query_range matrix family only; the other heads skip the solver
 // entirely (Classify returns not-classified for them). It mirrors the
@@ -108,13 +156,23 @@ const LangPromQL = "promql"
 // engine-internal type), so the solver derives the grid from the plan
 // the same way the emitter reads it.
 //
-// The carrier is the first (outermost, depth-first pre-order) node that
-// owns an eval grid: a StepGrid, or a RangeWindow / RangeLWR /
-// RangeBucketFanout with Step > 0. The dominant routed shape
-// sum(rate(m[5m])) carries its grid on the outermost RangeWindow. For an
-// instant / non-range plan no carrier with Step > 0 exists, so GridOf
-// returns a zero grid (Step == 0) and the Planner routes A on the
+// The carrier is the first (outermost, depth-first pre-order) node
+// implementing [chplan.GridCarrier] with Step > 0. The dominant routed
+// shape sum(rate(m[5m])) carries its grid on the outermost RangeWindow.
+// For an instant / non-range plan no carrier with Step > 0 exists, so
+// GridOf returns a zero grid (Step == 0) and the Planner routes A on the
 // (2)-prefix instant guard.
+//
+// Dispatching on the interface rather than on concrete node kinds is
+// load-bearing, not stylistic. A kind-by-kind type switch has to list
+// every grid-bearing node, and the failure mode when it misses one is
+// SILENT: the walk finds no carrier, GridOf returns a zero grid, and the
+// Planner's Step <= 0 guard classifies the plan as an instant query
+// before analyze() ever runs — so a range query is recorded as an
+// instant one with no cost grid at all, rather than raising an error.
+// chplan closes the carrier set in both directions (a grid-declaring
+// node must implement GridCarrier; see the completeness ratchet there),
+// so every current and future carrier is visible here by construction.
 //
 // GridOf only reads the OUTER bounds; the Planner re-walks the full
 // spine to validate inner-grid commensurability and grid-prediction.
@@ -124,22 +182,9 @@ func GridOf(plan chplan.Node) (start, end time.Time, step time.Duration) {
 			// Outer carrier already found; stop descending.
 			return false
 		}
-		switch v := n.(type) {
-		case *chplan.StepGrid:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
-			}
-		case *chplan.RangeWindow:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
-			}
-		case *chplan.RangeLWR:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
-			}
-		case *chplan.RangeBucketFanout:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
+		if gc, ok := n.(chplan.GridCarrier); ok {
+			if s, e, st := gc.EvalGrid(); st > 0 {
+				start, end, step = s, e, st
 			}
 		}
 		return true

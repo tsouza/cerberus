@@ -1,0 +1,34 @@
+Layer 2a — /api/v1/labels with a match[] selector.
+
+Label NAMES are the stored maps' key arrays, so the scan fans those out
+directly. The keys come back in storage spelling: the HTTP layer already
+folds every name source through the Prom label-name grammar, so doing it
+in SQL would mean running a regex over every key of every row to produce
+a rewrite Go does once per distinct name.
+
+-- query.promql --
+requests_total{job="api"}
+-- metadata_label_names --
+yes
+-- sql --
+SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`)))) AS `name` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "requests_total"
+[3] string = "requests.total"
+[4] string = "requests/total"
+[5] string = "job"
+[6] string = ""
+[7] string = "job"
+[8] string = ""
+[9] string = ""
+[10] string = "api"
+[11] string = "1970-01-01 00:01:40.000000000"
+[12] int64 = 9
+[13] string = "1970-01-01 00:08:20.000000000"
+[14] int64 = 9
+-- chplan --
+Project [arrayJoin(arrayConcat(mapKeys(Attributes), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes)))) AS name]
+  Filter predicate=((((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("requests_total", "requests.total", "requests/total"))) AND (TimeUnix >= toDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= toDateTime64("1970-01-01 00:08:20.000000000", 9)))
+    Scan(otel_metrics_sum)
