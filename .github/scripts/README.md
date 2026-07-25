@@ -333,9 +333,11 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 - **`chaos-run.mjs`** — `e2e.yml`, the `chaos` job (live-stack
   chaos-engineering lane, Layer 12). Fault-injects against the running
   k3d e2e stack (kubectl pod-kill / NetworkPolicy partition / slow-query
-  timeout / concurrency burst) and asserts the gateway's resilience
-  contracts (circuit breaker, per-query wall-clock timeout, admission
-  control, replica resilience) hold under real faults. Phase-1 scenarios
+  timeout / concurrency burst / a memory-cap-crossing query_range) and
+  asserts the gateway's resilience contracts (circuit breaker, per-query
+  wall-clock timeout, admission control, replica resilience,
+  failure-driven route-memo A->B activation) hold under real faults.
+  Phase-1 scenarios
   run sequentially with heal-between-each; metric corroboration is read
   back through cerberus's own Prom head (settle poll). After a
   CH-destructive scenario (which recreates CH empty on ephemeral storage),
