@@ -1,0 +1,188 @@
+# Tier-1 dual-backend stack for the migration lane (Layer 14).
+#
+# One ClickHouse, one collector, one cerberus, and one reference backend per
+# signal, all sharing a single time window — the topology `cerberus migrate
+# verify` needs, where a mixed three-head corpus replays against ONE cerberus
+# reading ONE ClickHouse and against the reference Prometheus / Loki / Tempo
+# an operator is migrating off.
+#
+# Services:
+#   clickhouse      OTel-schema CH instance (auth: cerberus/cerberus, db: otel)
+#   otel-collector  clickhouseexporter (create_schema: true) — the SOLE schema
+#                   authority for this stack, exactly as in the repo-root
+#                   quickstart. cerberus never mints its own tables, so its
+#                   readiness probe is a live schema-drift detector.
+#   prometheus      reference Prometheus, remote-write receiver only
+#   loki            reference Loki, mounting the ONE reference-Loki config in
+#                   the tree (compatibility/loki/loki-config.yaml)
+#   tempo           reference Tempo, mounting the ONE reference-Tempo config in
+#                   the tree (compatibility/tempo/tempo-config.yaml)
+#   cerberus        cerberus under test, serving Prom + Loki + Tempo on ONE
+#                   address — the operator journey `cerberus migrate verify`
+#                   models, where all three --cerberus* URLs are the same
+#                   endpoint and only the --ref* URLs differ.
+#
+# Port band: 27000-27400, contiguous and unclaimed. The other stacks in the
+# tree hold:
+#   compatibility/prometheus  CH 29000/28123, prom :29090, cerberus :29091
+#   compatibility/loki        CH 28000/28223, loki :23100, cerberus :29092
+#   compatibility/tempo       CH 29100/28124, tempo :23200/:24317, cerberus :29092
+#   repo-root docker-compose  cerberus :8080, grafana :3000, CH 8123/9000
+# Reusing any of those would silently cross-wire a tier-1 run onto a leftover
+# container from another stack.
+#
+# No named volumes and no data bind-mounts: every service keeps its state in
+# its own container layer, so tearing the stack down is a total reset and each
+# run starts from empty backends. A surviving volume is a determinism leak.
+#
+# Usage:
+#   just migration-tier1-up
+#   just migration-tier1-run
+#   just migration-tier1-down
+
+name: cerberus-migration-tier1
+
+services:
+  clickhouse:
+    # Ubuntu-base image, NOT -alpine. Per PR #245's finding, the `-alpine`
+    # variant stalls in the entrypoint script for 5+ min on GH Actions runners
+    # (never starts the server, never binds 8123); the Ubuntu-base variant
+    # boots in ~10-20s on the same runners.
+    #
+    # Pinned to versions.yaml's `quickstart_clickhouse`, NOT `chdb_substrate`.
+    # The two roles are distinct: chdb_substrate is the SQL-parity substrate the
+    # chDB suites and the compatibility harnesses run on; quickstart_clickhouse
+    # is the deployment surface operators actually run. The migration lane
+    # models the operator deployment, so it tracks the quickstart pin. The
+    # version-consistency gate (.github/scripts/clickhouse-version-sync.mjs,
+    # check (e)) holds this tag equal to quickstart_clickhouse.
+    image: clickhouse/clickhouse-server:26.6
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_PASSWORD: cerberus
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    healthcheck:
+      # `clickhouse-client --query 'SELECT 1'` is more reliable than
+      # `wget /ping`: the HTTP listener (:8123) binds slightly before the SQL
+      # engine is ready to answer queries.
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
+    ports:
+      - "27000:9000"
+      - "27123:8123"
+
+  otel-collector:
+    # Pinned to the same upstream-contrib release the quickstart and the k3d
+    # E2E use (docker-compose.yml, test/e2e/k3s/otel-collector.yaml). Bump all
+    # three together.
+    #
+    # No healthcheck: the contrib image is FROM scratch (no shell, no wget, no
+    # nc), so the standard probe commands are not callable. Readiness is proven
+    # data-side instead — the tier-1 contract test waits for the exporter's
+    # tables to appear in ClickHouse.
+    image: otel/opentelemetry-collector-contrib:0.152.1
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "27317:4317"
+      - "27318:4318"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  prometheus:
+    # The reference image tag is single-sourced from
+    # compatibility/prometheus/docker-compose.yml, which is itself bound to the
+    # go.mod prometheus require by test/regression/fork_version_skew_test.go.
+    # That test also asserts this tag equals the compat one, so the whole chain
+    # (go.mod -> compat image -> tier-1 image) moves in lock-step.
+    image: prom/prometheus:v3.11.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "27090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  loki:
+    image: grafana/loki:3.7.0
+    command:
+      - -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      # The tree holds exactly ONE reference-Loki config, and this is it. It is
+      # bind-mounted read-only rather than copied so a second definition can
+      # never drift from the first. Its stated invariant — intentionally
+      # minimal, so reference Loki behaviour stays close to default and a diff
+      # surfaces real semantic gaps rather than configuration noise — is
+      # precisely the property the migration parity lane needs.
+      - ../../../../../compatibility/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+    ports:
+      - "27100:3100"
+    # No healthcheck: the grafana/loki image is distroless (no sh / wget /
+    # curl) and the binary exposes no self-ping subcommand. Readiness is proven
+    # by polling /ready from the host instead. Single-binary Loki also holds a
+    # ~15s post-start delay before /ready returns 200, so a tight
+    # interval/retries combo would only flap.
+
+  tempo:
+    # Commit-pinned on every side: go.mod pseudo-version, compat reference
+    # image, and compatibility/tempo/upstream/VERSION. fork_version_skew_test
+    # binds this tag to the compat one, which is bound to go.mod.
+    image: grafana/tempo:main-2f74ea8
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      # The tree holds exactly ONE reference-Tempo config, and this is it —
+      # same single-sourcing rationale as the Loki config above. Mounting it
+      # also inherits `query_frontend.metrics.query_backend_after: 1s`, without
+      # which every TraceQL metrics query 500s on the reference side.
+      - ../../../../../compatibility/tempo/tempo-config.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "27200:3200"  # HTTP (query API)
+      - "27201:4317"  # OTLP gRPC ingest
+    # No healthcheck: the grafana/tempo image is distroless. Readiness is
+    # proven by polling /ready from the host, the same posture as loki above.
+
+  cerberus:
+    image: cerberus:migration-tier1
+    pull_policy: build
+    build:
+      context: ../../../../..
+      dockerfile: Dockerfile.local
+    environment:
+      CERBERUS_HTTP_ADDR: ":27080"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_DIAL_TIMEOUT: "10s"
+      # The collector's clickhouseexporter is the sole schema authority here.
+      # cerberus creating its own tables would mint cerberus-named tables and
+      # mask a real drift between the exporter's names and cerberus's read-side
+      # defaults; with auto-create off, /readyz stays 503 until the exporter
+      # has provisioned the schema cerberus expects.
+      CERBERUS_AUTO_CREATE_SCHEMA: "false"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "27080:27080"
+    healthcheck:
+      # Distroless image: no shell, no wget. The cerberus binary's own
+      # --version flag is the liveness signal.
+      test: ["CMD", "/usr/local/bin/cerberus", "--version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

@@ -43,9 +43,11 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
-  image tags, the preflight floor, and the chDB substrate all match it, and
-  that the quickstart is new enough for every optimization it enables (floors
-  derived from `internal/chopt/registry.go`, not duplicated). See
+  image tags, the preflight floor, and the chDB substrate all match it, that
+  the migration lane's Tier-1 stack tracks the quickstart (deployment-surface)
+  tag rather than the chDB substrate, and that the quickstart is new enough for
+  every optimization it enables (floors derived from
+  `internal/chopt/registry.go`, not duplicated). See
   `docs/optimization-rules.md` (Rule 1, step 4).
   - Args: `--self-test` pins the parse / compare / drift-detection logic
     (run as a CI step before the gate); no args runs the gate over the tree.
