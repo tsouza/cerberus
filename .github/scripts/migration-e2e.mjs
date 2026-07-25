@@ -198,9 +198,17 @@ export function featureFileNames(root = FEATURE_ROOT) {
 
 // stripPlaceholders — a `<name>` Scenario Outline placeholder is the one
 // legal use of angle brackets in step text; the operator-token scan looks at
-// what is left after they are removed.
+// what is left after they are removed. Strips to a fixed point rather than a
+// single pass, so a removal can never re-expose a match it would have missed
+// (e.g. `<<foo>bar>` collapsing to a new `<bar>` after the inner tag goes).
 function stripPlaceholders(text) {
-  return text.replace(/<[A-Za-z_][A-Za-z0-9_]*>/g, '');
+  let prev;
+  let stripped = text;
+  do {
+    prev = stripped;
+    stripped = stripped.replace(/<[A-Za-z_][A-Za-z0-9_]*>/g, '');
+  } while (stripped !== prev);
+  return stripped;
 }
 
 // A step may not carry a numeric literal (an inline epsilon IS a per-case
