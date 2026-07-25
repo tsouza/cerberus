@@ -286,7 +286,8 @@ func compareTraceSearch(q Query, refAny, cerAny any, _ Params) Outcome {
 	// diverging or truncated search still spawns its trace-by-id probes: the
 	// deeper structural check is independent evidence, not contingent on the
 	// summary-level verdict.
-	out := Outcome{Verdict: VerdictMatch, Compared: len(both), Derived: deriveTraceByIDProbes(q, both)}
+	derived := deriveTraceByIDProbes(q, both)
+	out := Outcome{Verdict: VerdictMatch, Compared: len(both), Derived: derived}
 
 	truncated := len(ref.Traces) == traceSearchReplayLimit || len(cer.Traces) == traceSearchReplayLimit
 	capped := 0
@@ -297,6 +298,13 @@ func compareTraceSearch(q Query, refAny, cerAny any, _ Params) Outcome {
 	}
 	if capped > 0 {
 		out.Limitations = append(out.Limitations, limitation(LimitSpanSetCapped, capped))
+	}
+	// deriveTraceByIDProbes caps at maxDerivedTraceFetchesPerSearch, so a search
+	// with more common trace IDs than the cap leaves some of them judged only at
+	// the trace-search summary level, never structurally. That exclusion is
+	// disclosed here rather than silently dropped.
+	if skipped := len(both) - len(derived); skipped > 0 {
+		out.Limitations = append(out.Limitations, limitation(LimitTraceByIDDerivedCap, skipped))
 	}
 	if truncated {
 		out.Limitations = append(out.Limitations, Limitation{

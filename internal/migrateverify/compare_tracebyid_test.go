@@ -153,6 +153,40 @@ func TestCompareTraceByID_SpanReturnedByOneBackendOnlyDiverges(t *testing.T) {
 	}
 }
 
+// TestCompareTraceByID_DuplicateSpanSameIDDivergesOnSpanCount pins the
+// trailing span-count check: indexTraceByIDSpans keys spans by SpanID with
+// last-write-wins, so a literal duplicate span (a double-ingest /
+// duplicate-batch bug) leaves the ID SET unaffected — both sides still key
+// down to the same one span ID, so the field-diff loop and both exclusive-ID
+// checks all see agreement — but the raw span COUNT is not: cerberus here
+// returns the very same span twice while the reference returns it once. Only
+// the trailing `len(ref.Spans) != len(cer.Spans)` check can catch this, and a
+// regression that dropped or reordered that check ahead of the exclusive-ID
+// checks would silently turn a real double-emit defect into VerdictMatch.
+func TestCompareTraceByID_DuplicateSpanSameIDDivergesOnSpanCount(t *testing.T) {
+	const cerSpan = `{"traceId":"0000000000000000000000000000a1b2","spanId":"00000000000000c3","parentSpanId":"",` +
+		`"name":"GET /cart","kind":"Server","startTimeUnixNano":"1000000000","durationNanos":100,` +
+		`"status":{"code":"Ok"},"attributes":{"http.status_code":"200"}}`
+	cerDuplicate := strings.Replace(cerTraceBody, cerSpan+`]}]}`, cerSpan+`,`+cerSpan+`]}]}`, 1)
+
+	ref := decodeTraceByIDResult(t, refTraceBody)
+	cer := decodeTraceByIDResult(t, cerDuplicate)
+	if len(cer.Spans) != 2 {
+		t.Fatalf("fixture sanity: decoded %d cerberus spans, want 2 (the duplicate must survive decode)", len(cer.Spans))
+	}
+	out := compareTraceByID(traceByIDQuery("0000000000000000000000000000a1b2"), ref, cer, Params{})
+	if out.Verdict != VerdictDiverge {
+		t.Fatalf("verdict = %q, want diverge: cerberus returned the same span ID twice, a real double-emit "+
+			"the ID-set comparison alone cannot see (first-diff: %+v)", out.Verdict, out.FirstDiff)
+	}
+	if out.FirstDiff == nil || out.FirstDiff.Field != "span-count" || out.FirstDiff.ReasonCode != ReasonTraceFieldDiffers {
+		t.Errorf("FirstDiff = %+v, want field=span-count reason=%s", out.FirstDiff, ReasonTraceFieldDiffers)
+	}
+	if out.FirstDiff.RefValue != "1" || out.FirstDiff.CerberusValue != "2" {
+		t.Errorf("FirstDiff span counts = ref=%q cerberus=%q, want 1 vs 2", out.FirstDiff.RefValue, out.FirstDiff.CerberusValue)
+	}
+}
+
 func TestCompareTraceByID_PayloadMismatchIsAnError(t *testing.T) {
 	out := compareTraceByID(traceByIDQuery("x"), "not a traceByIDResult", traceByIDResult{}, Params{})
 	if out.Verdict != VerdictError {

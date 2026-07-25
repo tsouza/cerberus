@@ -149,13 +149,51 @@ func TestCompareTagDiscovery_PartialReferenceIsUndecidable(t *testing.T) {
 }
 
 func TestCompareTagDiscovery_PartialReferenceStillDivergesOnAMissingTag(t *testing.T) {
-	// A partial reference must not MASK a real divergence: cerberus reporting a
-	// tag the reference does not have is still a bug, even under partiality.
-	ref := decodeTempoDiscoveryResult(t, `{"tagNames":["service.name"],"metrics":{"totalJobs":10,"completedJobs":3}}`)
-	cer := decodeTempoDiscoveryResult(t, `{"tagNames":["service.name","bogus.extra"]}`)
+	// A partial reference must not MASK a real divergence: a tag the REFERENCE
+	// has but cerberus does not is still a bug even under partiality — cerberus
+	// never truncates its own enumeration, so its absence is unexplainable by
+	// the reference's partiality.
+	ref := decodeTempoDiscoveryResult(t, `{"tagNames":["service.name","only.ref"],"metrics":{"totalJobs":10,"completedJobs":3}}`)
+	cer := decodeTempoDiscoveryResult(t, `{"tagNames":["service.name"]}`)
 	out := compareTagDiscovery(tempoDiscoveryQuery(SurfaceTempoTagsV1, ""), ref, cer, Params{})
 	if out.Verdict != VerdictDiverge {
-		t.Fatalf("verdict = %q, want diverge: cerberus has a tag the reference does not", out.Verdict)
+		t.Fatalf("verdict = %q, want diverge: the reference has a tag cerberus does not", out.Verdict)
+	}
+	if out.FirstDiff == nil || out.FirstDiff.ReasonCode != ReasonTagMissing || out.FirstDiff.RefValue != "only.ref" {
+		t.Errorf("FirstDiff = %+v, want the reference-only tag named", out.FirstDiff)
+	}
+}
+
+// TestCompareTagDiscovery_CerberusOnlyTagIsUndecidableNotDiverged pins the
+// asymmetry: a tag present in cerberus's answer but absent from the
+// reference's is NOT diffed as a hard divergence, because both Tempo and Loki
+// cap discovery cardinality server-side and return 200 with a
+// silently-truncated set when the cap trips, with no field in either wire
+// response naming that it happened. Scoring this a hard Diverge (the old
+// behaviour) would false-positive-block a healthy migration the instant the
+// reference's own cap trimmed one value cerberus correctly still has; scoring
+// it a silent Match would hide a real cerberus over-report behind an allow-
+// list wearing a comparator's clothes. The honest answer is a named,
+// counted, non-blocking Undecidable.
+func TestCompareTagDiscovery_CerberusOnlyTagIsUndecidableNotDiverged(t *testing.T) {
+	ref := decodeTempoDiscoveryResult(t, `{"tagNames":["service.name"]}`)
+	cer := decodeTempoDiscoveryResult(t, `{"tagNames":["service.name","bogus.extra"]}`)
+	out := compareTagDiscovery(tempoDiscoveryQuery(SurfaceTempoTagsV1, ""), ref, cer, Params{})
+	if out.Verdict != VerdictUndecidable {
+		t.Fatalf("verdict = %q, want undecidable: a cerberus-only tag cannot be told apart from reference-side "+
+			"cardinality truncation (first-diff: %+v)", out.Verdict, out.FirstDiff)
+	}
+	if out.FirstDiff != nil {
+		t.Errorf("first-diff = %+v, want none: an undecidable dimension names no anchor to chase", out.FirstDiff)
+	}
+	lim := limitationByCode(t, out.Limitations, LimitTagDiscoveryRefCardinalityUnknown)
+	if lim.Count != 1 {
+		t.Errorf("%s count = %d, want 1: exactly one tag is cerberus-only", LimitTagDiscoveryRefCardinalityUnknown, lim.Count)
+	}
+	// The confirmed shared tag is still counted as compared; the ambiguous
+	// cerberus-only tag is not — it is evidence of nothing, not a match.
+	if out.Compared != 1 {
+		t.Errorf("Compared = %d, want 1: the ambiguous tag is not evidence, only the confirmed shared one is", out.Compared)
 	}
 }
 

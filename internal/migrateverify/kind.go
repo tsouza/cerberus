@@ -142,6 +142,24 @@ const (
 	// itself reported as partial, so the values it did not return are not
 	// evidence of absence.
 	LimitTagDiscoveryRefPartial = "tag-discovery-reference-partial"
+	// LimitTraceByIDDerivedCap: a trace-search result whose common-trace-ID count
+	// exceeded maxDerivedTraceFetchesPerSearch, so the structural (full span-set)
+	// trace-by-id probe ran only on the first maxDerivedTraceFetchesPerSearch IDs
+	// in sorted order; the remaining common traces were judged only at the
+	// trace-search summary level, never structurally.
+	LimitTraceByIDDerivedCap = "trace-by-id-derived-cap"
+	// LimitTagDiscoveryRefCardinalityUnknown: a tag or tag-value present in
+	// cerberus's response but absent from the reference's. Both Tempo's and
+	// Loki's discovery endpoints cap enumeration cardinality server-side and
+	// return 200 with a silently-truncated set when the cap trips — no field in
+	// either wire response distinguishes that from a genuinely complete answer
+	// — so this direction cannot be told apart from a real cerberus over-report.
+	// The opposite direction (present in the reference, absent from cerberus) is
+	// NOT covered by this code: cerberus's own enumeration is complete-or-errored
+	// by construction (an unbounded ClickHouse DISTINCT, resource-bounded to a
+	// hard failure rather than a silent cap), so the reference having a value
+	// cerberus does not is always a real divergence.
+	LimitTagDiscoveryRefCardinalityUnknown = "tag-discovery-reference-cardinality-unknown"
 )
 
 // limitationDetails is the canonical, invariant explanation for each limitation
@@ -183,6 +201,20 @@ var limitationDetails = map[string]string{
 		"completed fewer jobs than it started), so the values it did not return are not evidence of absence and " +
 		"set membership was not judged against cerberus's complete answer. The count is the number of probes the " +
 		"reference answered partially.",
+	LimitTraceByIDDerivedCap: fmt.Sprintf("the structural (full span-set) trace-by-id probe ran only on the "+
+		"first %d common trace IDs a search returned, in the comparator's own sorted order, so a search whose "+
+		"common-trace-ID count exceeds the cap has traces judged only at the trace-search summary level "+
+		"(rootServiceName, rootTraceName, duration, matched count, matched spanset), never structurally. The "+
+		"cap bounds how many trace-by-id fetches one search can spawn, so a corpus of broad searches cannot turn "+
+		"one run into thousands of round-trips. The count is the number of common trace IDs this covers.",
+		maxDerivedTraceFetchesPerSearch),
+	LimitTagDiscoveryRefCardinalityUnknown: "a tag or tag-value present in cerberus's answer but absent from " +
+		"the reference's was NOT judged a divergence: the reference caps discovery cardinality server-side and " +
+		"returns 200 with a silently-truncated set when the cap trips, and neither backend's wire response names " +
+		"whether that happened, so this direction cannot be told apart from a real cerberus over-report. The " +
+		"opposite direction — present in the reference, absent from cerberus — is unaffected and still diverges: " +
+		"cerberus's own enumeration is complete-or-errored by construction, never silently capped. The count is " +
+		"the number of tags or tag-values this covers.",
 }
 
 // limitation builds one limitation from its code and count, carrying the

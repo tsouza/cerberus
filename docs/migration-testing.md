@@ -369,19 +369,27 @@ seven comparison modes, and no scenario mixes them silently:
    `cerberus migrate verify` under the same zero-diverge rule as mode 1, judged
    against evidence the run itself derives rather than the corpus supplies.
 
-7. **Tag/label set equality — discovery.** Tag-name and tag-value enumeration
-   is set equality, scoped where the wire contract scopes it (Tempo's v2
-   tag-names surface is diffed per scope — resource, span, intrinsic — rather
-   than as one flat set). Every tag name or value present on one side and
-   absent from the other is a divergence; the only exception is a reference
-   response the reference ITSELF reports as partial, which is declined by name
-   with both job counts rather than diffed against cerberus's complete answer
-   (cerberus is never partial: one ClickHouse query, complete or errored).
-   These probes are corpus-ANCHORED rather than harvested: an unfiltered
-   tag-name enumeration runs once per head the corpus touches, and a
-   tag-VALUE probe runs once per distinct label or attribute key that head's
-   own queries reference. This is `cerberus migrate verify` under the same
-   zero-diverge rule as mode 1.
+7. **Tag/label set equality — discovery, asymmetric on cardinality.** Tag-name
+   and tag-value enumeration is set equality, scoped where the wire contract
+   scopes it (Tempo's v2 tag-names surface is diffed per scope — resource,
+   span, intrinsic — rather than as one flat set), but the two directions of
+   "present on one side only" are not judged the same way. A tag or value the
+   reference has but cerberus does not is always a real divergence: cerberus's
+   own enumeration is one unbounded ClickHouse `DISTINCT`, complete-or-errored
+   by construction, never silently capped. A tag or value cerberus has but the
+   reference does not is declared UNDECIDABLE, never diffed: both Tempo and
+   Loki cap discovery cardinality server-side and return 200 with a
+   silently-truncated set when the cap trips, and neither wire response names
+   whether that happened, so this direction cannot be told apart from a real
+   cerberus over-report. It is named by count, not silently dropped. A
+   reference response the reference ITSELF reports as partial is a second,
+   separate exception, declined by name with both job counts rather than
+   diffed against cerberus's complete answer. These probes are
+   corpus-ANCHORED rather than harvested: an unfiltered tag-name enumeration
+   runs once per head the corpus touches, and a tag-VALUE probe runs once per
+   distinct label or attribute key that head's own queries reference. This is
+   `cerberus migrate verify` under the same zero-diverge rule as mode 1 for
+   every dimension it can judge.
 
 **Alert-firing parity is eval-interval-quantized (MIG-18).** Two independent
 rulers on independent evaluation schedules produce sub-interval fire/resolve

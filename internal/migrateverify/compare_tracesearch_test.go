@@ -360,6 +360,53 @@ func TestVerify_TraceSearchAgreementCountsEveryTrace(t *testing.T) {
 	}
 }
 
+// TestVerify_DerivedTraceByIDCapIsDisclosedNotSilent pins the finding: a search
+// whose common-trace-ID count exceeds maxDerivedTraceFetchesPerSearch must state,
+// with an exact count, how many of those common traces got no structural
+// (full span-set) trace-by-id probe — the same "declared, never silent" rule
+// every other declined-comparison dimension in this file already gets
+// (LimitSearchTruncated, LimitSpanSetCapped, …). Without the limitation, an
+// operator reading a clean report has no way to know that most of a large
+// search's traces were verified only at the trace-search summary level, never
+// down to their span structure.
+func TestVerify_DerivedTraceByIDCapIsDisclosedNotSilent(t *testing.T) {
+	const wantCommonTraces = maxDerivedTraceFetchesPerSearch + 3
+	traces := make([]traceSpec, 0, wantCommonTraces)
+	for n := 1; n <= wantCommonTraces; n++ {
+		traces = append(traces, fixtureTrace(n))
+	}
+	rep := runTraceSearch(t,
+		traceSearchBody(completeMetrics, traces...),
+		traceSearchBody(cerberusMetrics, traces...))
+
+	res := rep.Results[0]
+	if res.Verdict != VerdictMatch {
+		t.Fatalf("verdict = %q, want match (detail: %s, first-diff: %+v)", res.Verdict, res.Detail, res.FirstDiff)
+	}
+	if res.ComparedUnits != wantCommonTraces {
+		t.Fatalf("ComparedUnits = %d, want %d: every common trace is still field-diffed at the summary level "+
+			"regardless of the derived-probe cap", res.ComparedUnits, wantCommonTraces)
+	}
+
+	const wantSkipped = wantCommonTraces - maxDerivedTraceFetchesPerSearch
+	lim := limitationByCode(t, res.Limitations, LimitTraceByIDDerivedCap)
+	if lim.Count != wantSkipped {
+		t.Errorf("%s count = %d, want %d: the count is every common trace ID the cap left without a "+
+			"structural probe", LimitTraceByIDDerivedCap, lim.Count, wantSkipped)
+	}
+	if !strings.Contains(lim.Detail, fmt.Sprintf("%d", maxDerivedTraceFetchesPerSearch)) {
+		t.Errorf("%s detail = %q, want it to name the cap %d", LimitTraceByIDDerivedCap, lim.Detail, maxDerivedTraceFetchesPerSearch)
+	}
+
+	// The derived family itself only ever ran the capped number of structural
+	// probes — the limitation's count is the mirror of this family total.
+	byID := traceByIDFamily(t, rep)
+	if byID.Total != maxDerivedTraceFetchesPerSearch {
+		t.Errorf("trace-by-id family total = %d, want %d: the cap bounds how many derived fetches actually ran",
+			byID.Total, maxDerivedTraceFetchesPerSearch)
+	}
+}
+
 // TestVerify_EmptyTraceSearchIsNotProvenParity is the failure this whole evidence
 // mechanism exists to prevent, in its most dangerous form on this endpoint: the
 // reference OMITS the traces key when it has no matches while cerberus always

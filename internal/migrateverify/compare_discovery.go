@@ -211,43 +211,60 @@ func compareTempoDiscovery(q Query, refAny, cerAny any) Outcome {
 	return out
 }
 
-// diffTagSet compares two flat value sets exactly. tag, when non-empty, is
-// the key these values belong to (a label-values / tag-values probe); it is
-// empty for an unfiltered tag-NAME enumeration, where each element IS its own
-// identity. scope, when non-empty, anchors a v2 per-scope diff.
+// diffTagSet compares two flat value sets. tag, when non-empty, is the key
+// these values belong to (a label-values / tag-values probe); it is empty for
+// an unfiltered tag-NAME enumeration, where each element IS its own identity.
+// scope, when non-empty, anchors a v2 per-scope diff.
+//
+// The two directions of "present on one side only" are NOT symmetric. A value
+// the reference has but cerberus does not is always a real divergence:
+// cerberus's own enumeration is one unbounded ClickHouse DISTINCT that is
+// complete-or-errored by construction, never silently capped. A value cerberus
+// has but the reference does not is AMBIGUOUS: both Tempo and Loki cap
+// discovery cardinality server-side and return 200 with a silently-truncated
+// set when the cap trips, with no field in either wire response naming that it
+// happened, so this direction cannot be told apart from a real cerberus
+// over-report. It is therefore never diffed as a hard divergence; it is named
+// and counted via LimitTagDiscoveryRefCardinalityUnknown instead — the same
+// "declared, never silent" treatment every other undecidable dimension in this
+// package gets.
 func diffTagSet(ref, cer []string, tag, scope, reasonCode string) Outcome {
 	refSet := toStringSet(ref)
 	cerSet := toStringSet(cer)
 	union := unionKeys(refSet, cerSet)
-	out := Outcome{Verdict: VerdictMatch, Compared: len(union)}
+	out := Outcome{Verdict: VerdictMatch}
+	ambiguous := 0
 	for _, v := range union {
 		_, inRef := refSet[v]
 		_, inCer := cerSet[v]
+		if !inRef && inCer {
+			ambiguous++
+			continue
+		}
+		out.Compared++
 		if inRef && inCer {
+			continue
+		}
+		// Only the reference-only case reaches here: inRef && !inCer.
+		if out.Verdict == VerdictDiverge {
 			continue
 		}
 		anchorTag := tag
 		if anchorTag == "" {
 			anchorTag = v
 		}
-		refVal, cerVal := missingTagValue, missingTagValue
-		if inRef {
-			refVal = v
-		}
-		if inCer {
-			cerVal = v
-		}
-		reasonPrefix := "reference only"
-		if !inRef {
-			reasonPrefix = "cerberus only"
-		}
 		out.Verdict = VerdictDiverge
 		out.FirstDiff = &FirstDiff{
 			Kind: KindTagDiscovery, Scope: scope, Tag: anchorTag,
-			RefValue: refVal, CerberusValue: cerVal,
-			Reason: fmt.Sprintf("tag %q present in %s", v, reasonPrefix), ReasonCode: reasonCode,
+			RefValue: v, CerberusValue: missingTagValue,
+			Reason: fmt.Sprintf("tag %q present in reference only", v), ReasonCode: reasonCode,
 		}
-		return out
+	}
+	if ambiguous > 0 {
+		out.Limitations = append(out.Limitations, limitation(LimitTagDiscoveryRefCardinalityUnknown, ambiguous))
+		if out.Verdict == VerdictMatch {
+			out.Verdict = VerdictUndecidable
+		}
 	}
 	return out
 }
@@ -261,8 +278,12 @@ func diffTagScopes(ref, cer map[string][]string) Outcome {
 	for _, scope := range tempoTagScopes {
 		scopeOut := diffTagSet(ref[scope], cer[scope], "", scope, ReasonTagMissing)
 		out.Compared += scopeOut.Compared
-		if scopeOut.Verdict == VerdictDiverge && out.Verdict != VerdictDiverge {
+		out.Limitations = mergeLimitations(out.Limitations, scopeOut.Limitations)
+		switch {
+		case scopeOut.Verdict == VerdictDiverge && out.Verdict != VerdictDiverge:
 			out.Verdict, out.FirstDiff = scopeOut.Verdict, scopeOut.FirstDiff
+		case scopeOut.Verdict == VerdictUndecidable && out.Verdict == VerdictMatch:
+			out.Verdict = VerdictUndecidable
 		}
 	}
 	return out
