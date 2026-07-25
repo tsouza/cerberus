@@ -1,6 +1,7 @@
 package regression
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -316,10 +317,16 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(body, "migration-tier1: migration-tier1-up migration-tier1-run migration-tier1-down") {
-		t.Fatal("Justfile has no `migration-tier1` composite chaining up -> run -> down")
+	// The composite must carry the seed step. Without it the assertions run
+	// against an empty stack, where "both sides agree" is vacuously true.
+	if !strings.Contains(body, tier1Composite) {
+		t.Fatalf("Justfile has no `migration-tier1` composite chaining up -> seed -> run -> down; want %q",
+			tier1Composite)
 	}
 }
+
+// tier1Composite is the lane's full lifecycle, in order.
+const tier1Composite = "migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down"
 
 // justRecipeBody returns the lines of a Justfile recipe: everything from its
 // `name:` header up to the next non-indented, non-blank line.
@@ -344,4 +351,272 @@ func justRecipeBody(t *testing.T, justfile, recipe string) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// The seeder half of the Tier-1 substrate. These pins are pure file reads over
+// the seeder package, the archetype's data declaration and its pinned
+// expectations, so a change that breaks the seeder's contract fails the
+// required `check` lane instead of surfacing hours later in a scheduled lane.
+const (
+	tier1SettlePath     = tier1SeedPkgDir + "/settle.go"
+	tier1ArchetypeDir   = "../../test/e2e/migration/archetypes/three-signal"
+	tier1DeclPath       = tier1ArchetypeDir + "/seed/fixture.json"
+	tier1ExpectedPath   = tier1ArchetypeDir + "/expected/tier1.json"
+	tier1SeedCmdPath    = "./test/e2e/migration/cmd/seed"
+	tier1ManifestOutput = "test/e2e/migration/.out/manifest.json"
+)
+
+// compatSeederSources are the compatibility harnesses' seeders. They gate on
+// the same upstream readiness metrics the migration seeder does, and that
+// duplication is the one the "do not refactor three programs that each sit
+// behind a required check" decision leaves open — so it is closed behaviourally
+// here instead.
+var compatSeederSources = []string{
+	"../../compatibility/loki/cmd/seed/main.go",
+	"../../compatibility/tempo/driver/seeder.go",
+}
+
+// TestMigrationTier1ReadinessMetricsMatchCompat pins every upstream metric name
+// the migration seeder's settle gates key on to a name a compatibility seeder
+// also keys on. An upstream rename then fails in ONE place: without this, the
+// migration lane would keep polling a metric upstream had removed while the
+// compat gates had already moved on, and the failure would read as a timeout
+// rather than as the rename it is.
+func TestMigrationTier1ReadinessMetricsMatchCompat(t *testing.T) {
+	t.Parallel()
+
+	names := metricConstValues(t, tier1SettlePath)
+	if len(names) == 0 {
+		t.Fatalf("%s declares no readiness-metric constants; the settle gates have lost their signals",
+			tier1SettlePath)
+	}
+
+	var compat strings.Builder
+	for _, path := range compatSeederSources {
+		buf, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		compat.Write(buf)
+	}
+	haystack := compat.String()
+
+	for _, name := range names {
+		if !strings.Contains(haystack, name) {
+			t.Fatalf("the migration seeder gates on %q, which no compatibility seeder mentions. Either "+
+				"upstream renamed it and only one side followed, or a new signal was added without "+
+				"telling the harnesses that share it. Sources scanned: %v", name, compatSeederSources)
+		}
+	}
+}
+
+// metricConstValues returns the string values of every `…Metric` constant
+// declared in a Go file, read off the AST so a comment mentioning a metric name
+// cannot satisfy the pin.
+func metricConstValues(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	var out []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range value.Names {
+				if !strings.HasSuffix(name.Name, "Metric") || i >= len(value.Values) {
+					continue
+				}
+				lit, ok := value.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				unquoted, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("%s: unquote %s = %s: %v", path, name.Name, lit.Value, err)
+				}
+				out = append(out, unquoted)
+			}
+		}
+	}
+	return out
+}
+
+// tier1Declaration is the subset of the archetype's data declaration these pins
+// read.
+type tier1Declaration struct {
+	Services         []string  `json:"services"`
+	StatusCodes      []string  `json:"http_status_codes"`
+	LogFormats       []string  `json:"log_formats"`
+	LogJob           string    `json:"log_job"`
+	GaugeMetric      string    `json:"gauge_metric"`
+	CounterMetric    string    `json:"counter_metric"`
+	HistogramMetric  string    `json:"histogram_metric"`
+	HistogramBounds  []float64 `json:"histogram_bounds"`
+	TracesPerService int       `json:"traces_per_service"`
+	SpansPerTrace    []int     `json:"spans_per_trace"`
+}
+
+// tier1Expected is the subset of the archetype's pinned expectations these pins
+// read.
+type tier1Expected struct {
+	LogStreams       int `json:"log_streams"`
+	LogRecords       int `json:"log_records"`
+	PromSeries       int `json:"prom_series"`
+	Traces           int `json:"traces"`
+	TracesPerService int `json:"traces_per_service"`
+	Spans            int `json:"spans"`
+	SamplesPerSeries int `json:"samples_per_series"`
+	VerifySteps      int `json:"verify_steps"`
+	Series           struct {
+		Gauge     int `json:"gauge"`
+		Sum       int `json:"sum"`
+		Histogram int `json:"histogram"`
+	} `json:"series"`
+	MetricQueries []struct {
+		Name   string `json:"name"`
+		Query  string `json:"query"`
+		Series int    `json:"series"`
+	} `json:"metric_queries"`
+}
+
+func readTier1Archetype(t *testing.T) (tier1Declaration, tier1Expected) {
+	t.Helper()
+	var decl tier1Declaration
+	var expected tier1Expected
+	for _, target := range []struct {
+		path string
+		into any
+	}{{tier1DeclPath, &decl}, {tier1ExpectedPath, &expected}} {
+		buf, err := os.ReadFile(target.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", target.path, err)
+		}
+		if err := json.Unmarshal(buf, target.into); err != nil {
+			t.Fatalf("parse %s: %v", target.path, err)
+		}
+	}
+	return decl, expected
+}
+
+// TestMigrationTier1ExpectationsFollowTheDeclaration pins the archetype's
+// expected cardinalities to what its data declaration actually implies. Those
+// expectations are what the parity oracle is cross-checked against, so a
+// hand-edited number there would let a shrunken fixture and a shrunken oracle
+// agree with each other and report parity over almost no data.
+func TestMigrationTier1ExpectationsFollowTheDeclaration(t *testing.T) {
+	t.Parallel()
+
+	decl, expected := readTier1Archetype(t)
+
+	metricSeries := len(decl.Services) * len(decl.StatusCodes)
+	logStreams := len(decl.Services) * len(decl.LogFormats)
+	traces := len(decl.Services) * decl.TracesPerService
+	// A classic-histogram series expands on the reference side into one
+	// cumulative bucket per explicit bound, a +Inf bucket, a _count and a _sum.
+	histogramPromSeries := metricSeries * (len(decl.HistogramBounds) + 3)
+	promSeries := metricSeries*2 + histogramPromSeries
+
+	for _, c := range []struct {
+		what      string
+		got, want int
+	}{
+		{"gauge series", expected.Series.Gauge, metricSeries},
+		{"sum series", expected.Series.Sum, metricSeries},
+		{"histogram series", expected.Series.Histogram, metricSeries},
+		{"log streams", expected.LogStreams, logStreams},
+		{"log records", expected.LogRecords, logStreams * expected.SamplesPerSeries},
+		{"traces", expected.Traces, traces},
+		{"traces per service", expected.TracesPerService, decl.TracesPerService},
+		{"prometheus series", expected.PromSeries, promSeries},
+	} {
+		if c.got != c.want {
+			t.Fatalf("%s declares %s = %d, but %s implies %d",
+				tier1ExpectedPath, c.what, c.got, tier1DeclPath, c.want)
+		}
+	}
+
+	if expected.Spans <= expected.Traces {
+		t.Fatalf("%s declares %d spans across %d traces; every trace holds at least %d spans, so the "+
+			"span count cannot be that low", tier1ExpectedPath, expected.Spans, expected.Traces,
+			decl.SpansPerTrace[0])
+	}
+	if expected.VerifySteps <= 1 {
+		t.Fatalf("%s declares %d verify steps; a single-step window cannot show a divergence that only "+
+			"appears part-way through the range", tier1ExpectedPath, expected.VerifySteps)
+	}
+}
+
+// TestMigrationTier1QueriesNameTheFixture pins the corpus-shape rule that keeps
+// the ClickHouse-only schema warm-up rows unreachable from a comparison: every
+// declared query names a fixture metric explicitly. A bare `sum(rate(...))`
+// with no metric name would sweep in the warm-up series, which the collector
+// writes to ClickHouse and to nothing else, so it would read as a permanent
+// divergence that no amount of seeding could close.
+func TestMigrationTier1QueriesNameTheFixture(t *testing.T) {
+	t.Parallel()
+
+	decl, expected := readTier1Archetype(t)
+	if len(expected.MetricQueries) == 0 {
+		t.Fatalf("%s declares no metric queries; the parity lane would compare nothing", tier1ExpectedPath)
+	}
+
+	fixtureMetrics := []string{decl.GaugeMetric, decl.CounterMetric, decl.HistogramMetric}
+	seen := map[string]bool{}
+	for _, q := range expected.MetricQueries {
+		if q.Name == "" {
+			t.Fatalf("%s declares a query with no name: %q", tier1ExpectedPath, q.Query)
+		}
+		if seen[q.Name] {
+			t.Fatalf("%s declares two queries named %q", tier1ExpectedPath, q.Name)
+		}
+		seen[q.Name] = true
+		if q.Series <= 0 {
+			t.Fatalf("%s declares query %q with %d expected series; a zero-series expectation is "+
+				"satisfied by a backend that returned nothing", tier1ExpectedPath, q.Name, q.Series)
+		}
+		var named bool
+		for _, metric := range fixtureMetrics {
+			if strings.Contains(q.Query, metric) {
+				named = true
+			}
+		}
+		if !named {
+			t.Fatalf("%s query %q names no fixture metric (%v). A query that does not name one can "+
+				"reach the ClickHouse-only schema warm-up rows, which have no reference-side "+
+				"counterpart.", tier1ExpectedPath, q.Query, fixtureMetrics)
+		}
+	}
+}
+
+// TestMigrationTier1SeedRecipe pins the seed step into the lane's lifecycle.
+// Without it the assertions would run against an empty stack, where every
+// "both sides agree" comparison is vacuously true.
+func TestMigrationTier1SeedRecipe(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+	body := string(buf)
+
+	recipe := justRecipeBody(t, body, "migration-tier1-seed")
+	for _, want := range []string{
+		tier1SeedCmdPath,
+		strings.TrimPrefix(tier1DeclPath, "../../"),
+		tier1ManifestOutput,
+	} {
+		if !strings.Contains(recipe, want) {
+			t.Fatalf("Justfile recipe migration-tier1-seed does not reference %q; body:\n%s", want, recipe)
+		}
+	}
 }

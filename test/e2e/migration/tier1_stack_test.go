@@ -75,6 +75,12 @@ const (
 	httpTimeout = 15 * time.Second
 	// errBodyLimit caps how much of a failing response body is quoted back.
 	errBodyLimit = 4096
+	// responseBodyLimit caps a SUCCESSFUL response body. It is far above
+	// errBodyLimit on purpose: a parity read returns the whole fixture window
+	// (thousands of log entries, hundreds of samples), and a limit that
+	// truncated it would surface as a JSON decode error rather than as the
+	// oversized response it is.
+	responseBodyLimit = 32 << 20
 )
 
 // The substrate probe. One metric series, one log stream, one trace: the
@@ -459,7 +465,7 @@ func fetchJSON(ctx context.Context, url string, out any) error {
 		return err
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode %s body %q: %w", url, string(body), err)
+		return fmt.Errorf("decode %s body %q: %w", url, truncateBody(body), err)
 	}
 	return nil
 }
@@ -479,14 +485,22 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, errBodyLimit))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, responseBodyLimit))
 	if err != nil {
 		return nil, fmt.Errorf("read %s body: %w", url, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, truncateBody(body))
 	}
 	return body, nil
+}
+
+// truncateBody caps a failing response body quoted into an error message.
+func truncateBody(body []byte) string {
+	if len(body) <= errBodyLimit {
+		return string(body)
+	}
+	return string(body[:errBodyLimit])
 }
 
 // getJSON is fetchJSON's fatal-on-error form for the single-shot assertions

@@ -1211,11 +1211,24 @@ migration-tier1-up:
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         up --build --wait --wait-timeout 300
 
-# Assert the Tier-1 substrate contract against the running stack: the collector
-# provisioned the OTel schema, cerberus serves all three heads off it, and each
-# reference backend returns exactly what was written to it.
+# Load the deterministic all-signal fixture into the running stack: ONE
+# in-memory fixture written twice — directly into ClickHouse and into the
+# reference Prometheus / Loki / Tempo — so both sides of a parity diff are
+# comparable by construction. Publishes the manifest the assertions read their
+# query window from, so the lane never queries a window ending at `now`.
+migration-tier1-seed:
+    @echo "==> migration tier-1 seed"
+    go run ./test/e2e/migration/cmd/seed \
+        --fixture test/e2e/migration/archetypes/three-signal/seed/fixture.json \
+        --manifest test/e2e/migration/.out/manifest.json
+
+# Assert the Tier-1 substrate contract against the seeded stack: the collector
+# provisioned the OTel schema, cerberus serves all three heads off it, each
+# reference backend returns exactly what was written to it, both sides hold the
+# same telemetry over the manifest window, and a deliberately injected
+# disagreement is observed.
 migration-tier1-run:
-    @echo "==> migration tier-1 substrate assertions"
+    @echo "==> migration tier-1 substrate + parity assertions"
     go test -tags=migration_tier1 -count=1 ./test/e2e/migration/...
 
 # Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
@@ -1227,7 +1240,7 @@ migration-tier1-down:
         down -v --remove-orphans
 
 # Full Tier-1 lifecycle. Fails fast on the first non-zero recipe.
-migration-tier1: migration-tier1-up migration-tier1-run migration-tier1-down
+migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down
 
 # === Release (controlled local cut) ===
 #

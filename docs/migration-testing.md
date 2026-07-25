@@ -132,6 +132,78 @@ rather than `chdb_substrate`: the migration lane models the deployment surface
 an operator runs, not the SQL-parity substrate the chDB suites run on
 (asserted by `.github/scripts/clickhouse-version-sync.mjs`).
 
+### 3.1. The all-signal seeder
+
+`test/e2e/migration/cmd/seed` builds one in-memory fixture from an archetype's
+data declaration and writes it four times over: batch `INSERT` into
+`otel_metrics_{gauge,sum,histogram}`, `otel_logs` and `otel_traces`; snappy
+`prompb` remote-write into reference Prometheus; `/loki/api/v1/push` into
+reference Loki; OTLP/gRPC into reference Tempo. Every writer consumes the same
+Go values, so no timestamp, value or label is ever re-derived per backend.
+
+Its first action is one OTLP warm-up record per signal, sent to the collector
+under names no corpus query selects. That makes table creation unconditional
+rather than dependent on the exporter's start-time behaviour; the seeder then
+polls for all six `otel_*` tables against a hard deadline before it writes a
+single fixture row. Nothing in the seeder creates a table.
+
+**Determinism.** Four devices, and the fixture is byte-identical run to run
+apart from its offset from the epoch:
+
+- one RNG, seeded with a fixed value and consumed in a fixed order;
+- cardinality declared in `fixture.json`, never derived from a counter — the
+  metric label sets are a real CROSS JOIN of the service and status-code lists,
+  because a correlated `index % len` derivation collapses
+  `len(services) × len(codes)` series into `len(services)`;
+- trace and span identifiers hashed from `(service, trace index, span index)`;
+- ClickHouse `Map` columns written in sorted key order, because the driver
+  otherwise serialises a Go map in randomised iteration order and the same
+  logical label set lands under two different stored representations;
+- a rolling anchor truncated to the step grid. One anchor serves all three
+  signals: cross-signal correlation needs the three inside one window, and a
+  fixed date is unusable because Tempo's live store clamps span timestamps
+  outside its ingestion slack and the clamped block metadata makes search
+  return nothing.
+
+**Ingestion skew** is closed by two mechanisms answering two different
+questions. *Closed-window querying* answers "do both sides cover the same
+interval?": the seeder publishes a manifest carrying
+`[verify_start, verify_end]` and the step, and the lane reads its window from
+there instead of one ending at `now`. `cerberus migrate verify`'s own
+`--start -1h --end now` defaults are untouched — a real operator legitimately
+wants a live window against their own Prometheus. *Metric-driven readiness
+gates* answer "has the reference finished ingesting?": Loki is flushed
+synchronously and then gated on an empty flush queue, zero in-memory chunks, a
+chunks-flushed delta of at least one per pushed stream and a fresh TSDB index
+upload, all in a single poll; Tempo on a completed live-store block that the
+querier's blocklist has picked up; Prometheus — whose remote-write receiver has
+no flush stage — data-side, on an instant query returning exactly the declared
+series count with its last sample exactly at the anchor. Only the reference
+side needs a gate: cerberus reads ClickHouse directly, so its visibility is
+bounded by the `INSERT` round-trip.
+
+The gates carry no percentage floors, no cardinality tolerances, no latches and
+no retry-then-continue. A missing upstream metric never makes a gate pass: a
+signal asserted `== 0` is a hard error when absent, because coercing it to zero
+would satisfy the condition, while a signal asserted `>= n` reads as "not yet"
+and keeps the gate waiting until it fails with the un-observed metric named.
+
+**Proof.** `test/e2e/migration/tier1_parity_test.go` rebuilds the fixture
+in-process from the same declaration and the manifest's window, then compares
+each side against that oracle independently — never one side's length against
+the other's, which two empty results satisfy. It asserts the metric matrices
+group-for-group and sample-for-sample with no tolerance (every fixture value is
+a whole number or a negative power of two, so the arithmetic is exact), the log
+entries timestamp-and-line exact, and the trace-search results as 16-byte trace
+identities, with each backend's wire rendering asserted separately — reference
+Tempo strips leading zeros from trace-id hex, and cerberus emits the canonical
+fixed-width form the spec requires, so the difference is pinned rather than
+normalised away. A negative control runs last: it injects a series scaled far
+beyond any float tolerance into the ClickHouse side and requires the comparison
+to observe the disagreement at every step, and the other services to stay
+identical. Without it, "both sides agree" would also be the reading of a
+harness that had silently stopped comparing anything.
+
 **Tier 2 — ruler tier.** The Tier-1 stack **+ a real query-only external
 ruler** (a Prometheus/Thanos ruler in rule-eval-only mode, or Grafana-managed
 alerting) pointed at cerberus's HTTP API, writing recording-rule output back
