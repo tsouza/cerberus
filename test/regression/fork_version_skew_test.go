@@ -146,6 +146,54 @@ func TestForkVersionSkew(t *testing.T) {
 				libCommit, verCommit)
 		}
 	})
+
+	t.Run("migration-tier1", func(t *testing.T) {
+		t.Parallel()
+		// The migration lane's Tier-1 stack runs the same three reference
+		// backends the compat lanes do, and it must run them at the SAME
+		// versions: the compat compose files are the sole pin site, so a
+		// tier-1 restatement that drifts would silently diff cerberus against
+		// a reference engine the compat gate never exercised. Binding the
+		// tags here makes the go.mod <-> compat assertions above cover tier-1
+		// transitively, with one enforcement mechanism instead of two.
+		const tier1Compose = "../../test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml"
+		for _, tc := range []struct {
+			name        string
+			compat      string
+			re          *regexp.Regexp
+			description string
+		}{
+			{
+				name:        "prometheus",
+				compat:      "../../compatibility/prometheus/docker-compose.yml",
+				re:          regexp.MustCompile(`image:\s*(prom/prometheus:\S+)`),
+				description: "reference Prometheus",
+			},
+			{
+				name:        "loki",
+				compat:      "../../compatibility/loki/docker-compose.yml",
+				re:          regexp.MustCompile(`image:\s*(grafana/loki:\S+)`),
+				description: "reference Loki",
+			},
+			{
+				name:        "tempo",
+				compat:      "../../compatibility/tempo/docker-compose.yml",
+				re:          regexp.MustCompile(`image:\s*(grafana/tempo:\S+)`),
+				description: "reference Tempo",
+			},
+		} {
+			compatTag := composeImageTag(t, tc.compat, tc.re)[0]
+			tier1Tag := composeImageTag(t, tier1Compose, tc.re)[0]
+			if compatTag != tier1Tag {
+				t.Fatalf("migration tier-1 %s image %q != compatibility image %q. The "+
+					"compatibility compose file is the sole pin site for reference "+
+					"backend versions; tier-1 restates the tag and must restate it "+
+					"byte-for-byte, so the go.mod <-> compat version gate above covers "+
+					"tier-1 too. Align %s.",
+					tc.description, tier1Tag, compatTag, tier1Compose)
+			}
+		}
+	})
 }
 
 // requireVersion extracts the version pinned for modPath in a go.mod

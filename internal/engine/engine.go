@@ -504,7 +504,7 @@ type Engine struct {
 // for the dispatch (Solver off / unclassified head), in which case route is ""
 // and the scalar features are 0. This is a pure additive read-out: it joins
 // each routing DECISION to its OBSERVED cost for the route A/B calibration
-// corpus (stage 0) and changes no routing behavior.
+// corpus and changes no routing behavior.
 type QueryObserver interface {
 	ObserveQuery(
 		queryID, shapeID string,
@@ -766,7 +766,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// rewriting buys nothing. Each branch keeps the rest of the
 	// pipeline identical.
 	if !meta.IsTraceByID {
-		optT := telemetry.ObserveStage(telemetry.StageOptimize)
+		optT := telemetry.ObserveStage(telemetry.StageOptimize, lang.Name())
 		plan = e.Optimizer.Run(ctx, plan)
 		optT.Done(ctx)
 	}
@@ -791,7 +791,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	}
 
 	// Emit.
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
+	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
 	sql, args, err := emitForHead(ctx, lang, plan)
 	emitT.Done(ctx)
 	if err != nil {
@@ -801,7 +801,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// Execute. The progress-context key matches the upstream QL so
 	// the cerberus.clickhouse.{rows,bytes}_read histograms keep
 	// their per-head labels.
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	samples, err := e.Client.Query(execCtx, sql, args...)
@@ -876,7 +876,7 @@ func (e *Engine) executeRouted(
 	if e.Solver == nil || e.Solver.Executor == nil {
 		return Result{}, fmt.Errorf("engine: solver routed without an Executor")
 	}
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
 		chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
@@ -1004,7 +1004,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 
 	plan = lang.ProjectSamples(plan, meta)
 	if !meta.IsTraceByID {
-		optT := telemetry.ObserveStage(telemetry.StageOptimize)
+		optT := telemetry.ObserveStage(telemetry.StageOptimize, lang.Name())
 		plan = e.Optimizer.Run(ctx, plan)
 		optT.Done(ctx)
 	}
@@ -1025,14 +1025,14 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		return e.executeRoutedCursor(ctx, lang, meta, plan, decision)
 	}
 
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
+	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
 	sql, args, err := emitForHead(ctx, lang, plan)
 	emitT.Done(ctx)
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: emit: %w", err)
 	}
 
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	cursor, err := cq.QueryCursor(execCtx, sql, args...)
 	execT.Done(ctx)
@@ -1131,7 +1131,7 @@ func (e *Engine) executeRoutedCursor(
 	if e.Solver == nil || e.Solver.Executor == nil {
 		return CursorResult{}, fmt.Errorf("engine: solver routed without an Executor")
 	}
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	cursor, info, err := e.Solver.Executor.Execute(
 		chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)

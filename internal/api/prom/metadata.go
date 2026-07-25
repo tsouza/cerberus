@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // maxMetricCandidatesPerQuery bounds how many matcher variants the
@@ -303,7 +305,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	if len(matchers) == 0 {
 		names, err = h.fetchLabelNames(r.Context(), startT, endT, nowAnchored)
 	} else {
-		names, err = h.fetchLabelNamesMatched(r.Context(), matchers, startT, endT)
+		names, err = h.fetchLabelNamesMatched(r.Context(), matchers, startT, endT, nowAnchored)
 	}
 	if err != nil {
 		h.respondError(w, err)
@@ -375,7 +377,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	if len(matchers) == 0 {
 		values, err = h.fetchLabelValues(r.Context(), name, startT, endT, nowAnchored)
 	} else {
-		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT)
+		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT, nowAnchored)
 	}
 	if err != nil {
 		h.respondError(w, err)
@@ -677,6 +679,11 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	// nowAnchored mirrors handleLabels / handleLabelValues: with no explicit
+	// upper bound the effective window ends "now", so any name enumeration the
+	// matcher fan-out needs can answer from the max(TimeUnix) aggregating
+	// projection instead of a WHERE-bounded scan.
+	nowAnchored := endT.IsZero()
 	startT, endT = boundMetadataWindow(startT, endT)
 
 	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
@@ -691,7 +698,11 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	// dedup below folds into distinct label sets — same series returned,
 	// N round-trips → 1. Pathologically broad probes chunk into ⌈N/K⌉
 	// bounded queries (still ≪ N); see fetchSeries.
-	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	variants, err := h.expandMetadataMatchers(r.Context(), matchers, startT, endT, nowAnchored)
+	if err != nil {
+		h.respondError(w, err)
+		return
+	}
 	sets, err := h.fetchSeries(r.Context(), variants, startT, endT)
 	if err != nil {
 		h.respondError(w, err)
@@ -848,17 +859,12 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 		values = normalizeMetricValues(bare)
 	}
 	if histogramTable != "" {
-		sql := h.metricNamesSQL([]string{histogramTable}, start, end, nowAnchored)
-		hist, err := timeCH(ctx, func() ([]string, error) {
-			return h.Client.QueryStrings(ctx, sql)
-		})
+		bases, err := h.histogramBaseNames(ctx, start, end, nowAnchored)
 		if err != nil {
-			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+			return nil, err
 		}
-		for _, base := range normalizeMetricValues(hist) {
-			for _, suf := range []string{"_bucket", "_count", "_sum"} {
-				values = append(values, base+suf)
-			}
+		for _, base := range bases {
+			values = append(values, promql.HistogramSyntheticNames(base, h.Schema)...)
 		}
 	}
 	// Cross-group dedupe: a sum-table counter that already carries a
@@ -877,6 +883,33 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// histogramBaseNames enumerates the classic-histogram BASE names carrying data
+// in [start,end], normalised to Prom metric-name grammar. It is the one place
+// the "which histogram families exist" question is answered: the `__name__`
+// catalog expands these into the synthetic companion names it advertises, and
+// the metadata matcher fan-out resolves unpinned `__name__` matchers against
+// the same set, so the names a client can discover and the names a matcher can
+// select are the same set by construction.
+//
+// The enumeration inherits the endpoint's bounded window — the request's own
+// [start,end], or the default retention horizon when it supplied none (see
+// boundMetadataWindow) — so it partition-prunes exactly like every other
+// metadata arm. It returns nil when no distinct histogram table is configured.
+func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
+	_, histogramTable := h.catalogNameTables()
+	if histogramTable == "" {
+		return nil, nil
+	}
+	sql := h.metricNamesSQL([]string{histogramTable}, start, end, nowAnchored)
+	names, err := timeCH(ctx, func() ([]string, error) {
+		return h.Client.QueryStrings(ctx, sql)
+	})
+	if err != nil {
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
+	return normalizeMetricValues(names), nil
 }
 
 // catalogNameTables partitions the configured metric tables into the
@@ -923,7 +956,9 @@ func (h *Handler) catalogNameTables() (bareTables []string, histogramTable strin
 // — would see only `__name__` and render "Unable to fetch labels".
 // Non-histogram inputs short-circuit through the no-op (single-element)
 // return of the expander.
-func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string, start, end time.Time) ([]string, error) {
+func (h *Handler) fetchLabelNamesMatched(
+	ctx context.Context, matchers []string, start, end time.Time, nowAnchored bool,
+) ([]string, error) {
 	// Fan-in batching (task #71): the variant fan-out across all matchers
 	// collapses into ONE combined query (chunked under CH's max_query_size
 	// when broad). Each variant lowers to its inner matcher SELECT; the
@@ -932,7 +967,10 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string,
 	// (⌈N/K⌉ for a pathologically broad probe), same distinct key set the
 	// per-arm loop collected. start/end bound the closed metadata window
 	// each variant scans (zero = whole table).
-	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	variants, err := h.expandMetadataMatchers(ctx, matchers, start, end, nowAnchored)
+	if err != nil {
+		return nil, err
+	}
 	keys, err := h.labelKeysForMatchers(ctx, variants, start, end)
 	if err != nil {
 		return nil, err
@@ -953,14 +991,19 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string,
 // otherwise lowers to a gauge-table scan and returns empty for any
 // histogram metric) also visits the three classic-histogram companion
 // variants. See expandBareHistogramMatcher for the rationale.
-func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
+func (h *Handler) fetchLabelValuesMatched(
+	ctx context.Context, name string, matchers []string, start, end time.Time, nowAnchored bool,
+) ([]string, error) {
 	// Fan-in batching (task #71): the variant fan-out across all matchers
 	// collapses into ONE combined query (chunked under CH's max_query_size
 	// when broad). Each variant's matched-row subquery is a UNION-ALL arm
 	// of the shared scan; the per-name value projection (the `__name__` /
 	// single-candidate / multi-candidate shapes) runs once over that union
 	// — N round-trips → 1 (⌈N/K⌉ for a pathologically broad probe).
-	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	variants, err := h.expandMetadataMatchers(ctx, matchers, start, end, nowAnchored)
+	if err != nil {
+		return nil, err
+	}
 	vals, err := h.labelValuesForMatchers(ctx, name, variants, start, end)
 	if err != nil {
 		return nil, err
@@ -1170,12 +1213,12 @@ func (h *Handler) matcherSQL(ctx context.Context, matcher string, start, end tim
 // deduplicated list of matcher strings. The flattened list is the
 // candidate set the combined /api/v1/series query UNION-ALLs into a single
 // scan — collapsing the former V×H×matcher round-trip fan-out (task #71).
-func expandSeriesMatchers(parser promparser.Parser, matchers []string, histogramTable string) []string {
+func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.Metrics) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, len(matchers))
 	for _, m := range matchers {
 		for _, nameVariant := range expandUnderscoredMetricNameMatcher(parser, m) {
-			for _, variant := range expandBareHistogramMatcher(parser, nameVariant, histogramTable) {
+			for _, variant := range expandBareHistogramMatcher(parser, nameVariant, s) {
 				if _, dup := seen[variant]; dup {
 					continue
 				}
@@ -1185,6 +1228,74 @@ func expandSeriesMatchers(parser promparser.Parser, matchers []string, histogram
 		}
 	}
 	return out
+}
+
+// expandMetadataMatchers is the single matcher fan-out every matched metadata
+// surface (/series, /labels, /label/<name>/values) runs. It layers the
+// name-shape expansions that need no data (dotted-storage candidates ⊃
+// classic-histogram companions, see [expandSeriesMatchers]) with the one that
+// does: a `__name__` matcher that is NOT pinned to an equality — a regex or a
+// negated regex — cannot be resolved against the stored MetricName column,
+// because the histogram-derived names it speaks about exist only as synthetic
+// companions of a stored base name (see regex_name_histogram.go).
+//
+// For those selectors the base names present in the window are enumerated once
+// — [Handler.histogramBaseNames], the same enumeration the `__name__` catalog
+// answers from, so both surfaces agree on which families exist — and each
+// synthetic name the matcher accepts is appended as an equality-pinned variant.
+// Selectors whose name is already pinned skip the enumeration entirely, so the
+// common metric-picker shapes issue no extra query.
+//
+// Only the caller's own matchers are classified, never the expanded variants:
+// the two expansions above fire exclusively on equality-pinned names, so a
+// derived variant is pinned by construction and re-examining it would buy an
+// extra parse per variant for a decision that cannot change.
+//
+// start/end/nowAnchored are the request's bounded metadata window; the
+// enumeration is scanned under exactly the bound the rest of the endpoint uses.
+func (h *Handler) expandMetadataMatchers(
+	ctx context.Context, matchers []string, start, end time.Time, nowAnchored bool,
+) ([]string, error) {
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema)
+
+	type unpinned struct {
+		nameMatchers []*labels.Matcher
+		other        []*labels.Matcher
+	}
+	var needResolution []unpinned
+	for _, matcher := range matchers {
+		nameMatchers, other, ok := unpinnedMetricNameMatchers(h.parser, matcher)
+		if !ok {
+			continue
+		}
+		needResolution = append(needResolution, unpinned{nameMatchers: nameMatchers, other: other})
+	}
+	if len(needResolution) == 0 {
+		return variants, nil
+	}
+
+	bases, err := h.histogramBaseNames(ctx, start, end, nowAnchored)
+	if err != nil {
+		return nil, err
+	}
+	if len(bases) == 0 {
+		return variants, nil
+	}
+
+	seen := make(map[string]struct{}, len(variants))
+	for _, v := range variants {
+		seen[v] = struct{}{}
+	}
+	for _, u := range needResolution {
+		for _, variant := range histogramSyntheticVariants(u.nameMatchers, u.other, bases, h.Schema) {
+			if _, dup := seen[variant]; dup {
+				continue
+			}
+			seen[variant] = struct{}{}
+			variants = append(variants, variant)
+		}
+	}
+	return variants, nil
 }
 
 // fetchSeries lowers every matcher variant to a Sample-projecting

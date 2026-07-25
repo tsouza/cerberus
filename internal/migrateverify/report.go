@@ -16,7 +16,14 @@ const IssuesURL = "https://github.com/tsouza/cerberus/issues"
 // VerifyReportVersion is the schema version stamped into every --report JSON
 // diagnostic. Bump it when the on-disk shape changes so a consumer can refuse a
 // diagnostic it does not understand.
-const VerifyReportVersion = 1
+//
+// Version 2 records the backend pair PER HEAD (Params.Backends) instead of one
+// ref/cerberus URL pair, and carries the per-head lane summaries plus the
+// unconfigured bucket. A version-1 consumer reading a version-2 diagnostic would
+// find no ref_url at all; a version-2 consumer reading a version-1 one would
+// zero-fill Backends into "no backends were configured". Both are breaking, so
+// the version states it outright.
+const VerifyReportVersion = 2
 
 // hotspotFuncs are the PromQL functions whose cerberus results are most likely to
 // be computed via an EXPERIMENTAL ClickHouse path (native timeSeries*ToGrid /
@@ -24,6 +31,11 @@ const VerifyReportVersion = 1
 // deviate from real Prometheus. A divergence on one of these is not proof of an
 // experimental path — verify sees only two HTTP backends and cannot introspect
 // cerberus config — so it is surfaced as a CANDIDATE cause, never a detection.
+//
+// The matcher is PromQL-shaped and so is every note it selects, which is why
+// attribution is applied on the prom lane alone (see verifyOne): the bare
+// rate / increase tokens it keys on also occur verbatim in LogQL and TraceQL,
+// where these notes would name a ClickHouse path that head never takes.
 //
 // deriv/predict_linear are included: their native path
 // (timeSeriesDerivToGrid / timeSeriesPredictLinearToGrid) fits the per-window
@@ -201,18 +213,40 @@ func isCoverageGap(reason string) bool {
 	return strings.Contains(reason, "present in") || strings.Contains(reason, "no sample")
 }
 
+// VerifyReportBackend is one head lane's configured backend pair. Both URLs are
+// recorded REDACTED; the bearer tokens that authorised the run are credentials and
+// are deliberately absent from every artifact.
+//
+// RefOrgID is the exception, and deliberately so: X-Scope-OrgID is a ROUTING
+// parameter, not a credential — it selects which tenant's data the reference
+// backend serves. Withholding it made the repro command a lie, because re-running
+// without it queries a different tenant (or 401s on a multi-tenant Loki/Tempo,
+// recording the whole lane as errored). Recording it is what keeps the diagnostic
+// and the repro line describing the same run. It is omitted entirely for a
+// single-tenant lane.
+type VerifyReportBackend struct {
+	Head        string `json:"head"`
+	RefURL      string `json:"ref_url"`
+	CerberusURL string `json:"cerberus_url"`
+	RefOrgID    string `json:"ref_org_id,omitempty"`
+}
+
 // VerifyReportParams is the resolved run context stamped into the JSON diagnostic:
-// the two backend URLs, the exact query_range window (resolved to RFC3339 so a
-// relative -1h/now input is captured as the concrete instant that was queried),
-// the step, the tolerance, and the corpus path.
+// the backend pair for each configured head lane (head-token sorted so the
+// diagnostic is byte-deterministic), the exact query_range window (resolved to
+// RFC3339 so a relative -1h/now input is captured as the concrete instant that was
+// queried), the step, the tolerance, and the corpus path.
+//
+// One window / step / tolerance covers every lane: the whole point of the gate is
+// that all three heads are judged under the same parameters, so a per-head
+// tolerance cannot loosen one lane's definition of "the same number" out of view.
 type VerifyReportParams struct {
-	RefURL      string  `json:"ref_url"`
-	CerberusURL string  `json:"cerberus_url"`
-	Start       string  `json:"start"`
-	End         string  `json:"end"`
-	Step        string  `json:"step"`
-	Tolerance   float64 `json:"tolerance"`
-	Corpus      string  `json:"corpus"`
+	Backends  []VerifyReportBackend `json:"backends"`
+	Start     string                `json:"start"`
+	End       string                `json:"end"`
+	Step      string                `json:"step"`
+	Tolerance float64               `json:"tolerance"`
+	Corpus    string                `json:"corpus"`
 }
 
 // VerifyReport is the versioned, self-describing --report diagnostic: the full
@@ -226,7 +260,9 @@ type VerifyReport struct {
 	Note           string                `json:"note"`
 	Params         VerifyReportParams    `json:"params"`
 	Summary        Summary               `json:"summary"`
+	Heads          []HeadSummary         `json:"heads"`
 	Results        []QueryResult         `json:"results"`
+	Unconfigured   []UnconfiguredEntry   `json:"unconfigured,omitempty"`
 	OutOfScope     []OutOfScopeEntry     `json:"out_of_scope,omitempty"`
 	HarvestSkipped []HarvestSkippedEntry `json:"harvest_skipped,omitempty"`
 }
@@ -242,7 +278,9 @@ func NewVerifyReport(rep Report, params VerifyReportParams, toolVersion string, 
 		Note:           ExperimentalNote,
 		Params:         params,
 		Summary:        rep.Summary,
+		Heads:          rep.Heads,
 		Results:        rep.Results,
+		Unconfigured:   rep.Unconfigured,
 		OutOfScope:     rep.OutOfScope,
 		HarvestSkipped: rep.HarvestSkipped,
 	}
