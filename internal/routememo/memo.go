@@ -48,28 +48,31 @@ const (
 	PreferB
 	// BothFail: route B was tried for this Key and itself failed with a
 	// resource failure. The caller stays on route A; no further probing is
-	// warranted until the entry ages out at memoEntryTTL.
+	// warranted until the entry ages out at the memo's entryTTL.
 	BothFail
 )
 
 // Named, meaning-bearing constants — see docs/solver.md for the full
-// rationale of each.
+// rationale of each. memoEntryTTL and reValidationFraction are DEFAULT
+// values only: New seeds them into the per-Memo entryTTL /
+// reValidationFraction fields, which SetEntryTTL / SetReValidationFraction
+// can override per instance without changing New's signature.
 const (
 	// memoMaxEntries bounds the memo's resident size. A bounded LRU evicts
 	// the least-recently-touched entry once this is exceeded, so the memo
 	// cannot grow without bound under high key cardinality.
 	memoMaxEntries = 4096
 
-	// memoEntryTTL is how long any verdict is trusted at all, counted from
-	// creation. It is never refreshed by a lookup, nor by a plain
-	// confirming route-A success on an Unknown/bookkeeping entry — only a
-	// route-A ResourceFailure against a PreferB entry (the stale
+	// memoEntryTTL is the default for how long any verdict is trusted at
+	// all, counted from creation. It is never refreshed by a lookup, nor by
+	// a plain confirming route-A success on an Unknown/bookkeeping entry —
+	// only a route-A ResourceFailure against a PreferB entry (the stale
 	// re-validation path) or a fresh route-B Observe restamps it.
 	memoEntryTTL = 30 * time.Minute
 
-	// reValidationFraction places re-validation at the TTL midpoint — a
-	// fixed relationship to memoEntryTTL rather than a second freestanding
-	// duration.
+	// reValidationFraction is the default divisor that places
+	// re-validation at the TTL midpoint — a fixed relationship to entryTTL
+	// rather than a second freestanding duration.
 	reValidationFraction = 2
 
 	// maxConcurrentRoutedDispatches bounds every non-baseline dispatch —
@@ -124,6 +127,14 @@ type Memo struct {
 	pressureWindow time.Duration
 	pressure       *pressureTracker
 
+	// entryTTL and reValidationFraction are seeded from the package-level
+	// defaults (memoEntryTTL, reValidationFraction) inside New and are
+	// mutable only through the SetEntryTTL / SetReValidationFraction
+	// setters below, so New's signature and default behaviour for every
+	// existing caller stay unchanged.
+	entryTTL             time.Duration
+	reValidationFraction int
+
 	now func() time.Time // overridable by tests
 }
 
@@ -133,14 +144,46 @@ type Memo struct {
 // long a single fan-out's resource pressure stays live server-side.
 func New(pressureWindow time.Duration) *Memo {
 	return &Memo{
-		entries:        make(map[Key]*Verdict),
-		lruList:        list.New(),
-		lruIndex:       make(map[Key]*list.Element),
-		dispatchTokens: make(chan struct{}, maxConcurrentRoutedDispatches),
-		pressureWindow: pressureWindow,
-		pressure:       newPressureTracker(),
-		now:            time.Now,
+		entries:              make(map[Key]*Verdict),
+		lruList:              list.New(),
+		lruIndex:             make(map[Key]*list.Element),
+		dispatchTokens:       make(chan struct{}, maxConcurrentRoutedDispatches),
+		pressureWindow:       pressureWindow,
+		pressure:             newPressureTracker(),
+		entryTTL:             memoEntryTTL,
+		reValidationFraction: reValidationFraction,
+		now:                  time.Now,
 	}
+}
+
+// SetEntryTTL overrides how long a recorded verdict is trusted before it
+// ages out, replacing the memoEntryTTL default. A non-positive ttl is a
+// no-op: zero or negative would make every verdict expire the instant it is
+// written (getLiveLocked's expiry check trips immediately), silently
+// disabling the memo rather than tuning it, so a misconfigured operator
+// value can never reach that state.
+func (m *Memo) SetEntryTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entryTTL = ttl
+}
+
+// SetReValidationFraction overrides the divisor that places the
+// re-validation midpoint within entryTTL, replacing the reValidationFraction
+// default. A non-positive n is a no-op — it would either divide by zero or
+// push the re-validation midpoint to or past entryTTL itself, both of which
+// would silently break the stale-PreferB re-validation path rather than
+// tune it.
+func (m *Memo) SetReValidationFraction(n int) {
+	if n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reValidationFraction = n
 }
 
 // Lookup reports the recorded verdict for k. stale is true only for a
@@ -157,7 +200,7 @@ func (m *Memo) Lookup(k Key) (state LookupState, stale bool) {
 		return Unknown, false
 	}
 	if v.state == PreferB {
-		reValidateAt := v.createdAt.Add(memoEntryTTL / reValidationFraction)
+		reValidateAt := v.createdAt.Add(m.entryTTL / time.Duration(m.reValidationFraction))
 		if !m.now().Before(reValidateAt) {
 			return PreferB, true
 		}
@@ -257,7 +300,7 @@ func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok
 	// Capture staleness BEFORE the state transition below mutates it — this
 	// snapshot, not the post-transition state, is what admission decides on.
 	wasStalePreferB := live && v.state == PreferB &&
-		!now.Before(v.createdAt.Add(memoEntryTTL/reValidationFraction))
+		!now.Before(v.createdAt.Add(m.entryTTL/time.Duration(m.reValidationFraction)))
 
 	m.observeRouteAResourceFailureLocked(k, now)
 
@@ -386,13 +429,13 @@ func (m *Memo) observeRouteBLocked(k Key, now time.Time, outcome Outcome) {
 }
 
 // getLiveLocked returns k's Verdict, evicting and reporting absent if it
-// has crossed memoEntryTTL.
+// has crossed entryTTL.
 func (m *Memo) getLiveLocked(k Key, now time.Time) (*Verdict, bool) {
 	v, ok := m.entries[k]
 	if !ok {
 		return nil, false
 	}
-	if now.Sub(v.createdAt) >= memoEntryTTL {
+	if now.Sub(v.createdAt) >= m.entryTTL {
 		m.deleteLocked(k)
 		return nil, false
 	}

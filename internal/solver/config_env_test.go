@@ -158,3 +158,76 @@ func TestConfigFromEnv_RouteMemoExplicitOff(t *testing.T) {
 		t.Errorf("RouteMemoEnabled = true, want false (explicit opt-out)")
 	}
 }
+
+// TestConfigFromEnv_RouteMemoEntryTTLDefaultsUnset pins the zero-value
+// contract: an unset CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL must resolve to
+// Config's Go zero value (0), never a duplicated copy of the routememo
+// package's own default duration — the routememo package alone owns that
+// default; Config only carries an override.
+func TestConfigFromEnv_RouteMemoEntryTTLDefaultsUnset(t *testing.T) {
+	t.Setenv(EnvRouteMemoEntryTTL, "")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.RouteMemoEntryTTL != 0 {
+		t.Errorf("RouteMemoEntryTTL = %s, want 0 (unset means routememo package default)", cfg.RouteMemoEntryTTL)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_RouteMemoEntryTTLExplicitSet confirms an operator-supplied
+// duration parses through to Config unchanged.
+func TestConfigFromEnv_RouteMemoEntryTTLExplicitSet(t *testing.T) {
+	t.Setenv(EnvRouteMemoEntryTTL, "10m")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.RouteMemoEntryTTL != 10*time.Minute {
+		t.Errorf("RouteMemoEntryTTL = %s, want 10m", cfg.RouteMemoEntryTTL)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("explicit route-memo-entry-ttl config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_RouteMemoReValidationFractionDefaultsUnset mirrors
+// TestConfigFromEnv_RouteMemoEntryTTLDefaultsUnset for the fraction knob: an
+// unset env var must resolve to Config's Go zero value (0), not a duplicated
+// copy of the routememo package's own default divisor.
+func TestConfigFromEnv_RouteMemoReValidationFractionDefaultsUnset(t *testing.T) {
+	t.Setenv(EnvRouteMemoRevalFrac, "")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.RouteMemoReValidationFraction != 0 {
+		t.Errorf("RouteMemoReValidationFraction = %d, want 0 (unset means routememo package default)", cfg.RouteMemoReValidationFraction)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_RouteMemoReValidationFractionExplicitSet confirms an
+// operator-supplied divisor parses through to Config unchanged.
+func TestConfigFromEnv_RouteMemoReValidationFractionExplicitSet(t *testing.T) {
+	t.Setenv(EnvRouteMemoRevalFrac, "4")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.RouteMemoReValidationFraction != 4 {
+		t.Errorf("RouteMemoReValidationFraction = %d, want 4", cfg.RouteMemoReValidationFraction)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("explicit route-memo-revalidation-fraction config failed Validate: %v", err)
+	}
+}

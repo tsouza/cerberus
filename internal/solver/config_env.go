@@ -24,6 +24,8 @@ const (
 	EnvAutotune           = "CERBERUS_SOLVER_AUTOTUNE"
 	EnvAutotuneInterval   = "CERBERUS_SOLVER_AUTOTUNE_INTERVAL"
 	EnvRouteMemoEnabled   = "CERBERUS_SOLVER_ROUTE_MEMO_ENABLED"
+	EnvRouteMemoEntryTTL  = "CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL"
+	EnvRouteMemoRevalFrac = "CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION"
 )
 
 // ConfigFromEnv builds a Config from the CERBERUS_* environment, starting
@@ -79,6 +81,12 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.RouteMemoEnabled, err = envBool(EnvRouteMemoEnabled, cfg.RouteMemoEnabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.RouteMemoEntryTTL, err = envDuration(EnvRouteMemoEntryTTL, cfg.RouteMemoEntryTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.RouteMemoReValidationFraction, err = envInt(EnvRouteMemoRevalFrac, cfg.RouteMemoReValidationFraction); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
