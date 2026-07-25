@@ -267,7 +267,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	ctx := r.Context()
 	// Parse + lower inline so we can wrap the lowered plan with the
 	// matrix-shape RangeWindow before engine.QueryPlan runs.
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
+	parseT := telemetry.ObserveStage(telemetry.StageParse, telemetry.QLTraceQL)
 	expr, perr := parseExpr(ctx, q)
 	parseT.Done(ctx)
 	if perr != nil {
@@ -280,7 +280,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// (`{ } >> { } | rate()`); the RangeWindow wrap below cannot reach below a
 	// WITH RECURSIVE.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
+	lowerT := telemetry.ObserveStage(telemetry.StageLower, telemetry.QLTraceQL)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
 	lowerT.Done(ctx)
 	if lerr != nil {
