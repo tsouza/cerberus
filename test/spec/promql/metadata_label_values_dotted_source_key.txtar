@@ -1,0 +1,58 @@
+Layer 2a — label-values for a label whose SOURCE key needs sanitising.
+
+`k8s.namespace.name` is stored dotted; Prom's label grammar forbids dots,
+so the label is spelled `k8s_namespace_name`. Resolving that spelling
+back to storage keys is a plan-time string operation over the configured
+resource-attribute allowlist plus the dot/underscore candidate chain, so
+the scan probes the map directly instead of renaming every key of every
+row and subscripting the result.
+
+-- query.promql --
+requests_total
+-- resource_labels --
+k8s.namespace.name
+-- metadata_label_values --
+k8s_namespace_name
+-- sql --
+SELECT coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])))))), ?), nullIf(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])))))), ?), ?) AS `value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
+-- args --
+[0] string = "k8s_namespace_name"
+[1] string = "k8s_namespace_name"
+[2] string = "k8s.namespace.name"
+[3] string = "k8s.namespace.name"
+[4] string = "k8s.namespace/name"
+[5] string = "k8s.namespace/name"
+[6] string = "k8s.namespace_name"
+[7] string = "k8s.namespace_name"
+[8] string = "k8s/namespace/name"
+[9] string = "k8s/namespace/name"
+[10] string = "k8s/namespace_name"
+[11] string = "k8s/namespace_name"
+[12] string = "k8s_namespace.name"
+[13] string = ""
+[14] string = "k8s_namespace_name"
+[15] string = "k8s_namespace_name"
+[16] string = "k8s.namespace.name"
+[17] string = "k8s.namespace.name"
+[18] string = "k8s.namespace/name"
+[19] string = "k8s.namespace/name"
+[20] string = "k8s.namespace_name"
+[21] string = "k8s.namespace_name"
+[22] string = "k8s/namespace/name"
+[23] string = "k8s/namespace/name"
+[24] string = "k8s/namespace_name"
+[25] string = "k8s/namespace_name"
+[26] string = "k8s_namespace.name"
+[27] string = ""
+[28] string = ""
+[29] string = "requests_total"
+[30] string = "requests.total"
+[31] string = "requests/total"
+[32] string = "1970-01-01 00:01:40.000000000"
+[33] int64 = 9
+[34] string = "1970-01-01 00:08:20.000000000"
+[35] int64 = 9
+-- chplan --
+Project [coalesce(nullIf(if(mapContains(Attributes, "k8s_namespace_name"), Attributes["k8s_namespace_name"], if(mapContains(Attributes, "k8s.namespace.name"), Attributes["k8s.namespace.name"], if(mapContains(Attributes, "k8s.namespace/name"), Attributes["k8s.namespace/name"], if(mapContains(Attributes, "k8s.namespace_name"), Attributes["k8s.namespace_name"], if(mapContains(Attributes, "k8s/namespace/name"), Attributes["k8s/namespace/name"], if(mapContains(Attributes, "k8s/namespace_name"), Attributes["k8s/namespace_name"], Attributes["k8s_namespace.name"])))))), ""), nullIf(if(mapContains(ResourceAttributes, "k8s_namespace_name"), ResourceAttributes["k8s_namespace_name"], if(mapContains(ResourceAttributes, "k8s.namespace.name"), ResourceAttributes["k8s.namespace.name"], if(mapContains(ResourceAttributes, "k8s.namespace/name"), ResourceAttributes["k8s.namespace/name"], if(mapContains(ResourceAttributes, "k8s.namespace_name"), ResourceAttributes["k8s.namespace_name"], if(mapContains(ResourceAttributes, "k8s/namespace/name"), ResourceAttributes["k8s/namespace/name"], if(mapContains(ResourceAttributes, "k8s/namespace_name"), ResourceAttributes["k8s/namespace_name"], ResourceAttributes["k8s_namespace.name"])))))), ""), "") AS value]
+  Filter predicate=(((MetricName IN ("requests_total", "requests.total", "requests/total")) AND (TimeUnix >= toDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= toDateTime64("1970-01-01 00:08:20.000000000", 9)))
+    Scan(otel_metrics_sum)

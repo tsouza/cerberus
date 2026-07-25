@@ -91,10 +91,31 @@ func TestLower(t *testing.T) {
 		// rangeStart/rangeEnd window. This is the fixture-side mechanism
 		// for exercising query_range lowerings (histogram_quantile per-
 		// step anchor, etc.) without requiring per-test Go scaffolding.
+		// A `metadata_label_values:` section (body = the Prom label whose
+		// values the endpoint wants) or a `metadata_label_names:` section
+		// (body ignored) opts the fixture into a match[]-driven metadata
+		// CATALOG lowering over the fixed [start,end] window, the shape
+		// /api/v1/label/<name>/values and /api/v1/labels emit. A
+		// `resource_labels:` section (one OTel resource-attribute key per
+		// line) overrides the schema's resource-promotion allowlist so a
+		// fixture can pin how a closed key set is resolved.
+		fixtureSchema := s
+		if rl, ok := c.Section("resource_labels"); ok {
+			fixtureSchema.PromResourceLabels = nonEmptyLines(rl)
+		}
 		var plan chplan.Node
 		switch {
+		case hasSection(c, "metadata_label_values"):
+			label, _ := c.Section("metadata_label_values")
+			plan, err = promql.LowerMetadataLabelValues(
+				context.Background(), expr, fixtureSchema, start, end, strings.TrimSpace(label),
+			)
+		case hasSection(c, "metadata_label_names"):
+			plan, err = promql.LowerMetadataLabelNames(
+				context.Background(), expr, fixtureSchema, start, end,
+			)
 		case strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()"):
-			plan, err = promql.LowerAt(context.Background(), expr, s, start, end)
+			plan, err = promql.LowerAt(context.Background(), expr, fixtureSchema, start, end)
 		default:
 			if rs, ok := c.Section("range_step"); ok {
 				stepDur, perr := time.ParseDuration(strings.TrimSpace(rs))
@@ -134,10 +155,10 @@ func TestLower(t *testing.T) {
 				if _, predict := c.Section("experimental_ts_grid_predict_linear"); predict {
 					lowerers.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
 				}
-				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, s, rangeStart, rangeEnd, stepDur,
+				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, fixtureSchema, rangeStart, rangeEnd, stepDur,
 					promql.LowerOpts{Lowerers: lowerers})
 			} else {
-				plan, err = promql.LowerAt(context.Background(), expr, s, instantEval, instantEval)
+				plan, err = promql.LowerAt(context.Background(), expr, fixtureSchema, instantEval, instantEval)
 			}
 		}
 		if err != nil {
@@ -169,6 +190,25 @@ func TestLower(t *testing.T) {
 // previously-tested "topk without" rejection no longer exists: as of
 // the topk/bottomk without(...) lowering, `topk(K, v) without (l)`
 // lowers into chplan.TopK with a MapWithoutKeys partition expression.
+
+// hasSection reports whether the fixture carries the named section at
+// all — the marker-section idiom the fixture switches on.
+func hasSection(c *spec.Case, name string) bool {
+	_, ok := c.Section(name)
+	return ok
+}
+
+// nonEmptyLines splits a fixture section into its non-blank lines,
+// trimmed. Used by list-shaped sections such as `resource_labels:`.
+func nonEmptyLines(body string) []string {
+	var out []string
+	for _, ln := range strings.Split(body, "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
 
 func formatArgs(args []any) string {
 	if len(args) == 0 {

@@ -1,0 +1,48 @@
+Layer 2a — two configured source keys collide onto ONE Prom label.
+
+`deployment.environment` and `deployment-environment` both sanitise to
+`deployment_environment`. The sanitisation is many-to-one and therefore
+not invertible over an open key set — but the allowlist IS closed, so
+the inverse is exact: BOTH keys must appear as resolution arms, in
+allowlist order, or the endpoint silently hides one source's values.
+
+The dot spelling is already reachable through the dot/underscore
+candidate chain; the hyphen spelling is not, and is what the allowlist
+inversion adds.
+
+-- query.promql --
+requests_total
+-- resource_labels --
+deployment.environment
+deployment-environment
+-- metadata_label_values --
+deployment_environment
+-- sql --
+SELECT coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])), ?), nullIf(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])), ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
+-- args --
+[0] string = "deployment_environment"
+[1] string = "deployment_environment"
+[2] string = "deployment.environment"
+[3] string = "deployment.environment"
+[4] string = "deployment/environment"
+[5] string = ""
+[6] string = "deployment_environment"
+[7] string = "deployment_environment"
+[8] string = "deployment.environment"
+[9] string = "deployment.environment"
+[10] string = "deployment/environment"
+[11] string = ""
+[12] string = "deployment-environment"
+[13] string = ""
+[14] string = ""
+[15] string = "requests_total"
+[16] string = "requests.total"
+[17] string = "requests/total"
+[18] string = "1970-01-01 00:01:40.000000000"
+[19] int64 = 9
+[20] string = "1970-01-01 00:08:20.000000000"
+[21] int64 = 9
+-- chplan --
+Project [coalesce(nullIf(if(mapContains(Attributes, "deployment_environment"), Attributes["deployment_environment"], if(mapContains(Attributes, "deployment.environment"), Attributes["deployment.environment"], Attributes["deployment/environment"])), ""), nullIf(if(mapContains(ResourceAttributes, "deployment_environment"), ResourceAttributes["deployment_environment"], if(mapContains(ResourceAttributes, "deployment.environment"), ResourceAttributes["deployment.environment"], ResourceAttributes["deployment/environment"])), ""), nullIf(ResourceAttributes["deployment-environment"], ""), "") AS value]
+  Filter predicate=(((MetricName IN ("requests_total", "requests.total", "requests/total")) AND (TimeUnix >= toDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= toDateTime64("1970-01-01 00:08:20.000000000", 9)))
+    Scan(otel_metrics_sum)

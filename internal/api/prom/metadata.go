@@ -14,8 +14,10 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // maxMetricCandidatesPerQuery bounds how many matcher variants the
@@ -994,10 +996,13 @@ func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matc
 // UNION-ALL arm shared by the batched label-keys / label-values builders.
 // start/end anchor the matcher lowering's LWR window (zero-time falls back
 // to the lowering default).
-func (h *Handler) matcherArms(ctx context.Context, matchers []string, start, end time.Time) ([]chsql.Frag, error) {
+func (h *Handler) matcherArms(
+	ctx context.Context, matchers []string, start, end time.Time,
+	lowerCatalog func(context.Context, promparser.Expr, schema.Metrics, time.Time, time.Time) (chplan.Node, error),
+) ([]chsql.Frag, error) {
 	arms := make([]chsql.Frag, 0, len(matchers))
 	for _, m := range matchers {
-		innerSQL, args, err := h.matcherSQL(ctx, m, start, end)
+		innerSQL, args, err := h.catalogMatcherSQL(ctx, m, start, end, lowerCatalog)
 		if err != nil {
 			return nil, err
 		}
@@ -1006,32 +1011,36 @@ func (h *Handler) matcherArms(ctx context.Context, matchers []string, start, end
 	return arms, nil
 }
 
-// labelKeysForMatchers lowers each match[] selector variant, UNION-ALLs
-// their matched-row subqueries into one scan, and wraps the union in a
-// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` to extract the attribute
-// keys across all variants in a single CH round-trip (task #71).
+// labelKeysForMatchers lowers each match[] selector variant to a plan
+// that already projects its label NAMES (promql.LowerMetadataLabelNames),
+// UNION-ALLs those single-column subqueries into one scan, and dedupes
+// them with an outer `SELECT DISTINCT name` in a single CH round-trip
+// (task #71).
+//
+// The names come back in their storage spelling; the caller
+// (fetchLabelNamesMatched) folds them through the Prom label-name grammar
+// as it already does for every other name source.
 //
 // Bounded-batch-or-fallback: the variants are arm-capped into ⌈N/K⌉
 // chunks (chunkMatcherVariants); the rendered-size guard
 // (buildBoundedChunkSQL) then splits any chunk whose combined SQL still
-// breaches maxRenderedQueryBytes. The caller (fetchLabelNamesMatched)
-// re-dedupes via format.NormalizeLabelNames, so the per-query key sets can
-// overlap safely. An empty variant list yields no keys (and no query).
+// breaches maxRenderedQueryBytes. The caller re-dedupes via
+// format.NormalizeLabelNames, so the per-query key sets can overlap
+// safely. An empty variant list yields no keys (and no query).
 func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string, start, end time.Time) ([]string, error) {
 	if len(matchers) == 0 {
 		return nil, nil
 	}
-	attrsCol := h.Schema.AttributesColumn
 	combine := func(arms []chsql.Frag) (string, []any) {
 		return chsql.NewQuery().
-			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
+			Select(chsql.As(distinctIdent(promql.MetadataNameColumn), "")).
 			From(chsql.Paren(chsql.UnionAll(arms...))).
-			OrderBy(chsql.Col("name"), false).
+			OrderBy(chsql.Col(promql.MetadataNameColumn), false).
 			Build()
 	}
 	var all []string
 	for _, chunk := range chunkMatcherVariants(matchers) {
-		arms, err := h.matcherArms(ctx, chunk, start, end)
+		arms, err := h.matcherArms(ctx, chunk, start, end, promql.LowerMetadataLabelNames)
 		if err != nil {
 			return nil, err
 		}
@@ -1048,12 +1057,22 @@ func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string, s
 	return all, nil
 }
 
-// labelValuesForMatchers lowers each match[] selector variant, UNION-ALLs
-// their matched-row subqueries into one shared scan, and projects the
-// named label's distinct values over that union in a single CH round-trip
-// (task #71). `__name__` resolves to MetricName; other labels to
-// `Attributes[<name>]`. start/end anchor the matcher lowering's LWR window
-// (zero-time falls back to the lowering default).
+// labelValuesForMatchers lowers each match[] selector variant to a plan
+// that already projects the requested label's VALUE
+// (promql.LowerMetadataLabelValues), UNION-ALLs those single-column
+// subqueries into one shared scan, and dedupes them with an outer
+// `SELECT DISTINCT value` in a single CH round-trip (task #71).
+//
+// The label is known before the plan is built, so resolving it at the
+// leaf is strictly less work than any shape that carries whole rows up:
+// the scan emits one string per row, the dedupe is a hash set over that
+// one column, and no stage in between has to build, rename, or group by a
+// map. The candidate fan-out that used to sit in the combine — one full
+// copy of the matched-row scan per candidate storage spelling — collapses
+// into the leaf expression's candidate chain, so the scan happens once.
+//
+// start/end bound the closed metadata window (zero-time falls back to the
+// lowering default).
 //
 // Bounded-batch-or-fallback: as with labelKeysForMatchers the variants are
 // arm-capped into ⌈N/K⌉ chunks and the rendered-size guard splits any
@@ -1064,10 +1083,15 @@ func (h *Handler) labelValuesForMatchers(ctx context.Context, name string, match
 	if len(matchers) == 0 {
 		return nil, nil
 	}
-	combine := h.labelValueCombine(name)
+	combine := labelValueCombine()
+	lowerCatalog := func(
+		ctx context.Context, expr promparser.Expr, s schema.Metrics, start, end time.Time,
+	) (chplan.Node, error) {
+		return promql.LowerMetadataLabelValues(ctx, expr, s, start, end, name)
+	}
 	var all []string
 	for _, chunk := range chunkMatcherVariants(matchers) {
-		arms, err := h.matcherArms(ctx, chunk, start, end)
+		arms, err := h.matcherArms(ctx, chunk, start, end, lowerCatalog)
 		if err != nil {
 			return nil, err
 		}
@@ -1084,75 +1108,43 @@ func (h *Handler) labelValuesForMatchers(ctx context.Context, name string, match
 	return all, nil
 }
 
-// labelValueCombine returns the per-endpoint combine closure that projects
-// the distinct values of label <name> over a UNION-ALL of matcher-variant
-// arms. The closure shape is the three label-value projections the
-// pre-batch single-matcher path used: `__name__` → MetricName, a
-// single-candidate label → one `Attributes[k]` projection, a
-// multi-candidate label → an inner per-candidate UNION over the shared
-// matched-row scan (so a user-supplied `cerberus_ql` reaches both the
-// underscored and dotted storage forms).
-func (h *Handler) labelValueCombine(name string) func([]chsql.Frag) (string, []any) {
-	if name == model.MetricNameLabel {
-		return func(arms []chsql.Frag) (string, []any) {
-			return chsql.NewQuery().
-				Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
-				From(chsql.Paren(chsql.UnionAll(arms...))).
-				OrderBy(chsql.Col("value"), false).
-				Build()
-		}
-	}
-	attrsCol := h.Schema.AttributesColumn
-	candidates := labelValueCandidates(name)
-	if len(candidates) == 1 {
-		// Single candidate (the typical `job` / `instance` shape): the
-		// value projection runs directly over the combined matched-row
-		// scan.
-		return func(arms []chsql.Frag) (string, []any) {
-			return chsql.NewQuery().
-				Select(chsql.As(distinctMapAtFrag(attrsCol, candidates[0]), "value")).
-				From(chsql.Paren(chsql.UnionAll(arms...))).
-				Where(mapAtNotEmptyFrag(attrsCol, candidates[0])).
-				OrderBy(chsql.Col("value"), false).
-				Build()
-		}
-	}
-	// Multi-candidate fan-out: emit one inner UNION arm per candidate over
-	// the SAME combined matched-row scan so a user-supplied `cerberus_ql`
-	// reaches both the underscored and dotted storage forms. The matched
-	// scan is itself a UNION-ALL of the matcher variants; both fan-outs
-	// stay inside the single combined query.
+// labelValueCombine returns the combine closure that dedupes the
+// single-column value arms promql.LowerMetadataLabelValues produces.
+//
+// It is label-agnostic: which storage key(s) a Prom label resolves to,
+// which dedicated column backs it, and how the resource map folds in are
+// all settled inside the arm, so the combine is one `SELECT DISTINCT
+// value` over the UNION-ALL. The empty-string sentinel CH returns for an
+// absent map key is dropped by the caller's `seen` filter, matching Prom's
+// "an absent label has no value" contract.
+func labelValueCombine() func([]chsql.Frag) (string, []any) {
 	return func(arms []chsql.Frag) (string, []any) {
-		matchedFrom := chsql.Paren(chsql.UnionAll(arms...))
-		parts := make([]chsql.Frag, 0, len(candidates))
-		for _, k := range candidates {
-			arm := chsql.NewQuery().
-				Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
-				From(matchedFrom).
-				Where(mapAtNotEmptyFrag(attrsCol, k))
-			parts = append(parts, arm.Frag())
-		}
 		return chsql.NewQuery().
-			Select(chsql.As(distinctIdent("value"), "")).
-			From(chsql.Paren(chsql.UnionAll(parts...))).
-			OrderBy(chsql.Col("value"), false).
+			Select(chsql.As(distinctIdent(promql.MetadataValueColumn), "")).
+			From(chsql.Paren(chsql.UnionAll(arms...))).
+			OrderBy(chsql.Col(promql.MetadataValueColumn), false).
 			Build()
 	}
 }
 
-// matcherSQL lowers a single /labels or /label/<name>/values matcher to
-// its inner SQL + args. The caller wraps this in whatever projection it
-// needs (DISTINCT mapKeys, DISTINCT Attributes[name], etc.). start/end
-// bound the closed [start,end] metadata window (promql.LowerMetadataRange);
-// a zero bound is omitted. The full-range window — not an instant
-// staleness window at `end` — is what lets these endpoints surface a
-// label/value whose only sample sits early in the requested range.
-func (h *Handler) matcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
+// catalogMatcherSQL lowers one matcher variant for a catalog endpoint.
+// `lowerCatalog` picks the lowering: nil means the Sample-shaped
+// metadata lowering (/series), otherwise it is one of the single-column
+// catalog lowerings, which resolve the wanted column at the leaf instead
+// of rebuilding and grouping by each row's whole label map.
+func (h *Handler) catalogMatcherSQL(
+	ctx context.Context, matcher string, start, end time.Time,
+	lowerCatalog func(context.Context, promparser.Expr, schema.Metrics, time.Time, time.Time) (chplan.Node, error),
+) (string, []any, error) {
 	expr, err := h.parseExpr(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	plan, err := promql.LowerMetadataRange(ctx, expr, h.Schema, start, end)
+	lower := lowerCatalog
+	if lower == nil {
+		lower = promql.LowerMetadataRange
+	}
+	plan, err := lower(ctx, expr, h.Schema, start, end)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
