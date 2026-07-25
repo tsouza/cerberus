@@ -101,6 +101,21 @@ type Config struct {
 	// (CERBERUS_SOLVER_AUTOTUNE_INTERVAL, default 15m). Ignored when Autotune is
 	// false or Mode != ModeAuto.
 	AutotuneInterval time.Duration
+
+	// RouteMemoEnabled (CERBERUS_SOLVER_ROUTE_MEMO_ENABLED, default false)
+	// wires the failure-driven route memo (internal/routememo,
+	// docs/solver.md §"Failure-driven route memo"): a route-A dispatch that
+	// fails with resource exhaustion is retried once on route B, and the
+	// outcome is remembered so future cost-equivalent traffic can route
+	// directly. Off by default, matching this repo's convention for a new
+	// runtime-behavior-changing feature (CERBERUS_CH_OPT_CORPUS_ENABLED,
+	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) — an operator opts in explicitly
+	// rather than picking up new ClickHouse dispatch/resource behavior on a
+	// routine upgrade. cmd/cerberus reads this field to decide whether to
+	// construct a *routememo.Memo and wire it onto engine.Engine.RouteMemo;
+	// this package itself never imports internal/routememo (see
+	// .go-arch-lint.yml — routememo is importable by engine and cmd only).
+	RouteMemoEnabled bool
 }
 
 // Default tuning constants (docs §Routing / §"The solver framework").
@@ -131,6 +146,7 @@ func DefaultConfig() Config {
 		MaxOutputRows:      defaultMaxOutputRows,
 		Autotune:           defaultAutotune,
 		AutotuneInterval:   defaultAutotuneInterval,
+		RouteMemoEnabled:   false,
 	}
 }
 

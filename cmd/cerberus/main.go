@@ -37,6 +37,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/routerrules"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
@@ -520,12 +521,38 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		Solver:          evalSolver,
 		Settings:        settingsRules(cfg, optSet),
 		MaxQuerySamples: client.MaxQuerySamples(),
+		RouteMemo:       buildRouteMemo(evalSolver, logger),
 	}
 	h.Limiter = limiter
 	h.Version = Version
 	h.Lowerers = nativeRangeLowerers(optSet)
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	return h
+}
+
+// buildRouteMemo wires the failure-driven route memo (internal/routememo,
+// docs/solver.md §"Failure-driven route memo") when explicitly enabled via
+// CERBERUS_SOLVER_ROUTE_MEMO_ENABLED (default false — see
+// solver.Config.RouteMemoEnabled's doc for why this is opt-in rather than
+// riding along with Mode=auto/sharded automatically). Returns nil (the
+// engine's byte-unchanged, feature-off default) when disabled or when
+// evalSolver is nil.
+//
+// The pressure damper's correlation window is the solver's OWN effective
+// wall-clock deadline (Solver.EffectiveTimeout) — the horizon a single
+// fan-out's resource pressure stays live server-side, per routememo.New's
+// own doc — rather than a second, independently-configured duration that
+// could drift out of step with it.
+func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.Memo {
+	if evalSolver == nil || !evalSolver.Cfg.RouteMemoEnabled {
+		return nil
+	}
+	memo := routememo.New(evalSolver.EffectiveTimeout())
+	logger.Info(
+		"failure-driven route memo wired",
+		"pressure_window", evalSolver.EffectiveTimeout(),
+	)
+	return memo
 }
 
 // nativeRangeLowerers builds the BOOT-WIRED polymorphic lowering dispatch table

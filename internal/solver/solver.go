@@ -111,6 +111,19 @@ func (s *Solver) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool) 
 	return s.Planner.Eligible(plan, meta)
 }
 
+// EffectiveTimeout returns Cfg.Timeout, falling back to the same
+// defaultTimeout Execute itself applies when Cfg.Timeout is unset (<= 0).
+// Exported so a caller outside this package (cmd/cerberus, wiring the
+// failure-driven route memo's pressure-window horizon — see docs/solver.md
+// §"Failure-driven route memo") can read the REAL effective value without
+// duplicating the internal default as a second, driftable constant.
+func (s *Solver) EffectiveTimeout() time.Duration {
+	if s == nil || s.Cfg.Timeout <= 0 {
+		return defaultTimeout
+	}
+	return s.Cfg.Timeout
+}
+
 // BreakerClosed reports whether the ClickHouse circuit breaker is CLOSED,
 // without consuming a half-open recovery probe (the same PeekBreakerState
 // the Executor's own pre-flight already uses). It exists so a non-baseline

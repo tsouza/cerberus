@@ -23,6 +23,7 @@ const (
 	EnvMaxOutputRows      = "CERBERUS_SHARD_MAX_OUTPUT_ROWS"
 	EnvAutotune           = "CERBERUS_SOLVER_AUTOTUNE"
 	EnvAutotuneInterval   = "CERBERUS_SOLVER_AUTOTUNE_INTERVAL"
+	EnvRouteMemoEnabled   = "CERBERUS_SOLVER_ROUTE_MEMO_ENABLED"
 )
 
 // ConfigFromEnv builds a Config from the CERBERUS_* environment, starting
@@ -75,6 +76,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AutotuneInterval, err = envDuration(EnvAutotuneInterval, cfg.AutotuneInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.RouteMemoEnabled, err = envBool(EnvRouteMemoEnabled, cfg.RouteMemoEnabled); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

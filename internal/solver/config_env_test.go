@@ -104,3 +104,57 @@ func TestConfigFromEnv_AutotuneDisable(t *testing.T) {
 		t.Fatalf("disabled-autotune config failed Validate: %v", err)
 	}
 }
+
+// TestConfigFromEnv_RouteMemoDefaultsOff pins the OPPOSITE default from
+// Autotune: the failure-driven route memo is a new runtime-behavior-
+// changing feature, so — matching CERBERUS_CH_OPT_CORPUS_ENABLED and
+// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE's precedent — it stays off unless an
+// operator explicitly opts in. An unset env var (a routine upgrade,
+// deploying this binary onto an existing config with no manifest change)
+// must resolve to disabled, not enabled.
+func TestConfigFromEnv_RouteMemoDefaultsOff(t *testing.T) {
+	t.Setenv(EnvRouteMemoEnabled, "")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.RouteMemoEnabled {
+		t.Errorf("RouteMemoEnabled = true, want false (default-off)")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_RouteMemoExplicitOn confirms the opt-in path.
+func TestConfigFromEnv_RouteMemoExplicitOn(t *testing.T) {
+	t.Setenv(EnvRouteMemoEnabled, "true")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if !cfg.RouteMemoEnabled {
+		t.Errorf("RouteMemoEnabled = false, want true (explicit opt-in)")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("route-memo-enabled config failed Validate: %v", err)
+	}
+}
+
+// TestConfigFromEnv_RouteMemoExplicitOff confirms an explicit "false" is
+// indistinguishable in effect from leaving the var unset (both resolve to
+// disabled) — the option to be explicit about the default must not itself
+// change behaviour.
+func TestConfigFromEnv_RouteMemoExplicitOff(t *testing.T) {
+	t.Setenv(EnvRouteMemoEnabled, "false")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if cfg.RouteMemoEnabled {
+		t.Errorf("RouteMemoEnabled = true, want false (explicit opt-out)")
+	}
+}
