@@ -9,16 +9,158 @@
 // correlation-hop half of MIG-21 (Playwright reusing the Layer-9 crawl
 // engine); that half needs the live Loki+Tempo+Grafana three-signal stack
 // and is Phase 2b, unbuilt here.
+//
+// TraceIDIndexProbe/traceIDLookup below are harness-internal proof
+// infrastructure consumed ONLY from this test file (no production
+// entrypoint calls them), so they live here rather than in a
+// non-test-tagged production file — that keeps their fmt.Sprintf-composed
+// EXPLAIN/count queries subject to this package's existing test-only raw-SQL
+// convention (see the integration-tagged queries in ddl_integration_test.go)
+// instead of the typed chsql builder rule that binds production SQL
+// emission.
 package ddl
 
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 )
+
+// idxTraceIDName is the skip-index name both the logs and traces DDL
+// templates declare on their TraceId column (see traces_table.sql /
+// logs_table.sql in the tsouza/opentelemetry-collector-contrib:cerberus-ddl
+// fork). It is the single fact a query plan must reference for
+// [TraceIDIndexProbe] to consider a lookup index-served rather than a full
+// scan, whether the rendered branch is the bloom_filter index (the default,
+// HasFullTextSearch=false) or the text index (HasFullTextSearch=true) — both
+// branches keep this exact index name.
+const idxTraceIDName = "idx_trace_id"
+
+// TraceIDIndexProbeResult reports whether a candidate trace ID is
+// discoverable, and specifically index-served (not full-scanned), on each
+// side of the logs/traces boundary a Grafana exemplar-to-trace or
+// logs-to-trace correlation hop must cross.
+type TraceIDIndexProbeResult struct {
+	LogsFound       bool
+	TracesFound     bool
+	LogsIndexUsed   bool
+	TracesIndexUsed bool
+}
+
+// Consistent reports the bar MIG-21's verification methodology sets: the
+// trace ID resolves on both tables AND both resolutions were served by the
+// dedicated idx_trace_id skip index, not a full scan.
+func (r TraceIDIndexProbeResult) Consistent() bool {
+	return r.LogsFound && r.TracesFound && r.LogsIndexUsed && r.TracesIndexUsed
+}
+
+// scanner is the *sql.Row surface traceIDLookup needs.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// rowIterator is the *sql.Rows surface traceIDLookup needs.
+type rowIterator interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+	Close() error
+}
+
+// sqlQuerier abstracts *sql.DB behind the two methods traceIDLookup calls,
+// so tests can inject a fake that fails deterministically at each of
+// traceIDLookup's four internal error-return points (count-query failure,
+// EXPLAIN-query failure, row-scan failure, rows.Err() failure) — branches a
+// real ClickHouse backend can't be coaxed into hitting individually without
+// timing-dependent trickery. TestTraceIDIndexProbe_PropagatesLookupErrors
+// separately proves the two outer TraceIDIndexProbe wrap-branches against a
+// real chDB session.
+type sqlQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) scanner
+	QueryContext(ctx context.Context, query string, args ...any) (rowIterator, error)
+}
+
+// stdSQLQuerier adapts *sql.DB to sqlQuerier.
+type stdSQLQuerier struct{ *sql.DB }
+
+func (s stdSQLQuerier) QueryRowContext(ctx context.Context, query string, args ...any) scanner {
+	return s.DB.QueryRowContext(ctx, query, args...)
+}
+
+func (s stdSQLQuerier) QueryContext(ctx context.Context, query string, args ...any) (rowIterator, error) {
+	return s.DB.QueryContext(ctx, query, args...)
+}
+
+// TraceIDIndexProbe queries db — any live ClickHouse-speaking *sql.DB (chDB
+// today, a real cluster once a Tier-1 migration scenario exists) — for
+// traceID against logsTable.logsTraceIDCol and tracesTable.tracesTraceIDCol,
+// and inspects each query's EXPLAIN indexes=1 plan to confirm idx_trace_id
+// is actually consulted rather than a full scan.
+//
+// traceID must already be in the caller's canonical form (32-char
+// lowercase hex, the OTel-CH exporter's hex.EncodeToString form — see the
+// TraceIDColumn doc comments in internal/schema/logs.go /
+// internal/schema/traces.go). This function performs no normalisation: that
+// is Tempo's own inbound-boundary job (normaliseTraceID in
+// internal/api/tempo/handler.go). Probing with a non-canonical variant of a
+// genuinely stored ID (wrong case, stripped leading zeros) is precisely how
+// a caller proves that canonicalisation step is load-bearing — ClickHouse
+// String equality is case- and width-sensitive, so a non-canonical probe
+// value is expected to report Consistent() == false.
+func TraceIDIndexProbe(ctx context.Context, db *sql.DB, logsTable, logsTraceIDCol, tracesTable, tracesTraceIDCol, traceID string) (TraceIDIndexProbeResult, error) {
+	var r TraceIDIndexProbeResult
+	q := stdSQLQuerier{db}
+
+	var err error
+	r.LogsFound, r.LogsIndexUsed, err = traceIDLookup(ctx, q, logsTable, logsTraceIDCol, traceID)
+	if err != nil {
+		return TraceIDIndexProbeResult{}, fmt.Errorf("ddl: trace_id index probe against %s: %w", logsTable, err)
+	}
+	r.TracesFound, r.TracesIndexUsed, err = traceIDLookup(ctx, q, tracesTable, tracesTraceIDCol, traceID)
+	if err != nil {
+		return TraceIDIndexProbeResult{}, fmt.Errorf("ddl: trace_id index probe against %s: %w", tracesTable, err)
+	}
+	return r, nil
+}
+
+// traceIDLookup runs the count-matching lookup and its EXPLAIN indexes=1
+// twin against one (table, column) pair, returning whether the trace ID was
+// found and whether the plan shows idx_trace_id was consulted.
+func traceIDLookup(ctx context.Context, db sqlQuerier, table, col, traceID string) (found, indexUsed bool, err error) {
+	countQuery := fmt.Sprintf("SELECT count() FROM %s WHERE %s = ?", table, col) //nolint:gosec // G201: table/col are trusted schema identifiers, not user input
+
+	var count int64
+	if err := db.QueryRowContext(ctx, countQuery, traceID).Scan(&count); err != nil {
+		return false, false, fmt.Errorf("count lookup: %w", err)
+	}
+
+	explainQuery := fmt.Sprintf("EXPLAIN indexes = 1 SELECT count() FROM %s WHERE %s = ?", table, col) //nolint:gosec // G201: table/col are trusted schema identifiers, not user input
+	rows, err := db.QueryContext(ctx, explainQuery, traceID)
+	if err != nil {
+		return false, false, fmt.Errorf("explain: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return false, false, fmt.Errorf("explain scan: %w", err)
+		}
+		plan.WriteString(line)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		return false, false, fmt.Errorf("explain rows: %w", err)
+	}
+
+	return count > 0, strings.Contains(plan.String(), idxTraceIDName), nil
+}
 
 // traceIDColumn is the column name both otel_logs and otel_traces give
 // their trace-id correlation column (see the TraceIDColumn doc comments in
@@ -74,14 +216,14 @@ func openProbeChDB(t *testing.T) (db *sql.DB, cfg Config) {
 	return db, cfg
 }
 
-// promoteCreateTable rewrites the rendered production
-// `CREATE TABLE IF NOT EXISTS ...` statement to `CREATE OR REPLACE TABLE
+// promoteCreateTable rewrites a rendered production
+// `CREATE TABLE IF NOT EXISTS ...` statement into `CREATE OR REPLACE TABLE
 // ...` so each subtest's fresh chDB session starts from an empty table
-// rather than accumulating rows a prior subtest inserted — the same
+// instead of accumulating rows a prior subtest inserted — the
 // bare/idempotent-vs-replace distinction test/property/chdb.go and
 // test/spec/runner_chdb.go already draw for chDB re-runnability, applied
-// here because the production DDL opts into IF NOT EXISTS (correctly, for
-// a real cluster) rather than the bare form those helpers auto-promote.
+// here because the production DDL opts into IF NOT EXISTS (correctly, for a
+// real cluster) and the bare form is what these helpers auto-promote.
 func promoteCreateTable(stmt string) string {
 	const needle = "CREATE TABLE IF NOT EXISTS "
 	return strings.Replace(stmt, needle, "CREATE OR REPLACE TABLE ", 1)
@@ -196,11 +338,11 @@ func TestTraceIDIndexProbe_IndexActuallyServesTheLookup(t *testing.T) {
 	insertLogRow(t, db, cfg.Tables.Logs, probeSeedTraceID)
 	insertSpanRow(t, db, cfg.Tables.Traces, probeSeedTraceID)
 
-	logsFound, logsIndexUsed, err := traceIDLookup(context.Background(), db, cfg.Tables.Logs, traceIDColumn, probeSeedTraceID)
+	logsFound, logsIndexUsed, err := traceIDLookup(context.Background(), stdSQLQuerier{db}, cfg.Tables.Logs, traceIDColumn, probeSeedTraceID)
 	if err != nil {
 		t.Fatalf("traceIDLookup(logs): %v", err)
 	}
-	tracesFound, tracesIndexUsed, err := traceIDLookup(context.Background(), db, cfg.Tables.Traces, traceIDColumn, probeSeedTraceID)
+	tracesFound, tracesIndexUsed, err := traceIDLookup(context.Background(), stdSQLQuerier{db}, cfg.Tables.Traces, traceIDColumn, probeSeedTraceID)
 	if err != nil {
 		t.Fatalf("traceIDLookup(traces): %v", err)
 	}
@@ -281,6 +423,148 @@ func TestTraceIDIndexProbe_NonCanonicalFormDoesNotMatch(t *testing.T) {
 				t.Errorf("Consistent() = true for non-canonical probe value %q (canonical stored form is %q) — "+
 					"want false, ClickHouse String equality must not silently coerce case/width",
 					variant.id, probeSeedTraceID)
+			}
+		})
+	}
+}
+
+// TestTraceIDIndexProbe_PropagatesLookupErrors proves the two error-wrap
+// branches inside TraceIDIndexProbe itself (one per table) surface a real
+// backend failure rather than folding it into a false "gap" result. Without
+// this test, a regression that changed either branch to swallow the error
+// (e.g. `return r, nil` instead of `return TraceIDIndexProbeResult{}, err`)
+// would make TraceIDIndexProbe report Consistent()==false for a schema/
+// connectivity failure exactly as it would for a genuine missing-trace-id
+// gap — the two cases must stay distinguishable via a non-nil error.
+func TestTraceIDIndexProbe_PropagatesLookupErrors(t *testing.T) {
+	db, cfg := openProbeChDB(t)
+	const missingTable = "table_that_does_not_exist"
+
+	t.Run("bad logs table", func(t *testing.T) {
+		_, err := TraceIDIndexProbe(context.Background(), db,
+			missingTable, traceIDColumn, cfg.Tables.Traces, traceIDColumn,
+			probeSeedTraceID)
+		if err == nil {
+			t.Fatal("TraceIDIndexProbe returned a nil error for a nonexistent logs table")
+		}
+		if !strings.Contains(err.Error(), missingTable) {
+			t.Errorf("error %q does not name the failing logs table %q", err.Error(), missingTable)
+		}
+	})
+
+	t.Run("bad traces table", func(t *testing.T) {
+		_, err := TraceIDIndexProbe(context.Background(), db,
+			cfg.Tables.Logs, traceIDColumn, missingTable, traceIDColumn,
+			probeSeedTraceID)
+		if err == nil {
+			t.Fatal("TraceIDIndexProbe returned a nil error for a nonexistent traces table")
+		}
+		if !strings.Contains(err.Error(), missingTable) {
+			t.Errorf("error %q does not name the failing traces table %q", err.Error(), missingTable)
+		}
+	})
+}
+
+// fakeScanner and fakeRows below let TestTraceIDLookup_ErrorBranches inject
+// a failure at each of traceIDLookup's four internal error-return points
+// deterministically — a real ClickHouse backend can make the count query or
+// the EXPLAIN query fail together (bad table/column), but can't be coaxed
+// into failing the EXPLAIN query specifically while the count query
+// succeeds, nor into failing a row-scan or rows.Err() independently.
+
+type fakeScanner struct{ err error }
+
+func (f fakeScanner) Scan(dest ...any) error { return f.err }
+
+type fakeRows struct {
+	hasRow  bool
+	scanErr error
+	errErr  error
+	used    bool
+}
+
+func (r *fakeRows) Next() bool {
+	if !r.hasRow || r.used {
+		return false
+	}
+	r.used = true
+	return true
+}
+
+func (r *fakeRows) Scan(dest ...any) error { return r.scanErr }
+func (r *fakeRows) Err() error             { return r.errErr }
+func (r *fakeRows) Close() error           { return nil }
+
+type fakeQuerier struct {
+	countErr   error
+	explainErr error
+	hasRow     bool
+	scanErr    error
+	rowsErr    error
+}
+
+func (f fakeQuerier) QueryRowContext(ctx context.Context, query string, args ...any) scanner {
+	return fakeScanner{err: f.countErr}
+}
+
+func (f fakeQuerier) QueryContext(ctx context.Context, query string, args ...any) (rowIterator, error) {
+	if f.explainErr != nil {
+		return nil, f.explainErr
+	}
+	return &fakeRows{hasRow: f.hasRow, scanErr: f.scanErr, errErr: f.rowsErr}, nil
+}
+
+// TestTraceIDLookup_ErrorBranches pins that all four of traceIDLookup's
+// internal error-return points actually propagate the underlying error
+// (wrapped with distinguishing context) instead of folding it into the
+// zero-value (found=false, indexUsed=false, err=nil) result — which would
+// be indistinguishable from a genuine "trace ID not found" outcome and
+// silently turn a real backend/connectivity failure into a false report of
+// a cross-signal correlation gap.
+func TestTraceIDLookup_ErrorBranches(t *testing.T) {
+	sentinel := errors.New("boom")
+
+	tests := []struct {
+		name    string
+		q       fakeQuerier
+		wantMsg string
+	}{
+		{
+			name:    "count query fails",
+			q:       fakeQuerier{countErr: sentinel},
+			wantMsg: "count lookup",
+		},
+		{
+			name:    "explain query fails",
+			q:       fakeQuerier{explainErr: sentinel},
+			wantMsg: "explain:",
+		},
+		{
+			name:    "explain row scan fails",
+			q:       fakeQuerier{hasRow: true, scanErr: sentinel},
+			wantMsg: "explain scan",
+		},
+		{
+			name:    "explain rows.Err fails",
+			q:       fakeQuerier{rowsErr: sentinel},
+			wantMsg: "explain rows",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			found, indexUsed, err := traceIDLookup(context.Background(), tt.q, "otel_logs", "TraceId", probeSeedTraceID)
+			if err == nil {
+				t.Fatalf("traceIDLookup returned a nil error, want one wrapping %q", tt.wantMsg)
+			}
+			if !errors.Is(err, sentinel) {
+				t.Errorf("traceIDLookup error %q does not wrap the injected sentinel error", err.Error())
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("traceIDLookup error %q does not contain expected context %q", err.Error(), tt.wantMsg)
+			}
+			if found || indexUsed {
+				t.Errorf("traceIDLookup on error path returned found=%v indexUsed=%v, want both false", found, indexUsed)
 			}
 		})
 	}

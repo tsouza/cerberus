@@ -109,8 +109,13 @@ spec-chdb:
 # default install path). Mirrors the `chdb` CI job.
 # Includes ./internal/routerrules/... so the chDB cross-backend parity test
 # (parity_chdb_test.go) actually RUNS, not just compiles.
+# Includes ./internal/schema/ddl/... so the chDB-backed trace_id cross-table
+# index probe (trace_id_index_probe_chdb_test.go) actually RUNS under a
+# pass/fail CI gate, rather than only ever compiling under `chdb-build`'s
+# build+vet-only check or executing inside `just coverage`'s `|| true`-
+# shielded, non-required lane.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./test/consumer-corpus/...
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./internal/schema/ddl/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
