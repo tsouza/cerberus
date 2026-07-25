@@ -212,25 +212,54 @@ func evalVerify(path string) (StageResult, error) {
 	res.Present = true
 	s := rep.Summary
 	caveats := verifyCaveats(s)
-	// A run proves parity only if at least one query was actually COMPARED against
-	// the reference backend — matched, diverged, or errored. Unsupported replays
-	// (emitted SQL but returned no comparable matrix live) and out-of-scope /
-	// harvest-skipped entries inflate Total without comparing anything, so keying
-	// the "nothing verified" guard on Total alone lets an ALL-UNSUPPORTED run
-	// (Match+Diverge+Error==0, Total>0) fall through to a WARN and a green gate,
-	// proving nothing. Block whenever nothing was compared: the empty corpus
-	// (Total==0) is one subcase; an all-unsupported run (Total>0) is the other.
-	if compared := s.Match + s.Diverge + s.Error; compared == 0 {
+	caveats = append(caveats, idleLaneCaveats(rep.IdleLanes())...)
+	// A run proves parity only if the comparator actually DIFFED something.
+	// Unsupported replays (emitted SQL but returned no comparable matrix live) and
+	// out-of-scope / harvest-skipped entries inflate Total without comparing
+	// anything, and two EMPTY matrices score a match while diffing zero series — so
+	// the guard is keyed on ComparedSeries, the report's evidence counter, not on
+	// verdict counts. The empty corpus (Total==0) is one subcase; an
+	// all-unsupported run and an all-empty window (both Total>0) are the others.
+	if rep.JudgedNothing() {
 		res.Verdict = VerdictFail
 		res.Blocking = true
-		if s.Total == 0 {
-			res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
-		} else {
-			res.Reasons = append(res.Reasons, fmt.Sprintf(
-				"nothing actually compared: 0 of %d queries returned a comparable matrix live (all unsupported/unchecked); the parity gate compared nothing",
-				s.Total,
-			))
-		}
+		res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	if s.ComparedSeries == 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, fmt.Sprintf(
+			"nothing actually compared: 0 series were diffed across %d replayed queries (all unsupported/unchecked, or every response was an empty matrix); the parity gate compared nothing",
+			s.Total,
+		))
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	// Per-lane guard. The aggregate check above is satisfied by ANY head having
+	// compared something, so 40 matched PromQL queries would mask a Loki lane that
+	// replayed 12 and compared none of them — the operator flips that datasource on
+	// zero evidence. A head that HAD replayable queries must have diffed at least
+	// one series, or the whole lane is unproven and the cutover is refused.
+	if reasons := deadLaneReasons(rep.DeadLanes()); len(reasons) > 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, reasons...)
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	// A replayable query whose head lane had no backend pair was never issued to
+	// anything. That is a property of the invocation, not of the query, so it can
+	// never be a caveat: a WARN here would let a green cutover decision rest on
+	// queries the gate itself reports as unjudged.
+	if s.Unconfigured > 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, fmt.Sprintf(
+			"%d replayable quer%s had no configured backend pair for their head lane (unjudged); supply that head's --ref-*/--cerberus-* pair or harvest a narrower corpus",
+			s.Unconfigured, plural(s.Unconfigured, "y", "ies"),
+		))
 		res.Reasons = append(res.Reasons, caveats...)
 		return res, nil
 	}
@@ -251,13 +280,48 @@ func evalVerify(path string) (StageResult, error) {
 	return res, nil
 }
 
+// deadLaneReasons renders one operator-facing reason per lane the report already
+// identified as dead (Report.DeadLanes: replayed queries, diffed no series). The
+// PREDICATE lives on the report so `migrate verify`'s own exit code and this gate
+// can never disagree about which lanes proved nothing; this function only words
+// it. It is reported per head — not folded into one count — because the operator's
+// next action is head-specific: only naming the lane says which datasource must
+// not be flipped.
+func deadLaneReasons(dead []migrateverify.HeadSummary) []string {
+	var out []string
+	for _, h := range dead {
+		out = append(out, fmt.Sprintf(
+			"head %s compared nothing: 0 series were diffed across its %d replayed queries",
+			h.Head, h.Summary.Total,
+		))
+	}
+	return out
+}
+
+// idleLaneCaveats names every lane the operator CONFIGURED that had no replayable
+// query at all — every corpus entry for that head routed out of scope. It does not
+// block: those entries are honestly out of scope, not failures. But it is a caveat
+// rather than silence because the operator supplied that head's backends expecting
+// it to be judged, and a report that simply omits the lane would have them flip
+// that datasource on a green verdict that never covered it.
+func idleLaneCaveats(idle []migrateverify.HeadSummary) []string {
+	var out []string
+	for _, h := range idle {
+		out = append(out, fmt.Sprintf(
+			"head %s was configured but had no replayable query (%d corpus entries for it are out of scope); that lane was not judged",
+			h.Head, h.Summary.OutOfScope,
+		))
+	}
+	return out
+}
+
 // verifyCaveats surfaces the parity counts that Report.Failed() deliberately
 // does NOT block on but that each leave a query UNCHECKED against a reference
 // backend: a query cerberus emitted SQL for whose live response was not a
 // comparable matrix (Unsupported — e.g. a non-200 or non-matrix body), a corpus
-// entry that never became a replayable query (HarvestSkipped), and a non-PromQL
-// entry with no Prometheus baseline (OutOfScope). Each is an unexamined input
-// the operator must see before trusting a green parity gate — counted here,
+// entry that never became a replayable query (HarvestSkipped), and an entry whose
+// shape has no metric-lane baseline at all (OutOfScope). Each is an unexamined
+// input the operator must see before trusting a green parity gate — counted here,
 // never silently dropped.
 func verifyCaveats(s migrateverify.Summary) []string {
 	var out []string
@@ -275,7 +339,7 @@ func verifyCaveats(s migrateverify.Summary) []string {
 	}
 	if s.OutOfScope > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d out-of-scope entr%s (not PromQL; no Prometheus baseline, unchecked)",
+			"%d out-of-scope entr%s with no definable metric-lane parity (log-stream / trace-search / compare / unparseable, unchecked)",
 			s.OutOfScope, plural(s.OutOfScope, "y", "ies"),
 		))
 	}
