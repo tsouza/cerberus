@@ -22,42 +22,9 @@ const (
 	EnvTimeout            = "CERBERUS_SOLVER_TIMEOUT"
 	EnvMaxOutputRows      = "CERBERUS_SHARD_MAX_OUTPUT_ROWS"
 	EnvMemoryApportion    = "CERBERUS_SHARD_MEMORY_APPORTION"
+	EnvAutotune           = "CERBERUS_SOLVER_AUTOTUNE"
+	EnvAutotuneInterval   = "CERBERUS_SOLVER_AUTOTUNE_INTERVAL"
 )
-
-// RetiredEnvKeys are solver env vars a prior release read that ConfigFromEnv
-// no longer parses. They are retired, not repurposed: ConfigFromEnv already
-// ignores unknown keys (Go's os.Getenv is a no-op read for anything nobody
-// asks for), so an operator's existing deployment manifest setting one of
-// these keeps starting up unchanged — it just stops having any effect. The
-// caller (cmd/cerberus) logs one INFO line per still-set retired key at
-// boot so the no-op is discoverable instead of silent.
-var RetiredEnvKeys = []string{
-	// CERBERUS_SOLVER_AUTOTUNE / _INTERVAL configured the self-driving
-	// threshold-fit loop (internal/autotune, removed): a periodic refit of
-	// MinFanout/MinAnchorPairs from the observed route-A OOM floor. The
-	// loop used fan-out as a proxy for query cost; tuning the proxy's
-	// threshold cannot fix a shape whose cost is dominated by a dimension
-	// the proxy doesn't measure, so the mechanism it tuned is retired in
-	// favor of an outcome-driven route memo (internal/routememo) that needs
-	// no threshold to tune.
-	"CERBERUS_SOLVER_AUTOTUNE",
-	"CERBERUS_SOLVER_AUTOTUNE_INTERVAL",
-}
-
-// StillSetRetiredEnvKeys reports which of RetiredEnvKeys are set (to any
-// non-empty value) in the current process environment. cmd/cerberus calls
-// this once at boot and logs one INFO line per key so an operator whose
-// deployment manifest still sets a retired knob learns it is now a no-op,
-// instead of silently wondering why autotuning never seems to happen.
-func StillSetRetiredEnvKeys() []string {
-	var still []string
-	for _, k := range RetiredEnvKeys {
-		if strings.TrimSpace(os.Getenv(k)) != "" {
-			still = append(still, k)
-		}
-	}
-	return still
-}
 
 // ConfigFromEnv builds a Config from the CERBERUS_* environment, starting
 // from DefaultConfig and overriding each field from its env var when set. It
@@ -106,6 +73,12 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MemoryApportion, err = envBool(EnvMemoryApportion, cfg.MemoryApportion); err != nil {
+		return Config{}, err
+	}
+	if cfg.Autotune, err = envBool(EnvAutotune, cfg.Autotune); err != nil {
+		return Config{}, err
+	}
+	if cfg.AutotuneInterval, err = envDuration(EnvAutotuneInterval, cfg.AutotuneInterval); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

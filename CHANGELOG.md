@@ -4,14 +4,6 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-### Added
-
-- **solver:** failure-driven route memo (`internal/routememo`) — a bounded, in-process cache that retries a resource-exhausted route-A dispatch once on route B and memoizes the outcome, replacing the fan-out cost-threshold proxy with an outcome signal for cost shapes the proxy misclassifies
-
-### Removed
-
-- **solver:** the self-driving threshold-fit loop (`internal/autotune`), its `CERBERUS_SOLVER_AUTOTUNE` / `CERBERUS_SOLVER_AUTOTUNE_INTERVAL` config knobs, and the `GET /info/autotune` endpoint — retired in favor of the failure-driven route memo above; both retired env keys are now no-ops and logged once at boot if still set
-
 ## [v1.11.1] — 2026-07-17
 
 ### Fixed

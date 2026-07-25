@@ -111,6 +111,73 @@ func TestCHSourceBuildsTypedSQL(t *testing.T) {
 	}
 }
 
+// TestCHSourceOOMFloor pins the autotune OOM-floor query: the eligible-population
+// predicate (route=A, oom, below-threshold, grid-bearing), the typed min/count
+// wrapping for the strict driver, and the scan into an OOMFloor.
+func TestCHSourceOOMFloor(t *testing.T) {
+	// Columns: f(minIf fanout), a(minIf n_anchors), n(floor countIf),
+	// rb(route-B countIf), rbo(route-B oom countIf).
+	conn := &recordingConn{
+		respond: []scriptedResponse{
+			{match: "FROM cerberus_router_corpus", rows: [][]any{{float64(9), float64(241), int64(5), int64(100), int64(2)}}},
+		},
+	}
+	src := NewCHOOMFloorSource(conn, 0).(*chCorpusSource)
+
+	got, err := src.OOMFloor(context.Background())
+	if err != nil {
+		t.Fatalf("OOMFloor: %v", err)
+	}
+	if !got.HasSignal || got.MinFanout != 9 || got.MinAnchors != 241 {
+		t.Fatalf("floor: got %+v, want {MinFanout:9 MinAnchors:241 HasSignal:true}", got)
+	}
+	if got.RouteAOomCount != 5 || got.RouteBExecutions != 100 || got.RouteBOomCount != 2 {
+		t.Fatalf("counts: got A=%d B=%d Boom=%d, want 5 / 100 / 2",
+			got.RouteAOomCount, got.RouteBExecutions, got.RouteBOomCount)
+	}
+
+	q := conn.queries[0]
+	for _, want := range []string{
+		"minIf(fanout,",
+		"minIf(n_anchors,",
+		"countIf(",
+		"FROM cerberus_router_corpus",
+		"route = 'A'",
+		"route = 'B'",
+		"exit_status = 'oom'",
+		"decision_reason = 'below-threshold'",
+		"fanout > 0",
+		"n_anchors > 0",
+	} {
+		if stringIndex(q, want) < 0 {
+			t.Errorf("OOMFloor query missing %q:\n%s", want, q)
+		}
+	}
+}
+
+// TestCHSourceOOMFloorNoSignal asserts an empty eligible population (floor
+// countIf = 0) resolves to HasSignal=false — cold start, never a spurious "OOM
+// at fan-out 0" — while still reporting route-B outcome counts.
+func TestCHSourceOOMFloorNoSignal(t *testing.T) {
+	conn := &recordingConn{
+		respond: []scriptedResponse{
+			{match: "FROM cerberus_router_corpus", rows: [][]any{{float64(0), float64(0), int64(0), int64(50), int64(0)}}},
+		},
+	}
+	src := NewCHOOMFloorSource(conn, 0).(*chCorpusSource)
+
+	got, err := src.OOMFloor(context.Background())
+	if err != nil {
+		t.Fatalf("OOMFloor: %v", err)
+	}
+	if got.HasSignal {
+		t.Fatalf("empty floor population must be no-signal, got %+v", got)
+	}
+	if got.RouteBExecutions != 50 {
+		t.Errorf("RouteBExecutions = %d, want 50 (counts reported even with no floor signal)", got.RouteBExecutions)
+	}
+}
+
 // TestCHSourceStrictScanTypes is the regression guard for the strict
 // clickhouse-go/v2 scan-type trap. Every numeric corpus column is an integer
 // CH type (UInt8/UInt32/UInt64), and several aggregates preserve the integer

@@ -103,6 +103,11 @@ type Options struct {
 	// compute uptimeSeconds. When zero, uptime is reported as 0.
 	StartTime time.Time
 
+	// Autotune reports the self-driving solver's live decision state for
+	// GET /info/autotune. The bool is false when autotune introspection is not
+	// available; when nil, GET /info/autotune returns 404.
+	Autotune func() (AutotuneStatus, bool)
+
 	// PingTimeout caps the per-request reachability/ready probes. Defaults to
 	// 1s, matching the health handler's ping budget.
 	PingTimeout time.Duration
@@ -117,6 +122,7 @@ type Handler struct {
 	ready       func(ctx context.Context) bool
 	start       time.Time
 	pingTimeout time.Duration
+	autotune    func() (AutotuneStatus, bool)
 }
 
 // defaultPingTimeout bounds the live reachability/ready probes per request.
@@ -134,6 +140,7 @@ func New(opts Options) *Handler {
 		ready:       opts.Ready,
 		start:       opts.StartTime,
 		pingTimeout: opts.PingTimeout,
+		autotune:    opts.Autotune,
 	}
 	if h.pingTimeout <= 0 {
 		h.pingTimeout = defaultPingTimeout
@@ -141,9 +148,10 @@ func New(opts Options) *Handler {
 	return h
 }
 
-// Mount registers GET /info on mux.
+// Mount registers GET /info and GET /info/autotune on mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /info", h.handleInfo)
+	mux.HandleFunc("GET /info/autotune", h.handleAutotune)
 }
 
 // clickHouseInfo is the nested "clickhouse" object of the /info body.
