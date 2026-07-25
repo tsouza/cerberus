@@ -33,6 +33,44 @@ const (
 	jsonpbFalseText = "false"
 )
 
+// The two internal labels Tempo's metrics engine synthesises from a NUMBER — a
+// histogram bucket edge and a quantile phi — and that cerberus's own Tempo head
+// re-emits as a pre-formatted string label. They are named here because the two
+// sides only key the same series if this decoder renders the reference's
+// doubleValue with the same strconv verb the cerberus writer used for that exact
+// label, and cerberus uses a different verb for each (see tempoFloatVerb).
+const (
+	tempoBucketLabel   = "__bucket"
+	tempoQuantileLabel = "p"
+)
+
+// strconv verbs for a doubleValue label, chosen per label key to mirror
+// cerberus's own Tempo head byte-for-byte:
+//
+//   - tempoBucketFloatVerb ('g') mirrors normalizeHistogramBucketLabels, which
+//     writes `__bucket` as strconv.FormatFloat(f, 'g', -1, 64) precisely so a
+//     sub-100µs duration edge (1.28e-07) does not read as ClickHouse's
+//     "0.000000128" and split one series in two.
+//   - tempoScalarFloatVerb ('f') mirrors formatPhi, which writes `p` as
+//     strconv.FormatFloat(v, 'f', -1, 64), and ClickHouse's own toString of a
+//     grouped Float64 attribute, which is likewise non-exponential.
+const (
+	tempoBucketFloatVerb = 'g'
+	tempoScalarFloatVerb = 'f'
+)
+
+// tempoFloatVerb picks the strconv verb that renders a numeric label the way
+// cerberus's Tempo head writes that SAME label. A single global verb cannot work:
+// cerberus's two numeric-label writers disagree by design, so keying every
+// doubleValue with one of them would report every series carrying the other label
+// as present-on-one-side-only — a divergence that does not exist.
+func tempoFloatVerb(key string) byte {
+	if key == tempoBucketLabel {
+		return tempoBucketFloatVerb
+	}
+	return tempoScalarFloatVerb
+}
+
 type tempoDialect struct{}
 
 func (tempoDialect) Name() string { return HeadTempo }
@@ -218,11 +256,13 @@ func flattenTempoLabels(labels []tempoLabel) (map[string]string, error) {
 // tempoLabelValue renders one AnyValue as the label string both backends must
 // agree on.
 //
-// doubleValue uses strconv.FormatFloat('f', -1, 64) — the exact formatter
-// cerberus's own `p`-label writer uses — so a reference `{"doubleValue":0.99}`
-// and a cerberus `{"stringValue":"0.99"}` produce the same key and
-// quantile_over_time series align. That normalises an ENCODING difference, not a
-// value difference: a genuinely different phi still lands in a different key and
+// doubleValue is rendered with the strconv verb tempoFloatVerb picks for that
+// label key — the exact formatter cerberus's own writer for that label uses — so a
+// reference `{"doubleValue":0.99}` and a cerberus `{"stringValue":"0.99"}` produce
+// the same key and quantile_over_time series align, and a reference
+// `{"key":"__bucket","doubleValue":1.28e-07}` keys identically to cerberus's
+// `"1.28e-07"`. That normalises an ENCODING difference, not a value difference: a
+// genuinely different phi or bucket edge still lands in a different key and
 // surfaces as a missing series.
 //
 // arrayValue / kvlistValue / bytesValue are hard errors naming the variant.
@@ -261,7 +301,7 @@ func tempoLabelValue(key string, raw json.RawMessage) (string, error) {
 		}
 		return strconv.FormatInt(int64(n), 10), nil
 	case av.DoubleValue != nil:
-		return strconv.FormatFloat(*av.DoubleValue, 'f', -1, 64), nil
+		return strconv.FormatFloat(*av.DoubleValue, tempoFloatVerb(key), -1, 64), nil
 	case av.BoolValue != nil:
 		if *av.BoolValue {
 			return jsonpbTrueText, nil

@@ -232,8 +232,11 @@ func TestVerify_NaNEqual(t *testing.T) {
 }
 
 // TestVerify_CerberusUnsupported: cerberus returns a 400 (non-matrix) → the query
-// is classified unsupported, the reference is untouched, and the gate does NOT
-// fail on an unsupported query alone.
+// is classified unsupported, the reference is untouched, and an unsupported
+// verdict is not itself a wrong answer: it does not fail a run that ALSO compared
+// something. It is not a free pass either — a run made up only of unsupported
+// queries compared nothing at all and blocks via the no-evidence rules, which the
+// second half of this test pins.
 func TestVerify_CerberusUnsupported(t *testing.T) {
 	refBody := map[string]string{
 		"histogram_quantile(0.9, x)": matrix(seriesSpec{
@@ -249,9 +252,25 @@ func TestVerify_CerberusUnsupported(t *testing.T) {
 	if !strings.Contains(res.Detail, "status=400") {
 		t.Errorf("unsupported detail should name the cerberus status, got %q", res.Detail)
 	}
-	rep := Report{Summary: Summary{Unsupported: 1}}
-	if rep.Failed() {
-		t.Error("an unsupported query alone must not fail the gate")
+	alongsideEvidence := Report{
+		Summary: Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3},
+		Heads: []HeadSummary{{
+			Head: HeadProm, Configured: true,
+			Summary: Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3},
+		}},
+	}
+	if alongsideEvidence.Failed() {
+		t.Error("an unsupported query must not fail a run that also compared series")
+	}
+	onlyUnsupported := Report{
+		Summary: Summary{Total: 1, Unsupported: 1},
+		Heads: []HeadSummary{{
+			Head: HeadProm, Configured: true,
+			Summary: Summary{Total: 1, Unsupported: 1},
+		}},
+	}
+	if !onlyUnsupported.Failed() {
+		t.Error("a lane whose every query was unsupported compared nothing and must fail")
 	}
 }
 

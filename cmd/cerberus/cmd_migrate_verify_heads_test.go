@@ -395,11 +395,21 @@ func TestRunVerify_EnvFallbackPerHead(t *testing.T) {
 	}
 }
 
-// TestRunVerify_RefOrgIDIsSentAndNeverRecorded pins both halves of the tenant
-// header: the reference Loki receives X-Scope-OrgID, and the org-id never reaches
-// the report or the repro line — it is a credential, like the bearer token.
-func TestRunVerify_RefOrgIDIsSentAndNeverRecorded(t *testing.T) {
-	const tenant = "team-observability"
+// TestRunVerify_RefOrgIDIsSentRecordedAndTokenIsNot pins the tenant header on all
+// three axes, and pins the SPLIT between a routing parameter and a credential.
+//
+// X-Scope-OrgID selects which tenant's data the reference serves, so it goes to
+// the reference (never to cerberus, which reads no tenant header) AND is recorded
+// in the diagnostic: a report that omits it cannot be reproduced — re-running
+// without the header queries another tenant, or 401s the whole lane on a
+// multi-tenant Loki and reports a parity failure that is really an auth failure.
+// The bearer token is the opposite: it authorises the run and must appear in no
+// artifact at all.
+func TestRunVerify_RefOrgIDIsSentRecordedAndTokenIsNot(t *testing.T) {
+	const (
+		tenant   = "team-observability"
+		refToken = "s3cr3t-reference-token"
+	)
 	dir := t.TempDir()
 	corpus := writeLokiLaneCorpus(t, dir)
 	promRef := promServer(t, map[string]string{"up": upMatrix})
@@ -424,6 +434,7 @@ func TestRunVerify_RefOrgIDIsSentAndNeverRecorded(t *testing.T) {
 		"--ref", promRef.URL, "--cerberus", promCer.URL,
 		"--ref-loki", lokiRef.URL, "--cerberus-loki", lokiCer.URL,
 		"--ref-loki-org-id", tenant,
+		"--ref-loki-token", refToken,
 		"--report", reportPath,
 	}, windowArgs()...)
 	if err := runVerify(args, &out, &errOut); err != nil {
@@ -443,11 +454,44 @@ func TestRunVerify_RefOrgIDIsSentAndNeverRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read report: %v", err)
 	}
-	if strings.Contains(string(data), tenant) {
-		t.Errorf("the report must not record the tenant org-id (a credential), got:\n%s", data)
+	if !strings.Contains(string(data), `"ref_org_id": "`+tenant+`"`) {
+		t.Errorf("the report must record the reference tenant so the run is reproducible, got:\n%s", data)
 	}
-	if strings.Contains(out.String(), tenant) {
-		t.Errorf("the repro line must not record the tenant org-id, got:\n%s", out.String())
+	if strings.Contains(string(data), refToken) {
+		t.Errorf("the report must never record the bearer token, got:\n%s", data)
+	}
+	if strings.Contains(out.String(), refToken) {
+		t.Errorf("the text output must never record the bearer token, got:\n%s", out.String())
+	}
+}
+
+// TestReproCommand_EmitsReferenceTenant pins that the advertised "exact command
+// that regenerates this diagnostic" carries each lane's reference tenant. Without
+// it the command re-runs against a different tenant (or 401s every reference
+// request on a multi-tenant Loki / Tempo and records the whole lane as errored),
+// so the operator would attach a diagnostic of an auth failure to a bug report
+// about a value divergence.
+func TestReproCommand_EmitsReferenceTenant(t *testing.T) {
+	got := reproCommand(migrateverify.VerifyReportParams{
+		Corpus: "corpus.json",
+		Backends: []migrateverify.VerifyReportBackend{
+			{Head: migrateverify.HeadLoki, RefURL: "http://loki:3100", CerberusURL: "http://cerberus:8080", RefOrgID: "tenant-a"},
+			{Head: migrateverify.HeadProm, RefURL: "http://prom:9090", CerberusURL: "http://cerberus:8080"},
+			{Head: migrateverify.HeadTempo, RefURL: "http://tempo:3200", CerberusURL: "http://cerberus:8080", RefOrgID: "tenant b"},
+		},
+		Start: "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z", Step: "1m0s", Tolerance: 1e-9,
+	})
+	for _, want := range []string{
+		"--ref-loki-org-id tenant-a",
+		"--ref-tempo-org-id 'tenant b'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("repro command must contain %q, got:\n%s", want, got)
+		}
+	}
+	// The prom lane has no tenant flag at all, so nothing may be invented for it.
+	if strings.Contains(got, "--ref-org-id") {
+		t.Errorf("the prom lane has no tenant flag; repro must not invent one, got:\n%s", got)
 	}
 }
 

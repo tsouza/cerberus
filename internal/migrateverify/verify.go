@@ -18,13 +18,16 @@
 // set, step-aligns the samples, and compares values within a tolerance (with
 // NaN==NaN treated as equal). Every replayed query lands in exactly one verdict —
 // match, diverge, unsupported, or error — and a divergence is never allow-listed:
-// the gate exits non-zero if any query diverges or errors, or if a head with
-// replayable queries had no backend pair configured to judge them.
+// the gate exits non-zero if any query diverges or errors, if a head with
+// replayable queries had no backend pair configured to judge them, if nothing was
+// replayable at all, or if a lane replayed queries and diffed zero series.
 //
 // Honesty is the whole point: the comparator only claims a match where both
 // backends returned data that agrees. A series present in one backend but not
 // the other is itself a divergence (reported with its first differing point),
-// not a silent omission.
+// not a silent omission. And a match is only evidence if something was compared —
+// two empty matrices agree, so the report counts the series each lane actually
+// diffed and refuses to call a lane that diffed none of them proven.
 package migrateverify
 
 import (
@@ -224,6 +227,22 @@ func Compare(ref, cerberus []Series, tol float64) (Verdict, *FirstDiff) {
 	return VerdictMatch, nil
 }
 
+// comparedSeriesCount counts the DISTINCT canonical label sets Compare walks
+// across both backends — the number of series the query actually put in front of
+// the comparator. It counts the union, not the sum, so a series both backends
+// returned counts once and the number reads as "series diffed" rather than
+// "responses received".
+func comparedSeriesCount(ref, cerberus []Series) int {
+	seen := make(map[string]struct{}, len(ref)+len(cerberus))
+	for _, s := range ref {
+		seen[canonicalLabels(s.Labels)] = struct{}{}
+	}
+	for _, s := range cerberus {
+		seen[canonicalLabels(s.Labels)] = struct{}{}
+	}
+	return len(seen)
+}
+
 // indexSeries keys series by canonical label set. If a backend repeats a label
 // set (it should not), the last one wins — a benign, deterministic choice.
 func indexSeries(series []Series) map[string]Series {
@@ -357,19 +376,31 @@ type Corpus struct {
 // head lane it ran on. On a divergence it also carries Attribution: a list of
 // CANDIDATE causes (never a detection — verify cannot introspect either backend)
 // to steer triage.
+//
+// ComparedSeries records how many distinct series the comparator diffed for this
+// query — 0 when both backends returned an empty matrix, which scores match but
+// proves nothing.
 type QueryResult struct {
-	Head        string                 `json:"head"`
-	Source      string                 `json:"source"`
-	Expr        string                 `json:"expr"`
-	Verdict     Verdict                `json:"verdict"`
-	FirstDiff   *FirstDiff             `json:"first_diff,omitempty"`
-	Detail      string                 `json:"detail,omitempty"`
-	Attribution []AttributionCandidate `json:"attribution,omitempty"`
+	Head           string                 `json:"head"`
+	Source         string                 `json:"source"`
+	Expr           string                 `json:"expr"`
+	Verdict        Verdict                `json:"verdict"`
+	ComparedSeries int                    `json:"compared_series"`
+	FirstDiff      *FirstDiff             `json:"first_diff,omitempty"`
+	Detail         string                 `json:"detail,omitempty"`
+	Attribution    []AttributionCandidate `json:"attribution,omitempty"`
 }
 
 // Summary counts verdicts. Total counts REPLAYED queries only: Unconfigured
 // entries were never issued to any backend, so folding them into Total would
 // inflate the denominator of a claim the gate did not make.
+//
+// ComparedSeries counts the distinct series the comparator actually diffed. It is
+// the only counter that is EVIDENCE rather than bookkeeping: two empty matrices
+// score VerdictMatch, so Match alone cannot distinguish "both backends agreed on
+// real data" from "neither backend returned anything over this window". A lane
+// whose ComparedSeries is 0 proved nothing, however many matches it recorded —
+// see Report.DeadLanes.
 type Summary struct {
 	Total          int `json:"total"`
 	Match          int `json:"match"`
@@ -377,6 +408,7 @@ type Summary struct {
 	Unsupported    int `json:"unsupported"`
 	Error          int `json:"error"`
 	Unconfigured   int `json:"unconfigured"`
+	ComparedSeries int `json:"compared_series"`
 	OutOfScope     int `json:"out_of_scope"`
 	HarvestSkipped int `json:"harvest_skipped"`
 }
@@ -384,9 +416,17 @@ type Summary struct {
 // HeadSummary is one lane's counts, carried alongside the roll-up so a healthy
 // head can never mask a dead one: an aggregate "40 matched" reads green even when
 // a second lane compared nothing at all.
+//
+// Configured records whether the operator supplied that head's backend pair, and
+// is what makes a lane that replayed NOTHING legible. Without it a configured lane
+// whose corpus entries all routed out of scope is indistinguishable from a head
+// the operator never asked for — both would be absent from the table, and the
+// operator would flip that datasource having read a green report that never
+// mentions it.
 type HeadSummary struct {
-	Head    string  `json:"head"`
-	Summary Summary `json:"summary"`
+	Head       string  `json:"head"`
+	Configured bool    `json:"configured"`
+	Summary    Summary `json:"summary"`
 }
 
 // ReportParams records the comparison parameters the gate and humans need to
@@ -405,11 +445,12 @@ type ReportParams struct {
 // blocks rather than zero-filling to a silent PASS. Bump it on any breaking
 // change to the on-disk Report shape.
 //
-// Version 2 carries the per-head lane split (Heads) and the Unconfigured bucket.
-// A version-1 artifact decoded by this build would zero-fill both into a bogus
-// "0 non-Prometheus queries, all lanes configured" — precisely the silent
-// zero-fill the version check exists to stop — so the bump is enforcing, not
-// cosmetic.
+// Version 2 carries the per-head lane split (Heads, each tagged Configured), the
+// Unconfigured bucket, and the ComparedSeries evidence counter. A version-1
+// artifact decoded by this build would zero-fill all of them into a bogus
+// "0 non-Prometheus queries, all lanes configured, 0 series compared" — precisely
+// the silent zero-fill the version check exists to stop — so the bump is
+// enforcing, not cosmetic.
 const ReportVersion = 2
 
 // Report is the full parity result: the schema version, the resolved comparison
@@ -427,14 +468,70 @@ type Report struct {
 	HarvestSkipped []HarvestSkippedEntry `json:"harvest_skipped,omitempty"`
 }
 
-// Failed reports whether the gate should exit non-zero: any diverging or erroring
-// query, or any replayable query whose head lane was never configured — the gate
-// cannot claim parity for a query it never ran, and reporting that as a
-// non-blocking caveat would let "VERIFICATION PASSED" ship on zero evidence for a
-// whole head. Unsupported, out-of-scope and harvest-skipped entries are reported
-// but do not fail: each is a surfaced coverage gap, not a wrong answer.
+// Failed reports whether the gate should exit non-zero. It blocks on a wrong
+// answer AND on an absent answer, because "VERIFICATION PASSED" must never ship on
+// zero evidence:
+//
+//   - any diverging or erroring query;
+//   - any replayable query whose head lane was never configured — the gate cannot
+//     claim parity for a query it never ran;
+//   - a run that replayed nothing at all (see JudgedNothing) — an all-out-of-scope
+//     corpus would otherwise print "all 0 queries matched" and exit 0;
+//   - any head lane that replayed queries but diffed no series (see DeadLanes) —
+//     a lane whose backend answered nothing comparable, or answered two empty
+//     matrices, has proved nothing about that datasource.
+//
+// The last two mirror the cutover gate's blocking rules exactly, so `verify`'s own
+// exit code and banner can never disagree with `migrate gate`'s verdict on the
+// same report.
+//
+// Unsupported, out-of-scope and harvest-skipped entries are reported but do not
+// fail on their own: each is a surfaced coverage gap, not a wrong answer. (A lane
+// made up ENTIRELY of them still blocks, via DeadLanes.)
 func (r Report) Failed() bool {
-	return r.Summary.Diverge > 0 || r.Summary.Error > 0 || r.Summary.Unconfigured > 0
+	return r.Summary.Diverge > 0 || r.Summary.Error > 0 || r.Summary.Unconfigured > 0 ||
+		r.JudgedNothing() || len(r.DeadLanes()) > 0
+}
+
+// JudgedNothing reports whether the run replayed no query at all. A corpus whose
+// every entry routed out of scope (a Loki-heavy dashboard set is all log-stream
+// selectors), or an empty corpus, leaves Total at 0 — and a gate that judged
+// nothing has no business printing PASSED, whatever a CI job reading its exit code
+// concludes.
+func (r Report) JudgedNothing() bool { return r.Summary.Total == 0 }
+
+// DeadLanes returns every head lane that replayed queries but diffed no series.
+//
+// It is keyed on ComparedSeries rather than on verdict counts because both ways of
+// comparing nothing must block: a lane whose cerberus side 4xx'd every query
+// (all-unsupported, no verdict reaches the comparator) and a lane where both
+// backends returned an empty matrix over the window (all-match, comparator walked
+// zero keys) are equally devoid of evidence. Returned per head, not folded into a
+// count, because the operator's next action is head-specific: it names which
+// datasource must not be flipped.
+func (r Report) DeadLanes() []HeadSummary {
+	var out []HeadSummary
+	for _, h := range r.Heads {
+		if h.Summary.Total > 0 && h.Summary.ComparedSeries == 0 {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// IdleLanes returns every head lane the operator CONFIGURED that had no replayable
+// query to run — every corpus entry for that head routed out of scope. It does not
+// block (the entries are honestly out of scope, not failures), but it is surfaced
+// so a configured lane can never be silently absent from the report the operator
+// reads before flipping that datasource.
+func (r Report) IdleLanes() []HeadSummary {
+	var out []HeadSummary
+	for _, h := range r.Heads {
+		if h.Configured && h.Summary.Total == 0 {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // Backend issues a range query against one backend and returns the parsed
@@ -495,6 +592,25 @@ func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params)
 		return s
 	}
 
+	// Seed a row for every CONFIGURED lane before any query is routed. A lane whose
+	// corpus entries all routed out of scope replays nothing, so the query loop
+	// would never create its row and the per-head table — whose whole purpose is
+	// that a healthy head cannot mask a quiet one — would silently omit the lane
+	// the operator explicitly supplied backends for.
+	for head := range lanes {
+		headSummary(head)
+	}
+	// Out-of-scope entries are attributed to the head that declined them, so a lane
+	// showing 0 replayed also shows WHY: "tempo 0 replayed … 12 out of scope" is a
+	// legible answer, "tempo absent" is not. An entry whose language this build has
+	// no lane for carries no head and stays in the roll-up only.
+	for _, e := range corpus.OutOfScope {
+		if e.Head == "" {
+			continue
+		}
+		headSummary(e.Head).OutOfScope++
+	}
+
 	for _, q := range corpus.Queries {
 		hs := headSummary(q.Head)
 		lane, ok := lanes[q.Head]
@@ -514,6 +630,8 @@ func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params)
 		rep.Results = append(rep.Results, res)
 		rep.Summary.Total++
 		hs.Total++
+		rep.Summary.ComparedSeries += res.ComparedSeries
+		hs.ComparedSeries += res.ComparedSeries
 		switch res.Verdict {
 		case VerdictMatch:
 			rep.Summary.Match++
@@ -529,14 +647,16 @@ func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params)
 			hs.Error++
 		}
 	}
-	rep.Heads = sortedHeadSummaries(byHead)
+	rep.Heads = sortedHeadSummaries(byHead, lanes)
 	return rep
 }
 
 // sortedHeadSummaries flattens the per-head counters into a head-token-sorted
 // slice so the JSON report is byte-deterministic across runs (Go map iteration
-// order is not).
-func sortedHeadSummaries(byHead map[string]*Summary) []HeadSummary {
+// order is not). Each row is tagged with whether that head had a configured
+// backend pair, which is what lets a consumer tell "lane supplied, judged nothing"
+// apart from "lane never supplied".
+func sortedHeadSummaries(byHead map[string]*Summary, lanes map[string]Lane) []HeadSummary {
 	heads := make([]string, 0, len(byHead))
 	for h := range byHead {
 		heads = append(heads, h)
@@ -544,7 +664,8 @@ func sortedHeadSummaries(byHead map[string]*Summary) []HeadSummary {
 	sort.Strings(heads)
 	out := make([]HeadSummary, 0, len(heads))
 	for _, h := range heads {
-		out = append(out, HeadSummary{Head: h, Summary: *byHead[h]})
+		_, configured := lanes[h]
+		out = append(out, HeadSummary{Head: h, Configured: configured, Summary: *byHead[h]})
 	}
 	return out
 }
@@ -579,6 +700,9 @@ func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) Qu
 	default:
 		verdict, fd := Compare(refRes.Series, cerRes.Series, p.Tolerance)
 		out.Verdict, out.FirstDiff = verdict, fd
+		// Recorded on EVERY comparator outcome, match included: a match over two
+		// empty matrices diffed nothing, and only this counter says so.
+		out.ComparedSeries = comparedSeriesCount(refRes.Series, cerRes.Series)
 		// Attribution is PromQL-shaped: its hotspot matcher keys on bare
 		// rate / increase / histogram_quantile tokens, which also occur verbatim
 		// in LogQL and TraceQL, and its regression note describes a PromQL-only
@@ -630,9 +754,15 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	if r.Failed() {
 		// Unconfigured is named in the banner: a run that failed ONLY because a
 		// head lane was never configured must not read as "0 diverged, 0 errored"
-		// with no visible cause.
-		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d unjudged (unconfigured lane), %d matched (of %d replayed)\n\n",
+		// with no visible cause. The no-evidence reasons follow it for the same
+		// reason — a run that failed because a lane compared nothing must say so on
+		// the load-bearing line, not only in the table below it.
+		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d unjudged (unconfigured lane), %d matched (of %d replayed)\n",
 			r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured, r.Summary.Match, r.Summary.Total)
+		for _, reason := range r.noEvidenceReasons() {
+			bw.printf("                     %s\n", reason)
+		}
+		bw.printf("\n")
 	} else if r.Summary.Unsupported > 0 {
 		// Unsupported queries pass the gate but are NOT matches; the banner must
 		// not equate Total with matched or it overstates what agreed.
@@ -647,7 +777,8 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
 	bw.printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
 	bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
-	bw.printf("# or errors, or if a head's replayable queries had no backend pair to judge them.\n")
+	bw.printf("# or errors, if a head's replayable queries had no backend pair to judge them,\n")
+	bw.printf("# if nothing was replayable at all, or if any lane diffed zero series.\n")
 	bw.printf("#\n")
 	bw.printf("# Note: %s\n", ExperimentalNote)
 	bw.printf("#\n")
@@ -712,17 +843,52 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 
 	if r.Failed() {
 		bw.printf("FAIL: %d diverge, %d error, %d unconfigured\n", r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured)
+		for _, reason := range r.noEvidenceReasons() {
+			bw.printf("FAIL: %s\n", reason)
+		}
 		r.writeBugReport(bw, g)
 	} else {
-		bw.printf("PASS: %d match, %d unsupported (no divergence)\n", r.Summary.Match, r.Summary.Unsupported)
+		bw.printf("PASS: %d match, %d unsupported, %d series compared (no divergence)\n",
+			r.Summary.Match, r.Summary.Unsupported, r.Summary.ComparedSeries)
+		for _, h := range r.IdleLanes() {
+			bw.printf("NOTE: head %s was configured but had no replayable query (%d out of scope); "+
+				"this lane was not judged\n", h.Head, h.Summary.OutOfScope)
+		}
 	}
 	return bw.err
+}
+
+// noEvidenceReasons renders the blocking causes that are an ABSENCE rather than a
+// wrong answer: a run that replayed nothing, and each lane that replayed queries
+// but diffed no series. They are spelled out because the counts on the banner
+// ("0 diverged, 0 errored") describe them as zeros, and a reader has no way to
+// tell a clean run from a run that judged nothing without being told.
+func (r Report) noEvidenceReasons() []string {
+	var out []string
+	if r.JudgedNothing() {
+		out = append(out, fmt.Sprintf(
+			"the gate judged nothing: 0 corpus queries were replayable on any lane (+%d out of scope, +%d harvest-skipped)",
+			r.Summary.OutOfScope, r.Summary.HarvestSkipped,
+		))
+	}
+	for _, h := range r.DeadLanes() {
+		out = append(out, fmt.Sprintf(
+			"head %s compared nothing: 0 series diffed across %d replayed queries; that datasource is unproven",
+			h.Head, h.Summary.Total,
+		))
+	}
+	return out
 }
 
 // writeHeadTable prints the per-lane roll-up in head-token order. It exists so a
 // healthy head cannot mask a dead one: the aggregate line above can read
 // "40 match" while a second lane compared nothing, and only the per-head split
 // makes that visible.
+//
+// Each row states whether the operator configured that lane and how many series it
+// actually diffed, because those two numbers — not the match count — are what says
+// whether the lane proved anything. A configured lane with 0 replayed queries and a
+// head that only ever appeared in the out-of-scope list both get a row.
 func (r Report) writeHeadTable(bw *errWriter) {
 	if len(r.Heads) == 0 {
 		return
@@ -730,10 +896,21 @@ func (r Report) writeHeadTable(bw *errWriter) {
 	bw.printf("# per-head lanes:\n")
 	for _, h := range r.Heads {
 		s := h.Summary
-		bw.printf("#   %-6s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured\n",
-			h.Head, s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured)
+		bw.printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d series compared, %d out of scope\n",
+			h.Head, headLaneState(h), s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured,
+			s.ComparedSeries, s.OutOfScope)
 	}
 	bw.printf("\n")
+}
+
+// headLaneState labels a lane row with what the operator supplied for it, so
+// "0 replayed" is never ambiguous between a lane that was never configured and one
+// that was configured and had nothing to run.
+func headLaneState(h HeadSummary) string {
+	if h.Configured {
+		return "[configured]"
+	}
+	return "[no backends]"
 }
 
 // outOfScopeLane renders an out-of-scope entry's lane label. An unknown-language

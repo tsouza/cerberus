@@ -216,6 +216,67 @@ func TestDecodeTempoMetrics_DoubleAndStringPhiAgree(t *testing.T) {
 	}
 }
 
+// TestDecodeTempoMetrics_DoubleAndStringBucketAgree pins the OTHER numeric label
+// space, which does NOT share the `p` label's formatter.
+//
+// Reference Tempo buckets a duration with Log2Bucketize(nanos)/1e9 and ships the
+// edge as the `__bucket` label's doubleValue. Cerberus's own Tempo head ships the
+// same edge as a stringValue normalised with strconv.FormatFloat(f, 'g', -1, 64)
+// — internal/api/tempo/metrics_query_range_histogram.go's
+// normalizeHistogramBucketLabels, pinned to "1.024e-06" by that package's own
+// tests — chosen so a sub-100µs edge does not read as ClickHouse's plain-decimal
+// "0.000001024". A decoder that renders every doubleValue with the `p` label's 'f'
+// verb therefore keys the reference's 1.024e-06 as "0.000001024" while cerberus
+// keys it "1.024e-06", and EVERY histogram_over_time series below 1e-4 s reports
+// as present-on-one-side-only: a whole-lane divergence that does not exist.
+//
+// The magnitudes span both ends of the plain-decimal window: 1.024e-06 and
+// 1.28e-07 are typical span-latency edges, 1.048576e+06 is an int-attribute
+// histogram edge above the 1e21-free but 'f'-vs-'g' divergent range, and 0.25 is
+// inside the window where the two verbs agree (so the test also proves the fix
+// does not perturb the common case).
+func TestDecodeTempoMetrics_DoubleAndStringBucketAgree(t *testing.T) {
+	for _, bucket := range []string{"1.024e-06", "1.28e-07", "1.048576e+06", "0.25"} {
+		refBody := `{"series":[{"labels":[{"key":"__bucket","value":{"doubleValue":` + bucket + `}}],"samples":[]}]}`
+		cerBody := `{"series":[{"labels":[{"key":"__bucket","value":{"stringValue":"` + bucket + `"}}],"samples":[]}]}`
+		ref, err := decodeTempoMetrics([]byte(refBody))
+		if err != nil {
+			t.Fatalf("decode reference bucket %s: %v", bucket, err)
+		}
+		cer, err := decodeTempoMetrics([]byte(cerBody))
+		if err != nil {
+			t.Fatalf("decode cerberus bucket %s: %v", bucket, err)
+		}
+		refKey := canonicalLabels(ref.Series[0].Labels)
+		cerKey := canonicalLabels(cer.Series[0].Labels)
+		if refKey != cerKey {
+			t.Errorf("bucket %s: reference key %s != cerberus key %s; histogram series would not align", bucket, refKey, cerKey)
+		}
+		if got := ref.Series[0].Labels["__bucket"]; got != bucket {
+			t.Errorf("bucket %s: doubleValue rendered as %q, but cerberus's Tempo head writes %q", bucket, got, bucket)
+		}
+	}
+}
+
+// TestTempoFloatVerb_IsPerLabelNotGlobal pins WHY the verb is a per-key lookup:
+// cerberus's two numeric-label writers disagree by design, so a single global verb
+// must mis-key one of the two label spaces. Collapsing tempoFloatVerb back to one
+// constant fails here as well as in the two agreement tests above.
+func TestTempoFloatVerb_IsPerLabelNotGlobal(t *testing.T) {
+	if got := tempoFloatVerb(tempoBucketLabel); got != tempoBucketFloatVerb {
+		t.Errorf("tempoFloatVerb(%q) = %q, want %q (normalizeHistogramBucketLabels writes 'g')",
+			tempoBucketLabel, got, tempoBucketFloatVerb)
+	}
+	if got := tempoFloatVerb(tempoQuantileLabel); got != tempoScalarFloatVerb {
+		t.Errorf("tempoFloatVerb(%q) = %q, want %q (formatPhi writes 'f')",
+			tempoQuantileLabel, got, tempoScalarFloatVerb)
+	}
+	if got := tempoFloatVerb("span.duration"); got != tempoScalarFloatVerb {
+		t.Errorf("tempoFloatVerb on a grouped attribute = %q, want %q (ClickHouse toString is plain-decimal)",
+			got, tempoScalarFloatVerb)
+	}
+}
+
 // TestDecodeTempoMetrics_UnsupportedLabelVariantsError pins that a composite
 // AnyValue is a HARD ERROR naming the variant, never flattened to "". Collapsing
 // arrayValue to "" (the lenient default branch) folds two genuinely distinct

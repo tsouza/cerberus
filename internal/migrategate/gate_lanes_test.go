@@ -45,10 +45,10 @@ func evalWithVerify(t *testing.T, rep migrateverify.Report) migrategate.Decision
 // reason the report carries one.
 func TestEvalVerify_DeadLaneBlocks(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 52, Match: 40, Unsupported: 12},
+		Summary: migrateverify.Summary{Total: 52, Match: 40, Unsupported: 12, ComparedSeries: 40},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Summary: migrateverify.Summary{Total: 40, Match: 40}},
-			{Head: migrateverify.HeadLoki, Summary: migrateverify.Summary{Total: 12, Unsupported: 12}},
+			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 40, Match: 40, ComparedSeries: 40}},
+			{Head: migrateverify.HeadLoki, Configured: true, Summary: migrateverify.Summary{Total: 12, Unsupported: 12}},
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -74,10 +74,10 @@ func TestEvalVerify_DeadLaneBlocks(t *testing.T) {
 // by simply blocking every multi-head report.
 func TestEvalVerify_HealthyLanesDoNotBlock(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 5, Match: 5},
+		Summary: migrateverify.Summary{Total: 5, Match: 5, ComparedSeries: 9},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Summary: migrateverify.Summary{Total: 3, Match: 3}},
-			{Head: migrateverify.HeadLoki, Summary: migrateverify.Summary{Total: 2, Match: 2}},
+			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 5}},
+			{Head: migrateverify.HeadLoki, Configured: true, Summary: migrateverify.Summary{Total: 2, Match: 2, ComparedSeries: 4}},
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -94,7 +94,7 @@ func TestEvalVerify_UnsupportedOnlyLaneStillBlocks(t *testing.T) {
 	rep := migrateverify.Report{
 		Summary: migrateverify.Summary{Total: 4, Unsupported: 4},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadTempo, Summary: migrateverify.Summary{Total: 4, Unsupported: 4}},
+			{Head: migrateverify.HeadTempo, Configured: true, Summary: migrateverify.Summary{Total: 4, Unsupported: 4}},
 		},
 	}
 	dec := evalWithVerify(t, rep)
@@ -113,9 +113,9 @@ func TestEvalVerify_UnsupportedOnlyLaneStillBlocks(t *testing.T) {
 // here would ship a green go/no-go over queries the report itself calls unjudged.
 func TestEvalVerify_UnconfiguredBlocks(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 3, Match: 3, Unconfigured: 12},
+		Summary: migrateverify.Summary{Total: 3, Match: 3, Unconfigured: 12, ComparedSeries: 3},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Summary: migrateverify.Summary{Total: 3, Match: 3}},
+			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 3}},
 			{Head: migrateverify.HeadLoki, Summary: migrateverify.Summary{Unconfigured: 12}},
 		},
 		Unconfigured: []migrateverify.UnconfiguredEntry{
@@ -167,9 +167,9 @@ func TestEvalVerify_RejectsV1Artifact(t *testing.T) {
 // baseline at all.
 func TestEvalVerify_OutOfScopeCaveatNamesTheShapes(t *testing.T) {
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 2, Match: 2, OutOfScope: 3},
+		Summary: migrateverify.Summary{Total: 2, Match: 2, OutOfScope: 3, ComparedSeries: 2},
 		Heads: []migrateverify.HeadSummary{
-			{Head: migrateverify.HeadProm, Summary: migrateverify.Summary{Total: 2, Match: 2}},
+			{Head: migrateverify.HeadProm, Configured: true, Summary: migrateverify.Summary{Total: 2, Match: 2, ComparedSeries: 2}},
 		},
 	}
 	dec := evalWithVerify(t, rep)

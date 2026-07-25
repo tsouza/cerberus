@@ -214,12 +214,21 @@ func isCoverageGap(reason string) bool {
 }
 
 // VerifyReportBackend is one head lane's configured backend pair. Both URLs are
-// recorded REDACTED; the bearer token and tenant org-id that authorised the run
-// are credentials and are deliberately absent from every artifact.
+// recorded REDACTED; the bearer tokens that authorised the run are credentials and
+// are deliberately absent from every artifact.
+//
+// RefOrgID is the exception, and deliberately so: X-Scope-OrgID is a ROUTING
+// parameter, not a credential — it selects which tenant's data the reference
+// backend serves. Withholding it made the repro command a lie, because re-running
+// without it queries a different tenant (or 401s on a multi-tenant Loki/Tempo,
+// recording the whole lane as errored). Recording it is what keeps the diagnostic
+// and the repro line describing the same run. It is omitted entirely for a
+// single-tenant lane.
 type VerifyReportBackend struct {
 	Head        string `json:"head"`
 	RefURL      string `json:"ref_url"`
 	CerberusURL string `json:"cerberus_url"`
+	RefOrgID    string `json:"ref_org_id,omitempty"`
 }
 
 // VerifyReportParams is the resolved run context stamped into the JSON diagnostic:

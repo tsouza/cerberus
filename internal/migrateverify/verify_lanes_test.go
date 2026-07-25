@@ -388,10 +388,10 @@ func TestReport_JSONIsDeterministic(t *testing.T) {
 		SchemaVersion: ReportVersion,
 		Summary:       Summary{Total: 2, Match: 2},
 		Heads: sortedHeadSummaries(map[string]*Summary{
-			HeadTempo: {Total: 1, Match: 1},
-			HeadLoki:  {Total: 1, Match: 1},
+			HeadTempo: {Total: 1, Match: 1, ComparedSeries: 1},
+			HeadLoki:  {Total: 1, Match: 1, ComparedSeries: 1},
 			HeadProm:  {Total: 0},
-		}),
+		}, map[string]Lane{HeadTempo: {}, HeadLoki: {}}),
 	}
 	var first, second strings.Builder
 	if err := rep.WriteJSON(&first); err != nil {
@@ -422,9 +422,9 @@ func TestWriteText_ShowsUnconfiguredAndOutOfScopeReasons(t *testing.T) {
 		SchemaVersion: ReportVersion,
 		Summary:       Summary{Total: 1, Match: 1, Unconfigured: 1, OutOfScope: 2},
 		Heads: sortedHeadSummaries(map[string]*Summary{
-			HeadProm: {Total: 1, Match: 1},
+			HeadProm: {Total: 1, Match: 1, ComparedSeries: 1},
 			HeadLoki: {Unconfigured: 1},
-		}),
+		}, map[string]Lane{HeadProm: {}}),
 		Results: []QueryResult{{Head: HeadProm, Source: "rule:up", Expr: "up", Verdict: VerdictMatch}},
 		Unconfigured: []UnconfiguredEntry{{
 			Source: "panel:lograte", Expr: `sum(rate({job="a"}[5m]))`, Head: HeadLoki, Lang: "logql",

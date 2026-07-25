@@ -554,14 +554,21 @@ func newMigrateVerifyCmd() *cobra.Command {
 // verifyHeadFlags names one head lane's flags so validation, lane construction,
 // and the repro line all speak the operator's exact vocabulary for that lane
 // rather than a generic "a backend was missing".
+//
+// refAuthFlag / cerAuthFlag name that lane's bearer-token flags; orgFlag names its
+// reference tenant flag and is empty for a head with no tenant concept (the prom
+// lane), so nothing is invented for it in a diagnostic or a repro line.
 type verifyHeadFlags struct {
-	head    string
-	refFlag string
-	cerFlag string
-	refEnv  string
-	cerEnv  string
-	dialect migrateverify.Dialect
-	pair    func(*verifyInputs) *headPair
+	head        string
+	refFlag     string
+	cerFlag     string
+	refEnv      string
+	cerEnv      string
+	refAuthFlag string
+	cerAuthFlag string
+	orgFlag     string
+	dialect     migrateverify.Dialect
+	pair        func(*verifyInputs) *headPair
 }
 
 // verifyHeads is the head lane table, in head-token order so every artifact the
@@ -572,6 +579,8 @@ var verifyHeads = []verifyHeadFlags{
 		head:    migrateverify.HeadLoki,
 		refFlag: "--ref-loki", cerFlag: "--cerberus-loki",
 		refEnv: "CERBERUS_VERIFY_REF_LOKI", cerEnv: "CERBERUS_VERIFY_CERBERUS_LOKI",
+		refAuthFlag: "--ref-loki-token", cerAuthFlag: "--cerberus-loki-token",
+		orgFlag: "--ref-loki-org-id",
 		dialect: migrateverify.LokiDialect(),
 		pair:    func(in *verifyInputs) *headPair { return &in.loki },
 	},
@@ -579,6 +588,7 @@ var verifyHeads = []verifyHeadFlags{
 		head:    migrateverify.HeadProm,
 		refFlag: "--ref", cerFlag: "--cerberus",
 		refEnv: "CERBERUS_VERIFY_REF", cerEnv: "CERBERUS_VERIFY_CERBERUS",
+		refAuthFlag: "--ref-token", cerAuthFlag: "--cerberus-token",
 		dialect: migrateverify.PromDialect(),
 		pair:    func(in *verifyInputs) *headPair { return &in.prom },
 	},
@@ -586,16 +596,21 @@ var verifyHeads = []verifyHeadFlags{
 		head:    migrateverify.HeadTempo,
 		refFlag: "--ref-tempo", cerFlag: "--cerberus-tempo",
 		refEnv: "CERBERUS_VERIFY_REF_TEMPO", cerEnv: "CERBERUS_VERIFY_CERBERUS_TEMPO",
+		refAuthFlag: "--ref-tempo-token", cerAuthFlag: "--cerberus-tempo-token",
+		orgFlag: "--ref-tempo-org-id",
 		dialect: migrateverify.TempoDialect(),
 		pair:    func(in *verifyInputs) *headPair { return &in.tempo },
 	},
 }
 
-// validateVerifyBackends enforces the two backend rules: at least one COMPLETE
-// pair must be supplied (a run with no lane can judge nothing), and a lane the
-// operator half-supplied is a usage error naming the missing flag — never a
-// silently skipped head, which would drop that head's queries into the
-// unconfigured bucket for a reason the operator did not choose.
+// validateVerifyBackends enforces the three backend rules: at least one COMPLETE
+// pair must be supplied (a run with no lane can judge nothing), a lane the
+// operator half-supplied is a usage error naming the missing flag, and a lane
+// whose auth/tenant flags were supplied with NO URL pair is a usage error too.
+// None of the three is ever a silently skipped head, which would drop that head's
+// queries into the unconfigured bucket for a reason the operator did not choose —
+// or, for the third, discard the credentials they did supply with no diagnostic at
+// all, hiding the mistyped URL env that is the actual cause.
 func validateVerifyBackends(in verifyInputs) error {
 	complete := 0
 	for _, h := range verifyHeads {
@@ -609,6 +624,11 @@ func validateVerifyBackends(in verifyInputs) error {
 		case p.cerberus != "":
 			return fmt.Errorf("%s was supplied without %s (or %s): a lane needs both a reference and a cerberus backend",
 				h.cerFlag, h.refFlag, h.refEnv)
+		default:
+			if flag, ok := danglingLaneFlag(h, p); ok {
+				return fmt.Errorf("%s was supplied but the %s lane has no backend pair: add %s and %s (or unset %s)",
+					flag, h.head, h.refFlag, h.cerFlag, flag)
+			}
 		}
 	}
 	if complete == 0 {
@@ -616,6 +636,28 @@ func validateVerifyBackends(in verifyInputs) error {
 			"(--ref/--cerberus, --ref-loki/--cerberus-loki, or --ref-tempo/--cerberus-tempo)")
 	}
 	return nil
+}
+
+// danglingLaneFlag returns the first auth/tenant flag supplied for a lane that has
+// NO backend URL at all, in flag-declaration order so the message is deterministic.
+// Supplying one is always a mistake worth naming — most often a mistyped URL env —
+// and the flag would otherwise be discarded in silence while the run reports that
+// head's queries as merely "unconfigured", a message that never mentions the input
+// the operator actually gave.
+func danglingLaneFlag(h verifyHeadFlags, p headPair) (string, bool) {
+	for _, f := range []struct {
+		flag  string
+		value string
+	}{
+		{h.refAuthFlag, p.refToken},
+		{h.cerAuthFlag, p.cerberusToken},
+		{h.orgFlag, p.refOrgID},
+	} {
+		if f.flag != "" && f.value != "" {
+			return f.flag, true
+		}
+	}
+	return "", false
 }
 
 func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
@@ -641,7 +683,9 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 	// the live requests above use the real URLs, but any user:pass@ basic-auth
 	// credential must never reach the repro line, the report JSON, or the text
 	// output — the operator re-supplies auth via the per-head --*-token flags (or
-	// their own URL) on replay. Tokens and tenant org-ids are never recorded.
+	// their own URL) on replay. Bearer tokens are never recorded. The reference
+	// tenant org-id IS recorded: it selects which tenant was queried, so a repro
+	// line without it reproduces a different run (or 401s the whole lane).
 	lanes := map[string]migrateverify.Lane{}
 	var backends []migrateverify.VerifyReportBackend
 	for _, h := range verifyHeads {
@@ -662,6 +706,7 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 			Head:        h.head,
 			RefURL:      migrateverify.RedactURL(p.ref),
 			CerberusURL: migrateverify.RedactURL(p.cerberus),
+			RefOrgID:    p.refOrgID,
 		})
 	}
 	rep := migrateverify.Verify(context.Background(), c, lanes, params)
@@ -1112,6 +1157,13 @@ func writeReportFile(path string, diag migrateverify.VerifyReport) error {
 // head-token order the report's backend list and per-head table use — so a
 // prom-only run reproduces as a prom-only run, and adding a lane to the report can
 // never silently add a lane to the repro line.
+//
+// A lane's reference tenant org-id rides along, because it is a ROUTING parameter:
+// omitting it would re-run against a different tenant, or 401 every reference
+// request on a multi-tenant Loki / Tempo and record the whole lane as errored —
+// a "repro" that reproduces a different failure than the one being reported.
+// Bearer tokens are the opposite case and stay out: they are credentials, and the
+// operator re-supplies them via the --*-token flags.
 func reproCommand(p migrateverify.VerifyReportParams) string {
 	parts := []string{"cerberus migrate verify", "--corpus", shellQuote(p.Corpus)}
 	for _, b := range p.Backends {
@@ -1120,6 +1172,9 @@ func reproCommand(p migrateverify.VerifyReportParams) string {
 			continue
 		}
 		parts = append(parts, f.refFlag, shellQuote(b.RefURL), f.cerFlag, shellQuote(b.CerberusURL))
+		if b.RefOrgID != "" && f.orgFlag != "" {
+			parts = append(parts, f.orgFlag, shellQuote(b.RefOrgID))
+		}
 	}
 	parts = append(
 		parts,

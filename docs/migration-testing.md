@@ -228,6 +228,17 @@ definition of "fired at the same evaluation", not an allow-list. Under it, the
 multi-window multi-burn-rate SLO deltas must hold zero across the **full bake
 window**, not a spot check.
 
+**A zero diverge count is necessary, not sufficient — the run must have compared
+something.** Every mode above defines what "equal" means; none of them says
+anything about a query that produced nothing to compare. Two empty matrices are
+equal, a lane whose backend rejected every query has no disagreements to report,
+and a corpus whose every entry is out of scope has no queries at all — all three
+would read as a clean zero-diverge run. `verify` therefore counts the *series it
+actually diffed* per lane, and both `verify` and `gate` refuse a run that replayed
+nothing, or a lane that replayed queries and diffed zero series. Treating absence
+of evidence as parity would be the largest allow-list of all: one that covers
+every query at once.
+
 **Log-stream and trace-search results have no comparison mode.** A LogQL bare
 selector returns log lines and a TraceQL search returns trace summaries — neither
 is matrix-shaped, so none of the three modes above can express equality for them.

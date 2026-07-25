@@ -78,10 +78,14 @@ actually contains:
 | `tempo` | `--ref-tempo`   | `--cerberus-tempo`    | `--ref-tempo-token`, `--cerberus-tempo-token` | `--ref-tempo-org-id`   |
 
 At least one **complete** pair is required; supplying one side of a pair is a
-usage error, never a silently skipped head. The `--*-org-id` flags send
-`X-Scope-OrgID` to the **reference** backend only — a multi-tenant Loki or Tempo
-rejects an unscoped read, while cerberus reads no tenant header at all, so there
-is deliberately no cerberus-side equivalent. `--tolerance` is a single value
+usage error, and so is supplying a lane's `-token` / `-org-id` flags with no URL
+pair at all — never a silently skipped head or a silently discarded credential.
+The `--*-org-id` flags send `X-Scope-OrgID` to the **reference** backend only — a
+multi-tenant Loki or Tempo rejects an unscoped read, while cerberus reads no
+tenant header at all, so there is deliberately no cerberus-side equivalent. The
+tenant id is a *routing* parameter, not a credential, so it is recorded in the
+`--report` diagnostic and reproduced in the repro command; the bearer tokens are
+credentials and appear in no artifact. `--tolerance` is a single value
 shared by every lane: the gate proves the same number on all three heads under
 one definition of equality.
 
@@ -185,8 +189,13 @@ matrix-shaped, so one comparator judges all three under one tolerance.
 
 Each replayed query lands as `match`, `diverge`, `unsupported`, or `error`, and
 the report carries a **per-head roll-up** alongside the aggregate so a healthy
-lane can never mask a lane that compared nothing. Three further buckets record
-inputs that were **not** examined:
+lane can never mask a lane that compared nothing. Every lane you configured gets
+a row, including one whose corpus entries all landed out of scope — a configured
+lane is never silently absent from the table. Each row also carries a
+`compared_series` count, which is the only number that is *evidence*: two empty
+matrices agree, so a lane can record nothing but matches while the comparator
+diffed nothing at all. Three further buckets record inputs that were **not**
+examined:
 
 - `unconfigured` — a replayable query whose head lane had no backend pair. This
   is a property of your invocation, not of the query, and it **blocks**: the gate
@@ -203,12 +212,15 @@ A green run means the replayed queries matched, not that every input was checked
 point (series, timestamp, reference value, cerberus value) and the lane it
 happened on.
 
-`verify` exits **non-zero (code 2)** if a single query diverges or errors, or if
-a head with replayable queries had no backend pair to judge them — divergence is
-**never** allow-listed and an unjudged lane is never counted as passing. Run it,
+`verify` exits **non-zero (code 2)** if a single query diverges or errors, if a
+head with replayable queries had no backend pair to judge them, if the run
+replayed nothing at all, or if any lane replayed queries and diffed zero series.
+Divergence is **never** allow-listed, and no absence of evidence is ever counted
+as passing — `verify`'s own banner and exit code apply exactly the rules
+`migrate gate` applies to the same report, so the two can never disagree. Run it,
 fix each divergence at the source, re-run. **You are done when the diverge count
-reaches zero with every head configured.** That is your permission to flip
-traffic — not a leap of faith.
+reaches zero, with every head configured and every lane comparing series.** That
+is your permission to flip traffic — not a leap of faith.
 
 For a failing run, add `--report diagnostics.json` to capture the full
 machine-readable diagnostics (with a copy-pasteable repro command; backend URLs
@@ -229,10 +241,14 @@ them into **one** PASS/FAIL verdict with a per-stage checklist. It **refuses**
 (exits **code 3**), it never merely warns, on any blocking input:
 
 - **verify** — any divergence or error blocks; a parity run that replayed **zero
-  queries** also blocks (an empty corpus proves nothing); a **head lane that
-  compared nothing** blocks even when another lane is green (40 matched PromQL
-  queries must not mask a Loki lane that judged none of its 12); and any
-  **unconfigured** replayable query blocks.
+  queries** also blocks (an empty or all-out-of-scope corpus proves nothing); a
+  **head lane that diffed zero series** blocks even when another lane is green
+  (40 matched PromQL queries must not mask a Loki lane that judged none of its
+  12, and a lane whose every response was an empty matrix "matched" without
+  comparing anything); and any **unconfigured** replayable query blocks. A lane
+  you configured that had no replayable query at all is reported as a caveat
+  naming that head — it does not block, because those entries are honestly out of
+  scope, but it is never silently omitted.
 - **classify** — any unsupported query blocks (risky ones WARN); classifying
   **zero queries** also blocks (an empty corpus proves no support coverage).
 - **rulegraph** — any *consumed* recorded series blocks (it must stay
@@ -335,11 +351,15 @@ pretends to know these:
   Prometheus. Only `verify` proves parity.
 - **Only `verify` earns the flip.** The diverge-count-zero result is the
   permission to cut over. Nothing upstream of it is.
+- **A green gate must rest on evidence, not on silence.** A match over two empty
+  matrices, a lane whose every query was unsupported, and a corpus whose every
+  entry is out of scope all look like "no divergences" — and all three block.
+  Both `verify` and `gate` key that rule on the number of series actually diffed.
 - **The gates refuse; they don't warn.** `verify` exits non-zero on any
-  divergence (never allow-listed) and on any replayable query whose head lane it
-  was not given the backends to judge; `gate` exits non-zero on any blocking
-  stage, an empty corpus, a lane that compared nothing, or a missing required
-  artifact. There is no escape hatch and no per-head opt-out — the honest way to
+  divergence (never allow-listed), on any replayable query whose head lane it was
+  not given the backends to judge, and on any lane that compared nothing; `gate`
+  exits non-zero on any blocking stage, an empty corpus, a lane that compared
+  nothing, or a missing required artifact. There is no escape hatch and no per-head opt-out — the honest way to
   narrow the gate is to harvest a narrower corpus, which is visible and diffable.
 - **Experimental ClickHouse paths may deviate.** Verify against the exact
   configuration you will run in production (see the note under *Verify*).
