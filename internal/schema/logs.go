@@ -31,9 +31,16 @@ type Logs struct {
 	ScopeAttributesColumn string
 	// TimestampColumn names the per-record timestamp column (DateTime64).
 	TimestampColumn string
-	// TraceIDColumn names the trace-id correlation column.
+	// TraceIDColumn names the trace-id correlation column. Upstream
+	// `logs_table.sql` types it `String` — the OTel ClickHouse Exporter's
+	// already hex-encoded form (lowercase, zero-padded to 32 chars), the
+	// same representation schema.Traces.TraceIDColumn carries and
+	// cerberus's Tempo head reads/emits verbatim (see
+	// internal/api/tempo/traceid_hex_test.go): a value read off this
+	// column is directly usable, unmodified, as a Tempo trace-by-id key.
 	TraceIDColumn string
-	// SpanIDColumn names the span-id correlation column.
+	// SpanIDColumn names the span-id correlation column. Same
+	// `String`-typed, already-hex-encoded shape, zero-padded to 16 chars.
 	SpanIDColumn string
 	// TraceFlagsColumn names the OTel TraceFlags column (UInt8).
 	TraceFlagsColumn string

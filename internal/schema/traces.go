@@ -41,9 +41,16 @@ type Traces struct {
 	// today's plain `TraceId = ?` filter unchanged.
 	TraceIDTsEnabled bool
 
-	// TraceIDColumn names the trace-id column (FixedString(16) hex).
+	// TraceIDColumn names the trace-id column. Upstream `traces_table.sql`
+	// types it `String`, not FixedString: the OTel ClickHouse Exporter
+	// writes the already hex-encoded form (`hex.EncodeToString`, lowercase,
+	// zero-padded to 32 chars), never raw 16-byte binary. This is the exact
+	// representation cerberus's Tempo head reads/emits verbatim (see
+	// internal/api/tempo/traceid_hex_test.go) and the PromQL exemplars path
+	// passes through unmodified (internal/api/prom/exemplars_encoding_test.go).
 	TraceIDColumn string
-	// SpanIDColumn names the span-id column (FixedString(8) hex).
+	// SpanIDColumn names the span-id column. Same `String`-typed,
+	// already-hex-encoded shape as TraceIDColumn, zero-padded to 16 chars.
 	SpanIDColumn string
 	// ParentSpanIDColumn names the parent-span-id column.
 	ParentSpanIDColumn string
