@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,11 +72,15 @@ type fakeSolverCursorClient struct {
 	err            error
 	rows           int
 	maxMemoryBytes int64
-	opens          int
+	// opens is written concurrently — Executor.Execute dispatches K shards
+	// in parallel goroutines, each calling QueryCursor on this SAME fake —
+	// so it must be atomic, not a plain int (confirmed by -race: the first
+	// version of this fake raced here).
+	opens atomic.Int64
 }
 
 func (f *fakeSolverCursorClient) QueryCursor(context.Context, string, ...any) (chclient.Cursor, error) {
-	f.opens++
+	f.opens.Add(1)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -162,12 +167,12 @@ func TestTryRouteMemoHit_DispatchesOnLivePreferBVerdict(t *testing.T) {
 	if usedDecision.K < 2 {
 		t.Errorf("usedDecision.K = %d, want >= 2 (the FRESHLY derived eligible decision, not the not-routed seed)", usedDecision.K)
 	}
-	if cq.opens < 1 {
+	if cq.opens.Load() < 1 {
 		// Execute opens one cursor PER SHARD (kEff of them, not one per
 		// dispatch) — the exact count depends on the decision's K clamped
 		// by Cfg.Parallel/MaxK, which this test does not pin. >=1 is the
 		// meaningful assertion: a dispatch actually happened.
-		t.Errorf("Executor cursor opens = %d, want >= 1 (a dispatch must have happened)", cq.opens)
+		t.Errorf("Executor cursor opens = %d, want >= 1 (a dispatch must have happened)", cq.opens.Load())
 	}
 }
 
@@ -185,8 +190,8 @@ func TestTryRouteMemoHit_UnknownKeyNeverDispatches(t *testing.T) {
 	if ok {
 		t.Fatal("tryRouteMemoHit dispatched for an Unknown key — must never memo-hit without a recorded verdict")
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens = %d, want 0 (no dispatch should have been attempted)", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0 (no dispatch should have been attempted)", cq.opens.Load())
 	}
 }
 
@@ -215,8 +220,8 @@ func TestTryRouteMemoHit_StaleVerdictFallsBackToCaller(t *testing.T) {
 	if ok {
 		t.Fatal("tryRouteMemoHit dispatched on a STALE PreferB verdict — must fall through to route A instead")
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens = %d, want 0", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0", cq.opens.Load())
 	}
 }
 
@@ -263,8 +268,8 @@ func TestTryRouteMemoHit_PreFlightFailureFallsBackToRouteA(t *testing.T) {
 	if cur != nil || info != nil || usedDecision != nil {
 		t.Errorf("dispatched=false but returned non-nil values: cur=%v info=%v usedDecision=%v", cur, info, usedDecision)
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens = %d, want 0 — emit fails before any shard is dispatched", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0 — emit fails before any shard is dispatched", cq.opens.Load())
 	}
 	// A pre-flight failure classifies NoEvidence (never ResourceFailure —
 	// see classifyRouteOutcome's doc), so Observe is correctly a no-op: the
@@ -336,8 +341,8 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	if retried {
 		t.Fatal("retried on the FIRST route-A resource failure — corroboration requires more than one")
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens after 1st failure = %d, want 0", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens after 1st failure = %d, want 0", cq.opens.Load())
 	}
 
 	// Second consecutive resource failure, same key, no intervening
@@ -350,10 +355,10 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	if cur == nil || info == nil || usedDecision == nil || observeFn == nil {
 		t.Fatalf("retried=true but cur=%v info=%v usedDecision=%v observeFn-is-nil=%v", cur, info, usedDecision, observeFn == nil)
 	}
-	if cq.opens < 1 {
+	if cq.opens.Load() < 1 {
 		// Execute opens one cursor PER SHARD, not one per dispatch (see the
 		// comment in TestTryRouteMemoHit_DispatchesOnLivePreferBVerdict).
-		t.Errorf("Executor cursor opens after 2nd failure = %d, want >= 1 (a retry dispatch must have happened)", cq.opens)
+		t.Errorf("Executor cursor opens after 2nd failure = %d, want >= 1 (a retry dispatch must have happened)", cq.opens.Load())
 	}
 
 	// The probe's SUCCESS is what creates the memo's first verdict for this
@@ -393,8 +398,8 @@ func TestRetryOnRouteAResourceFailure_NonResourceErrorNeverRetried(t *testing.T)
 			t.Fatalf("iteration %d: retried on a NoEvidence-class error (solver timeout)", i)
 		}
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens = %d, want 0 — no dispatch should ever have been attempted", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0 — no dispatch should ever have been attempted", cq.opens.Load())
 	}
 }
 
@@ -415,8 +420,8 @@ func TestRetryOnRouteAResourceFailure_ClientGoneNeverRetried(t *testing.T) {
 	if retried {
 		t.Fatal("retried on a cancelled context — no client is there to receive the retry's answer")
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens = %d, want 0", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0", cq.opens.Load())
 	}
 }
 
@@ -439,8 +444,8 @@ func TestRouteMemoWiring_InactiveWhenRouteMemoNil(t *testing.T) {
 	if _, _, _, _, ok := eng.retryOnRouteAResourceFailure(context.Background(), "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded); ok {
 		t.Fatal("retryOnRouteAResourceFailure dispatched with RouteMemo nil")
 	}
-	if cq.opens != 0 {
-		t.Errorf("Executor cursor opens = %d, want 0", cq.opens)
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0", cq.opens.Load())
 	}
 }
 
