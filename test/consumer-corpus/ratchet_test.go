@@ -8,10 +8,10 @@ import "testing"
 // forbid. The corpus is the project's record of what Grafana actually
 // sends — shrinking it silently un-pins a consumer contract.
 const (
-	minTotalEntries = 18
+	minTotalEntries = 19
 	minTempoEntries = 9
 	minLokiEntries  = 4
-	minPromEntries  = 5
+	minPromEntries  = 6
 )
 
 // TestConsumerCorpus_Ratchet pins the corpus census and the per-entry

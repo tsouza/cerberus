@@ -303,6 +303,15 @@ var stubFixtures = map[string]func() *StubQuerier{
 		return &StubQuerier{Strings: []string{"logql", "promql", "traceql"}}
 	},
 
+	// prom-label-values-service-name: /api/v1/label/service_name/values
+	// rows — mirrors the ServiceName values metricsChDBSeed's
+	// cerberus_query_inflight rows carry in the chdb lane (see
+	// replay_chdb_test.go), so the shared wire predicate holds under
+	// both lanes.
+	"prom-label-values-service-name": func() *StubQuerier {
+		return &StubQuerier{Strings: []string{"cerberus-api", "cerberus-loki", "cerberus-tempo"}}
+	},
+
 	// prom-series: /api/v1/series reuses the instant-query pipeline
 	// (fetchSeries → executeInstant), so the canned rows are Samples;
 	// the handler dedupes them into label sets.

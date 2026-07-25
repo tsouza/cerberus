@@ -114,6 +114,14 @@ var chdbLogsAnchor = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // and the request-time-anchored matcher paths. All three metric tables
 // are created — the metadata handler and the bare-histogram matcher
 // fan-out read every table regardless of which carry rows.
+//
+// otel_metrics_sum also carries a dedicated ServiceName column (one
+// value per cerberus_query_inflight row) so a label-values catalog
+// request against a schema-top-level-column label (service_name /
+// service.name → schema.Metrics.ServiceNameColumn, resolved by
+// internal/promql.schemaTopLevelColumn / dedicatedLabelColumns) reads a
+// real dedicated column instead of only the Attributes map — see
+// drilldown-label-values-service-name.json.
 func metricsChDBSeed(now time.Time) string {
 	ts := now.Add(-2 * time.Minute).UTC().Format("2006-01-02 15:04:05.000")
 	return `CREATE TABLE otel_metrics_gauge (
@@ -131,7 +139,8 @@ CREATE TABLE otel_metrics_sum (
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64,
-    IsMonotonic Bool DEFAULT false
+    IsMonotonic Bool DEFAULT false,
+    ServiceName String DEFAULT ''
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
@@ -146,10 +155,10 @@ CREATE TABLE otel_metrics_histogram (
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('` + ts + `', 9), 1.0);
-INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
-    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'promql'),  toDateTime64('` + ts + `', 9), 2.0),
-    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'logql'),   toDateTime64('` + ts + `', 9), 1.0),
-    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'traceql'), toDateTime64('` + ts + `', 9), 0.0);`
+INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value, ServiceName) VALUES
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'promql'),  toDateTime64('` + ts + `', 9), 2.0, 'cerberus-api'),
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'logql'),   toDateTime64('` + ts + `', 9), 1.0, 'cerberus-loki'),
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'traceql'), toDateTime64('` + ts + `', 9), 0.0, 'cerberus-tempo');`
 }
 
 // chdbTokens mirrors StubTokens for the chdb lane's seed anchors.
