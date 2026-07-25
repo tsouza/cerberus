@@ -174,6 +174,27 @@ against over-routing (Grafana's auto-step makes `rate[5m] @ 15s` hit `F=20`,
 which must NOT route at the default thresholds unless the total expansion is
 spike-class).
 
+**Failure-driven route memo (`CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`, default
+`false`).** The Planner's cost thresholds are static and can misclassify a
+plan whose real, data-dependent cost only shows up at execution time. When
+enabled, `internal/routememo` (see
+[`solver.md`](solver.md#failure-driven-route-memo)) retries a route-A
+dispatch that fails on ClickHouse resource exhaustion once on route B, and
+remembers the outcome against a literal-free fingerprint of the plan's cost
+shape so a later cost-equivalent request routes directly instead of paying
+the same failure again. It is opt-in — like `CERBERUS_CH_OPT_CORPUS_ENABLED`
+and `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` — so upgrading cerberus never
+silently changes ClickHouse dispatch/resource behavior. Two more knobs tune
+it once enabled:
+
+- **`CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL`** (duration, default: the
+  `internal/routememo` package default of 30 minutes) — how long a recorded
+  verdict is trusted before it ages out. Unset or non-positive leaves the
+  package default in effect rather than disabling the memo.
+- **`CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION`** (int, default: the
+  package default of 2) — the divisor that places re-validation at the TTL
+  midpoint. Same unset/non-positive-is-a-no-op contract as the TTL knob.
+
 ### Native rate (`timeSeriesRateToGrid`) — auto-enabled on 25.9+
 
 The `ts_grid_range` optimization opts the eligible
@@ -944,6 +965,24 @@ per-arm `MetricName` primary-key prune, so a genuine histogram companion
 pays nothing for the gauge/sum arms it doesn't use. This is why a gauge
 named `*_sum`/`*_count` is queryable as its literal name rather than
 silently resolving to a non-existent histogram base and returning empty.
+
+The table above assumes a `__name__` **pinned to a literal** — the shape a
+suffix heuristic can dispatch on. A classic-histogram row is stored under
+its bare base name and exposed on the wire only as the synthetic companion
+series `foo_bucket` / `foo_count` / `foo_sum`, so a matcher that pins one
+of those names is resolved by stripping the suffix. A **regex** (or negated)
+`__name__` matcher has no suffix to strip: applied to the stored
+`MetricName` it would be tested against the base alphabet, which is not the
+alphabet the client is asking about, and no histogram-derived series could
+ever match. The metadata surfaces (`/api/v1/series`, `/api/v1/labels`,
+`/api/v1/label/<name>/values`) therefore evaluate an unpinned `__name__`
+matcher against the **synthetic name set** — the histogram base names in the
+request window, crossed with the companion suffixes the selector lowering
+serves — and re-issue each accepted name as a literal-pinned arm. The
+enumeration is the same one `/api/v1/label/__name__/values` answers from, so
+the names a client can discover and the names a matcher can select are one
+set; and because each arm carries a `MetricName` equality it prunes on the
+primary-key prefix rather than scanning the window's whole name space.
 
 A second axis of resolution is the **separator**. A PromQL `__name__`
 carries only `[a-zA-Z0-9_:]`, but the OTel-CH `MetricName` it must match can

@@ -20,7 +20,7 @@ func TestTelemetryInstall_NilNoopByDefault(t *testing.T) {
 	t.Cleanup(func() { telemetry.Install(nil) })
 
 	telemetry.ObserveQuery("promql", "GET /api/v1/query").
-		Done(t.Context(), telemetry.ResultOK)
+		Done(t.Context(), telemetry.OutcomeOK())
 }
 
 // TestTelemetryInstall_ManualReader exercises the metric-export
@@ -36,9 +36,9 @@ func TestTelemetryInstall_ManualReader(t *testing.T) {
 
 	// Drive every instrument once.
 	telemetry.ObserveQuery("promql", "GET /api/v1/query").
-		Done(t.Context(), telemetry.ResultOK)
-	telemetry.ObserveStage(telemetry.StageParse).Done(t.Context())
-	telemetry.ObserveStage(telemetry.StageOptimize).Done(t.Context())
+		Done(t.Context(), telemetry.OutcomeOK())
+	telemetry.ObserveStage(telemetry.StageParse, telemetry.QLPromQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageOptimize, telemetry.QLPromQL).Done(t.Context())
 	telemetry.RecordRulesApplied(t.Context(), 3)
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 1024)
 

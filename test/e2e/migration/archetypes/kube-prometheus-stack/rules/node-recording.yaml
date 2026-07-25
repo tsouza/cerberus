@@ -1,0 +1,11 @@
+groups:
+  - name: node.rules
+    rules:
+      - record: node:node_cpu_utilisation:avg1m
+        expr: 1 - avg without (cpu) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+      - record: node:node_memory_utilisation:ratio
+        expr: 1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+      - record: cluster:node_cpu:ratio
+        expr: avg(node:node_cpu_utilisation:avg1m)
+      - record: instance:node_network_receive_bytes_excluding_lo:rate1m
+        expr: sum without (device) (rate(node_network_receive_bytes_total{device!="lo"}[1m]))

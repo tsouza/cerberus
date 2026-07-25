@@ -5,29 +5,33 @@
 // returns the same numbers their current stack does for the queries they actually
 // run.
 //
-// The gate covers the METRIC lane of each head: PromQL, LogQL metric queries, and
-// TraceQL metrics queries all return matrix-shaped results, so one comparator
-// judges all three. A query whose shape is not a metric matrix — a LogQL log
-// stream, a TraceQL trace search, a compare() — has no matrix baseline to diff
-// and is reported out of scope with the specific reason it was not judged, never
-// dropped and never guessed at.
+// Every corpus entry is routed by the SHAPE of the result it returns, and each
+// shape has its own definition of equality and its own comparator. PromQL, LogQL
+// metric queries and TraceQL metrics queries all return matrix-shaped results, so
+// one comparator judges all three; a LogQL log stream returns log lines and is
+// judged on the entry multiset; a TraceQL search returns trace summaries and is
+// judged on trace identity plus exact field equality. A shape with no definition
+// of equality is reported out of scope with the specific reason it was not
+// judged, never dropped and never guessed at.
 //
-// The flow is read-only against every backend: for each query it issues an
-// identical range request to that head's reference and to cerberus, decodes the
-// response into the shared matrix shape, matches series by their canonical label
-// set, step-aligns the samples, and compares values within a tolerance (with
-// NaN==NaN treated as equal). Every replayed query lands in exactly one verdict —
-// match, diverge, unsupported, or error — and a divergence is never allow-listed:
-// the gate exits non-zero if any query diverges or errors, if a head with
-// replayable queries had no backend pair configured to judge them, if nothing was
-// replayable at all, or if a lane replayed queries and diffed zero series.
+// The flow is read-only against every backend: for each comparison unit it
+// issues an identical request to that head's reference and to cerberus, decodes
+// both responses into that shape's payload, and diffs them. Every replayed unit
+// lands in exactly one verdict — match, diverge, undecidable, unsupported, or
+// error — and a divergence is never allow-listed: the gate exits non-zero if
+// anything diverges or errors, if a head with replayable queries had no backend
+// pair configured to judge them, if nothing was replayable at all, or if any
+// (head, shape) family replayed units and compared none of them.
 //
-// Honesty is the whole point: the comparator only claims a match where both
-// backends returned data that agrees. A series present in one backend but not
-// the other is itself a divergence (reported with its first differing point),
-// not a silent omission. And a match is only evidence if something was compared —
-// two empty matrices agree, so the report counts the series each lane actually
-// diffed and refuses to call a lane that diffed none of them proven.
+// Honesty is the whole point: a comparator only claims a match where both
+// backends returned data that agrees. A series or an entry present in one backend
+// but not the other is itself a divergence (reported with its first differing
+// point), not a silent omission. A dimension that CANNOT be compared — one whose
+// ordering neither backend fixes, or a band below a truncation boundary — is
+// named as a counted limitation rather than quietly excluded, and it never scores
+// as agreement. And a match is only evidence if something was compared — two
+// empty results agree, so the report counts what each family actually diffed and
+// refuses to call a family that diffed nothing proven.
 package migrateverify
 
 import (
@@ -103,6 +107,48 @@ const (
 	// unsupported: there is either nothing to compare, or the backend is broken
 	// rather than honestly rejecting the query — both must fail the gate.
 	VerdictError Verdict = "error"
+	// VerdictUndecidable: both backends answered successfully and the comparator
+	// diffed everything it could without finding a difference, but a named,
+	// counted structural limitation prevented a full parity claim. It is
+	// NON-BLOCKING on its own (like unsupported, it is an honest "I could not
+	// judge this"), and it can never green-light a family that compared nothing:
+	// the evidence counter and DeadFamilies do that independently.
+	VerdictUndecidable Verdict = "undecidable"
+)
+
+// First-diff reason codes. The report's PROSE explains a divergence to a human;
+// the code is what other code switches on, so a new comparator's wording can
+// never silently fall through a substring match written for the matrix lane.
+const (
+	// ReasonSeriesMissing: a series one backend returned and the other did not.
+	ReasonSeriesMissing = "series-missing"
+	// ReasonNoSampleAtStep: a step one backend has a sample at and the other does not.
+	ReasonNoSampleAtStep = "no-sample-at-step"
+	// ReasonValueDiffers: both backends have a sample at this step, with different values.
+	ReasonValueDiffers = "value-differs"
+	// ReasonEntryMissing: a log entry one backend returned and the other did not.
+	ReasonEntryMissing = "entry-missing"
+	// ReasonEntryMultiplicity: both backends returned this log entry, a different
+	// number of times.
+	ReasonEntryMultiplicity = "entry-multiplicity"
+	// ReasonTraceMissing: a trace summary one backend returned and the other did not.
+	ReasonTraceMissing = "trace-missing"
+	// ReasonTraceFieldDiffers: both backends returned this trace, disagreeing on one
+	// of its summary fields.
+	ReasonTraceFieldDiffers = "trace-field-differs"
+	// ReasonSpanMissing: a matched span one backend returned and the other did not.
+	ReasonSpanMissing = "span-missing"
+	// ReasonSpanFieldDiffers: both backends returned this span, disagreeing on one of
+	// its fields.
+	ReasonSpanFieldDiffers = "span-field-differs"
+	// ReasonTagMissing: a tag/label NAME one backend returned and the other did not.
+	ReasonTagMissing = "tag-missing"
+	// ReasonTagValueMissing: a tag/label VALUE one backend returned and the other
+	// did not.
+	ReasonTagValueMissing = "tag-value-missing"
+	// ReasonTagTypeDiffers: both backends returned this tag value (V2 discovery),
+	// disagreeing on its type.
+	ReasonTagTypeDiffers = "tag-type-differs"
 )
 
 // Sample is one point of a range result: a Unix-seconds timestamp and its value.
@@ -121,12 +167,31 @@ type Series struct {
 // Values are formatted strings (Prometheus renders values as strings) so NaN /
 // +Inf survive both the human report and JSON encoding, where a float NaN would
 // otherwise be unrepresentable.
+//
+// Kind names which anchor fields are meaningful; every kind-specific anchor is
+// omitempty, so no kind ever borrows another kind's field to mean something else.
+//
+// A log-stream timestamp lives in TimestampNano as a DECIMAL STRING, not in
+// Timestamp: a nanosecond epoch exceeds float64's exact-integer range, so the
+// float slot cannot carry one without silently losing precision. A trace-search
+// timestamp rides in RefValue / CerberusValue as a decimal string for the same
+// reason.
 type FirstDiff struct {
+	Kind          string  `json:"kind"`
 	Series        string  `json:"series"`
 	Timestamp     float64 `json:"timestamp"`
 	RefValue      string  `json:"ref_value"`
 	CerberusValue string  `json:"cerberus_value"`
 	Reason        string  `json:"reason"`
+	ReasonCode    string  `json:"reason_code"`
+
+	Stream        string `json:"stream,omitempty"`
+	TimestampNano string `json:"timestamp_nano,omitempty"`
+	TraceID       string `json:"trace_id,omitempty"`
+	SpanID        string `json:"span_id,omitempty"`
+	Field         string `json:"field,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	Tag           string `json:"tag,omitempty"`
 }
 
 // canonicalLabels renders a label set as a stable, order-independent key so the
@@ -256,7 +321,7 @@ func indexSeries(series []Series) map[string]Series {
 // missingSeriesDiff builds a FirstDiff for a series that exists in only one
 // backend, anchored at the present side's first sample.
 func missingSeriesDiff(key string, present Series, reason string) *FirstDiff {
-	fd := &FirstDiff{Series: key, Reason: reason}
+	fd := &FirstDiff{Kind: KindMetricMatrix, Series: key, Reason: reason, ReasonCode: ReasonSeriesMissing}
 	presentVal := "<none>"
 	if len(present.Samples) > 0 {
 		fd.Timestamp = present.Samples[0].T
@@ -298,11 +363,11 @@ func compareSeries(key string, ref, cerberus Series, tol float64) *FirstDiff {
 		cv, cok := cerAt[ts]
 		switch {
 		case !cok:
-			return &FirstDiff{Series: key, Timestamp: ts, RefValue: formatValue(rv), CerberusValue: "<no sample>", Reason: "cerberus has no sample at this step"}
+			return &FirstDiff{Kind: KindMetricMatrix, Series: key, Timestamp: ts, RefValue: formatValue(rv), CerberusValue: "<no sample>", Reason: "cerberus has no sample at this step", ReasonCode: ReasonNoSampleAtStep}
 		case !rok:
-			return &FirstDiff{Series: key, Timestamp: ts, RefValue: "<no sample>", CerberusValue: formatValue(cv), Reason: "reference has no sample at this step"}
+			return &FirstDiff{Kind: KindMetricMatrix, Series: key, Timestamp: ts, RefValue: "<no sample>", CerberusValue: formatValue(cv), Reason: "reference has no sample at this step", ReasonCode: ReasonNoSampleAtStep}
 		case !valuesEqual(rv, cv, tol):
-			return &FirstDiff{Series: key, Timestamp: ts, RefValue: formatValue(rv), CerberusValue: formatValue(cv), Reason: "value differs beyond tolerance"}
+			return &FirstDiff{Kind: KindMetricMatrix, Series: key, Timestamp: ts, RefValue: formatValue(rv), CerberusValue: formatValue(cv), Reason: "value differs beyond tolerance", ReasonCode: ReasonValueDiffers}
 		}
 	}
 	return nil
@@ -317,21 +382,35 @@ func samplesByTS(samples []Sample) map[float64]float64 {
 	return out
 }
 
-// Query is one corpus expression to replay, tagged with the head lane that owns
-// it and the language it came from.
+// Query is one comparison unit to replay: a corpus expression, or a probe
+// DERIVED from one (a trace-by-id fetch, a tag/tag-value enumeration), tagged
+// with the head lane that owns it, the language it came from, and the result
+// KIND that selects the comparator which judges it.
+//
+// TraceID / TagName / Surface are the probe arguments a derived query's kind
+// reads — a trace-by-id fetch reads TraceID, a tag-discovery probe reads
+// TagName (empty for an unfiltered enumeration) and Surface (which endpoint:
+// "labels" / "label-values" for loki, "tags-v1" / "tags-v2" / "tag-values-v1" /
+// "tag-values-v2" for tempo). A corpus-sourced query never sets them; no kind
+// ever reads a field it did not ask for.
 type Query struct {
-	Expr   string `json:"expr"`
-	Source string `json:"source"`
-	Head   string `json:"head"`
-	Lang   string `json:"lang"`
+	Expr    string `json:"expr"`
+	Source  string `json:"source"`
+	Head    string `json:"head"`
+	Lang    string `json:"lang"`
+	Kind    string `json:"kind"`
+	TraceID string `json:"trace_id,omitempty"`
+	TagName string `json:"tag_name,omitempty"`
+	Surface string `json:"surface,omitempty"`
 }
 
-// OutOfScopeEntry records a corpus entry no metric-lane parity check can judge —
-// a LogQL log-stream query, a TraceQL trace search, a compare(), an expression
-// the parser rejected, or a language this build has no lane for. Kind names the
-// query SHAPE and Reason states, in the operator's words, exactly why the gate
-// did not judge it. Reported and counted here, never dropped: pretending a query
-// was covered when it was not is the failure this accounting exists to prevent.
+// OutOfScopeEntry records a corpus entry no comparator can judge — a TraceQL
+// compare(), an expression the parser rejected, or a language this build has no
+// lane for. Kind names the query SHAPE, in the same vocabulary
+// a replayed query's Kind uses, and Reason states, in the operator's words,
+// exactly why the gate did not judge it. Reported and counted here, never
+// dropped: pretending a query was covered when it was not is the failure this
+// accounting exists to prevent.
 type OutOfScopeEntry struct {
 	Source string `json:"source"`
 	Expr   string `json:"expr"`
@@ -377,17 +456,27 @@ type Corpus struct {
 // CANDIDATE causes (never a detection — verify cannot introspect either backend)
 // to steer triage.
 //
-// ComparedSeries records how many distinct series the comparator diffed for this
-// query — 0 when both backends returned an empty matrix, which scores match but
-// proves nothing.
+// Kind names the result shape, and therefore which comparator judged this query.
+//
+// ComparedUnits records how many comparison units that comparator actually
+// diffed, counted in its own unit (series for a matrix, log entries for a
+// stream) — 0 when both backends returned nothing, which scores match but proves
+// nothing. ComparedSeries is the matrix lane's counter and stays matrix-only, so
+// a report that talks about "series" is always literally talking about series.
+//
+// Limitations names the dimensions this comparison could NOT judge, each with the
+// count of units the statement covers.
 type QueryResult struct {
 	Head           string                 `json:"head"`
+	Kind           string                 `json:"kind"`
 	Source         string                 `json:"source"`
 	Expr           string                 `json:"expr"`
 	Verdict        Verdict                `json:"verdict"`
 	ComparedSeries int                    `json:"compared_series"`
+	ComparedUnits  int                    `json:"compared_units"`
 	FirstDiff      *FirstDiff             `json:"first_diff,omitempty"`
 	Detail         string                 `json:"detail,omitempty"`
+	Limitations    []Limitation           `json:"limitations,omitempty"`
 	Attribution    []AttributionCandidate `json:"attribution,omitempty"`
 }
 
@@ -395,27 +484,58 @@ type QueryResult struct {
 // entries were never issued to any backend, so folding them into Total would
 // inflate the denominator of a claim the gate did not make.
 //
-// ComparedSeries counts the distinct series the comparator actually diffed. It is
-// the only counter that is EVIDENCE rather than bookkeeping: two empty matrices
-// score VerdictMatch, so Match alone cannot distinguish "both backends agreed on
-// real data" from "neither backend returned anything over this window". A lane
-// whose ComparedSeries is 0 proved nothing, however many matches it recorded —
-// see Report.DeadLanes.
+// ComparedUnits counts the comparison units the comparators actually diffed,
+// across every shape. It is the only counter that is EVIDENCE rather than
+// bookkeeping: two empty results score VerdictMatch, so Match alone cannot
+// distinguish "both backends agreed on real data" from "neither backend returned
+// anything over this window". A family whose Compared is 0 proved nothing,
+// however many matches it recorded — see Report.DeadFamilies.
+//
+// ComparedSeries keeps its matrix-only meaning: it counts series and nothing
+// else, so a report sentence that says "series" is never quietly counting log
+// lines. Limitations names, across the whole run, the dimensions no comparator
+// could judge.
 type Summary struct {
-	Total          int `json:"total"`
-	Match          int `json:"match"`
-	Diverge        int `json:"diverge"`
-	Unsupported    int `json:"unsupported"`
-	Error          int `json:"error"`
-	Unconfigured   int `json:"unconfigured"`
-	ComparedSeries int `json:"compared_series"`
-	OutOfScope     int `json:"out_of_scope"`
-	HarvestSkipped int `json:"harvest_skipped"`
+	Total          int          `json:"total"`
+	Match          int          `json:"match"`
+	Diverge        int          `json:"diverge"`
+	Undecidable    int          `json:"undecidable"`
+	Unsupported    int          `json:"unsupported"`
+	Error          int          `json:"error"`
+	Unconfigured   int          `json:"unconfigured"`
+	ComparedSeries int          `json:"compared_series"`
+	ComparedUnits  int          `json:"compared_units"`
+	OutOfScope     int          `json:"out_of_scope"`
+	HarvestSkipped int          `json:"harvest_skipped"`
+	Limitations    []Limitation `json:"limitations,omitempty"`
+}
+
+// FamilySummary is one (head, result-kind) partition's counts and evidence. Unit
+// names what Compared counts, so a row can never read "412 series" about a lane
+// that diffed log lines.
+//
+// Families are carried as a KIND-SORTED SLICE, not a map: the report's
+// byte-determinism is a pinned contract and a map would break it.
+type FamilySummary struct {
+	Kind        string       `json:"kind"`
+	Unit        string       `json:"unit"`
+	Total       int          `json:"total"`
+	Match       int          `json:"match"`
+	Diverge     int          `json:"diverge"`
+	Undecidable int          `json:"undecidable"`
+	Unsupported int          `json:"unsupported"`
+	Error       int          `json:"error"`
+	Compared    int          `json:"compared"`
+	Limitations []Limitation `json:"limitations,omitempty"`
 }
 
 // HeadSummary is one lane's counts, carried alongside the roll-up so a healthy
 // head can never mask a dead one: an aggregate "40 matched" reads green even when
 // a second lane compared nothing at all.
+//
+// Families splits that lane one level further, for the same reason: a head now
+// runs more than one shape, and 412 compared log entries must not vouch for a
+// metric family that compared zero series.
 //
 // Configured records whether the operator supplied that head's backend pair, and
 // is what makes a lane that replayed NOTHING legible. Without it a configured lane
@@ -424,9 +544,10 @@ type Summary struct {
 // operator would flip that datasource having read a green report that never
 // mentions it.
 type HeadSummary struct {
-	Head       string  `json:"head"`
-	Configured bool    `json:"configured"`
-	Summary    Summary `json:"summary"`
+	Head       string          `json:"head"`
+	Configured bool            `json:"configured"`
+	Summary    Summary         `json:"summary"`
+	Families   []FamilySummary `json:"families,omitempty"`
 }
 
 // ReportParams records the comparison parameters the gate and humans need to
@@ -445,13 +566,14 @@ type ReportParams struct {
 // blocks rather than zero-filling to a silent PASS. Bump it on any breaking
 // change to the on-disk Report shape.
 //
-// Version 2 carries the per-head lane split (Heads, each tagged Configured), the
-// Unconfigured bucket, and the ComparedSeries evidence counter. A version-1
-// artifact decoded by this build would zero-fill all of them into a bogus
-// "0 non-Prometheus queries, all lanes configured, 0 series compared" — precisely
-// the silent zero-fill the version check exists to stop — so the bump is
-// enforcing, not cosmetic.
-const ReportVersion = 2
+// Version 3 partitions each head by result kind (Heads[].Families), records the
+// shape-agnostic ComparedUnits evidence counter alongside the matrix-only
+// ComparedSeries, adds the undecidable verdict, and carries the counted
+// Limitations each comparison could not judge. An older artifact decoded by this
+// build would zero-fill all of them into a bogus "no families, 0 units compared,
+// nothing undecidable, no limitations" — precisely the silent zero-fill the
+// version check exists to stop — so the bump is enforcing, not cosmetic.
+const ReportVersion = 3
 
 // Report is the full parity result: the schema version, the resolved comparison
 // params, the roll-up summary, the per-head lane summaries, per-query verdicts,
@@ -477,20 +599,21 @@ type Report struct {
 //     claim parity for a query it never ran;
 //   - a run that replayed nothing at all (see JudgedNothing) — an all-out-of-scope
 //     corpus would otherwise print "all 0 queries matched" and exit 0;
-//   - any head lane that replayed queries but diffed no series (see DeadLanes) —
-//     a lane whose backend answered nothing comparable, or answered two empty
-//     matrices, has proved nothing about that datasource.
+//   - any (head, shape) family that replayed comparison units but compared none
+//     of them (see DeadFamilies) — a family whose backend answered nothing
+//     comparable, or answered two empty results, has proved nothing.
 //
 // The last two mirror the cutover gate's blocking rules exactly, so `verify`'s own
 // exit code and banner can never disagree with `migrate gate`'s verdict on the
 // same report.
 //
-// Unsupported, out-of-scope and harvest-skipped entries are reported but do not
-// fail on their own: each is a surfaced coverage gap, not a wrong answer. (A lane
-// made up ENTIRELY of them still blocks, via DeadLanes.)
+// Undecidable, unsupported, out-of-scope and harvest-skipped entries are reported
+// but do not fail on their own: each is a surfaced coverage gap, honestly named,
+// not a wrong answer. (A family made up ENTIRELY of them still blocks, via
+// DeadFamilies, because it compared nothing.)
 func (r Report) Failed() bool {
 	return r.Summary.Diverge > 0 || r.Summary.Error > 0 || r.Summary.Unconfigured > 0 ||
-		r.JudgedNothing() || len(r.DeadLanes()) > 0
+		r.JudgedNothing() || len(r.DeadFamilies()) > 0
 }
 
 // JudgedNothing reports whether the run replayed no query at all. A corpus whose
@@ -500,23 +623,64 @@ func (r Report) Failed() bool {
 // concludes.
 func (r Report) JudgedNothing() bool { return r.Summary.Total == 0 }
 
-// DeadLanes returns every head lane that replayed queries but diffed no series.
+// FamilyRef names one (head, result-kind) partition for the blocking rules and
+// the reasons rendered from them.
+type FamilyRef struct {
+	Head     string
+	Kind     string
+	Unit     string
+	Total    int
+	Compared int
+}
+
+// DeadFamilies returns every (head, family) partition that replayed comparison
+// units but compared none of them.
 //
-// It is keyed on ComparedSeries rather than on verdict counts because both ways of
-// comparing nothing must block: a lane whose cerberus side 4xx'd every query
-// (all-unsupported, no verdict reaches the comparator) and a lane where both
-// backends returned an empty matrix over the window (all-match, comparator walked
-// zero keys) are equally devoid of evidence. Returned per head, not folded into a
-// count, because the operator's next action is head-specific: it names which
-// datasource must not be flipped.
-func (r Report) DeadLanes() []HeadSummary {
-	var out []HeadSummary
+// It is keyed on the evidence counter rather than on verdict counts because both
+// ways of comparing nothing must block: a family whose cerberus side 4xx'd every
+// query (all-unsupported, no verdict reaches the comparator) and a family where
+// both backends returned nothing over the window (all-match, comparator walked
+// zero keys) are equally devoid of evidence.
+//
+// It is per FAMILY, not per head, because a head runs more than one shape: the
+// same masking argument that split the aggregate into per-head rows applies one
+// level down, so 412 compared log entries must not vouch for a metric family that
+// compared zero series. A head that replayed units without reporting any family
+// partition has no evidence to attribute either, and is reported the same way —
+// otherwise a malformed report would slip past the rule that every replay must
+// show what it compared.
+func (r Report) DeadFamilies() []FamilyRef {
+	var out []FamilyRef
 	for _, h := range r.Heads {
-		if h.Summary.Total > 0 && h.Summary.ComparedSeries == 0 {
-			out = append(out, h)
+		if h.Summary.Total == 0 {
+			continue
+		}
+		if len(h.Families) == 0 {
+			out = append(out, FamilyRef{
+				Head: h.Head, Unit: UnitComparisons,
+				Total: h.Summary.Total, Compared: h.Summary.ComparedUnits,
+			})
+			continue
+		}
+		for _, f := range h.Families {
+			if f.Total > 0 && f.Compared == 0 {
+				out = append(out, FamilyRef{
+					Head: h.Head, Kind: f.Kind, Unit: f.Unit,
+					Total: f.Total, Compared: f.Compared,
+				})
+			}
 		}
 	}
 	return out
+}
+
+// FamilyLabel renders a family reference for an operator: the head plus the shape
+// it names, or the head alone when the report attributed no shape to it.
+func (f FamilyRef) FamilyLabel() string {
+	if f.Kind == "" {
+		return f.Head
+	}
+	return f.Head + "/" + f.Kind
 }
 
 // IdleLanes returns every head lane the operator CONFIGURED that had no replayable
@@ -529,6 +693,47 @@ func (r Report) IdleLanes() []HeadSummary {
 	for _, h := range r.Heads {
 		if h.Configured && h.Summary.Total == 0 {
 			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// IdleDerivedFamilies returns every CONFIGURED head that ran the trace-search
+// family (so it is CAPABLE of deriving a trace-by-id probe) but whose
+// derived-only trace-by-id family never ran at all.
+//
+// trace-by-id is never a top-level corpus entry — no query language names a
+// trace ID — so it exists in a report ONLY when trace-search derived it. A
+// family that never derived anything leaves no row in Families at all (see
+// reportRun.family), so "never ran" cannot be read off Total==0 the way a
+// corpus-sourced family's deadness can; it has to be read off the family's
+// ABSENCE alongside its capable sibling's presence.
+//
+// It does not block: an all-out-of-scope corpus already fails via
+// JudgedNothing/DeadFamilies, and a head that legitimately never derived a
+// probe (no trace-search query returned a trace both backends have) proved
+// nothing wrong — it simply had nothing to derive from. But it is surfaced,
+// not silent: without it, a derived family that never ran once is
+// indistinguishable from one this build forgot to wire up at all, and an
+// operator reading a report that never mentions trace-by-id has no way to
+// tell "verified" from "never attempted".
+func (r Report) IdleDerivedFamilies() []FamilyRef {
+	var out []FamilyRef
+	for _, h := range r.Heads {
+		if !h.Configured {
+			continue
+		}
+		var canDerive, derived bool
+		for _, f := range h.Families {
+			switch {
+			case f.Kind == KindTraceSearch:
+				canDerive = true
+			case f.Kind == KindTraceByID && f.Total > 0:
+				derived = true
+			}
+		}
+		if canDerive && !derived {
+			out = append(out, FamilyRef{Head: h.Head, Kind: KindTraceByID, Unit: UnitSpans})
 		}
 	}
 	return out
@@ -552,9 +757,17 @@ type RangeResult struct {
 // Lane is one head's reference/cerberus backend pair. Both sides speak that
 // head's dialect, so the same query is replayed identically against the
 // operator's current stack and against cerberus.
+//
+// RefKind / CerberusKind are the SAME connection as Ref / Cerberus — one
+// *HTTPBackend implements both interfaces — and are separate fields only so the
+// matrix Backend contract stays one method wide. A lane whose kind backends are
+// absent records any non-matrix query as UNCONFIGURED, which blocks: the gate
+// cannot claim parity for a shape it had no transport to fetch.
 type Lane struct {
-	Ref      Backend
-	Cerberus Backend
+	Ref          Backend
+	Cerberus     Backend
+	RefKind      KindBackend
+	CerberusKind KindBackend
 }
 
 // Verify replays every corpus query against the lane its head names and assembles
@@ -563,34 +776,28 @@ type Lane struct {
 // cerberus with identical parameters; the verdict is derived as:
 //
 //   - transport/decode failure on either backend, a reference that did not
-//     return a 200 matrix, or a cerberus 5xx / other non-200-non-4xx status (a
-//     half-broken backend) → error (nothing to compare, or the backend is broken);
-//   - cerberus 4xx, or a 200 non-matrix body → unsupported (answered, but could
-//     not serve the query as a range);
-//   - otherwise → the comparator's match/diverge verdict.
+//     return a usable baseline, or a cerberus 5xx / other non-200-non-4xx status
+//     (a half-broken backend) → error (nothing to compare, or the backend is
+//     broken);
+//   - cerberus 4xx, or a 200 body of the wrong result shape → unsupported
+//     (answered, but could not serve the query in the shape this lane asked for);
+//   - otherwise → the shape's comparator verdict.
 //
 // A query whose head has no configured lane is recorded as UNCONFIGURED: never
 // replayed against another head's backend (which would compare two unrelated
 // APIs), never silently dropped, and blocking — see Report.Failed.
 func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params) Report {
-	rep := Report{
-		SchemaVersion:  ReportVersion,
-		Params:         ReportParams{Tolerance: p.Tolerance},
-		OutOfScope:     corpus.OutOfScope,
-		HarvestSkipped: corpus.HarvestSkipped,
+	run := &reportRun{
+		rep: Report{
+			SchemaVersion:  ReportVersion,
+			Params:         ReportParams{Tolerance: p.Tolerance},
+			OutOfScope:     corpus.OutOfScope,
+			HarvestSkipped: corpus.HarvestSkipped,
+		},
+		byHead: map[string]*headAccum{},
 	}
-	rep.Summary.OutOfScope = len(corpus.OutOfScope)
-	rep.Summary.HarvestSkipped = len(corpus.HarvestSkipped)
-
-	byHead := map[string]*Summary{}
-	headSummary := func(head string) *Summary {
-		s, ok := byHead[head]
-		if !ok {
-			s = &Summary{}
-			byHead[head] = s
-		}
-		return s
-	}
+	run.rep.Summary.OutOfScope = len(corpus.OutOfScope)
+	run.rep.Summary.HarvestSkipped = len(corpus.HarvestSkipped)
 
 	// Seed a row for every CONFIGURED lane before any query is routed. A lane whose
 	// corpus entries all routed out of scope replays nothing, so the query loop
@@ -598,7 +805,7 @@ func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params)
 	// that a healthy head cannot mask a quiet one — would silently omit the lane
 	// the operator explicitly supplied backends for.
 	for head := range lanes {
-		headSummary(head)
+		run.head(head)
 	}
 	// Out-of-scope entries are attributed to the head that declined them, so a lane
 	// showing 0 replayed also shows WHY: "tempo 0 replayed … 12 out of scope" is a
@@ -608,55 +815,145 @@ func Verify(ctx context.Context, corpus Corpus, lanes map[string]Lane, p Params)
 		if e.Head == "" {
 			continue
 		}
-		headSummary(e.Head).OutOfScope++
+		run.head(e.Head).summary.OutOfScope++
 	}
 
-	for _, q := range corpus.Queries {
-		hs := headSummary(q.Head)
+	// The corpus batch first, then whatever it derived. Both go through the SAME
+	// loop body, so lane seeding, the unconfigured bucket, the verdict switch and
+	// the per-head/per-family rows exist in exactly one place. Derived units never
+	// derive further units: the depth is fixed at one.
+	derived := run.runBatch(ctx, corpus.Queries, lanes, p)
+	run.runBatch(ctx, derived, lanes, p)
+
+	run.rep.Heads = sortedHeadSummaries(run.byHead, lanes)
+	return run.rep
+}
+
+// headAccum accumulates one head's roll-up plus its per-family partitions while a
+// run is in flight. Families are held in a map for O(1) accumulation and flattened
+// into a kind-sorted slice at the end, where determinism is what matters.
+type headAccum struct {
+	summary  Summary
+	families map[string]*FamilySummary
+}
+
+// reportRun is the in-flight report plus its per-head accumulators, so one batch
+// loop can serve both the corpus batch and the batch it derives.
+type reportRun struct {
+	rep    Report
+	byHead map[string]*headAccum
+}
+
+// head returns the accumulator for a head, creating it on first use.
+func (rr *reportRun) head(head string) *headAccum {
+	h, ok := rr.byHead[head]
+	if !ok {
+		h = &headAccum{families: map[string]*FamilySummary{}}
+		rr.byHead[head] = h
+	}
+	return h
+}
+
+// family returns a head's accumulator for one result kind, creating it on first
+// use and stamping the unit that kind counts in.
+func (rr *reportRun) family(head, kind string) *FamilySummary {
+	h := rr.head(head)
+	f, ok := h.families[kind]
+	if !ok {
+		f = &FamilySummary{Kind: kind, Unit: kindUnit(kind)}
+		h.families[kind] = f
+	}
+	return f
+}
+
+// runBatch replays one batch of comparison units through the shared accounting
+// and returns the units that batch derived.
+func (rr *reportRun) runBatch(ctx context.Context, qs []Query, lanes map[string]Lane, p Params) []Query {
+	var derived []Query
+	for _, q := range qs {
 		lane, ok := lanes[q.Head]
 		if !ok {
-			rep.Unconfigured = append(rep.Unconfigured, UnconfiguredEntry{
-				Source: q.Source, Expr: q.Expr, Head: q.Head, Lang: q.Lang,
-				Reason: fmt.Sprintf(
-					"head=%s has replayable %s queries but no reference/cerberus backend pair was configured for it; the gate did not judge them",
-					q.Head, q.Lang,
-				),
-			})
-			rep.Summary.Unconfigured++
-			hs.Unconfigured++
+			rr.recordUnconfigured(q, fmt.Sprintf(
+				"head=%s has replayable %s queries but no reference/cerberus backend pair was configured for it; the gate did not judge them",
+				q.Head, q.Lang,
+			))
 			continue
 		}
-		res := verifyOne(ctx, q, lane.Ref, lane.Cerberus, p)
-		rep.Results = append(rep.Results, res)
-		rep.Summary.Total++
-		hs.Total++
-		rep.Summary.ComparedSeries += res.ComparedSeries
-		hs.ComparedSeries += res.ComparedSeries
-		switch res.Verdict {
-		case VerdictMatch:
-			rep.Summary.Match++
-			hs.Match++
-		case VerdictDiverge:
-			rep.Summary.Diverge++
-			hs.Diverge++
-		case VerdictUnsupported:
-			rep.Summary.Unsupported++
-			hs.Unsupported++
-		case VerdictError:
-			rep.Summary.Error++
-			hs.Error++
+		if !isMatrixKind(q.Kind) && (lane.RefKind == nil || lane.CerberusKind == nil) {
+			rr.recordUnconfigured(q, fmt.Sprintf(
+				"head=%s has replayable %s queries of shape %s but its backend pair speaks no wire contract for that shape; the gate did not judge them",
+				q.Head, q.Lang, q.Kind,
+			))
+			continue
 		}
+		res, next := verifyOne(ctx, q, lane, p)
+		derived = append(derived, next...)
+		rr.record(res)
 	}
-	rep.Heads = sortedHeadSummaries(byHead, lanes)
-	return rep
+	return derived
+}
+
+// recordUnconfigured books a comparison unit that was never issued to anything.
+func (rr *reportRun) recordUnconfigured(q Query, reason string) {
+	rr.rep.Unconfigured = append(rr.rep.Unconfigured, UnconfiguredEntry{
+		Source: q.Source, Expr: q.Expr, Head: q.Head, Lang: q.Lang, Reason: reason,
+	})
+	rr.rep.Summary.Unconfigured++
+	rr.head(q.Head).summary.Unconfigured++
+}
+
+// record folds one replayed unit's outcome into the roll-up, its head, and its
+// (head, shape) family. Every counter a blocking rule reads is updated here and
+// nowhere else, so no shape can be counted into one view and out of another.
+func (rr *reportRun) record(res QueryResult) {
+	h := rr.head(res.Head)
+	f := rr.family(res.Head, res.Kind)
+
+	rr.rep.Results = append(rr.rep.Results, res)
+	rr.rep.Summary.Total++
+	h.summary.Total++
+	f.Total++
+
+	rr.rep.Summary.ComparedSeries += res.ComparedSeries
+	h.summary.ComparedSeries += res.ComparedSeries
+	rr.rep.Summary.ComparedUnits += res.ComparedUnits
+	h.summary.ComparedUnits += res.ComparedUnits
+	f.Compared += res.ComparedUnits
+
+	rr.rep.Summary.Limitations = mergeLimitations(rr.rep.Summary.Limitations, res.Limitations)
+	h.summary.Limitations = mergeLimitations(h.summary.Limitations, res.Limitations)
+	f.Limitations = mergeLimitations(f.Limitations, res.Limitations)
+
+	switch res.Verdict {
+	case VerdictMatch:
+		rr.rep.Summary.Match++
+		h.summary.Match++
+		f.Match++
+	case VerdictDiverge:
+		rr.rep.Summary.Diverge++
+		h.summary.Diverge++
+		f.Diverge++
+	case VerdictUndecidable:
+		rr.rep.Summary.Undecidable++
+		h.summary.Undecidable++
+		f.Undecidable++
+	case VerdictUnsupported:
+		rr.rep.Summary.Unsupported++
+		h.summary.Unsupported++
+		f.Unsupported++
+	case VerdictError:
+		rr.rep.Summary.Error++
+		h.summary.Error++
+		f.Error++
+	}
 }
 
 // sortedHeadSummaries flattens the per-head counters into a head-token-sorted
 // slice so the JSON report is byte-deterministic across runs (Go map iteration
 // order is not). Each row is tagged with whether that head had a configured
 // backend pair, which is what lets a consumer tell "lane supplied, judged nothing"
-// apart from "lane never supplied".
-func sortedHeadSummaries(byHead map[string]*Summary, lanes map[string]Lane) []HeadSummary {
+// apart from "lane never supplied", and carries its families in kind order.
+func sortedHeadSummaries(byHead map[string]*headAccum, lanes map[string]Lane) []HeadSummary {
 	heads := make([]string, 0, len(byHead))
 	for h := range byHead {
 		heads = append(heads, h)
@@ -665,13 +962,55 @@ func sortedHeadSummaries(byHead map[string]*Summary, lanes map[string]Lane) []He
 	out := make([]HeadSummary, 0, len(heads))
 	for _, h := range heads {
 		_, configured := lanes[h]
-		out = append(out, HeadSummary{Head: h, Configured: configured, Summary: *byHead[h]})
+		out = append(out, HeadSummary{
+			Head:       h,
+			Configured: configured,
+			Summary:    byHead[h].summary,
+			Families:   sortedFamilies(byHead[h].families),
+		})
 	}
 	return out
 }
 
-// verifyOne runs the parity check for a single query on its head's lane.
-func verifyOne(ctx context.Context, q Query, ref, cerberus Backend, p Params) QueryResult {
+// sortedFamilies flattens one head's family accumulators into a kind-sorted slice.
+func sortedFamilies(byKind map[string]*FamilySummary) []FamilySummary {
+	if len(byKind) == 0 {
+		return nil
+	}
+	kinds := make([]string, 0, len(byKind))
+	for k := range byKind {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	out := make([]FamilySummary, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, *byKind[k])
+	}
+	return out
+}
+
+// isMatrixKind reports whether a comparison unit is judged by the matrix
+// comparator. The empty kind is included so a Query assembled without one — a
+// hand-built corpus, a caller predating the kind vocabulary — is judged as a
+// metric matrix rather than falling through to "no comparator".
+func isMatrixKind(kind string) bool {
+	return kind == "" || kind == KindMetricMatrix
+}
+
+// verifyOne dispatches one comparison unit to the comparator its result shape
+// selects, and returns the units that comparison derived.
+func verifyOne(ctx context.Context, q Query, lane Lane, p Params) (QueryResult, []Query) {
+	if isMatrixKind(q.Kind) {
+		res := verifyMatrix(ctx, q, lane.Ref, lane.Cerberus, p)
+		res.Kind, res.ComparedUnits = KindMetricMatrix, res.ComparedSeries
+		return res, nil
+	}
+	return verifyKind(ctx, q, lane, p)
+}
+
+// verifyMatrix runs the parity check for a single matrix-shaped query on its
+// head's lane.
+func verifyMatrix(ctx context.Context, q Query, ref, cerberus Backend, p Params) QueryResult {
 	out := QueryResult{Head: q.Head, Source: q.Source, Expr: q.Expr}
 
 	refRes, refErr := ref.QueryRange(ctx, q.Expr, p)
@@ -774,11 +1113,24 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 
 	bw.printf("# cerberus migrate verify\n")
 	bw.printf("#\n")
-	bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
-	bw.printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
-	bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
-	bw.printf("# or errors, if a head's replayable queries had no backend pair to judge them,\n")
-	bw.printf("# if nothing was replayable at all, or if any lane diffed zero series.\n")
+	if r.hasNonMatrixFamily() {
+		// A run that judged more than one result shape describes itself in the
+		// vocabulary that covers all of them: "series" is the matrix lane's unit,
+		// and a header that says it while a log-stream lane ran would name the
+		// wrong evidence.
+		bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
+		bw.printf("# and cerberus over one window, results diffed by the comparator its result\n")
+		bw.printf("# shape selects. A divergence is never allow-listed — the gate fails if any\n")
+		bw.printf("# query diverges or errors, if a head's replayable queries had no backend pair\n")
+		bw.printf("# to judge them, if nothing was replayable at all, or if any family compared\n")
+		bw.printf("# nothing.\n")
+	} else {
+		bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
+		bw.printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
+		bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
+		bw.printf("# or errors, if a head's replayable queries had no backend pair to judge them,\n")
+		bw.printf("# if nothing was replayable at all, or if any lane diffed zero series.\n")
+	}
 	bw.printf("#\n")
 	bw.printf("# Note: %s\n", ExperimentalNote)
 	bw.printf("#\n")
@@ -787,9 +1139,17 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	// comparison actually was.
 	bw.printf("# Match tolerance: %s (absolute; relative granularity also applied at large magnitudes)\n", formatValue(r.Params.Tolerance))
 	bw.printf("#\n")
-	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d unconfigured, +%d out of scope, +%d harvest-skipped)\n\n",
+	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d unconfigured, +%d out of scope, +%d harvest-skipped)\n",
 		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error,
 		r.Summary.Unconfigured, r.Summary.OutOfScope, r.Summary.HarvestSkipped)
+	if r.Summary.Undecidable > 0 {
+		// Undecidable is NOT folded into the match count: both backends answered
+		// and nothing disagreed, but a named limitation stopped short of a parity
+		// claim, and a reader who sees only "match" would take the stronger claim.
+		bw.printf("# %d undecidable — a named, counted limitation prevented a parity claim; see \"not judged\" below\n",
+			r.Summary.Undecidable)
+	}
+	bw.printf("\n")
 
 	r.writeHeadTable(bw)
 
@@ -803,9 +1163,7 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 			bw.printf("   detail: %s\n", res.Detail)
 		}
 		if res.FirstDiff != nil {
-			fd := res.FirstDiff
-			bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
-				fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
+			writeFirstDiff(bw, res.FirstDiff)
 		}
 		for _, a := range res.Attribution {
 			bw.printf("   candidate-cause [%s]: %s\n", a.Category, a.Note)
@@ -825,8 +1183,24 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 		bw.printf("\n")
 	}
 
+	// What the run could not judge, with the count each statement covers. It sits
+	// with the other accounting rather than in a footnote: a limitation is the one
+	// thing a reader cannot infer from the verdict counts, because a dimension
+	// nobody compared leaves no trace in them.
+	if r.Summary.Undecidable > 0 || len(r.Summary.Limitations) > 0 {
+		bw.printf("== not judged — dimensions no comparator could judge, and how much each covers\n")
+		if r.Summary.Undecidable > 0 {
+			bw.printf("   %d quer%s reached no parity claim at all\n",
+				r.Summary.Undecidable, pluralQueries(r.Summary.Undecidable))
+		}
+		for _, l := range r.Summary.Limitations {
+			bw.printf("   [%s] %d: %s\n", l.Code, l.Count, l.Detail)
+		}
+		bw.printf("\n")
+	}
+
 	if len(r.OutOfScope) > 0 {
-		bw.printf("== out of scope (%d) — no metric-lane parity is definable for these queries\n", len(r.OutOfScope))
+		bw.printf("== out of scope (%d) — no parity is definable for these queries\n", len(r.OutOfScope))
 		for _, e := range r.OutOfScope {
 			bw.printf("   %s %s %s: %s\n", outOfScopeLane(e), e.Kind, e.Source, e.Reason)
 		}
@@ -848,11 +1222,20 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 		}
 		r.writeBugReport(bw, g)
 	} else {
-		bw.printf("PASS: %d match, %d unsupported, %d series compared (no divergence)\n",
-			r.Summary.Match, r.Summary.Unsupported, r.Summary.ComparedSeries)
+		if r.hasNonMatrixFamily() {
+			bw.printf("PASS: %d match, %d undecidable, %d unsupported, %d comparison units compared (no divergence)\n",
+				r.Summary.Match, r.Summary.Undecidable, r.Summary.Unsupported, r.Summary.ComparedUnits)
+		} else {
+			bw.printf("PASS: %d match, %d unsupported, %d series compared (no divergence)\n",
+				r.Summary.Match, r.Summary.Unsupported, r.Summary.ComparedSeries)
+		}
 		for _, h := range r.IdleLanes() {
 			bw.printf("NOTE: head %s was configured but had no replayable query (%d out of scope); "+
 				"this lane was not judged\n", h.Head, h.Summary.OutOfScope)
+		}
+		for _, f := range r.IdleDerivedFamilies() {
+			bw.printf("NOTE: head %s ran trace-search but never derived a %s probe (no trace-search result "+
+				"gave it a trace both backends have); that shape was not judged this run\n", f.Head, f.Kind)
 		}
 	}
 	return bw.err
@@ -871,13 +1254,84 @@ func (r Report) noEvidenceReasons() []string {
 			r.Summary.OutOfScope, r.Summary.HarvestSkipped,
 		))
 	}
-	for _, h := range r.DeadLanes() {
+	for _, f := range r.DeadFamilies() {
 		out = append(out, fmt.Sprintf(
-			"head %s compared nothing: 0 series diffed across %d replayed queries; that datasource is unproven",
-			h.Head, h.Summary.Total,
+			"%s compared nothing: 0 %s diffed across %d replayed probes; that shape is unproven on that datasource",
+			f.FamilyLabel(), f.Unit, f.Total,
 		))
 	}
 	return out
+}
+
+// pluralQueries renders the "query"/"queries" suffix for a count.
+func pluralQueries(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
+// hasNonMatrixFamily reports whether any head judged a shape other than the
+// metric matrix. It gates every sentence whose vocabulary would otherwise be
+// wrong — "series compared" on a run that diffed log lines — so a matrix-only
+// run reads exactly as it always has.
+func (r Report) hasNonMatrixFamily() bool {
+	for _, h := range r.Heads {
+		for _, f := range h.Families {
+			if f.Kind != KindMetricMatrix {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeFirstDiff renders a divergence anchored in the vocabulary of the shape it
+// came from. The matrix anchor is a series and a step; a log-stream anchor is a
+// stream and a nanosecond timestamp, which is printed from its decimal string —
+// routing it through formatValue's float rendering would print a present-day
+// nanosecond epoch as "1.78e+18" and lose the entry it points at. A trace-search
+// anchor is a trace, optionally a span within it, and the field that differed.
+func writeFirstDiff(bw *errWriter, fd *FirstDiff) {
+	switch fd.Kind {
+	case KindLogStream:
+		bw.printf("   first-diff: stream=%s ts=%sns ref=%s cerberus=%s (%s)\n",
+			fd.Stream, fd.TimestampNano, fd.RefValue, fd.CerberusValue, fd.Reason)
+	case KindTraceSearch, KindTraceByID:
+		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
+			traceDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
+	case KindTagDiscovery:
+		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
+			tagDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
+	default:
+		bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
+			fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
+	}
+}
+
+// traceDiffAnchor names the exact place a trace-search divergence sits. The span
+// and field clauses appear only when the diff actually has one, so a whole-trace
+// difference is never printed with an empty "span=" or "field=" that reads as a
+// missing value rather than an inapplicable one.
+func traceDiffAnchor(fd *FirstDiff) string {
+	anchor := "trace=" + fd.TraceID
+	if fd.SpanID != "" {
+		anchor += " span=" + fd.SpanID
+	}
+	if fd.Field != "" {
+		anchor += " field=" + fd.Field
+	}
+	return anchor
+}
+
+// tagDiffAnchor names the exact place a tag-discovery divergence sits: the
+// scope (tempo v2 only; empty elsewhere) and the tag name or value it concerns.
+func tagDiffAnchor(fd *FirstDiff) string {
+	anchor := "tag=" + fd.Tag
+	if fd.Scope != "" {
+		anchor = "scope=" + fd.Scope + " " + anchor
+	}
+	return anchor
 }
 
 // writeHeadTable prints the per-lane roll-up in head-token order. It exists so a
@@ -885,10 +1339,16 @@ func (r Report) noEvidenceReasons() []string {
 // "40 match" while a second lane compared nothing, and only the per-head split
 // makes that visible.
 //
-// Each row states whether the operator configured that lane and how many series it
+// Each row states whether the operator configured that lane and how much it
 // actually diffed, because those two numbers — not the match count — are what says
 // whether the lane proved anything. A configured lane with 0 replayed queries and a
 // head that only ever appeared in the out-of-scope list both get a row.
+//
+// A head that judged ONE shape and reached a verdict on every replay states its
+// evidence on the head line itself. A head that judged more than one shape, or
+// that left anything undecidable, moves its evidence to one indented row per
+// family — the head line alone would sum two shapes into one number, which is the
+// masking the split exists to prevent.
 func (r Report) writeHeadTable(bw *errWriter) {
 	if len(r.Heads) == 0 {
 		return
@@ -896,11 +1356,30 @@ func (r Report) writeHeadTable(bw *errWriter) {
 	bw.printf("# per-head lanes:\n")
 	for _, h := range r.Heads {
 		s := h.Summary
-		bw.printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d series compared, %d out of scope\n",
+		if len(h.Families) > 1 || s.Undecidable > 0 {
+			bw.printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d out of scope\n",
+				h.Head, headLaneState(h), s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured, s.OutOfScope)
+			for _, f := range h.Families {
+				bw.printf("#          %-14s %d replayed: %d match, %d diverge, %d undecidable, %d unsupported, %d error; %d %s compared\n",
+					f.Kind, f.Total, f.Match, f.Diverge, f.Undecidable, f.Unsupported, f.Error, f.Compared, f.Unit)
+			}
+			continue
+		}
+		bw.printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d %s compared, %d out of scope\n",
 			h.Head, headLaneState(h), s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured,
-			s.ComparedSeries, s.OutOfScope)
+			s.ComparedUnits, headLaneUnit(h), s.OutOfScope)
 	}
 	bw.printf("\n")
+}
+
+// headLaneUnit names the unit a single-family head's evidence is counted in. A
+// head that replayed nothing has no family and therefore no unit of its own; it
+// reports zero, so the matrix lane's noun is used and the row claims nothing.
+func headLaneUnit(h HeadSummary) string {
+	if len(h.Families) == 1 {
+		return h.Families[0].Unit
+	}
+	return UnitSeries
 }
 
 // headLaneState labels a lane row with what the operator supplied for it, so

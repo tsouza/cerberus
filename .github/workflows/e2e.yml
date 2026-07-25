@@ -179,7 +179,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # The five discipline scans (pure `git grep` / `perl`, no Go
+      # The six discipline scans (pure `git grep` / `perl`, no Go
       # toolchain) — byte-identical to ci.yml's `forbid-skip` job.
       - name: Reject t.Skip in test files
         run: node .github/scripts/forbid-skip.mjs
@@ -201,6 +201,10 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: escape-hatch
+      - name: Reject scenario-suppressing tags and godog skip routes
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: feature-discipline
 
       # Compile sanity check. Far cheaper than the full compose stack;
       # catches a non-building tree before Docker buildx + k3d spin up.

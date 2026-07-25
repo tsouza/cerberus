@@ -46,6 +46,76 @@ const (
 	// AttrStage is the pipeline stage: parse / lower / optimize /
 	// emit / execute. Cardinality is fixed at five.
 	AttrStage = attribute.Key("stage")
+	// AttrReason labels a decline/skip event with the specific gate that
+	// declined it (see RouteMemoDecline* below). Bare, not cerberus.* —
+	// internal-only, not mirrored on any cerbtrace span attribute.
+	AttrReason = attribute.Key("reason")
+	// AttrRouteChoice is "a" or "b" — which route a memo-tracked dispatch
+	// resolved to success on. Distinct from AttrRoute (the matched
+	// http.ServeMux pattern): same English word, unrelated concept.
+	AttrRouteChoice = attribute.Key("cerberus.route_choice")
+	// AttrErrorReason is the closed failure classification of a query —
+	// one of the Reason* constants. "none" on a successful query, so the
+	// label set is identical across ok and error series. Cardinality is
+	// fixed by the enum; a raw error string never lands here.
+	AttrErrorReason = attribute.Key("cerberus.error_reason")
+	// AttrStatusClass is the HTTP status family of the response —
+	// "2xx" / "4xx" / "5xx" (see StatusClass* constants). Bounded by
+	// construction: derived from the status code's family, never from
+	// the code itself.
+	AttrStatusClass = attribute.Key("cerberus.status_class")
+)
+
+// RouteMemoDecline label values for AttrReason on RouteMemoHitSkippedTotal —
+// one per real decline branch the failure-driven route memo wiring
+// distinguishes in internal/engine/route_memo_wiring.go. Do not add a value
+// here that isn't backed by an actual branch condition in that file.
+const (
+	// RouteMemoDeclineNotEligible is deriveRouteMemoDispatch's
+	// Solver.Eligible verdict coming back false at dispatch time.
+	RouteMemoDeclineNotEligible = "not-eligible"
+	// RouteMemoDeclineNotFresh is freshEnoughForRouteMemo rejecting a
+	// request whose End has not aged past the live-edge margin.
+	RouteMemoDeclineNotFresh = "not-fresh"
+	// RouteMemoDeclineNoPreferB is Memo.Lookup returning a state other
+	// than PreferB — there is no live verdict to memo-hit on.
+	RouteMemoDeclineNoPreferB = "no-preferb"
+	// RouteMemoDeclineStale is Memo.Lookup returning a PreferB verdict
+	// past its re-validation midpoint — must fall through to route A.
+	RouteMemoDeclineStale = "stale"
+	// RouteMemoDeclineBreakerOpen is Solver.BreakerClosed reporting the
+	// ClickHouse circuit breaker is not closed.
+	RouteMemoDeclineBreakerOpen = "breaker-open"
+	// RouteMemoDeclineNoDispatchToken is Memo.AdmitDispatch's
+	// process-wide admission semaphore refusing a memo-hit dispatch.
+	RouteMemoDeclineNoDispatchToken = "no-dispatch-token"
+	// RouteMemoDeclineUnderPressure is Memo.UnderPressure reporting more
+	// than the pressure-failure threshold of distinct keys failed within
+	// the pressure window, sampled immediately before the atomic
+	// record-and-admit call so the pressure-caused decline is
+	// distinguishable from an ordinary admission miss.
+	RouteMemoDeclineUnderPressure = "under-pressure"
+	// RouteMemoDeclineProbeNotAdmitted is
+	// Memo.ObserveRouteAFailureAndMaybeBeginProbe refusing admission for
+	// a reason other than cluster-wide pressure (corroboration not yet
+	// met, or the shared dispatch-token semaphore full) — the wiring
+	// layer sees only the bool, so both collapse into one reason here.
+	RouteMemoDeclineProbeNotAdmitted = "probe-not-admitted"
+)
+
+// RouteChoice label values for AttrRouteChoice on RouteABSuccessTotal.
+const (
+	RouteChoiceA = "a"
+	RouteChoiceB = "b"
+)
+
+// Query-language identifiers used as the AttrQL value. The three heads'
+// Lang adapters return these from Name(), and every instrument that
+// carries a language label uses one of them — the vocabulary is closed.
+const (
+	QLPromQL  = "promql"
+	QLLogQL   = "logql"
+	QLTraceQL = "traceql"
 )
 
 // Stage names. Mirrored from cerbtrace's span names so a dashboard can
@@ -59,28 +129,29 @@ const (
 	StageExecute  = "execute"
 )
 
-// Result label values for AttrResult.
-const (
-	ResultOK    = "ok"
-	ResultError = "error"
-)
-
 // Instruments groups the cerberus self-metric set. One instance is
 // cached per process; callers should fetch it via Get() rather than
 // constructing their own.
 type Instruments struct {
 	// QueriesTotal counts every Prom/Loki/Tempo query the gateway
 	// handles, regardless of result. Attributes: cerberus.ql,
-	// cerberus.route, result.
+	// cerberus.route, result, cerberus.error_reason,
+	// cerberus.status_class. The last two are what let an operator
+	// alerting on the error ratio tell a caller-side rejection from a
+	// gateway-side failure; both are closed enums (see Outcome).
 	QueriesTotal metric.Int64Counter
 
 	// QueryDuration is the wall-clock distribution per query, end to
-	// end (handler entry to handler return). Seconds. Same attributes
-	// as QueriesTotal.
+	// end (handler entry to handler return). Seconds. Attributes:
+	// cerberus.ql, cerberus.route, result — the failure classification
+	// is deliberately NOT carried here: it multiplies the per-bucket
+	// series count without answering a latency question.
 	QueryDuration metric.Float64Histogram
 
 	// StageDuration is the per-pipeline-stage timing distribution.
-	// Attributes: stage. Seconds.
+	// Attributes: stage, cerberus.ql. Seconds. Without the language
+	// dimension a process serving more than one head cannot say WHICH
+	// head's parse / lower / execute is slow.
 	StageDuration metric.Float64Histogram
 
 	// RulesApplied is the distribution of how many optimizer rule
@@ -106,6 +177,36 @@ type Instruments struct {
 	// dashboard panel queries `sum by (cerberus_ql)
 	// (cerberus_query_inflight)`.
 	QueryInflight metric.Int64UpDownCounter
+
+	// RouteMemoHitSkippedTotal counts every failure-driven route-memo
+	// decision to NOT dispatch route B — one per real decline branch in
+	// internal/engine/route_memo_wiring.go (the eligibility/freshness
+	// gate, Memo.Lookup's verdict/staleness gate, the ClickHouse breaker
+	// gate, and the two Memo admission-token gates). Attribute: reason
+	// (one of the RouteMemoDecline* constants).
+	RouteMemoHitSkippedTotal metric.Int64Counter
+
+	// RouteMemoPressureActive is the failure-driven route memo's
+	// Memo.UnderPressure() level, encoded as a transition DELTA (+1 on a
+	// false->true edge, -1 on true->false) rather than a raw per-call
+	// snapshot — the same begin/end idiom QueryInflight uses — so summing
+	// the counter always reads the CURRENT active/inactive state without
+	// double-counting repeated same-state decisions.
+	RouteMemoPressureActive metric.Int64UpDownCounter
+
+	// RoutedDispatchInflight counts memo-triggered route-B dispatches
+	// currently in flight: +1 when a memo-hit's AdmitDispatch admission
+	// or a retry's ObserveRouteAFailureAndMaybeBeginProbe admission
+	// succeeds, -1 at the same call site the memo's own admission token
+	// is released at. Distinct from QueryInflight (every engine query,
+	// any route) — this counts only the subset the failure-driven route
+	// memo itself dispatched.
+	RoutedDispatchInflight metric.Int64UpDownCounter
+
+	// RouteABSuccessTotal counts every classifyRouteOutcome resolution to
+	// OutcomeSuccess for a memo-tracked dispatch, by which route produced
+	// it. Attribute: cerberus.route_choice ("a" / "b").
+	RouteABSuccessTotal metric.Int64Counter
 }
 
 // Histogram bucket boundaries, one ladder per instrument, matched to the
@@ -124,14 +225,32 @@ type Instruments struct {
 // Exported so tests assert against the single source of truth.
 var (
 	// QueryDurationBoundaries covers end-to-end query wall-clock in
-	// seconds: Prometheus DefBuckets plus a 30s tail for pathological
-	// slow queries.
-	QueryDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
+	// seconds: Prometheus DefBuckets plus a multi-minute tail.
+	//
+	// A gateway fronting an analytical database can legitimately serve
+	// a request that outlives any single-digit-second bound — an
+	// expensive scan, a queued request behind admission control, a
+	// retried connection. Every observation past the top FINITE bound
+	// lands in +Inf, where it has no upper bound left to interpolate
+	// against: once the +Inf bucket holds more than 5% of the
+	// observations, histogram_quantile pins BOTH p95 and p99 to the top
+	// finite bound and the tail becomes unreadable at exactly the
+	// moment it matters. The extra bounds keep the slow tail resolvable
+	// up to the minute scale.
+	//
+	// Existing boundaries are preserved verbatim so series recorded
+	// before this ladder remain comparable across the change.
+	QueryDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}
 
 	// StageDurationBoundaries covers per-pipeline-stage wall-clock in
-	// seconds. Stages (parse / lower / optimize / emit) are much faster
-	// than whole queries, so the ladder starts at 1ms.
-	StageDurationBoundaries = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+	// seconds. The front stages (parse / lower / optimize / emit) are
+	// pure in-process work and much faster than whole queries, so the
+	// ladder starts at 1ms; `execute` carries the ClickHouse round trip
+	// and inherits the whole query's magnitude, so the ladder has to
+	// reach as far up as the query ladder does or the slowest stage —
+	// the one an investigation is looking for — saturates its top
+	// finite bucket. Existing boundaries are preserved verbatim.
+	StageDurationBoundaries = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 	// RulesAppliedBoundaries covers the optimizer's per-query change
 	// count — small integers, so a near-unit ladder.
@@ -243,14 +362,50 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build query_inflight: " + err.Error())
 	}
+	routeMemoHitSkipped, err := meter.Int64Counter(
+		"cerberus_route_memo_hit_skipped_total",
+		metric.WithDescription("Failure-driven route memo declines to dispatch route B, by reason."),
+		metric.WithUnit("{decision}"),
+	)
+	if err != nil {
+		panic("telemetry: build route_memo_hit_skipped_total: " + err.Error())
+	}
+	routeMemoPressureActive, err := meter.Int64UpDownCounter(
+		"cerberus_route_memo_pressure_active",
+		metric.WithDescription("Failure-driven route memo cluster-wide pressure level (0/1, transition-encoded)."),
+		metric.WithUnit("{state}"),
+	)
+	if err != nil {
+		panic("telemetry: build route_memo_pressure_active: " + err.Error())
+	}
+	routedDispatchInflight, err := meter.Int64UpDownCounter(
+		"cerberus_routed_dispatch_inflight",
+		metric.WithDescription("Currently in-flight route-B dispatches the failure-driven route memo itself triggered."),
+		metric.WithUnit("{dispatch}"),
+	)
+	if err != nil {
+		panic("telemetry: build routed_dispatch_inflight: " + err.Error())
+	}
+	routeABSuccess, err := meter.Int64Counter(
+		"cerberus_route_ab_success_total",
+		metric.WithDescription("Successful dispatches classified by classifyRouteOutcome, by route."),
+		metric.WithUnit("{query}"),
+	)
+	if err != nil {
+		panic("telemetry: build route_ab_success_total: " + err.Error())
+	}
 	return &Instruments{
-		QueriesTotal:        queriesTotal,
-		QueryDuration:       queryDuration,
-		StageDuration:       stageDuration,
-		RulesApplied:        rulesApplied,
-		ClickHouseRowsRead:  chRows,
-		ClickHouseBytesRead: chBytes,
-		QueryInflight:       queryInflight,
+		QueriesTotal:             queriesTotal,
+		QueryDuration:            queryDuration,
+		StageDuration:            stageDuration,
+		RulesApplied:             rulesApplied,
+		ClickHouseRowsRead:       chRows,
+		ClickHouseBytesRead:      chBytes,
+		QueryInflight:            queryInflight,
+		RouteMemoHitSkippedTotal: routeMemoHitSkipped,
+		RouteMemoPressureActive:  routeMemoPressureActive,
+		RoutedDispatchInflight:   routedDispatchInflight,
+		RouteABSuccessTotal:      routeABSuccess,
 	}
 }
 
@@ -272,17 +427,25 @@ func Install(mp metric.MeterProvider) {
 // at the entry of the stage's call site.
 type StageTimer struct {
 	stage string
+	ql    string
 	start time.Time
 }
 
-// ObserveStage starts a stopwatch for the given pipeline stage. The
+// ObserveStage starts a stopwatch for the given pipeline stage of a
+// query in language ql (one of QLPromQL / QLLogQL / QLTraceQL). The
 // returned timer records its duration on the StageDuration histogram
 // when Done(ctx) is called. Idiomatic use:
 //
-//	t := telemetry.ObserveStage(telemetry.StageOptimize)
+//	t := telemetry.ObserveStage(telemetry.StageOptimize, lang.Name())
 //	defer t.Done(ctx)
-func ObserveStage(stage string) *StageTimer {
-	return &StageTimer{stage: stage, start: time.Now()}
+//
+// ql is required rather than optional: a single process serves all
+// three heads, so a stage timing without it is unattributable — the
+// metric could only be split by language in a deployment that happened
+// to run one head per process, which is a property of that deployment,
+// not of the metric.
+func ObserveStage(stage, ql string) *StageTimer {
+	return &StageTimer{stage: stage, ql: ql, start: time.Now()}
 }
 
 // Done records the stage's elapsed time. ctx propagates baggage /
@@ -294,7 +457,10 @@ func (t *StageTimer) Done(ctx context.Context) {
 	}
 	Get().StageDuration.Record(
 		ctx, time.Since(t.start).Seconds(),
-		metric.WithAttributes(AttrStage.String(t.stage)),
+		metric.WithAttributes(
+			AttrStage.String(t.stage),
+			AttrQL.String(t.ql),
+		),
 	)
 }
 
@@ -316,21 +482,33 @@ func ObserveQuery(ql, route string) *QueryTimer {
 }
 
 // Done records the query's outcome on QueriesTotal and its wall-clock
-// on QueryDuration. result is one of ResultOK / ResultError. ctx is
-// passed through to the OTel SDK so exemplars (linked spans) attach
-// correctly when the request span is on the context.
-func (t *QueryTimer) Done(ctx context.Context, result string) {
+// on QueryDuration. out is the bounded classification of how the query
+// finished — build it with ClassifyStatus, or use OutcomeOK for a path
+// that has no HTTP status to classify. ctx is passed through to the
+// OTel SDK so exemplars (linked spans) attach correctly when the
+// request span is on the context.
+//
+// The counter carries the full classification (result + reason +
+// status class); the duration histogram carries only the ok/error
+// bucket, so the failure taxonomy never multiplies its per-bucket
+// series.
+func (t *QueryTimer) Done(ctx context.Context, out Outcome) {
 	if t == nil {
 		return
 	}
-	attrs := metric.WithAttributes(
+	inst := Get()
+	inst.QueriesTotal.Add(ctx, 1, metric.WithAttributes(
 		AttrQL.String(t.ql),
 		AttrRoute.String(t.route),
-		AttrResult.String(result),
-	)
-	inst := Get()
-	inst.QueriesTotal.Add(ctx, 1, attrs)
-	inst.QueryDuration.Record(ctx, time.Since(t.start).Seconds(), attrs)
+		AttrResult.String(out.Result),
+		AttrErrorReason.String(out.Reason),
+		AttrStatusClass.String(out.StatusClass),
+	))
+	inst.QueryDuration.Record(ctx, time.Since(t.start).Seconds(), metric.WithAttributes(
+		AttrQL.String(t.ql),
+		AttrRoute.String(t.route),
+		AttrResult.String(out.Result),
+	))
 }
 
 // RecordRulesApplied records n (the optimizer's per-query change
@@ -372,4 +550,40 @@ func RecordClickHouseProgress(ctx context.Context, ql string, rows, bytes uint64
 	// Real CH row/byte counts never approach int64 overflow (≈9.2e18).
 	inst.ClickHouseRowsRead.Record(ctx, int64(rows), attrs)   //nolint:gosec // G115
 	inst.ClickHouseBytesRead.Record(ctx, int64(bytes), attrs) //nolint:gosec // G115
+}
+
+// RecordRouteMemoHitSkipped increments RouteMemoHitSkippedTotal for the
+// given decline reason (one of the RouteMemoDecline* constants). Caller is
+// internal/engine/route_memo_wiring.go, at each of its real decline
+// branches.
+func RecordRouteMemoHitSkipped(ctx context.Context, reason string) {
+	Get().RouteMemoHitSkippedTotal.Add(ctx, 1, metric.WithAttributes(AttrReason.String(reason)))
+}
+
+// RecordRouteMemoPressureTransition reports a false->true (delta=1) or
+// true->false (delta=-1) edge of the failure-driven route memo's
+// UnderPressure() level on RouteMemoPressureActive. Callers determine the
+// transition themselves (Get()/Swap() against their own last-seen state) so
+// this stays a pure recorder, symmetric with ObserveQueryInflight's
+// begin/end pair.
+func RecordRouteMemoPressureTransition(ctx context.Context, delta int64) {
+	Get().RouteMemoPressureActive.Add(ctx, delta)
+}
+
+// ObserveRoutedDispatchInflight increments RoutedDispatchInflight and
+// returns a closure that decrements it — the same begin/end idiom as
+// ObserveQueryInflight, scoped to memo-triggered route-B dispatches only.
+func ObserveRoutedDispatchInflight(ctx context.Context) func() {
+	inst := Get()
+	inst.RoutedDispatchInflight.Add(ctx, 1)
+	return func() {
+		inst.RoutedDispatchInflight.Add(ctx, -1)
+	}
+}
+
+// RecordRouteABSuccess increments RouteABSuccessTotal for the given route
+// choice (RouteChoiceA / RouteChoiceB) — called wherever classifyRouteOutcome
+// resolves to OutcomeSuccess for a memo-tracked dispatch.
+func RecordRouteABSuccess(ctx context.Context, route string) {
+	Get().RouteABSuccessTotal.Add(ctx, 1, metric.WithAttributes(AttrRouteChoice.String(route)))
 }

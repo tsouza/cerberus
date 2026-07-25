@@ -1,0 +1,15 @@
+groups:
+  - name: mimir.tenant
+    rules:
+      - record: tenant:cortex_request_duration_seconds:p99
+        expr: histogram_quantile(0.99, sum by (le, tenant) (rate(cortex_request_duration_seconds_bucket[5m])))
+      - record: tenant:cortex_ingester_active_series:sum
+        expr: sum by (tenant) (cortex_ingester_active_series)
+  - name: mimir.alerts
+    rules:
+      - alert: CortexIngesterUnhealthy
+        expr: cortex_ring_members{state="Unhealthy"} > 0
+        for: 15m
+      - alert: CortexTenantSeriesGrowth
+        expr: tenant:cortex_ingester_active_series:sum > 1000000
+        for: 30m

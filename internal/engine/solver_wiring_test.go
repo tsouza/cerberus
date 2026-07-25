@@ -76,6 +76,12 @@ func (r *recordingCursorClient) QueryCursor(context.Context, string, ...any) (ch
 	return nil, context.Canceled
 }
 
+// MaxQueryMemoryBytes satisfies the widened solver.CursorQuerier interface.
+// 0 means "no cap configured" — this fake never opens a real cursor
+// (QueryCursor always errors), so no shard settings are ever stamped either
+// way; the value is unobservable from this test's assertions.
+func (r *recordingCursorClient) MaxQueryMemoryBytes() int64 { return 0 }
+
 // TestSolver_SingleMode_ByteIdenticalToNilSolver is the BYTE-REPRO PIN: with
 // the default Mode=single Solver, the engine's Result — body (Samples / SQL /
 // Args / Strategy / PlanNodeCount / Meta) and ALL pre-existing headers — is

@@ -1,6 +1,7 @@
 package telemetry_test
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -22,12 +23,12 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	telemetry.Install(mp)
 	t.Cleanup(func() { telemetry.Install(nil) })
 
-	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.ResultOK)
-	telemetry.ObserveStage(telemetry.StageParse).Done(t.Context())
-	telemetry.ObserveStage(telemetry.StageLower).Done(t.Context())
-	telemetry.ObserveStage(telemetry.StageOptimize).Done(t.Context())
-	telemetry.ObserveStage(telemetry.StageEmit).Done(t.Context())
-	telemetry.ObserveStage(telemetry.StageExecute).Done(t.Context())
+	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.OutcomeOK())
+	telemetry.ObserveStage(telemetry.StageParse, telemetry.QLPromQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageLower, telemetry.QLPromQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageOptimize, telemetry.QLPromQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageEmit, telemetry.QLPromQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageExecute, telemetry.QLPromQL).Done(t.Context())
 	telemetry.RecordRulesApplied(t.Context(), 1)
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 2000)
 	telemetry.ObserveQueryInflight(t.Context(), "promql")()
@@ -73,8 +74,8 @@ func TestMetricUnits_PublicContract(t *testing.T) {
 	telemetry.Install(mp)
 	t.Cleanup(func() { telemetry.Install(nil) })
 
-	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.ResultOK)
-	telemetry.ObserveStage(telemetry.StageParse).Done(t.Context())
+	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.OutcomeOK())
+	telemetry.ObserveStage(telemetry.StageParse, telemetry.QLPromQL).Done(t.Context())
 	telemetry.RecordRulesApplied(t.Context(), 1)
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 2000)
 
@@ -109,7 +110,8 @@ func TestMetricUnits_PublicContract(t *testing.T) {
 
 // TestAttributeKeys_PublicContract documents the per-metric attribute
 // keys downstream dashboards pivot on. cerberus.ql / cerberus.route /
-// result on the query counter; stage on the stage histogram.
+// result / cerberus.error_reason / cerberus.status_class on the query
+// counter; stage + cerberus.ql on the stage histogram.
 func TestAttributeKeys_PublicContract(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -117,8 +119,8 @@ func TestAttributeKeys_PublicContract(t *testing.T) {
 	t.Cleanup(func() { telemetry.Install(nil) })
 
 	telemetry.ObserveQuery("logql", "GET /loki/api/v1/query_range").
-		Done(t.Context(), telemetry.ResultOK)
-	telemetry.ObserveStage(telemetry.StageEmit).Done(t.Context())
+		Done(t.Context(), telemetry.OutcomeOK())
+	telemetry.ObserveStage(telemetry.StageEmit, telemetry.QLLogQL).Done(t.Context())
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(t.Context(), &rm); err != nil {
@@ -137,7 +139,10 @@ func TestAttributeKeys_PublicContract(t *testing.T) {
 					t.Fatalf("queries.total: empty")
 				}
 				attrs := sum.DataPoints[0].Attributes
-				for _, key := range []attribute.Key{"cerberus.ql", "cerberus.route", "result"} {
+				for _, key := range []attribute.Key{
+					"cerberus.ql", "cerberus.route", "result",
+					"cerberus.error_reason", "cerberus.status_class",
+				} {
 					if _, ok := attrs.Value(key); !ok {
 						t.Errorf("queries.total: missing attr %q", key)
 					}
@@ -147,8 +152,10 @@ func TestAttributeKeys_PublicContract(t *testing.T) {
 				if len(hist.DataPoints) == 0 {
 					t.Fatalf("stage.duration: empty")
 				}
-				if _, ok := hist.DataPoints[0].Attributes.Value("stage"); !ok {
-					t.Errorf("stage.duration: missing stage attr")
+				for _, key := range []attribute.Key{"stage", "cerberus.ql"} {
+					if _, ok := hist.DataPoints[0].Attributes.Value(key); !ok {
+						t.Errorf("stage.duration: missing attr %q", key)
+					}
 				}
 			}
 		}
@@ -183,6 +190,61 @@ func TestResultValues_PublicContract(t *testing.T) {
 	}
 }
 
+// TestErrorReasonValues_PublicContract pins the closed reason enum. The
+// values are what an alert rule selects on to tell a caller-side
+// rejection (bad_request) from a gateway-side failure
+// (backend_unavailable / resource_exhausted / timeout / internal), so a
+// rename silently breaks every rule that references them.
+func TestErrorReasonValues_PublicContract(t *testing.T) {
+	want := map[string]string{
+		"none":                telemetry.ReasonNone,
+		"bad_request":         telemetry.ReasonBadRequest,
+		"backend_unavailable": telemetry.ReasonBackendUnavailable,
+		"resource_exhausted":  telemetry.ReasonResourceExhausted,
+		"timeout":             telemetry.ReasonTimeout,
+		"internal":            telemetry.ReasonInternal,
+	}
+	for v, got := range want {
+		if got != v {
+			t.Errorf("reason const for %q = %q; want %q", v, got, v)
+		}
+	}
+}
+
+// TestStatusClassValues_PublicContract pins the status-family labels.
+func TestStatusClassValues_PublicContract(t *testing.T) {
+	want := map[string]string{
+		"1xx":     telemetry.StatusClass1xx,
+		"2xx":     telemetry.StatusClass2xx,
+		"3xx":     telemetry.StatusClass3xx,
+		"4xx":     telemetry.StatusClass4xx,
+		"5xx":     telemetry.StatusClass5xx,
+		"unknown": telemetry.StatusClassUnknown,
+	}
+	for v, got := range want {
+		if got != v {
+			t.Errorf("status-class const for %q = %q; want %q", v, got, v)
+		}
+	}
+}
+
+// TestQLValues_PublicContract pins the three language identifiers. They
+// are the cerberus.ql attribute values on every per-language instrument
+// AND what each head's Lang.Name() returns, so the metric label and the
+// engine's internal keying can never drift apart.
+func TestQLValues_PublicContract(t *testing.T) {
+	want := map[string]string{
+		"promql":  telemetry.QLPromQL,
+		"logql":   telemetry.QLLogQL,
+		"traceql": telemetry.QLTraceQL,
+	}
+	for v, got := range want {
+		if got != v {
+			t.Errorf("ql const for %q = %q; want %q", v, got, v)
+		}
+	}
+}
+
 // TestGet_NoopMeterProviderProducesNonNilInstruments confirms Get() is
 // usable even with a noop provider — callers don't have to guard
 // against nil instruments. Anchor for the auto-install path that goes
@@ -212,7 +274,7 @@ func TestReset_RebuildsInstrumentsAgainstNewProvider(t *testing.T) {
 	mp1 := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader1))
 	telemetry.Install(mp1)
 
-	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.ResultOK)
+	telemetry.ObserveQuery("promql", "GET /api/v1/query").Done(t.Context(), telemetry.OutcomeOK())
 
 	// Re-install with a fresh reader; the next observation must land
 	// on it, not the previous one.
@@ -221,7 +283,7 @@ func TestReset_RebuildsInstrumentsAgainstNewProvider(t *testing.T) {
 	telemetry.Install(mp2)
 	t.Cleanup(func() { telemetry.Install(nil) })
 
-	telemetry.ObserveQuery("logql", "GET /loki/api/v1/query").Done(t.Context(), telemetry.ResultOK)
+	telemetry.ObserveQuery("logql", "GET /loki/api/v1/query").Done(t.Context(), telemetry.OutcomeOK())
 
 	var rm metricdata.ResourceMetrics
 	if err := reader2.Collect(t.Context(), &rm); err != nil {
@@ -259,7 +321,7 @@ func TestObserveQuery_RoutePopulatedFromExplicitArgument(t *testing.T) {
 	t.Cleanup(func() { telemetry.Install(nil) })
 
 	telemetry.ObserveQuery("traceql", "GET /api/traces/{id}").
-		Done(t.Context(), telemetry.ResultError)
+		Done(t.Context(), telemetry.ClassifyStatus(http.StatusInternalServerError))
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(t.Context(), &rm); err != nil {
@@ -296,5 +358,5 @@ func TestStageTimer_DoneOnNilReceiverIsSafe(t *testing.T) {
 // query timer.
 func TestQueryTimer_DoneOnNilReceiverIsSafe(t *testing.T) {
 	var qt *telemetry.QueryTimer
-	qt.Done(t.Context(), telemetry.ResultOK) // must not panic
+	qt.Done(t.Context(), telemetry.OutcomeOK()) // must not panic
 }

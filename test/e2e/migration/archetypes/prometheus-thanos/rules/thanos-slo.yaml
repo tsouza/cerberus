@@ -1,0 +1,12 @@
+groups:
+  - name: thanos.slo
+    rules:
+      - record: slo:http_request_availability:ratio30d
+        expr: 1 - (sum(rate(http_requests_total{code=~"5.."}[30d])) / sum(rate(http_requests_total[30d])))
+      - record: slo:http_error_budget:burnrate7d
+        expr: sum(rate(http_requests_total{code=~"5.."}[7d] offset 7d))
+  - name: thanos.alerts
+    rules:
+      - alert: ErrorBudgetBurn
+        expr: slo:http_error_budget:burnrate7d > 0.05
+        for: 1h

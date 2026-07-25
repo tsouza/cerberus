@@ -1,0 +1,131 @@
+name: migration-e2e
+
+# Layer-14 migration-scenario lane. The Tier-0 slice is an offline godog
+# suite over committed fixtures — no Docker, no reference backend, no
+# network — driving `cerberus migrate` against the eight archetype rule /
+# dashboard sets and asserting the emitted artifacts against goldens.
+#
+# There is deliberately NO `pull_request:` trigger, so this workflow can
+# never become a branch-protection check. Informational does not mean
+# tolerated: a red run here is a real failure to fix, not a signal to
+# ignore. The cheap halves of the lane — the coverage ratchet, its
+# detector guard, and `go vet -tags=migration` over the harness — run on
+# ci.yml's required `lint` job instead, so scenario/story drift blocks a
+# PR rather than waiting for the next scheduled run.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly, offset from the e2e and compatibility lanes.
+    - cron: '37 4 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'which tier(s) to run'
+        type: choice
+        options: [all, tier0]
+        default: all
+      story:
+        description: 'a single MIG id to drive, e.g. MIG-04'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Enumerate the Gherkin features, hold them to the 26-story anchor, and
+  # emit the tier matrix the run job fans out over.
+  migration-setup:
+    name: migration-setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: enumerate migration scenarios
+        run: |
+          mkdir -p build
+          go run ./test/e2e/migration/cmd/scenarios --out build/migration-scenarios.json
+
+      - name: coverage ratchet
+        run: node .github/scripts/migration-e2e.mjs
+        env:
+          MODE: verify
+          SCENARIOS_JSON: build/migration-scenarios.json
+
+      - name: emit tier matrix
+        id: emit
+        run: node .github/scripts/migration-e2e.mjs
+        env:
+          MODE: emit
+          SCENARIOS_JSON: build/migration-scenarios.json
+          TIER: ${{ inputs.tier || 'all' }}
+
+  migration-tier0:
+    name: migration-tier0 (${{ matrix.name }})
+    needs: migration-setup
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.migration-setup.outputs.matrix) }}
+    concurrency:
+      group: migration-tier0-${{ github.ref }}-${{ matrix.name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # The scenarios exec a real `cerberus migrate`. Building it here and
+      # handing it over via CERBERUS_BIN keeps the build failure separate
+      # from a scenario failure in the log.
+      - name: build the cerberus binary the scenarios drive
+        run: go build -o build/cerberus ./cmd/cerberus
+
+      - name: run the migration scenarios
+        run: node .github/scripts/migration-e2e.mjs
+        env:
+          MODE: run
+          SCENARIOS_JSON: build/migration-scenarios.json
+          TIER: ${{ matrix.tier }}
+          STORY: ${{ inputs.story }}
+          CERBERUS_BIN: ${{ github.workspace }}/build/cerberus
+
+  # Roll-up. `contains(needs.*.result, 'failure')` is the shape e2e.yml
+  # documents as unsafe: a matrix rolls up to `cancelled`, not `failure`,
+  # when a child is cancelled, so a cancelled tier would pass the fold
+  # silently. Assert `== 'success'` per need instead.
+  migration-aggregate:
+    name: migration-e2e
+    needs: [migration-setup, migration-tier0]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: roll up the migration lane
+        env:
+          SETUP: ${{ needs.migration-setup.result }}
+          TIER0: ${{ needs.migration-tier0.result }}
+        run: |
+          echo "setup=$SETUP tier0=$TIER0"
+          if [ "$SETUP" != "success" ] || [ "$TIER0" != "success" ]; then
+            echo "::error title=migration-e2e::a migration lane job did not succeed (setup=$SETUP tier0=$TIER0)"
+            exit 1
+          fi

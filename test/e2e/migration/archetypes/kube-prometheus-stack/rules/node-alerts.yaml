@@ -1,0 +1,12 @@
+groups:
+  - name: node.alerts
+    rules:
+      - alert: NodeCPUSaturation
+        expr: node:node_cpu_utilisation:avg1m > 0.9
+        for: 15m
+      - alert: NodeMemoryPressure
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+        for: 10m
+      - alert: KubeletDown
+        expr: absent(up{job="kubelet"} == 1)
+        for: 5m

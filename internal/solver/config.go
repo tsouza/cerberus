@@ -86,10 +86,44 @@ type Config struct {
 	// success cannot OOM the shared gateway heap.
 	MaxOutputRows int64
 
-	// MemoryApportion (CERBERUS_SHARD_MEMORY_APPORTION): when true, the
-	// per-shard max_memory_usage is cap/P (256 MiB floor), holding total
-	// exposure at exactly the single-query cap.
-	MemoryApportion bool
+	// RouteMemoEnabled (CERBERUS_SOLVER_ROUTE_MEMO_ENABLED, default false)
+	// wires the failure-driven route memo (internal/routememo,
+	// docs/solver.md §"Failure-driven route memo"): a route-A dispatch that
+	// fails with resource exhaustion is retried once on route B, and the
+	// outcome is remembered so future cost-equivalent traffic can route
+	// directly. Off by default, matching this repo's convention for a new
+	// runtime-behavior-changing feature (CERBERUS_CH_OPT_CORPUS_ENABLED,
+	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) — an operator opts in explicitly
+	// rather than picking up new ClickHouse dispatch/resource behavior on a
+	// routine upgrade. cmd/cerberus reads this field to decide whether to
+	// construct a *routememo.Memo and wire it onto engine.Engine.RouteMemo;
+	// this package itself never imports internal/routememo (see
+	// .go-arch-lint.yml — routememo is importable by engine and cmd only).
+	RouteMemoEnabled bool
+
+	// RouteMemoEntryTTL (CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL) overrides how
+	// long the route memo trusts a recorded verdict before it ages out,
+	// replacing the routememo package's own default (routememo.Memo's
+	// SetEntryTTL). Left at its Go zero value (0) here — the zero value
+	// means "use the routememo package default", not "TTL of zero
+	// duration": cmd/cerberus passes this straight to SetEntryTTL
+	// unconditionally, and routememo's own SetEntryTTL treats a
+	// non-positive input as a no-op, so an unset operator value can never
+	// disable the memo's aging out. This field is the single source of
+	// truth for the override; the routememo package's default constant is
+	// not duplicated here.
+	RouteMemoEntryTTL time.Duration
+
+	// RouteMemoReValidationFraction
+	// (CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION) overrides the
+	// divisor that places the route memo's re-validation midpoint within
+	// RouteMemoEntryTTL, replacing the routememo package's own default
+	// (routememo.Memo's SetReValidationFraction). Left at its Go zero value
+	// (0) here for the same reason as RouteMemoEntryTTL: cmd/cerberus passes
+	// this straight to SetReValidationFraction unconditionally, and
+	// routememo's own SetReValidationFraction no-ops on a non-positive
+	// input.
+	RouteMemoReValidationFraction int
 }
 
 // Default tuning constants (docs §Routing / §"The solver framework").
@@ -116,7 +150,7 @@ func DefaultConfig() Config {
 		Parallel:           defaultParallel,
 		Timeout:            defaultTimeout,
 		MaxOutputRows:      defaultMaxOutputRows,
-		MemoryApportion:    false,
+		RouteMemoEnabled:   false,
 	}
 }
 

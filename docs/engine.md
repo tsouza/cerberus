@@ -353,6 +353,43 @@ flagged in the IR — by design, not by default):
 - `RangeLWR`, `RangeBucketFanout`, and `AbsentOverTime` are separate IR
   node types with their own `maybePushRangeScanTimeBound` / inner-scan
   bounds.
+- The ClickHouse-native `timeSeries*ToGrid` family
+  (`RangeWindowNative`, `RangeWindowResample`) bounds its innermost read
+  through the same `maybePushRangeScanTimeBound` helper. Because that
+  bound changes only the rows *read* — the aggregate's own
+  `(start, end, step, window)` parameters already discard out-of-window
+  samples — dropping it produces no wrong answer and no failing golden.
+  The family is therefore pinned as a class by
+  `internal/chsql/range_window_native_scan_bound_test.go`, whose case
+  list is driven by the emitter's own `nativeTSGridFn` registry: a
+  native aggregate registered without a scan-bound case fails, as does
+  one whose emitter drops the predicate. The join case additionally
+  pins that the bound is rendered **per operand**, since each side of a
+  vector-vector join is an independent scan.
+
+#### Eval-grid carriers
+
+Several IR nodes materialise an evaluation grid — the
+`(Start, End, Step)` triple whose anchors become the emitted
+timestamps. Consumers that need the request's outer grid (routing, cost
+accounting, telemetry) discover it through the
+`chplan.GridCarrier` interface rather than by enumerating node kinds.
+
+This is a correctness contract, not a style choice. A consumer written
+as a type switch has to list every grid-bearing node, and the failure
+mode when it misses one is **silent**: the walk finds no carrier, the
+consumer reads a zero grid, and a zero grid is indistinguishable from a
+genuine instant query — so a range query gets filed under the wrong
+evaluation mode instead of raising an error. `Step > 0` is the only
+range-vs-instant discriminator a consumer may branch on.
+
+The carrier set is closed in both directions.
+`internal/chplan/grid_carrier.go` holds a compile-time list proving
+every registered carrier implements the interface, and the completeness
+ratchet in `grid_carrier_completeness_test.go` parses the package's own
+source and fails when a struct declares the grid-field signature
+without being registered. There is no allow-list: a new grid-bearing
+node either joins the contract or turns that test red.
 
 ### Typed SQL — `internal/chsql`
 
@@ -472,7 +509,10 @@ parent HTTP span
 Span names are the constants in `internal/cerbtrace`. The
 stopwatch around each stage is the same `telemetry.ObserveStage`
 helper, so the OTel span tree and the cerberus stage-duration
-histograms stay aligned. New cross-cutting hooks (request-id
+histograms stay aligned. It takes the language alongside the stage
+(`telemetry.ObserveStage(telemetry.StageEmit, lang.Name())`) — one
+process serves all three heads, so a stage timing without the language
+cannot be attributed to one. New cross-cutting hooks (request-id
 propagation, query-budget enforcement, per-tenant quotas) plug
 into the same context — no engine surface change required.
 

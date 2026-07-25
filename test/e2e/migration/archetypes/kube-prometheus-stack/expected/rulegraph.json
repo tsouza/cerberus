@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "counts": {
+    "recorded": 4,
+    "consumed": 3,
+    "orphan": 1,
+    "consumers": 4,
+    "skipped": 1
+  },
+  "recorded": [
+    {
+      "name": "cluster:node_cpu:ratio",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/cluster:node_cpu:ratio",
+      "status": "consumed",
+      "consumers": [
+        "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/CPU utilisation/A"
+      ]
+    },
+    {
+      "name": "instance:node_network_receive_bytes_excluding_lo:rate1m",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/instance:node_network_receive_bytes_excluding_lo:rate1m",
+      "status": "orphan",
+      "consumers": []
+    },
+    {
+      "name": "node:node_cpu_utilisation:avg1m",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/node:node_cpu_utilisation:avg1m",
+      "status": "consumed",
+      "consumers": [
+        "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-alerts.yaml/node.alerts/NodeCPUSaturation",
+        "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/cluster:node_cpu:ratio"
+      ]
+    },
+    {
+      "name": "node:node_memory_utilisation:ratio",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/node:node_memory_utilisation:ratio",
+      "status": "consumed",
+      "consumers": [
+        "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/Memory utilisation/A"
+      ]
+    }
+  ],
+  "consumers": [
+    {
+      "expr": "cluster:node_cpu:ratio",
+      "source": "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/CPU utilisation/A",
+      "kind": "panel",
+      "references": [
+        "cluster:node_cpu:ratio"
+      ]
+    },
+    {
+      "expr": "node:node_memory_utilisation:ratio",
+      "source": "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/Memory utilisation/A",
+      "kind": "panel",
+      "references": [
+        "node:node_memory_utilisation:ratio"
+      ]
+    },
+    {
+      "expr": "node:node_cpu_utilisation:avg1m \u003e 0.9",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-alerts.yaml/node.alerts/NodeCPUSaturation",
+      "kind": "alert",
+      "references": [
+        "node:node_cpu_utilisation:avg1m"
+      ]
+    },
+    {
+      "expr": "avg(node:node_cpu_utilisation:avg1m)",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/cluster:node_cpu:ratio",
+      "kind": "record",
+      "references": [
+        "node:node_cpu_utilisation:avg1m"
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/Byte counters by name pattern/A",
+      "reason": "unparseable consumer expr: consumer selects __name__ non-statically (regex/negated matcher or no name constraint): {__name__=~\"node_.*_bytes_total\"}"
+    }
+  ]
+}

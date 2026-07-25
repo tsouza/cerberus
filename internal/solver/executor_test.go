@@ -326,6 +326,11 @@ type recordingQuerier struct {
 	breakerCount atomic.Int64 // failures the latch admitted (i.e. would count)
 }
 
+// MaxQueryMemoryBytes satisfies the widened CursorQuerier interface by
+// forwarding to the wrapped fake — recordingQuerier adds concurrency
+// instrumentation, not a distinct memory-cap configuration.
+func (r *recordingQuerier) MaxQueryMemoryBytes() int64 { return r.inner.MaxQueryMemoryBytes() }
+
 func (r *recordingQuerier) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
 	// Rendezvous: block until all K opens have arrived, then release them
 	// together so the failures are genuinely concurrent.
@@ -650,6 +655,10 @@ func TestExecute_SharedSampleBudget(t *testing.T) {
 // budgetQuerier wraps the fake querier and enforces the shared ctx budget on
 // each yielded sample — modelling chclient's rowsCursor budget consult.
 type budgetQuerier struct{ inner *fakeQuerier }
+
+// MaxQueryMemoryBytes satisfies the widened CursorQuerier interface by
+// forwarding to the wrapped fake.
+func (b *budgetQuerier) MaxQueryMemoryBytes() int64 { return b.inner.MaxQueryMemoryBytes() }
 
 func (b *budgetQuerier) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
 	cur, err := b.inner.QueryCursor(ctx, sql, args...)
