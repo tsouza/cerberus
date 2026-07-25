@@ -40,8 +40,8 @@
       "blocking": true,
       "reasons": [
         "2 consumed recorded series must stay materialized after cutover",
-        "  tenant:cortex_ingester_active_series:sum \u003c- 2 consumers",
-        "  tenant:cortex_request_duration_seconds:p99 \u003c- 1 consumer"
+        "  tenant:cortex_ingester_active_series:sum (rule:test/e2e/migration/archetypes/mimir-cortex/rules/tenant-recording.yaml/mimir.tenant/tenant:cortex_ingester_active_series:sum) \u003c- 2 consumers",
+        "  tenant:cortex_request_duration_seconds:p99 (rule:test/e2e/migration/archetypes/mimir-cortex/rules/tenant-recording.yaml/mimir.tenant/tenant:cortex_request_duration_seconds:p99) \u003c- 1 consumer"
       ]
     }
   ],

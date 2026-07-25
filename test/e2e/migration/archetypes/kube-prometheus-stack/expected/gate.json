@@ -38,9 +38,9 @@
       "blocking": true,
       "reasons": [
         "3 consumed recorded series must stay materialized after cutover",
-        "  cluster:node_cpu:ratio \u003c- 1 consumer",
-        "  node:node_cpu_utilisation:avg1m \u003c- 2 consumers",
-        "  node:node_memory_utilisation:ratio \u003c- 1 consumer",
+        "  cluster:node_cpu:ratio (rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/cluster:node_cpu:ratio) \u003c- 1 consumer",
+        "  node:node_cpu_utilisation:avg1m (rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/node:node_cpu_utilisation:avg1m) \u003c- 2 consumers",
+        "  node:node_memory_utilisation:ratio (rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/node:node_memory_utilisation:ratio) \u003c- 1 consumer",
         "1 skipped input make the orphan classification unsound (a dropped consumer may reference a series marked orphan)",
         "  skipped dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/Byte counters by name pattern/A: unparseable consumer expr: consumer selects __name__ non-statically (regex/negated matcher or no name constraint): {__name__=~\"node_.*_bytes_total\"}"
       ]

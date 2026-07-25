@@ -393,7 +393,19 @@ them into **one** PASS/FAIL verdict with a per-stage checklist. It **refuses**
   **zero queries** also blocks (an empty corpus proves no support coverage).
 - **rulegraph** — any *consumed* recorded series blocks (it must stay
   materialized); an unparseable consumer expression also blocks, because
-  "orphan ⇒ safe to drop" is unsound once a consumer was dropped.
+  "orphan ⇒ safe to drop" is unsound once a consumer was dropped. A
+  Loki-ruler-sourced recorded series (from `--loki-rules`) is the identical
+  `RecordedNode` shape as a Prometheus one, distinguished only by its
+  `loki-rule:` source prefix, and blocks through this exact same rule — the
+  reported reason names the source, so the two are never visually
+  indistinguishable.
+- **inventory** — advisory everywhere: high cardinality WARNs and never
+  blocks, uniformly across every head the operator asked about. A
+  high-cardinality Loki stream selector (from `--loki-source`) WARNs exactly
+  like a high-cardinality Prometheus metric; a present Tempo section (from
+  `--tempo-source`) always WARNs with its fixed out-of-scope reason. A head
+  the operator never asked about is simply absent from the decision — never
+  presented as "checked, nothing found."
 - A **missing required artifact** blocks — `verify`, `classify`, and
   `rulegraph` are required; `inventory` is advisory (high cardinality WARNs,
   never blocks).

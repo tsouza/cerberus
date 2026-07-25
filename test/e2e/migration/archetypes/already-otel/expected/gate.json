@@ -40,7 +40,7 @@
       "blocking": true,
       "reasons": [
         "1 consumed recorded series must stay materialized after cutover",
-        "  otel:http_server_request_duration:p95 \u003c- 1 consumer"
+        "  otel:http_server_request_duration:p95 (rule:test/e2e/migration/archetypes/already-otel/rules/otel-recording.yaml/otel.rules/otel:http_server_request_duration:p95) \u003c- 1 consumer"
       ]
     }
   ],
