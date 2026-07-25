@@ -116,6 +116,30 @@ type Config struct {
 	// this package itself never imports internal/routememo (see
 	// .go-arch-lint.yml — routememo is importable by engine and cmd only).
 	RouteMemoEnabled bool
+
+	// RouteMemoEntryTTL (CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL) overrides how
+	// long the route memo trusts a recorded verdict before it ages out,
+	// replacing the routememo package's own default (routememo.Memo's
+	// SetEntryTTL). Left at its Go zero value (0) here — the zero value
+	// means "use the routememo package default", not "TTL of zero
+	// duration": cmd/cerberus passes this straight to SetEntryTTL
+	// unconditionally, and routememo's own SetEntryTTL treats a
+	// non-positive input as a no-op, so an unset operator value can never
+	// disable the memo's aging out. This field is the single source of
+	// truth for the override; the routememo package's default constant is
+	// not duplicated here.
+	RouteMemoEntryTTL time.Duration
+
+	// RouteMemoReValidationFraction
+	// (CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION) overrides the
+	// divisor that places the route memo's re-validation midpoint within
+	// RouteMemoEntryTTL, replacing the routememo package's own default
+	// (routememo.Memo's SetReValidationFraction). Left at its Go zero value
+	// (0) here for the same reason as RouteMemoEntryTTL: cmd/cerberus passes
+	// this straight to SetReValidationFraction unconditionally, and
+	// routememo's own SetReValidationFraction no-ops on a non-positive
+	// input.
+	RouteMemoReValidationFraction int
 }
 
 // Default tuning constants (docs §Routing / §"The solver framework").

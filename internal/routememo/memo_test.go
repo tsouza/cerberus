@@ -546,3 +546,109 @@ func TestConcurrentLookupObserveAdmitDispatchIsRace_free(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// --- SetEntryTTL / SetReValidationFraction: operator-configurable timing ---
+
+// buildPreferBEntry drives m through the corroborate → probe → succeed
+// sequence so k ends up a fresh, non-stale PreferB verdict — the shared
+// setup every re-validation/expiry timing test below starts from.
+func buildPreferBEntry(t *testing.T, m *Memo, k Key) {
+	t.Helper()
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	release, ok := m.BeginProbe(k)
+	if !ok {
+		t.Fatalf("expected probe eligibility after corroboration")
+	}
+	m.Observe(k, RouteB, OutcomeSuccess)
+	release()
+}
+
+// TestSetEntryTTLShortensExpiry proves SetEntryTTL actually changes
+// re-validation/expiry timing rather than being a purely cosmetic field: two
+// Memos built from the same New(...) call, driven through the identical
+// failure→probe→success sequence on a shared fake clock (via the exported
+// SetNowForTest hook, the cross-package-safe equivalent of this package's
+// own clk pattern), diverge only in one having a much shorter SetEntryTTL.
+// Advancing the shared clock just past the shortened TTL — but still well
+// inside the package default — must expire only the shortened Memo's entry.
+func TestSetEntryTTLShortensExpiry(t *testing.T) {
+	clk := newFakeClock()
+	k := testKey("A")
+
+	baseline := New(testPressureWindow)
+	baseline.SetNowForTest(clk.now)
+	buildPreferBEntry(t, baseline, k)
+
+	const shortTTL = 2 * time.Minute
+	shortened := New(testPressureWindow)
+	shortened.SetNowForTest(clk.now)
+	shortened.SetEntryTTL(shortTTL)
+	buildPreferBEntry(t, shortened, k)
+
+	// Past the shortened TTL but far short of the package default
+	// (memoEntryTTL == 30m), so only the shortened Memo should have aged out.
+	clk.advance(shortTTL + time.Second)
+
+	if state, _ := shortened.Lookup(k); state != Unknown {
+		t.Fatalf("shortened-TTL memo entry = %v, want Unknown (expired at the configured TTL)", state)
+	}
+	if state, _ := baseline.Lookup(k); state != PreferB {
+		t.Fatalf("baseline memo entry = %v, want PreferB (still well within the default TTL)", state)
+	}
+}
+
+// TestSetReValidationFractionShortensReValidationWindow proves
+// SetReValidationFraction changes when a PreferB verdict starts reporting
+// stale (and therefore requires real re-confirming traffic before being
+// trusted again), using the same paired-Memo-on-a-shared-clock shape as
+// TestSetEntryTTLShortensExpiry. A larger fraction divides entryTTL into a
+// smaller re-validation midpoint, so the configured Memo goes stale sooner
+// than the package-default Memo at an identical elapsed duration.
+func TestSetReValidationFractionShortensReValidationWindow(t *testing.T) {
+	clk := newFakeClock()
+	k := testKey("A")
+
+	baseline := New(testPressureWindow)
+	baseline.SetNowForTest(clk.now)
+	buildPreferBEntry(t, baseline, k)
+
+	const fasterFraction = 10 // midpoint at memoEntryTTL/10, versus the package default's /2
+	fasterReval := New(testPressureWindow)
+	fasterReval.SetNowForTest(clk.now)
+	fasterReval.SetReValidationFraction(fasterFraction)
+	buildPreferBEntry(t, fasterReval, k)
+
+	clk.advance(memoEntryTTL/fasterFraction + time.Second)
+
+	if state, stale := fasterReval.Lookup(k); state != PreferB || !stale {
+		t.Fatalf("configured-fraction memo Lookup = (%v, stale=%v), want (PreferB, stale=true)", state, stale)
+	}
+	if state, stale := baseline.Lookup(k); state != PreferB || stale {
+		t.Fatalf("baseline memo Lookup = (%v, stale=%v), want (PreferB, stale=false) — its midpoint is still 15m out", state, stale)
+	}
+}
+
+// TestSetEntryTTLAndSetReValidationFractionNoOpOnNonPositiveInput proves the
+// documented defensive guard: a non-positive ttl/fraction must never reach
+// the field, since a zero-or-negative entryTTL would expire every verdict
+// the instant it is written and a zero-or-negative reValidationFraction
+// would divide by zero or push the re-validation midpoint past entryTTL —
+// both silently break the memo rather than tune it.
+func TestSetEntryTTLAndSetReValidationFractionNoOpOnNonPositiveInput(t *testing.T) {
+	m := New(testPressureWindow)
+
+	for _, ttl := range []time.Duration{0, -time.Minute} {
+		m.SetEntryTTL(ttl)
+		if m.entryTTL != memoEntryTTL {
+			t.Fatalf("SetEntryTTL(%s) must no-op, got entryTTL=%s want default %s", ttl, m.entryTTL, memoEntryTTL)
+		}
+	}
+
+	for _, n := range []int{0, -1} {
+		m.SetReValidationFraction(n)
+		if m.reValidationFraction != reValidationFraction {
+			t.Fatalf("SetReValidationFraction(%d) must no-op, got reValidationFraction=%d want default %d", n, m.reValidationFraction, reValidationFraction)
+		}
+	}
+}

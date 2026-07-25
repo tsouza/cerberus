@@ -548,9 +548,17 @@ func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.M
 		return nil
 	}
 	memo := routememo.New(evalSolver.EffectiveTimeout())
+	// Both setters no-op on the Config zero value, so these calls are safe
+	// unconditionally regardless of whether the operator set either var —
+	// an unset RouteMemoEntryTTL / RouteMemoReValidationFraction leaves the
+	// memo on the routememo package's own default.
+	memo.SetEntryTTL(evalSolver.Cfg.RouteMemoEntryTTL)
+	memo.SetReValidationFraction(evalSolver.Cfg.RouteMemoReValidationFraction)
 	logger.Info(
 		"failure-driven route memo wired",
 		"pressure_window", evalSolver.EffectiveTimeout(),
+		"entry_ttl", evalSolver.Cfg.RouteMemoEntryTTL,
+		"revalidation_fraction", evalSolver.Cfg.RouteMemoReValidationFraction,
 	)
 	return memo
 }
