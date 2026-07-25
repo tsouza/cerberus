@@ -1,0 +1,37 @@
+Layer 2a — /api/v1/label/<name>/values with a match[] selector.
+
+The requested label is known before the plan exists, so the whole answer
+is one column resolved at the scan: no renamed attribute map, no
+map-valued GROUP BY, no any(TimeUnix)/any(Value) — none of which appear
+in a label-values response. The matcher predicate and the closed metadata
+window share one Filter directly above the scan.
+
+-- query.promql --
+requests_total{job="api"}
+-- metadata_label_values --
+region
+-- sql --
+SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
+-- args --
+[0] string = "region"
+[1] string = ""
+[2] string = "region"
+[3] string = ""
+[4] string = ""
+[5] string = "requests_total"
+[6] string = "requests.total"
+[7] string = "requests/total"
+[8] string = "job"
+[9] string = ""
+[10] string = "job"
+[11] string = ""
+[12] string = ""
+[13] string = "api"
+[14] string = "1970-01-01 00:01:40.000000000"
+[15] int64 = 9
+[16] string = "1970-01-01 00:08:20.000000000"
+[17] int64 = 9
+-- chplan --
+Project [coalesce(nullIf(Attributes["region"], ""), nullIf(ResourceAttributes["region"], ""), "") AS value]
+  Filter predicate=((((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("requests_total", "requests.total", "requests/total"))) AND (TimeUnix >= toDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= toDateTime64("1970-01-01 00:08:20.000000000", 9)))
+    Scan(otel_metrics_sum)

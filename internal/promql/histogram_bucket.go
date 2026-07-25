@@ -117,41 +117,44 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 // is prefixed `le_` to avoid colliding with any plausible user-supplied
 // label (Prom forbids labels starting with `__` for the public range and
 // reserved-internal range; `le_idx` falls outside both).
-func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s schema.Metrics) chplan.Node {
+func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog) chplan.Node {
 	// Inner Project — pass the histogram row's identity columns through
 	// and add the fanned bucket index via arrayJoin. Every output row
 	// carries one (MetricName, Attributes, TimeUnix, ExplicitBounds,
 	// BucketCounts, le_idx) tuple — the same row repeats N+1 times,
 	// once per BucketCounts entry, with le_idx running 1..length(BucketCounts).
-	fanout := &chplan.Project{
-		Input: scanOrFilter,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			// Merge resource attributes here, where the raw
-			// ResourceAttributes column is still in scope (this Project
-			// reads the histogram Scan directly). The arrayJoin fan-out +
-			// the outer `mapConcat(Attributes, map('le', …))` then carry
-			// the already-merged map, so the selector seam above treats
-			// this path as attributes-pre-merged (see lower.go bucket
-			// branch) and does not re-reference ResourceAttributes.
-			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
-			{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
-			{
-				Expr: &chplan.FuncCall{
-					Name: "arrayJoin",
-					Args: []chplan.Expr{
-						&chplan.FuncCall{
-							Name: "arrayEnumerate",
-							Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
-						},
+	fanoutProjections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+	}
+	// Merge resource attributes here, where the raw ResourceAttributes
+	// column is still in scope (this Project reads the histogram Scan
+	// directly). The arrayJoin fan-out + the outer `mapConcat(Attributes,
+	// map('le', …))` then carry the already-merged map, so the selector
+	// seam above treats this path as attributes-pre-merged (see lower.go
+	// bucket branch) and does not re-reference ResourceAttributes. Catalog
+	// mode passes the raw sources through instead — see
+	// [catalogAttributesProjections].
+	fanoutProjections = append(fanoutProjections,
+		selectorLabelProjections(cat, s)...)
+	fanoutProjections = append(
+		fanoutProjections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
+		chplan.Projection{
+			Expr: &chplan.FuncCall{
+				Name: "arrayJoin",
+				Args: []chplan.Expr{
+					&chplan.FuncCall{
+						Name: "arrayEnumerate",
+						Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
 					},
 				},
-				Alias: bucketIdxAlias,
 			},
+			Alias: bucketIdxAlias,
 		},
-	}
+	)
+	fanout := &chplan.Project{Input: scanOrFilter, Projections: fanoutProjections}
 
 	// Outer Project — synthesize the canonical Sample shape with the
 	// suffixed metric name + the `le` label baked into Attributes + the
@@ -222,15 +225,19 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 			},
 		},
 	}
-	return &chplan.Project{
-		Input: fanout,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
-			{Expr: mergedAttrs, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: cumCount, Alias: s.ValueColumn},
-		},
+	outer := []chplan.Projection{
+		{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
 	}
+	// The synthesised `le` key rides on Attributes in both modes: it is the
+	// only place a bucket bound exists as a label, and the post-fan-out
+	// `le=<bound>` matcher filter reads it back out of the map.
+	outer = append(outer, catalogAttributesProjections(cat, s, mergedAttrs)...)
+	outer = append(
+		outer,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		chplan.Projection{Expr: cumCount, Alias: s.ValueColumn},
+	)
+	return &chplan.Project{Input: fanout, Projections: outer}
 }
 
 // bucketIdxAlias is the CH-safe bare identifier used to surface the

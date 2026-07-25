@@ -312,6 +312,7 @@ func lowerHistogramSelectorInput(
 	bucketLeMatchers []*labels.Matcher,
 	companionValueColumn string,
 	s schema.Metrics,
+	cat *metadataCatalog,
 ) (chplan.Node, chplan.Expr, bool) {
 	switch {
 	case bucketSuffixed != "":
@@ -319,7 +320,7 @@ func lowerHistogramSelectorInput(
 		if pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
-		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s)
+		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat)
 		leSchema := s
 		leSchema.ResourceAttributesColumn = ""
 		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
@@ -327,7 +328,7 @@ func lowerHistogramSelectorInput(
 		}
 		return selectorInput, nil, true
 	case companionValueColumn != "":
-		return wrapHistogramCompanionProject(scan, companionValueColumn, s), pred, true
+		return wrapHistogramCompanionProject(scan, companionValueColumn, s, cat), pred, true
 	}
 	return scan, pred, false
 }
@@ -458,7 +459,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// outer Filter on `Attributes['le']` (the column doesn't exist on
 	// the raw scan row).
 	selectorInput, pred, attributesPreMerged := lowerHistogramSelectorInput(
-		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s,
+		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog,
 	)
 
 	// Resolve the effective evaluation anchor for this selector.
@@ -564,6 +565,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// metadata lowerings run with step==0 and inRangeVector==false, so they
 	// fall through to exactly this seam.
 	if ctx.metadataFullRange {
+		if ctx.catalog != nil {
+			return wrapMetadataCatalog(selectorInput, pred, ctx.start, ctx.end, s, ctx.catalog), nil
+		}
 		return wrapMetadataFullRange(selectorInput, pred, ctx.start, ctx.end, s), nil
 	}
 	// Instant-vector context: the LWR wrapper applies both the
@@ -588,26 +592,28 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 // here keeps the downstream rate / arithmetic expressions consistent
 // with the gauge / sum-table path (where `Value` is already
 // `Float64`).
-func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s schema.Metrics) chplan.Node {
-	return &chplan.Project{
-		Input: scan,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			// Merge resource attributes here (raw ResourceAttributes in
-			// scope on the histogram Scan); the canonical quadruple this
-			// Project exposes drops the raw column, so the selector seam
-			// above treats this path as attributes-pre-merged.
-			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{
-				Expr: &chplan.FuncCall{
-					Name: "toFloat64",
-					Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
-				},
-				Alias: s.ValueColumn,
-			},
-		},
+func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s schema.Metrics, cat *metadataCatalog) chplan.Node {
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 	}
+	// Merge resource attributes here (raw ResourceAttributes in scope on
+	// the histogram Scan); the canonical quadruple this Project exposes
+	// drops the raw column, so the selector seam above treats this path as
+	// attributes-pre-merged. Catalog mode keeps the raw sources instead —
+	// see [catalogAttributesProjections].
+	projections = append(projections, selectorLabelProjections(cat, s)...)
+	projections = append(
+		projections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		chplan.Projection{
+			Expr: &chplan.FuncCall{
+				Name: "toFloat64",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
+			},
+			Alias: s.ValueColumn,
+		},
+	)
+	return &chplan.Project{Input: scan, Projections: projections}
 }
 
 // needCompanionUnion reports whether the classic-histogram-companion
@@ -669,14 +675,14 @@ func lowerCompanionUnion(
 	bareName, suffixedName, sourceColumn string,
 ) (chplan.Node, error) {
 	inputs := []chplan.Node{
-		buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn),
+		buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn, ctx.catalog),
 	}
 	// One literal-suffixed-name arm per distinct value table the name may live
 	// in: the Sum table (hostmetrics cumulative sums) and the Gauge table
 	// (standalone `<x>_sum`/`<x>_count` gauges — the yace CloudWatch-suffix
 	// case). Empty arms are cost-free under the per-arm MetricName filter.
 	for _, t := range literalCompanionValueTables(s) {
-		inputs = append(inputs, buildLiteralNameCompanionArm(s, matchers, suffixedName, t))
+		inputs = append(inputs, buildLiteralNameCompanionArm(s, matchers, suffixedName, t, ctx.catalog))
 	}
 	selectorInput := chplan.Node(&chplan.UnionAll{Inputs: inputs})
 	anchor, err := selectorAnchor(v, ctx)
@@ -711,6 +717,9 @@ func lowerCompanionUnion(
 	// window, no LWR staleness collapse — same seam as the single-table
 	// path above. pred is nil here (already applied per union arm).
 	if ctx.metadataFullRange {
+		if ctx.catalog != nil {
+			return wrapMetadataCatalog(selectorInput, nil, ctx.start, ctx.end, s, ctx.catalog), nil
+		}
 		return wrapMetadataFullRange(selectorInput, nil, ctx.start, ctx.end, s), nil
 	}
 	return wrapInstantLatestPerSeries(selectorInput, nil, anchor, s), nil
@@ -734,6 +743,7 @@ func lowerCompanionUnion(
 func buildHistogramCompanionArm(
 	s schema.Metrics, matchers []*labels.Matcher,
 	bareName, suffixedName, sourceColumn string,
+	cat *metadataCatalog,
 ) chplan.Node {
 	armMatchers := rewriteMetricName(matchers, bareName)
 	scan := &chplan.Scan{Table: s.HistogramTable}
@@ -741,25 +751,27 @@ func buildHistogramCompanionArm(
 	if pred := buildPredicate(armMatchers, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}
 	}
-	return &chplan.Project{
-		Input: armInput,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
-			// Merge resource attributes per-arm: the raw ResourceAttributes
-			// column is in scope here (the arm scans the histogram table
-			// directly) but is dropped from the canonical quadruple the
-			// UnionAll exposes, so the post-union seam cannot reference it.
-			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{
-				Expr: &chplan.FuncCall{
-					Name: "toFloat64",
-					Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
-				},
-				Alias: s.ValueColumn,
-			},
-		},
+	projections := []chplan.Projection{
+		{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
 	}
+	// Merge resource attributes per-arm: the raw ResourceAttributes column
+	// is in scope here (the arm scans the histogram table directly) but is
+	// dropped from the canonical quadruple the UnionAll exposes, so the
+	// post-union seam cannot reference it. Catalog mode passes the raw
+	// sources through instead — see [catalogAttributesProjections].
+	projections = append(projections, selectorLabelProjections(cat, s)...)
+	projections = append(
+		projections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		chplan.Projection{
+			Expr: &chplan.FuncCall{
+				Name: "toFloat64",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
+			},
+			Alias: s.ValueColumn,
+		},
+	)
+	return &chplan.Project{Input: armInput, Projections: projections}
 }
 
 // buildLiteralNameCompanionArm assembles a literal-suffixed-name arm of the
@@ -773,6 +785,7 @@ func buildHistogramCompanionArm(
 // histogram arm needs the cast because its Count column is UInt64).
 func buildLiteralNameCompanionArm(
 	s schema.Metrics, matchers []*labels.Matcher, suffixedName, table string,
+	cat *metadataCatalog,
 ) chplan.Node {
 	// Defensive: thread the suffixed name back through rewriteMetricName
 	// so any non-Equal `__name__` matchers in the input list (regex
@@ -795,18 +808,20 @@ func buildLiteralNameCompanionArm(
 	if pred := buildPredicate(armMatchers, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}
 	}
-	return &chplan.Project{
-		Input: armInput,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			// Merge resource attributes per-arm (see buildHistogramCompanionArm):
-			// raw ResourceAttributes is in scope on the sum table but dropped
-			// by the canonical quadruple the UnionAll exposes.
-			{Expr: mergeResourceAttributesExpr(s), Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 	}
+	// Merge resource attributes per-arm (see buildHistogramCompanionArm):
+	// raw ResourceAttributes is in scope on the sum table but dropped by
+	// the canonical quadruple the UnionAll exposes. Catalog mode passes the
+	// raw sources through instead.
+	projections = append(projections, selectorLabelProjections(cat, s)...)
+	projections = append(
+		projections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+	)
+	return &chplan.Project{Input: armInput, Projections: projections}
 }
 
 // augmentSelectorAttributes wraps `input` with a Project that rebinds
@@ -863,7 +878,17 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 // [augmentSelectorAttributes] skips the Project entirely.
 func selectorAttributesExpr(ctx lowerCtx, s schema.Metrics) chplan.Expr {
 	base := mergeResourceAttributesExpr(s)
-	if ctx.attributesPreMerged {
+	if ctx.catalog != nil {
+		// Catalog mode answers with ONE column resolved at the leaf, so the
+		// merged map is never read: building it here would rebuild every
+		// row's whole attribute map (two mapFromArrays over a per-key regex)
+		// only for the catalog projection to subscript one key out of it.
+		// Leaving Attributes bare also keeps the raw ResourceAttributes /
+		// dedicated columns in scope for [catalogLabelValuesExpr], and keeps
+		// the matcher predicate un-sunk so it lands on one Filter with the
+		// metadata window bound.
+		base = &chplan.ColumnRef{Name: s.AttributesColumn}
+	} else if ctx.attributesPreMerged {
 		// The selector input already carries the merge in its Attributes
 		// column (companion-union arms merge per-arm); re-deriving it here
 		// would reference an out-of-scope ResourceAttributes. Overlay the
@@ -1034,31 +1059,8 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 // the row count to the number of distinct series, keeping a wide
 // metadata window cheap on the wire.
 func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.Time, s schema.Metrics) chplan.Node {
-	combined := pred
-	addBound := func(b chplan.Expr) {
-		if combined == nil {
-			combined = b
-			return
-		}
-		combined = &chplan.Binary{Op: chplan.OpAnd, Left: combined, Right: b}
-	}
-	if !start.IsZero() {
-		addBound(&chplan.Binary{
-			Op:    chplan.OpGe,
-			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-			Right: metadataBoundExpr(start),
-		})
-	}
-	if !end.IsZero() {
-		addBound(&chplan.Binary{
-			Op:    chplan.OpLe,
-			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-			Right: metadataBoundExpr(end),
-		})
-	}
-
 	input := scan
-	if combined != nil {
+	if combined := metadataWindowPredicate(pred, start, end, s); combined != nil {
 		input = &chplan.Filter{Input: scan, Predicate: combined}
 	}
 
@@ -1087,6 +1089,40 @@ func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.T
 			{Expr: &chplan.ColumnRef{Name: metaValueAlias}, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// metadataWindowPredicate ANDs the closed `[start,end]` metadata window
+// onto pred. Each bound is omitted when zero — a no-bound side scans the
+// whole table, matching reference Prometheus's min/max-retention default.
+// Returns nil when there is nothing to filter on (no matchers, no window),
+// so callers emit no Filter at all.
+//
+// Shared by [wrapMetadataFullRange] and [wrapMetadataCatalog] so the two
+// metadata seams can never drift on window semantics.
+func metadataWindowPredicate(pred chplan.Expr, start, end time.Time, s schema.Metrics) chplan.Expr {
+	combined := pred
+	addBound := func(b chplan.Expr) {
+		if combined == nil {
+			combined = b
+			return
+		}
+		combined = &chplan.Binary{Op: chplan.OpAnd, Left: combined, Right: b}
+	}
+	if !start.IsZero() {
+		addBound(&chplan.Binary{
+			Op:    chplan.OpGe,
+			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+			Right: metadataBoundExpr(start),
+		})
+	}
+	if !end.IsZero() {
+		addBound(&chplan.Binary{
+			Op:    chplan.OpLe,
+			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+			Right: metadataBoundExpr(end),
+		})
+	}
+	return combined
 }
 
 // metadataBoundExpr renders a metadata window bound as a
@@ -1419,9 +1455,34 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	if m.Name == model.MetricNameLabel {
 		return metricNamePredicate(m, s)
 	}
+	return &chplan.Binary{
+		Op:    matchOp(m.Type),
+		Left:  rawLabelValueExpr(s, m.Name),
+		Right: &chplan.LitString{V: m.Value},
+	}
+}
+
+// rawLabelValueExpr resolves the Prom label promLabel to the expression
+// that yields ITS VALUE on a RAW metric row — branches 2 to 4 of
+// [matcherToExpr]'s routing, factored out so the matcher predicate and the
+// label-values catalog projection ([catalogLabelValuesExpr]) resolve a
+// label the SAME way. Any divergence between the two would let the catalog
+// advertise values no selector can match, or hide values a selector does
+// match.
+//
+// The row is raw: the caller must not have replaced Attributes with the
+// merged/renamed read-path projection, because this expression reads the
+// dedicated column and the ResourceAttributes map directly.
+//
+// `__name__` is NOT handled here — it resolves against the MetricName
+// column and, in matcher position, carries its own dotted-candidate
+// fan-out ([metricNamePredicate]).
+//
+// The merged-row counterpart is [mergedLabelValueExpr].
+func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 	var lhs chplan.Expr
-	mapLookup := attributeLookup(s.AttributesColumn, m.Name)
-	if col := schemaTopLevelColumn(s, m.Name); col != "" {
+	mapLookup := attributeLookup(s.AttributesColumn, promLabel)
+	if col := schemaTopLevelColumn(s, promLabel); col != "" {
 		lhs = &chplan.FuncCall{
 			Name: "coalesce",
 			Args: []chplan.Expr{
@@ -1435,7 +1496,7 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 				mapLookup,
 			},
 		}
-	} else if resArm := resourceMatcherFallback(s, m.Name); resArm != nil {
+	} else if resArm := resourceMatcherFallback(s, promLabel); resArm != nil {
 		// BRANCH 3 — Attributes ∪ ResourceAttributes, Attributes-win.
 		//
 		//   coalesce(nullIf(Attributes[cands], ''),
@@ -1455,25 +1516,37 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 		// string (not NULL): a negative matcher `{env!="prod"}` must KEEP a
 		// row that has no `env` at all (Prom "absent label → empty string"),
 		// and CH three-valued logic would otherwise drop the NULL row.
-		lhs = &chplan.FuncCall{
-			Name: "coalesce",
-			Args: []chplan.Expr{
-				&chplan.FuncCall{
-					Name: "nullIf",
-					Args: []chplan.Expr{mapLookup, &chplan.LitString{V: ""}},
-				},
-				resArm,
-				&chplan.LitString{V: ""},
+		args := []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "nullIf",
+				Args: []chplan.Expr{mapLookup, &chplan.LitString{V: ""}},
 			},
+			resArm,
 		}
+		// The dot/underscore candidate chain inside resArm cannot reach a
+		// configured resource key whose Prom spelling differs from it by any
+		// OTHER separator (`a-b`, `a b`) — those keys are only discoverable
+		// by inverting the sanitisation over the configured allowlist, which
+		// [configuredResourceKeysFor] does exactly. Each extra key becomes
+		// one more coalesce arm AFTER the candidate chain, so an allowlist
+		// entry never displaces a spelling the chain already resolves.
+		for _, k := range configuredResourceKeysFor(s, promLabel) {
+			args = append(args, &chplan.FuncCall{
+				Name: "nullIf",
+				Args: []chplan.Expr{
+					&chplan.MapAccess{
+						Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+						Key: &chplan.LitString{V: k},
+					},
+					&chplan.LitString{V: ""},
+				},
+			})
+		}
+		lhs = &chplan.FuncCall{Name: "coalesce", Args: append(args, &chplan.LitString{V: ""})}
 	} else {
 		lhs = mapLookup
 	}
-	return &chplan.Binary{
-		Op:    matchOp(m.Type),
-		Left:  lhs,
-		Right: &chplan.LitString{V: m.Value},
-	}
+	return lhs
 }
 
 // metricNamePredicate resolves a `__name__` matcher against the
@@ -1626,6 +1699,21 @@ func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 // internal underscore now emits the if-chain. The chplan IR snapshot
 // expands accordingly; `just update-golden` regenerates the SQL +
 // chplan sections in lock-step.
+// attributeLookupKeys returns the storage keys [attributeLookup] probes
+// for the Prom label `key`, in probe order. Callers that need to know
+// which spellings the chain already covers (see
+// [configuredResourceKeysFor]) read it instead of re-deriving the rule.
+func attributeLookupKeys(key string) []string {
+	if !format.PromLabelNeedsDottedFallback(key) {
+		return []string{key}
+	}
+	candidates := format.PromLabelToOTelCandidates(key)
+	if len(candidates) <= 1 {
+		return []string{key}
+	}
+	return candidates
+}
+
 func attributeLookup(col, key string) chplan.Expr {
 	if !format.PromLabelNeedsDottedFallback(key) {
 		return &chplan.MapAccess{

@@ -62,6 +62,18 @@ type lowerCtx struct {
 	// by [LowerMetadataRange]; every query-evaluation path leaves it
 	// false and keeps the instant/range LWR semantics.
 	metadataFullRange bool
+	// catalog narrows a metadataFullRange lowering to a SINGLE-COLUMN
+	// catalog answer — the distinct values of one known label, or the label
+	// names each matched row carries. It is nil for /series (which needs the
+	// whole label set per row) and for every query-evaluation path.
+	//
+	// When set, the selector seam leaves the row's raw identity columns
+	// alone ([selectorAttributesExpr] skips the resource merge, so no
+	// per-row renamed map is built) and the metadata seam projects the one
+	// catalog column instead of the Sample quadruple
+	// ([wrapMetadataCatalog]). Set only by [LowerMetadataLabelValues] /
+	// [LowerMetadataLabelNames].
+	catalog *metadataCatalog
 	// outerByLabels carries the by-clause labels of an enclosing
 	// vector aggregation, threaded down so the inner selector path
 	// can inflate Attributes with the top-level OTel-CH columns
