@@ -36,6 +36,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 	"github.com/tsouza/cerberus/internal/solver"
@@ -507,12 +508,49 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		Solver:          evalSolver,
 		Settings:        settingsRules(cfg, optSet),
 		MaxQuerySamples: client.MaxQuerySamples(),
+		RouteMemo:       buildRouteMemo(evalSolver, logger),
 	}
 	h.Limiter = limiter
 	h.Version = Version
 	h.Lowerers = nativeRangeLowerers(optSet)
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	return h
+}
+
+// buildRouteMemo wires the failure-driven route memo (internal/routememo,
+// docs/solver.md §"Failure-driven route memo") when explicitly enabled via
+// CERBERUS_SOLVER_ROUTE_MEMO_ENABLED (default false — see
+// solver.Config.RouteMemoEnabled's doc for why this is opt-in rather than
+// riding along with Mode=auto/sharded automatically). Returns nil (the
+// engine's byte-unchanged, feature-off default) when disabled or when
+// evalSolver is nil.
+//
+// The pressure damper's correlation window is the solver's OWN effective
+// wall-clock deadline (Solver.EffectiveTimeout) — the horizon a single
+// fan-out's resource pressure stays live server-side, per routememo.New's
+// own doc — rather than a second, independently-configured duration that
+// could drift out of step with it. RouteMemoEntryTTL / RouteMemoReValidationFraction
+// (both zero-value-means-"use the routememo package default") are applied
+// after construction so an operator can override either without this
+// function needing to know the routememo package's own default constants.
+func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.Memo {
+	if evalSolver == nil || !evalSolver.Cfg.RouteMemoEnabled {
+		return nil
+	}
+	memo := routememo.New(evalSolver.EffectiveTimeout())
+	// Both setters no-op on the Config zero value, so these calls are safe
+	// unconditionally regardless of whether the operator set either var —
+	// an unset RouteMemoEntryTTL / RouteMemoReValidationFraction leaves the
+	// memo on the routememo package's own default.
+	memo.SetEntryTTL(evalSolver.Cfg.RouteMemoEntryTTL)
+	memo.SetReValidationFraction(evalSolver.Cfg.RouteMemoReValidationFraction)
+	logger.Info(
+		"failure-driven route memo wired",
+		"pressure_window", evalSolver.EffectiveTimeout(),
+		"entry_ttl", evalSolver.Cfg.RouteMemoEntryTTL,
+		"revalidation_fraction", evalSolver.Cfg.RouteMemoReValidationFraction,
+	)
+	return memo
 }
 
 // nativeRangeLowerers builds the BOOT-WIRED polymorphic lowering dispatch table

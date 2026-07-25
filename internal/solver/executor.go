@@ -206,6 +206,36 @@ func (x *Executor) Execute(
 	}
 	info.Parallelism = pEff
 
+	// 3b. MANDATORY PER-SHARD MEMORY APPORTIONMENT (docs §"Failure-driven
+	// route memo"). Route A's single statement runs under the client's
+	// configured max_memory_usage cap; a K-shard fan-out running EACH shard
+	// under that SAME full cap would let total server-side memory exposure
+	// reach K x route A's — exactly backwards for a mechanism whose premise
+	// is "sharding reduces resource use", and the accident this apportionment
+	// closes for good rather than leaving as a togglable knob (a knob
+	// defaults off, and an off-by-default safety property is not a safety
+	// property). kEff is already bounded above by the structural MaxK clamp
+	// (planner.go), so the minimum possible per-shard cap is
+	// routeAMemoryCapBytes/MaxK — a floor the mechanism already guarantees,
+	// with no separate floor constant needed.
+	//
+	// A cap of 0 (unconfigured — chclient.Client.MaxQueryMemoryBytes docs
+	// this as "no cap is configured, the setting is not sent") is left
+	// unapportioned: route A itself is uncapped in that configuration, so a
+	// per-shard cap here would make routed traffic MORE restrictive than
+	// route A, not merely no worse.
+	var perShardMemoryBytes int64
+	if cap := x.Client.MaxQueryMemoryBytes(); cap > 0 {
+		perShardMemoryBytes = cap / int64(kEff)
+		if perShardMemoryBytes < 1 {
+			// Only reachable if cap < kEff — an unrealistic (byte-scale)
+			// configuration. Guards against stamping a literal 0, which
+			// ClickHouse's max_memory_usage setting treats as UNLIMITED —
+			// the opposite of what "apportion the cap" means.
+			perShardMemoryBytes = 1
+		}
+	}
+
 	// 4. WALL-CLOCK DEADLINE — a dedicated cancel cause so a solver-timeout
 	// is breaker-NEUTRAL (504) and distinct from a real DeadlineExceeded.
 	timeout := x.Cfg.Timeout
@@ -264,7 +294,7 @@ func (x *Executor) Execute(
 		args := info.ShardArgs[shardIdx]
 		out := sc.chans[shardIdx]
 		g.Go(func() error {
-			return sc.runShard(gctx, langName, shardIdx, sql, args, budget, out)
+			return sc.runShard(gctx, langName, shardIdx, sql, args, budget, perShardMemoryBytes, out)
 		})
 	}
 
@@ -295,6 +325,7 @@ func (sc *shardCursor) runShard(
 	sql string,
 	args []any,
 	budget *chclient.SampleBudget,
+	perShardMemoryBytes int64,
 	out chan<- chclient.Sample,
 ) (err error) {
 	// Always close this shard's channel so the composer's range loop over it
@@ -307,6 +338,14 @@ func (sc *shardCursor) runShard(
 	// parity stays per-REQUEST across all shards.
 	if budget != nil {
 		pctx = chclient.WithSampleBudget(pctx, budget)
+	}
+	// Mandatory per-shard memory apportionment (see the call site in
+	// Execute). WithQuerySetting merges LAST into the client's per-query
+	// settings map (chclient/client.go querySettings), so this deliberately
+	// overrides the client-wide max_memory_usage cap for this shard alone —
+	// every other shard's context carries its own copy, never a shared one.
+	if perShardMemoryBytes > 0 {
+		pctx = chclient.WithQuerySetting(pctx, "max_memory_usage", perShardMemoryBytes)
 	}
 
 	cur, err := sc.client.QueryCursor(pctx, sql, args...)
