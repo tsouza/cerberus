@@ -4,6 +4,10 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+### Added
+
+- **solver:** failure-driven route memo (`internal/routememo`) — when a route-A dispatch fails on ClickHouse resource exhaustion, retry it once on the sharded route and remember the outcome against a literal-free cost-shape fingerprint, so future cost-equivalent traffic routes directly instead of paying the same failure again; bounded by two-failure corroboration, a cluster-wide pressure damper, a single process-wide dispatch-token budget, and TTL-with-midpoint-revalidation. Off by default (`CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`)
+
 ## [v1.11.1] — 2026-07-17
 
 ### Fixed
