@@ -61,6 +61,20 @@ expect_no_match() {
   fi
 }
 
+# expect_match_ci <label> <regex> <fixture-file> — same as expect_match, but
+# with grep's -i, for the one pattern (8) whose forbid-skip.mjs invocation
+# scans case-insensitively.
+expect_match_ci() {
+  local label="$1" regex="$2" file="$3"
+  if grep -nEi -- "$regex" "$file" >/dev/null; then
+    note "PASS  match  $label"
+    passes=$((passes + 1))
+  else
+    printf 'FAIL  match  %s — regex %q did not case-insensitively match %s\n' "$label" "$regex" "$file" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 # expect_match_perl / expect_no_match_perl — same idea, but using the
 # perl -0777 slurp shape from the CI step (pattern 6).
 expect_match_perl() {
@@ -180,6 +194,51 @@ expect_no_match_perl "case6c asserted-panic form" "$RE6" "$tmpdir/case6c_nomatch
 # `scripts/check-skip-additions.sh` is no longer needed and the
 # script itself was removed; there is nothing left to self-test here.
 # --------------------------------------------------------------------
+
+# --------------------------------------------------------------------
+# case 8 — scenario-suppressing Gherkin tags  (PR #1268)
+# --------------------------------------------------------------------
+# The Layer-14 migration scenarios are `.feature` files driven by godog.
+# A `@wip`-style tag filters a Scenario out of the run while the lane
+# still reports green — t.Skip wearing a hat, one directory over.
+RE8='(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)'
+printf '@MIG-04 @tier0 @wip\n'                       >"$tmpdir/case8_match.txt"
+printf '@skip\n'                                     >"$tmpdir/case8_match_bare.txt"
+printf '@MIG-01 @tier0 @archetype:already-otel\n'    >"$tmpdir/case8_nomatch.txt"
+printf '@MIG-01 @tier0 @archetype:manual-scrape\n'   >"$tmpdir/case8_nomatch_embedded.txt"
+expect_match    "case8 @wip suffix tag"        "$RE8" "$tmpdir/case8_match.txt"
+expect_match    "case8 bare @skip tag"         "$RE8" "$tmpdir/case8_match_bare.txt"
+expect_no_match "case8 real tag line"          "$RE8" "$tmpdir/case8_nomatch.txt"
+expect_no_match "case8 archetype containing a banned word" "$RE8" "$tmpdir/case8_nomatch_embedded.txt"
+
+# The forbid-skip.mjs invocation of RE8 runs `grep -i`: the tag vocabulary is
+# closed and fixed-case, so a wrongly-cased suppression tag — including one
+# placed on a Scenario Outline's Examples block, which is legal Gherkin — must
+# not merge clean just because nobody typed it in lowercase.
+printf '@WIP\n'                                      >"$tmpdir/case8_match_upper.txt"
+printf '    @Skip\n'                                 >"$tmpdir/case8_match_examples.txt"
+expect_match_ci "case8 uppercase @WIP"                    "$RE8" "$tmpdir/case8_match_upper.txt"
+expect_match_ci "case8 mixed-case @Skip on an Examples line" "$RE8" "$tmpdir/case8_match_examples.txt"
+
+# --------------------------------------------------------------------
+# case 9 — godog skip / pending routes  (PR #1268)
+# --------------------------------------------------------------------
+# godog step definitions live in NON-test .go files, so case 1's
+# `*_test.go` scope cannot see them. The receiver is unanchored so
+# binding godog.T(ctx) to a local first does not evade the scan.
+RE9='godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\('
+printf 'return godog.ErrSkip\n'                              >"$tmpdir/case9_match_errskip.txt"
+printf 'return godog.ErrPending\n'                           >"$tmpdir/case9_match_errpending.txt"
+printf 'godog.T(ctx).Skipf("no fixture for %%s", archetype)\n' >"$tmpdir/case9_match_skipf.txt"
+printf 't := godog.T(ctx)\nt.SkipNow()\n'                    >"$tmpdir/case9_match_local.txt"
+printf 'w.Skipped = corpus.Skipped\n'                        >"$tmpdir/case9_nomatch_field.txt"
+printf 'return fmt.Errorf("the harvester dropped %%d inputs", n)\n' >"$tmpdir/case9_nomatch_plain.txt"
+expect_match    "case9 godog.ErrSkip"        "$RE9" "$tmpdir/case9_match_errskip.txt"
+expect_match    "case9 godog.ErrPending"     "$RE9" "$tmpdir/case9_match_errpending.txt"
+expect_match    "case9 T(ctx).Skipf"         "$RE9" "$tmpdir/case9_match_skipf.txt"
+expect_match    "case9 local receiver SkipNow" "$RE9" "$tmpdir/case9_match_local.txt"
+expect_no_match "case9 Skipped field access" "$RE9" "$tmpdir/case9_nomatch_field.txt"
+expect_no_match "case9 ordinary error return" "$RE9" "$tmpdir/case9_nomatch_plain.txt"
 
 # --------------------------------------------------------------------
 # summary

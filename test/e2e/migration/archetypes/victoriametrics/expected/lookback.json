@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "longest": "5m",
+  "by_query": [
+    {
+      "expr": "sum by (path) (rate(vm_http_requests_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Request rate/A",
+      "kind": "panel",
+      "reach": "5m"
+    },
+    {
+      "expr": "sum(rate(vm_http_requests_total[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:http_requests:rate5m",
+      "kind": "record",
+      "reach": "5m"
+    }
+  ],
+  "anchored": [],
+  "non_promql": [],
+  "unparseable": [
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Disk with fallback (MetricsQL default)/A",
+      "reason": "unparseable PromQL: 1:26: parse error: unexpected identifier \"default\""
+    },
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Free disk space (MetricsQL rollup)/A",
+      "reason": "unparseable PromQL: 1:1: parse error: unknown function with name \"range_avg\""
+    },
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Tagged availability (MetricsQL label_set)/A",
+      "reason": "unparseable PromQL: 1:1: parse error: unknown function with name \"label_set\""
+    },
+    {
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.alerts/VMRowsInsertedStalled",
+      "reason": "unparseable PromQL: 1:1: parse error: unknown function with name \"rollup\""
+    },
+    {
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:rows_inserted:rate5m",
+      "reason": "unparseable PromQL: 1:39: parse error: unexpected identifier \"keep_metric_names\""
+    }
+  ]
+}

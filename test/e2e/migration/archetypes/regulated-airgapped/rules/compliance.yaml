@@ -1,0 +1,19 @@
+groups:
+  - name: compliance.recording
+    rules:
+      # Both recorded series are provisioned for the quarterly audit export,
+      # which reads them straight out of storage. Nothing in the corpus queries
+      # them, so both stay orphan and the rule graph raises no objection to
+      # dropping their materialisation at cutover.
+      - record: audit:log_write_failures:rate5m
+        expr: sum(rate(audit_log_write_failures_total[5m]))
+      - record: audit:session_duration:p95
+        expr: histogram_quantile(0.95, sum by (le) (rate(session_duration_seconds_bucket[5m])))
+  - name: compliance.alerts
+    rules:
+      - alert: AuditLogWriteFailing
+        expr: rate(audit_log_write_failures_total[5m]) > 0
+        for: 5m
+      - alert: ClockDriftOutsideTolerance
+        expr: abs(node_timex_offset_seconds) > 0.05
+        for: 10m

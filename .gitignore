@@ -33,6 +33,7 @@ go.work.sum
 
 # Local build outputs
 bin/
+build/
 dist/
 # route-rules CLI build output (never commit the compiled binary)
 /route-rules

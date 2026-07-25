@@ -1,0 +1,14 @@
+groups:
+  - name: repatriated
+    rules:
+      # The same monitor was imported twice when two SaaS accounts were merged.
+      # Both blocks name the same alert in the same group and carry the same
+      # expression, so the corpus counts the site once.
+      - alert: DatadogMonitorParity
+        expr: avg:system.cpu.user{*}.as_rate()
+        for: 5m
+      - alert: DatadogMonitorParity
+        expr: avg:system.cpu.user{*}.as_rate()
+        for: 5m
+      - record: saas:checkout_latency:p95
+        expr: histogram_quantile(0.95, sum by (le) (rate(checkout_latency_seconds_bucket[5m])))

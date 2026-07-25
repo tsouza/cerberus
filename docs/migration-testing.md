@@ -48,9 +48,9 @@ document.
 
 ## 2. The `cerberus migrate` CLI surface this lane drives
 
-Every scenario composes only the merged CLI. There are **seven subcommands**
-(`harvest`, `explain`, `classify`, `rulegraph`, `verify`, `inventory`, `gate`)
-plus a root `--schema` flag. The exact flags each scenario relies on:
+Every scenario composes only the merged CLI. There are **eight subcommands**
+(`harvest`, `explain`, `classify`, `rulegraph`, `verify`, `inventory`, `gate`,
+`schema`). The exact flags each scenario relies on:
 
 | Command                      | Flags this lane uses                                                                                                                                                                                                                                                | Output                                                      | Network                               |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------- |
@@ -530,10 +530,10 @@ divergence/unsupported/orphan/missing-artifact.
 Directory layout:
 
 ```text
-test/e2e/migration          # created by the Phase-1/2 build PRs
-  archetypes/
+test/e2e/migration/
+  archetypes/                # one directory per archetype, named for it
     kube-prometheus-stack/   { rules/  dashboards/  seed/  expected/ }
-    thanos/                  { … }
+    prometheus-thanos/       { … }
     mimir-cortex/            { … }
     victoriametrics/         { … }
     already-otel/            { … }
@@ -548,13 +548,20 @@ test/e2e/migration          # created by the Phase-1/2 build PRs
   steps/                     # godog step definitions — the assertion library
   lib/                       # assertion + artifact-collection helpers (JSON diff, first-blocker extract)
   tolerances/                # declared epsilons + their derivations (see 6.2)
+  coverage-baseline.json     # the raise-only story <-> scenario floor
   cmd/
     scenarios/               # enumerator: features -> {id, tiers, archetypes} JSON
 ```
 
+The `seed/` generators and the `tolerances/` registry belong to the tiers
+that need them: a seed profile drives a live backend, and the first
+epsilon is derived from a measured margin on one, so both arrive with
+Tier 1 ([section 8](#8-phased-build-order)). The offline tier reads
+committed fixtures and asserts exact equality, so it needs neither.
+
 Scenarios are **Gherkin feature files driven by `godog`** (the Cucumber
-implementation for Go, MIT, test-only — it is never reachable from
-`cmd/cerberus`, so the `agpl-clean` gate is unaffected). Go is the host language
+implementation for Go, MIT; it is never reachable from `cmd/cerberus`, so the
+`agpl-clean` gate is unaffected). Go is the host language
 because the assertions read the emitted artifacts as *typed structs* —
 `internal/migrate`'s corpus / classify / rulegraph shapes and
 `internal/migrateverify.Report` — rather than re-declaring those schemas in a
@@ -564,29 +571,54 @@ The feature files ARE the manifest: there is no separate scenario registry to
 keep in step with them. Metadata rides on tags — `@MIG-16` binds the story,
 `@tier0`/`@tier1`/`@tier2` the tier(s), `@archetype:<name>` the archetypes. A
 split-tier story (MIG-10, MIG-14, MIG-26) carries two `Scenario`s, one per tier
-tag, instead of a tier list. `cmd/scenarios` walks the features with godog's own
-parser and emits `{id, tiers, archetypes}` JSON, so exactly one Gherkin parser
-exists in the tree.
+tag, instead of a tier list. `test/e2e/migration/cmd/scenarios/` walks the
+features with godog's own parser and emits one record per `Scenario` node —
+`{feature, line, keyword, name, stories, tiers, archetypes, unknown_tags,
+steps}` — so exactly one Gherkin parser exists in the tree. It carries no
+policy: a tag matching none of the three vocabularies is preserved verbatim in
+`unknown_tags` rather than judged, and each step's Gherkin keyword type
+(`Context` / `Action` / `Outcome` / `Conjunction`) is reported rather than
+interpreted. Every verdict belongs to the ratchet that reads the JSON.
 
 Non-trivial step logic lives in `.github/scripts/migration-e2e.mjs` (per the
 CLAUDE.md "step logic in `.mjs`, not inline YAML" rule), mirroring
 `compose-smoke-matrix.mjs`. It consumes the enumerator's JSON rather than
 parsing Gherkin itself:
 
-- `MODE=verify` asserts every one of the 26 stories in
-  [section 4](#4-the-26-migration-user-stories) has exactly one feature and that
-  no feature references an unlisted story, tier, or archetype; it emits
-  `::error::` + exit 1 on any gap, extra, or stale entry. The 26-story list is
-  the durable anchor it diffs against, so the ratchet detects a *wrong* or
-  *missing* story, not merely a wrong count.
-- `MODE=emit` writes the `strategy.matrix` JSON keyed by archetype (Tier-1/2)
-  or a single Tier-0 entry, expanding split-tier stories into one matrix entry
-  per declared tier.
-- `MODE=run` drives one scenario — `godog` filtered to that story's tag — and
-  reports.
+- `MODE=verify` is the ratchet. It derives its anchors live from this
+  document — the story table in [section 4](#4-the-26-migration-user-stories),
+  the **Tier(s)** column in [section 6](#6-story--scenario-map), and the
+  archetype table in [section 7](#7-archetype-seed-profiles), cross-checked
+  against the directories that actually ship fixtures — and reports every
+  violation as `::error::` before exiting 1. It rejects a scenario carrying
+  anything other than exactly one story tag and one tier tag, a story id or
+  archetype the document does not list, a tier tag contradicting the story's
+  declared tiers, two scenarios covering the same story and tier, a story
+  spread across more than one feature file or living in a file not named for
+  it, a feature file contributing no scenario, an unrecognised tag, a
+  `Scenario` with no `Then`, and a number or an operator in step text. So the
+  ratchet detects a *wrong* story, not merely a wrong count. The aggregate
+  floor lives in `coverage-baseline.json` and is raise-only: coverage
+  dropping below it fails, and coverage growing past it fails until the
+  baseline is raised in the same reviewed diff, so the ratchet tightens
+  instead of ossifying at the number first written down.
+- `MODE=emit` writes the `strategy.matrix` JSON for the tier job(s), one entry
+  per tier that has scenarios, each carrying the stories it drives and its own
+  `timeoutMinutes` ceiling so the bound cannot drift from the shard it bounds.
+  It re-runs every `verify` assertion first, so removing the verify step can
+  never let a silently-incomplete matrix ship, and it refuses to emit an entry
+  for a tier the workflow has no job for — a tagged scenario is never one that
+  silently never runs.
+- `MODE=run` drives the suite — `godog` filtered to the tier's tag, narrowed
+  to one story's tag when asked — and reports. `go test`'s exit status is the
+  verdict; the script parses no logs and re-derives no result.
 
-A `migration-e2e.test.mjs` unit guard runs the coverage assertion at PR-cheap
-cost so a feature/story drift is caught before the heavy lane runs.
+The `verify` mode and a `migration-e2e.test.mjs` unit guard both run on the
+required `lint` job. `verify` is pure file walking, so a story/scenario drift
+is a blocking pull-request failure rather than a scheduled-lane surprise; the
+guard pins the document parsers against the live document and proves each
+detector still fires, because a ratchet whose detectors have rotted into
+no-ops reports zero violations forever and looks exactly like a healthy one.
 
 Scheduled workflow skeleton (`migration-e2e.yml`):
 
@@ -600,9 +632,8 @@ on:
     - cron: '37 4 * * *'      # nightly, offset from e2e and the compat lanes
   workflow_dispatch:
     inputs:
-      tier:        { type: choice, options: [all, tier0, tier1, tier2], default: all }
-      archetype:   { type: string, required: false }
-      update_goldens: { type: boolean, default: false }
+      tier:  { type: choice, options: [all, tier0], default: all }   # each tier's option lands with its job
+      story: { type: string, required: false }                        # a single MIG id, e.g. MIG-04
 
 permissions:
   contents: read
@@ -610,25 +641,31 @@ permissions:
 # NOTE: no `pull_request:` trigger — so it is never a branch-protection check.
 
 jobs:
-  migration-setup:                     # coverage ratchet + emit matrix
+  migration-setup:                     # enumerate + coverage ratchet + emit matrix
     runs-on: ubuntu-latest
     outputs: { matrix: ${{ steps.emit.outputs.matrix }} }
     steps:
       - uses: actions/checkout@v7
-      - run: node .github/scripts/migration-e2e.mjs   # MODE=verify (story <-> scenario cover)
-        env: { MODE: verify }
+      - uses: actions/setup-go@v7
+      - run: go run ./test/e2e/migration/cmd/scenarios --out build/migration-scenarios.json
+      - run: node .github/scripts/migration-e2e.mjs   # story <-> scenario cover
+        env: { MODE: verify, SCENARIOS_JSON: build/migration-scenarios.json }
       - id: emit
         run: node .github/scripts/migration-e2e.mjs
-        env: { MODE: emit, TIER: ${{ inputs.tier || 'all' }} }
+        env: { MODE: emit, SCENARIOS_JSON: build/migration-scenarios.json, TIER: ${{ inputs.tier || 'all' }} }
 
   migration-tier0:                     # offline — fast, no Docker
     needs: migration-setup
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeoutMinutes }}    # the ceiling rides on the entry
+    strategy: { fail-fast: false, matrix: ${{ fromJSON(needs.migration-setup.outputs.matrix) }} }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-      - run: node .github/scripts/migration-e2e.mjs   # MODE=run TIER=tier0
-        env: { MODE: run, TIER: tier0 }
+      - run: go build -o build/cerberus ./cmd/cerberus
+      - run: node .github/scripts/migration-e2e.mjs
+        env: { MODE: run, TIER: ${{ matrix.tier }}, STORY: ${{ inputs.story }},
+               CERBERUS_BIN: ${{ github.workspace }}/build/cerberus }
 
   migration-tier1:                     # dual-backend — matrix by archetype
     needs: migration-setup
@@ -658,19 +695,36 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # skipped tier2 (on push) must NOT fail the roll-up — treat skipped as OK,
-      # fail only on a real failure, the idiom compose-smoke's aggregator uses.
-      - run: |
-          if ${{ contains(needs.*.result, 'failure') }}; then exit 1; fi
+      # Per-need `!= success`, never `contains(needs.*.result, 'failure')`:
+      # a matrix rolls up to `cancelled` rather than `failure` when a child
+      # is cancelled, so the `contains` form lets a cancelled tier pass the
+      # fold silently. A tier the event deliberately did not schedule reports
+      # `skipped` and is short-circuited by name, the shape e2e.yml's
+      # compose-smoke aggregator documents.
+      - env: { SETUP: ${{ needs.migration-setup.result }}, TIER0: ${{ needs.migration-tier0.result }},
+               TIER1: ${{ needs.migration-tier1.result }}, TIER2: ${{ needs.migration-tier2.result }} }
+        run: |
+          if [ "$TIER2" = "skipped" ]; then TIER2=success; fi
+          for r in "$SETUP" "$TIER0" "$TIER1" "$TIER2"; do
+            [ "$r" = "success" ] || { echo "::error::a migration lane job did not succeed"; exit 1; }
+          done
 ```
 
-Push-to-main runs Tier-0 + Tier-1 (fast, informational); the heavy Tier-2 ruler
-tier runs on nightly `schedule` + `workflow_dispatch` only. Because Tier-2 is
-skipped on push, the aggregator keys on `!contains(needs.*.result, 'failure')`
-(the same idiom `compose-smoke` uses) rather than requiring every tier to be
-`success` — a *skipped* Tier-2 must not fail the merge roll-up. `fail-fast:
-false` and `cancel-in-progress: false` mirror the existing e2e lanes (a
-half-killed compose teardown leaks volumes).
+Push-to-main runs the tiers that need no cluster; the heavy Tier-2 ruler tier
+runs on nightly `schedule` + `workflow_dispatch` only. A tier the event
+deliberately did not schedule reports `skipped` and is passed through **by
+name** in the fold, so every tier that *did* run is still held to `success` —
+a cancelled matrix must not slip through as a non-failure. `fail-fast: false`
+and `cancel-in-progress: false` mirror the existing e2e lanes (a half-killed
+compose teardown leaks volumes).
+
+Each tier's `workflow_dispatch` option, its job stanza and its first scenario
+land together: a tier tagged in a feature but absent from the workflow is a
+scenario that silently never runs, so `MODE=emit` refuses to produce a matrix
+entry for a tier that has no job. Goldens are likewise never regenerated by
+the lane — `just migration-golden` rewrites them locally and refuses to run
+under CI, because a golden is a reviewed artifact rather than a workflow side
+effect.
 
 Every scenario writes its `migrate` JSON outputs into a per-scenario evidence
 dir, uploaded via `actions/upload-artifact` under a per-archetype name (a static
@@ -783,13 +837,24 @@ instead of ossifying at whatever number was first written down.
   **raise-only**.
 - **No pending step.** A Cucumber runner's default is to report an
   unimplemented step as *pending* and carry on, which is `t.Skip` wearing a hat.
-  `godog` runs under `--strict`, so undefined **and** pending steps both fail
-  the run. The `forbid-skip` discipline extends to `.feature` files: `@wip` /
-  `@skip` / `@manual` tags are banned, and a `Scenario` with no `Then` fails —
-  a scenario that asserts nothing is the same vacuous pass by another route.
+  Three mechanisms close it, each failing something concrete. `godog` runs
+  under `--strict`, so an undefined, pending **or** ambiguous step fails the
+  run. The `forbid-skip` discipline extends to `.feature` files — `@wip` /
+  `@skip` / `@ignore` / `@manual` / `@todo` / `@pending` tags are banned, as
+  are godog's Go-side skip routes (`godog.ErrSkip`, `godog.ErrPending`, a
+  `Skip` call on the `TestingT` a step is handed), which live in non-test `.go`
+  files the `t.Skip` scan structurally cannot see. And the coverage ratchet
+  fails a `Scenario` with no `Then`, because a scenario that asserts nothing is
+  the same vacuous pass by another route. The tag ban and the ratchet both run
+  on required pull-request checks, so a suppressed scenario cannot merge and
+  wait for the next scheduled run to notice.
 - **No inline tolerance.** A numeric epsilon may not appear in feature text; it
   lives in `tolerances/` with a derivation, under the shrink-only ratchet
-  ([section 6.2](#62-scenario-language--what-a-step-may-assert)).
+  ([section 6.2](#62-scenario-language--what-a-step-may-assert)). The ban is
+  structural rather than aspirational: the coverage ratchet rejects any digit
+  and any comparison or arithmetic operator in step text, so the first epsilon
+  cannot land inline. A `Scenario Outline` `Examples` row is data rather than a
+  step, so the one legitimate place for a number needs no exemption.
 - **Read-only where the CLI is read-only.** Scenarios never auto-provision
   schema (MIG-10 keeps DDL application a deliberate human step) and never mutate
   a real Grafana; the synthetic Grafana in the stack is the only thing driven.
@@ -826,7 +891,8 @@ Cheapest-first, so value lands before the heavy infra, and each phase's
 assertions become the trust anchor the next depends on.
 
 **Phase 1 — Tier-0 offline (build first).** The `godog` runner + the step
-library + `cmd/scenarios` + coverage ratchet + `migration-e2e.mjs` + the
+library + `test/e2e/migration/cmd/scenarios/` + the coverage ratchet +
+`migration-e2e.mjs` + the
 `migration-e2e.yml` skeleton running Tier-0 only. Scenarios MIG-01, MIG-03,
 MIG-04, MIG-05, MIG-10 (render half), MIG-14 (lookback compute), MIG-26 (gate
 compute), plus the `gate` fold. Lands the eight archetype `rules/` +

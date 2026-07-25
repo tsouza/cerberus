@@ -20,6 +20,8 @@
 //     soft-assert       Reject soft-assertion / silent-recover patterns
 //     should-skip       Reject non-empty should_skip: overlay entries
 //     escape-hatch      Reject test escape-hatch primitives
+//     feature-discipline Reject scenario-suppressing tags in .feature files
+//                       and the godog skip / pending routes in harness Go
 //
 // Exit codes: 0 = clean, 1 = a banned pattern was found (or bad $CHECK).
 
@@ -169,8 +171,50 @@ switch (CHECK) {
     break;
   }
 
+  case 'feature-discipline': {
+    let bad = false;
+    // A Cucumber runner's default is to report an unimplemented step as
+    // *pending* and carry on — a skip wearing a hat. A scenario-suppressing
+    // tag is the same move at the scenario level: `@wip` on a Scenario means
+    // it never runs while the lane still reports green.
+    // Case-insensitive: Gherkin tags are a closed vocabulary here (the story
+    // `@MIG-\d\d`, tier `@tier[0-2]`, and archetype `@archetype:...` forms are
+    // all fixed-case by construction), so this vocabulary legitimately never
+    // needs mixed case — `-i` closes a scan gap (`@WIP`, `@Skip`, ...) without
+    // risking a false positive on unrelated text.
+    const tags = grepFiles({
+      pathspecs: ['*.feature', ':!:**/node_modules/**'],
+      grepFlags: ['-nEHi'],
+      regex: '(^|[ \\t])@(wip|skip|ignore|manual|todo|pending)([ \\t]|$)',
+    });
+    if (tags.matched) {
+      log(tags.output);
+      bad = true;
+    }
+    // godog's Go-side skip routes. Step definitions live in NON-test .go
+    // files, so the `t\.Skip[fN]?\(` scan over `*_test.go` structurally
+    // cannot see them: a step returning godog.ErrSkip / godog.ErrPending, or
+    // calling Skip / Skipf / SkipNow on the TestingT godog hands it, would
+    // suppress the assertion with the gate none the wiser.
+    const goSkips = grepFiles({
+      pathspecs: ['test/e2e/migration/**/*.go'],
+      grepFlags: ['-nEH'],
+      regex: 'godog\\.(ErrSkip|ErrPending)|\\.Skip(f|Now)?\\(',
+    });
+    if (goSkips.matched) {
+      log(goSkips.output);
+      bad = true;
+    }
+    if (bad) {
+      fail(
+        'a scenario-suppressing tag or a godog skip/pending route was found. A scenario runs and asserts, or it is deleted — @wip / @skip / @ignore / @manual / @todo / @pending and godog.ErrSkip / godog.ErrPending / T(ctx).Skip are t.Skip wearing a hat. Fix the scenario or remove it.',
+      );
+    }
+    break;
+  }
+
   default:
-    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, not-implemented, soft-assert, should-skip, escape-hatch)`);
+    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, not-implemented, soft-assert, should-skip, escape-hatch, feature-discipline)`);
     process.exit(1);
 }
 

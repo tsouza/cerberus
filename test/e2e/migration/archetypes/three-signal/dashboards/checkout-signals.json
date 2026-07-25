@@ -1,0 +1,48 @@
+{
+  "title": "Checkout / metrics, logs and traces",
+  "uid": "checkout-three-signal",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "svc:http_requests:rate5m" }]
+    },
+    {
+      "id": 2,
+      "title": "Error log rate",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name) (rate({service_name=\"checkout\"} |= \"error\" [5m]))"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Slow checkout spans",
+      "type": "traces",
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        { "refId": "A", "query": "{ resource.service.name = \"checkout\" && duration > 2s }" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Request rate at the window edge",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "svc:http_requests:rate5m @ end()" }]
+    },
+    {
+      "id": 5,
+      "title": "Left on the old search backend",
+      "type": "table",
+      "datasource": { "type": "elasticsearch", "uid": "es" },
+      "targets": [{ "refId": "A", "expr": "service:checkout AND level:error" }]
+    }
+  ]
+}

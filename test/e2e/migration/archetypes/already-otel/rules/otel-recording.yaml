@@ -1,0 +1,10 @@
+groups:
+  - name: otel.rules
+    rules:
+      - record: otel:http_server_request_duration:p95
+        expr: histogram_quantile(0.95, sum by (le) (rate({__name__="http.server.request.duration_bucket"}[5m])))
+  - name: otel.alerts
+    rules:
+      - alert: OTelExporterQueueSaturated
+        expr: '{__name__="otelcol.exporter.queue.size"} / {__name__="otelcol.exporter.queue.capacity"} > 0.9'
+        for: 10m

@@ -104,6 +104,31 @@ pre-push:
       run: |
         base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
         npx --no -- commitlint --from "$base" --to HEAD
+    # Mirrors the CI `forbid-skip` gate's Gherkin-scenario discipline.
+    # A `@wip`-style tag filters a Scenario out of the migration lane
+    # while the run still reports green, and godog's Go-side skip
+    # routes (`godog.ErrSkip` / `godog.ErrPending` / a `Skip` call on
+    # the TestingT it hands a step) live in NON-test .go files that the
+    # `forbid-skip-t-skip` scan above cannot see.
+    forbid-feature-discipline:
+      tags: discipline
+      run: |
+        fail=0
+        if git ls-files -z -- \
+            '*.feature' \
+            ':!:**/node_modules/**' \
+            | xargs -0 grep -nEH '(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)' --; then
+          fail=1
+        fi
+        if git ls-files -z -- \
+            'test/e2e/migration/**/*.go' \
+            | xargs -0 grep -nEH 'godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\(' --; then
+          fail=1
+        fi
+        if [ "$fail" -ne 0 ]; then
+          echo "lefthook: scenario-suppressing tag or godog skip/pending route — a scenario runs and asserts, or it is deleted"
+          exit 1
+        fi
     # Mirrors the `Self-test forbid-skip regex set` CI step. Runs the
     # canonical match / no-match assertions documented in
     # docs/forbid-skip.md against the regex set shared with the CI gate.

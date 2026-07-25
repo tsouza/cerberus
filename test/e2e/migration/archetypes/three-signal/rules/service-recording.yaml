@@ -1,0 +1,8 @@
+groups:
+  - name: three-signal
+    rules:
+      - record: svc:http_requests:rate5m
+        expr: sum by (service) (rate(http_requests_total[5m]))
+      - alert: CheckoutErrorRate
+        expr: sum by (service) (rate(http_requests_total{code=~"5..",service="checkout"}[5m])) > 1
+        for: 10m
