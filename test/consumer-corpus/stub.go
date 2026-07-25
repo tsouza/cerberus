@@ -320,4 +320,26 @@ var stubFixtures = map[string]func() *StubQuerier{
 			{Name: "cerberus_query_inflight", Description: "in-flight queries", Unit: "", Type: "gauge"},
 		}}
 	},
+
+	// prom-query-range-route-memo-window backs
+	// grafana-12.2.9/query-range-route-memo-retry.json. That entry's
+	// request.query.start/end are fixed literals (not ${START_UNIX} /
+	// ${END_UNIX} tokens) chosen to reproduce a specific grid anchor
+	// count for solver.Eligible() — see the entry's own provenance — so
+	// its canned row must fall inside THAT window rather than the
+	// shared stubPromAnchor above (matrixFromCursor drops any sample
+	// outside [start, end], which would otherwise leave this entry with
+	// zero result series in the default stub lane).
+	"prom-query-range-route-memo-window": func() *StubQuerier {
+		return &StubQuerier{Samples: []chclient.Sample{
+			{MetricName: "cerberus_query_inflight", Labels: map[string]string{"cerberus_ql": "promql"}, Timestamp: stubRouteMemoRetryWindowAnchor, Value: 2},
+		}}
+	},
 }
+
+// stubRouteMemoRetryWindowAnchor sits inside
+// grafana-12.2.9/query-range-route-memo-retry.json's fixed
+// request.query.start=1781002800 / end=1781003400 window (2026-06-09
+// 11:00:00Z .. 11:10:00Z UTC) — see prom-query-range-route-memo-window
+// above.
+var stubRouteMemoRetryWindowAnchor = time.Date(2026, 6, 9, 11, 5, 0, 0, time.UTC)
