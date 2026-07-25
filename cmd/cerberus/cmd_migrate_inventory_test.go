@@ -262,6 +262,115 @@ func TestRunInventory_LokiAndTempoSections(t *testing.T) {
 	}
 }
 
+// TestRunInventory_LokiSelectorsEnvPreservesCommaBearingSelector pins that the
+// CERBERUS_INVENTORY_LOKI_SELECTORS env fallback treats one line as one whole
+// selector, never comma-splitting it — an ordinary multi-label LogQL stream
+// selector like `{app="checkout", env="prod"}` contains a comma of its own,
+// and the documented env-var form must round-trip it exactly like the
+// equivalent repeated --loki-selector flag does (StringArrayVar, no split).
+func TestRunInventory_LokiSelectorsEnvPreservesCommaBearingSelector(t *testing.T) {
+	clearInventoryEnv(t)
+	promSrv := tsdbServer(t)
+
+	const multiLabelSelector = `{app="checkout", env="prod"}`
+	var gotQueries []string
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQueries = append(gotQueries, r.URL.Query().Get("query"))
+		_, _ = w.Write([]byte(`{"streams":10,"chunks":20,"entries":100,"bytes":1000}`))
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("CERBERUS_INVENTORY_LOKI_SELECTORS", multiLabelSelector)
+
+	var out, errOut bytes.Buffer
+	err := runInventory([]string{
+		"--source", promSrv.URL, "--json",
+		"--loki-source", lokiSrv.URL,
+	}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("runInventory: %v (stderr: %s)", err, errOut.String())
+	}
+
+	if len(gotQueries) != 1 || gotQueries[0] != multiLabelSelector {
+		t.Fatalf("loki index/stats queries = %+v, want exactly one query %q "+
+			"(the env selector must not be split on its internal comma)", gotQueries, multiLabelSelector)
+	}
+}
+
+// TestRunInventory_LokiProbeAllSelectorsFail pins the CLI-level enforcement of
+// the honesty contract LokiClient.Probe documents: if every --loki-selector's
+// index/stats call fails, runInventory must return a hard error and must NOT
+// write an inventory.json — a failed probe must never read as a clean, empty
+// top-N.
+func TestRunInventory_LokiProbeAllSelectorsFail(t *testing.T) {
+	clearInventoryEnv(t)
+	promSrv := tsdbServer(t)
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer lokiSrv.Close()
+
+	outPath := filepath.Join(t.TempDir(), "inventory.json")
+	var out, errOut bytes.Buffer
+	err := runInventory([]string{
+		"--source", promSrv.URL, "--json", "--out", outPath,
+		"--loki-source", lokiSrv.URL,
+		"--loki-selector", `{app="checkout"}`,
+		"--loki-selector", `{app="frontend"}`,
+	}, &out, &errOut)
+	if err == nil {
+		t.Fatal("runInventory should hard-fail when every --loki-selector's probe call fails")
+	}
+	if !strings.Contains(err.Error(), `{app="checkout"}`) || !strings.Contains(err.Error(), `{app="frontend"}`) {
+		t.Errorf("error should name both failed selectors, got: %v", err)
+	}
+	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
+		t.Errorf("--out file should not be written on a hard probe failure, stat err: %v", statErr)
+	}
+}
+
+// TestRunInventory_LokiProbePartialFailureRecordsNotes pins that a PARTIAL
+// Loki probe failure (some selectors succeed, one fails) is not an error at
+// the CLI layer: runInventory succeeds and the emitted JSON carries the
+// failed selector in inv.Loki.Notes rather than silently dropping it.
+func TestRunInventory_LokiProbePartialFailureRecordsNotes(t *testing.T) {
+	clearInventoryEnv(t)
+	promSrv := tsdbServer(t)
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("query") == `{app="checkout"}` {
+			_, _ = w.Write([]byte(`{"streams":500,"chunks":900,"entries":40000,"bytes":8000000}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer lokiSrv.Close()
+
+	var out, errOut bytes.Buffer
+	err := runInventory([]string{
+		"--source", promSrv.URL, "--json",
+		"--loki-source", lokiSrv.URL,
+		"--loki-selector", `{app="checkout"}`,
+		"--loki-selector", `{app="broken"}`,
+	}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("runInventory (partial loki failure): %v (stderr: %s)", err, errOut.String())
+	}
+
+	var inv migrateinventory.Inventory
+	if unmarshalErr := json.Unmarshal(out.Bytes(), &inv); unmarshalErr != nil {
+		t.Fatalf("decode inventory JSON: %v\n%s", unmarshalErr, out.String())
+	}
+	if inv.Loki == nil {
+		t.Fatalf("inventory should still carry a Loki section, got:\n%s", out.String())
+	}
+	if len(inv.Loki.Selectors) != 1 || inv.Loki.Selectors[0].Selector != `{app="checkout"}` {
+		t.Fatalf("loki selectors = %+v, want exactly the surviving checkout selector", inv.Loki.Selectors)
+	}
+	if len(inv.Loki.Notes) != 1 || !strings.Contains(inv.Loki.Notes[0], `{app="broken"}`) {
+		t.Fatalf("loki notes = %+v, want one note naming the failed broken selector", inv.Loki.Notes)
+	}
+}
+
 // TestRunInventory_LokiSelectorWithoutSourceIsValidationError: --loki-selector
 // with no --loki-source is rejected before any HTTP call, naming both flags.
 func TestRunInventory_LokiSelectorWithoutSourceIsValidationError(t *testing.T) {

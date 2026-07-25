@@ -416,6 +416,83 @@ groups:
 	}
 }
 
+// TestHarvestLokiRuleFilesBadGlobPatternIsSkip pins that a syntactically
+// invalid --loki-rules glob pattern (an unterminated character class) is a
+// counted skip naming the bad pattern, never a silent empty result — the same
+// discipline HarvestRuleFiles applies to a bad Prometheus --rules pattern.
+func TestHarvestLokiRuleFilesBadGlobPatternIsSkip(t *testing.T) {
+	pattern := filepath.Join(t.TempDir(), "invalid[")
+
+	recorded, skipped := HarvestLokiRuleFiles([]string{pattern})
+
+	if len(recorded) != 0 {
+		t.Fatalf("recorded = %+v, want none", recorded)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %+v, want exactly 1", skipped)
+	}
+	if skipped[0].Source != pattern {
+		t.Errorf("skipped[0].Source = %q, want %q", skipped[0].Source, pattern)
+	}
+	if !strings.Contains(skipped[0].Reason, "bad path pattern") {
+		t.Errorf("skipped[0].Reason = %q, want it to name a bad path pattern", skipped[0].Reason)
+	}
+}
+
+// TestHarvestLokiRuleFilesUnreadableFileIsSkip pins that a matched path
+// os.ReadFile cannot read (here, a directory matched by the glob rather than
+// a plain file) is a counted skip naming the read failure, not a silently
+// dropped input.
+func TestHarvestLokiRuleFilesUnreadableFileIsSkip(t *testing.T) {
+	dir := t.TempDir()
+	unreadable := filepath.Join(dir, "loki-rules.yml")
+	if err := os.Mkdir(unreadable, 0o755); err != nil { //nolint:gosec // test-controlled temp path.
+		t.Fatal(err)
+	}
+
+	recorded, skipped := HarvestLokiRuleFiles([]string{unreadable})
+
+	if len(recorded) != 0 {
+		t.Fatalf("recorded = %+v, want none", recorded)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %+v, want exactly 1", skipped)
+	}
+	if skipped[0].Source != unreadable {
+		t.Errorf("skipped[0].Source = %q, want %q", skipped[0].Source, unreadable)
+	}
+	if !strings.Contains(skipped[0].Reason, "read:") {
+		t.Errorf("skipped[0].Reason = %q, want it to name the read failure", skipped[0].Reason)
+	}
+}
+
+// TestHarvestLokiRuleFilesParseErrorIsSkip pins that a matched file whose
+// contents are not valid YAML is a counted skip naming the parse failure —
+// never silently dropped, and never surfaced as a spurious empty rule file.
+func TestHarvestLokiRuleFilesParseErrorIsSkip(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "loki-rules.yml")
+	const malformed = "groups: [\n  - name: unterminated\n"
+	if err := os.WriteFile(file, []byte(malformed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, skipped := HarvestLokiRuleFiles([]string{file})
+
+	if len(recorded) != 0 {
+		t.Fatalf("recorded = %+v, want none", recorded)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %+v, want exactly 1", skipped)
+	}
+	if skipped[0].Source != file {
+		t.Errorf("skipped[0].Source = %q, want %q", skipped[0].Source, file)
+	}
+	if !strings.Contains(skipped[0].Reason, "parse:") {
+		t.Errorf("skipped[0].Reason = %q, want it to name the parse failure", skipped[0].Reason)
+	}
+}
+
 // TestBuildRuleGraphLokiRecordedSeriesLinkedByExistingConsumers pins that a
 // Loki-recorded series is linked by the SAME PromQL-based consumer pipeline a
 // Prometheus-recorded series uses — a dashboard panel or Prometheus rule

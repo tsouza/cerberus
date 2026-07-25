@@ -871,9 +871,9 @@ func newMigrateInventoryCmd() *cobra.Command {
 	cmd.Flags().StringVar(&lokiSource, "loki-source", envOr("CERBERUS_INVENTORY_LOKI_SOURCE", ""),
 		"optional Loki base URL to probe per-selector stream cardinality/volume (requires --loki-selector; "+
 			"env: CERBERUS_INVENTORY_LOKI_SOURCE)")
-	cmd.Flags().StringArrayVar(&lokiSelectors, "loki-selector", envOrList("CERBERUS_INVENTORY_LOKI_SELECTORS"),
+	cmd.Flags().StringArrayVar(&lokiSelectors, "loki-selector", envOrLokiSelectors("CERBERUS_INVENTORY_LOKI_SELECTORS"),
 		"Loki stream selector to rank via /loki/api/v1/index/stats (repeatable; required with --loki-source; "+
-			"env: CERBERUS_INVENTORY_LOKI_SELECTORS, comma-separated)")
+			"env: CERBERUS_INVENTORY_LOKI_SELECTORS, one selector per line — a selector may itself contain a comma)")
 	cmd.Flags().StringVar(&tempoSource, "tempo-source", envOr("CERBERUS_INVENTORY_TEMPO_SOURCE", ""),
 		"optional Tempo base URL; presence alone records a fixed out-of-scope inventory entry, no probe is made "+
 			"(env: CERBERUS_INVENTORY_TEMPO_SOURCE)")
@@ -1376,16 +1376,22 @@ func envOr(key, def string) string {
 	return def
 }
 
-// envOrList parses a comma-separated environment fallback for a repeatable
-// flag, applying normalizeList's trim-and-drop-blanks semantics. It returns
-// nil (not an empty non-nil slice) when the variable is unset, so cobra's
-// flag default stays indistinguishable from "never set."
-func envOrList(key string) []string {
+// envOrLokiSelectors parses the environment fallback for the repeatable
+// --loki-selector flag. It deliberately does NOT comma-split the way a
+// generic repeatable-flag env fallback would: a LogQL stream selector
+// routinely contains a comma itself (e.g. the ordinary multi-label selector
+// `{app="checkout", env="prod"}`), and comma-splitting would corrupt it into
+// two malformed fragments. Each selector is instead one line, matching
+// --loki-selector's StringArrayVar CLI semantics where every occurrence of
+// the flag is one whole, unsplit selector. It returns nil (not an empty
+// non-nil slice) when the variable is unset, so cobra's flag default stays
+// indistinguishable from "never set."
+func envOrLokiSelectors(key string) []string {
 	v := os.Getenv(key)
 	if v == "" {
 		return nil
 	}
-	return normalizeList(strings.Split(v, ","))
+	return normalizeList(strings.Split(v, "\n"))
 }
 
 // envFloat returns the float parsed from the environment value for key, or def
