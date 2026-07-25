@@ -15,6 +15,15 @@
 //   #3 handler-panic envelope is covered DETERMINISTICALLY by Layer 10 unit
 //      chaos; the live lane only corroborates no lingering 5xx after the
 //      cumulative fault storm (a passive end-of-run health gate).
+//   #5 failure-driven route memo (internal/routememo, e01ed68d) — a route-A
+//      dispatch that hits ClickHouse's MEMORY_LIMIT_EXCEEDED (code 241) is
+//      retried once on route B; a successful retry both rescues the
+//      client's request (200 instead of the pinned 422) and moves
+//      cerberus_route_ab_success_total{cerberus_route_choice="b"}. Proves
+//      the mechanism actually fires against a real cerberus process + real
+//      ClickHouse, closing the "hollow green / inert feature" gap: no
+//      e2e/chaos/compose manifest had ever set
+//      CERBERUS_SOLVER_ROUTE_MEMO_ENABLED before this scenario.
 //
 // This is an INFORMATIONAL lane (the `chaos` job in e2e.yml; push-to-main +
 // nightly + manual ONLY, never a PR gate). Heavy + chaos flakes, so the
@@ -1102,6 +1111,144 @@ async function scenarioLoadAdmitSaturation() {
   return failures;
 }
 
+// ---- scenario: route-memo-activation ---------------------------------
+//
+// The failure-driven route memo (internal/routememo, wired via
+// CERBERUS_SOLVER_ROUTE_MEMO_ENABLED in cmd/cerberus/main.go, landed
+// e01ed68d) has never run end-to-end against a real cerberus process
+// fielding real ClickHouse traffic in any e2e/chaos/compose manifest
+// before this scenario — the classic "hollow green / inert feature"
+// gap (a mechanism that could pass every unit test while never firing in
+// production). CERBERUS_SOLVER_ROUTE_MEMO_ENABLED=true is set by the
+// chaos overlay (test/e2e/chaos/manifests/chaos-overlay.env) applied
+// before any scenario runs, so this is on for the whole lane.
+//
+// The fault: drive the SAME (24h range, 15s step) aggregating query_range
+// shape that iterate-time-ranges.spec.ts (Layer-9 dashboard sweep) already
+// pins as the documented CERBERUS_CH_QUERY_MAX_MEMORY-crossing tuple (run
+// 27277793810: 24h/15s demanded 2.12 GiB against the 1 GiB per-query cap
+// both the k3d chart values and compose set — see
+// test/e2e/k3s/cerberus-values.yaml / docker-compose.yml). 24h/15s is
+// 5,760 anchor points — comfortably under the 11,000-point Prometheus
+// resolution cap (internal/api/prom/handler.go maxResolutionPoints), so
+// the request reaches ClickHouse instead of 400-ing on the resolution
+// guard first. A route-A dispatch that trips ClickHouse's MEMORY_LIMIT_
+// EXCEEDED (code 241) classifies OutcomeResourceFailure
+// (internal/engine/route_outcome.go) — with the memo enabled, eligible,
+// fresh, and the (breaker-neutral, see internal/chclient/memlimit.go)
+// 241 not having tripped the shared breaker, two corroborating failures
+// on the same routememo.Key (internal/routememo/memo.go
+// minCorroboratingFailures=2) admit a probe dispatch to route B; a
+// successful probe drain both rescues the CLIENT's request (a 200
+// instead of the pinned 422) and records
+// cerberus_route_ab_success_total{cerberus_route_choice="b"}
+// (telemetry.RecordRouteABSuccess) — a real counter that can only move
+// if a real route-A resource failure was really rescued by a real
+// route-B dispatch.
+//
+// HONESTY NOTE (mirrors iterate-time-ranges.spec.ts's own "Memory-limit
+// dual contract" and scenarioChNetworkPartition's enforcement-probe
+// gate): whether a given run's data volume actually pushes this tuple
+// over the 1 GiB cap is environment-dependent — the spec's own header
+// documents this cannot be pinned per-tuple deterministically. If the
+// query stays under the cap for the whole polling budget (every attempt
+// 200s, the metric never had anything to prove), this scenario records
+// NOT-APPLICABLE rather than a vacuous pass, exactly like
+// ch-network-partition's not-applicable branch. If the cap IS crossed
+// (a 422 is observed) but cerberus_route_ab_success_total{route_choice=
+// "b"} never climbs within budget, that IS a real failure: the memo was
+// enabled, eligible, and had a genuine resource failure to rescue, and
+// didn't.
+const ROUTE_MEMO_RANGE_SECONDS = 24 * 3600; // matches the pinned 24h/15s memory-cap tuple (iterate-time-ranges.spec.ts, run 27277793810)
+const ROUTE_MEMO_STEP_SECONDS = 15; // => 5760 anchors, under the 11000-point resolution cap
+// liveEdgeFreshnessMarginSteps in internal/engine/route_memo_wiring.go is
+// 1 step; doubled here so a few seconds of clock skew between this script
+// and the cluster can never make a legitimately-old request look
+// live-edge-fresh and get declined with reason=not-fresh.
+const ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS = 2;
+// The exact aggregating panel expr already provisioned in
+// test/e2e/k3s/grafana-dashboards.yaml and already exercised at this
+// exact (24h, 15s) tuple by iterate-time-ranges.spec.ts — reusing a
+// proven production shape rather than inventing a new untested one.
+const ROUTE_MEMO_EXPR = 'sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))';
+const ROUTE_MEMO_ACTIVATION_DEADLINE_MS = 120_000; // generous: needs >= minCorroboratingFailures(2) consecutive route-A resource failures on the same key before a probe is even admitted
+const ROUTE_MEMO_POLL_INTERVAL_MS = 5_000;
+const ROUTE_MEMO_FINAL_OK_DEADLINE_MS = 60_000; // post-activation: the same query must now cleanly 200 for a real client
+
+// routeMemoQueryPath builds the /api/v1/query_range path for the pinned
+// 24h/15s aggregating shape. `end` is anchored ROUTE_MEMO_LIVE_EDGE_
+// MARGIN_STEPS*step behind `now` so every request clears the route
+// memo's live-edge freshness gate (freshEnoughForRouteMemo).
+function routeMemoQueryPath() {
+  const now = Math.floor(Date.now() / 1000);
+  const end = now - ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS * ROUTE_MEMO_STEP_SECONDS;
+  const start = end - ROUTE_MEMO_RANGE_SECONDS;
+  return (
+    '/api/v1/query_range?query=' +
+    encodeURIComponent(ROUTE_MEMO_EXPR) +
+    `&start=${start}&end=${end}&step=${ROUTE_MEMO_STEP_SECONDS}`
+  );
+}
+
+async function scenarioRouteMemoActivation() {
+  const failures = [];
+
+  const baselineSuccessB = await queryBreakerMetric(
+    'cerberus_route_ab_success_total{cerberus_route_choice="b"}',
+  );
+  const path = routeMemoQueryPath();
+
+  log('  fault: driving the pinned 24h/15s memory-cap query_range shape to force a route-A resource failure...');
+  let lastStatus = null;
+  let sawMemoryLimit422 = false;
+  const activated = await pollUntil(
+    async () => {
+      const r = await httpGet(path, { timeoutMs: 30_000 });
+      lastStatus = r.status;
+      if (r.status === 422) {
+        sawMemoryLimit422 = true;
+        return false; // route A hit the cap; keep polling for the memo's A->B rescue
+      }
+      if (r.status !== 200) return false;
+      const successB = await queryBreakerMetric(
+        'cerberus_route_ab_success_total{cerberus_route_choice="b"}',
+      );
+      if (successB === null) return false;
+      if (baselineSuccessB !== null && successB <= baselineSuccessB) return false;
+      return true;
+    },
+    { deadlineMs: ROUTE_MEMO_ACTIVATION_DEADLINE_MS, intervalMs: ROUTE_MEMO_POLL_INTERVAL_MS, label: 'route-memo-activation' },
+  );
+
+  if (activated) {
+    log('    cerberus_route_ab_success_total{cerberus_route_choice="b"} climbed — a real route-A resource failure was rescued by a real route-B dispatch');
+  } else if (!sawMemoryLimit422) {
+    notice(
+      'route-memo-activation: the pinned 24h/15s query never crossed CERBERUS_CH_QUERY_MAX_MEMORY this run (data-volume-dependent, same dual contract iterate-time-ranges.spec.ts documents) — recording not-applicable; the memo had no resource failure to rescue.',
+    );
+    return failures;
+  } else {
+    failures.push(
+      `route-memo did not activate: last query status=${lastStatus}, a 422 memory-limit rejection WAS observed, but cerberus_route_ab_success_total{cerberus_route_choice="b"} never climbed within budget — the memo was enabled and had a genuine resource failure to rescue and did not`,
+    );
+  }
+
+  // Corroborate from the client's own seat: the SAME query, fired again,
+  // must now cleanly 200 (the mechanism rescues the REQUEST, not just an
+  // internal counter).
+  const finalOk = await pollUntil(
+    async () => (await httpGet(path, { timeoutMs: 30_000 })).status === 200,
+    { deadlineMs: ROUTE_MEMO_FINAL_OK_DEADLINE_MS, label: 'route-memo-query-200' },
+  );
+  if (!finalOk) {
+    failures.push('the route-memo-activation query did not return a clean 200 to a real HTTP client after the memo activated');
+  } else {
+    log('    query_range returned 200 to a real client — rescued by the route-memo A->B retry');
+  }
+
+  return failures;
+}
+
 // ---- passive end-of-run health gate (handler-panic corroboration) ----
 // Panic-envelope correctness is covered DETERMINISTICALLY by Layer 10 unit
 // chaos. Here we only corroborate the process recovered cleanly from the
@@ -1154,6 +1301,11 @@ async function endOfRunHealthGate() {
 // assertion then runs on a naturally-closed breaker (no prior outage), and each
 // destructive scenario re-establishes its own preconditions via the heal gate.
 const PHASE1 = [
+  // Non-destructive, data-dependent: failure-driven route-memo activation
+  // (see the scenario's own header comment for the full rationale). Runs
+  // first among the non-destructive set — it never touches the CH or
+  // cerberus pods, so it isn't affected by anything a later scenario does.
+  { name: 'route-memo-activation', run: scenarioRouteMemoActivation },
   // Non-destructive, data-dependent: the slow-query timeout contract. Runs on
   // the full rolling-seeded window so the heavy nested subquery reliably blows
   // the calibrated wall-clock cap.

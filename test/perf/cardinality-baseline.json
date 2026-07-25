@@ -3690,6 +3690,36 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/metadata_label_values_bucket_le",
+    "fan_factor": 3,
+    "scan_rows": 1,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/metadata_label_values_collides_on_sanitized_name",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/metadata_label_values_dotted_source_key",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/minute_default",
     "fan_factor": 1,
     "scan_rows": 1,

@@ -114,8 +114,30 @@ var chdbLogsAnchor = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // and the request-time-anchored matcher paths. All three metric tables
 // are created — the metadata handler and the bare-histogram matcher
 // fan-out read every table regardless of which carry rows.
+//
+// otel_metrics_sum also carries a dedicated ServiceName column (one
+// value per cerberus_query_inflight row) so a label-values catalog
+// request against a schema-top-level-column label (service_name /
+// service.name → schema.Metrics.ServiceNameColumn, resolved by
+// internal/promql.schemaTopLevelColumn / dedicatedLabelColumns) reads a
+// real dedicated column instead of only the Attributes map — see
+// drilldown-label-values-service-name.json.
 func metricsChDBSeed(now time.Time) string {
 	ts := now.Add(-2 * time.Minute).UTC().Format("2006-01-02 15:04:05.000")
+	// routeMemoRetryTS1 / routeMemoRetryTS2 sit inside
+	// grafana-12.2.9/query-range-route-memo-retry.json's fixed
+	// request.query.start=1781002800 / end=1781003400 window (2026-06-09
+	// 11:00:00Z .. 11:10:00Z UTC) — that window is a literal, not a
+	// ${START_UNIX} token, because internal/consumer-corpus's dedicated
+	// route_memo_replay_test.go reproduces the SAME literal to pin a specific
+	// solver grid-anchor count (N=41 at a 15s step), so these rows can't
+	// ride the shared near-`now` anchor every other seeded row uses.
+	// rate()'s 5-minute lookback needs two samples inside one anchor's
+	// window to compute a delta at all, so the pair sits 180s apart —
+	// comfortably under 300s — landing both inside the same lookback for
+	// several grid anchors around the window's midpoint.
+	routeMemoRetryTS1 := time.Unix(1781002800+60, 0).UTC().Format("2006-01-02 15:04:05.000")
+	routeMemoRetryTS2 := time.Unix(1781002800+240, 0).UTC().Format("2006-01-02 15:04:05.000")
 	return `CREATE TABLE otel_metrics_gauge (
     MetricName String,
     MetricDescription String,
@@ -131,7 +153,8 @@ CREATE TABLE otel_metrics_sum (
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64,
-    IsMonotonic Bool DEFAULT false
+    IsMonotonic Bool DEFAULT false,
+    ServiceName String DEFAULT ''
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
@@ -146,10 +169,12 @@ CREATE TABLE otel_metrics_histogram (
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('` + ts + `', 9), 1.0);
-INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
-    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'promql'),  toDateTime64('` + ts + `', 9), 2.0),
-    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'logql'),   toDateTime64('` + ts + `', 9), 1.0),
-    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'traceql'), toDateTime64('` + ts + `', 9), 0.0);`
+INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value, ServiceName) VALUES
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'promql'),  toDateTime64('` + ts + `', 9), 2.0, 'cerberus-api'),
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'logql'),   toDateTime64('` + ts + `', 9), 1.0, 'cerberus-loki'),
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'traceql'), toDateTime64('` + ts + `', 9), 0.0, 'cerberus-tempo'),
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'promql'),  toDateTime64('` + routeMemoRetryTS1 + `', 9), 2.0, 'cerberus-api'),
+    ('cerberus_query_inflight', 'in-flight queries', '', map('cerberus_ql', 'promql'),  toDateTime64('` + routeMemoRetryTS2 + `', 9), 5.0, 'cerberus-api');`
 }
 
 // chdbTokens mirrors StubTokens for the chdb lane's seed anchors.

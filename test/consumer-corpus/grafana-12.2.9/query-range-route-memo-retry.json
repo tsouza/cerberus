@@ -1,0 +1,41 @@
+{
+  "name": "query-range-route-memo-retry",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Prometheus datasource (grafana-prometheus, pkg/promlib) — a standard /api/v1/query_range panel request",
+  "provenance": [
+    "The generic Prometheus datasource query_range wire shape (pkg/promlib backend.QueryDataRequest -> GET /api/v1/query_range?query=&start=&end=&step=), the request every Grafana time-series panel sends against a Prometheus-compatible datasource.",
+    "Added to close a consumer-corpus coverage gap, not mined from a live incident: query_range is the ONLY request shape that flows through engine.Engine.QueryCursor / QueryPlanCursor, the streaming execution path the failure-driven route memo (internal/routememo, Engine.retryOnRouteAResourceFailure) hooks into. No prior corpus entry exercised this HTTP surface at all, so a route-A-to-route-B retry could silently break the consumer-decode contract (wrong envelope shape, dropped labels, wrong resultType) without any corpus test ever catching it.",
+    "start/end/step are chosen to reproduce internal/api/prom/handler_route_memo_test.go's routeMemoQuery fixture exactly (10-minute window, 15s step -> N=41 grid anchors), which that test proves clamps solver.Eligible() to the structural minimum K=2 shard fan-out through the real parse->lower->optimize pipeline — so this entry's route-memo eligibility is provable, not coincidental."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "cerberus-prom" },
+          "expr": "rate(cerberus_query_inflight[5m])",
+          "instant": false,
+          "range": true
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/query_range",
+    "query": {
+      "query": "rate(cerberus_query_inflight[5m])",
+      "start": "1781002800",
+      "end": "1781003400",
+      "step": "15"
+    },
+    "headers": {}
+  },
+  "stub": "prom-query-range-route-memo-window",
+  "expect": {
+    "status": 200,
+    "decode": "prom-envelope",
+    "wire": ["resulttype:matrix", "result-min:1", "every-series-metric-label:cerberus_ql"]
+  }
+}

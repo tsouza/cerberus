@@ -386,6 +386,21 @@ What it proves (the contracts, mapped to their landing PRs):
   — the live lane only corroborates that the process recovered cleanly
   from the cumulative fault storm (all 3 heads 200, no lingering 5xx) as
   a passive end-of-run health gate, not a dedicated scenario.
+- **Failure-driven route memo (e01ed68d).** `route-memo-activation` fires
+  the pinned 24h/15s aggregating `query_range` shape (the same
+  `CERBERUS_CH_QUERY_MAX_MEMORY`-crossing tuple `iterate-time-ranges.spec.ts`
+  already pins) with `CERBERUS_SOLVER_ROUTE_MEMO_ENABLED=true` (chaos
+  overlay). A route-A dispatch that trips ClickHouse's
+  `MEMORY_LIMIT_EXCEEDED` (code 241, breaker-neutral) is retried once on
+  route B; a successful retry both returns the client a 200 (instead of
+  the pinned 422) and moves
+  `cerberus_route_ab_success_total{cerberus_route_choice="b"}`. Closes the
+  gap the mechanism had never been run against a real cerberus process
+  fielding real ClickHouse traffic — no e2e/chaos/compose manifest had
+  ever set the env var before this scenario. Data-volume-dependent like
+  the dashboard sweep's own dual contract: if the tuple never crosses the
+  cap this run, the scenario records not-applicable rather than a
+  vacuous pass.
 
 Design notes (flake resistance): every recovery check polls to a
 **generous bounded deadline** (never asserts immediately after a fault);
