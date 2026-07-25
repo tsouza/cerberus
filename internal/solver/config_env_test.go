@@ -2,7 +2,6 @@ package solver
 
 import (
 	"testing"
-	"time"
 )
 
 // TestConfigFromEnv_DefaultsToAuto pins the phase-2 flip: with
@@ -61,46 +60,48 @@ func TestConfigFromEnv_ShardedForce(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_AutotuneDefaultsOn pins the headline default: the
-// self-driving loop is ENABLED unless an operator opts out, with the default
-// cadence. The resolved config must validate.
-func TestConfigFromEnv_AutotuneDefaultsOn(t *testing.T) {
-	t.Setenv(EnvAutotune, "")
-	t.Setenv(EnvAutotuneInterval, "")
+// TestConfigFromEnv_IgnoresRetiredAutotuneKeys pins the graceful-retirement
+// contract: a deployment manifest that still sets the removed autotune knobs
+// must keep starting up unchanged — ConfigFromEnv reads neither key at all
+// (there is no Config field left for them to populate), so setting them has
+// no effect on the resolved config. This test must FAIL if ConfigFromEnv
+// (or Config) ever grows a field these keys populate again without also
+// removing them from RetiredEnvKeys.
+func TestConfigFromEnv_IgnoresRetiredAutotuneKeys(t *testing.T) {
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE", "false")
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE_INTERVAL", "30m")
 
-	cfg, err := ConfigFromEnv()
+	got, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv() error = %v", err)
 	}
-	if !cfg.Autotune {
-		t.Errorf("Autotune = false, want true (default-on)")
+
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE", "")
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE_INTERVAL", "")
+	want, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
 	}
-	if cfg.AutotuneInterval != defaultAutotuneInterval {
-		t.Errorf("AutotuneInterval = %s, want %s", cfg.AutotuneInterval, defaultAutotuneInterval)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("autotune config failed Validate: %v", err)
+
+	if got != want {
+		t.Fatalf("setting the retired autotune keys changed the resolved Config: got %+v, want %+v", got, want)
 	}
 }
 
-// TestConfigFromEnv_AutotuneDisable confirms the kill-switch: setting
-// CERBERUS_SOLVER_AUTOTUNE=false pins the thresholds (fixed-threshold build) and
-// a custom interval parses.
-func TestConfigFromEnv_AutotuneDisable(t *testing.T) {
-	t.Setenv(EnvAutotune, "false")
-	t.Setenv(EnvAutotuneInterval, "30m")
+// TestStillSetRetiredEnvKeysDetectsAndClearsBoth pins the discoverability
+// half: an operator who still sets either retired key gets it named, and a
+// clean environment reports none.
+func TestStillSetRetiredEnvKeysDetectsAndClearsBoth(t *testing.T) {
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE", "true")
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE_INTERVAL", "")
 
-	cfg, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatalf("ConfigFromEnv() error = %v", err)
+	got := StillSetRetiredEnvKeys()
+	if len(got) != 1 || got[0] != "CERBERUS_SOLVER_AUTOTUNE" {
+		t.Fatalf("StillSetRetiredEnvKeys() = %v, want [CERBERUS_SOLVER_AUTOTUNE]", got)
 	}
-	if cfg.Autotune {
-		t.Errorf("Autotune = true, want false (kill-switch)")
-	}
-	if cfg.AutotuneInterval != 30*time.Minute {
-		t.Errorf("AutotuneInterval = %s, want 30m", cfg.AutotuneInterval)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("disabled-autotune config failed Validate: %v", err)
+
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE", "")
+	if got := StillSetRetiredEnvKeys(); len(got) != 0 {
+		t.Fatalf("StillSetRetiredEnvKeys() = %v, want none once both are unset", got)
 	}
 }

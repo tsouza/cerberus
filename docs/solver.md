@@ -337,61 +337,104 @@ Step)` back through `Planner.Plan` and it reproduces the recorded route, so an
 operator can sweep counterfactual thresholds against history without touching
 production (proven by `TestPlan_OfflineReplay_ReproducesRoute`).
 
-## Stage 1 — self-driving thresholds (the autotune loop)
+## Stage 1 — failure-driven route memo
 
-`internal/autotune` closes the loop on the Stage-0 corpus. When enabled
-(`CERBERUS_SOLVER_AUTOTUNE`, **default true**) and the solver is in auto mode, a
-background loop (`autotune.Loop`, launched on the server lifecycle context so it
-exits cleanly at shutdown) refits the two auto-gate thresholds — `MinFanout` and
-`MinAnchorPairs` — from the corpus on a cadence
-(`CERBERUS_SOLVER_AUTOTUNE_INTERVAL`, default 15m, plus one immediate fit at
-startup) and hot-swaps any change into the live `Planner` via an atomic pointer
-store (`Planner.SetThresholds`). Single / sharded modes carry no cost gate, so
-the loop no-ops there; disabling it pins the thresholds at their configured
-values, byte-identical to a fixed-threshold build. The fit reads the
-`cerberus_router_corpus` MergeTree, so the loop stays **dormant** until the
-Stage-0 reconciler is writing that table (`CERBERUS_CH_OPT_CORPUS_ENABLED=true`
-with the `chtable` sink) rather than erroring against a missing table. Its live
-decision state — configured vs. live thresholds, the last fit, tick count — is
-exposed at [`GET /info/autotune`](health.md#infoautotune--self-driving-solver-state).
+The auto-gate cost thresholds (`MinFanout`, `MinAnchorPairs`) are a **proxy**
+for query cost: they classify by anchor fan-out because fan-out is cheap to
+read off a plan before running it. A fan-out threshold is a good proxy
+exactly when cost is dominated by the dimension it measures — series
+breadth. It is a bad proxy whenever cost is instead dominated by the
+evaluation-grid dimension (anchor count, `N`): a low-fan-out, high-`N` shape
+can be just as memory-unbounded on route A as a high-fan-out one, and the
+threshold — measuring the wrong variable — confidently classifies it as
+cheap. No amount of *tuning* a threshold fixes a proxy that is measuring the
+wrong thing; a self-driving fit that only ever adjusts the threshold's
+*value* inherits the proxy's blind spot unchanged.
 
-The fit (`routerrules.Autotuner.Fit`) is deliberately narrow and **safe by
-construction, not by statistics**:
+`internal/routememo` replaces the proxy with an **outcome** signal instead
+of a better predictor. The reasoning is a plain control-theory substitution:
+a resource failure observed on route A *is* the ground truth the threshold
+was trying to approximate — it needs no model, no fit, and no periodic
+refit loop, because it is the thing itself rather than an estimate of it.
+The mechanism:
 
-- It reads only the observed **route-A OOM floor** over the population the cost
-  gate can actually protect: rows where route A OOM'd *after being gated below
-  the thresholds* (`decision_reason = below-threshold`), via the narrow
-  `OOMFloorSource` seam. That predicate excludes the OOMs lowering the gate cannot
-  help — instant / not-sliceable / high-D route-A OOMs were rejected for
-  eligibility, not by the cost gate. An added `fanout > 0 AND n_anchors > 0` guard
-  stops a gridless row (an instant query, recorded with `fanout = 0`) from
-  cratering the floor to 0.
-- It only ever **lowers** a threshold toward that floor, never raises it, and
-  applies whatever it computes (no hysteresis) — so the guarantee below holds for
-  the **live** gate, not a notional candidate. Because route A and route B are
-  result-identical and route B is the OOM mitigation, lowering can only send more
-  queries to the safe route: the worst case is added route-B overhead, never a
-  wrong answer and never a new OOM.
-- The candidate is clamped so `MinFanout ≤ observed OOM fan-out` and
-  `MinAnchorPairs ≤ min(N)·min(F)` over those rows (a lower bound on the minimum
-  `N·F` product). Together these **prove** every eligible route-A OOM shape in the
-  corpus clears the live gate and would route B — a structural invariant checked
-  in `autotune_test.go`, not a fragile off-policy point estimate.
-- Each tick refits against the *currently active* thresholds over a **rolling**
-  corpus window, so the gate only ratchets downward and settles once it reaches
-  the OOM floor. The monotone ratchet cannot oscillate, so no hysteresis is
-  needed.
+1. Route A dispatches and fails with a typed resource-exhaustion error.
+2. If the query is structurally eligible for route B (the same
+   slice-invariance / correctness gates this document already describes —
+   see [Eligibility signals](#eligibility-signals)), and the failure has been corroborated (below),
+   the memo grants a single retry on route B.
+3. The retry's outcome is classified and recorded against a routing-specific
+   key (`routememo.Key`, `internal/routememo/key.go`) built from the plan's
+   function shape and cost-grid buckets — never from a metric name, label
+   name, label value, or timestamp.
+4. A later request whose plan hashes to the same key consults the memo
+   before falling through to the cost-threshold gate.
 
-**Cold start / kill-switch.** With no eligible route-A OOM in the corpus there is
-no signal and the loop holds the configured thresholds — so a fresh deployment
-behaves byte-identically to the fixed-threshold defaults until real OOM evidence
-accrues. A restart drops the in-memory overlay back to the configured values and
-re-derives from a fresh corpus window.
+**Detection stays typed.** `classifyRouteOutcome` (`internal/engine`) maps a
+dispatch's terminal error onto exactly one of three buckets —
+`OutcomeSuccess`, `OutcomeResourceFailure`, `OutcomeNoEvidence` — using only
+sentinels the codebase already defines for other purposes
+(`chclient.ErrMemoryLimitExceeded`, `*solver.OutputCapError`) or documents as
+deliberately unclassified (a solver wall-clock deadline, an open circuit
+breaker, the sample budget, a pre-flight emit failure, client
+cancellation). Only `OutcomeSuccess` and `OutcomeResourceFailure` ever touch
+memo state; every other outcome is a pure no-op release of whatever
+admission slot it held. This is the single-seam fix for a class of bug a
+naive failure-driven retry is prone to: an unrelated failure (a timeout, a
+cancelled client, a circuit breaker that was already open) carries no
+evidence about whether *sharding* helps, and must never be allowed to teach
+the memo anything.
 
-**Scope of v1.** Because production routing is deterministic, the corpus carries
-no counterfactual A/B evidence with which to *loosen* a threshold; the loop
-therefore only tightens. Loosening (de-protecting a workload the defaults
-over-route) is out of scope until an exploration posture supplies that evidence.
+**Safety envelope.** The memo cannot make routing decisions *less* correct
+than the deterministic path it augments, because it never overrides a
+structural gate — it only decides *whether to attempt* route B, and route
+B's own equivalence proof (this document, [Eligibility signals](#eligibility-signals)) is
+unconditional on the memo. Beyond that, the mechanism is bounded on five
+independent axes, each closing a specific failure mode a naive version
+would have:
+
+- **Corroboration before any positive learning.** A key only becomes
+  probe-eligible after two consecutive route-A resource failures with no
+  intervening success. A single transient rejection — including one caused
+  by an unrelated victim under a shared resource event — cannot by itself
+  trigger a probe.
+- **A cluster-wide pressure damper.** Simultaneous resource failures across
+  many *distinct* keys is the signature of a shared external cause, not a
+  per-query one — the correlation needs no new backend signal, only
+  observing what already flows through the classification seam. While more
+  distinct keys than the pressure threshold show a fresh failure within the
+  window, no probe is admitted and no memo state is written at all.
+- **A single, process-wide admission bound covers every non-baseline
+  dispatch** — probe, retry, and a memo-hit alike — through one
+  non-blocking semaphore. A memo-hit denied admission degrades transparently
+  to route A; a probe or retry denied admission serves the original error
+  unchanged. Route B can therefore never be the thing that queues or
+  stampedes the shared connection pool.
+- **TTL from creation, with explicit re-validation.** A verdict's clock is
+  stamped once, on creation, and is never refreshed by a lookup or by a
+  plain confirming success. A positive verdict past its re-validation
+  midpoint is reported *stale*: the next matching request routes through A
+  instead of memo-hitting, and that attempt's outcome decides the entry's
+  fate — success drops it, failure refreshes it. A verdict is something
+  that must continuously re-earn its keep, not something that, once
+  written, is trusted forever.
+- **Bounded size with LRU eviction.** The memo is an in-process, per-pod
+  cache with a fixed entry cap; it stores a routing *decision* only — never
+  result rows, never query text — so a stale or wrong entry can cost
+  performance, never correctness.
+
+**Scope of the live-edge exception.** Route B's output-equivalence proof
+holds when every shard's window has already closed with respect to the
+table state at dispatch time — a shard reading a strictly newer snapshot
+than an earlier shard is a real, bounded exception, not an implementation
+detail. A grid-relative freshness gate (`liveEdgeFreshnessMarginSteps`)
+refuses to route B for a window whose end has not aged past one step: by
+construction, the newest grid anchor is still inside the write window of
+the step that produced it, so an anchor strictly older than one step has
+crossed the write frontier for any step-aligned ingestion pattern. This is
+a correctness boundary, not a performance one — a query inside the margin
+falls through to whatever the eligible-no-memo path already does (route A),
+never a wrong answer.
 
 ### Blind spot: a cerberus process OOM-kill
 

@@ -6,11 +6,13 @@ JSONL fallback — and emits **findings**: shape classes where the recorded rout
 A/B decision is paying an observable cost the corpus shows the other route would
 avoid. It changes no routing. It is a report an operator runs.
 
-The same corpus and the same `routerrules` fit primitives also feed the
-**online** self-driving loop (`internal/autotune`, see `docs/solver.md` §"Stage 1
-— self-driving thresholds"), which lowers the solver's live auto-gate thresholds
-toward the observed OOM line. The `cmd/cerberus` CLI here remains purely a
-report; the loop is the component that actually moves thresholds.
+The solver's live routing decisions are no longer moved by a background fit
+over this corpus: `internal/routememo` (see `docs/solver.md` §"Stage 1 —
+failure-driven route memo") replaced the self-tuning threshold loop with an
+outcome-driven memo that needs no periodic corpus read to operate. This
+catalog stays purely a report — an operator (or a future rule) reads it and
+acts; the corpus itself is unchanged as the shared evidence source for both
+this offline tool and `internal/routememo`'s online decisions.
 
 - **Route A** is a single ClickHouse query.
 - **Route B** is a time-slice sharded execution.

@@ -29,7 +29,6 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"
-	"github.com/tsouza/cerberus/internal/autotune"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
@@ -37,7 +36,6 @@ import (
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
-	"github.com/tsouza/cerberus/internal/routerrules"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 	"github.com/tsouza/cerberus/internal/solver"
@@ -94,11 +92,6 @@ func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *
 // skips the gRPC branch and shutdown skips GracefulStop).
 type apiHeads struct {
 	grpcServer *grpc.Server
-	// autotuneReporter exposes the self-driving solver's live decision state to
-	// the /info/autotune handler. Non-nil only when the prom head (hence the
-	// solver) is built; it reports "disabled"/"dormant" when the loop isn't
-	// running.
-	autotuneReporter *autotune.Reporter
 }
 
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
@@ -128,10 +121,6 @@ func mountAPIHeads(
 	// observes only live heads (a disabled head has no engine to observe).
 	var engines []*engine.Engine
 
-	// autotuneReporter is populated when the prom head builds the solver; it
-	// backs GET /info/autotune. Nil when prom (and thus the solver) is disabled.
-	var autotuneReporter *autotune.Reporter
-
 	if cfg.HeadEnabled(config.HeadProm) {
 		// Per-head Client VIEW (#94): own breaker over the shared pool. Built
 		// only for the prom head — and the prom-only sharded-pushdown solver is
@@ -145,16 +134,6 @@ func mountAPIHeads(
 		promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
-
-		// Self-driving threshold loop: when enabled (default) and the solver is
-		// in auto mode, periodically refit MinFanout / MinAnchorPairs from the
-		// router corpus and hot-swap changes into the live Planner. It runs on
-		// the server lifecycle ctx, so it exits on shutdown. The returned reporter
-		// backs GET /info/autotune (populated even when the loop stays dormant).
-		autotuneReporter = startAutotune(ctx, evalSolver, promClient, cfg, logger)
-		if err := autotune.RegisterMetrics(autotuneReporter); err != nil {
-			logger.Warn("autotune metrics registration failed; /info/autotune still serves this pod", "err", err)
-		}
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
@@ -190,7 +169,7 @@ func mountAPIHeads(
 	// hot path).
 	startOptCorpus(ctx, logger, client, cfg, engines...)
 
-	return apiHeads{grpcServer: grpcServer, autotuneReporter: autotuneReporter}, nil
+	return apiHeads{grpcServer: grpcServer}, nil
 }
 
 // enabledHeadNames returns the enabled heads in the canonical prom,loki,tempo
@@ -259,6 +238,10 @@ func run() error {
 		"log_format", cfg.Log.Format,
 		"log_level", cfg.Log.Level.String(),
 	)
+
+	for _, k := range solver.StillSetRetiredEnvKeys() {
+		logger.Info("solver env var is retired and no longer has any effect", "env", k)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -438,7 +421,7 @@ func run() error {
 	// readiness probe uses for its live reachability/breaker fields, and
 	// reuses the /readyz readiness condition for "ready". Like the health
 	// probes it bypasses otelhttp (low-frequency metadata scrape, no spans).
-	infoHandler := info.New(infoOptions(client, cfg, optRes, schemaReady, schemaPresent, startTime, heads.autotuneReporter))
+	infoHandler := info.New(infoOptions(client, cfg, optRes, schemaReady, schemaPresent, startTime))
 
 	rootMux := http.NewServeMux()
 	healthHandler.Mount(rootMux)
@@ -635,7 +618,6 @@ func infoOptions(
 	schemaReady health.SchemaReadyFunc,
 	schemaPresent health.SchemaPresentFunc,
 	startTime time.Time,
-	autotuneReporter *autotune.Reporter,
 ) info.Options {
 	probe := client.ForHead(chclient.HeadProbe)
 
@@ -677,12 +659,6 @@ func infoOptions(
 		SchemaReady: schemaReadyNow,
 		Ready: func(ctx context.Context) bool {
 			return probe.Ping(ctx) == nil && schemaPresentNow() && schemaReadyNow()
-		},
-		Autotune: func() (info.AutotuneStatus, bool) {
-			if autotuneReporter == nil {
-				return info.AutotuneStatus{}, false
-			}
-			return mapAutotuneStatus(autotuneReporter.Snapshot()), true
 		},
 	}
 }
@@ -1001,115 +977,6 @@ func buildSolver(
 		"min_anchor_pairs", cfg.MinAnchorPairs,
 	)
 	return s, nil
-}
-
-// autotuneCorpusWindow bounds how far back the self-driving fit reads the router
-// corpus: recent enough to track a shifting workload, wide enough to accumulate
-// the route-A OOM evidence the fit keys on.
-const autotuneCorpusWindow = 7 * 24 * time.Hour
-
-// startAutotune launches the self-driving threshold loop when it is enabled
-// (default) and the solver is in auto mode — single / sharded carry no cost gate
-// to tune, so it no-ops there, and a fixed-threshold deployment
-// (CERBERUS_SOLVER_AUTOTUNE=false) pays nothing. The loop goroutine runs on the
-// server lifecycle ctx and exits when ctx is cancelled at shutdown. It always
-// returns a Reporter (backing GET /info/autotune) describing the state, even
-// when the loop stays dormant.
-func startAutotune(ctx context.Context, s *solver.Solver, client *chclient.Client, cfg config.Config, logger *slog.Logger) *autotune.Reporter {
-	configured := routerrules.Thresholds{MinFanout: s.Cfg.MinFanout, MinAnchorPairs: s.Cfg.MinAnchorPairs}
-	base := autotune.Status{
-		Enabled:             s.Cfg.Autotune,
-		Configured:          configured,
-		Live:                configured,
-		IntervalSeconds:     s.Cfg.AutotuneInterval.Seconds(),
-		CorpusWindowSeconds: autotuneCorpusWindow.Seconds(),
-	}
-
-	if !s.Cfg.Autotune || s.Cfg.Mode != solver.ModeAuto {
-		base.Reason = autotune.ReasonStatusDisabled
-		if s.Cfg.Autotune {
-			base.Reason = autotune.ReasonStatusNotAutoMode
-		}
-		return autotune.NewReporter(base)
-	}
-	// The fit reads the cerberus_router_corpus MergeTree, which is written ONLY
-	// when the query-log corpus reconciler runs with the chtable sink. Without it
-	// the table does not exist, so autotune stays dormant rather than erroring
-	// every tick against a missing table — it activates once the operator turns
-	// the corpus on (autotune defaults on, so no extra flag is needed that day).
-	if !cfg.CHOptCorpus.Enabled || cfg.CHOptCorpus.SinkMode != corpusSinkModeCHTable {
-		logger.Info(
-			"solver autotune enabled but the router corpus CH table is not being written; "+
-				"loop dormant until the corpus reconciler runs with the chtable sink",
-			"corpus_enabled", cfg.CHOptCorpus.Enabled,
-			"corpus_sink_mode", cfg.CHOptCorpus.SinkMode,
-		)
-		base.Reason = autotune.ReasonStatusCorpusUnavailable
-		return autotune.NewReporter(base)
-	}
-
-	base.Active = true
-	base.Reason = autotune.ReasonStatusActive
-	reporter := autotune.NewReporter(base)
-
-	// Rebuild the source per tick with a freshly-computed window lower bound, so
-	// the fit reads a ROLLING window (recent data) rather than a window frozen at
-	// process start that would only ever expand.
-	conn := client.Conn()
-	newTuner := func() *routerrules.Autotuner {
-		sinceUnix := float64(time.Now().Add(-autotuneCorpusWindow).Unix())
-		return routerrules.NewAutotuner(routerrules.NewCHOOMFloorSource(conn, sinceUnix))
-	}
-	loop := autotune.New(s.Planner, newTuner, s.Cfg.AutotuneInterval, logger.With("component", "autotune"), reporter)
-	go loop.Run(ctx)
-	logger.Info(
-		"solver autotune loop started",
-		"interval", s.Cfg.AutotuneInterval,
-		"corpus_window", autotuneCorpusWindow,
-		"min_fanout", s.Cfg.MinFanout,
-		"min_anchor_pairs", s.Cfg.MinAnchorPairs,
-	)
-	return reporter
-}
-
-// mapAutotuneStatus projects the autotune snapshot into the info-layer JSON
-// shape, keeping the info package decoupled from the solver stack.
-func mapAutotuneStatus(s autotune.Status) info.AutotuneStatus {
-	out := info.AutotuneStatus{
-		Enabled:             s.Enabled,
-		Active:              s.Active,
-		Reason:              s.Reason,
-		IntervalSeconds:     s.IntervalSeconds,
-		CorpusWindowSeconds: s.CorpusWindowSeconds,
-		Configured:          info.ThresholdInfo{MinFanout: s.Configured.MinFanout, MinAnchorPairs: s.Configured.MinAnchorPairs},
-		Live:                info.ThresholdInfo{MinFanout: s.Live.MinFanout, MinAnchorPairs: s.Live.MinAnchorPairs},
-		Stats: info.AutotuneStats{
-			Ticks:            s.Stats.Ticks,
-			SignalTicks:      s.Stats.SignalTicks,
-			AppliedTicks:     s.Stats.AppliedTicks,
-			ErrorTicks:       s.Stats.ErrorTicks,
-			TicksSinceChange: s.Stats.TicksSinceChange,
-			LastError:        s.Stats.LastError,
-		},
-		Outcome: info.AutotuneOutcome{
-			HasSignal:        s.Outcome.HasSignal,
-			OOMMinFanout:     s.Outcome.OOMMinFanout,
-			OOMMinAnchors:    s.Outcome.OOMMinAnchors,
-			RouteAOoms:       s.Outcome.RouteAOomCount,
-			RouteBExecutions: s.Outcome.RouteBExecutions,
-			RouteBOoms:       s.Outcome.RouteBOomCount,
-		},
-	}
-	if !s.Stats.LastChangeAt.IsZero() {
-		out.Stats.LastChangeAt = s.Stats.LastChangeAt.UTC().Format(time.RFC3339)
-	}
-	if !s.Stats.LastErrorAt.IsZero() {
-		out.Stats.LastErrorAt = s.Stats.LastErrorAt.UTC().Format(time.RFC3339)
-	}
-	if !s.Outcome.At.IsZero() {
-		out.Outcome.At = s.Outcome.At.UTC().Format(time.RFC3339)
-	}
-	return out
 }
 
 // warnIfClickHouseUnreachable performs the best-effort startup
