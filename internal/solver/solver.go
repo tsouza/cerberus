@@ -96,6 +96,21 @@ func (s *Solver) Classify(plan chplan.Node, meta RequestMeta) (*Decision, bool) 
 	return s.Planner.Plan(plan, meta)
 }
 
+// Eligible mirrors Classify's nil-guards and lang gate for Planner.Eligible
+// (docs §"Failure-driven route memo"): a nil Solver/Planner or a non-PromQL
+// RequestMeta.Lang both report not-eligible, exactly like Classify. Used at
+// every non-baseline dispatch site (probe, retry, memo-hit) to re-derive
+// structural eligibility independent of Cfg.Mode's predictive thresholds.
+func (s *Solver) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
+	if s == nil || s.Planner == nil {
+		return nil, false
+	}
+	if meta.Lang != LangPromQL {
+		return nil, false
+	}
+	return s.Planner.Eligible(plan, meta)
+}
+
 // BreakerClosed reports whether the ClickHouse circuit breaker is CLOSED,
 // without consuming a half-open recovery probe (the same PeekBreakerState
 // the Executor's own pre-flight already uses). It exists so a non-baseline

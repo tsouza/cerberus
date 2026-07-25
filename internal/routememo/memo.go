@@ -342,6 +342,19 @@ func (m *Memo) evictIfNeededLocked() {
 	}
 }
 
+// SetNowForTest overrides Memo's time source. Production code must never
+// call this — it exists so a CONSUMING package's tests (the engine's
+// route-memo dispatch wiring) can exercise TTL / re-validation timing
+// deterministically without waiting on a real clock. routememo's own tests,
+// in the same package, already have direct field access; this is the
+// cross-package equivalent, safe under concurrent use because it takes the
+// same mutex every other Memo method does.
+func (m *Memo) SetNowForTest(now func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.now = now
+}
+
 // Stats is a point-in-time snapshot of the memo's resident state, for
 // observability (cerberus_solver_route_memo_* gauges).
 type Stats struct {

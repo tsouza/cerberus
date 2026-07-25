@@ -36,6 +36,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
+	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -487,6 +488,15 @@ type Engine struct {
 	// would exceed the budget, which the result drain never sees (resource-bound
 	// audit GAP-2, see requireSubquerySampleBudget). 0 disables the gate.
 	MaxQuerySamples int64
+
+	// RouteMemo is the OPTIONAL failure-driven route memo (internal/routememo,
+	// docs/solver.md §"Failure-driven route memo"). Nil unless wired from
+	// cmd/cerberus, so the default path is byte-unchanged. When non-nil AND
+	// Solver is non-nil AND the head is PromQL, the engine consults it before
+	// dispatching route A (a live PreferB verdict routes B directly) and,
+	// symmetrically, when a route-A dispatch fails with a resource-exhaustion
+	// error (a retry on route B, at most once, see route_memo_wiring.go).
+	RouteMemo *routememo.Memo
 }
 
 // QueryObserver is the narrow seam the corpus reconciler registers on the
@@ -957,6 +967,45 @@ type CursorResult struct {
 	// the drain is stamped onto the same corpus record. Empty when the dispatch
 	// carried no trace id (un-instrumented caller) or when the corpus is off.
 	QueryID string
+
+	// Retry is the failure-driven route memo's A->B retry hook (docs
+	// §"Failure-driven route memo"). Nil unless Engine.RouteMemo is wired AND
+	// this CursorResult's dispatch went through route A AND was structurally
+	// eligible for route B — a nil Retry is the ordinary "this mechanism does
+	// not apply here" case, not an error.
+	//
+	// The DRAIN happens in the caller (the handler owns cursor.Next() /
+	// cursor.Err()), so a resource-exhaustion failure surfacing mid-drain is
+	// necessarily discovered outside this package — Retry is how the engine
+	// still gets to classify it and decide whether to dispatch route B,
+	// without the handler needing to know anything about routes, keys, or
+	// the memo itself. On drainErr classifying as a genuine resource
+	// failure AND every other gate passing (eligibility, freshness, breaker,
+	// corroboration), Retry dispatches route B and returns a FRESH
+	// CursorResult (with its own nil Retry — at most one retry per request,
+	// no loop) for the caller to drain instead; retried=false means "keep
+	// using drainErr", the safe default.
+	//
+	// The caller MUST release ownership of the ORIGINAL cursor (Close it)
+	// before calling Retry, and must drop any partial result it accumulated
+	// from draining the original cursor before beginning to drain the new
+	// one — Retry itself does neither, since both are properties of
+	// whatever the caller was accumulating into, not of the cursor.
+	Retry func(ctx context.Context, drainErr error) (CursorResult, bool)
+
+	// ObserveDrainOutcome is the failure-driven route memo's UNCONDITIONAL
+	// bookkeeping hook — distinct from Retry, which fires ONLY on a drain
+	// failure and offers an alternate cursor. This Cursor came from route
+	// B's very first probe for its Key (Retry's own A->B retry path): a
+	// CLEAN drain is what creates the memo's positive verdict in the first
+	// place (there is no pre-existing verdict here to fall back on if the
+	// caller skips this), so the caller MUST call this exactly once with the
+	// drain error (nil on a clean finish) whenever it is non-nil — silently
+	// skipping it leaves the Key permanently unlearned no matter how many
+	// times route A goes on failing it. Nil whenever it does not apply
+	// (RouteMemo unset, or this Cursor did not come from a first-time
+	// probe).
+	ObserveDrainOutcome func(drainErr error)
 }
 
 // QueryCursor runs the full pipeline through emit, then opens a
@@ -990,10 +1039,6 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	if plan == nil {
 		return CursorResult{}, fmt.Errorf("engine: nil plan")
 	}
-	cq, ok := e.Client.(CursorQuerier)
-	if !ok {
-		return CursorResult{}, fmt.Errorf("engine: client does not implement CursorQuerier")
-	}
 
 	// Inflight bookkeeping — symmetrical with QueryPlan so the gauge
 	// covers both the eager and streaming pipelines. Cursor consumers
@@ -1025,11 +1070,112 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		return e.executeRoutedCursor(ctx, lang, meta, plan, decision)
 	}
 
+	// Failure-driven route memo (DARK — nil RouteMemo is a no-op, byte-
+	// unchanged below). A live PreferB verdict routes B directly, subject
+	// to every gate re-checked at THIS call; any route-B failure here falls
+	// back to the ordinary route-A dispatch below exactly as if this had
+	// never run (Major-2's symmetric fallback).
+	budget := chclient.SampleBudgetFromContext(ctx)
+	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), plan, decision, budget); ok {
+		result := e.buildRoutedCursorResult(meta, plan, usedDecision, cur, info, "memo-hit")
+		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
+			// The verdict already existed before this dispatch (that is
+			// what made it a memo-hit); a clean drain needed no
+			// re-confirmation, but this closure only ever runs when the
+			// drain FAILED, so report that failure now rather than waiting
+			// for the entry to age out on its own TTL clock.
+			e.RouteMemo.Observe(key, routememo.RouteB, classifyRouteOutcome(routememo.RouteB, drainErr))
+			// The memo chose B on B's own past recommendation, not on
+			// evidence about THIS request — fall back to the ordinary,
+			// always-safe route-A dispatch, memo bypassed entirely (no
+			// further retry chaining: an open failure here just surfaces
+			// as "no retry available", not a second retry attempt).
+			fallback, ferr := e.dispatchRouteACursor(retryCtx, lang, meta, plan, decision)
+			if ferr != nil || fallback.openErr != nil {
+				return CursorResult{}, false
+			}
+			return fallback.CursorResult, true
+		}
+		return result, nil
+	}
+
+	result, err := e.dispatchRouteACursor(ctx, lang, meta, plan, decision)
+	if err != nil {
+		return CursorResult{}, err
+	}
+
+	if err := result.openErr; err != nil {
+		// Open-time failure (e.g. a breaker fast-fail, or a 241 on the
+		// first block) — try the A->B retry before giving up. On success
+		// this returns a routed CursorResult from route B instead; on
+		// failure (including "retry does not apply here") the original
+		// route-A error is what surfaces, unchanged.
+		execCtx := chclient.WithProgressFor(ctx, lang.Name())
+		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(execCtx, lang.Name(), plan, decision, budget, err); retried {
+			retryResult := e.buildRoutedCursorResult(meta, plan, usedDecision, cur, info, "retry")
+			retryResult.ObserveDrainOutcome = observeFn
+			return retryResult, nil
+		}
+		// The sample-budget 422 instead surfaces later during the handler's
+		// drain via ObserveDrainOutcome. Stamp any cerberus-side open-time
+		// outcome here.
+		e.observeOutcomeForErr(result.queryID, lang.Name(), plan, decision, err)
+		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)
+	}
+
+	// Attach the drain-failure retry hook only when the memo mechanism is
+	// active AND this dispatch could plausibly need it (a nil seed decision
+	// means the head isn't PromQL / Solver is off, in which case
+	// retryOnRouteAResourceFailure's own guards would refuse anyway — the
+	// nil check here just avoids handing the caller a closure that always
+	// declines).
+	if e.routeMemoActive() && decision != nil {
+		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
+			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(retryCtx, lang.Name(), plan, decision, budget, drainErr)
+			if !retried {
+				return CursorResult{}, false
+			}
+			retryResult := e.buildRoutedCursorResult(meta, plan, usedDecision, cur, info, "retry")
+			retryResult.ObserveDrainOutcome = observeFn
+			return retryResult, true
+		}
+	}
+	return result.CursorResult, nil
+}
+
+// routeACursorAttempt wraps the ordinary (non-memo) route-A cursor dispatch:
+// either a genuine CursorResult (openErr nil), or — when the OPEN itself
+// failed — the empty CursorResult plus openErr and queryID, so the caller
+// can still classify/retry/stamp the open-time failure without
+// dispatchRouteACursor needing to know anything about the route memo.
+type routeACursorAttempt struct {
+	CursorResult
+	openErr error
+	queryID string
+}
+
+// dispatchRouteACursor is the ordinary, always-safe route-A cursor dispatch
+// — emit, open. Factored out of QueryPlanCursor so both the normal path AND
+// the failure-driven route memo's memo-hit fallback (route B failed mid-
+// drain -> fall back to plain route A, memo bypassed) can share it, rather
+// than risk the two drifting apart.
+func (e *Engine) dispatchRouteACursor(
+	ctx context.Context,
+	lang Lang,
+	meta Meta,
+	plan chplan.Node,
+	decision *solver.Decision,
+) (routeACursorAttempt, error) {
+	cq, ok := e.Client.(CursorQuerier)
+	if !ok {
+		return routeACursorAttempt{}, fmt.Errorf("engine: client does not implement CursorQuerier")
+	}
+
 	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sql, args, err := emitForHead(ctx, lang, plan)
 	emitT.Done(ctx)
 	if err != nil {
-		return CursorResult{}, fmt.Errorf("engine: emit: %w", err)
+		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
@@ -1037,11 +1183,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	cursor, err := cq.QueryCursor(execCtx, sql, args...)
 	execT.Done(ctx)
 	if err != nil {
-		// Open-time failure (e.g. a breaker fast-fail) — the sample-budget 422
-		// instead surfaces later during the handler's drain via
-		// ObserveDrainOutcome. Stamp any cerberus-side open-time outcome here.
-		e.observeOutcomeForErr(queryID, lang.Name(), plan, decision, err)
-		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)
+		return routeACursorAttempt{openErr: err, queryID: queryID}, nil
 	}
 
 	nodes := cerbtrace.CountNodes(plan)
@@ -1058,6 +1200,45 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	if v := routeDecisionValue(decision, false); v != "" {
 		headers[HeaderRouteDecision] = v
 	}
+	return routeACursorAttempt{
+		CursorResult: CursorResult{
+			Cursor:        cursor,
+			SQL:           sql,
+			Args:          args,
+			Strategy:      strategy,
+			PlanNodeCount: nodes,
+			Headers:       headers,
+			Meta:          meta,
+			QueryID:       queryID,
+		},
+	}, nil
+}
+
+// buildRoutedCursorResult composes the CursorResult for a cursor obtained
+// via the Solver's Executor — shared by executeRoutedCursor's ordinary
+// threshold-triggered route and the failure-driven route memo's memo-hit /
+// retry dispatch sites, so header and strategy construction cannot drift
+// between the three. via is a short label folded into the shadow header's
+// decision-reason position ("memo-hit" / "retry") distinguishing a memo-
+// driven route from an ordinary threshold-triggered one; it never appears
+// on the ordinary executeRoutedCursor path, which passes its own decision's
+// real Reason (ReasonRouted) instead by calling routeDecisionValue directly.
+func (e *Engine) buildRoutedCursorResult(
+	meta Meta,
+	plan chplan.Node,
+	decision *solver.Decision,
+	cursor chclient.Cursor,
+	info *solver.ExecInfo,
+	via string,
+) CursorResult {
+	nodes := cerbtrace.CountNodes(plan)
+	strategy := strategyFor(meta)
+	sql, args := routedSQLArgs(info)
+	headers := map[string]string{
+		HeaderStrategy:  strategy,
+		HeaderPlanNodes: strconv.Itoa(nodes),
+	}
+	headers[HeaderRouteDecision] = solver.StrategyShardedTimeslice + ";k=" + strconv.Itoa(decision.K) + ";reason=" + via
 	return CursorResult{
 		Cursor:        cursor,
 		SQL:           sql,
@@ -1066,8 +1247,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		PlanNodeCount: nodes,
 		Headers:       headers,
 		Meta:          meta,
-		QueryID:       queryID,
-	}, nil
+	}
 }
 
 // ObserveDrainOutcome stamps a CERBERUS-side terminal outcome that surfaced
