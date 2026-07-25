@@ -153,14 +153,14 @@ components:
   # narrow CHConn + column contract rather than importing optcorpus/chclient, so
   # it depends only on chsql for typed SQL composition.
   routerrules:    { in: routerrules }
-  autotune:       { in: autotune }
   # Offline migration preview support: harvests a PromQL corpus from rule files
   # (promrules) and assembles the explain report over the chplan IR. Wired from
   # cmd/cerberus only.
   migrate:        { in: migrate }
-  # Online cutover parity gate: replays a harvested corpus against a reference
-  # Prometheus + cerberus and diffs the query_range results. Reuses the migrate
-  # corpus format to read the harvested corpus.json. Wired from cmd/cerberus only.
+  # Online cutover parity gate: replays a harvested corpus against each head's
+  # reference backend + cerberus and diffs the range results. Reuses the migrate
+  # corpus format to read the harvested corpus.json, and the two in-house leaf
+  # parsers to route each entry to a head lane. Wired from cmd/cerberus only.
   migrateverify:  { in: migrateverify }
   # Live cardinality probe: reads the source Prometheus TSDB status over HTTP and
   # ranks the top-N metrics/labels by cardinality (the offline-invisible OOM
@@ -287,15 +287,6 @@ deps:
       - chplan
       - chclient
 
-  # autotune is the self-driving loop: it composes the solver (Planner, whose
-  # thresholds it hot-swaps) with routerrules (the corpus-fit brain). It is
-  # wired from cmd/ with a corpus source and launched on the server lifecycle
-  # context; it sits above both and is imported by nothing but cmd/.
-  autotune:
-    mayDependOn:
-      - solver
-      - routerrules
-
   # migrate builds the offline explain report. It walks the chplan IR (Tables /
   # Lint) and harvests its corpus via promrules. Explanation is delegated to an
   # Explainer interface — the engine/DryRunSQL wiring lives in cmd/cerberus
@@ -305,13 +296,17 @@ deps:
       - chplan
       - promrules
 
-  # migrateverify is the online parity gate. It only needs the migrate corpus
-  # format (Corpus / CorpusQuery / LangPromQL) to read a harvested corpus.json;
-  # the comparator and HTTP client are net-new and stdlib-only. It must NOT reach
-  # into the engine / chsql / handler layers — it talks to both backends over HTTP.
+  # migrateverify is the online parity gate. It reads the migrate corpus format
+  # (Corpus / CorpusQuery / Lang*) and routes each entry to a head lane, which
+  # needs the two in-house leaf parsers to tell a metric query from a log-stream
+  # or trace-search one offline: lsyntax (LogQL, depends only on logpattern) and
+  # traceql-ast (TraceQL, a pure leaf). It must still NOT reach into the engine /
+  # chsql / handler layers — it talks to both backends over HTTP.
   migrateverify:
     mayDependOn:
       - migrate
+      - lsyntax
+      - traceql-ast
 
   # migrategate is the offline aggregator. It reads the JSON each block emits, so
   # it reuses their contract types: migrate (classify + rulegraph), migrateverify

@@ -6,11 +6,9 @@ JSONL fallback — and emits **findings**: shape classes where the recorded rout
 A/B decision is paying an observable cost the corpus shows the other route would
 avoid. It changes no routing. It is a report an operator runs.
 
-The same corpus and the same `routerrules` fit primitives also feed the
-**online** self-driving loop (`internal/autotune`, see `docs/solver.md` §"Stage 1
-— self-driving thresholds"), which lowers the solver's live auto-gate thresholds
-toward the observed OOM line. The `cmd/cerberus` CLI here remains purely a
-report; the loop is the component that actually moves thresholds.
+The solver's auto-gate thresholds are static configuration
+(see [`docs/solver.md`](solver.md)); nothing in this package moves them. A
+finding is evidence an operator weighs when choosing the configured values.
 
 - **Route A** is a single ClickHouse query.
 - **Route B** is a time-slice sharded execution.

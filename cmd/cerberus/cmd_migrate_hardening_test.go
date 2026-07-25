@@ -72,15 +72,22 @@ func TestRunVerify_RedactsCredentials(t *testing.T) {
 	}
 	var diag struct {
 		Params struct {
-			RefURL      string `json:"ref_url"`
-			CerberusURL string `json:"cerberus_url"`
+			Backends []struct {
+				Head        string `json:"head"`
+				RefURL      string `json:"ref_url"`
+				CerberusURL string `json:"cerberus_url"`
+			} `json:"backends"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(data, &diag); err != nil {
 		t.Fatalf("report JSON did not parse: %v", err)
 	}
-	if !strings.Contains(diag.Params.RefURL, "REDACTED") || !strings.Contains(diag.Params.CerberusURL, "REDACTED") {
-		t.Errorf("report params must carry redacted URLs, got ref=%q cerberus=%q", diag.Params.RefURL, diag.Params.CerberusURL)
+	if len(diag.Params.Backends) != 1 {
+		t.Fatalf("report params must record the one configured lane, got %+v", diag.Params.Backends)
+	}
+	b := diag.Params.Backends[0]
+	if !strings.Contains(b.RefURL, "REDACTED") || !strings.Contains(b.CerberusURL, "REDACTED") {
+		t.Errorf("report params must carry redacted URLs, got ref=%q cerberus=%q", b.RefURL, b.CerberusURL)
 	}
 }
 

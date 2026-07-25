@@ -64,18 +64,23 @@ func TestBuildParams(t *testing.T) {
 	}
 }
 
-// TestLoadCorpus writes a v1 corpus with a PromQL query, a LogQL panel, and a
-// harvest-time skip, then checks that verify picks up the PromQL query, carries
-// the LogQL one through as out-of-scope, and surfaces the harvest skip — every
-// entry accounted for, none silently dropped.
+// TestLoadCorpus writes a v1 corpus holding one entry of each shape the router
+// must distinguish — a PromQL rule, a LogQL log-stream panel, a LogQL metric
+// panel, a TraceQL metrics panel, a TraceQL search panel — plus a harvest-time
+// skip, and pins that each lands in exactly one bucket with the right head, that
+// corpus order survives, and that the buckets account for every input entry.
 func TestLoadCorpus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corpus.json")
+	const corpusEntries = 5
 	const body = `{
   "version": 1,
   "queries": [
     {"expr": "up", "source": "rule:a", "kind": "record", "lang": "promql"},
-    {"expr": "{app=\"x\"}", "source": "panel:logs", "kind": "panel", "lang": "logql"}
+    {"expr": "{app=\"x\"}", "source": "panel:logs", "kind": "panel", "lang": "logql"},
+    {"expr": "sum(rate({app=\"x\"}[5m]))", "source": "panel:lograte", "kind": "panel", "lang": "logql"},
+    {"expr": "{} | rate()", "source": "panel:spanrate", "kind": "panel", "lang": "traceql"},
+    {"expr": "{ span.a = \"b\" }", "source": "panel:search", "kind": "panel", "lang": "traceql"}
   ],
   "skipped": [
     {"source": "rule:broken.yml", "reason": "rule has an empty expr"}
@@ -88,12 +93,50 @@ func TestLoadCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
-	if len(c.PromQL) != 1 || c.PromQL[0].Expr != "up" {
-		t.Errorf("PromQL = %+v, want the single `up` query", c.PromQL)
+
+	wantQueries := []Query{
+		{Expr: "up", Source: "rule:a", Head: HeadProm, Lang: "promql"},
+		{Expr: `sum(rate({app="x"}[5m]))`, Source: "panel:lograte", Head: HeadLoki, Lang: "logql"},
+		{Expr: "{} | rate()", Source: "panel:spanrate", Head: HeadTempo, Lang: "traceql"},
 	}
-	if len(c.OutOfScope) != 1 || c.OutOfScope[0].Lang != "logql" {
-		t.Errorf("OutOfScope = %+v, want the one logql panel", c.OutOfScope)
+	if len(c.Queries) != len(wantQueries) {
+		t.Fatalf("Queries = %+v, want the 3 metric-lane queries", c.Queries)
 	}
+	for i, want := range wantQueries {
+		if c.Queries[i] != want {
+			t.Errorf("Queries[%d] = %+v, want %+v (corpus order + head tag must survive)", i, c.Queries[i], want)
+		}
+	}
+
+	if len(c.OutOfScope) != 2 {
+		t.Fatalf("OutOfScope = %+v, want the log-stream panel and the trace search", c.OutOfScope)
+	}
+	wantOOS := []struct {
+		source string
+		head   string
+		kind   string
+	}{
+		{"panel:logs", HeadLoki, KindLogStream},
+		{"panel:search", HeadTempo, KindTraceSearch},
+	}
+	for i, want := range wantOOS {
+		got := c.OutOfScope[i]
+		if got.Source != want.source || got.Head != want.head || got.Kind != want.kind {
+			t.Errorf("OutOfScope[%d] = %+v, want source=%s head=%s kind=%s", i, got, want.source, want.head, want.kind)
+		}
+		if got.Reason == "" {
+			t.Errorf("OutOfScope[%d] (%s) carries an empty Reason: the operator must be told WHY it was not judged", i, got.Source)
+		}
+		if got.Expr == "" {
+			t.Errorf("OutOfScope[%d] (%s) carries an empty Expr", i, got.Source)
+		}
+	}
+
+	// The accounting invariant: every corpus entry landed in exactly one bucket.
+	if got := len(c.Queries) + len(c.OutOfScope); got != corpusEntries {
+		t.Errorf("replayable + out-of-scope = %d, want %d: an entry was dropped", got, corpusEntries)
+	}
+
 	if len(c.HarvestSkipped) != 1 || c.HarvestSkipped[0].Source != "rule:broken.yml" ||
 		c.HarvestSkipped[0].Reason != "rule has an empty expr" {
 		t.Errorf("HarvestSkipped = %+v, want the one broken-rule skip", c.HarvestSkipped)

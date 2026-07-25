@@ -1,14 +1,13 @@
-package logql
+package lsyntax
 
 import (
 	"testing"
-
-	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
 // TestNormalizeLokiDottedLabels pins the rewrite contract at the unit
-// layer. The wired sites (Lang.Parse, selectorMatchers, tail) call
-// this before handing the query to the upstream LogQL parser, so the
+// layer. The wired sites (Lang.Parse, selectorMatchers, tail, and the
+// migration parity gate's query classifier) call this before handing
+// the query to the LogQL parser, so the
 // rewrite is the source of truth for whether
 // `{service.name="api"}`-shape queries round-trip through cerberus.
 func TestNormalizeLokiDottedLabels(t *testing.T) {
@@ -359,9 +358,9 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := normalizeLokiDottedLabels(tc.in)
+			got := NormalizeDottedLabels(tc.in)
 			if got != tc.want {
-				t.Errorf("normalizeLokiDottedLabels(%q):\n got: %q\nwant: %q", tc.in, got, tc.want)
+				t.Errorf("NormalizeDottedLabels(%q):\n got: %q\nwant: %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -385,8 +384,8 @@ func TestNormalizeLokiDottedLabels_Idempotent(t *testing.T) {
 		in := in
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
-			first := normalizeLokiDottedLabels(in)
-			second := normalizeLokiDottedLabels(first)
+			first := NormalizeDottedLabels(in)
+			second := NormalizeDottedLabels(first)
 			if first != second {
 				t.Errorf("not idempotent:\n  in:     %q\n  first:  %q\n  second: %q", in, first, second)
 			}
@@ -418,8 +417,8 @@ func TestNormalizeLokiDottedLabels_ParserRoundtrip(t *testing.T) {
 		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
-			rewritten := normalizeLokiDottedLabels(q)
-			if _, err := syntax.ParseExpr(rewritten); err != nil {
+			rewritten := NormalizeDottedLabels(q)
+			if _, err := ParseExpr(rewritten); err != nil {
 				t.Errorf("parser rejected rewritten query:\n  in:        %q\n  rewritten: %q\n  err:       %v", q, rewritten, err)
 			}
 		})
@@ -436,11 +435,11 @@ func TestNormalizeLokiDottedLabels_ParserRoundtrip(t *testing.T) {
 func TestNormalizeLokiDottedLabels_MatcherSemantics(t *testing.T) {
 	t.Parallel()
 
-	expr, err := syntax.ParseExpr(normalizeLokiDottedLabels(`{service.name="api", http.method="GET"}`))
+	expr, err := ParseExpr(NormalizeDottedLabels(`{service.name="api", http.method="GET"}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel, ok := expr.(syntax.LogSelectorExpr)
+	sel, ok := expr.(LogSelectorExpr)
 	if !ok {
 		t.Fatalf("not a log-selector expr: %T", expr)
 	}
