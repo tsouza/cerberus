@@ -310,12 +310,12 @@ func sumUnlabeledUpDownCounter(t *testing.T, reader *sdkmetric.ManualReader, nam
 	return total
 }
 
-// TestTryRouteMemoHit_RecordsSkipReasons pins RouteMemoHitSkippedTotal's
+// TestTryRouteMemoHit_RecordsDeclineReasons pins RouteMemoHitSkippedTotal's
 // `reason` attribute against every real decline branch tryRouteMemoHit
 // itself distinguishes: deriveRouteMemoDispatch's eligibility and
 // freshness gates, Memo.Lookup's verdict and staleness gates, the
 // ClickHouse breaker gate, and Memo.AdmitDispatch's admission-token gate.
-func TestTryRouteMemoHit_RecordsSkipReasons(t *testing.T) {
+func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 	reader := installMemoWiringTelemetryReader(t)
 	plan := memoWiringEligiblePlan()
 
