@@ -18,6 +18,31 @@ func TestPressureTrackerCountsDistinctKeysOnly(t *testing.T) {
 	}
 }
 
+// TestPressureTrackerBoundedUnderDistinctKeyBurst pins the size-cap backstop:
+// a burst of distinct keys arriving faster than they can age out of the
+// window must not grow the tracker without bound. Every record call in this
+// test lands inside the window, so time-based pruning alone cannot cap the
+// resident size — only the pressureTrackerMaxEntries backstop can.
+func TestPressureTrackerBoundedUnderDistinctKeyBurst(t *testing.T) {
+	p := newPressureTracker()
+	base := time.Unix(1_700_000_000, 0)
+
+	for i := 0; i < pressureTrackerMaxEntries*4; i++ {
+		p.record(Key{AnchorLg: i, FanoutLg: i / 256}, base)
+	}
+
+	if got := len(p.lastFailure); got > pressureTrackerMaxEntries {
+		t.Fatalf("resident tracker size = %d after a burst of %d distinct keys, want <= %d (pressureTrackerMaxEntries)",
+			got, pressureTrackerMaxEntries*4, pressureTrackerMaxEntries)
+	}
+	if got, want := p.order.Len(), len(p.lastFailure); got != want {
+		t.Fatalf("order list len = %d, map len = %d — eviction left the two out of sync", got, want)
+	}
+	if got, want := len(p.index), len(p.lastFailure); got != want {
+		t.Fatalf("index map len = %d, lastFailure map len = %d — eviction left the two out of sync", got, want)
+	}
+}
+
 func TestPressureTrackerPrunesStaleEntries(t *testing.T) {
 	p := newPressureTracker()
 	base := time.Unix(1_700_000_000, 0)
