@@ -3,12 +3,14 @@ package engine
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/solver"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // liveEdgeFreshnessMarginSteps is the failure-driven route memo's live-edge
@@ -67,12 +69,44 @@ func (e *Engine) deriveRouteMemoDispatch(plan chplan.Node, seedDecision *solver.
 	meta := solver.RequestMeta{Lang: solver.LangPromQL, Start: start, End: end, Step: step}
 	key := routememo.KeyFor(plan, seedDecision.NAnchors, seedDecision.Fanout, seedDecision.Step)
 	decision, eligible := e.Solver.Eligible(plan, meta)
+	recordRouteMemoPressureActive(e.RouteMemo)
 	return routeMemoDispatch{
 		key:      key,
 		decision: decision,
 		eligible: eligible,
 		fresh:    freshEnoughForRouteMemo(end, step, now),
 	}
+}
+
+// routeMemoPressureState mirrors the failure-driven route memo's
+// UnderPressure() level across calls so recordRouteMemoPressureActive can
+// report a TRANSITION delta (telemetry.RecordRouteMemoPressureTransition)
+// instead of a raw per-call snapshot, which would double-count every
+// decision made while pressure stays at the same level. Package-level, not
+// an Engine field: the underlying Memo is process-wide by contract
+// (routeMemoActive's own "nil means off" gate covers the only Engine that
+// matters per process), so one flag per process mirrors it exactly without
+// widening Engine's own field set.
+var routeMemoPressureState atomic.Bool
+
+// recordRouteMemoPressureActive re-samples m.UnderPressure() at
+// dispatch-decision time (deriveRouteMemoDispatch's own call site, common to
+// both tryRouteMemoHit and retryOnRouteAResourceFailure) and reports ONLY a
+// false->true / true->false transition on RouteMemoPressureActive. Uses
+// context.Background(), mirroring chclient's breaker-state recordTrip: this
+// is process-state telemetry, not a per-request observation, so there is no
+// request context to thread through deriveRouteMemoDispatch's existing
+// signature for it.
+func recordRouteMemoPressureActive(m *routememo.Memo) {
+	now := m.UnderPressure()
+	if routeMemoPressureState.Swap(now) == now {
+		return
+	}
+	delta := int64(-1)
+	if now {
+		delta = 1
+	}
+	telemetry.RecordRouteMemoPressureTransition(context.Background(), delta)
 }
 
 // tryRouteMemoHit consults the route memo BEFORE route A is dispatched: a
@@ -105,21 +139,35 @@ func (e *Engine) tryRouteMemoHit(
 		return nil, nil, nil, routememo.Key{}, false
 	}
 	d := e.deriveRouteMemoDispatch(plan, seedDecision, time.Now())
-	if !d.eligible || !d.fresh {
+	if !d.eligible {
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNotEligible)
+		return nil, nil, nil, routememo.Key{}, false
+	}
+	if !d.fresh {
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNotFresh)
 		return nil, nil, nil, routememo.Key{}, false
 	}
 	state, stale := e.RouteMemo.Lookup(d.key)
-	if state != routememo.PreferB || stale {
+	if state != routememo.PreferB {
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNoPreferB)
+		return nil, nil, nil, routememo.Key{}, false
+	}
+	if stale {
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineStale)
 		return nil, nil, nil, routememo.Key{}, false
 	}
 	if !e.Solver.BreakerClosed() {
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineBreakerOpen)
 		return nil, nil, nil, routememo.Key{}, false
 	}
 	release, ok := e.RouteMemo.AdmitDispatch()
 	if !ok {
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNoDispatchToken)
 		return nil, nil, nil, routememo.Key{}, false
 	}
 	defer release()
+	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
+	defer dispatchDone()
 
 	cur, execInfo, err := e.Solver.Executor.Execute(ctx, langName, d.decision, budget)
 	if err != nil {
@@ -180,25 +228,51 @@ func (e *Engine) retryOnRouteAResourceFailure(
 		// probe, so there is nothing for the atomic record-and-admit method
 		// below to decide.
 		e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
+		if outcome == routememo.OutcomeSuccess {
+			telemetry.RecordRouteABSuccess(ctx, telemetry.RouteChoiceA)
+		}
 		return nil, nil, nil, nil, false
 	}
-	if !d.eligible || !d.fresh || !e.Solver.BreakerClosed() {
+	if !d.eligible {
+		e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNotEligible)
+		return nil, nil, nil, nil, false
+	}
+	if !d.fresh {
+		e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineNotFresh)
+		return nil, nil, nil, nil, false
+	}
+	if !e.Solver.BreakerClosed() {
 		// Still record the failure even when a gate blocks probing — the
 		// corroboration count (or the stale-PreferB re-validation refresh)
 		// must progress regardless of whether THIS failure is admitted, or
 		// a Key that keeps failing while e.g. transiently ineligible would
 		// never accumulate enough evidence to ever probe once it clears.
 		e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
+		telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineBreakerOpen)
 		return nil, nil, nil, nil, false
 	}
+	// Under cluster-wide pressure, ObserveRouteAFailureAndMaybeBeginProbe
+	// itself suppresses BOTH the state write and the probe admission (its
+	// own doc), so sample it here first purely to give the decline an
+	// honest, distinct reason instead of folding it into the generic
+	// probe-not-admitted bucket below.
+	underPressure := e.RouteMemo.UnderPressure()
 	// Record the failure AND decide probe admission atomically — see
 	// ObserveRouteAFailureAndMaybeBeginProbe's doc for why this must not be
 	// two separate calls (a stale PreferB entry's re-validation rescue
 	// depends on the admission check seeing pre-refresh staleness).
 	release, ok := e.RouteMemo.ObserveRouteAFailureAndMaybeBeginProbe(d.key)
 	if !ok {
+		if underPressure {
+			telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineUnderPressure)
+		} else {
+			telemetry.RecordRouteMemoHitSkipped(ctx, telemetry.RouteMemoDeclineProbeNotAdmitted)
+		}
 		return nil, nil, nil, nil, false
 	}
+	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
 
 	cur, execInfo, dispatchErr := e.Solver.Executor.Execute(ctx, langName, d.decision, budget)
 	if dispatchErr != nil {
@@ -208,6 +282,7 @@ func (e *Engine) retryOnRouteAResourceFailure(
 		// therefore no later call site to release it.
 		e.RouteMemo.Observe(d.key, routememo.RouteB, classifyRouteOutcome(routememo.RouteB, dispatchErr))
 		release()
+		dispatchDone()
 		return nil, nil, nil, nil, false
 	}
 
@@ -218,8 +293,13 @@ func (e *Engine) retryOnRouteAResourceFailure(
 		// on its side) must not double-release the admission token or
 		// double-flip the verdict on a second, possibly-different drainErr.
 		once.Do(func() {
-			e.RouteMemo.Observe(key, routememo.RouteB, classifyRouteOutcome(routememo.RouteB, drainErr))
+			drainOutcome := classifyRouteOutcome(routememo.RouteB, drainErr)
+			e.RouteMemo.Observe(key, routememo.RouteB, drainOutcome)
+			if drainOutcome == routememo.OutcomeSuccess {
+				telemetry.RecordRouteABSuccess(ctx, telemetry.RouteChoiceB)
+			}
 			release()
+			dispatchDone()
 		})
 	}
 	return cur, execInfo, d.decision, observeFn, true
