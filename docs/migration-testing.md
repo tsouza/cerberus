@@ -239,9 +239,10 @@ performed, by the lane.
 
 Scenario ids track the story order. The **Tier(s)** column lists every tier a
 scenario's PASS assertion needs; a split-tier scenario (MIG-10, MIG-14, MIG-26)
-declares two, and the manifest schema in [section 6.1](#61-harness-shape)
-carries a tier **list**, not a single tier. A scenario is never downgraded to a
-cheaper tier to make it pass ([section 6.2](#62-honesty-guardrails)). Every CLI
+declares two, and carries one tagged `Scenario` per tier
+([section 6.1](#61-harness-shape)) rather than a single tier. A scenario is
+never downgraded to a cheaper tier to make it pass
+([section 6.3](#63-honesty-guardrails)). Every CLI
 cell uses only the verified flags from [section 2](#2-the-cerberus-migrate-cli-surface-this-lane-drives).
 
 ### ASSESS scenarios
@@ -326,33 +327,49 @@ test/e2e/migration          # created by the Phase-1/2 build PRs
     tier0-offline/           # runner over fixtures; no Docker
     tier1-dual/              # docker-compose.dual.yml + prometheus.yml + otel-collector-config.yaml + seeders
     tier2-ruler/             # docker-compose.ruler.yml (extends dual): shadow ruler + dead-end alertmanager
-  scenarios/                 # MIG-01..MIG-26, one declarative file each
+  features/                  # MIG-01..MIG-26, one Gherkin .feature file each
+  steps/                     # godog step definitions — the assertion library
   lib/                       # assertion + artifact-collection helpers (JSON diff, first-blocker extract)
-  scenario-manifest.mjs      # single source of truth: id -> { tiers: [...], archetypes, commands, assertions }
+  tolerances/                # declared epsilons + their derivations (see 6.2)
+  cmd/
+    scenarios/               # enumerator: features -> {id, tiers, archetypes} JSON
 ```
 
-The manifest keys each story to a **tier list**, so a split-tier scenario
-(MIG-10, MIG-14, MIG-26) declares `tiers: [0, 1]` and maps to two jobs. Its
-schema is `id -> { tiers: [...], archetypes: [...], commands: [...],
-assertions: [...] }`.
+Scenarios are **Gherkin feature files driven by `godog`** (the Cucumber
+implementation for Go, MIT, test-only — it is never reachable from
+`cmd/cerberus`, so the `agpl-clean` gate is unaffected). Go is the host language
+because the assertions read the emitted artifacts as *typed structs* —
+`internal/migrate`'s corpus / classify / rulegraph shapes and
+`internal/migrateverify.Report` — rather than re-declaring those schemas in a
+second language where they would drift.
+
+The feature files ARE the manifest: there is no separate scenario registry to
+keep in step with them. Metadata rides on tags — `@MIG-16` binds the story,
+`@tier0`/`@tier1`/`@tier2` the tier(s), `@archetype:<name>` the archetypes. A
+split-tier story (MIG-10, MIG-14, MIG-26) carries two `Scenario`s, one per tier
+tag, instead of a tier list. `cmd/scenarios` walks the features with godog's own
+parser and emits `{id, tiers, archetypes}` JSON, so exactly one Gherkin parser
+exists in the tree.
 
 Non-trivial step logic lives in `.github/scripts/migration-e2e.mjs` (per the
 CLAUDE.md "step logic in `.mjs`, not inline YAML" rule), mirroring
-`compose-smoke-matrix.mjs`:
+`compose-smoke-matrix.mjs`. It consumes the enumerator's JSON rather than
+parsing Gherkin itself:
 
 - `MODE=verify` asserts every one of the 26 stories in
-  [section 4](#4-the-26-migration-user-stories) has a scenario in the manifest
-  and that no manifest entry references an unlisted story; it emits `::error::`
-  - exit 1 on any gap, extra, or stale entry. The 26-story list is the durable
-  anchor it diffs against, so the ratchet detects a *wrong* or *missing* story,
-  not merely a wrong count.
+  [section 4](#4-the-26-migration-user-stories) has exactly one feature and that
+  no feature references an unlisted story, tier, or archetype; it emits
+  `::error::` + exit 1 on any gap, extra, or stale entry. The 26-story list is
+  the durable anchor it diffs against, so the ratchet detects a *wrong* or
+  *missing* story, not merely a wrong count.
 - `MODE=emit` writes the `strategy.matrix` JSON keyed by archetype (Tier-1/2)
   or a single Tier-0 entry, expanding split-tier stories into one matrix entry
   per declared tier.
-- `MODE=run` drives one scenario and reports.
+- `MODE=run` drives one scenario — `godog` filtered to that story's tag — and
+  reports.
 
 A `migration-e2e.test.mjs` unit guard runs the coverage assertion at PR-cheap
-cost so a manifest drift is caught before the heavy lane runs.
+cost so a feature/story drift is caught before the heavy lane runs.
 
 Scheduled workflow skeleton (`migration-e2e.yml`):
 
@@ -448,7 +465,82 @@ for `verify` that is the first-diff point plus the copy-pasteable
 `cerberus migrate verify …` repro the CLI already emits; for `gate` it is the blocking
 stage; for offline scenarios it is the diffed golden line.
 
-### 6.2. Honesty guardrails
+### 6.2. Scenario language — what a step may assert
+
+The 26 anchors are already written in operator voice ("As an operator I …"), and
+this document doubles as the migration runbook. A feature file is therefore both
+the executable scenario and the runbook step-list an operator reads, which is
+what earns Gherkin its place here.
+
+A feature carries the story verbatim as its narrative, so the story text and the
+scenario cannot drift apart:
+
+```gherkin
+@MIG-16 @tier1 @archetype:kube-prometheus-stack @archetype:victoriametrics
+Feature: MIG-16 — differential query parity over the full corpus
+  As an operator I run the differential query-parity harness over my full
+  corpus until the diverge count reaches zero.
+
+  Scenario: every corpus query agrees between the reference and cerberus
+    Given the archetype is seeded into both backends over a 1h dual-write overlap
+    And a harvested corpus of at least 50 queries
+    When I run `cerberus migrate verify` over [now-1h, now] at step 60s
+    Then the report replayed more than 0 queries
+    And both backends returned at least one series
+    And the diverge count is exactly 0
+    And the metadata endpoint diff is empty
+```
+
+#### The assertion taxonomy
+
+A `Then` is a **predicate over typed artifact fields** — equality is only its
+degenerate case. Several PASS assertions in
+[section 6](#6-story--scenario-map) are inherently relational (MIG-14 and MIG-26
+compare a TTL against a lookback, MIG-02 ranks by realized cardinality, MIG-18
+quantizes timestamps). There are exactly three predicate kinds, and each is
+guarded differently because each carries a different risk of becoming a
+tolerance in disguise:
+
+1. **Exact** — `== 0`, `== expected`. The assertion form of comparison mode 1 in
+   [section 5](#5-comparison-modes--the-honesty-contract). A scenario tagged
+   `@exact-parity` may not reference a tolerance at all; the lint rejects one.
+2. **Relational over two measured quantities** — `ttl >= max_lookback`,
+   `ch_retention >= compliance_window`. Both operands come from artifacts, so
+   there is no constant to tune and nothing to corrupt. This kind needs no extra
+   machinery.
+3. **Bounded by a declared constant** — `|a − b| <= ε`. The assertion form of
+   comparison modes 2 and 3, and the only kind that can decay into a per-case
+   allow-list. It is confined by `tolerances/` (below).
+
+#### Where the arithmetic lives
+
+The *relation* is named in prose; the *arithmetic* is Go. Feature files carry no
+operators — `Then every table's TTL covers its longest corpus lookback` is a
+step function computing the comparison over typed artifacts. This keeps the
+runbook readable for its operator audience and puts the math somewhere
+unit-testable. The one place numbers are legitimately feature data is a
+`Scenario Outline` `Examples` table, where the parameter is the thing varying.
+
+A step may not assert "the command exited 0" or "a file was produced" as its
+only claim — that is the existence check
+[section 6.3](#63-honesty-guardrails) forbids, and it is the failure mode
+Gherkin invites most.
+
+#### The tolerances registry
+
+Every ε of kind 3 lives in `tolerances/`, never as an inline number in a feature
+file, and carries a **derivation** — MIG-20's band is "stated before the run
+from the aggregation math", and the registry is where that statement becomes
+structural. An empty derivation fails the lint.
+
+The registry is **shrink-only**: an ε may be lowered freely, but raising one
+fails CI without an explicit reviewed override. That is section 6.3's "no
+per-case tolerance inflation" made mechanical rather than aspirational. Each run
+reports the observed headroom (`ε_observed / ε_declared`) alongside MIG-17's
+per-query max/median divergence, so the ratchet has the evidence to tighten
+instead of ossifying at whatever number was first written down.
+
+### 6.3. Honesty guardrails
 
 - **Real assertions from acceptance criteria — never existence checks.** A
   scenario asserts the story's PASS bullet (a landed CH *type*, a diverge count
@@ -470,8 +562,17 @@ stage; for offline scenarios it is the diffed golden line.
 - **No `t.Skip` / silent no-run.** A capability genuinely unavailable on the CI
   substrate is recorded **not-applicable with `::notice::`** and covered by an
   alternate scenario — the same posture as the Layer-13 `ch-network-partition`
-  gate — never a vacuous pass. The story ↔ scenario coverage manifest is a
-  **raise-only ratchet**.
+  gate — never a vacuous pass. The story ↔ scenario coverage ratchet is
+  **raise-only**.
+- **No pending step.** A Cucumber runner's default is to report an
+  unimplemented step as *pending* and carry on, which is `t.Skip` wearing a hat.
+  `godog` runs under `--strict`, so undefined **and** pending steps both fail
+  the run. The `forbid-skip` discipline extends to `.feature` files: `@wip` /
+  `@skip` / `@manual` tags are banned, and a `Scenario` with no `Then` fails —
+  a scenario that asserts nothing is the same vacuous pass by another route.
+- **No inline tolerance.** A numeric epsilon may not appear in feature text; it
+  lives in `tolerances/` with a derivation, under the shrink-only ratchet
+  ([section 6.2](#62-scenario-language--what-a-step-may-assert)).
 - **Read-only where the CLI is read-only.** Scenarios never auto-provision
   schema (MIG-10 keeps DDL application a deliberate human step) and never mutate
   a real Grafana; the synthetic Grafana in the stack is the only thing driven.
@@ -501,13 +602,21 @@ dual-sourced), and `expected/` (golden offline assertions).
 Cheapest-first, so value lands before the heavy infra, and each phase's
 assertions become the trust anchor the next depends on.
 
-**Phase 1 — Tier-0 offline (build first).** Scenario manifest + coverage
-ratchet + `migration-e2e.mjs` + the `migration-e2e.yml` skeleton running Tier-0
-only. Scenarios MIG-01, MIG-03, MIG-04, MIG-05, MIG-10 (render half), MIG-14
-(lookback compute), MIG-26 (gate compute), plus the `gate` fold. Lands the eight
-archetype `rules/` + `dashboards/` + `expected/` fixtures (the seed telemetry
-generators come in Phase 2). Dependencies: none beyond the merged CLI — no
-Docker, seconds to run, so it ships and starts catching regressions immediately.
+**Phase 1 — Tier-0 offline (build first).** The `godog` runner + the step
+library + `cmd/scenarios` + coverage ratchet + `migration-e2e.mjs` + the
+`migration-e2e.yml` skeleton running Tier-0 only. Scenarios MIG-01, MIG-03,
+MIG-04, MIG-05, MIG-10 (render half), MIG-14 (lookback compute), MIG-26 (gate
+compute), plus the `gate` fold. Lands the eight archetype `rules/` +
+`dashboards/` + `expected/` fixtures (the seed telemetry generators come in
+Phase 2). Dependencies: none beyond the merged CLI — no Docker, seconds to run,
+so it ships and starts catching regressions immediately.
+
+These seven scenarios are entirely predicate kinds 1 and 2, so Phase 1 also
+fixes the scenario language cheaply: it proves the tag vocabulary, the
+strict-mode + `.feature` lint discipline, and the "relation named in prose,
+arithmetic in Go" split against real scenarios before the heavier tiers commit
+to them. `tolerances/` stays empty until Phase 2 — the first ε is derived from a
+measured margin on a live backend, never guessed ahead of one.
 
 **Phase 2 — Tier-1 dual-backend.** `docker-compose.dual.yml` (Prometheus + OTel
 collector + ClickHouse + cerberus) + collector config + the per-archetype
