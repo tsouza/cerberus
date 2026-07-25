@@ -32,9 +32,19 @@ func writeArtifact(t *testing.T, name string, wj func(io.Writer) error) string {
 	return p
 }
 
-// cleanVerify is a parity report with no divergence and no error.
+// cleanVerify is a parity report with no divergence and no error. It carries a
+// non-zero ComparedSeries and a configured head lane because those are what make
+// the run EVIDENCE: a report whose comparator diffed zero series is blocked by the
+// gate however many matches it claims, so a fixture standing in for "a healthy
+// run" has to look like one.
 func cleanVerify(t *testing.T) string {
-	rep := migrateverify.Report{Summary: migrateverify.Summary{Total: 3, Match: 3}}
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 7},
+		Heads: []migrateverify.HeadSummary{{
+			Head: migrateverify.HeadProm, Configured: true,
+			Summary: migrateverify.Summary{Total: 3, Match: 3, ComparedSeries: 7},
+		}},
+	}
 	return writeArtifact(t, "verify.json", rep.WriteJSON)
 }
 
@@ -392,11 +402,16 @@ func TestDecisionWriteJSONRoundTrips(t *testing.T) {
 
 func TestEvaluateWarnsOnVerifyUnsupportedButPasses(t *testing.T) {
 	// A query that emitted SQL offline but returned no comparable matrix live is
-	// counted only in Summary.Unsupported. Report.Failed() does not block on it,
-	// but the gate must surface it: it is a query UNVERIFIED against the backend,
-	// not a clean pass.
+	// counted only in Summary.Unsupported. It does not block ALONGSIDE queries the
+	// comparator actually diffed, but the gate must surface it: it is a query
+	// UNVERIFIED against the backend, not a clean pass. (A lane made up only of
+	// them compared nothing and DOES block — see TestEvalVerify_UnsupportedOnlyLaneStillBlocks.)
 	rep := migrateverify.Report{
-		Summary: migrateverify.Summary{Total: 3, Match: 2, Unsupported: 1, HarvestSkipped: 2, OutOfScope: 1},
+		Summary: migrateverify.Summary{Total: 3, Match: 2, Unsupported: 1, ComparedSeries: 4, HarvestSkipped: 2, OutOfScope: 1},
+		Heads: []migrateverify.HeadSummary{{
+			Head: migrateverify.HeadProm, Configured: true,
+			Summary: migrateverify.Summary{Total: 3, Match: 2, Unsupported: 1, ComparedSeries: 4, OutOfScope: 1},
+		}},
 	}
 	in := migrategate.Inputs{
 		Verify:    writeArtifact(t, "verify.json", rep.WriteJSON),
@@ -591,7 +606,7 @@ func TestEvaluateBlocksOnMissingVersion(t *testing.T) {
 // cannot slip a zero-filled struct past the gate.
 func TestEvaluateBlocksOnDriftedUnknownField(t *testing.T) {
 	verify := rawArtifact(t, "verify.json",
-		`{"schema_version":1,"summary":{"total":3,"match":3},"bogus_new_field":42}`)
+		`{"schema_version":2,"summary":{"total":3,"match":3},"bogus_new_field":42}`)
 	in := migrategate.Inputs{Verify: verify, Classify: cleanClassify(t), RuleGraph: cleanRuleGraph(t)}
 	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
 		t.Fatal("a drifted verify artifact with an unknown field must hard error")

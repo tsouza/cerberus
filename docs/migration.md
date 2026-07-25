@@ -53,19 +53,41 @@ You need three things in place:
 `migrate` is a command group of the single `cerberus` binary, with eight
 subcommands.
 
-| Command                      | What it does                                                             | Key flags                                                                                                                                        | Network             |
-| ---------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- |
-| `cerberus migrate schema`    | Print the `CREATE` statements cerberus expects, from `CERBERUS_*` env    | *(no flags; reads `CERBERUS_*`)*                                                                                                                 | offline             |
-| `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                               | offline             |
-| `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL       | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                                 | offline             |
-| `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                     | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                       | offline             |
-| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized  | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline             |
-| `cerberus migrate verify`    | Replay the corpus against **both** backends and diff (parity gate)       | `--corpus`, `--ref`, `--cerberus`, `--ref-token`, `--cerberus-token`, `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out` | live (two backends) |
-| `cerberus migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk     | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)  |
-| `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                    | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline             |
+| Command                      | What it does                                                                   | Key flags                                                                                                                                        | Network                                 |
+| ---------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `cerberus migrate schema`    | Print the `CREATE` statements cerberus expects, from `CERBERUS_*` env          | *(no flags; reads `CERBERUS_*`)*                                                                                                                 | offline                                 |
+| `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files       | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                               | offline                                 |
+| `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL             | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                                 | offline                                 |
+| `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                       | offline                                 |
+| `cerberus migrate rulegraph` | Map recording-rule outputs to the consumers that must stay materialized        | `--rules`, `--corpus`, `--json`, `--out`                                                                                                         | offline                                 |
+| `cerberus migrate verify`    | Replay the corpus against each head's reference backend and diff (parity gate) | `--corpus`, per-head `--ref*`/`--cerberus*` pairs (see below), `--start`, `--end`, `--step`, `--tolerance`, `--json`, `--report`, `--out`        | live (two backends per configured head) |
+| `cerberus migrate inventory` | Probe a **live** Prometheus for the cardinality that drives OOM risk           | `--source`, `--top`, `--window`, `--json`, `--out`                                                                                               | live (one backend)                      |
+| `cerberus migrate gate`      | Fold the artifacts into one cutover go/no-go decision                          | `--verify`, `--classify`, `--rulegraph`, `--inventory`, `--high-card-series`, `--high-card-label-values`, `--json`, `--out`                      | offline                                 |
 
 The legacy `migrate --schema` root flag is now the `schema` subcommand, and the
 legacy `migrate --rules` root shorthand folded into `explain --rules`.
+
+`verify` takes one **backend pair per head lane** — a reference backend and the
+cerberus endpoint that replaces it. You configure only the heads your corpus
+actually contains:
+
+| Head    | Reference       | Cerberus              | Bearer tokens                                 | Multi-tenant reference |
+| ------- | --------------- | --------------------- | --------------------------------------------- | ---------------------- |
+| `prom`  | `--ref`         | `--cerberus`          | `--ref-token`, `--cerberus-token`             | *(n/a)*                |
+| `loki`  | `--ref-loki`    | `--cerberus-loki`     | `--ref-loki-token`, `--cerberus-loki-token`   | `--ref-loki-org-id`    |
+| `tempo` | `--ref-tempo`   | `--cerberus-tempo`    | `--ref-tempo-token`, `--cerberus-tempo-token` | `--ref-tempo-org-id`   |
+
+At least one **complete** pair is required; supplying one side of a pair is a
+usage error, and so is supplying a lane's `-token` / `-org-id` flags with no URL
+pair at all — never a silently skipped head or a silently discarded credential.
+The `--*-org-id` flags send `X-Scope-OrgID` to the **reference** backend only — a
+multi-tenant Loki or Tempo rejects an unscoped read, while cerberus reads no
+tenant header at all, so there is deliberately no cerberus-side equivalent. The
+tenant id is a *routing* parameter, not a credential, so it is recorded in the
+`--report` diagnostic and reproduced in the repro command; the bearer tokens are
+credentials and appear in no artifact. `--tolerance` is a single value
+shared by every lane: the gate proves the same number on all three heads under
+one definition of equality.
 
 The offline preview commands (`explain`, `classify`) load `config.FromEnv()`
 so the preview runs with the **same per-query sample budget** the production
@@ -101,11 +123,11 @@ before cutover.
 ## The migration lifecycle
 
 ```text
-ASSESS            VALIDATE      VERIFY         DECIDE      CUT OVER       DECOMMISSION
-harvest           --schema      verify         gate        (manual:       (manual:
- → inventory      (render +     (diff both      (go/        flip the       after the
- → classify        review)      backends,       no-go)      datasource     retention
- → rulegraph                    diverge→zero)                URL)          runway)
+ASSESS            VALIDATE      VERIFY          DECIDE      CUT OVER       DECOMMISSION
+harvest           --schema      verify          gate        (manual:       (manual:
+ → inventory      (render +     (diff each      (go/        flip the       after the
+ → classify        review)      head's lane,    no-go)      datasource     retention
+ → rulegraph                    diverge→zero)               URL)           runway)
 ```
 
 The offline stages (`ASSESS`, `VALIDATE`) you can run today, before cerberus is
@@ -156,23 +178,49 @@ cerberus migrate schema | clickhouse-client -h clickhouse.internal --multiquery
 Applying the DDL is a **deliberate, separate step you run yourself** — the tool
 only renders it.
 
-### Verify: replay against both backends
+### Verify: replay against each head's reference backend
 
 This is the parity gate. Over the dual-write window, `verify` replays every
-corpus query against reference Prometheus **and** cerberus over one
-`query_range` window and diffs the results series-by-series. Each replayed
-PromQL query lands as `match`, `diverge`, `unsupported`, or `error`; two further
-buckets record inputs that were **not** examined — `out_of_scope` (a
-non-PromQL entry with no Prometheus baseline) and `harvest_skipped` (a corpus
-entry that never became a replayable query). A green run means the replayed
-queries matched, not that every input was checked — read those two buckets too.
-On divergence it shows the first differing point (series, timestamp, reference
-value, cerberus value).
+corpus query against the reference backend for **its own head** — PromQL against
+reference Prometheus, LogQL metric queries against reference Loki, TraceQL
+metrics queries against reference Tempo — **and** against cerberus over one
+`query_range` window, then diffs the results series-by-series. All three are
+matrix-shaped, so one comparator judges all three under one tolerance.
 
-`verify` exits **non-zero (code 2)** if a single query diverges or errors —
-divergence is **never** allow-listed. Run it, fix each divergence at the source,
-re-run. **You are done when the diverge count reaches zero.** That number is
-your permission to flip traffic — not a leap of faith.
+Each replayed query lands as `match`, `diverge`, `unsupported`, or `error`, and
+the report carries a **per-head roll-up** alongside the aggregate so a healthy
+lane can never mask a lane that compared nothing. Every lane you configured gets
+a row, including one whose corpus entries all landed out of scope — a configured
+lane is never silently absent from the table. Each row also carries a
+`compared_series` count, which is the only number that is *evidence*: two empty
+matrices agree, so a lane can record nothing but matches while the comparator
+diffed nothing at all. Three further buckets record inputs that were **not**
+examined:
+
+- `unconfigured` — a replayable query whose head lane had no backend pair. This
+  is a property of your invocation, not of the query, and it **blocks**: the gate
+  cannot claim parity for a query it never ran. Supply that head's pair, or
+  harvest a narrower corpus.
+- `out_of_scope` — a query whose *shape* has no metric matrix to diff at all: a
+  LogQL log-stream selector, a TraceQL trace search, a `compare()`, an expression
+  the parser rejects. Each entry names its `kind` and the specific `reason` the
+  gate did not judge it.
+- `harvest_skipped` — a corpus entry that never became a replayable query.
+
+A green run means the replayed queries matched, not that every input was checked
+— read those buckets too. On divergence the report shows the first differing
+point (series, timestamp, reference value, cerberus value) and the lane it
+happened on.
+
+`verify` exits **non-zero (code 2)** if a single query diverges or errors, if a
+head with replayable queries had no backend pair to judge them, if the run
+replayed nothing at all, or if any lane replayed queries and diffed zero series.
+Divergence is **never** allow-listed, and no absence of evidence is ever counted
+as passing — `verify`'s own banner and exit code apply exactly the rules
+`migrate gate` applies to the same report, so the two can never disagree. Run it,
+fix each divergence at the source, re-run. **You are done when the diverge count
+reaches zero, with every head configured and every lane comparing series.** That
+is your permission to flip traffic — not a leap of faith.
 
 For a failing run, add `--report diagnostics.json` to capture the full
 machine-readable diagnostics (with a copy-pasteable repro command; backend URLs
@@ -193,7 +241,14 @@ them into **one** PASS/FAIL verdict with a per-stage checklist. It **refuses**
 (exits **code 3**), it never merely warns, on any blocking input:
 
 - **verify** — any divergence or error blocks; a parity run that replayed **zero
-  queries** also blocks (an empty corpus proves nothing).
+  queries** also blocks (an empty or all-out-of-scope corpus proves nothing); a
+  **head lane that diffed zero series** blocks even when another lane is green
+  (40 matched PromQL queries must not mask a Loki lane that judged none of its
+  12, and a lane whose every response was an empty matrix "matched" without
+  comparing anything); and any **unconfigured** replayable query blocks. A lane
+  you configured that had no replayable query at all is reported as a caveat
+  naming that head — it does not block, because those entries are honestly out of
+  scope, but it is never silently omitted.
 - **classify** — any unsupported query blocks (risky ones WARN); classifying
   **zero queries** also blocks (an empty corpus proves no support coverage).
 - **rulegraph** — any *consumed* recorded series blocks (it must stay
@@ -254,11 +309,17 @@ cerberus migrate inventory \
 cerberus migrate schema | clickhouse-client -h clickhouse.internal --multiquery
 
 # ── VERIFY ────────────────────────────────────────────────────────────
-# Replay the corpus against BOTH backends over one window. Exits 2 on any diverge.
+# Replay each query against its head's reference backend and cerberus over one
+# window. Configure a pair per head your corpus contains. Exits 2 on any diverge
+# — or on a head whose replayable queries had no pair to judge them.
 cerberus migrate verify \
   --corpus corpus.json \
   --ref http://prometheus.internal:9090 \
   --cerberus http://cerberus.internal:8080 \
+  --ref-loki http://loki.internal:3100 \
+  --cerberus-loki http://cerberus.internal:8080 \
+  --ref-tempo http://tempo.internal:3200 \
+  --cerberus-tempo http://cerberus.internal:8080 \
   --start -1h --end now --step 60s \
   --json --out verify.json \
   --report verify-diagnostics.json
@@ -290,9 +351,16 @@ pretends to know these:
   Prometheus. Only `verify` proves parity.
 - **Only `verify` earns the flip.** The diverge-count-zero result is the
   permission to cut over. Nothing upstream of it is.
+- **A green gate must rest on evidence, not on silence.** A match over two empty
+  matrices, a lane whose every query was unsupported, and a corpus whose every
+  entry is out of scope all look like "no divergences" — and all three block.
+  Both `verify` and `gate` key that rule on the number of series actually diffed.
 - **The gates refuse; they don't warn.** `verify` exits non-zero on any
-  divergence (never allow-listed); `gate` exits non-zero on any blocking stage,
-  an empty corpus, or a missing required artifact. There is no escape hatch.
+  divergence (never allow-listed), on any replayable query whose head lane it was
+  not given the backends to judge, and on any lane that compared nothing; `gate`
+  exits non-zero on any blocking stage, an empty corpus, a lane that compared
+  nothing, or a missing required artifact. There is no escape hatch and no per-head opt-out — the honest way to
+  narrow the gate is to harvest a narrower corpus, which is visible and diffable.
 - **Experimental ClickHouse paths may deviate.** Verify against the exact
   configuration you will run in production (see the note under *Verify*).
 
@@ -311,8 +379,12 @@ and the tier/build plan live in
 
 ## Scope (v1)
 
-- **PromQL only.** LogQL and TraceQL panels are counted and dropped, not
-  migrated.
+- **Metric lanes on all three heads.** `verify` judges PromQL, LogQL metric
+  queries, and TraceQL metrics queries — every shape that returns a matrix. A
+  LogQL **log-stream** selector and a TraceQL **trace search** return log lines
+  and trace summaries, not a matrix, so no metric-lane baseline is definable for
+  them: they are counted and reported `out_of_scope` with the reason, never
+  silently dropped and never guessed at.
 - **Query-result parity, not alert-firing parity.** `verify` diffs query
   results; it does not re-implement `for:` durations or Alertmanager routing.
 - **File-based harvest.** Harvest inputs are rule YAML and exported dashboard

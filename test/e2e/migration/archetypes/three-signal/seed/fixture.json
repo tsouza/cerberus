@@ -1,0 +1,12 @@
+{
+  "services": ["checkout", "payments", "search"],
+  "http_status_codes": ["200", "500"],
+  "log_formats": ["json", "logfmt", "unstructured"],
+  "log_job": "cerberus-migration",
+  "gauge_metric": "cerberus_migration_queue_depth",
+  "counter_metric": "cerberus_migration_requests_total",
+  "histogram_metric": "cerberus_migration_request_duration_seconds",
+  "histogram_bounds": [0.1, 0.5, 1.0],
+  "traces_per_service": 20,
+  "spans_per_trace": [3, 4, 5]
+}

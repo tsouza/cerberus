@@ -70,7 +70,7 @@ func TestVerify_InfinityMatchEndToEnd(t *testing.T) {
 			points: []pointSpec{{1_700_000_000, "+Inf"}, {1_700_000_060, "+Inf"}},
 		}),
 	}
-	res := runVerifyOne(t, body, body, Query{Expr: "1/0", Source: "rule:inf"})
+	res := runVerifyOne(t, body, body, promQuery("1/0", "rule:inf"))
 	if res.Verdict != VerdictMatch {
 		t.Fatalf("verdict = %q, want match (first-diff: %+v)", res.Verdict, res.FirstDiff)
 	}
@@ -103,7 +103,7 @@ func TestVerify_Cerberus5xxIsBlockingError(t *testing.T) {
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(statusServer(t, http.StatusServiceUnavailable, `{"status":"error"}`).URL)
 
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "up", Source: "rule:up"}}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("up", "rule:up")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error for a cerberus 503 (detail: %s)", res.Verdict, res.Detail)
@@ -127,7 +127,7 @@ func TestVerify_Cerberus4xxStaysUnsupported(t *testing.T) {
 		"up": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
 	}
 	// matrixServer answers a 400 (non-matrix) for any query it has no entry for.
-	res := runVerifyOne(t, refBody, map[string]string{}, Query{Expr: "up", Source: "rule:up"})
+	res := runVerifyOne(t, refBody, map[string]string{}, promQuery("up", "rule:up"))
 	if res.Verdict != VerdictUnsupported {
 		t.Fatalf("verdict = %q, want unsupported for a cerberus 400", res.Verdict)
 	}
@@ -145,7 +145,7 @@ func TestVerify_RecordsTolerance(t *testing.T) {
 	cer := NewHTTPBackend(matrixServer(t, body).URL)
 	p := testParams()
 	p.Tolerance = tol
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "up", Source: "s"}}}, ref, cer, p)
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("up", "s")}}, promLanes(ref, cer), p)
 	if rep.Params.Tolerance != tol {
 		t.Errorf("Report.Params.Tolerance = %v, want %v", rep.Params.Tolerance, tol)
 	}

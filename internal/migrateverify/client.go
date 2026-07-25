@@ -17,10 +17,6 @@ import (
 	"github.com/tsouza/cerberus/internal/migrate"
 )
 
-// queryRangePath is the Prometheus HTTP API range-query endpoint, appended to
-// each backend's base URL.
-const queryRangePath = "/api/v1/query_range"
-
 // defaultHTTPTimeout bounds a single backend request so one hung query can't
 // stall the whole gate.
 const defaultHTTPTimeout = 30 * time.Second
@@ -40,7 +36,11 @@ type Params struct {
 	Tolerance float64
 }
 
-// HTTPBackend issues range queries against a Prometheus-compatible HTTP API.
+// HTTPBackend issues range queries against one head's HTTP API. The head-specific
+// wire contract — endpoint path, query-string encoding, response decoding — is
+// supplied by a Dialect; everything security-relevant (auth headers, credential
+// redaction, the response-size cap, the non-200 rule) is written once here and
+// therefore holds identically for every head.
 type HTTPBackend struct {
 	BaseURL string
 	HTTP    *http.Client
@@ -48,10 +48,30 @@ type HTTPBackend struct {
 	// credential-clean alternative to embedding user:pass@ in BaseURL (which
 	// would leak into repro lines and report artifacts).
 	bearerToken string
+	// orgID, when set, is sent as X-Scope-OrgID — the tenant header a
+	// multi-tenant reference Loki / Tempo requires.
+	orgID string
+	// dialect is the head wire contract this backend speaks.
+	dialect Dialect
 }
 
 // BackendOption configures an HTTPBackend at construction.
 type BackendOption func(*HTTPBackend)
+
+// WithDialect makes the backend speak a head's wire contract (endpoint path,
+// query-string encoding, response decoding). Without it a backend speaks the
+// Prometheus dialect.
+func WithDialect(d Dialect) BackendOption {
+	return func(b *HTTPBackend) { b.dialect = d }
+}
+
+// WithOrgID sends an "X-Scope-OrgID: <id>" header on every request, so a
+// reference Loki / Tempo running with auth_enabled answers instead of 401ing the
+// whole lane into VerdictError. Like WithBearerToken it travels in a header, never
+// in the URL, and is never recorded in any artifact. An empty id is a no-op.
+func WithOrgID(id string) BackendOption {
+	return func(b *HTTPBackend) { b.orgID = id }
+}
 
 // WithBearerToken sends an "Authorization: Bearer <token>" header on every
 // request. It is the clean auth path: credentials travel in a header, never in
@@ -62,11 +82,13 @@ func WithBearerToken(token string) BackendOption {
 	return func(b *HTTPBackend) { b.bearerToken = token }
 }
 
-// NewHTTPBackend builds a backend for baseURL with a bounded default client.
+// NewHTTPBackend builds a backend for baseURL with a bounded default client,
+// speaking the Prometheus dialect unless WithDialect says otherwise.
 func NewHTTPBackend(baseURL string, opts ...BackendOption) *HTTPBackend {
 	b := &HTTPBackend{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTP:    &http.Client{Timeout: defaultHTTPTimeout},
+		dialect: promDialect{},
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -128,17 +150,12 @@ type promRawSeries struct {
 	Values [][2]json.RawMessage `json:"values"`
 }
 
-// QueryRange issues GET {base}/api/v1/query_range with the shared params and
-// parses the response. An HTTP non-200 is returned as RangeResult{Status: code}
+// QueryRange issues the dialect's range request with the shared params and
+// decodes the response. An HTTP non-200 is returned as RangeResult{Status: code}
 // (no series) rather than an error, so the caller can classify it as unsupported
 // vs error; only transport and decode failures are returned as err.
 func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (RangeResult, error) {
-	q := url.Values{}
-	q.Set("query", expr)
-	q.Set("start", formatTimestamp(p.Start))
-	q.Set("end", formatTimestamp(p.End))
-	q.Set("step", formatStep(p.Step))
-	reqURL := b.BaseURL + queryRangePath + "?" + q.Encode()
+	reqURL := b.BaseURL + b.dialect.Path() + "?" + b.dialect.Encode(expr, p).Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -146,6 +163,9 @@ func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (Ra
 	}
 	if b.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+b.bearerToken)
+	}
+	if b.orgID != "" {
+		req.Header.Set(scopeOrgIDHeader, b.orgID)
 	}
 	resp, err := b.HTTP.Do(req)
 	if err != nil {
@@ -160,7 +180,12 @@ func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (Ra
 	if resp.StatusCode != http.StatusOK {
 		return RangeResult{Status: resp.StatusCode}, nil
 	}
-	return parseRangeBody(resp.StatusCode, body)
+	res, err := b.dialect.Decode(body)
+	if err != nil {
+		return RangeResult{}, err
+	}
+	res.Status = resp.StatusCode
+	return res, nil
 }
 
 // readCappedBody reads r fully but no further than limit bytes, erroring rather
@@ -178,15 +203,21 @@ func readCappedBody(r io.Reader, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-// parseRangeBody decodes a 200 range body into a RangeResult. A body that is not
-// valid JSON is a decode error; a valid body with a non-matrix resultType is
-// carried through (Status + ResultType) for the caller to classify.
-func parseRangeBody(status int, body []byte) (RangeResult, error) {
+// decodePromMatrix decodes a 200 range body carrying the standard Prometheus
+// matrix envelope into a RangeResult. A body that is not valid JSON is a decode
+// error; a valid body with a non-matrix resultType is carried through
+// (ResultType) for the caller to classify. Status is stamped by the caller.
+//
+// The Loki lane shares this decoder rather than duplicating it: Loki's `matrix`
+// result is literally []prometheus/common/model.SampleStream, the same Go type
+// Prometheus marshals, so the envelope is byte-compatible. Loki's extra
+// stats / warnings / encodingFlags fields are simply not read.
+func decodePromMatrix(body []byte) (RangeResult, error) {
 	var raw promRangeResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return RangeResult{}, fmt.Errorf("decode range response: %w", err)
 	}
-	res := RangeResult{Status: status, ResultType: raw.Data.ResultType}
+	res := RangeResult{ResultType: raw.Data.ResultType}
 	if raw.Data.ResultType != resultTypeMatrix {
 		return res, nil
 	}
@@ -316,13 +347,18 @@ func validateTolerance(tol float64) error {
 	return nil
 }
 
-// LoadCorpus reads a corpus.json produced by `migrate harvest`, splits it into
-// the PromQL queries to replay and the non-PromQL entries carried through for
-// honest accounting, carries through the harvest-time skips the corpus recorded,
-// and rejects a corpus whose version this build does not understand. Every entry
-// is accounted for — none is silently dropped: PromQL queries are replayed,
-// non-PromQL queries are counted out of scope, and the harvester's own skips are
-// surfaced so the operator sees queries that never became replayable at all.
+// LoadCorpus reads a corpus.json produced by `migrate harvest`, routes every
+// entry to its head's metric lane or to the out-of-scope accounting, carries
+// through the harvest-time skips the corpus recorded, and rejects a corpus whose
+// version this build does not understand.
+//
+// Every entry is accounted for — none is silently dropped. A query whose shape a
+// metric lane can judge is replayed and tagged with its head; a log-stream, trace
+// search, compare(), unparseable expression, or unknown language is counted out
+// of scope with the specific reason it was not judged; and the harvester's own
+// skips are surfaced so the operator also sees queries that never became
+// replayable at all. Corpus order is preserved so the report reads in the order
+// the operator's sources were harvested.
 func LoadCorpus(path string) (Corpus, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied corpus path; offline CLI input.
 	if err != nil {
@@ -337,11 +373,14 @@ func LoadCorpus(path string) (Corpus, error) {
 	}
 	out := Corpus{}
 	for _, q := range c.Queries {
-		if q.Lang == migrate.LangPromQL {
-			out.PromQL = append(out.PromQL, Query{Expr: q.Expr, Source: q.Source})
+		r := RouteQuery(q.Lang, q.Expr)
+		if r.Replayable {
+			out.Queries = append(out.Queries, Query{Expr: q.Expr, Source: q.Source, Head: r.Head, Lang: q.Lang})
 			continue
 		}
-		out.OutOfScope = append(out.OutOfScope, OutOfScopeEntry{Source: q.Source, Lang: q.Lang})
+		out.OutOfScope = append(out.OutOfScope, OutOfScopeEntry{
+			Source: q.Source, Expr: q.Expr, Head: r.Head, Lang: q.Lang, Kind: r.Kind, Reason: r.Reason,
+		})
 	}
 	for _, s := range c.Skipped {
 		out.HarvestSkipped = append(out.HarvestSkipped, HarvestSkippedEntry{Source: s.Source, Reason: s.Reason})

@@ -77,9 +77,14 @@ migrate *ARGS:
 
 # === Test ===
 
-# Run unit + spec tests with race detector.
+# Run unit + spec tests with race detector, then type-check the one
+# build-tagged lane no other recipe compiles. `go vet` typechecks, so a rename
+# in an untagged package that breaks a `migration_tier1` assertion fails HERE,
+# in the required `check` lane, instead of surfacing in the scheduled
+# `migration` workflow — the only lane that executes those files.
 test:
     go test -race ./...
+    go vet -tags=migration_tier1 ./test/e2e/migration/...
 
 # Run the internal/schema/ddl integration tests against a real ClickHouse
 # container (spun up via testcontainers-go). Requires Docker. Gated behind
@@ -1195,6 +1200,60 @@ compat-traceql-down:
 # Exit semantics: fails fast on the first non-zero recipe; the report
 # files for each head land under compatibility/*/reports/ regardless.
 compat-all: compat-promql compat-logql compat-traceql
+
+# === Migration lane — Tier-1 dual-backend substrate (Layer 14) ===
+#
+# The pinned reference stack `cerberus migrate verify` replays a harvested
+# corpus against: reference Prometheus + Loki + Tempo alongside one ClickHouse,
+# one OTel collector (the sole schema authority) and one cerberus serving all
+# three heads. Explicit lifecycle verbs plus a composite, mirroring the e2e-*
+# shape; the `tier1` prefix leaves room for the ruler tier without renaming.
+
+# Bring the Tier-1 stack up and wait for every healthcheck to pass. Builds
+# cerberus:migration-tier1 from the repo-root Dockerfile.local.
+# The teardown is a sub-invocation rather than a `migration-tier1-up:
+# migration-tier1-down` dependency on purpose: just runs a recipe at most once
+# per invocation, so declaring it as a dependency would consume the trailing
+# `migration-tier1-down` of the `migration-tier1` composite and leave the stack
+# running after a clean lane. Seeding an already-seeded stack is the failure
+# this closes — a run aborted by a failing assertion never reaches teardown,
+# and a second seed into the same live window collides on every sample instant.
+migration-tier1-up:
+    @just migration-tier1-down
+    @echo "==> migration tier-1 stack up"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        up --build --wait --wait-timeout 300
+
+# Load the deterministic all-signal fixture into the running stack: ONE
+# in-memory fixture written twice — directly into ClickHouse and into the
+# reference Prometheus / Loki / Tempo — so both sides of a parity diff are
+# comparable by construction. Publishes the manifest the assertions read their
+# query window from, so the lane never queries a window ending at `now`.
+migration-tier1-seed:
+    @echo "==> migration tier-1 seed"
+    go run ./test/e2e/migration/cmd/seed \
+        --fixture test/e2e/migration/archetypes/three-signal/seed/fixture.json \
+        --manifest test/e2e/migration/.out/manifest.json
+
+# Assert the Tier-1 substrate contract against the seeded stack: the collector
+# provisioned the OTel schema, cerberus serves all three heads off it, each
+# reference backend returns exactly what was written to it, both sides hold the
+# same telemetry over the manifest window, and a deliberately injected
+# disagreement is observed.
+migration-tier1-run:
+    @echo "==> migration tier-1 substrate + parity assertions"
+    go test -tags=migration_tier1 -count=1 ./test/e2e/migration/...
+
+# Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
+# images declare their own VOLUMEs, and a surviving volume would carry one
+# run's data into the next.
+migration-tier1-down:
+    @echo "==> migration tier-1 stack down"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        down -v --remove-orphans
+
+# Full Tier-1 lifecycle. Fails fast on the first non-zero recipe.
+migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down
 
 # === Release (controlled local cut) ===
 #
