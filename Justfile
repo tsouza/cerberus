@@ -1196,6 +1196,39 @@ compat-traceql-down:
 # files for each head land under compatibility/*/reports/ regardless.
 compat-all: compat-promql compat-logql compat-traceql
 
+# === Migration lane — Tier-1 dual-backend substrate (Layer 14) ===
+#
+# The pinned reference stack `cerberus migrate verify` replays a harvested
+# corpus against: reference Prometheus + Loki + Tempo alongside one ClickHouse,
+# one OTel collector (the sole schema authority) and one cerberus serving all
+# three heads. Explicit lifecycle verbs plus a composite, mirroring the e2e-*
+# shape; the `tier1` prefix leaves room for the ruler tier without renaming.
+
+# Bring the Tier-1 stack up and wait for every healthcheck to pass. Builds
+# cerberus:migration-tier1 from the repo-root Dockerfile.local.
+migration-tier1-up:
+    @echo "==> migration tier-1 stack up"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        up --build --wait --wait-timeout 300
+
+# Assert the Tier-1 substrate contract against the running stack: the collector
+# provisioned the OTel schema, cerberus serves all three heads off it, and each
+# reference backend returns exactly what was written to it.
+migration-tier1-run:
+    @echo "==> migration tier-1 substrate assertions"
+    go test -tags=migration_tier1 -count=1 ./test/e2e/migration/...
+
+# Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
+# images declare their own VOLUMEs, and a surviving volume would carry one
+# run's data into the next.
+migration-tier1-down:
+    @echo "==> migration tier-1 stack down"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        down -v --remove-orphans
+
+# Full Tier-1 lifecycle. Fails fast on the first non-zero recipe.
+migration-tier1: migration-tier1-up migration-tier1-run migration-tier1-down
+
 # === Release (controlled local cut) ===
 #
 # These mirror prepare-release.yml for when the workflow_dispatch isn't

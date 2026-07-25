@@ -98,13 +98,39 @@ No Docker, no network, no ClickHouse — air-gap-faithful, seconds to run. Drive
 (the pure aggregator). Cheap enough that it *may* also run per-PR later, but it
 ships informational-first.
 
-**Tier 1 — dual-backend compose.** `docker-compose.dual.yml`: reference
-**Prometheus** (scrapes synthetic exporters) **+ OTel collector**
-(clickhouseexporter → the OTel-shaped tables cerberus reads) **+ ClickHouse +
-cerberus**, both fed the *same* synthetic sources over an overlapping dual-write
-window. This is the only place ground truth exists for a differential diff.
-Drives `inventory` (probe live Prometheus), `verify` (diff both backends), and
-the live half of schema/label/histogram/retention validation.
+**Tier 1 — dual-backend compose.**
+`test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml`: reference
+**Prometheus** + reference **Loki** + reference **Tempo**, alongside an **OTel
+collector** (clickhouseexporter → the OTel-shaped tables cerberus reads) **+
+ClickHouse + cerberus**. All three signals live in one stack because an
+unconfigured head is a *blocking* verify verdict: a metrics-only substrate
+fails the moment the corpus carries one LogQL or TraceQL query. cerberus serves
+all three heads on one address, mirroring the operator journey where every
+`--cerberus*` URL is the same endpoint and only the `--ref*` URLs differ.
+
+Both sides are fed the *same* fixture over one window: the seeder builds one
+in-memory fixture and writes it twice — direct `INSERT` into ClickHouse, and
+push into each reference backend. This is the only place ground truth exists
+for a differential diff. Drives `inventory` (probe live Prometheus), `verify`
+(diff both backends), and the live half of schema/label/histogram/retention
+validation.
+
+Two roles are split, not merged. The collector's clickhouseexporter
+(`create_schema: true`) is the **sole schema authority** — cerberus runs with
+auto-create off, so its readiness probe is a live drift detector between the
+exporter's table names and cerberus's read-side defaults. The seeder owns
+**data only**, and waits for the exporter's tables before it inserts.
+
+The reference Loki and Tempo configurations are the compatibility harnesses'
+own files, bind-mounted read-only: the tree holds exactly one reference config
+per signal, so no second definition exists to drift. The reference image tags
+are likewise single-sourced — the compatibility compose files are the pin site,
+tier-1 restates them, and `test/regression/fork_version_skew_test.go` asserts
+the restatement is byte-identical, which transitively binds tier-1 to the
+`go.mod` parser versions. The ClickHouse tag tracks `quickstart_clickhouse`
+rather than `chdb_substrate`: the migration lane models the deployment surface
+an operator runs, not the SQL-parity substrate the chDB suites run on
+(asserted by `.github/scripts/clickhouse-version-sync.mjs`).
 
 **Tier 2 — ruler tier.** The Tier-1 stack **+ a real query-only external
 ruler** (a Prometheus/Thanos ruler in rule-eval-only mode, or Grafana-managed
@@ -581,10 +607,16 @@ instead of ossifying at whatever number was first written down.
 
 Eight archetypes, each a directory named for the archetype under
 `test/e2e/migration/archetypes`, contributing `rules/` (recording+alerting),
-`dashboards/` (exported Grafana
-JSON), `seed/` (an OTLP metric generator config **and** the Prometheus-side
-synthetic exposition/scrape config, so the dual-write is genuinely
-dual-sourced), and `expected/` (golden offline assertions).
+`dashboards/` (exported Grafana JSON), `seed/` (a **data declaration** — the
+service list, log-format list and metric table the shared seeder builds its
+fixture from), and `expected/` (golden offline assertions).
+
+`seed/` declares data, never a generator per backend. One declaration produces
+one in-memory fixture, and the seeder writes that fixture to both sides. Two
+independent sample paths — say a Prometheus scrape config alongside an OTLP
+generator — cannot land identical timestamps, and the comparator keys samples
+by exact timestamp, so a second path injects sample-level skew by construction
+into the one place ground truth exists.
 
 | Archetype             | Representative seed                                                                                                                                                            | Hotspots it forces                                                                                                                                   | Feeds                                |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
@@ -618,13 +650,13 @@ arithmetic in Go" split against real scenarios before the heavier tiers commit
 to them. `tolerances/` stays empty until Phase 2 — the first ε is derived from a
 measured margin on a live backend, never guessed ahead of one.
 
-**Phase 2 — Tier-1 dual-backend.** `docker-compose.dual.yml` (Prometheus + OTel
-collector + ClickHouse + cerberus) + collector config + the per-archetype
-`seed/` generators (incl. the pod-restart counter-reset + `container_id`-churn
-seeder). Scenarios MIG-02, MIG-06, MIG-07, MIG-08, MIG-10 (diff half), MIG-11,
-MIG-12, MIG-13 (read-back half), MIG-14 (live TTL), MIG-15, MIG-16, MIG-17,
-MIG-20, MIG-22, MIG-23, MIG-25, MIG-26 (live TTL). A **Phase 2b** three-signal
-variant adds Loki + Tempo + Grafana for MIG-21. Dependencies: Phase-1 corpora
+**Phase 2 — Tier-1 dual-backend.** `docker-compose.dual.yml` (Prometheus,
+Loki, Tempo, OTel collector, ClickHouse, cerberus) + collector config + the
+per-archetype `seed/` declarations (incl. the pod-restart counter-reset +
+`container_id`-churn shape). Scenarios MIG-02, MIG-06, MIG-07, MIG-08, MIG-10
+(diff half), MIG-11, MIG-12, MIG-13 (read-back half), MIG-14 (live TTL),
+MIG-15, MIG-16, MIG-17, MIG-20, MIG-21, MIG-22, MIG-23, MIG-25, MIG-26 (live
+TTL). Dependencies: Phase-1 corpora
 feed `verify --corpus`; reuses e2e.yml's free-disk-space + docker-hub-login +
 log-dump patterns. MIG-08's faults are `docker compose kill/pause/stop` on the
 compose stack — the Layer-13 `chaos-run.mjs` primitives are k3d/NetworkPolicy
