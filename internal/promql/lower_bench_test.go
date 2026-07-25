@@ -3,11 +3,23 @@ package promql_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+)
+
+// metadataCatalogWindowStart/End is the fixed [start,end] metadata-catalog
+// window the two label-catalog benchmarks below lower against. Any fixed
+// window works — the catalog lowering resolves the requested column at the
+// scan regardless of the range — so a short, deterministic one keeps the
+// benchmark's SQL literals (and therefore its allocation profile) stable
+// across runs.
+var (
+	metadataCatalogWindowStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	metadataCatalogWindowEnd   = metadataCatalogWindowStart.Add(5 * time.Minute)
 )
 
 // PromQL micro-benchmarks (Layer 12 perf gate). Each Benchmark
@@ -92,6 +104,41 @@ func BenchmarkLower_Subquery(b *testing.B) {
 			b.Fatalf("Lower: %v", err)
 		}
 	}
+}
+
+// BenchmarkLower_MetadataCatalog covers the /api/v1/label/<name>/values and
+// /api/v1/labels lowering paths (PR #1270): the requested column is
+// resolved at the scan leaf instead of above a per-row attribute-map
+// rebuild, so the cost here should track O(plan nodes), not the
+// O(rows × attributes) shape a generic Sample projection would force.
+// Neither sub-benchmark existed before this change was made — a future
+// regression that reintroduces a merged-map rebuild above the catalog
+// projection should show up here as an allocs/op jump.
+func BenchmarkLower_MetadataCatalog(b *testing.B) {
+	expr := parsePromQL(b, `requests_total{job="api"}`)
+	s := schema.DefaultOTelMetrics()
+
+	b.Run("label_values", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := promql.LowerMetadataLabelValues(
+				context.Background(), expr, s, metadataCatalogWindowStart, metadataCatalogWindowEnd, "region",
+			); err != nil {
+				b.Fatalf("LowerMetadataLabelValues: %v", err)
+			}
+		}
+	})
+
+	b.Run("label_names", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := promql.LowerMetadataLabelNames(
+				context.Background(), expr, s, metadataCatalogWindowStart, metadataCatalogWindowEnd,
+			); err != nil {
+				b.Fatalf("LowerMetadataLabelNames: %v", err)
+			}
+		}
+	})
 }
 
 // TestAllocs_Lower pins the per-query alloc count for each
