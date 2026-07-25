@@ -259,13 +259,13 @@ jobs:
       # silently when the secrets are absent (forks). Mirroring the
       # upstream images to GHCR is the stronger long-term fix.
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
-          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Run compatibility harness
         id: compat
@@ -507,13 +507,13 @@ jobs:
           tool: just
 
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
-          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Run forced-route compatibility harness
         id: compat
@@ -631,13 +631,13 @@ jobs:
       # See the prometheus job: authed Docker Hub pulls dodge the anonymous
       # rate limit shared across runner IPs; skips silently on forks.
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
-          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Run PromQL surface-completeness gate
         id: gate
@@ -681,13 +681,13 @@ jobs:
       # anonymous rate limit shared across runner IPs; skips silently
       # on forks without the secrets.
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
-          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Run tempo-compatibility harness
         id: harness
@@ -857,13 +857,13 @@ jobs:
       # anonymous rate limit shared across runner IPs; skips silently
       # on forks without the secrets.
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
-          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Run loki-compatibility harness
         id: harness
