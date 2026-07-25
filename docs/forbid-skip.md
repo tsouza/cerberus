@@ -38,7 +38,9 @@ The two locations carry **identical** patterns for rows 1–5 of the
 summary table below. Row 6 is enforced by the CI `forbid-skip` job step
 "Reject should_skip overlay entries", which rejects every non-empty
 `should_skip:` block in `compatibility/**/*.{yml,yaml}` outright. Row 7
-is enforced by the CI step "Reject test escape-hatch patterns".
+is enforced by the CI step "Reject test escape-hatch patterns". Rows 8
+and 9 are enforced by the CI step "Reject scenario-suppressing tags and
+godog skip routes".
 
 ## Patterns vs CHECK categories — the count that the gate pins
 
@@ -47,22 +49,24 @@ distinct regex shape, so that each shape has its own match-example and
 counter-example. The CI gate, however, dispatches by **CHECK category**:
 `.github/scripts/doc-counts.mjs` derives the canonical scan count LIVE
 from the `case '<name>':` arms of the `CHECK` switch in
-`.github/scripts/forbid-skip.mjs`, and that count is **5**:
+`.github/scripts/forbid-skip.mjs`, and that count is **6**:
 
-| CHECK category    | Covers regex pattern row(s) |
-| ----------------- | --------------------------- |
-| `t-skip`          | 1                           |
-| `not-implemented` | 2                           |
-| `soft-assert`     | 3, 4, 5                     |
-| `should-skip`     | 6                           |
-| `escape-hatch`    | 7                           |
+| CHECK category       | Covers regex pattern row(s) |
+| -------------------- | --------------------------- |
+| `t-skip`             | 1                           |
+| `not-implemented`    | 2                           |
+| `soft-assert`        | 3, 4, 5                     |
+| `should-skip`        | 6                           |
+| `escape-hatch`       | 7                           |
+| `feature-discipline` | 8, 9                        |
 
 The `soft-assert` scan runs three regex shapes (the two soft-assertion
-forms plus the silent-recover slurp) inside one CHECK, which is why the
-**7** pattern rows collapse to **5** dispatched scans. The
-`doc-counts.mjs` gate asserts every "N patterns/checks/scans" claim in
-this document equals the live CHECK-arm count (5), so the number can
-never drift from the source switch.
+forms plus the silent-recover slurp) inside one CHECK, and
+`feature-discipline` runs two (the `.feature` tag scan plus the
+harness-Go skip scan), which is why the **9** pattern rows collapse to
+**6** dispatched scans. The `doc-counts.mjs` gate asserts every "N
+patterns/checks/scans" claim in this document equals the live CHECK-arm
+count (6), so the number can never drift from the source switch.
 
 ## Adding a new pattern
 
@@ -92,6 +96,8 @@ shape.
 | 5   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
 | 6   | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
 | 7   | Reject test escape-hatch primitives (allow-list / tolerance / soft-assert)                                  | `*.{ts,tsx,go}` (non-upstream, non-vendor)                      | #712          |
+| 8   | Reject scenario-suppressing Gherkin tags (`@wip` / `@skip` / `@ignore` / `@manual` / `@todo` / `@pending`)  | `*.feature`                                                     | #1268         |
+| 9   | Reject godog skip / pending routes (`godog.ErrSkip`, `godog.ErrPending`, `.Skip` / `.Skipf` / `.SkipNow`)   | `test/e2e/migration/**/*.go`                                    | #1268         |
 
 Row 6 rejects any non-empty `should_skip:` block outright (see
 `.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
@@ -251,6 +257,62 @@ Each token names a removed anti-pattern:
   `expect.soft(locator).toBeVisible();`
 - Does NOT match: `expect(locator).toBeVisible();` (the loud form)
 
+## Pattern 8 — scenario-suppressing Gherkin tags (PR #1268)
+
+Regex (ERE over `*.feature`, excluding `**/node_modules/**`):
+
+```text
+(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)
+```
+
+The Layer-14 migration lane's scenarios are Gherkin feature files driven
+by `godog`. A Cucumber runner's culture carries two suppression routes
+that Go's `testing` package does not: a `@wip`-style tag that filters a
+`Scenario` out of the run, and an unimplemented step reported as
+*pending* rather than failed. The runner closes the second one at
+runtime (`godog.Options.Strict` fails a suite on an undefined, pending
+or ambiguous step); this pattern closes the first one lexically, on the
+required `forbid-skip` PR gate, so a suppressed scenario cannot merge and
+wait for the next scheduled lane to notice.
+
+The tag vocabulary is bounded on the other side too: the coverage
+ratchet in `.github/scripts/migration-e2e.mjs` rejects any tag that is
+not `@MIG-nn`, `@tier0`..`@tier2` or `@archetype:<name>`, so a novel
+suppression tag fails there even before this scan names it.
+
+- Matches: `@MIG-04 @tier0 @wip`
+- Matches: `@skip`
+- Does NOT match: `@MIG-01 @tier0 @archetype:already-otel`
+- Does NOT match: an `@archetype:` value that merely contains one of the
+  words, e.g. `@archetype:manual-scrape`
+
+## Pattern 9 — godog skip / pending routes (PR #1268)
+
+Regex (ERE over `test/e2e/migration/**/*.go`):
+
+```text
+godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\(
+```
+
+Pattern 1's scope is `*_test.go`, but godog step definitions live in ordinary
+non-test `.go` files — the step library is a package the runner imports,
+not a test package. A step returning `godog.ErrSkip` skips the rest of
+its scenario, and one returning `godog.ErrPending` reports the Cucumber
+"pending" status; `godog.T(ctx)` hands a step a `TestingT` whose `Skip`,
+`Skipf` and `SkipNow` mark the scenario skipped. Every one of those is
+`t.Skip` reached by a different door, and pattern 1's scope cannot see
+any of them.
+
+The receiver is deliberately unanchored (`\.Skip(f|Now)?\(` rather than
+`godog\.T\(…\)\.Skip`) so binding the `TestingT` to a local variable
+first does not evade the scan. Nothing in the harness has a legitimate
+reason to call a method named `Skip`.
+
+- Matches: `return godog.ErrSkip`
+- Matches: `godog.T(ctx).Skipf("no fixture for %s", archetype)`
+- Matches: `t := godog.T(ctx); t.SkipNow()`
+- Does NOT match: `w.Skipped = corpus.Skipped` (a field, not a call)
+
 ## Redundancy review
 
 A read-through of the remaining patterns shows no strict
@@ -264,14 +326,20 @@ redundancies — each catches a shape the others would miss:
   recover()` vs the multi-line block). They cannot be merged with
   patterns 3 / 4 because pattern 5 needs the `perl -0777` slurp to
   span lines.
+- Patterns 1 and 9 both reject a skip call, but neither scope reaches
+  the other's files: pattern 1's scope is `*_test.go` across the tree, while
+  godog step definitions are non-test `.go` files under the migration
+  harness.
 
-The gate dispatches **5** CHECK scans (`t-skip`, `not-implemented`,
-`soft-assert`, `should-skip`, `escape-hatch`), which together run the
-**7** regex pattern rows above (the `soft-assert` scan carries rows 3, 4
-and 5; see the "Patterns vs CHECK categories" mapping). Patterns 1–5 run
+The gate dispatches **6** CHECK scans (`t-skip`, `not-implemented`,
+`soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`),
+which together run the **9** regex pattern rows above (the `soft-assert`
+scan carries rows 3, 4 and 5 and `feature-discipline` carries rows 8 and
+9; see the "Patterns vs CHECK categories" mapping). Patterns 1–5 run
 over Go test files / production code; pattern 6 is the strict
 overlay-entry rejection over the compatibility YAML; pattern 7 is the
-escape-hatch scan over the TS / Go suites. The canonical scan count is
-derived live from `.github/scripts/forbid-skip.mjs` by
-`.github/scripts/doc-counts.mjs`, so this **5** can never drift from the
+escape-hatch scan over the TS / Go suites; patterns 8 and 9 are the
+Gherkin-scenario discipline over the migration harness. The canonical
+scan count is derived live from `.github/scripts/forbid-skip.mjs` by
+`.github/scripts/doc-counts.mjs`, so this **6** can never drift from the
 source switch.

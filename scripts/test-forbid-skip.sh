@@ -182,6 +182,42 @@ expect_no_match_perl "case6c asserted-panic form" "$RE6" "$tmpdir/case6c_nomatch
 # --------------------------------------------------------------------
 
 # --------------------------------------------------------------------
+# case 8 — scenario-suppressing Gherkin tags  (PR #1268)
+# --------------------------------------------------------------------
+# The Layer-14 migration scenarios are `.feature` files driven by godog.
+# A `@wip`-style tag filters a Scenario out of the run while the lane
+# still reports green — t.Skip wearing a hat, one directory over.
+RE8='(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)'
+printf '@MIG-04 @tier0 @wip\n'                       >"$tmpdir/case8_match.txt"
+printf '@skip\n'                                     >"$tmpdir/case8_match_bare.txt"
+printf '@MIG-01 @tier0 @archetype:already-otel\n'    >"$tmpdir/case8_nomatch.txt"
+printf '@MIG-01 @tier0 @archetype:manual-scrape\n'   >"$tmpdir/case8_nomatch_embedded.txt"
+expect_match    "case8 @wip suffix tag"        "$RE8" "$tmpdir/case8_match.txt"
+expect_match    "case8 bare @skip tag"         "$RE8" "$tmpdir/case8_match_bare.txt"
+expect_no_match "case8 real tag line"          "$RE8" "$tmpdir/case8_nomatch.txt"
+expect_no_match "case8 archetype containing a banned word" "$RE8" "$tmpdir/case8_nomatch_embedded.txt"
+
+# --------------------------------------------------------------------
+# case 9 — godog skip / pending routes  (PR #1268)
+# --------------------------------------------------------------------
+# godog step definitions live in NON-test .go files, so case 1's
+# `*_test.go` scope cannot see them. The receiver is unanchored so
+# binding godog.T(ctx) to a local first does not evade the scan.
+RE9='godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\('
+printf 'return godog.ErrSkip\n'                              >"$tmpdir/case9_match_errskip.txt"
+printf 'return godog.ErrPending\n'                           >"$tmpdir/case9_match_errpending.txt"
+printf 'godog.T(ctx).Skipf("no fixture for %%s", archetype)\n' >"$tmpdir/case9_match_skipf.txt"
+printf 't := godog.T(ctx)\nt.SkipNow()\n'                    >"$tmpdir/case9_match_local.txt"
+printf 'w.Skipped = corpus.Skipped\n'                        >"$tmpdir/case9_nomatch_field.txt"
+printf 'return fmt.Errorf("the harvester dropped %%d inputs", n)\n' >"$tmpdir/case9_nomatch_plain.txt"
+expect_match    "case9 godog.ErrSkip"        "$RE9" "$tmpdir/case9_match_errskip.txt"
+expect_match    "case9 godog.ErrPending"     "$RE9" "$tmpdir/case9_match_errpending.txt"
+expect_match    "case9 T(ctx).Skipf"         "$RE9" "$tmpdir/case9_match_skipf.txt"
+expect_match    "case9 local receiver SkipNow" "$RE9" "$tmpdir/case9_match_local.txt"
+expect_no_match "case9 Skipped field access" "$RE9" "$tmpdir/case9_nomatch_field.txt"
+expect_no_match "case9 ordinary error return" "$RE9" "$tmpdir/case9_nomatch_plain.txt"
+
+# --------------------------------------------------------------------
 # summary
 # --------------------------------------------------------------------
 total=$((passes + failures))

@@ -269,6 +269,39 @@ jobs:
       - name: doc-to-code reference check
         run: node .github/scripts/doc-refs.mjs
 
+      # Layer-14 story <-> scenario coverage ratchet. The 26 migration
+      # user-stories in docs/migration-testing.md section 4 are the
+      # durable anchor; every one of them is executed by a tagged Gherkin
+      # Scenario under test/e2e/migration/features. The ratchet also
+      # enforces the scenario-language rules the Gherkin AST is needed
+      # for — a Scenario with no `Then` asserts nothing, and a number or
+      # an operator in step text means an epsilon or a relation escaped
+      # from Go into feature prose.
+      #
+      # It lives here rather than on migration-e2e.yml because the anchor
+      # is a markdown table: e2e.yml's `gate` job is skipped on docs-only
+      # PRs, and the migration lane has no `pull_request:` trigger at
+      # all, so a PR deleting a story row would sail past both. MODE=verify
+      # is pure file walking — seconds — so the drift is a blocking PR
+      # failure rather than a nightly surprise.
+      #
+      # The unit guard runs first: it proves each detector still FIRES,
+      # so the ratchet cannot rot into a no-op that reports zero
+      # violations forever and looks exactly like a healthy one.
+      - name: migration coverage-ratchet self-test (detector guard)
+        run: node --test .github/scripts/migration-e2e.test.mjs
+
+      - name: enumerate migration scenarios
+        run: |
+          mkdir -p build
+          go run ./test/e2e/migration/cmd/scenarios --out build/migration-scenarios.json
+
+      - name: migration story/scenario coverage ratchet
+        run: node .github/scripts/migration-e2e.mjs
+        env:
+          MODE: verify
+          SCENARIOS_JSON: build/migration-scenarios.json
+
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
   # NON-NEGOTIABLE rule is "no t.Skip in test files — fix the bug, do
   # not skip." Greps `*_test.go` for `t.Skip` / `t.Skipf` / `t.SkipNow`
@@ -385,6 +418,20 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: escape-hatch
+      # Gherkin-scenario discipline for the Layer-14 migration lane. A
+      # Cucumber runner carries two suppression routes Go's testing
+      # package does not: a `@wip`-style tag that filters a Scenario out
+      # of the run, and a step reported as *pending* instead of failed.
+      # godog's `--strict` closes the second at runtime, but the
+      # migration lane has no `pull_request:` trigger — so without this
+      # step a `@skip` tag would merge and only surface on the next
+      # scheduled run. The scan also covers the godog skip routes in the
+      # harness's NON-test .go step definitions, which the `t-skip` scan
+      # over `*_test.go` structurally cannot see.
+      - name: Reject scenario-suppressing tags and godog skip routes
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: feature-discipline
       # ClickHouse version-consistency gate. versions.yaml is the single
       # source of truth for the ClickHouse versions the deployment surface
       # depends on (min floor, quickstart image, chDB substrate); this check

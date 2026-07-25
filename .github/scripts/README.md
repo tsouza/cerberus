@@ -36,9 +36,9 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`).
   - Exit: `0` clean; `1` on a violation. ENFORCING (a violation fails CI) and a
     required status check on `main`.
-- **`forbid-skip.mjs`** — `ci.yml`, the five `forbid-skip` discipline scans.
+- **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
-    `soft-assert`, `should-skip`, `escape-hatch`.
+    `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
@@ -420,6 +420,41 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `gate_excluded` outputs are written to).
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
+
+- **`migration-e2e.mjs`** — `ci.yml`'s `lint` job (`MODE=verify`) and
+  `migration-e2e.yml` (all three modes). The Layer-14 migration lane's
+  coverage ratchet, tier-matrix emitter and scenario runner. It consumes the
+  JSON that `test/e2e/migration/cmd/scenarios` projects out of the Gherkin
+  feature files — it never parses Gherkin itself, so exactly one Gherkin
+  parser exists in the tree — and holds that scenario set to anchors derived
+  LIVE from `docs/migration-testing.md`: the 26-story table in section 4, the
+  Tier(s) column in section 6, and the archetype table in section 7 (which is
+  cross-checked against the directories under `test/e2e/migration/archetypes`).
+  Fifteen collect-all violation classes cover a stale/duplicate/missing story
+  tag, a tier tag contradicting the doc, an unrecognised tag (the route by
+  which `@wip` / `@skip` reach the ratchet), an unknown archetype, a Scenario
+  with no `Then` (it asserts nothing), and a number or an operator in step
+  text (an inline epsilon is a per-case allow-list; the arithmetic lives in
+  Go). `test/e2e/migration/coverage-baseline.json` pins the aggregate
+  scenario floor — raise-only, and growing coverage without raising it fails
+  too, so the ratchet tightens instead of ossifying. It is NOT an allow-list:
+  it names no story, and every structural class applies unconditionally to
+  every scenario that exists. `migration-e2e.test.mjs` is the `node --test`
+  guard (run on the required `lint` lane) that pins the doc parsers against
+  the live doc and proves each detector fires.
+  - Env: `MODE` (`verify` | `emit` | `run`; also `argv[2]`; default
+    `verify`), `SCENARIOS_JSON` (default `build/migration-scenarios.json`),
+    `STORIES_DOC` (default `docs/migration-testing.md`), `ARCHETYPE_ROOT`
+    (default `test/e2e/migration/archetypes`), `FEATURE_ROOT` (default
+    `test/e2e/migration/features`), `COVERAGE_BASELINE` (default
+    `test/e2e/migration/coverage-baseline.json`), `TIER` (emit/run: `all` |
+    `tier0` | `tier1` | `tier2`; default `all`), `STORY` (run: a single MIG
+    id), `CERBERUS_BIN` (run: a prebuilt binary, passed through to the
+    suite), `GITHUB_OUTPUT` (emit: the runner file the `matrix` output is
+    written to).
+  - Exit: `0` clean, `1` on any coverage violation, an unknown `MODE`, a
+    missing/malformed input, a requested tier the workflow has no job for, or
+    a failed suite run.
 
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
