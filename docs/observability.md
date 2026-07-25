@@ -65,7 +65,10 @@ observability — a typo never ships to prod undetected.
 ready`, `signal received, shutting down`, `cerberus stopped`).
 - **`Warn`** — recoverable conditions where the request can still be served
   meaningfully or the client is at fault (e.g. WebSocket upgrade rejected
-  by the peer in the Loki `/tail` handler).
+  by the peer in the Loki `/tail` handler), plus degradation of a
+  background subsystem — a dropped self-telemetry export, an optcorpus
+  sink write that failed. Carries `component` so the subsystem is
+  selectable.
 - **`Error`** — handler-level failures that produce a 5xx (CH connection
   reset, plan emission internal error). The bridge to alerting.
 
@@ -169,6 +172,98 @@ Standard OTel SDK env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,
 the SDK on top of the cerberus-specific knobs above. When both are set,
 the `CERBERUS_OTLP_*` value wins for that field because cerberus passes
 it explicitly to the exporter constructor.
+
+### Self-metrics
+
+The instrument set lives in `internal/telemetry`. Names, units and
+attribute keys are a public contract — dashboards and alert rules
+reference them verbatim, and `internal/telemetry/contract_test.go` pins
+each one so a rename cannot ship silently.
+
+| Metric                                     | Type      | Attributes                                                                                  |
+| ------------------------------------------ | --------- | ------------------------------------------------------------------------------------------- |
+| `cerberus_queries_total`                   | counter   | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
+| `cerberus_queries_duration_seconds`        | histogram | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_pipeline_stage_duration_seconds` | histogram | `stage`, `cerberus_ql`                                                                      |
+| `cerberus_optimizer_rules_applied`         | histogram | —                                                                                           |
+| `cerberus_clickhouse_rows_read`            | histogram | `cerberus_ql`                                                                               |
+| `cerberus_clickhouse_bytes_read`           | histogram | `cerberus_ql`                                                                               |
+| `cerberus_query_inflight`                  | gauge     | `cerberus_ql`                                                                               |
+
+#### Failure classification
+
+`result` alone answers "did the query fail", never "whose fault was
+it" — and those demand opposite responses. A 4xx means the caller sent
+something cerberus cannot answer; a 5xx means cerberus could not answer
+something valid. `cerberus_error_reason` and `cerberus_status_class`
+carry that distinction on the counter. Both are closed enums derived
+from the response's status family, never from an error string or a raw
+status code, so the label cardinality is fixed:
+
+| `cerberus_error_reason` | Meaning                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `none`                  | The query succeeded. Carried so ok and error series share one label set.                                      |
+| `bad_request`           | Not answerable as written — unparseable, unsupported, or over a per-query budget. Caller has to change it.    |
+| `backend_unavailable`   | ClickHouse could not be reached or refused the work.                                                          |
+| `resource_exhausted`    | The server refused for capacity reasons: rate limited, out of storage.                                        |
+| `timeout`               | The request ran out of time, on either side of the gateway.                                                   |
+| `internal`              | A defect in cerberus — a recovered panic or an unclassified 5xx. Worth a page.                                |
+
+Admission-control rejections are not in this counter at all: the
+limiter middleware sits OUTSIDE `telemetry.QueryMiddleware`, so a
+saturation rejection never enters the query pipeline and never lands in
+`cerberus_queries_total`.
+
+`cerberus_status_class` is the HTTP family (`1xx` … `5xx`, or `unknown`
+for a code outside them). Alert on
+`cerberus_queries_total{cerberus_status_class="5xx"}` for "cerberus is
+broken" and leave `4xx` to a separate, lower-urgency rule.
+
+#### Duration buckets
+
+The duration ladders are explicit (the SDK default is
+millisecond-shaped, and these instruments record seconds). Both reach
+the minute scale on purpose: a gateway fronting an analytical database
+can serve a request slower than any single-digit-second bound, and
+every observation past the top FINITE bucket is unresolvable — the
+`+Inf` bucket has no upper bound for `histogram_quantile` to
+interpolate against, so once it holds more than 5% of the observations
+p95 and p99 both collapse onto the top finite bound and the slow tail
+disappears exactly where an investigation needs it. `execute` carries
+the ClickHouse round trip, so the stage ladder has to reach as far up
+as the query ladder.
+
+#### Stage attribution
+
+`cerberus_pipeline_stage_duration_seconds` carries `cerberus_ql`
+because one process serves all three heads: without it, a slow `parse`
+or `execute` cannot be attributed to a language, and the metric would
+only be separable in a deployment that happened to split the heads into
+separate processes — a property of that deployment, not of the metric.
+The stages (`parse` / `lower` / `optimize` / `emit` / `execute`) do not
+sum to the request duration: response materialisation and the row drain
+sit outside them, and on the streaming paths the drain runs while the
+response is being written. Use `cerberus_queries_duration_seconds` for
+the end-to-end number and the stage histogram for the breakdown within
+the engine.
+
+### SDK error reporting
+
+The OTel SDK reports its own failures — a batch it could not export, a
+collect or shutdown error — through a process-global error handler
+instead of returning them. Cerberus routes that handler into the
+structured logger at `WARN` with `component=otel` and the native error
+under `err`:
+
+```json
+{"level":"WARN","msg":"otel: self-telemetry pipeline error","component":"otel","err":"..."}
+```
+
+`WARN` rather than `INFO` because the condition is actionable and
+degrading: an export failure means the gateway has lost its OWN
+telemetry, which is precisely what an operator reaches for when
+diagnosing a failure. The fixed message plus the `component` field make
+the rate of these expressible as an alert.
 
 ### Resource attributes
 

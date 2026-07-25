@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestExpandBareHistogramMatcher pins the contract the labels / series
@@ -20,7 +22,7 @@ func TestExpandBareHistogramMatcher(t *testing.T) {
 	t.Parallel()
 
 	parser := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
-	const histogramTable = "otel_metrics_histogram"
+	metrics := schema.DefaultOTelMetrics()
 
 	cases := []struct {
 		name    string
@@ -110,7 +112,7 @@ func TestExpandBareHistogramMatcher(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := expandBareHistogramMatcher(parser, tc.matcher, histogramTable)
+			got := expandBareHistogramMatcher(parser, tc.matcher, metrics)
 			if !stringSlicesEqual(got, tc.want) {
 				t.Fatalf("expandBareHistogramMatcher(%q)\n got:  %v\n want: %v", tc.matcher, got, tc.want)
 			}
@@ -126,7 +128,9 @@ func TestExpandBareHistogramMatcher_NoHistogramTable(t *testing.T) {
 	t.Parallel()
 
 	parser := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
-	got := expandBareHistogramMatcher(parser, "cerberus_clickhouse_bytes_read", "")
+	metrics := schema.DefaultOTelMetrics()
+	metrics.HistogramTable = ""
+	got := expandBareHistogramMatcher(parser, "cerberus_clickhouse_bytes_read", metrics)
 	want := []string{"cerberus_clickhouse_bytes_read"}
 	if !stringSlicesEqual(got, want) {
 		t.Fatalf("expandBareHistogramMatcher with empty HistogramTable\n got:  %v\n want: %v", got, want)

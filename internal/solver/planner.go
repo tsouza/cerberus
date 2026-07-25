@@ -1,7 +1,6 @@
 package solver
 
 import (
-	"sync/atomic"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -12,45 +11,18 @@ import (
 // and slicing (the only path that copies) goes through ReanchorRange, which
 // deep-copies.
 //
-// The two auto-mode cost thresholds (MinFanout, MinAnchorPairs) may be
-// hot-swapped at runtime by the self-driving autotune loop via SetThresholds:
-// the read in Plan goes through an atomic pointer, so a concurrent reload is
-// seen atomically (never a torn pair) and the classification stays pure — no
-// per-request mutable state, no RNG. A nil overlay (the default) reads the
-// configured Cfg values, so a build with Autotune off is byte-identical.
+// The auto-mode cost thresholds (MinFanout, MinAnchorPairs) are static
+// configuration read straight off Cfg, so classification is a pure function of
+// (plan, meta, Cfg) — no per-request mutable state, no RNG, and identical
+// across every replica running the same configuration.
 type Planner struct {
 	Cfg Config
-
-	// tuned is the hot-reloadable (MinFanout, MinAnchorPairs) overlay set by
-	// the autotune loop. nil means "use Cfg".
-	tuned atomic.Pointer[tunedThresholds]
 }
 
-// tunedThresholds is the atomically-swapped auto-gate threshold pair.
-type tunedThresholds struct {
-	MinFanout      int
-	MinAnchorPairs int
-}
-
-// thresholds returns the active auto-gate thresholds: the hot-reloaded overlay
-// when present, else the configured Cfg values.
-func (p *Planner) thresholds() (minFanout, minAnchorPairs int) {
-	if t := p.tuned.Load(); t != nil {
-		return t.MinFanout, t.MinAnchorPairs
-	}
-	return p.Cfg.MinFanout, p.Cfg.MinAnchorPairs
-}
-
-// SetThresholds atomically hot-swaps the auto-gate thresholds. Called only by
-// the autotune loop after a fit; safe to call concurrently with Plan.
-func (p *Planner) SetThresholds(minFanout, minAnchorPairs int) {
-	p.tuned.Store(&tunedThresholds{MinFanout: minFanout, MinAnchorPairs: minAnchorPairs})
-}
-
-// CurrentThresholds reports the active auto-gate thresholds for the autotune
-// loop's baseline and for the shadow header / metric.
+// CurrentThresholds reports the configured auto-gate thresholds for the shadow
+// header / metric.
 func (p *Planner) CurrentThresholds() (minFanout, minAnchorPairs int) {
-	return p.thresholds()
+	return p.Cfg.MinFanout, p.Cfg.MinAnchorPairs
 }
 
 // Plan classifies plan against meta and returns the Decision plus whether the
@@ -79,10 +51,8 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	}
 
 	if p.Cfg.Mode == ModeAuto {
-		// Cost thresholds gate the auto path. Below threshold → route A. Read
-		// through the atomic overlay so a concurrent autotune reload is seen as
-		// one consistent (MinFanout, MinAnchorPairs) pair.
-		minFanout, minAnchorPairs := p.thresholds()
+		// Cost thresholds gate the auto path. Below threshold → route A.
+		minFanout, minAnchorPairs := p.Cfg.MinFanout, p.Cfg.MinAnchorPairs
 		if sig.maxFanout < int64(minFanout) {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
@@ -118,10 +88,9 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 // Eligible respects ModeSingle: an operator who has explicitly disabled the
 // solver has said route B never runs, full stop, and the memo mechanism —
 // itself a form of route-B usage — honours that rather than routing around
-// it as a side channel. It does NOT gate on ModeAuto's thresholds and does
-// NOT respect a hot-swapped autotune overlay (the mechanism this method
-// replaces): CurrentThresholds/SetThresholds/tuned remain load-bearing only
-// for Plan's own ModeAuto branch above.
+// it as a side channel. It does NOT gate on ModeAuto's thresholds
+// (MinFanout, MinAnchorPairs) at all — those stay load-bearing only for
+// Plan's own ModeAuto branch above.
 //
 // Eligible answers ONLY "can this plan be sliced and answered identically
 // via route B". It makes no promise about breaker state, admission budget,

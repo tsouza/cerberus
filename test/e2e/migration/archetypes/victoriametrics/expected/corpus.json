@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "vm_free_disk_space_bytes default 0",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Disk with fallback (MetricsQL default)/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "range_avg(vm_free_disk_space_bytes)",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Free disk space (MetricsQL rollup)/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (path) (rate(vm_http_requests_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Request rate/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "label_set(up, \"src\", \"vm\")",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Tagged availability (MetricsQL label_set)/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "rollup(vm_rows_inserted_total[5m]) \u003c 1",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.alerts/VMRowsInsertedStalled",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(rate(vm_http_requests_total[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:http_requests:rate5m",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(rate(vm_rows_inserted_total[5m])) keep_metric_names",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:rows_inserted:rate5m",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

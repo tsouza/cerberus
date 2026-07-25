@@ -1,0 +1,19 @@
+# Reference Prometheus configuration for the Tier-1 migration stack.
+#
+# Remote-write receiver ONLY — there is no `scrape_configs` block and there
+# must never be one. A scrape is a second, independent sample path: two paths
+# cannot land identical timestamps, and the migration comparator keys samples
+# by exact timestamp, so a scraped series would inject sample-level skew into
+# the one place ground truth exists for a differential diff. Every sample the
+# reference holds arrives over /api/v1/write from the same in-memory fixture
+# that is INSERTed into ClickHouse.
+#
+# The receiver itself is enabled on the command line
+# (--web.enable-remote-write-receiver in docker-compose.dual.yml), not here.
+
+global:
+  # The stack has no scrape targets, so this interval governs nothing but
+  # Prometheus's own bookkeeping. It is stated explicitly so a future reader
+  # does not infer a scrape cadence that does not exist.
+  scrape_interval: 15s
+  evaluation_interval: 15s

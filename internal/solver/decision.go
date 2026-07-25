@@ -54,7 +54,7 @@ type Decision struct {
 	Slices []Slice
 
 	// Cost grid — the RAW classifier scalars Planner.Plan already computed,
-	// surfaced for the route A/B calibration corpus (stage 0). These are
+	// surfaced for the route A/B calibration corpus. These are
 	// populated for BOTH routed AND not-routed decisions: a route-A
 	// (below-threshold) query must record its N/F/D too, because the
 	// counterfactual overlap analysis compares route-A and route-B cost

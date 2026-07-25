@@ -54,6 +54,16 @@ const (
 	// resolved to success on. Distinct from AttrRoute (the matched
 	// http.ServeMux pattern): same English word, unrelated concept.
 	AttrRouteChoice = attribute.Key("cerberus.route_choice")
+	// AttrErrorReason is the closed failure classification of a query —
+	// one of the Reason* constants. "none" on a successful query, so the
+	// label set is identical across ok and error series. Cardinality is
+	// fixed by the enum; a raw error string never lands here.
+	AttrErrorReason = attribute.Key("cerberus.error_reason")
+	// AttrStatusClass is the HTTP status family of the response —
+	// "2xx" / "4xx" / "5xx" (see StatusClass* constants). Bounded by
+	// construction: derived from the status code's family, never from
+	// the code itself.
+	AttrStatusClass = attribute.Key("cerberus.status_class")
 )
 
 // RouteMemoDecline label values for AttrReason on RouteMemoHitSkippedTotal —
@@ -99,6 +109,15 @@ const (
 	RouteChoiceB = "b"
 )
 
+// Query-language identifiers used as the AttrQL value. The three heads'
+// Lang adapters return these from Name(), and every instrument that
+// carries a language label uses one of them — the vocabulary is closed.
+const (
+	QLPromQL  = "promql"
+	QLLogQL   = "logql"
+	QLTraceQL = "traceql"
+)
+
 // Stage names. Mirrored from cerbtrace's span names so a dashboard can
 // group histogram buckets by the same stage attribute the trace view
 // uses.
@@ -110,28 +129,29 @@ const (
 	StageExecute  = "execute"
 )
 
-// Result label values for AttrResult.
-const (
-	ResultOK    = "ok"
-	ResultError = "error"
-)
-
 // Instruments groups the cerberus self-metric set. One instance is
 // cached per process; callers should fetch it via Get() rather than
 // constructing their own.
 type Instruments struct {
 	// QueriesTotal counts every Prom/Loki/Tempo query the gateway
 	// handles, regardless of result. Attributes: cerberus.ql,
-	// cerberus.route, result.
+	// cerberus.route, result, cerberus.error_reason,
+	// cerberus.status_class. The last two are what let an operator
+	// alerting on the error ratio tell a caller-side rejection from a
+	// gateway-side failure; both are closed enums (see Outcome).
 	QueriesTotal metric.Int64Counter
 
 	// QueryDuration is the wall-clock distribution per query, end to
-	// end (handler entry to handler return). Seconds. Same attributes
-	// as QueriesTotal.
+	// end (handler entry to handler return). Seconds. Attributes:
+	// cerberus.ql, cerberus.route, result — the failure classification
+	// is deliberately NOT carried here: it multiplies the per-bucket
+	// series count without answering a latency question.
 	QueryDuration metric.Float64Histogram
 
 	// StageDuration is the per-pipeline-stage timing distribution.
-	// Attributes: stage. Seconds.
+	// Attributes: stage, cerberus.ql. Seconds. Without the language
+	// dimension a process serving more than one head cannot say WHICH
+	// head's parse / lower / execute is slow.
 	StageDuration metric.Float64Histogram
 
 	// RulesApplied is the distribution of how many optimizer rule
@@ -205,14 +225,32 @@ type Instruments struct {
 // Exported so tests assert against the single source of truth.
 var (
 	// QueryDurationBoundaries covers end-to-end query wall-clock in
-	// seconds: Prometheus DefBuckets plus a 30s tail for pathological
-	// slow queries.
-	QueryDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
+	// seconds: Prometheus DefBuckets plus a multi-minute tail.
+	//
+	// A gateway fronting an analytical database can legitimately serve
+	// a request that outlives any single-digit-second bound — an
+	// expensive scan, a queued request behind admission control, a
+	// retried connection. Every observation past the top FINITE bound
+	// lands in +Inf, where it has no upper bound left to interpolate
+	// against: once the +Inf bucket holds more than 5% of the
+	// observations, histogram_quantile pins BOTH p95 and p99 to the top
+	// finite bound and the tail becomes unreadable at exactly the
+	// moment it matters. The extra bounds keep the slow tail resolvable
+	// up to the minute scale.
+	//
+	// Existing boundaries are preserved verbatim so series recorded
+	// before this ladder remain comparable across the change.
+	QueryDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}
 
 	// StageDurationBoundaries covers per-pipeline-stage wall-clock in
-	// seconds. Stages (parse / lower / optimize / emit) are much faster
-	// than whole queries, so the ladder starts at 1ms.
-	StageDurationBoundaries = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+	// seconds. The front stages (parse / lower / optimize / emit) are
+	// pure in-process work and much faster than whole queries, so the
+	// ladder starts at 1ms; `execute` carries the ClickHouse round trip
+	// and inherits the whole query's magnitude, so the ladder has to
+	// reach as far up as the query ladder does or the slowest stage —
+	// the one an investigation is looking for — saturates its top
+	// finite bucket. Existing boundaries are preserved verbatim.
+	StageDurationBoundaries = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 	// RulesAppliedBoundaries covers the optimizer's per-query change
 	// count — small integers, so a near-unit ladder.
@@ -389,17 +427,25 @@ func Install(mp metric.MeterProvider) {
 // at the entry of the stage's call site.
 type StageTimer struct {
 	stage string
+	ql    string
 	start time.Time
 }
 
-// ObserveStage starts a stopwatch for the given pipeline stage. The
+// ObserveStage starts a stopwatch for the given pipeline stage of a
+// query in language ql (one of QLPromQL / QLLogQL / QLTraceQL). The
 // returned timer records its duration on the StageDuration histogram
 // when Done(ctx) is called. Idiomatic use:
 //
-//	t := telemetry.ObserveStage(telemetry.StageOptimize)
+//	t := telemetry.ObserveStage(telemetry.StageOptimize, lang.Name())
 //	defer t.Done(ctx)
-func ObserveStage(stage string) *StageTimer {
-	return &StageTimer{stage: stage, start: time.Now()}
+//
+// ql is required rather than optional: a single process serves all
+// three heads, so a stage timing without it is unattributable — the
+// metric could only be split by language in a deployment that happened
+// to run one head per process, which is a property of that deployment,
+// not of the metric.
+func ObserveStage(stage, ql string) *StageTimer {
+	return &StageTimer{stage: stage, ql: ql, start: time.Now()}
 }
 
 // Done records the stage's elapsed time. ctx propagates baggage /
@@ -411,7 +457,10 @@ func (t *StageTimer) Done(ctx context.Context) {
 	}
 	Get().StageDuration.Record(
 		ctx, time.Since(t.start).Seconds(),
-		metric.WithAttributes(AttrStage.String(t.stage)),
+		metric.WithAttributes(
+			AttrStage.String(t.stage),
+			AttrQL.String(t.ql),
+		),
 	)
 }
 
@@ -433,21 +482,33 @@ func ObserveQuery(ql, route string) *QueryTimer {
 }
 
 // Done records the query's outcome on QueriesTotal and its wall-clock
-// on QueryDuration. result is one of ResultOK / ResultError. ctx is
-// passed through to the OTel SDK so exemplars (linked spans) attach
-// correctly when the request span is on the context.
-func (t *QueryTimer) Done(ctx context.Context, result string) {
+// on QueryDuration. out is the bounded classification of how the query
+// finished — build it with ClassifyStatus, or use OutcomeOK for a path
+// that has no HTTP status to classify. ctx is passed through to the
+// OTel SDK so exemplars (linked spans) attach correctly when the
+// request span is on the context.
+//
+// The counter carries the full classification (result + reason +
+// status class); the duration histogram carries only the ok/error
+// bucket, so the failure taxonomy never multiplies its per-bucket
+// series.
+func (t *QueryTimer) Done(ctx context.Context, out Outcome) {
 	if t == nil {
 		return
 	}
-	attrs := metric.WithAttributes(
+	inst := Get()
+	inst.QueriesTotal.Add(ctx, 1, metric.WithAttributes(
 		AttrQL.String(t.ql),
 		AttrRoute.String(t.route),
-		AttrResult.String(result),
-	)
-	inst := Get()
-	inst.QueriesTotal.Add(ctx, 1, attrs)
-	inst.QueryDuration.Record(ctx, time.Since(t.start).Seconds(), attrs)
+		AttrResult.String(out.Result),
+		AttrErrorReason.String(out.Reason),
+		AttrStatusClass.String(out.StatusClass),
+	))
+	inst.QueryDuration.Record(ctx, time.Since(t.start).Seconds(), metric.WithAttributes(
+		AttrQL.String(t.ql),
+		AttrRoute.String(t.route),
+		AttrResult.String(out.Result),
+	))
 }
 
 // RecordRulesApplied records n (the optimizer's per-query change

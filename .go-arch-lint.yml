@@ -161,7 +161,6 @@ components:
   # narrow CHConn + column contract rather than importing optcorpus/chclient, so
   # it depends only on chsql for typed SQL composition.
   routerrules:    { in: routerrules }
-  autotune:       { in: autotune }
   # Offline migration preview support: harvests a PromQL corpus from rule files
   # (promrules) and assembles the explain report over the chplan IR. Wired from
   # cmd/cerberus only.
@@ -304,15 +303,6 @@ deps:
     mayDependOn:
       - chplan
       - chclient
-
-  # autotune is the self-driving loop: it composes the solver (Planner, whose
-  # thresholds it hot-swaps) with routerrules (the corpus-fit brain). It is
-  # wired from cmd/ with a corpus source and launched on the server lifecycle
-  # context; it sits above both and is imported by nothing but cmd/.
-  autotune:
-    mayDependOn:
-      - solver
-      - routerrules
 
   # migrate builds the offline explain report. It walks the chplan IR (Tables /
   # Lint) and harvests its corpus via promrules. Explanation is delegated to an

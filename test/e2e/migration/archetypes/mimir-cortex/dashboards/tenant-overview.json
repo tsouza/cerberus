@@ -1,0 +1,29 @@
+{
+  "title": "Mimir / per-tenant overview",
+  "uid": "mimir-tenants",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active series per tenant",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "topk(10, tenant:cortex_ingester_active_series:sum)" }]
+    },
+    {
+      "id": 2,
+      "title": "Write latency",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "tenant:cortex_request_duration_seconds:p99" }]
+    },
+    {
+      "id": 3,
+      "title": "Distributor throughput",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (tenant) (rate(cortex_distributor_received_samples_total[5m]))" }
+      ]
+    }
+  ]
+}

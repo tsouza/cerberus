@@ -472,7 +472,10 @@ parent HTTP span
 Span names are the constants in `internal/cerbtrace`. The
 stopwatch around each stage is the same `telemetry.ObserveStage`
 helper, so the OTel span tree and the cerberus stage-duration
-histograms stay aligned. New cross-cutting hooks (request-id
+histograms stay aligned. It takes the language alongside the stage
+(`telemetry.ObserveStage(telemetry.StageEmit, lang.Name())`) — one
+process serves all three heads, so a stage timing without the language
+cannot be attributed to one. New cross-cutting hooks (request-id
 propagation, query-budget enforcement, per-tenant quotas) plug
 into the same context — no engine surface change required.
 

@@ -86,22 +86,6 @@ type Config struct {
 	// success cannot OOM the shared gateway heap.
 	MaxOutputRows int64
 
-	// Autotune enables the self-driving threshold loop
-	// (CERBERUS_SOLVER_AUTOTUNE, default true). When true AND Mode == ModeAuto,
-	// a background loop periodically refits MinFanout / MinAnchorPairs from the
-	// router corpus toward the observed route-A OOM floor — only ever lowering
-	// them — and hot-reloads the result into the Planner (Planner.SetThresholds).
-	// Disabled pins the thresholds at their configured values — byte-identical to
-	// a fixed-threshold build. It has no effect outside ModeAuto (single and
-	// sharded carry no cost gate to tune), and stays dormant until the router
-	// corpus CH table is being written (see startAutotune in cmd/).
-	Autotune bool
-
-	// AutotuneInterval is the cadence of the self-driving loop
-	// (CERBERUS_SOLVER_AUTOTUNE_INTERVAL, default 15m). Ignored when Autotune is
-	// false or Mode != ModeAuto.
-	AutotuneInterval time.Duration
-
 	// RouteMemoEnabled (CERBERUS_SOLVER_ROUTE_MEMO_ENABLED, default false)
 	// wires the failure-driven route memo (internal/routememo,
 	// docs/solver.md §"Failure-driven route memo"): a route-A dispatch that
@@ -151,8 +135,6 @@ const (
 	defaultParallel           = 3
 	defaultTimeout            = 60 * time.Second
 	defaultMaxOutputRows      = 2_000_000
-	defaultAutotune           = true
-	defaultAutotuneInterval   = 15 * time.Minute
 )
 
 // DefaultConfig returns the conservative library defaults. Mode defaults to
@@ -168,8 +150,6 @@ func DefaultConfig() Config {
 		Parallel:           defaultParallel,
 		Timeout:            defaultTimeout,
 		MaxOutputRows:      defaultMaxOutputRows,
-		Autotune:           defaultAutotune,
-		AutotuneInterval:   defaultAutotuneInterval,
 		RouteMemoEnabled:   false,
 	}
 }
@@ -207,13 +187,6 @@ func (c Config) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("solver: Timeout must be > 0, got %s", c.Timeout)
-	}
-	// AutotuneInterval only has to be self-consistent when the loop can run
-	// (Autotune && auto mode); a stale interval on a disabled loop is harmless,
-	// but validating unconditionally keeps the failure at startup, not at the
-	// first tick.
-	if c.Autotune && c.AutotuneInterval <= 0 {
-		return fmt.Errorf("solver: AutotuneInterval must be > 0 when Autotune is set, got %s", c.AutotuneInterval)
 	}
 	return nil
 }

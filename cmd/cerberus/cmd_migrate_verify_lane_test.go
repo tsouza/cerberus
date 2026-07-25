@@ -13,12 +13,15 @@ import (
 // LogQL classifier and the Loki head's own matrix-vs-streams pivot can never
 // drift.
 //
-// The gate must replay exactly the queries cerberus answers with a matrix: a
-// classifier that called a log-stream query "metric" would diff a streams body
-// against a matrix baseline, and one that called a metric query "log-stream" would
-// silently drop a judgeable panel into the out-of-scope bucket. The two predicates
-// live in different packages (migrateverify may not import internal/logql), so
-// this cross-package test is the only place the equality can be asserted.
+// The gate must send every query to the comparator for the shape cerberus
+// actually answers it with: a classifier that called a log-stream query "metric"
+// would diff a streams body against a matrix baseline, and one that called a
+// metric query "log-stream" would ask the log comparator to read a matrix. Both
+// shapes are replayed, so the assertion is on the routed KIND — the weaker
+// "is it replayable" check would now pass for both and prove nothing. The two
+// predicates live in different packages (migrateverify may not import
+// internal/logql), so this cross-package test is the only place the equality can
+// be asserted.
 func TestRouteQuery_MatchesLogqlIsMetricQuery(t *testing.T) {
 	exprs := []string{
 		`{job="api"}`,
@@ -40,11 +43,18 @@ func TestRouteQuery_MatchesLogqlIsMetricQuery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fixture %q must parse: %v", expr, err)
 		}
-		wantMetric := logql.IsMetricQuery(parsed)
+		wantKind := migrateverify.KindLogStream
+		if logql.IsMetricQuery(parsed) {
+			wantKind = migrateverify.KindMetricMatrix
+		}
 		got := migrateverify.RouteQuery("logql", expr)
-		if got.Replayable != wantMetric {
-			t.Errorf("RouteQuery(%q).Replayable = %v, but the loki head's IsMetricQuery = %v: the gate would judge a shape cerberus does not serve as a matrix (routing = %+v)",
-				expr, got.Replayable, wantMetric, got)
+		if !got.Replayable {
+			t.Errorf("RouteQuery(%q).Replayable = false: cerberus serves this query, so a comparator must judge it (routing = %+v)", expr, got)
+			continue
+		}
+		if got.Kind != wantKind {
+			t.Errorf("RouteQuery(%q).Kind = %q, but the loki head answers this with %q: the gate would hand the response to the wrong comparator (routing = %+v)",
+				expr, got.Kind, wantKind, got)
 		}
 	}
 }

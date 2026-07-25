@@ -196,6 +196,77 @@ func TestHistogramBucketBoundaries(t *testing.T) {
 	}
 }
 
+// TestDurationBoundaries_SlowTailIsResolvable pins the property the
+// upper end of the duration ladders exists for: an observation slower
+// than a single-digit-second bound must still land in a FINITE bucket.
+//
+// Everything that overflows into +Inf is unresolvable by construction —
+// the bucket has no upper bound, so histogram_quantile can only report
+// the top finite bound for every quantile that falls inside it. Once
+// the overflow bucket holds more than 5% of the observations, p95 AND
+// p99 both collapse onto that same number and the slow tail — the only
+// part of the distribution an investigation cares about — disappears.
+// A gateway in front of an analytical database can produce such
+// observations, so the ladder has to reach the minute scale.
+func TestDurationBoundaries_SlowTailIsResolvable(t *testing.T) {
+	cases := []struct {
+		metricName string
+		bounds     []float64
+		record     func(ctx context.Context, v float64)
+		values     []float64
+	}{
+		{
+			metricName: "cerberus_queries_duration_seconds",
+			bounds:     telemetry.QueryDurationBoundaries,
+			record:     func(ctx context.Context, v float64) { telemetry.Get().QueryDuration.Record(ctx, v) },
+			values:     []float64{45, 90, 200},
+		},
+		{
+			metricName: "cerberus_pipeline_stage_duration_seconds",
+			bounds:     telemetry.StageDurationBoundaries,
+			record:     func(ctx context.Context, v float64) { telemetry.Get().StageDuration.Record(ctx, v) },
+			values:     []float64{8, 20, 45},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.metricName, func(t *testing.T) {
+			// The ladder must be strictly increasing, or the bucket
+			// assignment below is meaningless.
+			for i := 1; i < len(tc.bounds); i++ {
+				if tc.bounds[i] <= tc.bounds[i-1] {
+					t.Fatalf("%s: bounds not strictly increasing at %d: %v", tc.metricName, i, tc.bounds)
+				}
+			}
+			for _, v := range tc.values {
+				if idx := bucketFor(tc.bounds, v); idx == len(tc.bounds) {
+					t.Errorf("%s: %vs overflows into +Inf — the tail is unresolvable there (bounds %v)",
+						tc.metricName, v, tc.bounds)
+				}
+			}
+		})
+	}
+
+	// End-to-end through the SDK: a slow observation must be reported in
+	// a finite bucket of the exported datapoint, not in the overflow.
+	for _, tc := range cases {
+		t.Run(tc.metricName+"/exported", func(t *testing.T) {
+			reader := installManualReader(t)
+			slowest := tc.values[len(tc.values)-1]
+			tc.record(t.Context(), slowest)
+
+			sm := collect(t, reader)
+			bounds, counts, count := histogramBounds(t, findMetric(t, sm, tc.metricName))
+			if count != 1 {
+				t.Fatalf("%s: count = %d want 1", tc.metricName, count)
+			}
+			if overflow := counts[len(bounds)]; overflow != 0 {
+				t.Errorf("%s: %vs landed in the +Inf bucket (counts=%v, bounds=%v)",
+					tc.metricName, slowest, counts, bounds)
+			}
+		})
+	}
+}
+
 // TestObserveQuery_RecordsCounterAndDuration covers the QueryTimer
 // happy path: a single Done(ResultOK) call must bump
 // cerberus_queries_total by one and record a point on
@@ -204,7 +275,7 @@ func TestObserveQuery_RecordsCounterAndDuration(t *testing.T) {
 	reader := installManualReader(t)
 
 	tm := telemetry.ObserveQuery("promql", "GET /api/v1/query")
-	tm.Done(t.Context(), telemetry.ResultOK)
+	tm.Done(t.Context(), telemetry.OutcomeOK())
 
 	sm := collect(t, reader)
 	total := findMetric(t, sm, "cerberus_queries_total")
@@ -249,7 +320,7 @@ func TestObserveStage_RecordsHistogram(t *testing.T) {
 		telemetry.StageEmit,
 		telemetry.StageExecute,
 	} {
-		telemetry.ObserveStage(stage).Done(t.Context())
+		telemetry.ObserveStage(stage, telemetry.QLPromQL).Done(t.Context())
 	}
 
 	sm := collect(t, reader)
@@ -261,6 +332,45 @@ func TestObserveStage_RecordsHistogram(t *testing.T) {
 	// One DP per distinct stage attribute value.
 	if got, want := len(hist.DataPoints), 5; got != want {
 		t.Fatalf("stage.duration DPs: got %d want %d", got, want)
+	}
+}
+
+// TestObserveStage_SeparatesLanguages is the attribution guard for the
+// stage histogram: one process serves all three heads, so the SAME
+// stage recorded for two languages must produce two datapoints, each
+// carrying its own cerberus.ql. Without the language dimension the two
+// observations merge into one series and no query can say which head is
+// slow — the metric would only be separable in a deployment that
+// happened to run one head per process.
+func TestObserveStage_SeparatesLanguages(t *testing.T) {
+	reader := installManualReader(t)
+
+	telemetry.ObserveStage(telemetry.StageExecute, telemetry.QLPromQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageExecute, telemetry.QLLogQL).Done(t.Context())
+	telemetry.ObserveStage(telemetry.StageExecute, telemetry.QLTraceQL).Done(t.Context())
+
+	sm := collect(t, reader)
+	m := findMetric(t, sm, "cerberus_pipeline_stage_duration_seconds")
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("stage.duration: unexpected data type %T", m.Data)
+	}
+	seen := map[string]uint64{}
+	for _, dp := range hist.DataPoints {
+		stage, _ := dp.Attributes.Value("stage")
+		if stage.AsString() != telemetry.StageExecute {
+			t.Errorf("unexpected stage %q", stage.AsString())
+		}
+		ql, ok := dp.Attributes.Value("cerberus.ql")
+		if !ok {
+			t.Fatalf("stage.duration DP missing cerberus.ql: %+v", dp.Attributes)
+		}
+		seen[ql.AsString()] = dp.Count
+	}
+	for _, ql := range []string{telemetry.QLPromQL, telemetry.QLLogQL, telemetry.QLTraceQL} {
+		if seen[ql] != 1 {
+			t.Errorf("stage.duration[%s]: count = %d want 1 (got series %v)", ql, seen[ql], seen)
+		}
 	}
 }
 
@@ -346,15 +456,26 @@ func TestQueryMiddleware_ResultOK(t *testing.T) {
 // error. The `cerberus_queries_total{result}` series is a query-outcome
 // metric (not an HTTP SLO), so a 400 parse rejection counts as a failed
 // query — the same way the "Error rate by language" dashboard reads it.
+// It also pins the classification dimensions the counter carries
+// alongside result: an operator alerting on the error ratio has to be
+// able to separate a caller-side rejection (the query is malformed —
+// nothing to page for) from a gateway-side failure (the database is
+// unreachable — page now), and result="error" alone cannot express
+// that difference.
 func TestQueryMiddleware_ResultError(t *testing.T) {
 	cases := []struct {
-		name   string
-		status int
+		name       string
+		status     int
+		wantReason string
+		wantClass  string
 	}{
-		{"400_bad_request", http.StatusBadRequest},
-		{"422_unprocessable_entity", http.StatusUnprocessableEntity},
-		{"500_internal", http.StatusInternalServerError},
-		{"502_bad_gateway", http.StatusBadGateway},
+		{"400_bad_request", http.StatusBadRequest, telemetry.ReasonBadRequest, telemetry.StatusClass4xx},
+		{"422_unprocessable_entity", http.StatusUnprocessableEntity, telemetry.ReasonBadRequest, telemetry.StatusClass4xx},
+		{"429_too_many_requests", http.StatusTooManyRequests, telemetry.ReasonResourceExhausted, telemetry.StatusClass4xx},
+		{"500_internal", http.StatusInternalServerError, telemetry.ReasonInternal, telemetry.StatusClass5xx},
+		{"502_bad_gateway", http.StatusBadGateway, telemetry.ReasonBackendUnavailable, telemetry.StatusClass5xx},
+		{"503_service_unavailable", http.StatusServiceUnavailable, telemetry.ReasonBackendUnavailable, telemetry.StatusClass5xx},
+		{"504_gateway_timeout", http.StatusGatewayTimeout, telemetry.ReasonTimeout, telemetry.StatusClass5xx},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -383,7 +504,58 @@ func TestQueryMiddleware_ResultError(t *testing.T) {
 			if v, _ := sum.DataPoints[0].Attributes.Value("result"); v.AsString() != telemetry.ResultError {
 				t.Errorf("result: got %q want error", v.AsString())
 			}
+			if v, _ := sum.DataPoints[0].Attributes.Value("cerberus.error_reason"); v.AsString() != tc.wantReason {
+				t.Errorf("cerberus.error_reason: got %q want %q", v.AsString(), tc.wantReason)
+			}
+			if v, _ := sum.DataPoints[0].Attributes.Value("cerberus.status_class"); v.AsString() != tc.wantClass {
+				t.Errorf("cerberus.status_class: got %q want %q", v.AsString(), tc.wantClass)
+			}
 		})
+	}
+}
+
+// TestQueryMiddleware_ErrorReasonsAreDistinctSeries is the alerting
+// guard behind the reason dimension: a malformed query and an
+// unreachable backend must land on SEPARATE counter series, so a rule
+// can fire on one without the other. If both collapsed into a single
+// result="error" series the two opposite situations would be
+// indistinguishable at query time.
+func TestQueryMiddleware_ErrorReasonsAreDistinctSeries(t *testing.T) {
+	reader := installManualReader(t)
+
+	status := http.StatusBadRequest
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", noopPanicRenderer,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+		})))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	for _, s := range []int{http.StatusBadRequest, http.StatusServiceUnavailable} {
+		status = s
+		resp, err := http.Get(srv.URL + "/api/v1/query")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	sm := collect(t, reader)
+	sum := findMetric(t, sm, "cerberus_queries_total").Data.(metricdata.Sum[int64])
+	byReason := map[string]int64{}
+	for _, dp := range sum.DataPoints {
+		v, _ := dp.Attributes.Value("cerberus.error_reason")
+		byReason[v.AsString()] += dp.Value
+	}
+	want := map[string]int64{
+		telemetry.ReasonBadRequest:         1,
+		telemetry.ReasonBackendUnavailable: 1,
+	}
+	for reason, n := range want {
+		if byReason[reason] != n {
+			t.Errorf("queries.total{error_reason=%q}: got %d want %d (series %v)", reason, byReason[reason], n, byReason)
+		}
 	}
 }
 
@@ -507,7 +679,7 @@ func TestInstall_NilFallsBackToNoop(t *testing.T) {
 	telemetry.Install(nil)
 	t.Cleanup(func() { telemetry.Install(nil) })
 	// Should be a no-op, not a panic.
-	telemetry.ObserveStage(telemetry.StageEmit).Done(context.Background())
+	telemetry.ObserveStage(telemetry.StageEmit, telemetry.QLPromQL).Done(context.Background())
 }
 
 // inflightValue reads the (signed) cumulative value the manual reader

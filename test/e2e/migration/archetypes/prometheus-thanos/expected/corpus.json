@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "avg_over_time(slo:http_request_availability:ratio30d[1h:5m])[14d:1h]",
+      "source": "dashboard:test/e2e/migration/archetypes/prometheus-thanos/dashboards/thanos-slo.json/Availability over the compliance window/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "predict_linear(node_filesystem_free_bytes[6h], 345600)",
+      "source": "dashboard:test/e2e/migration/archetypes/prometheus-thanos/dashboards/thanos-slo.json/Filesystem capacity trend/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(rate(prometheus_tsdb_head_samples_appended_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/prometheus-thanos/dashboards/thanos-slo.json/Ingest rate/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "slo:http_error_budget:burnrate7d \u003e 0.05",
+      "source": "rule:test/e2e/migration/archetypes/prometheus-thanos/rules/thanos-slo.yaml/thanos.alerts/ErrorBudgetBurn",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(rate(http_requests_total{code=~\"5..\"}[7d] offset 7d))",
+      "source": "rule:test/e2e/migration/archetypes/prometheus-thanos/rules/thanos-slo.yaml/thanos.slo/slo:http_error_budget:burnrate7d",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "1 - (sum(rate(http_requests_total{code=~\"5..\"}[30d])) / sum(rate(http_requests_total[30d])))",
+      "source": "rule:test/e2e/migration/archetypes/prometheus-thanos/rules/thanos-slo.yaml/thanos.slo/slo:http_request_availability:ratio30d",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

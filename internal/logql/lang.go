@@ -67,7 +67,7 @@ const (
 
 // Name returns "logql" — the stable per-language label engine threads
 // onto progress-context keys and trace attributes.
-func (l *Lang) Name() string { return "logql" }
+func (l *Lang) Name() string { return telemetry.QLLogQL }
 
 // Parse runs the LogQL parser, lowers the AST, and returns the plan
 // plus engine.Meta. Parser failures map to 400 bad_data; lowering
@@ -75,7 +75,7 @@ func (l *Lang) Name() string { return "logql" }
 // 422 execution — both wire-format-identical to the handler's
 // pre-engine error contract.
 func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
+	parseT := telemetry.ObserveStage(telemetry.StageParse, l.Name())
 	expr, err := parseExprTraced(ctx, query)
 	parseT.Done(ctx)
 	if err != nil {
@@ -86,7 +86,7 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 		}
 	}
 
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
+	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
 	plan, err := LowerAtRange(ctx, expr, l.Schema, l.Start, l.End, l.Step)
 	lowerT.Done(ctx)
 	if err != nil {

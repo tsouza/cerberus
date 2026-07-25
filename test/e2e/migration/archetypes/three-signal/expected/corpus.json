@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "sum by (service_name) (rate({service_name=\"checkout\"} |= \"error\" [5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Error log rate/A",
+      "kind": "panel",
+      "lang": "logql"
+    },
+    {
+      "expr": "svc:http_requests:rate5m @ end()",
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Request rate at the window edge/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "svc:http_requests:rate5m",
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Request rate/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "{ resource.service.name = \"checkout\" \u0026\u0026 duration \u003e 2s }",
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Slow checkout spans/A",
+      "kind": "panel",
+      "lang": "traceql"
+    },
+    {
+      "expr": "sum by (service) (rate(http_requests_total{code=~\"5..\",service=\"checkout\"}[5m])) \u003e 1",
+      "source": "rule:test/e2e/migration/archetypes/three-signal/rules/service-recording.yaml/three-signal/CheckoutErrorRate",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (service) (rate(http_requests_total[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/three-signal/rules/service-recording.yaml/three-signal/svc:http_requests:rate5m",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": [
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Left on the old search backend/A",
+      "reason": "unsupported datasource type \"elasticsearch\" (not prometheus/loki/tempo)"
+    }
+  ]
+}

@@ -21,8 +21,6 @@ const (
 	EnvParallel           = "CERBERUS_SHARD_PARALLEL"
 	EnvTimeout            = "CERBERUS_SOLVER_TIMEOUT"
 	EnvMaxOutputRows      = "CERBERUS_SHARD_MAX_OUTPUT_ROWS"
-	EnvAutotune           = "CERBERUS_SOLVER_AUTOTUNE"
-	EnvAutotuneInterval   = "CERBERUS_SOLVER_AUTOTUNE_INTERVAL"
 	EnvRouteMemoEnabled   = "CERBERUS_SOLVER_ROUTE_MEMO_ENABLED"
 	EnvRouteMemoEntryTTL  = "CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL"
 	EnvRouteMemoRevalFrac = "CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION"
@@ -34,6 +32,11 @@ const (
 // at startup, keeping the parse-vs-validate split the same as internal/config.
 // A parse failure on any knob is returned so a typo never silently routes (or
 // never silently disables routing).
+//
+// Only the keys listed above are read; anything else in the environment is
+// ignored. Retired knobs therefore stay inert rather than failing startup, so a
+// deployment still carrying one in its manifest boots on the configured
+// defaults instead of crash-looping (asserted by TestConfigFromEnv_RetiredKnobsIgnored).
 //
 // PRODUCTION DEFAULT: when CERBERUS_EVAL_ROUTE is unset the
 // solver routes in "auto" mode — eligible plans that clear the cost thresholds
@@ -72,12 +75,6 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MaxOutputRows, err = envInt64(EnvMaxOutputRows, cfg.MaxOutputRows); err != nil {
-		return Config{}, err
-	}
-	if cfg.Autotune, err = envBool(EnvAutotune, cfg.Autotune); err != nil {
-		return Config{}, err
-	}
-	if cfg.AutotuneInterval, err = envDuration(EnvAutotuneInterval, cfg.AutotuneInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.RouteMemoEnabled, err = envBool(EnvRouteMemoEnabled, cfg.RouteMemoEnabled); err != nil {

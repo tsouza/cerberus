@@ -6,6 +6,9 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // histogramCompanionSuffixes are the Prom-wire classic-histogram companion
@@ -19,9 +22,10 @@ var histogramCompanionSuffixes = []string{"_bucket", "_count", "_sum", "_total"}
 // expandBareHistogramMatcher takes a raw match[] string and, when it is
 // a single VectorSelector pinning `__name__` to a bare base name (no
 // classic-histogram companion suffix), returns the original matcher PLUS
-// three companion variants — `<base>_bucket`, `<base>_count`,
-// `<base>_sum` — so the labels / series metadata surfaces can fan-out
-// the lookup across the histogram table's companion rows.
+// one variant per synthetic companion name the selector lowering serves
+// off that base ([promql.HistogramSyntheticNames] — `<base>_bucket`,
+// `<base>_count`, `<base>_sum`), so the labels / series metadata surfaces
+// can fan-out the lookup across the histogram table's companion rows.
 //
 // The OTel-CH classic histogram exporter writes one row under the bare
 // `<base>` name in the histogram table; PromQL exposes that single row
@@ -47,19 +51,21 @@ var histogramCompanionSuffixes = []string{"_bucket", "_count", "_sum", "_total"}
 // since the lowering re-parses inside matcherSQL. Parse failures fall
 // through as the single-element slice — the downstream matcherSQL call
 // will surface the same parse error to the client with full diagnostics.
-func expandBareHistogramMatcher(parser promparser.Parser, matcher, histogramTable string) []string {
-	if histogramTable == "" {
-		return []string{matcher}
-	}
+func expandBareHistogramMatcher(parser promparser.Parser, matcher string, s schema.Metrics) []string {
 	base, ok := bareHistogramBaseName(parser, matcher)
 	if !ok {
 		return []string{matcher}
 	}
-	out := make([]string, 0, 1+len(histogramCompanionSuffixes)-1)
+	// The companion set comes from the selector lowering's own routing
+	// (promql.HistogramSyntheticNames), so this fan-out can only ever emit
+	// names the query path resolves back onto the `<base>` histogram row —
+	// and it returns nothing when no histogram table is configured.
+	companions := promql.HistogramSyntheticNames(base, s)
+	out := make([]string, 0, 1+len(companions))
 	out = append(out, matcher)
 	seen := map[string]struct{}{matcher: {}}
-	for _, suf := range []string{"_bucket", "_count", "_sum"} {
-		variant := companionMatcherString(matcher, base, base+suf)
+	for _, companion := range companions {
+		variant := companionMatcherString(matcher, base, companion)
 		if variant == "" {
 			continue
 		}

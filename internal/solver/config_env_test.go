@@ -61,47 +61,27 @@ func TestConfigFromEnv_ShardedForce(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_AutotuneDefaultsOn pins the headline default: the
-// self-driving loop is ENABLED unless an operator opts out, with the default
-// cadence. The resolved config must validate.
-func TestConfigFromEnv_AutotuneDefaultsOn(t *testing.T) {
-	t.Setenv(EnvAutotune, "")
-	t.Setenv(EnvAutotuneInterval, "")
+// TestConfigFromEnv_RetiredKnobsIgnored pins the graceful-retirement contract
+// for the removed threshold-autotune knobs. ConfigFromEnv reads only the keys it
+// recognises, so a deployment whose manifest still carries a retired
+// CERBERUS_* var must boot on the configured defaults rather than failing
+// startup on an unrecognised key.
+func TestConfigFromEnv_RetiredKnobsIgnored(t *testing.T) {
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE", "true")
+	t.Setenv("CERBERUS_SOLVER_AUTOTUNE_INTERVAL", "30m")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
-		t.Fatalf("ConfigFromEnv() error = %v", err)
+		t.Fatalf("ConfigFromEnv() with retired knobs set: error = %v, want nil", err)
 	}
-	if !cfg.Autotune {
-		t.Errorf("Autotune = false, want true (default-on)")
+	if cfg.MinFanout != defaultMinFanout {
+		t.Errorf("MinFanout = %d, want the configured default %d", cfg.MinFanout, defaultMinFanout)
 	}
-	if cfg.AutotuneInterval != defaultAutotuneInterval {
-		t.Errorf("AutotuneInterval = %s, want %s", cfg.AutotuneInterval, defaultAutotuneInterval)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("autotune config failed Validate: %v", err)
-	}
-}
-
-// TestConfigFromEnv_AutotuneDisable confirms the kill-switch: setting
-// CERBERUS_SOLVER_AUTOTUNE=false pins the thresholds (fixed-threshold build) and
-// a custom interval parses.
-func TestConfigFromEnv_AutotuneDisable(t *testing.T) {
-	t.Setenv(EnvAutotune, "false")
-	t.Setenv(EnvAutotuneInterval, "30m")
-
-	cfg, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatalf("ConfigFromEnv() error = %v", err)
-	}
-	if cfg.Autotune {
-		t.Errorf("Autotune = true, want false (kill-switch)")
-	}
-	if cfg.AutotuneInterval != 30*time.Minute {
-		t.Errorf("AutotuneInterval = %s, want 30m", cfg.AutotuneInterval)
+	if cfg.MinAnchorPairs != defaultMinAnchorPairs {
+		t.Errorf("MinAnchorPairs = %d, want the configured default %d", cfg.MinAnchorPairs, defaultMinAnchorPairs)
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("disabled-autotune config failed Validate: %v", err)
+		t.Fatalf("config resolved alongside retired knobs failed Validate: %v", err)
 	}
 }
 
