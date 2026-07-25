@@ -36,7 +36,6 @@ func drawValidConfig(t *rapid.T) Config {
 		Parallel:           rapid.IntRange(1, 8).Draw(t, "parallel"),
 		Timeout:            time.Duration(rapid.IntRange(1, 600).Draw(t, "timeoutSec")) * time.Second,
 		MaxOutputRows:      int64(rapid.IntRange(1, 10_000_000).Draw(t, "maxOutputRows")),
-		MemoryApportion:    rapid.Bool().Draw(t, "memoryApportion"),
 	}
 	// The ranges above are bounded to the valid space by construction, so every
 	// draw must validate. A failure here means a range edit widened past the

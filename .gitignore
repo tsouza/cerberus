@@ -78,3 +78,4 @@ test/e2e/playwright/playwright-report/
 # Tier-1 migration substrate: the seeder's manifest is a per-run artifact
 # (its window rolls with wall-clock time), not a committed fixture.
 /test/e2e/migration/.out/
+/cerberus

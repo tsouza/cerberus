@@ -22,11 +22,22 @@ import (
 //   - internal/chsql provides the SQLEmitter (wired by the engine adapter
 //     in the next PR).
 
-// CursorQuerier opens a streaming cursor over a CH result set. It is the
-// single data-plane capability the Executor needs; *chclient.Client
-// satisfies it via QueryCursor.
+// CursorQuerier opens a streaming cursor over a CH result set and reports
+// the per-query memory cap it stamps on every data-plane query.
+// *chclient.Client satisfies it via QueryCursor + MaxQueryMemoryBytes (the
+// engine already reads the latter for an unrelated spill-threshold sizing
+// decision, so this is the same value read from a second call site, not a
+// new capability).
 type CursorQuerier interface {
 	QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error)
+
+	// MaxQueryMemoryBytes returns the per-query `max_memory_usage` cap
+	// (bytes) this Client stamps on route A's single-statement queries, or
+	// 0 when no cap is configured. Execute divides this by kEff to compute
+	// the mandatory per-shard apportionment (docs §"Failure-driven route
+	// memo" — a routed K-shard fan-out must not multiply route A's total
+	// server-side memory exposure by K).
+	MaxQueryMemoryBytes() int64
 }
 
 // SQLEmitter lowers a re-anchored shard plan into a parameterised
