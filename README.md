@@ -189,11 +189,12 @@ swap**. But you only earn that swap after _proving_, query by query, that
 cerberus returns the same numbers on your own data.
 
 The release `cerberus` binary ships a `migrate` subcommand for exactly that. It **harvests** your
-real PromQL from rule files and exported dashboards, **previews** the ClickHouse
-SQL and schema offline, then **replays the corpus against both Prometheus and
-cerberus and diffs the results** — and folds every artifact into one go/no-go
-**gate** that refuses the cutover while a single query still diverges. Nothing
-is allow-listed; the gate earns the flip.
+real PromQL, LogQL, and TraceQL from rule files and exported dashboards, **previews** the ClickHouse
+SQL and schema offline, then **replays every metric query against its head's
+reference backend — Prometheus, Loki, Tempo — and against cerberus, and diffs the
+results** — and folds every artifact into one go/no-go **gate** that refuses the
+cutover while a single query still diverges. Nothing is allow-listed; the gate
+earns the flip.
 
 **→ Follow the step-by-step operator playbook in
 [`docs/migration.md`](docs/migration.md).**

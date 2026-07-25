@@ -504,7 +504,7 @@ type Engine struct {
 // for the dispatch (Solver off / unclassified head), in which case route is ""
 // and the scalar features are 0. This is a pure additive read-out: it joins
 // each routing DECISION to its OBSERVED cost for the route A/B calibration
-// corpus (stage 0) and changes no routing behavior.
+// corpus and changes no routing behavior.
 type QueryObserver interface {
 	ObserveQuery(
 		queryID, shapeID string,
