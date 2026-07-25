@@ -1290,6 +1290,36 @@
     "reason": "below-threshold"
   },
   {
+    "query": "metadata_label_names_leaf_projection",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "metadata_label_values_bucket_le",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "metadata_label_values_collides_on_sanitized_name",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "metadata_label_values_dotted_source_key",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "metadata_label_values_leaf_projection",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "minute_default",
     "routed": false,
     "k": 0,
@@ -1621,6 +1651,12 @@
   },
   {
     "query": "resource_attr_sum_by",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "resource_attrs_allowlist_lookup_table",
     "routed": true,
     "k": 8,
     "reason": "routed"
