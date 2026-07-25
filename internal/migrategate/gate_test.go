@@ -501,6 +501,227 @@ func TestEvaluateBlocksOnRuleGraphSkipped(t *testing.T) {
 	}
 }
 
+// TestEvaluateBlocksOnLokiConsumedRecordedSeries pins that a Loki-ruler-sourced
+// recorded series (Source prefixed "loki-rule:") blocks through the exact same,
+// unmodified rule a Prometheus-sourced one does — RecordedNode carries no
+// per-head field, only the Source prefix — and that the blocking reason names
+// the Loki source, not just the series name, so the two are never visually
+// indistinguishable in the decision output.
+func TestEvaluateBlocksOnLokiConsumedRecordedSeries(t *testing.T) {
+	g := migrate.RuleGraph{
+		Counts: migrate.RuleGraphCounts{Recorded: 1, Consumed: 1, Consumers: 1},
+		Recorded: []migrate.RecordedNode{
+			{
+				Name: "job:logs:error_rate", Source: "loki-rule:loki/rules.yml/logs/job:logs:error_rate",
+				Status: migrate.StatusConsumed, Consumers: []string{"dash.json"},
+			},
+		},
+		Consumers: []migrate.ConsumerNode{
+			{Expr: "job:logs:error_rate", Source: "dash.json", Kind: "dashboard", References: []string{"job:logs:error_rate"}},
+		},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: writeArtifact(t, "rulegraph.json", g.WriteJSON),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	r := stageByName(t, dec, migrategate.StageRuleGraph)
+	if dec.Pass || r.Verdict != migrategate.VerdictFail || !r.Blocking {
+		t.Fatalf("want rulegraph FAIL+blocking on a Loki-sourced consumed series, got pass=%v verdict=%q", dec.Pass, r.Verdict)
+	}
+	if !containsSubstr(r.Reasons, "job:logs:error_rate") {
+		t.Errorf("rulegraph reasons should name the consumed series, got %v", r.Reasons)
+	}
+	if !containsSubstr(r.Reasons, "loki-rule:") {
+		t.Errorf("rulegraph reasons should attribute the block to its loki-rule: source, got %v", r.Reasons)
+	}
+}
+
+// TestEvaluateBlocksOnLokiRulegraphSkip mirrors TestEvaluateBlocksOnRuleGraphSkipped
+// for a Loki-sourced skip (a --loki-rules glob that matched zero files, or an
+// unreadable/unparseable Loki rule file): it trips the same blockingSkip rule,
+// unmodified, because Counts.Skipped carries no per-head distinction.
+func TestEvaluateBlocksOnLokiRulegraphSkip(t *testing.T) {
+	g := migrate.RuleGraph{
+		Counts:   migrate.RuleGraphCounts{Recorded: 1, Orphan: 1, Skipped: 1},
+		Recorded: []migrate.RecordedNode{{Name: "job:foo:rate", Source: "rules.yml", Status: migrate.StatusOrphan}},
+		Skipped:  []migrate.SkippedEntry{{Source: "loki-rule:loki/missing-*.yml", Reason: "no files matched"}},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: writeArtifact(t, "rulegraph.json", g.WriteJSON),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	r := stageByName(t, dec, migrategate.StageRuleGraph)
+	if dec.Pass || r.Verdict != migrategate.VerdictFail || !r.Blocking {
+		t.Fatalf("rulegraph with a loki-sourced skip must FAIL+block, got pass=%v verdict=%q blocking=%v", dec.Pass, r.Verdict, r.Blocking)
+	}
+	if !containsSubstr(r.Reasons, "unsound") || !containsSubstr(r.Reasons, "loki-rule:") {
+		t.Errorf("rulegraph reasons should surface the loki-sourced skip, got %v", r.Reasons)
+	}
+}
+
+// TestEvaluateWarnsOnLokiHighCardinalitySelector pins that a Loki selector at or
+// above the same DefaultHighCardSeries threshold used for Prometheus metrics
+// WARNs — never blocks — and that a low-cardinality selector is not flagged.
+func TestEvaluateWarnsOnLokiHighCardinalitySelector(t *testing.T) {
+	inv := migrateinventory.Inventory{
+		Source: "http://src", Top: 5,
+		Loki: &migrateinventory.LokiInventory{
+			Source: "http://loki",
+			Selectors: []migrateinventory.LokiSelectorStats{
+				{Selector: "checkout-app-stream", Streams: 250_000},
+				{Selector: "quiet-app-stream", Streams: 3},
+			},
+		},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: writeArtifact(t, "inventory.json", inv.WriteJSON),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	iv := stageByName(t, dec, migrategate.StageInventory)
+	if iv.Verdict != migrategate.VerdictWarn {
+		t.Fatalf("want inventory WARN on a high-cardinality loki selector, got %q", iv.Verdict)
+	}
+	if iv.Blocking {
+		t.Errorf("a high-cardinality loki selector must WARN, never block")
+	}
+	if !dec.Pass || dec.Overall != migrategate.OverallPass {
+		t.Fatalf("a WARN-only run should PASS overall, got pass=%v overall=%q", dec.Pass, dec.Overall)
+	}
+	if !containsSubstr(iv.Reasons, "checkout-app-stream") {
+		t.Errorf("inventory reasons should name the high-cardinality selector, got %v", iv.Reasons)
+	}
+	if containsSubstr(iv.Reasons, "quiet-app-stream") {
+		t.Errorf("a low-cardinality selector must not be flagged, got %v", iv.Reasons)
+	}
+}
+
+// TestEvaluateWarnsOnLokiInventoryNotes pins that a Loki selector probe failure
+// (recorded in the Loki section's own Notes, e.g. a partial-failure case) is
+// surfaced as an inventory caveat, never silently dropped.
+func TestEvaluateWarnsOnLokiInventoryNotes(t *testing.T) {
+	inv := migrateinventory.Inventory{
+		Source: "http://src", Top: 5,
+		Loki: &migrateinventory.LokiInventory{
+			Source:    "http://loki",
+			Selectors: []migrateinventory.LokiSelectorStats{{Selector: `{app="checkout"}`, Streams: 10}},
+			Notes:     []string{`selector {app="down"}: /loki/api/v1/index/stats unavailable: HTTP 503`},
+		},
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: writeArtifact(t, "inventory.json", inv.WriteJSON),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	iv := stageByName(t, dec, migrategate.StageInventory)
+	if iv.Verdict != migrategate.VerdictWarn || iv.Blocking {
+		t.Fatalf("loki inventory notes must WARN not block, got verdict=%q blocking=%v", iv.Verdict, iv.Blocking)
+	}
+	if !containsSubstr(iv.Reasons, "unavailable") {
+		t.Errorf("inventory reasons should surface the loki selector failure note, got %v", iv.Reasons)
+	}
+}
+
+// TestEvaluateWarnsOnTempoInventoryOutOfScope pins that a present Tempo section
+// (the operator supplied --tempo-source) always yields exactly one WARN
+// reason naming the fixed, specific out-of-scope text — never a block, and
+// never a silently dropped section.
+func TestEvaluateWarnsOnTempoInventoryOutOfScope(t *testing.T) {
+	tempoInv := migrateinventory.NewTempoInventory("http://tempo")
+	inv := migrateinventory.Inventory{
+		Source: "http://src", Top: 5,
+		Tempo: &tempoInv,
+	}
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: writeArtifact(t, "inventory.json", inv.WriteJSON),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	iv := stageByName(t, dec, migrategate.StageInventory)
+	if iv.Verdict != migrategate.VerdictWarn || iv.Blocking {
+		t.Fatalf("a present tempo section must WARN not block, got verdict=%q blocking=%v", iv.Verdict, iv.Blocking)
+	}
+	if !dec.Pass || dec.Overall != migrategate.OverallPass {
+		t.Fatalf("a tempo-out-of-scope-only run should PASS overall, got pass=%v overall=%q", dec.Pass, dec.Overall)
+	}
+	if !containsSubstr(iv.Reasons, migrateinventory.TempoInventoryOutOfScopeReason) {
+		t.Errorf("inventory reasons should carry the specific tempo out-of-scope reason, got %v", iv.Reasons)
+	}
+}
+
+// TestEvaluateInventoryAbsentHeadsAreSilent pins the "never asked ⇒ never
+// mentioned" half of the fold: an inventory with neither Loki nor Tempo
+// sections must not mention either head anywhere in its reasons.
+func TestEvaluateInventoryAbsentHeadsAreSilent(t *testing.T) {
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: cleanInventory(t),
+		RuleGraph: cleanRuleGraph(t),
+	}
+	dec, err := migrategate.Evaluate(in, migrategate.Options{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	iv := stageByName(t, dec, migrategate.StageInventory)
+	if containsSubstr(iv.Reasons, "loki") || containsSubstr(iv.Reasons, "tempo") {
+		t.Errorf("an inventory with no loki/tempo section must not mention either head, got %v", iv.Reasons)
+	}
+}
+
+// TestEvaluateRejectsLegacyV1InventoryArtifact pins §5's exact-match schema
+// version policy: InventoryVersion bumped 1→2 when the optional Loki/Tempo
+// sections were added, and the gate's requireSchemaVersion check is exact
+// equality, not "at least" — so a schema_version:1 artifact from before this
+// wave (which predates the Loki/Tempo fields entirely) is a hard error, never
+// a silent decode into a struct whose new pointer fields simply zero to nil.
+// This is the same posture TestEvaluateBlocksOnV2Artifact already pins for
+// verify: the operator must regenerate the artifact with the new binary
+// (inventory is a read-only, non-destructive probe, so this costs one re-run).
+func TestEvaluateRejectsLegacyV1InventoryArtifact(t *testing.T) {
+	legacy := rawArtifact(t, "inventory.json",
+		`{"schema_version":1,"source":"http://src","top":5,"head":{"numSeries":0,"numLabelPairs":0,`+
+			`"chunkCount":0,"minTime":0,"maxTime":0},"topMetricsBySeriesCount":[],`+
+			`"topLabelsByValueCardinality":[],"topLabelsByMemoryBytes":[],"metricNameTotal":-1,`+
+			`"metadataMetricTotal":-1}`)
+	in := migrategate.Inputs{
+		Verify:    cleanVerify(t),
+		Classify:  cleanClassify(t),
+		Inventory: legacy,
+		RuleGraph: cleanRuleGraph(t),
+	}
+	if _, err := migrategate.Evaluate(in, migrategate.Options{}); err == nil {
+		t.Fatal("a schema_version:1 inventory artifact predates the Loki/Tempo sections and must hard error, not silently decode")
+	}
+}
+
 func TestEvaluateWarnsOnInventoryNotesButPasses(t *testing.T) {
 	// An enrichment the probe could not fetch lands in Notes. The gate must
 	// surface it: a probe that silently failed an enrichment is an unchecked

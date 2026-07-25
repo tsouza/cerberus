@@ -384,33 +384,46 @@ func runClassifyCommand(cmd *cobra.Command, rules, lokiRules []string, dashboard
 
 // newMigrateRuleGraphCmd builds the recording-rule-output → consumer dependency
 // graph and lists the consumers that MUST keep being materialized post-cutover.
-// Needs --rules and/or --corpus.
+// Needs --rules, --loki-rules, and/or --corpus. Tempo has no rule-file concept
+// in this sense — its metrics-generator is a fixed-shape, config-driven metric
+// emitter with no user-authored record:/expr: rule file to point a glob at —
+// so there is deliberately no --tempo-rules flag; offering one with nothing
+// behind it would itself be the silent-ignore anti-pattern this tool avoids.
 func newMigrateRuleGraphCmd() *cobra.Command {
 	var (
-		rules  []string
-		corpus string
-		out    string
-		asJSON bool
+		rules     []string
+		lokiRules []string
+		corpus    string
+		out       string
+		asJSON    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rulegraph",
 		Short: "Map recording-rule outputs to the consumers that must stay materialized",
 		Long: "Link each recording rule's recorded OUTPUT series (its record: name, from\n" +
-			"--rules) to the corpus queries and alerting exprs that reference it\n" +
-			"(--rules alerts + --corpus), classify every recorded series as consumed or\n" +
-			"orphan, and list the consumers that MUST keep being materialized after\n" +
-			"cutover (cerberus has no ruler). Fully offline; anything unparseable is a\n" +
-			"counted skip, never silently dropped.",
-		Example:       "  cerberus migrate rulegraph --rules 'rules/*.yml' --corpus corpus.json",
+			"--rules and/or --loki-rules) to the corpus queries and alerting exprs that\n" +
+			"reference it (--rules alerts + --corpus), classify every recorded series as\n" +
+			"consumed or orphan, and list the consumers that MUST keep being\n" +
+			"materialized after cutover (cerberus has no ruler). --loki-rules harvests\n" +
+			"only Loki ruler record: output series: a LogQL alerting or recording expr\n" +
+			"is a log-stream selector, not a metric reference, so it can never itself\n" +
+			"consume a recorded series and is never fed into the consumer pipeline.\n" +
+			"Tempo has no rule concept in this sense (its metrics-generator has no\n" +
+			"user-authored rule file), so there is no --tempo-rules flag. Fully\n" +
+			"offline; anything unparseable is a counted skip, never silently dropped.",
+		Example:       "  cerberus migrate rulegraph --rules 'rules/*.yml' --loki-rules 'loki/*.yml' --corpus corpus.json",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRuleGraphCommand(cmd, normalizeList(rules), corpus, out, asJSON)
+			return runRuleGraphCommand(cmd, normalizeList(rules), normalizeList(lokiRules), corpus, out, asJSON)
 		},
 	}
 	cmd.Flags().StringSliceVar(&rules, "rules", nil,
-		"recording/alerting rule files: record: names are the recorded series, alerting exprs are consumers "+
+		"Prometheus recording/alerting rule files: record: names are the recorded series, alerting exprs are consumers "+
+			"(repeatable or comma-separated paths/globs)")
+	cmd.Flags().StringSliceVar(&lokiRules, "loki-rules", nil,
+		"Loki ruler rule files: only record: names are harvested, as recorded series "+
 			"(repeatable or comma-separated paths/globs)")
 	cmd.Flags().StringVar(&corpus, "corpus", "",
 		"harvested corpus.json (from `cerberus migrate harvest`) whose queries are scanned as consumers")
@@ -419,12 +432,12 @@ func newMigrateRuleGraphCmd() *cobra.Command {
 	return cmd
 }
 
-func runRuleGraphCommand(cmd *cobra.Command, rules []string, corpus, out string, asJSON bool) error {
-	if len(rules) == 0 && corpus == "" {
+func runRuleGraphCommand(cmd *cobra.Command, rules, lokiRules []string, corpus, out string, asJSON bool) error {
+	if len(rules) == 0 && len(lokiRules) == 0 && corpus == "" {
 		_ = cmd.Usage()
-		return fmt.Errorf("rulegraph needs --rules (for recorded series) and/or --corpus (for consumers)")
+		return fmt.Errorf("rulegraph needs --rules and/or --loki-rules (for recorded series) and/or --corpus (for consumers)")
 	}
-	g, err := buildRuleGraph(rules, corpus)
+	g, err := buildRuleGraph(rules, lokiRules, corpus)
 	if err != nil {
 		return err
 	}
@@ -769,27 +782,42 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 	return nil
 }
 
-// newMigrateInventoryCmd probes a LIVE source Prometheus for the runtime
-// cardinality facts config can't reveal offline — the head-block series/label
-// cardinality that drives OOM risk — ranks the top-N candidates, and writes the
-// report. Flags fall back to CERBERUS_INVENTORY_*.
+// newMigrateInventoryCmd probes LIVE migration sources for the runtime
+// cardinality facts config can't reveal offline. The source Prometheus is
+// always probed (its head-block series/label cardinality drives OOM risk,
+// ranked to the top-N candidates); a Loki source is probed only when
+// --loki-source is supplied (its per-selector stream cardinality/volume,
+// ranked across the operator-supplied --loki-selector set — Loki has no
+// whole-tenant top-N call to rank without one); a Tempo source, supplied via
+// --tempo-source, records a fixed out-of-scope entry rather than a fabricated
+// cardinality number, since Tempo's span/block storage exposes nothing
+// analogous. Flags fall back to CERBERUS_INVENTORY_*.
 func newMigrateInventoryCmd() *cobra.Command {
 	var (
-		source string
-		top    int
-		window string
-		asJSON bool
-		out    string
+		source        string
+		top           int
+		window        string
+		asJSON        bool
+		out           string
+		lokiSource    string
+		lokiSelectors []string
+		tempoSource   string
 	)
 	cmd := &cobra.Command{
 		Use:   "inventory",
-		Short: "Probe a live source Prometheus for cardinality / OOM-risk facts",
+		Short: "Probe live migration sources for cardinality / OOM-risk facts",
 		Long: "Probe the LIVE source Prometheus for the runtime cardinality facts config\n" +
 			"can't reveal offline: /api/v1/status/tsdb (plus optional label-values and\n" +
 			"metadata) ranked as the top-N metrics by series count and labels by\n" +
 			"cardinality — the OOM candidates cerberus can't see before cutover. It\n" +
 			"refuses to infer from prometheus.yml. The numbers RANK RISK; they do not\n" +
-			"predict cerberus's exact memory.",
+			"predict cerberus's exact memory.\n\n" +
+			"--loki-source additionally probes a Loki instance's per-selector\n" +
+			"/loki/api/v1/index/stats endpoint, ranking the --loki-selector set the\n" +
+			"operator supplies (Loki has no whole-tenant top-N call to rank without\n" +
+			"one). --tempo-source records a fixed, specifically-reasoned out-of-scope\n" +
+			"entry: Tempo's span/block storage exposes no cardinality-ranking API\n" +
+			"analogous to Prometheus's or Loki's, so no proxy number is fabricated.",
 		Example:       "  cerberus migrate inventory --source http://prometheus:9090 --top 50 --json",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
@@ -798,6 +826,16 @@ func newMigrateInventoryCmd() *cobra.Command {
 			if source == "" {
 				return errors.New("missing --source (or CERBERUS_INVENTORY_SOURCE): the source Prometheus base URL to probe")
 			}
+			selectors := normalizeList(lokiSelectors)
+			if len(selectors) > 0 && lokiSource == "" {
+				return errors.New("--loki-selector supplied without --loki-source: " +
+					"point --loki-source at a Loki base URL or drop --loki-selector")
+			}
+			if lokiSource != "" && len(selectors) == 0 {
+				return errors.New("--loki-source requires at least one --loki-selector: " +
+					"Loki has no whole-tenant top-N cardinality endpoint, so name what to rank")
+			}
+
 			opts := migrateinventory.Options{Top: top, Window: window}
 			if err := opts.Validate(); err != nil {
 				return err
@@ -806,16 +844,39 @@ func newMigrateInventoryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			if lokiSource != "" {
+				lokiInv, err := migrateinventory.NewLokiClient(lokiSource).Probe(context.Background(), selectors, window, top)
+				if err != nil {
+					return err
+				}
+				inv.Loki = &lokiInv
+			}
+			if tempoSource != "" {
+				tempoInv := migrateinventory.NewTempoInventory(tempoSource)
+				inv.Tempo = &tempoInv
+			}
+
 			return writeInventory(cmd.OutOrStdout(), out, inv, asJSON)
 		},
 	}
 	cmd.Flags().StringVar(&source, "source", envOr("CERBERUS_INVENTORY_SOURCE", ""),
 		"source Prometheus base URL to probe for live cardinality (env: CERBERUS_INVENTORY_SOURCE)")
-	cmd.Flags().IntVar(&top, "top", migrateinventory.DefaultTop, "rank the top N metrics/labels by cardinality")
+	cmd.Flags().IntVar(&top, "top", migrateinventory.DefaultTop, "rank the top N metrics/labels/selectors by cardinality")
 	cmd.Flags().StringVar(&window, "window", envOr("CERBERUS_INVENTORY_WINDOW", ""),
-		"optional observation window (duration like 1h) recorded as report context (env: CERBERUS_INVENTORY_WINDOW)")
+		"optional observation window (duration like 1h); recorded as report context for Prometheus, "+
+			"and applied as the real query range for Loki's index/stats (env: CERBERUS_INVENTORY_WINDOW)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the machine-readable JSON report instead of text")
 	cmd.Flags().StringVar(&out, "out", "", "write the inventory here (default: stdout)")
+	cmd.Flags().StringVar(&lokiSource, "loki-source", envOr("CERBERUS_INVENTORY_LOKI_SOURCE", ""),
+		"optional Loki base URL to probe per-selector stream cardinality/volume (requires --loki-selector; "+
+			"env: CERBERUS_INVENTORY_LOKI_SOURCE)")
+	cmd.Flags().StringArrayVar(&lokiSelectors, "loki-selector", envOrLokiSelectors("CERBERUS_INVENTORY_LOKI_SELECTORS"),
+		"Loki stream selector to rank via /loki/api/v1/index/stats (repeatable; required with --loki-source; "+
+			"env: CERBERUS_INVENTORY_LOKI_SELECTORS, one selector per line — a selector may itself contain a comma)")
+	cmd.Flags().StringVar(&tempoSource, "tempo-source", envOr("CERBERUS_INVENTORY_TEMPO_SOURCE", ""),
+		"optional Tempo base URL; presence alone records a fixed out-of-scope inventory entry, no probe is made "+
+			"(env: CERBERUS_INVENTORY_TEMPO_SOURCE)")
 	return cmd
 }
 
@@ -950,11 +1011,21 @@ func runClassifyReport(w io.Writer, src migrate.CorpusSource, asJSON bool) error
 }
 
 // buildRuleGraph assembles the graph inputs: recorded series + alerting
-// consumers from the rule files, plus every corpus query as an additional
+// consumers from the Prometheus rule files, recorded series (record: only)
+// from the Loki rule files, plus every corpus query as an additional
 // consumer. Rule-file and corpus skips are threaded through so the graph's skip
-// count accounts for every dropped input.
-func buildRuleGraph(rules []string, corpus string) (migrate.RuleGraph, error) {
+// count accounts for every dropped input. When lokiRules is empty this runs
+// the exact same code path as before it existed — no HarvestLokiRuleFiles
+// call, no output-shape change — which is what keeps MIG-04's committed
+// golden byte-identical for the existing --rules/--corpus invocation.
+func buildRuleGraph(rules, lokiRules []string, corpus string) (migrate.RuleGraph, error) {
 	recorded, consumers, skipped := migrate.HarvestRuleFiles(rules)
+
+	if len(lokiRules) > 0 {
+		lokiRecorded, lokiSkipped := migrate.HarvestLokiRuleFiles(lokiRules)
+		recorded = append(recorded, lokiRecorded...)
+		skipped = append(skipped, lokiSkipped...)
+	}
 
 	if corpus != "" {
 		cq, csk, err := migrate.CorpusFileSource{Path: corpus}.Harvest(context.Background())
@@ -1303,6 +1374,24 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envOrLokiSelectors parses the environment fallback for the repeatable
+// --loki-selector flag. It deliberately does NOT comma-split the way a
+// generic repeatable-flag env fallback would: a LogQL stream selector
+// routinely contains a comma itself (e.g. the ordinary multi-label selector
+// `{app="checkout", env="prod"}`), and comma-splitting would corrupt it into
+// two malformed fragments. Each selector is instead one line, matching
+// --loki-selector's StringArrayVar CLI semantics where every occurrence of
+// the flag is one whole, unsplit selector. It returns nil (not an empty
+// non-nil slice) when the variable is unset, so cobra's flag default stays
+// indistinguishable from "never set."
+func envOrLokiSelectors(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	return normalizeList(strings.Split(v, "\n"))
 }
 
 // envFloat returns the float parsed from the environment value for key, or def

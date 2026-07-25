@@ -23,18 +23,34 @@
 //     equivalent), or if ZERO queries were classified (an empty harvest cannot
 //     prove support). A supported-but-risky query WARNs but does not block; a
 //     harvest-skipped corpus entry (never classified) also WARNs.
-//   - inventory — WARN (never block) when the source carries high-cardinality
-//     metrics or labels: an OOM candidate to review, not a correctness stop.
+//   - inventory — WARN (never block), uniformly across every head the operator
+//     asked about, when the source carries high-cardinality metrics, labels, or
+//     Loki stream selectors: an OOM candidate to review, not a correctness stop.
 //     Also WARNs on every honesty caveat the probe recorded (an optional
-//     enrichment it could not fetch), so an enrichment failure never reads clean.
+//     enrichment or Loki selector it could not fetch) and on a Tempo section's
+//     fixed out-of-scope note, so none of that ever reads clean. Inventory's own
+//     rule — a cardinality signal never proves or disproves cutover correctness,
+//     only how well-informed it is — is head-agnostic by construction, so no
+//     head gets a WARN-vs-BLOCK carve-out; a head the operator never asked
+//     about (no --loki-source / --tempo-source) is simply absent, never
+//     silently treated as "checked, nothing found."
 //   - rulegraph — BLOCK if any recorded series is consumed: a dashboard or
 //     alert depends on it, so it MUST keep being materialized after cutover;
-//     dropping its materializer leaves a blank panel. Orphan recorded series
-//     (nobody reads them) are safe and never block — BUT any SKIPPED input (an
-//     unparseable consumer expr, an unreadable rule file) also BLOCKS, because a
-//     dropped consumer that referenced a series would have marked it consumed;
-//     with a skip, "orphan ⇒ safe to drop" is unsound and the stage can no
-//     longer prove a panel won't go blank.
+//     dropping its materializer leaves a blank panel. This applies identically
+//     to a Prometheus-sourced and a Loki-ruler-sourced recorded series — both
+//     are the same RecordedNode shape, discriminated only by a "rule:" vs.
+//     "loki-rule:" Source prefix, so the existing rule covers both with no
+//     per-head branch; the blocking reason names the Source so the two are
+//     never visually indistinguishable. Orphan recorded series (nobody reads
+//     them) are safe and never block — BUT any SKIPPED input (an unparseable
+//     consumer expr, an unreadable rule file, a --loki-rules glob that matched
+//     zero files) also BLOCKS, because a dropped consumer that referenced a
+//     series would have marked it consumed; with a skip, "orphan ⇒ safe to
+//     drop" is unsound and the stage can no longer prove a panel won't go
+//     blank. Loki has no rule-consumer side to fold in here: a Loki ruler
+//     expression is LogQL over log streams, which cannot itself reference a
+//     recorded metric series, so only Loki's recorded (record:) side ever
+//     reaches this stage — never a new consumer shape.
 //
 // A required artifact that was not supplied is itself a BLOCK: the gate cannot
 // prove safety for a stage it never saw. verify, classify, and rulegraph are
@@ -475,10 +491,13 @@ func classifyHarvestSkips(cl migrate.Classification) []string {
 const enrichmentUnavailable = -1
 
 // evalInventory WARNs (never blocks) when the source carries a high-cardinality
-// metric or label, or when the probe recorded an honesty caveat (an optional
-// enrichment it could not fetch). inventory is advisory: its worst outcome is a
-// WARN, so a missing inventory artifact is reported but does not block the
-// cutover.
+// metric, label, or Loki stream selector, or when the probe recorded an
+// honesty caveat (an optional enrichment or Loki selector it could not fetch,
+// or a Tempo out-of-scope note). Every head folds into this single stage the
+// same way — inventory is advisory everywhere, its worst outcome is a WARN —
+// so a missing inventory artifact is reported but does not block the cutover,
+// and a head the operator never asked about (Loki/Tempo both nil) contributes
+// nothing at all.
 func evalInventory(path string, opts Options) (StageResult, error) {
 	res := StageResult{Stage: StageInventory, Required: false}
 	if path == "" {
@@ -511,6 +530,8 @@ func evalInventory(path string, opts Options) (StageResult, error) {
 		}
 	}
 	res.Reasons = append(res.Reasons, inventoryCaveats(inv)...)
+	res.Reasons = append(res.Reasons, lokiInventoryReasons(inv.Loki, seriesLimit)...)
+	res.Reasons = append(res.Reasons, tempoInventoryReasons(inv.Tempo)...)
 
 	if len(res.Reasons) > 0 {
 		res.Verdict = VerdictWarn
@@ -543,12 +564,54 @@ func inventoryCaveats(inv migrateinventory.Inventory) []string {
 	return out
 }
 
+// lokiInventoryReasons flags every Loki selector at or above seriesLimit
+// streams and surfaces every per-selector probe failure the Loki section
+// recorded in Notes. A nil section (the operator never supplied --loki-source)
+// yields nothing: "never asked" is not "asked and found nothing." This never
+// blocks — WARN is inventory's only outcome, uniformly across every head.
+func lokiInventoryReasons(loki *migrateinventory.LokiInventory, seriesLimit int64) []string {
+	if loki == nil {
+		return nil
+	}
+	var out []string
+	// highCardSeries() always returns a positive default or override, but the
+	// guard is restated on this same variable so gosec G115 and CodeQL's
+	// go/incorrect-integer-conversion can prove the uint64 conversion locally
+	// (neither follows the bound across the Options.highCardSeries call).
+	if seriesLimit > 0 {
+		limit := uint64(seriesLimit)
+		for _, s := range loki.Selectors {
+			if s.Streams >= limit {
+				out = append(out, fmt.Sprintf("high-cardinality loki selector %q: %d streams (>= %d)",
+					s.Selector, s.Streams, seriesLimit))
+			}
+		}
+	}
+	out = append(out, loki.Notes...)
+	return out
+}
+
+// tempoInventoryReasons surfaces the Tempo section's fixed, specifically-
+// reasoned out-of-scope note as a caveat. A nil section (the operator never
+// supplied --tempo-source) yields nothing. This never blocks: it documents why
+// no cardinality signal exists for Tempo, it does not itself signal risk.
+func tempoInventoryReasons(tempo *migrateinventory.TempoInventory) []string {
+	if tempo == nil {
+		return nil
+	}
+	return []string{fmt.Sprintf("tempo inventory intentionally out of scope: %s", tempo.OutOfScope)}
+}
+
 // evalRuleGraph blocks when any recorded series is consumed: a dashboard or
 // alert reads it, so it MUST keep being materialized after cutover — dropping
-// its recording rule leaves a blank panel. Orphan recorded series (read by
-// nobody) are safe to drop and never block — BUT any SKIPPED input also blocks:
-// the builder could not use it (an unparseable consumer expr, an unreadable rule
-// file), so a consumer that referenced a recorded series may have been dropped,
+// its recording rule leaves a blank panel. This rule is unmodified by source:
+// a Loki-ruler-sourced RecordedNode (Source prefixed "loki-rule:") is the exact
+// same shape as a Prometheus one and blocks identically — the reason line names
+// the Source so the two are never visually indistinguishable. Orphan recorded
+// series (read by nobody) are safe to drop and never block — BUT any SKIPPED
+// input also blocks: the builder could not use it (an unparseable consumer
+// expr, an unreadable rule file, a --loki-rules glob that matched zero files),
+// so a consumer that referenced a recorded series may have been dropped,
 // leaving that series wrongly classified orphan. With a skip, "orphan ⇒ safe to
 // drop" is unsound, so the gate refuses rather than green-light dropping a
 // materializer the skipped consumer needs. rulegraph is a required artifact.
@@ -588,7 +651,7 @@ func evalRuleGraph(path string) (StageResult, error) {
 				len(consumed)))
 		for _, n := range consumed {
 			res.Reasons = append(res.Reasons,
-				fmt.Sprintf("  %s <- %d consumer%s", n.Name, len(n.Consumers), plural(len(n.Consumers), "", "s")))
+				fmt.Sprintf("  %s (%s) <- %d consumer%s", n.Name, n.Source, len(n.Consumers), plural(len(n.Consumers), "", "s")))
 		}
 	}
 	if blockingSkip {

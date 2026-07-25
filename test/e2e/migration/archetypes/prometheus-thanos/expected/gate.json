@@ -40,8 +40,8 @@
       "blocking": true,
       "reasons": [
         "2 consumed recorded series must stay materialized after cutover",
-        "  slo:http_error_budget:burnrate7d \u003c- 1 consumer",
-        "  slo:http_request_availability:ratio30d \u003c- 1 consumer"
+        "  slo:http_error_budget:burnrate7d (rule:test/e2e/migration/archetypes/prometheus-thanos/rules/thanos-slo.yaml/thanos.slo/slo:http_error_budget:burnrate7d) \u003c- 1 consumer",
+        "  slo:http_request_availability:ratio30d (rule:test/e2e/migration/archetypes/prometheus-thanos/rules/thanos-slo.yaml/thanos.slo/slo:http_request_availability:ratio30d) \u003c- 1 consumer"
       ]
     }
   ],

@@ -1,21 +1,34 @@
-// Package migrateinventory probes a LIVE source Prometheus for the runtime
+// Package migrateinventory probes LIVE migration sources for the runtime
 // cardinality facts that a migration preview cannot learn offline. Cerberus's
 // offline `migrate explain` can show the SQL and physical tables a query
 // touches, but the one thing that actually drives ClickHouse memory risk —
-// how many series a metric fans out to, how wide a label is — is data, not
-// config, and it lives only in the running TSDB.
+// how many series a metric fans out to, how wide a label is, how much a log
+// stream churns — is data, not config; it lives only in the running source.
 //
-// This package deliberately REFUSES to infer cardinality from prometheus.yml:
-// scrape config lists targets and relabel rules, not the realized series count
-// after those rules run against real endpoints. The only honest source is the
-// TSDB itself, so `inventory` calls the source Prometheus HTTP API
-// (/api/v1/status/tsdb) and ranks the head-block cardinality.
+// Each head's client REFUSES to infer cardinality from static config —
+// Prometheus's scrape config lists targets and relabel rules, not the
+// realized series count after those rules run against real endpoints; Loki's
+// config says nothing about how many streams a tenant actually writes. The
+// only honest source is the running system itself:
 //
-// Honesty contract: everything here is a SOURCE-Prometheus runtime fact. It
-// ranks OOM RISK — a high-cardinality metric is a candidate that cerberus can't
-// see offline — it does NOT predict cerberus's exact memory. The report says so
-// in its own words. Optional enrichment endpoints that fail are COUNTED and
-// surfaced as notes, never silently dropped.
+//   - Client probes the source Prometheus's /api/v1/status/tsdb, which ranks
+//     head-block cardinality — a point-in-time TSDB snapshot.
+//   - LokiClient probes a Loki source's per-selector /loki/api/v1/index/stats
+//     endpoint. Loki exposes no whole-tenant top-N cardinality call, so the
+//     operator supplies the stream selectors to rank; the ranking covers
+//     exactly that supplied set, by streams matched.
+//   - Tempo has no client in this package. Its span/block storage exposes
+//     neither a TSDB-style head snapshot (Prometheus) nor a per-selector
+//     stats endpoint (Loki); its Inventory section is always the fixed,
+//     specifically-reasoned out-of-scope entry in TempoInventory rather than
+//     a fabricated cardinality number Tempo cannot honestly back.
+//
+// Honesty contract: everything here is a source runtime fact. It ranks OOM
+// RISK — a high-cardinality metric, label, or selector is a candidate worth
+// reviewing, never a prediction of cerberus's exact memory — and it never
+// silently drops a caveat: enrichment and per-selector failures land in
+// Notes, and a head the operator never asked about is simply absent from the
+// report, never presented as "checked, nothing found."
 package migrateinventory
 
 import (
@@ -115,12 +128,18 @@ type tsdbStatusResponse struct {
 // WriteJSON stamps it and the cutover gate refuses an inventory whose version it
 // does not understand, so a schema-drifted or wrong-type artifact blocks rather
 // than zero-filling to a silent PASS. Bump it on any breaking change to the JSON
-// shape.
-const InventoryVersion = 1
+// shape — the optional Loki and Tempo sections are exactly that kind of change,
+// since DisallowUnknownFields decoding of an old artifact against a newer struct
+// (or vice versa) is the class of drift this version exists to catch.
+const InventoryVersion = 2
 
-// Inventory is the ranked risk picture of the source Prometheus head block.
-// Every field is a source-Prometheus runtime fact; none predicts cerberus's
-// memory. It ranks candidates worth reviewing before cutover.
+// Inventory is the ranked risk picture assembled from every source the
+// operator pointed the probe at. The Prometheus fields (Head/TopMetrics*/
+// TopLabels*) are always present — Inventory always probes a live Prometheus.
+// Loki and Tempo are present only when the operator supplied the matching
+// source flag; a nil section means "never asked," never "asked and found
+// nothing." Every field is a source runtime fact; none predicts cerberus's
+// own memory. It ranks candidates worth reviewing before cutover.
 type Inventory struct {
 	SchemaVersion int    `json:"schema_version"`
 	Source        string `json:"source"`
@@ -150,6 +169,13 @@ type Inventory struct {
 	// enrichment that could not be fetched is recorded here — counted, never
 	// silently dropped.
 	Notes []string `json:"notes,omitempty"`
+
+	// Loki is the optional per-selector stream cardinality/volume section,
+	// present only when the operator supplied a Loki source to probe.
+	Loki *LokiInventory `json:"loki,omitempty"`
+	// Tempo is the optional out-of-scope section, present only when the
+	// operator supplied a Tempo source.
+	Tempo *TempoInventory `json:"tempo,omitempty"`
 }
 
 // Client probes a Prometheus-compatible HTTP API for TSDB cardinality.
