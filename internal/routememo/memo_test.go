@@ -192,7 +192,17 @@ func TestReValidationAtMidpointSuccessDropsEntry(t *testing.T) {
 	}
 }
 
-func TestReValidationAtMidpointFailureRefreshesWithoutReProbing(t *testing.T) {
+// TestReValidationAtMidpointFailureRefreshesVerdictState pins the plain
+// Observe(RouteA, ResourceFailure) call's STATE-TRANSITION behavior on a
+// stale PreferB entry: it stays PreferB and its clock refreshes. This is
+// unconditionally correct on its own and is unaffected by the atomic
+// record-and-admit method (ObserveRouteAFailureAndMaybeBeginProbe, see
+// TestReValidationRescue_* below) — that method reuses this exact same
+// state transition internally. What this test does NOT cover is whether a
+// caller gets a RESCUE dispatch for the request that produced this
+// failure; see TestObserveThenBeginProbeSeparately_MissesStaleRescue and
+// TestReValidationRescue_AdmitsStalePreferBFailure for that half.
+func TestReValidationAtMidpointFailureRefreshesVerdictState(t *testing.T) {
 	m, clk := newTestMemo()
 	k := testKey("A")
 
@@ -207,8 +217,6 @@ func TestReValidationAtMidpointFailureRefreshesWithoutReProbing(t *testing.T) {
 		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
 	}
 
-	// Route A is re-confirmed still failing: the entry refreshes (createdAt
-	// resets) WITHOUT going through BeginProbe again.
 	m.Observe(k, RouteA, OutcomeResourceFailure)
 	if state, stale := m.Lookup(k); state != PreferB || stale {
 		t.Fatalf("expected the entry refreshed to non-stale PreferB, got (%v, stale=%v)", state, stale)
@@ -219,6 +227,121 @@ func TestReValidationAtMidpointFailureRefreshesWithoutReProbing(t *testing.T) {
 	if state, _ := m.Lookup(k); state != PreferB {
 		t.Fatalf("expected the refreshed entry to still be live, got %v", state)
 	}
+}
+
+// TestObserveThenBeginProbeSeparately_MissesStaleRescue documents the exact
+// ordering hazard ObserveRouteAFailureAndMaybeBeginProbe exists to close: a
+// caller that observes and admits as two SEPARATE calls can never rescue a
+// stale-PreferB re-validation failure, because Observe's own refresh of
+// createdAt un-stales the entry before BeginProbe (Unknown-only) ever looks
+// at it. This is a guard against "simplifying" the engine's call site back
+// to the two-call form — if this test ever starts passing with ok=true, the
+// atomic method has stopped being necessary or something has regressed the
+// separate calls' documented behavior.
+func TestObserveThenBeginProbeSeparately_MissesStaleRescue(t *testing.T) {
+	m, clk := newTestMemo()
+	k := testKey("A")
+
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	release, _ := m.BeginProbe(k)
+	m.Observe(k, RouteB, OutcomeSuccess)
+	release()
+
+	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	if state, stale := m.Lookup(k); state != PreferB || !stale {
+		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
+	}
+
+	// The two-call sequence: Observe refreshes (un-stales) the entry, THEN
+	// BeginProbe looks — and refuses, because state is PreferB, not Unknown.
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	_, ok := m.BeginProbe(k)
+	if ok {
+		t.Fatal("BeginProbe admitted after a separate Observe call — the ordering hazard this test documents no longer reproduces; if the two-call form is now safe, ObserveRouteAFailureAndMaybeBeginProbe may be unnecessary and this test's premise should be revisited")
+	}
+}
+
+// TestReValidationRescue_AdmitsStalePreferBFailure pins the actual fix: the
+// atomic method rescues the request that triggers a stale PreferB entry's
+// re-validation, using the SAME setup as
+// TestObserveThenBeginProbeSeparately_MissesStaleRescue to make the
+// before/after contrast direct.
+func TestReValidationRescue_AdmitsStalePreferBFailure(t *testing.T) {
+	m, clk := newTestMemo()
+	k := testKey("A")
+
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	release, _ := m.BeginProbe(k)
+	m.Observe(k, RouteB, OutcomeSuccess)
+	release()
+
+	clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+	if state, stale := m.Lookup(k); state != PreferB || !stale {
+		t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
+	}
+
+	rescueRelease, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if !ok {
+		t.Fatal("ObserveRouteAFailureAndMaybeBeginProbe did not rescue a stale PreferB entry's re-validation failure")
+	}
+	rescueRelease()
+
+	// The rescue also performed the same state refresh the plain Observe
+	// call does — still PreferB, no longer stale.
+	if state, stale := m.Lookup(k); state != PreferB || stale {
+		t.Fatalf("state after rescue = (%v, stale=%v), want (PreferB, stale=false)", state, stale)
+	}
+}
+
+// TestReValidationRescue_FreshPreferBNotAdmitted defensively pins the Memo
+// API's own correctness independent of caller discipline: a PreferB entry
+// that has NOT crossed the re-validation midpoint must not be rescued, even
+// if something calls the atomic method for it (the real engine call sites
+// only ever reach this method after Lookup already reported non-fresh, but
+// the Memo API itself should not rely on that).
+func TestReValidationRescue_FreshPreferBNotAdmitted(t *testing.T) {
+	m, _ := newTestMemo()
+	k := testKey("A")
+
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	m.Observe(k, RouteA, OutcomeResourceFailure)
+	release, _ := m.BeginProbe(k)
+	m.Observe(k, RouteB, OutcomeSuccess)
+	release()
+
+	if state, stale := m.Lookup(k); state != PreferB || stale {
+		t.Fatalf("expected a fresh (non-stale) PreferB entry, got (%v, stale=%v)", state, stale)
+	}
+
+	_, ok := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if ok {
+		t.Fatal("rescued a FRESH PreferB entry's failure — re-probing an already-trusted, non-stale verdict is unnecessary and wasteful")
+	}
+}
+
+// TestReValidationRescue_UnknownKeyCorroborationStillWorks pins that the
+// atomic method preserves the ORIGINAL first-probe contract for a fresh
+// Unknown key — the case ObserveRouteAFailureAndMaybeBeginProbe replaces
+// Observe+BeginProbe for, not just the new stale-rescue case.
+func TestReValidationRescue_UnknownKeyCorroborationStillWorks(t *testing.T) {
+	m, _ := newTestMemo()
+	k := testKey("A")
+
+	release1, ok1 := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if ok1 {
+		t.Fatal("admitted on the FIRST failure — corroboration requires more than one")
+	}
+	if release1 != nil {
+		release1()
+	}
+
+	release2, ok2 := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
+	if !ok2 {
+		t.Fatal("did not admit on the 2nd consecutive failure (minCorroboratingFailures)")
+	}
+	release2()
 }
 
 func TestBothFailHasNoReValidationAndExpiresAtPlainTTL(t *testing.T) {

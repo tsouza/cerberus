@@ -174,14 +174,28 @@ func (e *Engine) retryOnRouteAResourceFailure(
 
 	outcome := classifyRouteOutcome(routememo.RouteA, err)
 	d := e.deriveRouteMemoDispatch(plan, seedDecision, time.Now())
-	e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
 	if outcome != routememo.OutcomeResourceFailure {
+		// Success or NoEvidence: plain Observe (Success drops any recorded
+		// state; NoEvidence is a documented no-op) — neither ever earns a
+		// probe, so there is nothing for the atomic record-and-admit method
+		// below to decide.
+		e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
 		return nil, nil, nil, nil, false
 	}
 	if !d.eligible || !d.fresh || !e.Solver.BreakerClosed() {
+		// Still record the failure even when a gate blocks probing — the
+		// corroboration count (or the stale-PreferB re-validation refresh)
+		// must progress regardless of whether THIS failure is admitted, or
+		// a Key that keeps failing while e.g. transiently ineligible would
+		// never accumulate enough evidence to ever probe once it clears.
+		e.RouteMemo.Observe(d.key, routememo.RouteA, outcome)
 		return nil, nil, nil, nil, false
 	}
-	release, ok := e.RouteMemo.BeginProbe(d.key)
+	// Record the failure AND decide probe admission atomically — see
+	// ObserveRouteAFailureAndMaybeBeginProbe's doc for why this must not be
+	// two separate calls (a stale PreferB entry's re-validation rescue
+	// depends on the admission check seeing pre-refresh staleness).
+	release, ok := e.RouteMemo.ObserveRouteAFailureAndMaybeBeginProbe(d.key)
 	if !ok {
 		return nil, nil, nil, nil, false
 	}

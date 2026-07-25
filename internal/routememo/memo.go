@@ -210,6 +210,82 @@ func (m *Memo) BeginProbe(k Key) (release func(), ok bool) {
 	}
 }
 
+// ObserveRouteAFailureAndMaybeBeginProbe records a route-A resource-
+// exhaustion failure for k AND, in the SAME atomic step, decides whether
+// THIS failure earns an immediate rescue dispatch on route B — either
+// because it is the Nth consecutive failure on a fresh Unknown key (the
+// original first-probe admission BeginProbe alone already granted), or
+// because it is the failure a STALE PreferB entry's re-validation dispatch
+// produced.
+//
+// The second case is why this method exists as one atomic operation rather
+// than two calls to the existing Observe + BeginProbe primitives. Lookup
+// correctly declines to memo-hit a stale PreferB verdict — the caller
+// routes through plain route A instead, "as if the Key were unknown", so
+// the verdict can be honestly re-confirmed by real traffic rather than
+// trusted forever. But if that route-A dispatch then fails for real (the
+// expected outcome, if the underlying premise still holds), a caller that
+// separately calls Observe(k, RouteA, OutcomeResourceFailure) — which
+// refreshes a PreferB entry's createdAt, un-staling it — and THEN calls
+// BeginProbe(k) finds BeginProbe's Unknown-only gate refuses: the entry no
+// longer LOOKS stale, because Observe already cleared that flag before
+// BeginProbe got to look at it. The caller's actual HTTP request is then
+// stuck on the very failure the memo already knows how to avoid, with no
+// rescue, even though the memo has been confidently routing this shape to
+// B for the entire life of the entry. Combining record-and-decide into one
+// critical section lets the admission check see staleness as it stood
+// BEFORE this call's own side effects, closing that gap.
+//
+// Callers MUST use this method — never a separate Observe(k, RouteA,
+// OutcomeResourceFailure) followed by BeginProbe(k) — for a route-A
+// resource-exhaustion failure. release must be called exactly once,
+// whenever ok is true, when the resulting probe/rescue dispatch finishes.
+func (m *Memo) ObserveRouteAFailureAndMaybeBeginProbe(k Key) (release func(), ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := m.now()
+	m.pressure.record(k, now)
+	if m.pressure.countFresh(now, m.pressureWindow) > pressureFailureThreshold {
+		// Cluster-wide pressure: no state write (Observe's own contract),
+		// no probe admitted either — the damper suppresses both action and
+		// learning uniformly, regardless of which path would have admitted.
+		return noopRelease, false
+	}
+
+	v, live := m.getLiveLocked(k, now)
+	// Capture staleness BEFORE the state transition below mutates it — this
+	// snapshot, not the post-transition state, is what admission decides on.
+	wasStalePreferB := live && v.state == PreferB &&
+		!now.Before(v.createdAt.Add(memoEntryTTL/reValidationFraction))
+
+	m.observeRouteAResourceFailureLocked(k, now)
+
+	if wasStalePreferB {
+		// The re-validation rescue path: admit regardless of the (now
+		// refreshed, no longer "stale") post-transition state.
+		select {
+		case m.dispatchTokens <- struct{}{}:
+			return m.releaseToken, true
+		default:
+			return noopRelease, false
+		}
+	}
+
+	// The original first-probe path: admit only a fresh Unknown entry that
+	// has now reached the corroboration floor.
+	v, live = m.getLiveLocked(k, now)
+	if !live || v.state != Unknown || v.corroboration < minCorroboratingFailures {
+		return noopRelease, false
+	}
+	select {
+	case m.dispatchTokens <- struct{}{}:
+		return m.releaseToken, true
+	default:
+		return noopRelease, false
+	}
+}
+
 // UnderPressure reports whether more than pressureFailureThreshold distinct
 // Keys have shown a resource failure within the pressure window. While
 // true, callers must not admit a probe or a memo-hit route-B dispatch (both
@@ -251,37 +327,47 @@ func (m *Memo) Observe(k Key, route Route, outcome Outcome) {
 }
 
 func (m *Memo) observeRouteALocked(k Key, now time.Time, outcome Outcome) {
-	v, live := m.getLiveLocked(k, now)
-
 	switch outcome {
 	case OutcomeSuccess:
 		// A route-A success always contradicts "A always fails here" —
 		// drop any recorded state (positive verdict or bare corroboration
 		// bookkeeping) for this Key immediately.
-		if live {
+		if _, live := m.getLiveLocked(k, now); live {
 			m.deleteLocked(k)
 		}
 	case OutcomeResourceFailure:
-		if !live {
-			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: 1}
-			m.touchLRULocked(k)
-			m.evictIfNeededLocked()
-			return
-		}
-		switch v.state {
-		case PreferB:
-			// Stale re-validation path: A was routed through instead of a
-			// memo-hit (Lookup reported stale=true), and it failed again —
-			// the failing premise was just re-confirmed directly, without
-			// re-probing B. Refresh the TTL clock; do not re-probe.
-			v.createdAt = now
-		case BothFail:
-			// No positive result to protect; it simply expires from its
-			// own creation at memoEntryTTL.
-		case Unknown:
-			if v.corroboration < minCorroboratingFailures {
-				v.corroboration++
-			}
+		m.observeRouteAResourceFailureLocked(k, now)
+	}
+}
+
+// observeRouteAResourceFailureLocked applies the route-A resource-failure
+// state transition: create a fresh Unknown entry with corroboration=1 if
+// none exists; on an existing Unknown entry, bump corroboration (capped at
+// minCorroboratingFailures); on a live PreferB entry (necessarily the
+// stale-re-validation path — Lookup would not have let the caller route
+// through A otherwise), refresh createdAt without re-probing, since the
+// failing premise was just re-confirmed directly; a BothFail entry has no
+// positive result to protect and is left to expire at its own TTL.
+//
+// Shared by observeRouteALocked (Observe's public, general-purpose path)
+// and ObserveRouteAFailureAndMaybeBeginProbe (the atomic record-and-admit
+// path retryOnRouteAResourceFailure uses) so the state transition itself
+// can never drift between the two callers.
+func (m *Memo) observeRouteAResourceFailureLocked(k Key, now time.Time) {
+	v, live := m.getLiveLocked(k, now)
+	if !live {
+		m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: 1}
+		m.touchLRULocked(k)
+		m.evictIfNeededLocked()
+		return
+	}
+	switch v.state {
+	case PreferB:
+		v.createdAt = now
+	case BothFail:
+	case Unknown:
+		if v.corroboration < minCorroboratingFailures {
+			v.corroboration++
 		}
 	}
 }
