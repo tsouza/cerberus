@@ -362,6 +362,27 @@ export function collectViolations({
     }
   }
 
+  // V16 — every RUNNABLE tier a story declares in section 6 must have a
+  // matching Scenario. V7 rejects a DUPLICATE (story, tier) pair; this is its
+  // required-once twin. Without it, a scenario deleted from the feature tree
+  // is invisible here as long as V14/V15's aggregate `scenarios.length` vs
+  // `scenarios_covered` floor is kept in lockstep by the same diff — this
+  // check is keyed per (story, tier) pulled straight from the doc, so it
+  // cannot be silenced by decrementing one baseline number.
+  for (const [story, tiers] of tierMap) {
+    if (!storySet.has(story)) continue;
+    for (const tier of tiers) {
+      if (!RUNNABLE_TIERS.includes(tier)) continue;
+      const key = `${story}/${tier}`;
+      if (!seenPairs.has(key)) {
+        add(
+          'V16',
+          `${STORIES_DOC} section 6 declares ${story} at ${tier}, but no Scenario carries both @${story} and @${tier}`,
+        );
+      }
+    }
+  }
+
   // V8 — one feature file per story, named for it, and no feature file that
   // contributes nothing.
   for (const [story, files] of filesByStory) {

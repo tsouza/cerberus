@@ -20,14 +20,16 @@ type RunSpec struct {
 	Env  []string
 }
 
-// Result is a finished child process: its captured streams and its exit code.
-// The exit code is data, not an error — several scenarios assert a specific
-// non-zero code (the gate's documented no-go status), which they could not do
-// if a non-zero exit were reported as a failure.
+// Result is a finished child process: its captured streams, its exit code,
+// and the complete environment it actually ran under. Env is spec.Env echoed
+// back rather than re-derived, so a caller proving an offline property can
+// assert against what the child process was really given instead of
+// reconstructing a fresh value that would agree with itself by construction.
 type Result struct {
 	Stdout   []byte
 	Stderr   []byte
 	ExitCode int
+	Env      []string
 }
 
 // Run executes spec and returns its captured output and exit code. A non-zero
@@ -43,7 +45,7 @@ func Run(spec RunSpec) (Result, error) {
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), Env: spec.Env}
 
 	var exitErr *exec.ExitError
 	switch {

@@ -188,12 +188,16 @@ func (w *World) thenExplainIsReproducible() error {
 
 // thenExplainRanOffline asserts the preview ran with every HTTP route closed
 // and still emitted SQL, so "no database in the loop" is a property of the run
-// rather than a claim about the tool.
+// rather than a claim about the tool. The check runs against w.envUsed[a], the
+// environment the explain command for THAT archetype actually received
+// (echoed back from lib.Result), not a freshly re-derived lib.OfflineEnv()
+// that would agree with itself regardless of what run() actually wired into
+// the subprocess.
 func (w *World) thenExplainRanOffline() error {
-	if err := lib.RequireOffline(lib.OfflineEnv()); err != nil {
-		return err
-	}
 	return w.eachExplain(func(a string, rep explainReport) error {
+		if err := lib.RequireOffline(w.envUsed[a]); err != nil {
+			return fmt.Errorf("archetype %s: %w", a, err)
+		}
 		for _, q := range rep.Queries {
 			if q.SQL != "" {
 				return nil

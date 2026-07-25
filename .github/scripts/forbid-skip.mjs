@@ -177,9 +177,14 @@ switch (CHECK) {
     // *pending* and carry on — a skip wearing a hat. A scenario-suppressing
     // tag is the same move at the scenario level: `@wip` on a Scenario means
     // it never runs while the lane still reports green.
+    // Case-insensitive: Gherkin tags are a closed vocabulary here (the story
+    // `@MIG-\d\d`, tier `@tier[0-2]`, and archetype `@archetype:...` forms are
+    // all fixed-case by construction), so this vocabulary legitimately never
+    // needs mixed case — `-i` closes a scan gap (`@WIP`, `@Skip`, ...) without
+    // risking a false positive on unrelated text.
     const tags = grepFiles({
       pathspecs: ['*.feature', ':!:**/node_modules/**'],
-      grepFlags: ['-nEH'],
+      grepFlags: ['-nEHi'],
       regex: '(^|[ \\t])@(wip|skip|ignore|manual|todo|pending)([ \\t]|$)',
     });
     if (tags.matched) {

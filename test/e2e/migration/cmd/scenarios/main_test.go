@@ -71,6 +71,23 @@ func TestEnumerateCollapsesAnOutlineToOneRecord(t *testing.T) {
 	}
 }
 
+// TestEnumerateCollectsTagsPlacedOnTheExamplesBlock asserts a tag written on
+// a Scenario Outline's Examples block — legal Gherkin, distinct from a tag on
+// the Scenario line — reaches the same partitioned vocabularies a
+// Scenario-level tag does. Without it, a suppression tag (@wip et al.) placed
+// on an Examples block would be invisible to the coverage ratchet's
+// unknown-tag check: it would never appear in UnknownTags at all, regardless
+// of spelling or casing.
+func TestEnumerateCollectsTagsPlacedOnTheExamplesBlock(t *testing.T) {
+	t.Parallel()
+
+	doc := enumerate(t, testFeatureDir)
+	outline := find(t, doc, "an outline collapses to one record")
+	if want := []string{"@examples-only-tag"}; !reflect.DeepEqual(outline.UnknownTags, want) {
+		t.Errorf("UnknownTags = %v, want %v (the Examples-block tag)", outline.UnknownTags, want)
+	}
+}
+
 // TestEnumeratePartitionsTheTagVocabularies asserts feature-level tags are
 // inherited, scenario-level tags are merged in, each vocabulary lands in its own
 // sorted list with the prefix stripped, and a tag matching no vocabulary is

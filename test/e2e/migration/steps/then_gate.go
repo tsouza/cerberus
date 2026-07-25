@@ -118,7 +118,9 @@ func (w *World) runGate(archetype, outName string) (gateRun, error) {
 	if err != nil {
 		return gateRun{}, err
 	}
-	if err := lib.RequireOffline(lib.OfflineEnv()); err != nil {
+	// Assert against the environment this exact command actually ran under,
+	// not a freshly re-derived one — see World.envUsed.
+	if err := lib.RequireOffline(res.Env); err != nil {
 		return gateRun{}, err
 	}
 	data, err := lib.ReadArtifact(out)
@@ -129,7 +131,7 @@ func (w *World) runGate(archetype, outName string) (gateRun, error) {
 	if err := lib.DecodeArtifact(data, &dec); err != nil {
 		return gateRun{}, fmt.Errorf("archetype %s: %w", archetype, err)
 	}
-	return gateRun{ran: true, decision: dec, exitCode: res.ExitCode, raw: data}, nil
+	return gateRun{ran: true, decision: dec, exitCode: res.ExitCode, raw: data, env: res.Env}, nil
 }
 
 // thenGateSaysNoGo asserts the fold refused, in both the field a script reads

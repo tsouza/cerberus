@@ -259,11 +259,19 @@ Each token names a removed anti-pattern:
 
 ## Pattern 8 — scenario-suppressing Gherkin tags (PR #1268)
 
-Regex (ERE over `*.feature`, excluding `**/node_modules/**`):
+Regex (ERE, case-insensitive, over `*.feature`, excluding
+`**/node_modules/**`):
 
 ```text
 (^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)
 ```
+
+Case-insensitive (`grep -i`) is deliberate here: this Gherkin tag
+vocabulary is closed by construction — the coverage ratchet's own three
+recognised forms (`@MIG-nn`, `@tier0`..`@tier2`, `@archetype:<name>`)
+are all fixed-case, so nothing legitimate in a `.feature` file ever
+needs a mixed-case `@wip`/`@WIP`/`@Skip` spelling. Scanning
+case-sensitively would let a wrongly-cased suppression tag merge clean.
 
 The Layer-14 migration lane's scenarios are Gherkin feature files driven
 by `godog`. A Cucumber runner's culture carries two suppression routes

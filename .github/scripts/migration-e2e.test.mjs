@@ -146,6 +146,23 @@ test('V15 fires when coverage grows without the baseline being raised', () => {
   assert.ok(codes(v).includes('V15'), `expected V15, got ${JSON.stringify(v)}`);
 });
 
+test('V16 fires when a scenario is deleted even if the baseline floor is lowered in lockstep', () => {
+  // V14 is an AGGREGATE floor: decrementing scenarios_covered in the same
+  // diff that deletes a scenario keeps it quiet. V16 is keyed per (story,
+  // tier) straight from section 6, so it must still catch the deleted MIG-04
+  // scenario even though the lockstep edit hides it from V14/V15.
+  const w = world();
+  w.scenarios = w.scenarios.filter((s) => !s.stories.includes('MIG-04'));
+  w.featureFiles = w.featureFiles.filter((f) => f !== 'MIG-04.feature');
+  w.baseline = { ...BASELINE, scenarios_covered: w.scenarios.length };
+  const v = collectViolations(w);
+  assert.ok(
+    v.some((x) => x.code === 'V16' && x.message.includes('MIG-04')),
+    `expected V16 naming MIG-04, got ${JSON.stringify(v)}`,
+  );
+  assert.ok(!codes(v).includes('V14'), 'V14 must not fire once the baseline is lowered in lockstep — V16 is the point of this test');
+});
+
 test('V1 fires when the story anchor loses a row from the middle of the run', () => {
   const stories = parseStories(DOC).filter((s) => s !== 'MIG-13');
   const v = collectViolations(world({ stories }));

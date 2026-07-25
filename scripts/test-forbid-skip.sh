@@ -61,6 +61,20 @@ expect_no_match() {
   fi
 }
 
+# expect_match_ci <label> <regex> <fixture-file> — same as expect_match, but
+# with grep's -i, for the one pattern (8) whose forbid-skip.mjs invocation
+# scans case-insensitively.
+expect_match_ci() {
+  local label="$1" regex="$2" file="$3"
+  if grep -nEi -- "$regex" "$file" >/dev/null; then
+    note "PASS  match  $label"
+    passes=$((passes + 1))
+  else
+    printf 'FAIL  match  %s — regex %q did not case-insensitively match %s\n' "$label" "$regex" "$file" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 # expect_match_perl / expect_no_match_perl — same idea, but using the
 # perl -0777 slurp shape from the CI step (pattern 6).
 expect_match_perl() {
@@ -196,6 +210,15 @@ expect_match    "case8 @wip suffix tag"        "$RE8" "$tmpdir/case8_match.txt"
 expect_match    "case8 bare @skip tag"         "$RE8" "$tmpdir/case8_match_bare.txt"
 expect_no_match "case8 real tag line"          "$RE8" "$tmpdir/case8_nomatch.txt"
 expect_no_match "case8 archetype containing a banned word" "$RE8" "$tmpdir/case8_nomatch_embedded.txt"
+
+# The forbid-skip.mjs invocation of RE8 runs `grep -i`: the tag vocabulary is
+# closed and fixed-case, so a wrongly-cased suppression tag — including one
+# placed on a Scenario Outline's Examples block, which is legal Gherkin — must
+# not merge clean just because nobody typed it in lowercase.
+printf '@WIP\n'                                      >"$tmpdir/case8_match_upper.txt"
+printf '    @Skip\n'                                 >"$tmpdir/case8_match_examples.txt"
+expect_match_ci "case8 uppercase @WIP"                    "$RE8" "$tmpdir/case8_match_upper.txt"
+expect_match_ci "case8 mixed-case @Skip on an Examples line" "$RE8" "$tmpdir/case8_match_examples.txt"
 
 # --------------------------------------------------------------------
 # case 9 — godog skip / pending routes  (PR #1268)

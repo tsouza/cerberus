@@ -62,6 +62,14 @@ type World struct {
 	explain      map[string]explainReport
 	lookback     map[string]migrate.Lookback
 
+	// envUsed is the environment the most recent `cerberus migrate` child
+	// process for that archetype actually ran under, echoed back from
+	// lib.Result rather than re-derived. An offline-proof Then step asserts
+	// lib.RequireOffline against THIS value, so a regression in how run()
+	// wires the environment into exec.Command fails the scenario instead of
+	// being invisible to a check that only re-validates its own construction.
+	envUsed map[string][]string
+
 	gate gateRun
 }
 
@@ -89,6 +97,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.ruleGraphRaw, w.ruleGraph = map[string][]byte{}, map[string]migrate.RuleGraph{}
 		w.explainRaw, w.explain = map[string][]byte{}, map[string]explainReport{}
 		w.lookback = map[string]migrate.Lookback{}
+		w.envUsed = map[string][]string{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -151,4 +160,5 @@ type gateRun struct {
 	decision migrategate.Decision
 	exitCode int
 	raw      []byte
+	env      []string
 }

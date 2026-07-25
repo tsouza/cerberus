@@ -131,12 +131,16 @@ func (w *World) thenHarvestIsReproducible() error {
 // thenHarvestRanOffline asserts the harvest ran with every HTTP route closed
 // and still produced its corpus. Offline is proven by CONSTRUCTION here — the
 // child had no proxy to reach and no bypass list to escape through — rather
-// than by trusting the tool's own claim not to have dialled out.
+// than by trusting the tool's own claim not to have dialled out. The check
+// runs against w.envUsed[a], the environment the harvest command for THAT
+// archetype actually received (echoed back from lib.Result), not a freshly
+// re-derived lib.OfflineEnv() that would agree with itself regardless of what
+// run() actually wired into the subprocess.
 func (w *World) thenHarvestRanOffline() error {
-	if err := lib.RequireOffline(lib.OfflineEnv()); err != nil {
-		return err
-	}
 	return w.eachCorpus(func(a string, c migrate.Corpus) error {
+		if err := lib.RequireOffline(w.envUsed[a]); err != nil {
+			return fmt.Errorf("archetype %s: %w", a, err)
+		}
 		if len(c.Queries) == 0 {
 			return fmt.Errorf("archetype %s produced nothing under the offline environment", a)
 		}

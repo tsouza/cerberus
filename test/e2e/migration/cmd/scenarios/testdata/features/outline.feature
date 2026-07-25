@@ -8,6 +8,7 @@ Feature: MIG-04 — a feature-tagged outline
     Then the artifact matches its committed golden
     And every entry names the source it came from
 
+    @examples-only-tag
     Examples:
       | case      |
       | first     |

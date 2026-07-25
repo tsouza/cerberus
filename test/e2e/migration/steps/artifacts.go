@@ -103,9 +103,12 @@ func (w *World) runArtifact(archetype, outName string, args ...string) ([]byte, 
 		return nil, fmt.Errorf("migration harness: `cerberus %s` for %s exited %d: %s",
 			strings.Join(args, " "), archetype, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 	}
-	if err := lib.RequireOffline(lib.OfflineEnv()); err != nil {
+	// Assert against the environment this exact command actually ran under,
+	// not a freshly re-derived one — see World.envUsed.
+	if err := lib.RequireOffline(res.Env); err != nil {
 		return nil, err
 	}
+	w.envUsed[archetype] = res.Env
 	return lib.ReadArtifact(out)
 }
 

@@ -66,6 +66,7 @@ func FoldGate(root, bin, work, archetype string) (GateFold, error) {
 	w.corpusRaw, w.corpus = map[string][]byte{}, map[string]migrate.Corpus{}
 	w.classifyRaw, w.classify = map[string][]byte{}, map[string]migrate.Classification{}
 	w.ruleGraphRaw, w.ruleGraph = map[string][]byte{}, map[string]migrate.RuleGraph{}
+	w.envUsed = map[string][]string{}
 
 	if err := w.loadCorpora(); err != nil {
 		return GateFold{}, err

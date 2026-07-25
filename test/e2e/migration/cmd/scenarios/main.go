@@ -186,7 +186,17 @@ func scenariosOf(doc *messages.GherkinDocument, feature string) []Scenario {
 			continue
 		}
 		sc := child.Scenario
+		// A Scenario Outline's Examples block carries its own Tags slot in the
+		// Gherkin grammar — a tag placed there (rather than on the Scenario
+		// line) is legal Gherkin and must reach the same vocabularies (most
+		// importantly the unknown-tag bucket a suppression tag like @wip
+		// would land in) as a Scenario-level tag does.
 		tags := append(append([]string{}, featureTags...), tagNames(sc.Tags)...)
+		for _, ex := range sc.Examples {
+			if ex != nil {
+				tags = append(tags, tagNames(ex.Tags)...)
+			}
+		}
 		stories, tiers, archetypes, unknown := partitionTags(tags)
 
 		steps := make([]Step, 0, len(sc.Steps))
