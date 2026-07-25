@@ -200,20 +200,26 @@ func sortStrings(s []string) {
 	}
 }
 
-// hexToBytesPadded re-inflates the leading-zero-stripped hex string the
-// CH stripLeadingHexZeros UDF emits (see traceByIDProjections) back to
+// hexToBytesPadded defensively re-pads a hex trace/span-id string to
 // the fixed-width byte array OTel-proto requires (16 bytes for trace
-// IDs, 8 bytes for span IDs). Returns nil if the input is empty so the
-// proto wire layer omits the field — Grafana's plugin tolerates a
+// IDs, 8 bytes for span IDs). The column value read via
+// traceByIDProjections is already the canonical, fixed-width
+// lowercase-hex form the OTel-CH exporter writes (stripLeadingHexZeros
+// is a passthrough, not a stripping UDF — see its doc comment in
+// handler.go, issue #209), so in the common case this is a no-op
+// re-encode; the left-padding below only engages if a caller supplies
+// a shorter, non-canonical value. Returns nil if the input is empty so
+// the proto wire layer omits the field — Grafana's plugin tolerates a
 // missing ParentSpanId (root span) but not a malformed one.
 func hexToBytesPadded(stripped string, byteLen int) []byte {
 	if stripped == "" {
 		return nil
 	}
-	// Restore the leading-zero padding the CH UDF stripped. The hex
-	// string is the lower-case form (the OTel-CH exporter writes hex
-	// lower-case); a caller that supplied an uppercase hex value would
-	// be normalized by hex.DecodeString below regardless.
+	// Restore left-padding for a non-canonical short value. The hex
+	// string is normally already the lower-case form (the OTel-CH
+	// exporter writes hex lower-case); a caller that supplied an
+	// uppercase hex value would be normalized by hex.DecodeString below
+	// regardless.
 	want := byteLen * 2
 	if len(stripped) > want {
 		// Truncate from the left — a value longer than the column width
