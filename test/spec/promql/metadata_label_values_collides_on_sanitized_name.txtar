@@ -17,6 +17,21 @@ deployment.environment
 deployment-environment
 -- metadata_label_values --
 deployment_environment
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('requests_total', map(), map('deployment.environment', 'prod-dot', 'deployment-environment', 'prod-hyphen'), toDateTime64('1970-01-01 00:02:00', 9), 1.0),
+    ('requests_total', map(), map('deployment-environment', 'canary-hyphen-only'), toDateTime64('1970-01-01 00:02:00', 9), 1.0),
+    ('requests_total', map('deployment_environment', 'attr-wins'), map('deployment.environment', 'ra-loses'), toDateTime64('1970-01-01 00:02:00', 9), 1.0);
+-- expected_rows --
+[
+  ["prod-dot"],
+  ["canary-hyphen-only"],
+  ["attr-wins"]
+]
 -- sql --
 SELECT coalesce(nullIf(if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])), ?), nullIf(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])), ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
 -- args --

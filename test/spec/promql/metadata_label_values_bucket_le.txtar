@@ -11,6 +11,19 @@ disappears is the per-series collapse above them.
 latency_seconds_bucket
 -- metadata_label_values --
 le
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String), ServiceName String,
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64, BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('latency_seconds', map(), map(), 'api', toDateTime64('1970-01-01 00:02:00', 9), 6, 10.0, [1, 2, 3], [0.1, 0.5]);
+-- expected_rows --
+[
+  ["0.1"],
+  ["0.5"],
+  ["+Inf"]
+]
 -- sql --
 SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[le_idx])))) AS `Attributes`, `ResourceAttributes` AS `ResourceAttributes`, `ServiceName` AS `ServiceName`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `ResourceAttributes` AS `ResourceAttributes`, `ServiceName` AS `ServiceName`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?))))) WHERE ((`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?))))
 -- args --
