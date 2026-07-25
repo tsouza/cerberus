@@ -6,6 +6,8 @@
 //   - compatibility/*/docker-compose.yml  the per-head test-substrate image tag
 //   - internal/preflight/preflight.go     the boot-time min-version floor
 //   - internal/config/config.go (comment) the chDB substrate version
+//   - test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
+//                                         the migration lane's deployment-surface tag
 //
 // and the quickstart MUST be new enough to actually demo every optimization
 // it enables. This script reads versions.yaml as the SoT and asserts:
@@ -20,6 +22,12 @@
 //       among the features the quickstart's CERBERUS_CH_OPTIMIZATIONS enables.
 //       The per-feature floors are NOT duplicated here - they are read from
 //       internal/chopt/registry.go, which stays the SoT for feature floors.
+//   (e) the migration lane's Tier-1 `clickhouse` image tag
+//       == quickstart_clickhouse (NOT chdb_substrate). The two roles differ:
+//       chdb_substrate is the SQL-parity substrate the chDB suites and the
+//       compatibility harnesses run on; quickstart_clickhouse is the
+//       deployment surface operators run. The migration lane models the
+//       operator deployment, so it tracks the quickstart pin.
 //
 // No version floor is re-pinned here; floor data is derived from the registry.
 // When a future optimization raises the floor above the quickstart, (d) fails
@@ -247,6 +255,20 @@ export function runChecks(sources) {
     }
   }
 
+  // (e) the migration lane's Tier-1 stack tracks the DEPLOYMENT surface.
+  const migrationTag = parseVersion(readComposeCHTag(sources.migrationTier1));
+  if (!migrationTag) {
+    failures.push('migration tier-1 compose: could not read the clickhouse image tag');
+  } else if (quickstart && !sameMM(migrationTag, quickstart)) {
+    failures.push(
+      `(e) migration tier-1 clickhouse tag ${vstr(migrationTag)} != versions.yaml quickstart_clickhouse ` +
+        `${vstr(quickstart)}. The migration lane models the operator deployment surface, so it tracks ` +
+        `quickstart_clickhouse - not chdb_substrate.`,
+    );
+  } else if (quickstart) {
+    notes.push(`(e) migration tier-1 image == quickstart ${vstr(quickstart)}`);
+  }
+
   return { failures, notes };
 }
 
@@ -266,6 +288,7 @@ function loadSources() {
       'compatibility/loki/docker-compose.yml': readFile('compatibility/loki/docker-compose.yml'),
       'compatibility/tempo/docker-compose.yml': readFile('compatibility/tempo/docker-compose.yml'),
     },
+    migrationTier1: readFile('test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml'),
   };
 }
 
@@ -284,7 +307,7 @@ function main() {
 // self-test - pins the parse / compare / drift-detection logic against
 // synthetic fixtures, the same contract scripts/test-forbid-skip.sh provides
 // for forbid-skip.mjs. Asserts a consistent fixture passes and that each of
-// the four checks (a)/(b)/(c)/(d) FAILS when its source is deliberately
+// the checks (a)/(b)/(c)/(d)/(e) FAILS when its source is deliberately
 // drifted - so a future refactor that breaks a reader is caught here.
 // ---------------------------------------------------------------------------
 
@@ -335,6 +358,9 @@ var registry = []Feature{
       'compatibility/loki/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
       'compatibility/tempo/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
     },
+    // The migration tier-1 stack tracks the quickstart tag (26.5 here), NOT
+    // the 25.8 chDB substrate the compatibility lanes pin.
+    migrationTier1: 'image: clickhouse/clickhouse-server:26.5\n',
   };
   ok('consistent fixtures => no failures', runChecks(goodSources).failures.length === 0);
 
@@ -373,6 +399,16 @@ var registry = []Feature{
     drift((s) => (s.compose = s.compose.replace('ts_grid_range', 'ts_grid_bogus'))).some((f) =>
       f.startsWith('(d)') && f.includes('not a known'),
     ),
+  );
+
+  ok(
+    '(e) migration tier-1 tag drift is caught',
+    drift((s) => (s.migrationTier1 = 'image: clickhouse/clickhouse-server:25.3\n')).some((f) => f.startsWith('(e)')),
+  );
+  ok(
+    '(e) migration tier-1 pinned to the chDB substrate instead of the quickstart is caught',
+    // 25.8 is chdb_substrate in the fixture - the exact wrong-role mistake (e) exists to reject.
+    drift((s) => (s.migrationTier1 = 'image: clickhouse/clickhouse-server:25.8\n')).some((f) => f.startsWith('(e)')),
   );
 
   if (fails.length > 0) {

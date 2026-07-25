@@ -101,13 +101,116 @@ No Docker, no network, no ClickHouse — air-gap-faithful, seconds to run. Drive
 (the pure aggregator). Cheap enough that it *may* also run per-PR later, but it
 ships informational-first.
 
-**Tier 1 — dual-backend compose.** `docker-compose.dual.yml`: reference
-**Prometheus** (scrapes synthetic exporters) **+ OTel collector**
-(clickhouseexporter → the OTel-shaped tables cerberus reads) **+ ClickHouse +
-cerberus**, both fed the *same* synthetic sources over an overlapping dual-write
-window. This is the only place ground truth exists for a differential diff.
-Drives `inventory` (probe live Prometheus), `verify` (diff both backends), and
-the live half of schema/label/histogram/retention validation.
+**Tier 1 — dual-backend compose.**
+`test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml`: reference
+**Prometheus** + reference **Loki** + reference **Tempo**, alongside an **OTel
+collector** (clickhouseexporter → the OTel-shaped tables cerberus reads) **+
+ClickHouse + cerberus**. All three signals live in one stack because an
+unconfigured head is a *blocking* verify verdict: a metrics-only substrate
+fails the moment the corpus carries one LogQL or TraceQL query. cerberus serves
+all three heads on one address, mirroring the operator journey where every
+`--cerberus*` URL is the same endpoint and only the `--ref*` URLs differ.
+
+Both sides are fed the *same* fixture over one window: the seeder builds one
+in-memory fixture and writes it twice — direct `INSERT` into ClickHouse, and
+push into each reference backend. This is the only place ground truth exists
+for a differential diff. Drives `inventory` (probe live Prometheus), `verify`
+(diff both backends), and the live half of schema/label/histogram/retention
+validation.
+
+Two roles are split, not merged. The collector's clickhouseexporter
+(`create_schema: true`) is the **sole schema authority** — cerberus runs with
+auto-create off, so its readiness probe is a live drift detector between the
+exporter's table names and cerberus's read-side defaults. The seeder owns
+**data only**, and waits for the exporter's tables before it inserts.
+
+The reference Loki and Tempo configurations are the compatibility harnesses'
+own files, bind-mounted read-only: the tree holds exactly one reference config
+per signal, so no second definition exists to drift. The reference image tags
+are likewise single-sourced — the compatibility compose files are the pin site,
+tier-1 restates them, and `test/regression/fork_version_skew_test.go` asserts
+the restatement is byte-identical, which transitively binds tier-1 to the
+`go.mod` parser versions. The ClickHouse tag tracks `quickstart_clickhouse`
+rather than `chdb_substrate`: the migration lane models the deployment surface
+an operator runs, not the SQL-parity substrate the chDB suites run on
+(asserted by `.github/scripts/clickhouse-version-sync.mjs`).
+
+### 3.1. The all-signal seeder
+
+`test/e2e/migration/cmd/seed` builds one in-memory fixture from an archetype's
+data declaration and writes it four times over: batch `INSERT` into
+`otel_metrics_{gauge,sum,histogram}`, `otel_logs` and `otel_traces`; snappy
+`prompb` remote-write into reference Prometheus; `/loki/api/v1/push` into
+reference Loki; OTLP/gRPC into reference Tempo. Every writer consumes the same
+Go values, so no timestamp, value or label is ever re-derived per backend.
+
+Its first action is one OTLP warm-up record per signal, sent to the collector
+under names no corpus query selects. That makes table creation unconditional
+rather than dependent on the exporter's start-time behaviour; the seeder then
+polls for all six `otel_*` tables against a hard deadline before it writes a
+single fixture row. Nothing in the seeder creates a table.
+
+**Determinism.** Five devices, and the fixture is byte-identical run to run
+apart from its offset from the epoch:
+
+- one RNG, seeded with a fixed value and consumed in a fixed order;
+- cardinality declared in `fixture.json`, never derived from a counter — the
+  metric label sets are a real CROSS JOIN of the service and status-code lists,
+  because a correlated `index % len` derivation collapses
+  `len(services) × len(codes)` series into `len(services)`;
+- trace and span identifiers hashed from `(service, trace index, span index)`;
+- ClickHouse `Map` columns written in sorted key order, because the driver
+  otherwise serialises a Go map in randomised iteration order and the same
+  logical label set lands under two different stored representations;
+- a rolling anchor truncated to the step grid. One anchor serves all three
+  signals: cross-signal correlation needs the three inside one window, and a
+  fixed date is unusable because Tempo's live store clamps span timestamps
+  outside its ingestion slack and the clamped block metadata makes search
+  return nothing.
+
+**Ingestion skew** is closed by two mechanisms answering two different
+questions. *Closed-window querying* answers "do both sides cover the same
+interval?": the seeder publishes a manifest carrying
+`[verify_start, verify_end]` and the step, and the lane reads its window from
+there instead of one ending at `now`. `cerberus migrate verify`'s own
+`--start -1h --end now` defaults are untouched — a real operator legitimately
+wants a live window against their own Prometheus. *Metric-driven readiness
+gates* answer "has the reference finished ingesting?": Loki is flushed
+synchronously and then gated on an empty flush queue, zero in-memory chunks, a
+chunks-flushed delta of at least one per pushed stream and a fresh TSDB index
+upload, all in a single poll; Tempo on a completed live-store block that the
+querier's blocklist has picked up *and* `/api/search` returning, per service,
+exactly the trace identities this run pushed — the live store cuts blocks on
+second-scale timers, so the block counters say nothing about whether the whole
+fixture is searchable, which is the only question the lane goes on to ask;
+Prometheus — whose remote-write receiver has
+no flush stage — data-side, on an instant query returning exactly the declared
+series count with its last sample exactly at the anchor. Every gate is bound to
+the payload this run produced rather than to an absolute counter. Only the reference
+side needs a gate: cerberus reads ClickHouse directly, so its visibility is
+bounded by the `INSERT` round-trip.
+
+The gates carry no percentage floors, no cardinality tolerances, no latches and
+no retry-then-continue. A missing upstream metric never makes a gate pass: a
+signal asserted `== 0` is a hard error when absent, because coercing it to zero
+would satisfy the condition, while a signal asserted `>= n` reads as "not yet"
+and keeps the gate waiting until it fails with the un-observed metric named.
+
+**Proof.** `test/e2e/migration/tier1_parity_test.go` rebuilds the fixture
+in-process from the same declaration and the manifest's window, then compares
+each side against that oracle independently — never one side's length against
+the other's, which two empty results satisfy. It asserts the metric matrices
+group-for-group and sample-for-sample with no tolerance (every fixture value is
+a whole number or a negative power of two, so the arithmetic is exact), the log
+entries timestamp-and-line exact, and the trace-search results as 16-byte trace
+identities, with each backend's wire rendering asserted separately — reference
+Tempo strips leading zeros from trace-id hex, and cerberus emits the canonical
+fixed-width form the spec requires, so the difference is pinned rather than
+normalised away. A negative control runs last: it injects a series scaled far
+beyond any float tolerance into the ClickHouse side and requires the comparison
+to observe the disagreement at every step, and the other services to stay
+identical. Without it, "both sides agree" would also be the reading of a
+harness that had silently stopped comparing anything.
 
 **Tier 2 — ruler tier.** The Tier-1 stack **+ a real query-only external
 ruler** (a Prometheus/Thanos ruler in rule-eval-only mode, or Grafana-managed
@@ -604,10 +707,16 @@ instead of ossifying at whatever number was first written down.
 
 Eight archetypes, each a directory named for the archetype under
 `test/e2e/migration/archetypes`, contributing `rules/` (recording+alerting),
-`dashboards/` (exported Grafana
-JSON), `seed/` (an OTLP metric generator config **and** the Prometheus-side
-synthetic exposition/scrape config, so the dual-write is genuinely
-dual-sourced), and `expected/` (golden offline assertions).
+`dashboards/` (exported Grafana JSON), `seed/` (a **data declaration** — the
+service list, log-format list and metric table the shared seeder builds its
+fixture from), and `expected/` (golden offline assertions).
+
+`seed/` declares data, never a generator per backend. One declaration produces
+one in-memory fixture, and the seeder writes that fixture to both sides. Two
+independent sample paths — say a Prometheus scrape config alongside an OTLP
+generator — cannot land identical timestamps, and the comparator keys samples
+by exact timestamp, so a second path injects sample-level skew by construction
+into the one place ground truth exists.
 
 | Archetype             | Representative seed                                                                                                                                                            | Hotspots it forces                                                                                                                                   | Feeds                                |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
@@ -641,13 +750,13 @@ arithmetic in Go" split against real scenarios before the heavier tiers commit
 to them. `tolerances/` stays empty until Phase 2 — the first ε is derived from a
 measured margin on a live backend, never guessed ahead of one.
 
-**Phase 2 — Tier-1 dual-backend.** `docker-compose.dual.yml` (Prometheus + OTel
-collector + ClickHouse + cerberus) + collector config + the per-archetype
-`seed/` generators (incl. the pod-restart counter-reset + `container_id`-churn
-seeder). Scenarios MIG-02, MIG-06, MIG-07, MIG-08, MIG-10 (diff half), MIG-11,
-MIG-12, MIG-13 (read-back half), MIG-14 (live TTL), MIG-15, MIG-16, MIG-17,
-MIG-20, MIG-22, MIG-23, MIG-25, MIG-26 (live TTL). A **Phase 2b** three-signal
-variant adds Loki + Tempo + Grafana for MIG-21. Dependencies: Phase-1 corpora
+**Phase 2 — Tier-1 dual-backend.** `docker-compose.dual.yml` (Prometheus,
+Loki, Tempo, OTel collector, ClickHouse, cerberus) + collector config + the
+per-archetype `seed/` declarations (incl. the pod-restart counter-reset +
+`container_id`-churn shape). Scenarios MIG-02, MIG-06, MIG-07, MIG-08, MIG-10
+(diff half), MIG-11, MIG-12, MIG-13 (read-back half), MIG-14 (live TTL),
+MIG-15, MIG-16, MIG-17, MIG-20, MIG-21, MIG-22, MIG-23, MIG-25, MIG-26 (live
+TTL). Dependencies: Phase-1 corpora
 feed `verify --corpus`; reuses e2e.yml's free-disk-space + docker-hub-login +
 log-dump patterns. MIG-08's faults are `docker compose kill/pause/stop` on the
 compose stack — the Layer-13 `chaos-run.mjs` primitives are k3d/NetworkPolicy

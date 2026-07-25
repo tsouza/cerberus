@@ -1,0 +1,42 @@
+{
+  "log_streams": 9,
+  "log_records": 1089,
+  "prom_series": 48,
+  "traces": 60,
+  "traces_per_service": 20,
+  "spans": 237,
+  "samples_per_series": 121,
+  "verify_steps": 21,
+  "series": {
+    "gauge": 6,
+    "sum": 6,
+    "histogram": 6
+  },
+  "metric_queries": [
+    {
+      "name": "counter_raw_series",
+      "query": "cerberus_migration_requests_total",
+      "series": 6
+    },
+    {
+      "name": "gauge_by_service_and_status",
+      "query": "sum by (service_name, http_status_code) (cerberus_migration_queue_depth)",
+      "series": 6
+    },
+    {
+      "name": "counter_by_service",
+      "query": "sum by (service_name) (cerberus_migration_requests_total)",
+      "series": 3
+    },
+    {
+      "name": "histogram_count_by_status",
+      "query": "sum by (http_status_code) (cerberus_migration_request_duration_seconds_count)",
+      "series": 2
+    },
+    {
+      "name": "histogram_sum_by_status",
+      "query": "sum by (http_status_code) (cerberus_migration_request_duration_seconds_sum)",
+      "series": 2
+    }
+  ]
+}

@@ -73,3 +73,7 @@ test/e2e/playwright/playwright-report/
 /compatibility/prometheus/compat-score.json
 /compatibility/prometheus/rejection-parity.json
 /compatibility/prometheus/upstream/promql/cmd/promql-compliance-tester/promql-compliance-tester
+
+# Tier-1 migration substrate: the seeder's manifest is a per-run artifact
+# (its window rolls with wall-clock time), not a committed fixture.
+/test/e2e/migration/.out/
