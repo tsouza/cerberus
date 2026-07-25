@@ -17,10 +17,6 @@ import (
 	"github.com/tsouza/cerberus/internal/migrate"
 )
 
-// queryRangePath is the Prometheus HTTP API range-query endpoint, appended to
-// each backend's base URL.
-const queryRangePath = "/api/v1/query_range"
-
 // defaultHTTPTimeout bounds a single backend request so one hung query can't
 // stall the whole gate.
 const defaultHTTPTimeout = 30 * time.Second
@@ -40,7 +36,11 @@ type Params struct {
 	Tolerance float64
 }
 
-// HTTPBackend issues range queries against a Prometheus-compatible HTTP API.
+// HTTPBackend issues range queries against one head's HTTP API. The head-specific
+// wire contract — endpoint path, query-string encoding, response decoding — is
+// supplied by a Dialect; everything security-relevant (auth headers, credential
+// redaction, the response-size cap, the non-200 rule) is written once here and
+// therefore holds identically for every head.
 type HTTPBackend struct {
 	BaseURL string
 	HTTP    *http.Client
@@ -48,10 +48,49 @@ type HTTPBackend struct {
 	// credential-clean alternative to embedding user:pass@ in BaseURL (which
 	// would leak into repro lines and report artifacts).
 	bearerToken string
+	// orgID, when set, is sent as X-Scope-OrgID — the tenant header a
+	// multi-tenant reference Loki / Tempo requires.
+	orgID string
+	// dialect is the head wire contract this backend speaks.
+	dialect Dialect
+	// kinds are the non-matrix wire contracts this backend speaks, keyed by
+	// result kind. A backend asked for a kind it has no dialect for fails
+	// loudly rather than issuing a request to a guessed endpoint.
+	kinds map[string]KindDialect
 }
 
 // BackendOption configures an HTTPBackend at construction.
 type BackendOption func(*HTTPBackend)
+
+// WithDialect makes the backend speak a head's wire contract (endpoint path,
+// query-string encoding, response decoding). Without it a backend speaks the
+// Prometheus dialect.
+func WithDialect(d Dialect) BackendOption {
+	return func(b *HTTPBackend) { b.dialect = d }
+}
+
+// WithKindDialects teaches the backend the non-matrix wire contracts it speaks.
+// The SAME backend serves them: log-stream, trace and discovery probes hang off
+// the same base URL, token and tenant the operator already supplied for that
+// head, so a lane never needs a second connection or a second flag.
+func WithKindDialects(ds ...KindDialect) BackendOption {
+	return func(b *HTTPBackend) {
+		if b.kinds == nil {
+			b.kinds = map[string]KindDialect{}
+		}
+		for _, d := range ds {
+			b.kinds[d.Kind()] = d
+		}
+	}
+}
+
+// WithOrgID sends an "X-Scope-OrgID: <id>" header on every request, so a
+// reference Loki / Tempo running with auth_enabled answers instead of 401ing the
+// whole lane into VerdictError. Like WithBearerToken it travels in a header, never
+// in the URL, and is never recorded in any artifact. An empty id is a no-op.
+func WithOrgID(id string) BackendOption {
+	return func(b *HTTPBackend) { b.orgID = id }
+}
 
 // WithBearerToken sends an "Authorization: Bearer <token>" header on every
 // request. It is the clean auth path: credentials travel in a header, never in
@@ -62,11 +101,13 @@ func WithBearerToken(token string) BackendOption {
 	return func(b *HTTPBackend) { b.bearerToken = token }
 }
 
-// NewHTTPBackend builds a backend for baseURL with a bounded default client.
+// NewHTTPBackend builds a backend for baseURL with a bounded default client,
+// speaking the Prometheus dialect unless WithDialect says otherwise.
 func NewHTTPBackend(baseURL string, opts ...BackendOption) *HTTPBackend {
 	b := &HTTPBackend{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTP:    &http.Client{Timeout: defaultHTTPTimeout},
+		dialect: promDialect{},
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -128,39 +169,83 @@ type promRawSeries struct {
 	Values [][2]json.RawMessage `json:"values"`
 }
 
-// QueryRange issues GET {base}/api/v1/query_range with the shared params and
-// parses the response. An HTTP non-200 is returned as RangeResult{Status: code}
+// QueryRange issues the dialect's range request with the shared params and
+// decodes the response. An HTTP non-200 is returned as RangeResult{Status: code}
 // (no series) rather than an error, so the caller can classify it as unsupported
 // vs error; only transport and decode failures are returned as err.
 func (b *HTTPBackend) QueryRange(ctx context.Context, expr string, p Params) (RangeResult, error) {
-	q := url.Values{}
-	q.Set("query", expr)
-	q.Set("start", formatTimestamp(p.Start))
-	q.Set("end", formatTimestamp(p.End))
-	q.Set("step", formatStep(p.Step))
-	reqURL := b.BaseURL + queryRangePath + "?" + q.Encode()
+	status, body, err := b.do(ctx, b.dialect.Path(), b.dialect.Encode(expr, p), nil)
+	if err != nil {
+		return RangeResult{}, err
+	}
+	if status != http.StatusOK {
+		return RangeResult{Status: status}, nil
+	}
+	res, err := b.dialect.Decode(body)
+	if err != nil {
+		return RangeResult{}, err
+	}
+	res.Status = status
+	return res, nil
+}
+
+// Fetch issues one non-matrix probe. It routes through the SAME request helper
+// QueryRange uses, so auth headers, the response cap, credential redaction and
+// the non-200 rule hold identically on every surface. A non-200 is returned as
+// FetchResult{Status: code} with no payload, so the caller classifies
+// unsupported vs error by the same rule the matrix path applies.
+func (b *HTTPBackend) Fetch(ctx context.Context, q Query, p Params) (FetchResult, error) {
+	d, ok := b.kinds[q.Kind]
+	if !ok {
+		return FetchResult{}, fmt.Errorf("this backend speaks no wire contract for result kind %q", q.Kind)
+	}
+	status, body, err := b.do(ctx, d.Path(q), d.Encode(q, p), d.Header())
+	if err != nil {
+		return FetchResult{}, err
+	}
+	if status != http.StatusOK {
+		return FetchResult{Status: status}, nil
+	}
+	payload, err := d.Decode(body)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	return FetchResult{Status: status, Payload: payload}, nil
+}
+
+// do issues one GET against the backend and returns the status and the capped
+// body. It is the single place every request passes through, so the auth header,
+// the tenant header, credential redaction and the response-size cap are written
+// once and hold for every endpoint any dialect names.
+func (b *HTTPBackend) do(ctx context.Context, path string, params url.Values, extra http.Header) (int, []byte, error) {
+	reqURL := b.BaseURL + path + "?" + params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("build request: %w", redactTransportErr(err))
+		return 0, nil, fmt.Errorf("build request: %w", redactTransportErr(err))
 	}
 	if b.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+b.bearerToken)
 	}
+	if b.orgID != "" {
+		req.Header.Set(scopeOrgIDHeader, b.orgID)
+	}
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	resp, err := b.HTTP.Do(req)
 	if err != nil {
-		return RangeResult{}, fmt.Errorf("do request: %w", redactTransportErr(err))
+		return 0, nil, fmt.Errorf("do request: %w", redactTransportErr(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readCappedBody(resp.Body, maxResponseBytes)
 	if err != nil {
-		return RangeResult{}, err
+		return 0, nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return RangeResult{Status: resp.StatusCode}, nil
-	}
-	return parseRangeBody(resp.StatusCode, body)
+	return resp.StatusCode, body, nil
 }
 
 // readCappedBody reads r fully but no further than limit bytes, erroring rather
@@ -178,15 +263,21 @@ func readCappedBody(r io.Reader, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-// parseRangeBody decodes a 200 range body into a RangeResult. A body that is not
-// valid JSON is a decode error; a valid body with a non-matrix resultType is
-// carried through (Status + ResultType) for the caller to classify.
-func parseRangeBody(status int, body []byte) (RangeResult, error) {
+// decodePromMatrix decodes a 200 range body carrying the standard Prometheus
+// matrix envelope into a RangeResult. A body that is not valid JSON is a decode
+// error; a valid body with a non-matrix resultType is carried through
+// (ResultType) for the caller to classify. Status is stamped by the caller.
+//
+// The Loki lane shares this decoder rather than duplicating it: Loki's `matrix`
+// result is literally []prometheus/common/model.SampleStream, the same Go type
+// Prometheus marshals, so the envelope is byte-compatible. Loki's extra
+// stats / warnings / encodingFlags fields are simply not read.
+func decodePromMatrix(body []byte) (RangeResult, error) {
 	var raw promRangeResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return RangeResult{}, fmt.Errorf("decode range response: %w", err)
 	}
-	res := RangeResult{Status: status, ResultType: raw.Data.ResultType}
+	res := RangeResult{ResultType: raw.Data.ResultType}
 	if raw.Data.ResultType != resultTypeMatrix {
 		return res, nil
 	}
@@ -316,13 +407,18 @@ func validateTolerance(tol float64) error {
 	return nil
 }
 
-// LoadCorpus reads a corpus.json produced by `migrate harvest`, splits it into
-// the PromQL queries to replay and the non-PromQL entries carried through for
-// honest accounting, carries through the harvest-time skips the corpus recorded,
-// and rejects a corpus whose version this build does not understand. Every entry
-// is accounted for — none is silently dropped: PromQL queries are replayed,
-// non-PromQL queries are counted out of scope, and the harvester's own skips are
-// surfaced so the operator sees queries that never became replayable at all.
+// LoadCorpus reads a corpus.json produced by `migrate harvest`, routes every
+// entry to its head's lane or to the out-of-scope accounting, carries through
+// the harvest-time skips the corpus recorded, and rejects a corpus whose version
+// this build does not understand.
+//
+// Every entry is accounted for — none is silently dropped. A query whose shape a
+// comparator can judge is replayed and tagged with its head and its result kind;
+// a shape with no definition of equality is counted out of scope with the
+// specific reason it was not judged; and the harvester's own skips are surfaced
+// so the operator also sees queries that never became replayable at all. Corpus
+// order is preserved so the report reads in the order the operator's sources
+// were harvested.
 func LoadCorpus(path string) (Corpus, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied corpus path; offline CLI input.
 	if err != nil {
@@ -337,15 +433,29 @@ func LoadCorpus(path string) (Corpus, error) {
 	}
 	out := Corpus{}
 	for _, q := range c.Queries {
-		if q.Lang == migrate.LangPromQL {
-			out.PromQL = append(out.PromQL, Query{Expr: q.Expr, Source: q.Source})
+		r := RouteQuery(q.Lang, q.Expr)
+		if r.Replayable {
+			// The routed KIND is carried through, not discarded: it is what selects
+			// the comparator that judges this entry's shape, and it is the same
+			// vocabulary the out-of-scope accounting below names shapes with.
+			out.Queries = append(out.Queries, Query{Expr: q.Expr, Source: q.Source, Head: r.Head, Lang: q.Lang, Kind: r.Kind})
 			continue
 		}
-		out.OutOfScope = append(out.OutOfScope, OutOfScopeEntry{Source: q.Source, Lang: q.Lang})
+		out.OutOfScope = append(out.OutOfScope, OutOfScopeEntry{
+			Source: q.Source, Expr: q.Expr, Head: r.Head, Lang: q.Lang, Kind: r.Kind, Reason: r.Reason,
+		})
 	}
 	for _, s := range c.Skipped {
 		out.HarvestSkipped = append(out.HarvestSkipped, HarvestSkippedEntry{Source: s.Source, Reason: s.Reason})
 	}
+	// Tag/label discovery probes are corpus-ANCHORED, not corpus entries
+	// themselves: no query language names a tag enumeration, so they are always
+	// derived here rather than routed from c.Queries. Anchoring on the already-
+	// routed out.Queries (not c.Queries) means a head only gets discovery probes
+	// when it has at least one REPLAYABLE query — an all-out-of-scope Loki corpus
+	// adds no Loki discovery probes either, the same "no query, no probe" rule
+	// discoveryProbesForCorpus documents for the head-absent case.
+	out.Queries = append(out.Queries, discoveryProbesForCorpus(out.Queries)...)
 	return out, nil
 }
 

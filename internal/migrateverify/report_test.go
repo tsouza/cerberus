@@ -3,6 +3,7 @@ package migrateverify
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestAttribution_HotspotVsNonHotspot(t *testing.T) {
 	}
 	refBody, cerBody := mk("1"), mk("2")
 
-	hotspot := runVerifyOne(t, refBody, cerBody, Query{Expr: "rate(x[1m])", Source: "rule:r"})
+	hotspot := runVerifyOne(t, refBody, cerBody, promQuery("rate(x[1m])", "rule:r"))
 	if hotspot.Verdict != VerdictDiverge {
 		t.Fatalf("hotspot verdict = %q, want diverge", hotspot.Verdict)
 	}
@@ -73,7 +74,7 @@ func TestAttribution_HotspotVsNonHotspot(t *testing.T) {
 		t.Errorf("every divergence must carry the cerberus-bug candidate, got %+v", hotspot.Attribution)
 	}
 
-	plain := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "rule:u"})
+	plain := runVerifyOne(t, refBody, cerBody, promQuery("up", "rule:u"))
 	if plain.Verdict != VerdictDiverge {
 		t.Fatalf("non-hotspot verdict = %q, want diverge", plain.Verdict)
 	}
@@ -90,7 +91,7 @@ func TestAttribution_HistogramQuantileHotspot(t *testing.T) {
 	const expr = "histogram_quantile(0.9, x)"
 	refBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"le": "1"}, points: []pointSpec{{1_700_000_000, "1"}}})}
 	cerBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"le": "1"}, points: []pointSpec{{1_700_000_000, "2"}}})}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: expr, Source: "panel:p"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery(expr, "panel:p"))
 	if !hasAttrib(res.Attribution, AttribExperimentalCHFeature) {
 		t.Errorf("histogram_quantile divergence must carry the experimental-ch-feature candidate, got %+v", res.Attribution)
 	}
@@ -113,7 +114,7 @@ func TestAttribution_RegressionHotspotNote(t *testing.T) {
 	for _, expr := range []string{"deriv(x[5m])", "predict_linear(x[5m], 3600)"} {
 		refBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}})}
 		cerBody := map[string]string{expr: matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "2"}}})}
-		res := runVerifyOne(t, refBody, cerBody, Query{Expr: expr, Source: "rule:r"})
+		res := runVerifyOne(t, refBody, cerBody, promQuery(expr, "rule:r"))
 		if !hasAttrib(res.Attribution, AttribExperimentalCHFeature) {
 			t.Errorf("%s divergence must carry the experimental-ch-feature candidate, got %+v", expr, res.Attribution)
 		}
@@ -133,7 +134,7 @@ func TestAttribution_CoverageGap(t *testing.T) {
 	cerBody := map[string]string{"up": matrix(
 		seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}},
 	)}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "s"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery("up", "s"))
 	if !hasAttrib(res.Attribution, AttribDataWindowGap) || !hasAttrib(res.Attribution, AttribIngestArtifact) {
 		t.Errorf("coverage-gap divergence must carry data-window-gap + ingest-artifact, got %+v", res.Attribution)
 	}
@@ -154,7 +155,7 @@ func TestAttribution_ValueDivergenceDialect(t *testing.T) {
 	cerBody := map[string]string{"up": matrix(
 		seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "2"}}},
 	)}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "up", Source: "s"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery("up", "s"))
 	if res.Verdict != VerdictDiverge {
 		t.Fatalf("verdict = %q, want diverge", res.Verdict)
 	}
@@ -275,12 +276,12 @@ func TestVerifyReport_JSON(t *testing.T) {
 	}
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
-	corpus := Corpus{PromQL: []Query{{Expr: "up", Source: "s1"}, {Expr: "rate(x[1m])", Source: "s2"}}}
-	rep := Verify(context.Background(), corpus, ref, cer, testParams())
+	corpus := Corpus{Queries: []Query{promQuery("up", "s1"), promQuery("rate(x[1m])", "s2")}}
+	rep := Verify(context.Background(), corpus, promLanes(ref, cer), testParams())
 
 	params := VerifyReportParams{
-		RefURL: "http://ref", CerberusURL: "http://cer",
-		Start: "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z",
+		Backends: []VerifyReportBackend{{Head: HeadProm, RefURL: "http://ref", CerberusURL: "http://cer"}},
+		Start:    "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z",
 		Step: "1m0s", Tolerance: DefaultTolerance, Corpus: "corpus.json",
 	}
 	genAt := time.Unix(1_700_000_600, 0).UTC()
@@ -308,11 +309,16 @@ func TestVerifyReport_JSON(t *testing.T) {
 	if back.Note != ExperimentalNote {
 		t.Errorf("note = %q, want the experimental-feature note", back.Note)
 	}
-	if back.Params != params {
+	if !reflect.DeepEqual(back.Params, params) {
 		t.Errorf("params = %+v, want %+v", back.Params, params)
 	}
-	if back.Summary != rep.Summary {
+	if !reflect.DeepEqual(back.Summary, rep.Summary) {
 		t.Errorf("summary = %+v, want %+v", back.Summary, rep.Summary)
+	}
+	// The per-head lane split must survive into the diagnostic: without it a
+	// --report artifact cannot tell an operator which head a divergence lived on.
+	if !reflect.DeepEqual(back.Heads, rep.Heads) {
+		t.Errorf("heads = %+v, want %+v", back.Heads, rep.Heads)
 	}
 	if len(back.Results) != 2 {
 		t.Fatalf("results = %d, want 2", len(back.Results))
@@ -339,5 +345,169 @@ func TestVerifyReport_JSON(t *testing.T) {
 	}
 	if buf.String() != buf2.String() {
 		t.Errorf("diagnostic marshaling must be deterministic; got two different encodings")
+	}
+}
+
+// v1ReportSchemaVersion is the schema version whose on-disk shape the multi-lane
+// gate replaced: one flat ref_url / cerberus_url pair, no per-head lanes, no
+// unconfigured bucket. Both current versions must sit above it.
+const v1ReportSchemaVersion = 1
+
+// TestSchemaVersionsAreBumpedOffTheSingleLaneShape pins the two version constants
+// to concrete values AND to the reason they moved.
+//
+// Asserting only "the marshaled version equals the constant" is self-satisfying:
+// reverting either constant to 1 keeps every such test green while handing a
+// version-1 consumer a body with no ref_url in it, and handing this build a
+// version-1 artifact whose missing heads / unconfigured fields zero-fill into
+// "every lane configured, none dead" — the silent zero-fill the version check
+// exists to stop. So this test checks the literal, and checks that the shape the
+// number describes really did break.
+func TestSchemaVersionsAreBumpedOffTheSingleLaneShape(t *testing.T) {
+	if ReportVersion <= v1ReportSchemaVersion {
+		t.Errorf("ReportVersion = %d: the gate-consumed report gained Heads + Unconfigured, so it must sit above %d",
+			ReportVersion, v1ReportSchemaVersion)
+	}
+	if VerifyReportVersion <= v1ReportSchemaVersion {
+		t.Errorf("VerifyReportVersion = %d: the diagnostic's params became per-head, so it must sit above %d",
+			VerifyReportVersion, v1ReportSchemaVersion)
+	}
+
+	// The breaking change itself: params no longer carries a single flat backend
+	// pair, and the report carries the per-head split.
+	var buf strings.Builder
+	diag := NewVerifyReport(
+		Report{Heads: []HeadSummary{{Head: HeadProm}}},
+		VerifyReportParams{Backends: []VerifyReportBackend{{Head: HeadProm, RefURL: "http://ref", CerberusURL: "http://cer"}}},
+		"v1.2.3", time.Unix(0, 0).UTC(),
+	)
+	if err := diag.WriteJSON(&buf); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(buf.String()), &decoded); err != nil {
+		t.Fatalf("diagnostic must be JSON: %v", err)
+	}
+	params, ok := decoded["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostic carries no params object: %s", buf.String())
+	}
+	for _, gone := range []string{"ref_url", "cerberus_url"} {
+		if _, present := params[gone]; present {
+			t.Errorf("params still carries the single-lane %q field, so the version bump describes no real shape change: %s", gone, buf.String())
+		}
+	}
+	if _, present := params["backends"]; !present {
+		t.Errorf("params must carry the per-head backends list: %s", buf.String())
+	}
+	if _, present := decoded["heads"]; !present {
+		t.Errorf("the diagnostic must carry the per-head lane split: %s", buf.String())
+	}
+}
+
+// v2ReportSchemaVersion is the schema version whose on-disk shape the multi-shape
+// gate replaced: per-head lanes with no family partition, one matrix-only
+// evidence counter, no undecidable verdict and no limitations. Both current
+// versions must sit above it.
+const v2ReportSchemaVersion = 2
+
+// TestSchemaVersionsAreBumpedOffTheSingleShapeReport pins the versions to the
+// SECOND shape change, and to the reason it broke.
+//
+// The literal alone is self-satisfying — reverting the constants keeps every
+// "marshaled version equals the constant" test green while handing this build a
+// version-2 artifact whose absent families and zero compared_units decode into
+// "no family compared anything", which the new guards read as a dead lane and
+// block a legitimately green run over. So this test checks the number AND that
+// the shape the number describes really did change.
+func TestSchemaVersionsAreBumpedOffTheSingleShapeReport(t *testing.T) {
+	if ReportVersion <= v2ReportSchemaVersion {
+		t.Errorf("ReportVersion = %d: the gate-consumed report gained per-shape families and compared_units, so it must sit above %d",
+			ReportVersion, v2ReportSchemaVersion)
+	}
+	if VerifyReportVersion <= v2ReportSchemaVersion {
+		t.Errorf("VerifyReportVersion = %d: the diagnostic gained the pinned replay parameters, so it must sit above %d",
+			VerifyReportVersion, v2ReportSchemaVersion)
+	}
+
+	rep := Report{
+		SchemaVersion: ReportVersion,
+		Summary:       Summary{Total: 1, Match: 1, ComparedUnits: 4, Limitations: mergeLimitations(nil, []Limitation{limitation(LimitLogEntryOrder, 4)})},
+		Heads: []HeadSummary{{
+			Head: HeadLoki, Configured: true,
+			Summary:  Summary{Total: 1, Match: 1, ComparedUnits: 4},
+			Families: []FamilySummary{{Kind: KindLogStream, Unit: UnitLogEntries, Total: 1, Match: 1, Compared: 4}},
+		}},
+		Results: []QueryResult{{
+			Head: HeadLoki, Kind: KindLogStream, Source: "panel:logs", Expr: `{job="api"}`,
+			Verdict: VerdictMatch, ComparedUnits: 4,
+		}},
+	}
+	var buf strings.Builder
+	if err := rep.WriteJSON(&buf); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(buf.String()), &decoded); err != nil {
+		t.Fatalf("report must be JSON: %v", err)
+	}
+	heads, ok := decoded["heads"].([]any)
+	if !ok || len(heads) != 1 {
+		t.Fatalf("report carries no heads array: %s", buf.String())
+	}
+	head, ok := heads[0].(map[string]any)
+	if !ok {
+		t.Fatalf("head row is not an object: %s", buf.String())
+	}
+	if _, present := head["families"]; !present {
+		t.Errorf("each head must carry its per-shape families, or the dead-family rule has nothing to read: %s", buf.String())
+	}
+	summary, ok := decoded["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("report carries no summary object: %s", buf.String())
+	}
+	for _, want := range []string{"compared_units", "undecidable", "limitations"} {
+		if _, present := summary[want]; !present {
+			t.Errorf("the summary must carry %q: %s", want, buf.String())
+		}
+	}
+	results, ok := decoded["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("report carries no results array: %s", buf.String())
+	}
+	result, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("result row is not an object: %s", buf.String())
+	}
+	for _, want := range []string{"kind", "compared_units"} {
+		if _, present := result[want]; !present {
+			t.Errorf("each result must carry %q, or a consumer cannot tell which comparator judged it: %s", want, buf.String())
+		}
+	}
+
+	// The diagnostic records how strict the run was, the same reason it records
+	// the tolerance: the replay limit decides how much of a result was truncated.
+	var diagBuf strings.Builder
+	diag := NewVerifyReport(rep, VerifyReportParams{Replay: ReplayParams()}, "v1.2.3", time.Unix(0, 0).UTC())
+	if err := diag.WriteJSON(&diagBuf); err != nil {
+		t.Fatalf("WriteJSON (diagnostic): %v", err)
+	}
+	var diagDecoded map[string]any
+	if err := json.Unmarshal([]byte(diagBuf.String()), &diagDecoded); err != nil {
+		t.Fatalf("diagnostic must be JSON: %v", err)
+	}
+	params, ok := diagDecoded["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostic carries no params object: %s", diagBuf.String())
+	}
+	replay, ok := params["replay"].(map[string]any)
+	if !ok {
+		t.Fatalf("params must carry the pinned replay block: %s", diagBuf.String())
+	}
+	if got := replay["log_stream_limit"]; got != float64(logStreamReplayLimit) {
+		t.Errorf("replay.log_stream_limit = %v, want %d", got, logStreamReplayLimit)
+	}
+	if got := replay["log_stream_direction"]; got != logStreamReplayDirection {
+		t.Errorf("replay.log_stream_direction = %v, want %q", got, logStreamReplayDirection)
 	}
 }

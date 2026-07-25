@@ -1,0 +1,34 @@
+{
+  "title": "VictoriaMetrics / cluster",
+  "uid": "vm-cluster",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Free disk space (MetricsQL rollup)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "vm" },
+      "targets": [{ "refId": "A", "expr": "range_avg(vm_free_disk_space_bytes)" }]
+    },
+    {
+      "id": 2,
+      "title": "Tagged availability (MetricsQL label_set)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "vm" },
+      "targets": [{ "refId": "A", "expr": "label_set(up, \"src\", \"vm\")" }]
+    },
+    {
+      "id": 3,
+      "title": "Disk with fallback (MetricsQL default)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "vm" },
+      "targets": [{ "refId": "A", "expr": "vm_free_disk_space_bytes default 0" }]
+    },
+    {
+      "id": 4,
+      "title": "Request rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "vm" },
+      "targets": [{ "refId": "A", "expr": "sum by (path) (rate(vm_http_requests_total[5m]))" }]
+    }
+  ]
+}

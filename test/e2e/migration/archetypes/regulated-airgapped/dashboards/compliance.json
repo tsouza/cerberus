@@ -1,0 +1,27 @@
+{
+  "title": "Compliance / control plane",
+  "uid": "compliance-control-plane",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Audit log write failures",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(audit_log_write_failures_total[5m]))" }]
+    },
+    {
+      "id": 2,
+      "title": "File descriptor headroom",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "max_over_time(process_open_fds[1h])" }]
+    },
+    {
+      "id": 3,
+      "title": "Clock offset",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{ "refId": "A", "expr": "abs(node_timex_offset_seconds)" }]
+    }
+  ]
+}

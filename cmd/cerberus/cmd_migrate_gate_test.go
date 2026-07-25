@@ -32,8 +32,24 @@ func writeJSONFile(t *testing.T, dir, name string, wj func(io.Writer) error) str
 	return p
 }
 
+// cleanVerifyFile stands in for a healthy parity run, which means it must carry
+// EVIDENCE: a configured lane, a family that says which shape it judged, and a
+// non-zero compared count. A report whose comparator diffed nothing — or that
+// reports no family to attribute its evidence to — is blocked by the gate however
+// many matches it claims, so a fixture without those fields would be a dead lane,
+// not a clean one.
 func cleanVerifyFile(t *testing.T, dir string) string {
-	rep := migrateverify.Report{Summary: migrateverify.Summary{Total: 1, Match: 1}}
+	rep := migrateverify.Report{
+		Summary: migrateverify.Summary{Total: 1, Match: 1, ComparedSeries: 2, ComparedUnits: 2},
+		Heads: []migrateverify.HeadSummary{{
+			Head: migrateverify.HeadProm, Configured: true,
+			Summary: migrateverify.Summary{Total: 1, Match: 1, ComparedSeries: 2, ComparedUnits: 2},
+			Families: []migrateverify.FamilySummary{{
+				Kind: migrateverify.KindMetricMatrix, Unit: migrateverify.UnitSeries,
+				Total: 1, Match: 1, Compared: 2,
+			}},
+		}},
+	}
 	return writeJSONFile(t, dir, "verify.json", rep.WriteJSON)
 }
 

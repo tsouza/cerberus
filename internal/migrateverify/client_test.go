@@ -64,18 +64,25 @@ func TestBuildParams(t *testing.T) {
 	}
 }
 
-// TestLoadCorpus writes a v1 corpus with a PromQL query, a LogQL panel, and a
-// harvest-time skip, then checks that verify picks up the PromQL query, carries
-// the LogQL one through as out-of-scope, and surfaces the harvest skip — every
-// entry accounted for, none silently dropped.
+// TestLoadCorpus writes a v1 corpus holding one entry of each shape the router
+// must distinguish — a PromQL rule, a LogQL log-stream panel, a LogQL metric
+// panel, a TraceQL metrics panel, a TraceQL search panel, a TraceQL compare()
+// panel — plus a harvest-time skip, and pins that each lands in exactly one
+// bucket with the right head and result kind, that corpus order survives, and
+// that the buckets account for every input entry.
 func TestLoadCorpus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corpus.json")
+	const corpusEntries = 6
 	const body = `{
   "version": 1,
   "queries": [
     {"expr": "up", "source": "rule:a", "kind": "record", "lang": "promql"},
-    {"expr": "{app=\"x\"}", "source": "panel:logs", "kind": "panel", "lang": "logql"}
+    {"expr": "{app=\"x\"}", "source": "panel:logs", "kind": "panel", "lang": "logql"},
+    {"expr": "sum(rate({app=\"x\"}[5m]))", "source": "panel:lograte", "kind": "panel", "lang": "logql"},
+    {"expr": "{} | rate()", "source": "panel:spanrate", "kind": "panel", "lang": "traceql"},
+    {"expr": "{ span.a = \"b\" }", "source": "panel:search", "kind": "panel", "lang": "traceql"},
+    {"expr": "{} | compare({status=error})", "source": "panel:breakdown", "kind": "panel", "lang": "traceql"}
   ],
   "skipped": [
     {"source": "rule:broken.yml", "reason": "rule has an empty expr"}
@@ -88,12 +95,86 @@ func TestLoadCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
-	if len(c.PromQL) != 1 || c.PromQL[0].Expr != "up" {
-		t.Errorf("PromQL = %+v, want the single `up` query", c.PromQL)
+
+	// The routed KIND rides on every replayable query: it is what selects the
+	// comparator, so a corpus loader that dropped it would silently hand a log
+	// stream to the matrix comparator.
+	//
+	// The corpus itself routes to 5 replayable queries. LoadCorpus then ANCHORS
+	// one discovery probe set per head that got at least one of them: loki got
+	// two entries whose only matcher key is "app" (an unfiltered labels probe
+	// plus one label-values probe for "app"); tempo got two entries whose only
+	// referenced attribute key is "a" (two unfiltered tags probes — v1 and v2 —
+	// plus one tag-values probe per key for each of v1/v2). None of this reads
+	// the compare() panel: it never made it into the routed query list, so it
+	// contributes no discovery probes either.
+	wantQueries := []Query{
+		{Expr: "up", Source: "rule:a", Head: HeadProm, Lang: "promql", Kind: KindMetricMatrix},
+		{Expr: `{app="x"}`, Source: "panel:logs", Head: HeadLoki, Lang: "logql", Kind: KindLogStream},
+		{Expr: `sum(rate({app="x"}[5m]))`, Source: "panel:lograte", Head: HeadLoki, Lang: "logql", Kind: KindMetricMatrix},
+		{Expr: "{} | rate()", Source: "panel:spanrate", Head: HeadTempo, Lang: "traceql", Kind: KindMetricMatrix},
+		{Expr: `{ span.a = "b" }`, Source: "panel:search", Head: HeadTempo, Lang: "traceql", Kind: KindTraceSearch},
+		{Head: HeadLoki, Lang: "logql", Kind: KindTagDiscovery, Surface: SurfaceLokiLabels, Source: discoverySourceTag},
+		{Head: HeadLoki, Lang: "logql", Kind: KindTagDiscovery, Surface: SurfaceLokiLabelValues, TagName: "app", Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagsV1, Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagsV2, Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagValuesV1, TagName: "a", Source: discoverySourceTag},
+		{Head: HeadTempo, Lang: "traceql", Kind: KindTagDiscovery, Surface: SurfaceTempoTagValuesV2, TagName: "a", Source: discoverySourceTag},
 	}
-	if len(c.OutOfScope) != 1 || c.OutOfScope[0].Lang != "logql" {
-		t.Errorf("OutOfScope = %+v, want the one logql panel", c.OutOfScope)
+	if len(c.Queries) != len(wantQueries) {
+		t.Fatalf("Queries = %+v, want the 5 replayable queries plus their anchored discovery probes", c.Queries)
 	}
+	for i, want := range wantQueries {
+		if c.Queries[i] != want {
+			t.Errorf("Queries[%d] = %+v, want %+v (corpus order + head tag must survive)", i, c.Queries[i], want)
+		}
+	}
+
+	if len(c.OutOfScope) != 1 {
+		t.Fatalf("OutOfScope = %+v, want the compare() panel", c.OutOfScope)
+	}
+	wantOOS := []struct {
+		source string
+		head   string
+		kind   string
+	}{
+		{"panel:breakdown", HeadTempo, KindMetricsCompare},
+	}
+	for i, want := range wantOOS {
+		got := c.OutOfScope[i]
+		if got.Source != want.source || got.Head != want.head || got.Kind != want.kind {
+			t.Errorf("OutOfScope[%d] = %+v, want source=%s head=%s kind=%s", i, got, want.source, want.head, want.kind)
+		}
+		if got.Reason == "" {
+			t.Errorf("OutOfScope[%d] (%s) carries an empty Reason: the operator must be told WHY it was not judged", i, got.Source)
+		}
+		if got.Expr == "" {
+			t.Errorf("OutOfScope[%d] (%s) carries an empty Expr", i, got.Source)
+		}
+	}
+
+	// The accounting invariant: every RAW corpus entry landed in exactly one
+	// bucket. Discovery probes are excluded from this count deliberately: they
+	// are corpus-ANCHORED, not corpus entries themselves — no query language
+	// names a tag enumeration — so a corpus with N entries always anchors a
+	// FIXED number of discovery probes per head it touched, not one per entry.
+	replayedFromCorpus := 0
+	discoveryProbes := 0
+	for _, q := range c.Queries {
+		if q.Kind == KindTagDiscovery {
+			discoveryProbes++
+			continue
+		}
+		replayedFromCorpus++
+	}
+	if got := replayedFromCorpus + len(c.OutOfScope); got != corpusEntries {
+		t.Errorf("replayable + out-of-scope = %d, want %d: an entry was dropped", got, corpusEntries)
+	}
+	const wantDiscoveryProbes = 6 // 2 loki (labels + 1 label-values key) + 4 tempo (tags-v1/v2 + 1 tag-values key on each)
+	if discoveryProbes != wantDiscoveryProbes {
+		t.Errorf("discovery probes = %d, want %d anchored from the loki/tempo entries", discoveryProbes, wantDiscoveryProbes)
+	}
+
 	if len(c.HarvestSkipped) != 1 || c.HarvestSkipped[0].Source != "rule:broken.yml" ||
 		c.HarvestSkipped[0].Reason != "rule has an empty expr" {
 		t.Errorf("HarvestSkipped = %+v, want the one broken-rule skip", c.HarvestSkipped)

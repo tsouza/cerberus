@@ -180,7 +180,7 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: 'step' must be > 0", errParseStage)
 	}
 
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
+	parseT := telemetry.ObserveStage(telemetry.StageParse, telemetry.QLTraceQL)
 	expr, perr := parseExpr(ctx, query)
 	parseT.Done(ctx)
 	if perr != nil {
@@ -191,7 +191,7 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	// recursive spans scans of a metrics-over-structural / nested-set source; the
 	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
+	lowerT := telemetry.ObserveStage(telemetry.StageLower, telemetry.QLTraceQL)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
 	lowerT.Done(ctx)
 	if lerr != nil {
@@ -307,7 +307,7 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: 'end' must be after 'start'", errParseStage)
 	}
 
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
+	parseT := telemetry.ObserveStage(telemetry.StageParse, telemetry.QLTraceQL)
 	expr, perr := parseExpr(ctx, query)
 	parseT.Done(ctx)
 	if perr != nil {
@@ -318,7 +318,7 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 	// recursive spans scans of a metrics-over-structural / nested-set source; the
 	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
+	lowerT := telemetry.ObserveStage(telemetry.StageLower, telemetry.QLTraceQL)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
 	lowerT.Done(ctx)
 	if lerr != nil {

@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "sum({__name__=~\"node_.*_bytes_total\"})",
+      "source": "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/Byte counters by name pattern/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cluster:node_cpu:ratio",
+      "source": "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/CPU utilisation/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "node:node_memory_utilisation:ratio",
+      "source": "dashboard:test/e2e/migration/archetypes/kube-prometheus-stack/dashboards/node-exporter.json/Memory utilisation/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "absent(up{job=\"kubelet\"} == 1)",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-alerts.yaml/node.alerts/KubeletDown",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "node:node_cpu_utilisation:avg1m \u003e 0.9",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-alerts.yaml/node.alerts/NodeCPUSaturation",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes \u003c 0.1",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-alerts.yaml/node.alerts/NodeMemoryPressure",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "avg(node:node_cpu_utilisation:avg1m)",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/cluster:node_cpu:ratio",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum without (device) (rate(node_network_receive_bytes_total{device!=\"lo\"}[1m]))",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/instance:node_network_receive_bytes_excluding_lo:rate1m",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "1 - avg without (cpu) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/node:node_cpu_utilisation:avg1m",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes",
+      "source": "rule:test/e2e/migration/archetypes/kube-prometheus-stack/rules/node-recording.yaml/node.rules/node:node_memory_utilisation:ratio",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

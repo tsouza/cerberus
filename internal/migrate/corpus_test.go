@@ -283,3 +283,49 @@ func TestDashboardSourceCountsEveryDrop(t *testing.T) {
 		t.Errorf("empty-expr target should be counted: %+v", skipped)
 	}
 }
+
+// TestBuildCorpusCollapsesExactDuplicates proves the corpus counts a query once
+// per site: a rule block copy-pasted inside one group (identical expr, source,
+// kind and language) collapses, while the same expression harvested from two
+// DIFFERENT sources is kept twice, because provenance is what the corpus is for.
+func TestBuildCorpusCollapsesExactDuplicates(t *testing.T) {
+	const expr = "sum(rate(http_requests_total[5m]))"
+	c := BuildCorpus([]HarvestedQuery{
+		{Expr: expr, Source: "rule:a.yml/g/rps", Kind: KindRecord, Lang: LangPromQL},
+		{Expr: expr, Source: "rule:a.yml/g/rps", Kind: KindRecord, Lang: LangPromQL},
+		{Expr: expr, Source: "dashboard:d.json/RPS/A", Kind: KindPanel, Lang: LangPromQL},
+	}, nil)
+
+	if len(c.Queries) != 2 {
+		t.Fatalf("expected the copy-pasted rule to collapse to 2 entries, got %d: %+v", len(c.Queries), c.Queries)
+	}
+	sources := map[string]int{}
+	for _, q := range c.Queries {
+		sources[q.Source]++
+	}
+	if sources["rule:a.yml/g/rps"] != 1 {
+		t.Errorf("the duplicated rule site appears %d times, want 1", sources["rule:a.yml/g/rps"])
+	}
+	if sources["dashboard:d.json/RPS/A"] != 1 {
+		t.Errorf("the same expression from a different source was dropped: %+v", c.Queries)
+	}
+}
+
+// TestBuildCorpusKeepsEntriesDifferingInAnyField proves the duplicate key covers
+// every field: two entries that differ only in kind, or only in language, are
+// different queries and both survive.
+func TestBuildCorpusKeepsEntriesDifferingInAnyField(t *testing.T) {
+	const (
+		expr   = "up"
+		source = "rule:a.yml/g/n"
+	)
+	c := BuildCorpus([]HarvestedQuery{
+		{Expr: expr, Source: source, Kind: KindRecord, Lang: LangPromQL},
+		{Expr: expr, Source: source, Kind: KindAlert, Lang: LangPromQL},
+		{Expr: expr, Source: source, Kind: KindRecord, Lang: LangLogQL},
+	}, nil)
+
+	if len(c.Queries) != 3 {
+		t.Fatalf("entries differing in kind or language must all survive, got %d: %+v", len(c.Queries), c.Queries)
+	}
+}

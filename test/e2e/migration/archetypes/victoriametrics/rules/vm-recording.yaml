@@ -1,0 +1,12 @@
+groups:
+  - name: vm.rules
+    rules:
+      - record: vm:rows_inserted:rate5m
+        expr: sum(rate(vm_rows_inserted_total[5m])) keep_metric_names
+      - record: vm:http_requests:rate5m
+        expr: sum(rate(vm_http_requests_total[5m]))
+  - name: vm.alerts
+    rules:
+      - alert: VMRowsInsertedStalled
+        expr: rollup(vm_rows_inserted_total[5m]) < 1
+        for: 10m

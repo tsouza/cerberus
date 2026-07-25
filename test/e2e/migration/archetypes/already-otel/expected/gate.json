@@ -1,0 +1,51 @@
+{
+  "pass": false,
+  "overall": "FAIL",
+  "stages": [
+    {
+      "stage": "verify",
+      "present": false,
+      "required": true,
+      "verdict": "MISSING",
+      "blocking": true,
+      "reasons": [
+        "required artifact not provided (--verify); cannot prove safety"
+      ]
+    },
+    {
+      "stage": "classify",
+      "present": true,
+      "required": true,
+      "verdict": "WARN",
+      "blocking": false,
+      "reasons": [
+        "1 supported query carry an offline fan-out risk flag"
+      ]
+    },
+    {
+      "stage": "inventory",
+      "present": false,
+      "required": false,
+      "verdict": "MISSING",
+      "blocking": false,
+      "reasons": [
+        "artifact not provided (--inventory); source cardinality risk unchecked"
+      ]
+    },
+    {
+      "stage": "rulegraph",
+      "present": true,
+      "required": true,
+      "verdict": "FAIL",
+      "blocking": true,
+      "reasons": [
+        "1 consumed recorded series must stay materialized after cutover",
+        "  otel:http_server_request_duration:p95 \u003c- 1 consumer"
+      ]
+    }
+  ],
+  "missing": [
+    "verify",
+    "inventory"
+  ]
+}

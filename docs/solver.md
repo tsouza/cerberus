@@ -274,17 +274,17 @@ immediately so no connection leaks. A client disconnect propagates through the
 request ctx to the group ctx to every shard. Every handler entrypoint is
 goleak-gated with routed queries.
 
-## Routing-decision calibration corpus (stage 0, measurement-only)
+## Routing-decision calibration corpus (measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single
 CH query) or B (time-slice sharded) by cost thresholds over the grid it
 derives — `N` anchors, fan-out `F`, cumulative spine lookback `D`. Those
-thresholds start at their configured values and are lowered at runtime by the
-self-driving loop (Stage 1 below); the classifier reads them through an atomic
-overlay, so it stays pure — no per-request state, no RNG. Stage 0 is the
-**measurement-only** substrate that loop consumes: it records, **without itself
-changing any threshold or routing behavior**, the `(N, F, D)` context and the
-observed cost of every decision.
+thresholds are **static configuration**, so classification is a pure function of
+`(plan, meta, Config)` — no per-request state, no RNG, and identical across every
+replica running the same configuration. The corpus is the **measurement-only**
+substrate for tuning them: it records, **without itself changing any threshold or
+routing behavior**, the `(N, F, D)` context and the observed cost of every
+decision.
 
 To answer it the engine closes the loop the optimization corpus
 (`internal/optcorpus`) already half-built:
@@ -337,62 +337,6 @@ Step)` back through `Planner.Plan` and it reproduces the recorded route, so an
 operator can sweep counterfactual thresholds against history without touching
 production (proven by `TestPlan_OfflineReplay_ReproducesRoute`).
 
-## Stage 1 — self-driving thresholds (the autotune loop)
-
-`internal/autotune` closes the loop on the Stage-0 corpus. When enabled
-(`CERBERUS_SOLVER_AUTOTUNE`, **default true**) and the solver is in auto mode, a
-background loop (`autotune.Loop`, launched on the server lifecycle context so it
-exits cleanly at shutdown) refits the two auto-gate thresholds — `MinFanout` and
-`MinAnchorPairs` — from the corpus on a cadence
-(`CERBERUS_SOLVER_AUTOTUNE_INTERVAL`, default 15m, plus one immediate fit at
-startup) and hot-swaps any change into the live `Planner` via an atomic pointer
-store (`Planner.SetThresholds`). Single / sharded modes carry no cost gate, so
-the loop no-ops there; disabling it pins the thresholds at their configured
-values, byte-identical to a fixed-threshold build. The fit reads the
-`cerberus_router_corpus` MergeTree, so the loop stays **dormant** until the
-Stage-0 reconciler is writing that table (`CERBERUS_CH_OPT_CORPUS_ENABLED=true`
-with the `chtable` sink) rather than erroring against a missing table. Its live
-decision state — configured vs. live thresholds, the last fit, tick count — is
-exposed at [`GET /info/autotune`](health.md#infoautotune--self-driving-solver-state).
-
-The fit (`routerrules.Autotuner.Fit`) is deliberately narrow and **safe by
-construction, not by statistics**:
-
-- It reads only the observed **route-A OOM floor** over the population the cost
-  gate can actually protect: rows where route A OOM'd *after being gated below
-  the thresholds* (`decision_reason = below-threshold`), via the narrow
-  `OOMFloorSource` seam. That predicate excludes the OOMs lowering the gate cannot
-  help — instant / not-sliceable / high-D route-A OOMs were rejected for
-  eligibility, not by the cost gate. An added `fanout > 0 AND n_anchors > 0` guard
-  stops a gridless row (an instant query, recorded with `fanout = 0`) from
-  cratering the floor to 0.
-- It only ever **lowers** a threshold toward that floor, never raises it, and
-  applies whatever it computes (no hysteresis) — so the guarantee below holds for
-  the **live** gate, not a notional candidate. Because route A and route B are
-  result-identical and route B is the OOM mitigation, lowering can only send more
-  queries to the safe route: the worst case is added route-B overhead, never a
-  wrong answer and never a new OOM.
-- The candidate is clamped so `MinFanout ≤ observed OOM fan-out` and
-  `MinAnchorPairs ≤ min(N)·min(F)` over those rows (a lower bound on the minimum
-  `N·F` product). Together these **prove** every eligible route-A OOM shape in the
-  corpus clears the live gate and would route B — a structural invariant checked
-  in `autotune_test.go`, not a fragile off-policy point estimate.
-- Each tick refits against the *currently active* thresholds over a **rolling**
-  corpus window, so the gate only ratchets downward and settles once it reaches
-  the OOM floor. The monotone ratchet cannot oscillate, so no hysteresis is
-  needed.
-
-**Cold start / kill-switch.** With no eligible route-A OOM in the corpus there is
-no signal and the loop holds the configured thresholds — so a fresh deployment
-behaves byte-identically to the fixed-threshold defaults until real OOM evidence
-accrues. A restart drops the in-memory overlay back to the configured values and
-re-derives from a fresh corpus window.
-
-**Scope of v1.** Because production routing is deterministic, the corpus carries
-no counterfactual A/B evidence with which to *loosen* a threshold; the loop
-therefore only tightens. Loosening (de-protecting a workload the defaults
-over-route) is out of scope until an exploration posture supplies that evidence.
-
 ### Blind spot: a cerberus process OOM-kill
 
 The in-process recorder dies with the process. If the **cerberus process
@@ -400,7 +344,7 @@ itself** is OOM-killed — the Go-side result-buffering class the sample budget
 exists to bound (e.g. an unbounded `matrixFromCursor` double-buffer) — the
 recorder cannot emit a `cerberus-oom` row, because the goroutine that would
 write it is gone with the rest of the process. That specific event is
-**unrecordable in-process** and is explicitly **out of Stage-0 scope**.
+**unrecordable in-process** and is explicitly **out of the corpus's scope**.
 
 Partial recovery is two-fold, and neither is an authoritative marker:
 
@@ -414,7 +358,7 @@ Partial recovery is two-fold, and neither is an authoritative marker:
 
 An authoritative "cerberus-oom" marker would require an **external** signal — a
 k8s `OOMKilled` container event correlated back to the in-flight requests —
-which is outside the corpus's in-process boundary and is not part of Stage 0.
+which is outside the corpus's in-process boundary and is not part of the corpus.
 
 ### Reading the go/no-go analysis
 

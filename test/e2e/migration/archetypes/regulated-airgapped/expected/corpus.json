@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "sum(rate(audit_log_write_failures_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/regulated-airgapped/dashboards/compliance.json/Audit log write failures/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "abs(node_timex_offset_seconds)",
+      "source": "dashboard:test/e2e/migration/archetypes/regulated-airgapped/dashboards/compliance.json/Clock offset/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "max_over_time(process_open_fds[1h])",
+      "source": "dashboard:test/e2e/migration/archetypes/regulated-airgapped/dashboards/compliance.json/File descriptor headroom/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "rate(audit_log_write_failures_total[5m]) \u003e 0",
+      "source": "rule:test/e2e/migration/archetypes/regulated-airgapped/rules/compliance.yaml/compliance.alerts/AuditLogWriteFailing",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "abs(node_timex_offset_seconds) \u003e 0.05",
+      "source": "rule:test/e2e/migration/archetypes/regulated-airgapped/rules/compliance.yaml/compliance.alerts/ClockDriftOutsideTolerance",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(rate(audit_log_write_failures_total[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/regulated-airgapped/rules/compliance.yaml/compliance.recording/audit:log_write_failures:rate5m",
+      "kind": "record",
+      "lang": "promql"
+    },
+    {
+      "expr": "histogram_quantile(0.95, sum by (le) (rate(session_duration_seconds_bucket[5m])))",
+      "source": "rule:test/e2e/migration/archetypes/regulated-airgapped/rules/compliance.yaml/compliance.recording/audit:session_duration:p95",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

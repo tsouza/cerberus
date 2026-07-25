@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "longest": "5m",
+  "by_query": [
+    {
+      "expr": "svc:http_requests:rate5m",
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Request rate/A",
+      "kind": "panel",
+      "reach": "0s"
+    },
+    {
+      "expr": "sum by (service) (rate(http_requests_total{code=~\"5..\",service=\"checkout\"}[5m])) \u003e 1",
+      "source": "rule:test/e2e/migration/archetypes/three-signal/rules/service-recording.yaml/three-signal/CheckoutErrorRate",
+      "kind": "alert",
+      "reach": "5m"
+    },
+    {
+      "expr": "sum by (service) (rate(http_requests_total[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/three-signal/rules/service-recording.yaml/three-signal/svc:http_requests:rate5m",
+      "kind": "record",
+      "reach": "5m"
+    }
+  ],
+  "anchored": [
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Request rate at the window edge/A",
+      "reason": "pinned to the request window by an @ modifier (svc:http_requests:rate5m @ end()); its reach is not a lookback"
+    }
+  ],
+  "non_promql": [
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Error log rate/A",
+      "reason": "logql entry; the lookback walk reads the PromQL AST"
+    },
+    {
+      "source": "dashboard:test/e2e/migration/archetypes/three-signal/dashboards/checkout-signals.json/Slow checkout spans/A",
+      "reason": "traceql entry; the lookback walk reads the PromQL AST"
+    }
+  ],
+  "unparseable": []
+}

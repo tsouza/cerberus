@@ -56,7 +56,7 @@ type traceqlLang struct {
 	schema schema.Traces
 }
 
-func (l *traceqlLang) Name() string { return "traceql" }
+func (l *traceqlLang) Name() string { return telemetry.QLTraceQL }
 
 // SpansTable exposes the spans table so the engine threads it onto the emit
 // context (chsql.WithSpansTable), letting RequireSpansScansBounded verify every
@@ -67,7 +67,7 @@ func (l *traceqlLang) SpansTable() string { return l.schema.SpansTable }
 func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
 	// Parse pipeline-stage stopwatch — mirrors the inlined handler so
 	// cerberus.queries.parse_duration_ms keeps its per-head label.
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
+	parseT := telemetry.ObserveStage(telemetry.StageParse, l.Name())
 	expr, err := parseExpr(ctx, query)
 	parseT.Done(ctx)
 	if err != nil {
@@ -76,7 +76,7 @@ func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 
 	// Lower pipeline-stage stopwatch. traceql.Lower opens its own
 	// cerbtrace.SpanLower span internally.
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
+	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
 	plan, err := traceql_lower.Lower(ctx, expr, l.schema)
 	lowerT.Done(ctx)
 	if err != nil {

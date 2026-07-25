@@ -11,13 +11,14 @@
 //
 //   - verify   — BLOCK if any query diverged or errored (the parity gate found
 //     cerberus returning different numbers, or a backend failing), or if the run
-//     COMPARED ZERO queries (Match+Diverge+Error==0): an empty harvest (Total==0)
-//     or an all-unsupported run (Total>0 but nothing returned a comparable matrix
-//     live) proves nothing and must not green-light a cutover. WARN when the run
-//     did compare something but the report also carries UNCHECKED entries —
-//     queries that emitted SQL but returned no comparable matrix live
-//     (Unsupported), harvest-skipped entries, or out-of-scope (non-PromQL)
-//     entries — so a green parity gate never hides an unexamined input.
+//     COMPARED ZERO units: an empty harvest (Total==0) or an all-unsupported run
+//     (Total>0 but nothing returned a comparable result live) proves nothing and
+//     must not green-light a cutover. WARN when the run did compare something but
+//     the report also carries UNCHECKED entries — queries that emitted SQL but
+//     returned no comparable result live (Unsupported), comparisons a named
+//     limitation left undecidable, harvest-skipped entries, or entries whose
+//     result shape has no comparator — so a green parity gate never hides an
+//     unexamined input.
 //   - classify — BLOCK if any corpus query is unsupported (no cerberus
 //     equivalent), or if ZERO queries were classified (an empty harvest cannot
 //     prove support). A supported-but-risky query WARNs but does not block; a
@@ -212,25 +213,57 @@ func evalVerify(path string) (StageResult, error) {
 	res.Present = true
 	s := rep.Summary
 	caveats := verifyCaveats(s)
-	// A run proves parity only if at least one query was actually COMPARED against
-	// the reference backend — matched, diverged, or errored. Unsupported replays
-	// (emitted SQL but returned no comparable matrix live) and out-of-scope /
-	// harvest-skipped entries inflate Total without comparing anything, so keying
-	// the "nothing verified" guard on Total alone lets an ALL-UNSUPPORTED run
-	// (Match+Diverge+Error==0, Total>0) fall through to a WARN and a green gate,
-	// proving nothing. Block whenever nothing was compared: the empty corpus
-	// (Total==0) is one subcase; an all-unsupported run (Total>0) is the other.
-	if compared := s.Match + s.Diverge + s.Error; compared == 0 {
+	caveats = append(caveats, idleLaneCaveats(rep.IdleLanes())...)
+	caveats = append(caveats, idleDerivedFamilyCaveats(rep.IdleDerivedFamilies())...)
+	// A run proves parity only if the comparator actually DIFFED something.
+	// Unsupported replays (emitted SQL but returned no comparable matrix live) and
+	// out-of-scope / harvest-skipped entries inflate Total without comparing
+	// anything, and two EMPTY matrices score a match while diffing zero series — so
+	// the guard is keyed on ComparedSeries, the report's evidence counter, not on
+	// verdict counts. The empty corpus (Total==0) is one subcase; an
+	// all-unsupported run and an all-empty window (both Total>0) are the others.
+	if rep.JudgedNothing() {
 		res.Verdict = VerdictFail
 		res.Blocking = true
-		if s.Total == 0 {
-			res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
-		} else {
-			res.Reasons = append(res.Reasons, fmt.Sprintf(
-				"nothing actually compared: 0 of %d queries returned a comparable matrix live (all unsupported/unchecked); the parity gate compared nothing",
-				s.Total,
-			))
-		}
+		res.Reasons = append(res.Reasons, "nothing verified: the parity run replayed 0 queries (an empty corpus cannot prove parity)")
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	if s.ComparedUnits == 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, fmt.Sprintf(
+			"nothing actually compared: 0 comparison units were diffed across %d replayed queries (all unsupported/unchecked, or every response was empty); the parity gate compared nothing",
+			s.Total,
+		))
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	// Per-family guard. The aggregate check above is satisfied by ANY family having
+	// compared something, so 40 matched PromQL queries would mask a Loki lane that
+	// replayed 12 and compared none of them — the operator flips that datasource on
+	// zero evidence. The same argument applies one level down, between two shapes
+	// on the SAME head: a lane's compared log entries must not vouch for its metric
+	// family. Every family that HAD replayable units must have diffed at least one,
+	// or that shape is unproven on that datasource and the cutover is refused.
+	if reasons := deadFamilyReasons(rep.DeadFamilies()); len(reasons) > 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, reasons...)
+		res.Reasons = append(res.Reasons, caveats...)
+		return res, nil
+	}
+	// A replayable query whose head lane had no backend pair was never issued to
+	// anything. That is a property of the invocation, not of the query, so it can
+	// never be a caveat: a WARN here would let a green cutover decision rest on
+	// queries the gate itself reports as unjudged.
+	if s.Unconfigured > 0 {
+		res.Verdict = VerdictFail
+		res.Blocking = true
+		res.Reasons = append(res.Reasons, fmt.Sprintf(
+			"%d replayable quer%s had no configured backend pair for their head lane (unjudged); supply that head's --ref-*/--cerberus-* pair or harvest a narrower corpus",
+			s.Unconfigured, plural(s.Unconfigured, "y", "ies"),
+		))
 		res.Reasons = append(res.Reasons, caveats...)
 		return res, nil
 	}
@@ -251,13 +284,81 @@ func evalVerify(path string) (StageResult, error) {
 	return res, nil
 }
 
+// deadFamilyReasons renders one operator-facing reason per (head, shape) family
+// the report already identified as dead (Report.DeadFamilies: replayed
+// comparison units, compared none of them). The PREDICATE lives on the report so
+// `migrate verify`'s own exit code and this gate can never disagree about what
+// proved nothing; this function only words it. It is reported per family — not
+// folded into one count — because the operator's next action is specific: only
+// naming the head AND the shape says which datasource must not be flipped, and
+// for which kind of query.
+func deadFamilyReasons(dead []migrateverify.FamilyRef) []string {
+	var out []string
+	for _, f := range dead {
+		out = append(out, fmt.Sprintf(
+			"head %s family %s compared nothing: 0 %s were diffed across its %d replayed probes",
+			f.Head, familyKindLabel(f), f.Unit, f.Total,
+		))
+	}
+	return out
+}
+
+// familyKindLabel names the shape a dead family covers. A report that attributed
+// no shape to a head's replays gets the honest placeholder rather than an empty
+// slot, so the reason still reads as a sentence.
+func familyKindLabel(f migrateverify.FamilyRef) string {
+	if f.Kind == "" {
+		return "(unattributed)"
+	}
+	return f.Kind
+}
+
+// idleLaneCaveats names every lane the operator CONFIGURED that had no replayable
+// query at all — every corpus entry for that head routed out of scope. It does not
+// block: those entries are honestly out of scope, not failures. But it is a caveat
+// rather than silence because the operator supplied that head's backends expecting
+// it to be judged, and a report that simply omits the lane would have them flip
+// that datasource on a green verdict that never covered it.
+func idleLaneCaveats(idle []migrateverify.HeadSummary) []string {
+	var out []string
+	for _, h := range idle {
+		out = append(out, fmt.Sprintf(
+			"head %s was configured but had no replayable query (%d corpus entries for it are out of scope); that lane was not judged",
+			h.Head, h.Summary.OutOfScope,
+		))
+	}
+	return out
+}
+
+// idleDerivedFamilyCaveats names every head that ran trace-search (so it is
+// CAPABLE of deriving a trace-by-id probe) but never derived one — no
+// trace-search result gave it a trace both backends have. It does not block:
+// a head with nothing to derive from proved nothing wrong, and blocking on it
+// would penalise a corpus whose searches all diverged on a shape trace-search
+// itself already reports. It is a caveat, not silence, for the same reason
+// idleLaneCaveats is one: an operator who expects trace-by-id structural
+// coverage should see that this run never exercised it, rather than infer
+// "verified" from an artifact that simply never mentions the shape.
+func idleDerivedFamilyCaveats(idle []migrateverify.FamilyRef) []string {
+	var out []string
+	for _, f := range idle {
+		out = append(out, fmt.Sprintf(
+			"head %s ran trace-search but never derived a %s probe (no trace-search result gave it a trace "+
+				"both backends have); that shape was not judged this run", f.Head, f.Kind,
+		))
+	}
+	return out
+}
+
 // verifyCaveats surfaces the parity counts that Report.Failed() deliberately
-// does NOT block on but that each leave a query UNCHECKED against a reference
-// backend: a query cerberus emitted SQL for whose live response was not a
-// comparable matrix (Unsupported — e.g. a non-200 or non-matrix body), a corpus
-// entry that never became a replayable query (HarvestSkipped), and a non-PromQL
-// entry with no Prometheus baseline (OutOfScope). Each is an unexamined input
-// the operator must see before trusting a green parity gate — counted here,
+// does NOT block on but that each leave something UNCHECKED against a reference
+// backend: a query cerberus emitted SQL for whose live response was not
+// comparable (Unsupported — e.g. a non-200 or a body of the wrong shape), a
+// comparison that reached no parity claim because a named limitation stood in the
+// way (Undecidable), each dimension no comparator could judge (Limitations), a
+// corpus entry that never became a replayable query (HarvestSkipped), and an
+// entry whose shape has no comparator at all (OutOfScope). Each is an unexamined
+// input the operator must see before trusting a green parity gate — counted here,
 // never silently dropped.
 func verifyCaveats(s migrateverify.Summary) []string {
 	var out []string
@@ -267,6 +368,20 @@ func verifyCaveats(s migrateverify.Summary) []string {
 			s.Unsupported, plural(s.Unsupported, "y", "ies"),
 		))
 	}
+	if s.Undecidable > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d compared quer%s reached no parity claim: both backends answered and nothing disagreed, but a named limitation prevented judging the result in full",
+			s.Undecidable, plural(s.Undecidable, "y", "ies"),
+		))
+	}
+	// Each limitation is named with the count of comparison units it covers. It is
+	// the OPPOSITE of an allow-list: nothing is blessed, and every dimension the
+	// comparators COULD judge is still judged and still blocks. Reporting it is
+	// what stops a green gate from reading as "everything was compared".
+	for _, l := range s.Limitations {
+		out = append(out, fmt.Sprintf("[%s] covering %d compared unit%s: %s",
+			l.Code, l.Count, plural(l.Count, "", "s"), l.Detail))
+	}
 	if s.HarvestSkipped > 0 {
 		out = append(out, fmt.Sprintf(
 			"%d harvest-skipped corpus entr%s never became a replayable query (unchecked)",
@@ -275,7 +390,7 @@ func verifyCaveats(s migrateverify.Summary) []string {
 	}
 	if s.OutOfScope > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d out-of-scope entr%s (not PromQL; no Prometheus baseline, unchecked)",
+			"%d out-of-scope entr%s whose result shape has no comparator (compare / unparseable / unknown-language, unchecked)",
 			s.OutOfScope, plural(s.OutOfScope, "y", "ies"),
 		))
 	}

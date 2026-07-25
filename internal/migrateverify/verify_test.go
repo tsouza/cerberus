@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,8 @@ import (
 func matrixServer(t *testing.T, byQuery map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Path; got != queryRangePath {
-			t.Errorf("unexpected path %q, want %q", got, queryRangePath)
+		if got := r.URL.Path; got != promQueryRangePath {
+			t.Errorf("unexpected path %q, want %q", got, promQueryRangePath)
 		}
 		q := r.URL.Query().Get("query")
 		body, ok := byQuery[q]
@@ -84,11 +85,22 @@ func testParams() Params {
 	}
 }
 
+// promLanes wires a single prom-head lane, the shape every PromQL-only test uses.
+func promLanes(ref, cerberus Backend) map[string]Lane {
+	return map[string]Lane{HeadProm: {Ref: ref, Cerberus: cerberus}}
+}
+
+// promQuery tags a corpus entry for the prom lane, mirroring what LoadCorpus does
+// for an untagged / promql corpus entry.
+func promQuery(expr, source string) Query {
+	return Query{Expr: expr, Source: source, Head: HeadProm, Lang: "promql"}
+}
+
 func runVerifyOne(t *testing.T, refBody, cerBody map[string]string, q Query) QueryResult {
 	t.Helper()
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{q}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{q}}, promLanes(ref, cer), testParams())
 	if len(rep.Results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(rep.Results))
 	}
@@ -104,7 +116,7 @@ func TestVerify_Match(t *testing.T) {
 			points: []pointSpec{{1_700_000_000, "1"}, {1_700_000_060, "1"}},
 		}),
 	}
-	res := runVerifyOne(t, body, body, Query{Expr: "up", Source: "rule:up"})
+	res := runVerifyOne(t, body, body, promQuery("up", "rule:up"))
 	if res.Verdict != VerdictMatch {
 		t.Fatalf("verdict = %q, want match (detail: %s)", res.Verdict, res.Detail)
 	}
@@ -128,7 +140,7 @@ func TestVerify_ValueDivergence(t *testing.T) {
 			points: []pointSpec{{1_700_000_000, "1"}, {1_700_000_060, "2.5"}, {1_700_000_120, "3"}},
 		}),
 	}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "rate(x[1m])", Source: "rule:r"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery("rate(x[1m])", "rule:r"))
 	if res.Verdict != VerdictDiverge {
 		t.Fatalf("verdict = %q, want diverge", res.Verdict)
 	}
@@ -163,7 +175,7 @@ func TestVerify_MissingSeries(t *testing.T) {
 			seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}},
 		),
 	}
-	res := runVerifyOne(t, refBody, cerBody, Query{Expr: "q", Source: "rule:q"})
+	res := runVerifyOne(t, refBody, cerBody, promQuery("q", "rule:q"))
 	if res.Verdict != VerdictDiverge {
 		t.Fatalf("verdict = %q, want diverge", res.Verdict)
 	}
@@ -193,14 +205,14 @@ func TestVerify_EpsilonBoundary(t *testing.T) {
 	// Exactly at the boundary: |0 - 0.5| == tol → within tolerance → match.
 	ref := NewHTTPBackend(matrixServer(t, mk("0")).URL)
 	cerAtBoundary := NewHTTPBackend(matrixServer(t, mk("0.5")).URL)
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cerAtBoundary, p)
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cerAtBoundary), p)
 	if rep.Results[0].Verdict != VerdictMatch {
 		t.Errorf("diff exactly at tolerance should match, got %q", rep.Results[0].Verdict)
 	}
 
 	// Just beyond the boundary: |0 - 0.75| > tol → diverge.
 	cerBeyond := NewHTTPBackend(matrixServer(t, mk("0.75")).URL)
-	rep = Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cerBeyond, p)
+	rep = Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cerBeyond), p)
 	if rep.Results[0].Verdict != VerdictDiverge {
 		t.Errorf("diff beyond tolerance should diverge, got %q", rep.Results[0].Verdict)
 	}
@@ -214,15 +226,18 @@ func TestVerify_NaNEqual(t *testing.T) {
 			points: []pointSpec{{1_700_000_000, "NaN"}, {1_700_000_060, "5"}},
 		}),
 	}
-	res := runVerifyOne(t, body, body, Query{Expr: "q", Source: "s"})
+	res := runVerifyOne(t, body, body, promQuery("q", "s"))
 	if res.Verdict != VerdictMatch {
 		t.Fatalf("NaN==NaN should be treated as equal, got %q (diff %+v)", res.Verdict, res.FirstDiff)
 	}
 }
 
 // TestVerify_CerberusUnsupported: cerberus returns a 400 (non-matrix) → the query
-// is classified unsupported, the reference is untouched, and the gate does NOT
-// fail on an unsupported query alone.
+// is classified unsupported, the reference is untouched, and an unsupported
+// verdict is not itself a wrong answer: it does not fail a run that ALSO compared
+// something. It is not a free pass either — a run made up only of unsupported
+// queries compared nothing at all and blocks via the no-evidence rules, which the
+// second half of this test pins.
 func TestVerify_CerberusUnsupported(t *testing.T) {
 	refBody := map[string]string{
 		"histogram_quantile(0.9, x)": matrix(seriesSpec{
@@ -231,16 +246,34 @@ func TestVerify_CerberusUnsupported(t *testing.T) {
 		}),
 	}
 	// cerBody has no entry for the query → matrixServer answers 400.
-	res := runVerifyOne(t, refBody, map[string]string{}, Query{Expr: "histogram_quantile(0.9, x)", Source: "panel:x"})
+	res := runVerifyOne(t, refBody, map[string]string{}, promQuery("histogram_quantile(0.9, x)", "panel:x"))
 	if res.Verdict != VerdictUnsupported {
 		t.Fatalf("verdict = %q, want unsupported", res.Verdict)
 	}
 	if !strings.Contains(res.Detail, "status=400") {
 		t.Errorf("unsupported detail should name the cerberus status, got %q", res.Detail)
 	}
-	rep := Report{Summary: Summary{Unsupported: 1}}
-	if rep.Failed() {
-		t.Error("an unsupported query alone must not fail the gate")
+	alongsideEvidence := Report{
+		Summary: Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3, ComparedUnits: 3},
+		Heads: []HeadSummary{{
+			Head: HeadProm, Configured: true,
+			Summary:  Summary{Total: 2, Match: 1, Unsupported: 1, ComparedSeries: 3, ComparedUnits: 3},
+			Families: []FamilySummary{{Kind: KindMetricMatrix, Unit: UnitSeries, Total: 2, Match: 1, Unsupported: 1, Compared: 3}},
+		}},
+	}
+	if alongsideEvidence.Failed() {
+		t.Error("an unsupported query must not fail a run that also compared series")
+	}
+	onlyUnsupported := Report{
+		Summary: Summary{Total: 1, Unsupported: 1},
+		Heads: []HeadSummary{{
+			Head: HeadProm, Configured: true,
+			Summary:  Summary{Total: 1, Unsupported: 1},
+			Families: []FamilySummary{{Kind: KindMetricMatrix, Unit: UnitSeries, Total: 1, Unsupported: 1}},
+		}},
+	}
+	if !onlyUnsupported.Failed() {
+		t.Error("a lane whose every query was unsupported compared nothing and must fail")
 	}
 }
 
@@ -250,7 +283,7 @@ func TestVerify_ReferenceError(t *testing.T) {
 	cerBody := map[string]string{
 		"q": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
 	}
-	res := runVerifyOne(t, map[string]string{}, cerBody, Query{Expr: "q", Source: "s"})
+	res := runVerifyOne(t, map[string]string{}, cerBody, promQuery("q", "s"))
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error", res.Verdict)
 	}
@@ -274,11 +307,14 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
 	corpus := Corpus{
-		PromQL:         []Query{{Expr: "good", Source: "s1"}, {Expr: "bad", Source: "s2"}},
-		OutOfScope:     []OutOfScopeEntry{{Source: "panel:logs", Lang: "logql"}},
+		Queries: []Query{promQuery("good", "s1"), promQuery("bad", "s2")},
+		OutOfScope: []OutOfScopeEntry{{
+			Source: "panel:logs", Expr: `{app="x"}`, Head: HeadLoki, Lang: "logql",
+			Kind: KindLogStream, Reason: "lang=logql kind=log-stream: log lines, not a metric matrix",
+		}},
 		HarvestSkipped: []HarvestSkippedEntry{{Source: "rule:broken.yml", Reason: "rule has an empty expr"}},
 	}
-	rep := Verify(context.Background(), corpus, ref, cer, testParams())
+	rep := Verify(context.Background(), corpus, promLanes(ref, cer), testParams())
 
 	if rep.Summary.Total != 2 || rep.Summary.Match != 1 || rep.Summary.Diverge != 1 ||
 		rep.Summary.OutOfScope != 1 || rep.Summary.HarvestSkipped != 1 {
@@ -296,7 +332,7 @@ func TestVerify_SummaryAndJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(buf.String()), &back); err != nil {
 		t.Fatalf("JSON report should round-trip: %v", err)
 	}
-	if back.Summary != rep.Summary {
+	if !reflect.DeepEqual(back.Summary, rep.Summary) {
 		t.Errorf("round-tripped summary = %+v, want %+v", back.Summary, rep.Summary)
 	}
 	if len(back.HarvestSkipped) != 1 || back.HarvestSkipped[0].Source != "rule:broken.yml" {
@@ -353,7 +389,7 @@ func TestVerify_Cerberus200NonMatrix(t *testing.T) {
 	}
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(nonMatrixServer(t).URL)
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "scalar(up)", Source: "panel:s"}}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("scalar(up)", "panel:s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictUnsupported {
 		t.Fatalf("verdict = %q, want unsupported (cerberus 200 non-matrix)", res.Verdict)
@@ -375,7 +411,7 @@ func TestVerify_Reference200NonMatrix(t *testing.T) {
 	}
 	ref := NewHTTPBackend(nonMatrixServer(t).URL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error (reference 200 non-matrix)", res.Verdict)
@@ -393,7 +429,7 @@ func TestVerify_ReferenceTransportError(t *testing.T) {
 	}
 	ref := NewHTTPBackend(deadBackendURL(t))
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error (reference transport failure)", res.Verdict)
@@ -412,7 +448,7 @@ func TestVerify_CerberusTransportError(t *testing.T) {
 	}
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
 	cer := NewHTTPBackend(deadBackendURL(t))
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "q", Source: "s"}}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error (cerberus transport failure)", res.Verdict)
@@ -440,7 +476,7 @@ func TestVerify_TransportErrorRedactsCredentials(t *testing.T) {
 	}
 	ref := NewHTTPBackend(badURL)
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
-	rep := Verify(context.Background(), Corpus{PromQL: []Query{{Expr: "up", Source: "s"}}}, ref, cer, testParams())
+	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("up", "s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
 		t.Fatalf("verdict = %q, want error", res.Verdict)

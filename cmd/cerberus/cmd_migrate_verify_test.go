@@ -174,28 +174,39 @@ func TestRunVerify_ReportFile(t *testing.T) {
 		GeneratedAt   string `json:"generated_at"`
 		Note          string `json:"note"`
 		Params        struct {
-			RefURL      string  `json:"ref_url"`
-			CerberusURL string  `json:"cerberus_url"`
-			Start       string  `json:"start"`
-			End         string  `json:"end"`
-			Step        string  `json:"step"`
-			Tolerance   float64 `json:"tolerance"`
-			Corpus      string  `json:"corpus"`
+			Backends []struct {
+				Head        string `json:"head"`
+				RefURL      string `json:"ref_url"`
+				CerberusURL string `json:"cerberus_url"`
+			} `json:"backends"`
+			Start     string  `json:"start"`
+			End       string  `json:"end"`
+			Step      string  `json:"step"`
+			Tolerance float64 `json:"tolerance"`
+			Corpus    string  `json:"corpus"`
 		} `json:"params"`
 		Summary struct {
 			Total   int `json:"total"`
 			Diverge int `json:"diverge"`
 		} `json:"summary"`
+		Heads []struct {
+			Head    string `json:"head"`
+			Summary struct {
+				Total   int `json:"total"`
+				Diverge int `json:"diverge"`
+			} `json:"summary"`
+		} `json:"heads"`
 		Results []struct {
 			Expr    string `json:"expr"`
 			Verdict string `json:"verdict"`
+			Head    string `json:"head"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(data, &diag); err != nil {
 		t.Fatalf("--report must be valid JSON: %v\n%s", err, string(data))
 	}
-	if diag.SchemaVersion != 1 {
-		t.Errorf("schema_version = %d, want 1", diag.SchemaVersion)
+	if diag.SchemaVersion != migrateverify.VerifyReportVersion {
+		t.Errorf("schema_version = %d, want %d", diag.SchemaVersion, migrateverify.VerifyReportVersion)
 	}
 	if diag.ToolVersion == "" {
 		t.Error("tool_version must be populated")
@@ -203,8 +214,20 @@ func TestRunVerify_ReportFile(t *testing.T) {
 	if diag.GeneratedAt == "" || diag.Note == "" {
 		t.Errorf("generated_at and note must be populated, got %q / %q", diag.GeneratedAt, diag.Note)
 	}
-	if diag.Params.RefURL != ref.URL || diag.Params.CerberusURL != cer.URL || diag.Params.Corpus != corpus {
-		t.Errorf("params did not capture the run inputs: %+v", diag.Params)
+	if len(diag.Params.Backends) != 1 {
+		t.Fatalf("params.backends = %+v, want exactly the one prom lane this run configured", diag.Params.Backends)
+	}
+	if b := diag.Params.Backends[0]; b.Head != "prom" || b.RefURL != ref.URL || b.CerberusURL != cer.URL {
+		t.Errorf("params.backends[0] did not capture the prom lane: %+v", b)
+	}
+	if diag.Params.Corpus != corpus {
+		t.Errorf("params.corpus = %q, want %q", diag.Params.Corpus, corpus)
+	}
+	// The diagnostic must carry the per-head split, and the diverging result must
+	// name its lane — a divergence with no head is untriageable once more than one
+	// lane can produce one.
+	if len(diag.Heads) != 1 || diag.Heads[0].Head != "prom" || diag.Heads[0].Summary.Diverge != 1 {
+		t.Errorf("heads = %+v, want one prom lane with 1 diverge", diag.Heads)
 	}
 	if diag.Params.Step != "1m0s" || diag.Params.Tolerance == 0 {
 		t.Errorf("params step/tolerance not captured: step=%q tol=%v", diag.Params.Step, diag.Params.Tolerance)
@@ -212,8 +235,8 @@ func TestRunVerify_ReportFile(t *testing.T) {
 	if diag.Summary.Total != 1 || diag.Summary.Diverge != 1 {
 		t.Errorf("summary = %+v, want total 1 / diverge 1", diag.Summary)
 	}
-	if len(diag.Results) != 1 || diag.Results[0].Verdict != "diverge" {
-		t.Errorf("results = %+v, want one diverge result", diag.Results)
+	if len(diag.Results) != 1 || diag.Results[0].Verdict != "diverge" || diag.Results[0].Head != "prom" {
+		t.Errorf("results = %+v, want one prom-lane diverge result", diag.Results)
 	}
 }
 
@@ -251,7 +274,9 @@ func TestRunVerify_OutFile(t *testing.T) {
 // the repro command stays copy-pasteable.
 func TestReproCommand_ShellQuoting(t *testing.T) {
 	cmd := reproCommand(migrateverify.VerifyReportParams{
-		RefURL: "http://ref:9090", CerberusURL: "http://cer/path?x=1&y=2",
+		Backends: []migrateverify.VerifyReportBackend{
+			{Head: migrateverify.HeadProm, RefURL: "http://ref:9090", CerberusURL: "http://cer/path?x=1&y=2"},
+		},
 		Start: "2023-11-14T22:13:20Z", End: "2023-11-14T22:23:20Z",
 		Step: "1m0s", Tolerance: migrateverify.DefaultTolerance, Corpus: "corpus.json",
 	})

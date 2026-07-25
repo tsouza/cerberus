@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "counts": {
+    "total": 7,
+    "supported": 2,
+    "unsupported": 5,
+    "risky": 1
+  },
+  "queries": [
+    {
+      "expr": "vm_free_disk_space_bytes default 0",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Disk with fallback (MetricsQL default)/A",
+      "kind": "panel",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:26: parse error: unexpected identifier \"default\"",
+      "risky": false
+    },
+    {
+      "expr": "range_avg(vm_free_disk_space_bytes)",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Free disk space (MetricsQL rollup)/A",
+      "kind": "panel",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:1: parse error: unknown function with name \"range_avg\"",
+      "risky": false
+    },
+    {
+      "expr": "sum by (path) (rate(vm_http_requests_total[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Request rate/A",
+      "kind": "panel",
+      "bucket": "supported",
+      "risky": true,
+      "risks": [
+        "subquery fan-out: inner expression evaluated at 61 anchors per series"
+      ]
+    },
+    {
+      "expr": "label_set(up, \"src\", \"vm\")",
+      "source": "dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Tagged availability (MetricsQL label_set)/A",
+      "kind": "panel",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:1: parse error: unknown function with name \"label_set\"",
+      "risky": false
+    },
+    {
+      "expr": "rollup(vm_rows_inserted_total[5m]) \u003c 1",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.alerts/VMRowsInsertedStalled",
+      "kind": "alert",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:1: parse error: unknown function with name \"rollup\"",
+      "risky": false
+    },
+    {
+      "expr": "sum(rate(vm_http_requests_total[5m]))",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:http_requests:rate5m",
+      "kind": "record",
+      "bucket": "supported",
+      "risky": false
+    },
+    {
+      "expr": "sum(rate(vm_rows_inserted_total[5m])) keep_metric_names",
+      "source": "rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:rows_inserted:rate5m",
+      "kind": "record",
+      "bucket": "unsupported",
+      "construct": "engine: parse: 1:39: parse error: unexpected identifier \"keep_metric_names\"",
+      "risky": false
+    }
+  ],
+  "skipped": []
+}

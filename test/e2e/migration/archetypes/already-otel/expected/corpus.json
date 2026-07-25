@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "histogram_quantile(0.99, sum by (le) (rate({__name__=\"db.client.operation.duration_bucket\"}[5m])))",
+      "source": "dashboard:test/e2e/migration/archetypes/already-otel/dashboards/otel-services.json/Database latency/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "otel:http_server_request_duration:p95",
+      "source": "dashboard:test/e2e/migration/archetypes/already-otel/dashboards/otel-services.json/Exporter queue headroom/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (service_name) (rate({__name__=\"http.server.request.count\"}[5m]))",
+      "source": "dashboard:test/e2e/migration/archetypes/already-otel/dashboards/otel-services.json/Request rate by service/A",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "{__name__=\"otelcol.exporter.queue.size\"} / {__name__=\"otelcol.exporter.queue.capacity\"} \u003e 0.9",
+      "source": "rule:test/e2e/migration/archetypes/already-otel/rules/otel-recording.yaml/otel.alerts/OTelExporterQueueSaturated",
+      "kind": "alert",
+      "lang": "promql"
+    },
+    {
+      "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=\"http.server.request.duration_bucket\"}[5m])))",
+      "source": "rule:test/e2e/migration/archetypes/already-otel/rules/otel-recording.yaml/otel.rules/otel:http_server_request_duration:p95",
+      "kind": "record",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

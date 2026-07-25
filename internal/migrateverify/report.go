@@ -16,7 +16,16 @@ const IssuesURL = "https://github.com/tsouza/cerberus/issues"
 // VerifyReportVersion is the schema version stamped into every --report JSON
 // diagnostic. Bump it when the on-disk shape changes so a consumer can refuse a
 // diagnostic it does not understand.
-const VerifyReportVersion = 1
+//
+// Version 3 partitions each head lane by result kind, records the replay
+// parameters the non-matrix probes are pinned to (Params.Replay), and carries the
+// counted limitations each comparison could not judge. An older consumer reading
+// it would find families and limitations it cannot render; this build reading an
+// older one would zero-fill them into "no families, nothing unjudged", which is
+// the silent zero-fill the version check exists to stop. It moves in lock-step
+// with ReportVersion because the diagnostic embeds the same Summary, Heads and
+// Results.
+const VerifyReportVersion = 3
 
 // hotspotFuncs are the PromQL functions whose cerberus results are most likely to
 // be computed via an EXPERIMENTAL ClickHouse path (native timeSeries*ToGrid /
@@ -24,6 +33,11 @@ const VerifyReportVersion = 1
 // deviate from real Prometheus. A divergence on one of these is not proof of an
 // experimental path — verify sees only two HTTP backends and cannot introspect
 // cerberus config — so it is surfaced as a CANDIDATE cause, never a detection.
+//
+// The matcher is PromQL-shaped and so is every note it selects, which is why
+// attribution is applied on the prom lane alone (see verifyOne): the bare
+// rate / increase tokens it keys on also occur verbatim in LogQL and TraceQL,
+// where these notes would name a ClickHouse path that head never takes.
 //
 // deriv/predict_linear are included: their native path
 // (timeSeriesDerivToGrid / timeSeriesPredictLinearToGrid) fits the per-window
@@ -184,7 +198,7 @@ func attributeDivergence(expr string, fd *FirstDiff) []AttributionCandidate {
 		}
 		cands = append(cands, AttributionCandidate{Category: AttribExperimentalCHFeature, Note: note})
 	}
-	if fd != nil && isCoverageGap(fd.Reason) {
+	if fd != nil && isCoverageGap(fd.ReasonCode) {
 		cands = append(cands,
 			AttributionCandidate{Category: AttribDataWindowGap, Note: dataWindowGapNote},
 			AttributionCandidate{Category: AttribIngestArtifact, Note: ingestArtifactNote})
@@ -194,25 +208,83 @@ func attributeDivergence(expr string, fd *FirstDiff) []AttributionCandidate {
 	return cands
 }
 
-// isCoverageGap reports whether a first-diff reason describes a series/step that
-// exists on only one backend (a coverage gap), as opposed to a value that differs
-// where both backends have data.
-func isCoverageGap(reason string) bool {
-	return strings.Contains(reason, "present in") || strings.Contains(reason, "no sample")
+// isCoverageGap reports whether a first-diff describes a series/step that exists
+// on only one backend (a coverage gap), as opposed to a value that differs where
+// both backends have data.
+//
+// It switches on the reason CODE, not on the prose: a substring match written for
+// the matrix lane's wording silently fails open on every comparator whose prose
+// differs, and "fails open" here means a divergence quietly loses its
+// data-window / ingest candidate causes.
+func isCoverageGap(reasonCode string) bool {
+	switch reasonCode {
+	case ReasonSeriesMissing, ReasonNoSampleAtStep, ReasonEntryMissing, ReasonTraceMissing, ReasonSpanMissing:
+		return true
+	default:
+		return false
+	}
+}
+
+// VerifyReportBackend is one head lane's configured backend pair. Both URLs are
+// recorded REDACTED; the bearer tokens that authorised the run are credentials and
+// are deliberately absent from every artifact.
+//
+// RefOrgID is the exception, and deliberately so: X-Scope-OrgID is a ROUTING
+// parameter, not a credential — it selects which tenant's data the reference
+// backend serves. Withholding it made the repro command a lie, because re-running
+// without it queries a different tenant (or 401s on a multi-tenant Loki/Tempo,
+// recording the whole lane as errored). Recording it is what keeps the diagnostic
+// and the repro line describing the same run. It is omitted entirely for a
+// single-tenant lane.
+type VerifyReportBackend struct {
+	Head        string `json:"head"`
+	RefURL      string `json:"ref_url"`
+	CerberusURL string `json:"cerberus_url"`
+	RefOrgID    string `json:"ref_org_id,omitempty"`
 }
 
 // VerifyReportParams is the resolved run context stamped into the JSON diagnostic:
-// the two backend URLs, the exact query_range window (resolved to RFC3339 so a
-// relative -1h/now input is captured as the concrete instant that was queried),
-// the step, the tolerance, and the corpus path.
+// the backend pair for each configured head lane (head-token sorted so the
+// diagnostic is byte-deterministic), the exact query_range window (resolved to
+// RFC3339 so a relative -1h/now input is captured as the concrete instant that was
+// queried), the step, the tolerance, and the corpus path.
+//
+// One window / step / tolerance covers every lane: the whole point of the gate is
+// that all three heads are judged under the same parameters, so a per-head
+// tolerance cannot loosen one lane's definition of "the same number" out of view.
 type VerifyReportParams struct {
-	RefURL      string  `json:"ref_url"`
-	CerberusURL string  `json:"cerberus_url"`
-	Start       string  `json:"start"`
-	End         string  `json:"end"`
-	Step        string  `json:"step"`
-	Tolerance   float64 `json:"tolerance"`
-	Corpus      string  `json:"corpus"`
+	Backends  []VerifyReportBackend `json:"backends"`
+	Start     string                `json:"start"`
+	End       string                `json:"end"`
+	Step      string                `json:"step"`
+	Tolerance float64               `json:"tolerance"`
+	Replay    VerifyReportReplay    `json:"replay"`
+	Corpus    string                `json:"corpus"`
+}
+
+// VerifyReportReplay records the pinned parameters the non-matrix probes are
+// issued with. They are compile-time constants, not flags, precisely because they
+// decide how much of a result is truncated — i.e. how much the gate could judge —
+// so an operator knob would silently change what parity MEANS between two runs.
+// They are recorded for the same reason Tolerance is: an artifact must be
+// self-describing about how strict the run that produced it actually was.
+type VerifyReportReplay struct {
+	LogStreamLimit         int    `json:"log_stream_limit"`
+	LogStreamDirection     string `json:"log_stream_direction"`
+	TraceSearchLimit       int    `json:"trace_search_limit"`
+	TraceSearchSpansPerSet int    `json:"trace_search_spans_per_set"`
+}
+
+// ReplayParams returns the pinned non-matrix replay parameters, so the CLI can
+// stamp them into the diagnostic without re-declaring the values the dialects
+// actually send.
+func ReplayParams() VerifyReportReplay {
+	return VerifyReportReplay{
+		LogStreamLimit:         logStreamReplayLimit,
+		LogStreamDirection:     logStreamReplayDirection,
+		TraceSearchLimit:       traceSearchReplayLimit,
+		TraceSearchSpansPerSet: traceSearchReplaySpansPerSet,
+	}
 }
 
 // VerifyReport is the versioned, self-describing --report diagnostic: the full
@@ -226,7 +298,9 @@ type VerifyReport struct {
 	Note           string                `json:"note"`
 	Params         VerifyReportParams    `json:"params"`
 	Summary        Summary               `json:"summary"`
+	Heads          []HeadSummary         `json:"heads"`
 	Results        []QueryResult         `json:"results"`
+	Unconfigured   []UnconfiguredEntry   `json:"unconfigured,omitempty"`
 	OutOfScope     []OutOfScopeEntry     `json:"out_of_scope,omitempty"`
 	HarvestSkipped []HarvestSkippedEntry `json:"harvest_skipped,omitempty"`
 }
@@ -242,7 +316,9 @@ func NewVerifyReport(rep Report, params VerifyReportParams, toolVersion string, 
 		Note:           ExperimentalNote,
 		Params:         params,
 		Summary:        rep.Summary,
+		Heads:          rep.Heads,
 		Results:        rep.Results,
+		Unconfigured:   rep.Unconfigured,
 		OutOfScope:     rep.OutOfScope,
 		HarvestSkipped: rep.HarvestSkipped,
 	}

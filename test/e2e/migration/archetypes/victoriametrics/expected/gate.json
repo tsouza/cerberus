@@ -1,0 +1,60 @@
+{
+  "pass": false,
+  "overall": "FAIL",
+  "stages": [
+    {
+      "stage": "verify",
+      "present": false,
+      "required": true,
+      "verdict": "MISSING",
+      "blocking": true,
+      "reasons": [
+        "required artifact not provided (--verify); cannot prove safety"
+      ]
+    },
+    {
+      "stage": "classify",
+      "present": true,
+      "required": true,
+      "verdict": "FAIL",
+      "blocking": true,
+      "reasons": [
+        "5 unsupported queries (no cerberus equivalent)",
+        "  unsupported: engine: parse: 1:1: parse error: unknown function with name \"label_set\"",
+        "  unsupported: engine: parse: 1:1: parse error: unknown function with name \"range_avg\"",
+        "  unsupported: engine: parse: 1:1: parse error: unknown function with name \"rollup\"",
+        "  unsupported: engine: parse: 1:26: parse error: unexpected identifier \"default\"",
+        "  unsupported: engine: parse: 1:39: parse error: unexpected identifier \"keep_metric_names\""
+      ]
+    },
+    {
+      "stage": "inventory",
+      "present": false,
+      "required": false,
+      "verdict": "MISSING",
+      "blocking": false,
+      "reasons": [
+        "artifact not provided (--inventory); source cardinality risk unchecked"
+      ]
+    },
+    {
+      "stage": "rulegraph",
+      "present": true,
+      "required": true,
+      "verdict": "FAIL",
+      "blocking": true,
+      "reasons": [
+        "5 skipped inputs make the orphan classification unsound (a dropped consumer may reference a series marked orphan)",
+        "  skipped dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Disk with fallback (MetricsQL default)/A: unparseable consumer expr: 1:26: parse error: unexpected identifier \"default\"",
+        "  skipped dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Free disk space (MetricsQL rollup)/A: unparseable consumer expr: 1:1: parse error: unknown function with name \"range_avg\"",
+        "  skipped dashboard:test/e2e/migration/archetypes/victoriametrics/dashboards/vm-cluster.json/Tagged availability (MetricsQL label_set)/A: unparseable consumer expr: 1:1: parse error: unknown function with name \"label_set\"",
+        "  skipped rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.alerts/VMRowsInsertedStalled: unparseable consumer expr: 1:1: parse error: unknown function with name \"rollup\"",
+        "  skipped rule:test/e2e/migration/archetypes/victoriametrics/rules/vm-recording.yaml/vm.rules/vm:rows_inserted:rate5m: unparseable consumer expr: 1:39: parse error: unexpected identifier \"keep_metric_names\""
+      ]
+    }
+  ],
+  "missing": [
+    "verify",
+    "inventory"
+  ]
+}
