@@ -147,7 +147,7 @@ rather than dependent on the exporter's start-time behaviour; the seeder then
 polls for all six `otel_*` tables against a hard deadline before it writes a
 single fixture row. Nothing in the seeder creates a table.
 
-**Determinism.** Four devices, and the fixture is byte-identical run to run
+**Determinism.** Five devices, and the fixture is byte-identical run to run
 apart from its offset from the epoch:
 
 - one RNG, seeded with a fixed value and consumed in a fixed order;
@@ -176,9 +176,14 @@ gates* answer "has the reference finished ingesting?": Loki is flushed
 synchronously and then gated on an empty flush queue, zero in-memory chunks, a
 chunks-flushed delta of at least one per pushed stream and a fresh TSDB index
 upload, all in a single poll; Tempo on a completed live-store block that the
-querier's blocklist has picked up; Prometheus — whose remote-write receiver has
+querier's blocklist has picked up *and* `/api/search` returning, per service,
+exactly the trace identities this run pushed — the live store cuts blocks on
+second-scale timers, so the block counters say nothing about whether the whole
+fixture is searchable, which is the only question the lane goes on to ask;
+Prometheus — whose remote-write receiver has
 no flush stage — data-side, on an instant query returning exactly the declared
-series count with its last sample exactly at the anchor. Only the reference
+series count with its last sample exactly at the anchor. Every gate is bound to
+the payload this run produced rather than to an absolute counter. Only the reference
 side needs a gate: cerberus reads ClickHouse directly, so its visibility is
 bounded by the `INSERT` round-trip.
 

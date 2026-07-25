@@ -200,8 +200,9 @@ func run(logger *slog.Logger) error {
 	if err := seed.WaitLokiSettled(ctx, *lokiAddr, manifest.Streams, lokiBaseline, settleWait); err != nil {
 		return err
 	}
-	logger.Info("waiting for the reference tempo live store to settle", "url", *tempoHTTP)
-	if err := seed.WaitTempoSettled(ctx, *tempoHTTP, settleWait); err != nil {
+	logger.Info("waiting for reference tempo to hold the whole fixture",
+		"url", *tempoHTTP, "traces", manifest.Traces)
+	if err := seed.WaitTempoSettled(ctx, *tempoHTTP, fixture, settleWait); err != nil {
 		return err
 	}
 	logger.Info("waiting for reference prometheus to hold the whole fixture",

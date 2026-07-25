@@ -200,30 +200,39 @@ func WaitLokiSettled(ctx context.Context, baseURL string, streams int, baseline 
 	}
 }
 
-// WaitTempoSettled blocks until the live store has completed at least one
-// block AND the querier's blocklist has picked it up. Both are necessary:
-// /api/search only consults blocks it sees in the blocklist, so a completed
-// block the poller has not discovered is invisible.
-func WaitTempoSettled(ctx context.Context, baseURL string, timeout time.Duration) error {
+// WaitTempoSettled blocks until BOTH hold in a single poll:
+//
+//   - the live store has completed a block AND the querier's blocklist has
+//     picked it up — /api/search only consults blocks it sees in the blocklist,
+//     so a completed block the poller has not discovered is invisible,
+//   - every trace THIS run pushed comes back from /api/search, per service,
+//     as an exact set.
+//
+// The second condition is the binding one, and it is why the gate takes the
+// fixture rather than only a URL. The live store cuts a block on
+// max_trace_idle / max_block_duration, both of which are seconds: a push that
+// spans more than one cut window flips the two counters while the traces sent
+// after the cut are still in the WAL. An absolute counter reading therefore
+// says nothing about whether the fixture is searchable, which is the only
+// question the parity lane goes on to ask. Both of the sibling gates are
+// already payload-bound — WaitLokiSettled scales to the pushed stream count,
+// WaitPrometheusSettled queries the data back — and this one now matches them.
+func WaitTempoSettled(ctx context.Context, baseURL string, f Fixture, timeout time.Duration) error {
+	want := f.TraceIDsByService()
+	if len(want) == 0 {
+		return fmt.Errorf("the fixture holds no traces, so this gate would wait for nothing and " +
+			"report a settled reference tempo over an empty push")
+	}
 	deadline := time.Now().Add(timeout)
 	unseen := newProgressTracker(tempoBlocksCompletedMetric, tempoBlocklistLengthMetric)
 	var last error
 	for {
-		metrics, err := fetchMetrics(ctx, baseURL)
-		if err == nil {
-			blocks, blocksSeen := progressMetric(metrics, tempoBlocksCompletedMetric)
-			blocklist, blocklistSeen := progressMetric(metrics, tempoBlocklistLengthMetric)
-			unseen.observe(tempoBlocksCompletedMetric, blocksSeen)
-			unseen.observe(tempoBlocklistLengthMetric, blocklistSeen)
-			if blocks >= tempoBlocksNeeded && blocklist >= tempoBlocklistNeeded {
-				return nil
-			}
-			err = fmt.Errorf("blocks_completed=%v (need %d) blocklist_length=%v (need %d)%s",
-				blocks, tempoBlocksNeeded, blocklist, tempoBlocklistNeeded, unseen.suffix())
+		last = checkTempoHoldsFixture(ctx, baseURL, f.Window, want, unseen)
+		if last == nil {
+			return nil
 		}
-		last = err
 		if time.Now().After(deadline) {
-			return fmt.Errorf("reference tempo did not settle within %s: %w", timeout, last)
+			return fmt.Errorf("reference tempo did not hold the fixture within %s: %w", timeout, last)
 		}
 		select {
 		case <-ctx.Done():
@@ -231,6 +240,92 @@ func WaitTempoSettled(ctx context.Context, baseURL string, timeout time.Duration
 		case <-time.After(settleInterval):
 		}
 	}
+}
+
+// checkTempoHoldsFixture is one poll of the Tempo gate: the live-store progress
+// signals first (they name the cheaper failure), then the per-service search
+// that proves the pushed traces are actually retrievable.
+func checkTempoHoldsFixture(
+	ctx context.Context, baseURL string, w Window, want []ServiceTraces, unseen *progressTracker,
+) error {
+	metrics, err := fetchMetrics(ctx, baseURL)
+	if err != nil {
+		return err
+	}
+	blocks, blocksSeen := progressMetric(metrics, tempoBlocksCompletedMetric)
+	blocklist, blocklistSeen := progressMetric(metrics, tempoBlocklistLengthMetric)
+	unseen.observe(tempoBlocksCompletedMetric, blocksSeen)
+	unseen.observe(tempoBlocklistLengthMetric, blocklistSeen)
+	if blocks < tempoBlocksNeeded || blocklist < tempoBlocklistNeeded {
+		return fmt.Errorf("blocks_completed=%v (need %d) blocklist_length=%v (need %d)%s",
+			blocks, tempoBlocksNeeded, blocklist, tempoBlocklistNeeded, unseen.suffix())
+	}
+	for _, svc := range want {
+		got, err := searchTempoTraceIDs(ctx, baseURL, svc.Service, w)
+		if err != nil {
+			return err
+		}
+		if len(got) != len(svc.TraceIDs) {
+			return fmt.Errorf("search for %s returned %d traces, want the %d this run pushed",
+				svc.Service, len(got), len(svc.TraceIDs))
+		}
+		for i := range svc.TraceIDs {
+			if got[i] != svc.TraceIDs[i] {
+				return fmt.Errorf("search for %s returned trace id %q at position %d, want %q",
+					svc.Service, got[i], i, svc.TraceIDs[i])
+			}
+		}
+	}
+	return nil
+}
+
+// tempoSearchResponse is the subset of Tempo's /api/search response the gate
+// reads.
+type tempoSearchResponse struct {
+	Traces []struct {
+		TraceID string `json:"traceID"`
+	} `json:"traces"`
+}
+
+// searchTempoTraceIDs runs one service search and returns the trace ids it
+// yielded, sorted, in the reference backend's own wire rendering.
+func searchTempoTraceIDs(ctx context.Context, baseURL, service string, w Window) ([]string, error) {
+	start, end := w.TraceSearchRange()
+	target := strings.TrimRight(baseURL, "/") + "/api/search?" + url.Values{
+		"q":     {TraceServiceQuery(service)},
+		"start": {strconv.FormatInt(start.Unix(), 10)},
+		"end":   {strconv.FormatInt(end.Unix(), 10)},
+		"limit": {strconv.Itoa(TraceSearchLimit)},
+	}.Encode()
+
+	reqCtx, cancel := context.WithTimeout(ctx, metricsFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, metricsBodyLimit))
+	if err != nil {
+		return nil, fmt.Errorf("read %s body: %w", target, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned %d: %s", target, resp.StatusCode, truncate(string(body)))
+	}
+	var got tempoSearchResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		return nil, fmt.Errorf("decode %s body %s: %w", target, truncate(string(body)), err)
+	}
+	out := make([]string, 0, len(got.Traces))
+	for _, tr := range got.Traces {
+		out = append(out, tr.TraceID)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // WaitPrometheusSettled proves the reference Prometheus has ingested the whole

@@ -11,8 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
 // The Tier-1 migration substrate (Layer 14) is a Docker stack, so the
@@ -305,7 +308,13 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 		recipe string
 		wants  []string
 	}{
-		{recipe: "migration-tier1-up", wants: []string{composeRef, "up ", "--wait"}},
+		// The up recipe tears the stack down first. A run aborted by a failing
+		// assertion never reaches the composite's trailing teardown, so without
+		// this the next run seeds a stack that is already seeded: inside the
+		// seed window the two fixture generations collide on every sample
+		// instant and remote-write rejects the push; past it, ClickHouse
+		// silently accumulates both.
+		{recipe: "migration-tier1-up", wants: []string{composeRef, "up ", "--wait", "just migration-tier1-down"}},
 		{recipe: "migration-tier1-run", wants: []string{"-tags=migration_tier1", "./test/e2e/migration/"}},
 		{recipe: "migration-tier1-down", wants: []string{composeRef, "down -v"}},
 	} {
@@ -327,6 +336,68 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 
 // tier1Composite is the lane's full lifecycle, in order.
 const tier1Composite = "migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down"
+
+// tier1WorkflowPath is the scheduled lane that executes the tagged assertions.
+const tier1WorkflowPath = "../../.github/workflows/migration.yml"
+
+// TestMigrationTier1LaneIsWiredIntoCI pins the two things that keep the
+// `migration_tier1`-tagged sources from rotting unobserved.
+//
+// Those files carry every value assertion the Tier-1 substrate makes, and a
+// build tag no lane names is a file no lane compiles: a rename in an untagged
+// package breaks them while all eleven required checks stay green, and the docs
+// go on citing them as proof. Two independent wirings close that:
+//
+//   - the required `check` lane type-checks them under the tag, so a break is
+//     caught at merge time,
+//   - a scheduled workflow actually runs the lane, so the substrate itself is
+//     exercised rather than only parsed.
+//
+// Both are pinned from pure file reads, which is what lets this run inside
+// `check` alongside the thing it is guarding.
+func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
+	t.Parallel()
+
+	justfile, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+	testRecipe := justRecipeBody(t, string(justfile), "test")
+	for _, want := range []string{"-tags=migration_tier1", "./test/e2e/migration/"} {
+		if !strings.Contains(testRecipe, want) {
+			t.Fatalf("the `test` recipe does not type-check the migration_tier1 lane (missing %q); "+
+				"without it the tagged assertion files compile in no CI job. Body:\n%s", want, testRecipe)
+		}
+	}
+
+	workflow, err := os.ReadFile(tier1WorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v — the tagged Tier-1 assertions are executed by no workflow", tier1WorkflowPath, err)
+	}
+	var parsed struct {
+		On struct {
+			Schedule []struct {
+				Cron string `yaml:"cron"`
+			} `yaml:"schedule"`
+		} `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(workflow, &parsed); err != nil {
+		t.Fatalf("parse %s: %v", tier1WorkflowPath, err)
+	}
+	if len(parsed.On.Schedule) == 0 {
+		t.Fatalf("%s declares no schedule; the lane the docs call scheduled would run only on dispatch",
+			tier1WorkflowPath)
+	}
+	for _, c := range parsed.On.Schedule {
+		if strings.TrimSpace(c.Cron) == "" {
+			t.Fatalf("%s declares an empty cron expression", tier1WorkflowPath)
+		}
+	}
+	if !strings.Contains(string(workflow), "run: just migration-tier1\n") {
+		t.Fatalf("%s does not run `just migration-tier1`, so it exercises no part of the substrate",
+			tier1WorkflowPath)
+	}
+}
 
 // justRecipeBody returns the lines of a Justfile recipe: everything from its
 // `name:` header up to the next non-indented, non-blank line.
@@ -525,10 +596,20 @@ func TestMigrationTier1ExpectationsFollowTheDeclaration(t *testing.T) {
 	histogramPromSeries := metricSeries * (len(decl.HistogramBounds) + 3)
 	promSeries := metricSeries*2 + histogramPromSeries
 
+	// The window geometry has two definitions — the Go consts in seed/fixture.go
+	// and these pinned counts — and they are bound HERE. Without this, a change
+	// to SampleStep or VerifyStep leaves the JSON mis-declaring the fixture and
+	// the required lane green, because the only assertion that reads both is
+	// behind the `migration_tier1` tag. The window rolls with wall-clock now,
+	// but its SHAPE does not, so the counts are exact.
+	window := seed.NewWindow(time.Now())
+
 	for _, c := range []struct {
 		what      string
 		got, want int
 	}{
+		{"samples per series", expected.SamplesPerSeries, len(window.SampleTimes())},
+		{"verify steps", expected.VerifySteps, len(window.VerifySteps())},
 		{"gauge series", expected.Series.Gauge, metricSeries},
 		{"sum series", expected.Series.Sum, metricSeries},
 		{"histogram series", expected.Series.Histogram, metricSeries},

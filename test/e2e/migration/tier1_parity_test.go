@@ -33,12 +33,11 @@ import (
 // would not match what either backend returned.
 
 const (
-	fixtureDeclPath  = "archetypes/three-signal/seed/fixture.json"
-	expectedPath     = "archetypes/three-signal/expected/tier1.json"
-	manifestEnvKey   = "TIER1_MANIFEST"
-	defaultManifest  = ".out/manifest.json"
-	lokiEntryLimit   = "5000"
-	traceSearchLimit = "200"
+	fixtureDeclPath = "archetypes/three-signal/seed/fixture.json"
+	expectedPath    = "archetypes/three-signal/expected/tier1.json"
+	manifestEnvKey  = "TIER1_MANIFEST"
+	defaultManifest = ".out/manifest.json"
+	lokiEntryLimit  = "5000"
 )
 
 // expectedTier1 is the archetype's declared cardinality. It is the anti-hollow
@@ -72,6 +71,7 @@ type expectedTier1 struct {
 type tier1Context struct {
 	declaration seed.Declaration
 	manifest    seed.Manifest
+	window      seed.Window
 	fixture     seed.Fixture
 	expected    expectedTier1
 	steps       []time.Time
@@ -104,6 +104,7 @@ func loadTier1Context(t *testing.T) tier1Context {
 	return tier1Context{
 		declaration: declaration,
 		manifest:    manifest,
+		window:      window,
 		fixture:     fixture,
 		expected:    expected,
 		steps:       window.VerifySteps(),
@@ -129,7 +130,7 @@ func TestTier1Parity(t *testing.T) {
 		for _, c := range metricParityCases(tc) {
 			t.Run(c.name, func(t *testing.T) {
 				oracle := c.oracle(tc)
-				assertDeclaredSeriesCount(t, tc, c.name, len(oracle))
+				assertDeclaredQuery(t, tc, c, len(oracle))
 				for _, side := range promSides() {
 					got := queryRangeMatrix(t, ctx, side.baseURL, c.query, tc)
 					assertMatrixEqualsOracle(t, side.name, c.query, got, oracle, tc.steps)
@@ -249,21 +250,35 @@ func assertTier1Cardinality(t *testing.T, tc tier1Context) {
 	}
 }
 
-// assertDeclaredSeriesCount cross-checks the oracle's group count against the
-// archetype's pinned expectation for that query, so an oracle that collapsed
-// its grouping cannot quietly agree with a backend that did the same.
-func assertDeclaredSeriesCount(t *testing.T, tc tier1Context, name string, got int) {
+// assertDeclaredQuery cross-checks a parity case against the archetype's pinned
+// expectation for it: the PromQL that is about to be replayed, and the number
+// of groups the oracle produced.
+//
+// Pinning the query text is what makes the archetype's `query` field load-
+// bearing rather than a decorative copy. The corpus-shape rule that keeps the
+// collector's ClickHouse-only warm-up rows unreachable from a comparison —
+// every query names a fixture metric explicitly — is enforced against the JSON
+// by test/regression/migration_tier1_test.go; unless the JSON is the query
+// that actually runs, that gate guards a string nothing executes.
+//
+// The series count is the anti-hollow half: an oracle that collapsed its
+// grouping cannot quietly agree with a backend that did the same.
+func assertDeclaredQuery(t *testing.T, tc tier1Context, c metricParityCase, got int) {
 	t.Helper()
 	for _, q := range tc.expected.MetricQueries {
-		if q.Name != name {
+		if q.Name != c.name {
 			continue
 		}
+		if q.Query != c.query {
+			t.Fatalf("%s declares query %q as %q, but the lane replays %q",
+				expectedPath, c.name, q.Query, c.query)
+		}
 		if got != q.Series {
-			t.Fatalf("oracle for %q produced %d series, want the declared %d", name, got, q.Series)
+			t.Fatalf("oracle for %q produced %d series, want the declared %d", c.name, got, q.Series)
 		}
 		return
 	}
-	t.Fatalf("%s declares no metric query named %q", expectedPath, name)
+	t.Fatalf("%s declares no metric query named %q", expectedPath, c.name)
 }
 
 // --- metric parity -------------------------------------------------------
@@ -715,7 +730,8 @@ func labelSetKeys(m map[seriesKey]map[string]string) []seriesKey {
 func assertTraceSearch(t *testing.T, ctx context.Context, service string, wantIDs []string, tc tier1Context) {
 	t.Helper()
 
-	query := fmt.Sprintf("{resource.service.name=%q}", service)
+	query := seed.TraceServiceQuery(service)
+	searchStart, searchEnd := tc.window.TraceSearchRange()
 	for _, side := range []struct {
 		name    string
 		baseURL string
@@ -724,7 +740,7 @@ func assertTraceSearch(t *testing.T, ctx context.Context, service string, wantID
 		{
 			name:    "reference-tempo",
 			baseURL: envOr(tempoURLEnvKey, defaultTempoURL),
-			render:  trimLeadingHexZeros,
+			render:  seed.RenderTempoTraceID,
 		},
 		{
 			name:    "cerberus",
@@ -734,9 +750,9 @@ func assertTraceSearch(t *testing.T, ctx context.Context, service string, wantID
 	} {
 		target := strings.TrimRight(side.baseURL, "/") + "/api/search?" + url.Values{
 			"q":     {query},
-			"start": {strconv.FormatInt(tc.manifest.SeedStart.Unix(), 10)},
-			"end":   {strconv.FormatInt(tc.manifest.AnchorEnd.Add(tc.searchEndMargin()).Unix(), 10)},
-			"limit": {traceSearchLimit},
+			"start": {strconv.FormatInt(searchStart.Unix(), 10)},
+			"end":   {strconv.FormatInt(searchEnd.Unix(), 10)},
+			"limit": {strconv.Itoa(seed.TraceSearchLimit)},
 		}.Encode()
 
 		var got struct {
@@ -771,28 +787,6 @@ func assertTraceSearch(t *testing.T, ctx context.Context, service string, wantID
 			}
 		}
 	}
-}
-
-// searchEndMargin extends the trace-search upper bound past the last fixture
-// span so a span that starts exactly at the anchor is inside the searched
-// range on both sides, whose end-bound inclusivity differs.
-func (tc tier1Context) searchEndMargin() time.Duration {
-	step, err := tc.manifest.StepDuration()
-	if err != nil {
-		return time.Minute
-	}
-	return step
-}
-
-// trimLeadingHexZeros renders a canonical trace id the way reference Tempo
-// puts it on the wire. A trace id that is all zeros keeps one digit, matching
-// upstream's own trimming.
-func trimLeadingHexZeros(id string) string {
-	trimmed := strings.TrimLeft(id, "0")
-	if trimmed == "" {
-		return "0"
-	}
-	return trimmed
 }
 
 // --- negative control ----------------------------------------------------
@@ -837,6 +831,8 @@ func assertDriftIsObserved(t *testing.T, ctx context.Context, tc tier1Context) {
 	if !ok {
 		t.Fatalf("cerberus lost the %s series after the injection", service)
 	}
+	assertStepGridComplete(t, "reference prometheus", service, referenceSeries, tc.steps)
+	assertStepGridComplete(t, "cerberus", service, perturbedSeries, tc.steps)
 
 	var observed int
 	for i, step := range tc.steps {
@@ -867,12 +863,27 @@ func assertDriftIsObserved(t *testing.T, ctx context.Context, tc tier1Context) {
 		if !refOK || !cerbOK {
 			t.Fatalf("service %s disappeared from one side after the injection", other)
 		}
+		assertStepGridComplete(t, "reference prometheus", other, refOther, tc.steps)
+		assertStepGridComplete(t, "cerberus", other, cerbOther, tc.steps)
 		for i := range tc.steps {
 			if refOther.samples[i].value != cerbOther.samples[i].value {
 				t.Fatalf("service %s diverged at step %d (%v vs %v); the injection was supposed to touch "+
 					"only %s", other, i, refOther.samples[i].value, cerbOther.samples[i].value, service)
 			}
 		}
+	}
+}
+
+// assertStepGridComplete requires a series to carry one sample per verify step
+// before the negative control indexes it. A short response is precisely the
+// regression this control exists to surface, so it has to be NAMED — an
+// unguarded index would kill the test binary with `index out of range` from a
+// helper instead, losing which side returned how many samples.
+func assertStepGridComplete(t *testing.T, side, service string, series promMatrixSeries, steps []time.Time) {
+	t.Helper()
+	if len(series.samples) != len(steps) {
+		t.Fatalf("%s: service %s returned %d samples after the injection, want one per verify step (%d)",
+			side, service, len(series.samples), len(steps))
 	}
 }
 

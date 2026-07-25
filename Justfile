@@ -77,9 +77,14 @@ migrate *ARGS:
 
 # === Test ===
 
-# Run unit + spec tests with race detector.
+# Run unit + spec tests with race detector, then type-check the one
+# build-tagged lane no other recipe compiles. `go vet` typechecks, so a rename
+# in an untagged package that breaks a `migration_tier1` assertion fails HERE,
+# in the required `check` lane, instead of surfacing in the scheduled
+# `migration` workflow — the only lane that executes those files.
 test:
     go test -race ./...
+    go vet -tags=migration_tier1 ./test/e2e/migration/...
 
 # Run the internal/schema/ddl integration tests against a real ClickHouse
 # container (spun up via testcontainers-go). Requires Docker. Gated behind
@@ -1206,7 +1211,15 @@ compat-all: compat-promql compat-logql compat-traceql
 
 # Bring the Tier-1 stack up and wait for every healthcheck to pass. Builds
 # cerberus:migration-tier1 from the repo-root Dockerfile.local.
+# The teardown is a sub-invocation rather than a `migration-tier1-up:
+# migration-tier1-down` dependency on purpose: just runs a recipe at most once
+# per invocation, so declaring it as a dependency would consume the trailing
+# `migration-tier1-down` of the `migration-tier1` composite and leave the stack
+# running after a clean lane. Seeding an already-seeded stack is the failure
+# this closes — a run aborted by a failing assertion never reaches teardown,
+# and a second seed into the same live window collides on every sample instant.
 migration-tier1-up:
+    @just migration-tier1-down
     @echo "==> migration tier-1 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         up --build --wait --wait-timeout 300

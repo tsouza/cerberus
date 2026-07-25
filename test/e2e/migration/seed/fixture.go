@@ -190,6 +190,14 @@ func (w Window) VerifySteps() []time.Time {
 	return out
 }
 
+// TraceSearchRange is the [start, end] a trace search covers. The end bound is
+// pushed one step past the last fixture span so a span starting exactly at the
+// anchor is inside the range on both sides, whose end-bound inclusivity
+// differs.
+func (w Window) TraceSearchRange() (time.Time, time.Time) {
+	return w.SeedStart, w.AnchorEnd.Add(w.Step)
+}
+
 // MetricSeries is one fixture metric series carried in both shapes at once:
 // Attributes is simultaneously the ClickHouse `Attributes` map and — plus
 // `__name__` — the reference Prometheus label set, so the two sides cannot
@@ -717,6 +725,41 @@ func (f Fixture) SortedTraceIDs(service string) []string {
 		out = append(out, hex.EncodeToString(t.Spans[0].TraceID[:]))
 	}
 	sort.Strings(out)
+	return out
+}
+
+// ServiceTraces is one service's fixture traces, rendered the way reference
+// Tempo returns them, sorted so a search-result comparison is order-
+// independent.
+type ServiceTraces struct {
+	Service  string
+	TraceIDs []string
+}
+
+// TraceIDsByService groups every fixture trace under the service that emitted
+// it, in reference-Tempo wire rendering and in a stable service order. The
+// settle gate compares a search result against this, so it waits for the exact
+// set the push produced rather than for a payload-independent counter.
+func (f Fixture) TraceIDsByService() []ServiceTraces {
+	byService := map[string][]string{}
+	for _, t := range f.Traces {
+		if len(t.Spans) == 0 {
+			continue
+		}
+		id := hex.EncodeToString(t.Spans[0].TraceID[:])
+		byService[t.ServiceName] = append(byService[t.ServiceName], RenderTempoTraceID(id))
+	}
+	services := make([]string, 0, len(byService))
+	for service := range byService {
+		services = append(services, service)
+	}
+	sort.Strings(services)
+	out := make([]ServiceTraces, 0, len(services))
+	for _, service := range services {
+		ids := byService[service]
+		sort.Strings(ids)
+		out = append(out, ServiceTraces{Service: service, TraceIDs: ids})
+	}
 	return out
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tracecollectorv1 "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -38,6 +39,34 @@ type Trace struct {
 
 // otlpPushTimeout bounds one OTLP Export call.
 const otlpPushTimeout = 30 * time.Second
+
+// TraceSearchLimit caps a /api/search response. It sits far above the
+// fixture's per-service trace count, so a complete result set can never come
+// back truncated — a truncated one would read as a partial ingest and send
+// both the settle gate and the parity lane chasing a substrate fault that is
+// really a query parameter.
+const TraceSearchLimit = 200
+
+// TraceServiceQuery is the TraceQL selector that picks out one service's
+// fixture traces. The settle gate and the parity lane share it so the gate
+// waits for exactly the result set the lane goes on to assert on.
+func TraceServiceQuery(service string) string {
+	return fmt.Sprintf("{resource.service.name=%q}", service)
+}
+
+// RenderTempoTraceID renders a canonical 32-char trace id the way reference
+// Tempo puts it on the wire: leading hex zeros stripped, an all-zero id kept as
+// a single digit. cerberus deliberately emits the canonical fixed-width form
+// instead, declining to propagate upstream's wire-format defect, so the two
+// renderings differ by design and the difference is asserted rather than
+// normalised away.
+func RenderTempoTraceID(id string) string {
+	trimmed := strings.TrimLeft(id, "0")
+	if trimmed == "" {
+		return "0"
+	}
+	return trimmed
+}
 
 // PushTraces exports traces to an OTLP/gRPC endpoint over plaintext, one
 // ExportTraceServiceRequest per trace so each message stays far below the 4MB
