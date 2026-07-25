@@ -96,7 +96,7 @@ func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 		if err != nil {
 			return nil, err
 		}
-		keys = append(keys, chplan.OrderKey{Expr: naturalSortKeyExpr(labelValueExpr(name, s)), Desc: desc})
+		keys = append(keys, chplan.OrderKey{Expr: naturalSortKeyExpr(mergedLabelValueExpr(name, s)), Desc: desc})
 	}
 	return &chplan.OrderBy{Input: inner, Keys: keys}, nil
 }
@@ -164,16 +164,21 @@ func naturalSortKeyExpr(value chplan.Expr) chplan.Expr {
 	}
 }
 
-// labelValueExpr resolves a Prom label NAME to the chplan expression
-// that yields that label's VALUE for a row — the same resolution
-// [matcherToExpr] applies to a matcher's left-hand side, minus the
-// comparison. `__name__` reads the dedicated MetricName column; a label
-// backed by a top-level OTel-CH column (e.g. `service_name`) coalesces
-// the column with its Attributes-map fallback; everything else is an
-// [attributeLookup] on the Attributes map (with the dotted-candidate
-// if-chain for underscored names). Used by [lowerSortByLabel] to build
-// ORDER BY keys over label values.
-func labelValueExpr(name string, s schema.Metrics) chplan.Expr {
+// mergedLabelValueExpr resolves a Prom label NAME to the chplan
+// expression that yields that label's VALUE on a row whose Attributes
+// column is ALREADY the merged read-path projection
+// ([mergeResourceAttributesExpr]). `__name__` reads the dedicated
+// MetricName column; a label backed by a top-level OTel-CH column (e.g.
+// `service_name`) coalesces the column with its Attributes-map fallback;
+// everything else is an [attributeLookup] on the Attributes map (with the
+// dotted-candidate if-chain for underscored names). Used by
+// [lowerSortByLabel] to build ORDER BY keys over label values.
+//
+// There is no ResourceAttributes arm because there is no raw
+// ResourceAttributes column at this point in the plan — the merge already
+// folded those keys into Attributes under their sanitised spelling. The
+// raw-row counterpart is [rawLabelValueExpr].
+func mergedLabelValueExpr(name string, s schema.Metrics) chplan.Expr {
 	if name == model.MetricNameLabel {
 		return &chplan.ColumnRef{Name: s.MetricNameColumn}
 	}

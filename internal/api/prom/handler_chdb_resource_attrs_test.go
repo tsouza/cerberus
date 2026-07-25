@@ -53,14 +53,21 @@ func newChDBServerWithResourceAllowlist(t *testing.T, seed string, allow []strin
 }
 
 // resourceAttrGaugeDDL / resourceAttrSumDDL / resourceAttrHistogramDDL
-// carry the ResourceAttributes Map column the production OTel-CH tables
-// declare (internal/schema/otel.go::DefaultOTelMetrics). All three exist
-// because the metadata fan-out reads the histogram + sum tables even when
-// only the sum table is seeded.
+// carry the ResourceAttributes Map + ServiceName columns the production
+// OTel-CH tables declare (internal/schema/otel.go::DefaultOTelMetrics).
+// The metadata-catalog SELECT (dedicatedLabelColumns in
+// internal/promql/metadata_catalog.go) projects both columns
+// unconditionally whenever schema.Metrics configures
+// ResourceAttributesColumn / ServiceNameColumn — true for
+// DefaultOTelMetrics — so both must exist regardless of whether any
+// row sets them. All three tables exist because the metadata fan-out
+// reads the histogram + sum tables even when only the sum table is
+// seeded.
 const resourceAttrGaugeDDL = `CREATE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
     ResourceAttributes Map(String, String),
+    ServiceName String,
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
@@ -69,6 +76,7 @@ const resourceAttrSumDDL = `CREATE TABLE otel_metrics_sum (
     MetricName String,
     Attributes Map(String, String),
     ResourceAttributes Map(String, String),
+    ServiceName String,
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
@@ -77,6 +85,7 @@ const resourceAttrHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     MetricName String,
     Attributes Map(String, String),
     ResourceAttributes Map(String, String),
+    ServiceName String,
     TimeUnix DateTime64(9),
     Count UInt64,
     Sum Float64,

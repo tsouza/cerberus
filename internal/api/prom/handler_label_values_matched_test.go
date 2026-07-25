@@ -108,14 +108,15 @@ func TestLabelValues_MatchSelector_MetricName(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// The outer projection must be `MetricName AS value` (the __name__
-	// branch). The non-__name__ branch would project Attributes[?] AS
-	// value at the same slot. Match the prefix to disambiguate the
-	// outer projection from any Attributes[?] references in the
-	// matcher subquery's WHERE clause.
-	if !strings.HasPrefix(q.lastSQL, "SELECT DISTINCT `MetricName` AS `value`") {
+	// The `__name__` branch resolves to the MetricName column, and it
+	// resolves there at the LEAF: the matched-row subquery projects
+	// `MetricName AS value` and the outer query only dedupes that column.
+	if !strings.Contains(q.lastSQL, "SELECT `MetricName` AS `value` FROM") {
 		t.Errorf("__name__ matcher branch should project MetricName at "+
-			"the outer SELECT; got %q", q.lastSQL)
+			"the leaf; got %q", q.lastSQL)
+	}
+	if !strings.HasPrefix(q.lastSQL, "SELECT DISTINCT `value` FROM") {
+		t.Errorf("outer query should dedupe the value column; got %q", q.lastSQL)
 	}
 	if !strings.Contains(q.lastSQL, "DISTINCT") {
 		t.Errorf("expected DISTINCT projection in SQL; got %q",

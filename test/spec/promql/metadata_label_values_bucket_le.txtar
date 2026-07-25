@@ -1,0 +1,39 @@
+Layer 2a — label-values for `le` over a classic-histogram bucket
+selector.
+
+`le` exists only as a synthesised label on the bucket fan-out, so the
+fan-out keeps carrying it while the raw resource/dedicated columns ride
+along beside it for the catalog projection to read. The row-shaped
+columns the fan-out computes for query evaluation stay put; what
+disappears is the per-series collapse above them.
+
+-- query.promql --
+latency_seconds_bucket
+-- metadata_label_values --
+le
+-- sql --
+SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[le_idx])))) AS `Attributes`, `ResourceAttributes` AS `ResourceAttributes`, `ServiceName` AS `ServiceName`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `ResourceAttributes` AS `ResourceAttributes`, `ServiceName` AS `ServiceName`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?))))) WHERE ((`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?))))
+-- args --
+[0] string = "le"
+[1] string = ""
+[2] string = "le"
+[3] string = ""
+[4] string = ""
+[5] string = "latency_seconds_bucket"
+[6] string = "le"
+[7] string = "+Inf"
+[8] int64 = 1
+[9] string = "latency_seconds"
+[10] string = "latency.seconds"
+[11] string = "latency/seconds"
+[12] string = "1970-01-01 00:01:40.000000000"
+[13] int64 = 9
+[14] string = "1970-01-01 00:08:20.000000000"
+[15] int64 = 9
+-- chplan --
+Project [coalesce(nullIf(Attributes["le"], ""), nullIf(ResourceAttributes["le"], ""), "") AS value]
+  Filter predicate=((TimeUnix >= toDateTime64("1970-01-01 00:01:40.000000000", 9)) AND (TimeUnix <= toDateTime64("1970-01-01 00:08:20.000000000", 9)))
+    Project ["latency_seconds_bucket" AS MetricName, mapConcat(Attributes, map("le", if((le_idx > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[le_idx])))) AS Attributes, ResourceAttributes AS ResourceAttributes, ServiceName AS ServiceName, TimeUnix AS TimeUnix, toFloat64(arraySum(arraySlice(BucketCounts, 1, le_idx))) AS Value]
+      Project [MetricName AS MetricName, Attributes AS Attributes, ResourceAttributes AS ResourceAttributes, ServiceName AS ServiceName, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, arrayJoin(arrayEnumerate(BucketCounts)) AS le_idx]
+        Filter predicate=(MetricName IN ("latency_seconds", "latency.seconds", "latency/seconds"))
+          Scan(otel_metrics_histogram)
