@@ -39,6 +39,8 @@ package solver_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -50,6 +52,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
@@ -317,13 +320,21 @@ func TestSolver_AvsB_ChDB_Differential(t *testing.T) {
 // serializes — the exact route-A pipeline.
 func optimizedPlan(t *testing.T, ctx context.Context, query string) chplan.Node {
 	t.Helper()
+	return optimizedPlanAt(t, ctx, query, laneStart, laneEnd, laneStep)
+}
+
+// optimizedPlanAt is optimizedPlan generalized over the grid: the
+// live-edge boundary case below anchors its window near a fixed synthetic
+// "now" instead of the fixed laneStart/laneEnd grid every other fixture in
+// this file shares.
+func optimizedPlanAt(t *testing.T, ctx context.Context, query string, start, end time.Time, step time.Duration) chplan.Node {
+	t.Helper()
 	p := parser.NewParser(parser.Options{})
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("parse %q: %v", query, err)
 	}
-	plan, err := promql.LowerAtRange(ctx, expr, schema.DefaultOTelMetrics(),
-		laneStart, laneEnd, laneStep)
+	plan, err := promql.LowerAtRange(ctx, expr, schema.DefaultOTelMetrics(), start, end, step)
 	if err != nil {
 		t.Fatalf("lower %q: %v", query, err)
 	}
@@ -705,4 +716,457 @@ func renderRow(row []any) string {
 		}
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// ---------------------------------------------------------------------
+// chDB-backed solver.CursorQuerier — drives the REAL Executor/shardCursor
+// orchestration (admission, the composed output-row cap, the wall-clock
+// deadline) over genuine chDB result cardinalities, rather than the SQL-text
+// comparison the differential loop above performs. chdbQuerier adapts the
+// existing execLane/wrapMapColumns machinery to solver.CursorQuerier so
+// Executor.Execute runs unmodified against a real ClickHouse engine.
+// ---------------------------------------------------------------------
+
+// chdbQuerier implements solver.CursorQuerier by executing each shard's SQL
+// against a live chDB session, through the same wrapMapColumns shim the
+// route-A/route-B comparator above uses. sleep, when > 0, wraps every query
+// behind a forced ClickHouse-side sleep() so the deadline contract case
+// below can assert the wall-clock timeout path against genuine (deliberately
+// slowed) execution latency instead of a synthetic clock double.
+type chdbQuerier struct {
+	db                  *sql.DB
+	maxQueryMemoryBytes int64
+	sleep               time.Duration
+	opened              int
+}
+
+func (q *chdbQuerier) MaxQueryMemoryBytes() int64 { return q.maxQueryMemoryBytes }
+
+func (q *chdbQuerier) QueryCursor(ctx context.Context, sqlText string, args ...any) (chclient.Cursor, error) {
+	q.opened++
+	wrapped := wrapMapColumns(sqlText)
+	if q.sleep > 0 {
+		// CROSS JOIN forces ClickHouse to evaluate the scalar sleep()
+		// subquery as a real data source instead of eliding it as dead
+		// code — a bare WITH-clause scalar nothing selects from gets
+		// optimized away, but a CROSS JOIN operand cannot be.
+		wrapped = fmt.Sprintf(
+			"SELECT * FROM (%s) AS _lane CROSS JOIN (SELECT sleep(%f)) AS _delay",
+			wrapped, q.sleep.Seconds(),
+		)
+	}
+	rows, err := q.db.QueryContext(ctx, wrapped, args...)
+	if err != nil {
+		return nil, err
+	}
+	return &chdbCursor{rows: rows}, nil
+}
+
+// chdbCursor adapts a chdb-go *sql.Rows into chclient.Cursor. It decodes
+// columns by NAME, not position, so extra columns — the sleep() cross-join
+// dummy, or wrapMapColumns's Attributes-last reordering — are tolerated
+// without hand-tuning scan order per fixture.
+type chdbCursor struct {
+	rows      *sql.Rows
+	cols      []string
+	idx       map[string]int
+	cur       chclient.Sample
+	err       error
+	inspected int64
+}
+
+// probeColumns latches the result-set column names on first use.
+func (c *chdbCursor) probeColumns() bool {
+	if c.cols != nil {
+		return true
+	}
+	cols, err := c.rows.Columns()
+	if err != nil {
+		c.err = fmt.Errorf("chdb cursor columns: %w", err)
+		return false
+	}
+	c.cols = cols
+	c.idx = make(map[string]int, len(cols))
+	for i, name := range cols {
+		c.idx[name] = i
+	}
+	return true
+}
+
+func (c *chdbCursor) Next() bool {
+	if c.err != nil {
+		return false
+	}
+	if !c.probeColumns() {
+		return false
+	}
+	if !c.rows.Next() {
+		if err := tolerantRowsErr(c.rows.Err()); err != nil {
+			c.err = err
+		}
+		return false
+	}
+	vals := make([]any, len(c.cols))
+	ptrs := make([]any, len(c.cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := c.rows.Scan(ptrs...); err != nil {
+		c.err = fmt.Errorf("chdb cursor scan: %w", err)
+		return false
+	}
+	var s chclient.Sample
+	if i, ok := c.idx["MetricName"]; ok {
+		s.MetricName, _ = vals[i].(string)
+	}
+	if i, ok := c.idx["TimeUnix"]; ok {
+		s.Timestamp, _ = vals[i].(time.Time)
+	}
+	if i, ok := c.idx["Value"]; ok {
+		s.Value = cellAsFloat64(vals[i])
+	}
+	if i, ok := c.idx["Attributes"]; ok {
+		labels := map[string]string{}
+		if raw, ok := vals[i].(string); ok && raw != "" {
+			if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+				c.err = fmt.Errorf("chdb cursor unmarshal Attributes: %w", err)
+				return false
+			}
+		}
+		s.Labels = labels
+	}
+	c.cur = s
+	c.inspected++
+	return true
+}
+
+func (c *chdbCursor) Sample() chclient.Sample { return c.cur }
+func (c *chdbCursor) Err() error              { return c.err }
+func (c *chdbCursor) Close() error            { return c.rows.Close() }
+func (c *chdbCursor) Inspected() int64        { return c.inspected }
+
+// cellAsFloat64 coerces a scanned Value cell to float64. chdb-go's driver
+// already hands back a float64 for a Float64 column in every fixture this
+// lane exercises; the int64 fallback covers a query that happens to project
+// an integer-typed Value without pulling in reflection.
+func cellAsFloat64(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int64:
+		return float64(x)
+	default:
+		return 0
+	}
+}
+
+// chsqlEmitter adapts the package-level chsql.Emit function to
+// solver.SQLEmitter (mirrors internal/engine.ChsqlEmitter, which this
+// solver-scoped lane does not import — the lane's dependency cone stays
+// solver + chsql + chDB, matching the differential loop above).
+type chsqlEmitter struct{}
+
+func (chsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, error) {
+	return chsql.Emit(ctx, plan)
+}
+
+// TestSolver_AvsB_ChDB_OutputCapContract proves the REAL contract behind
+// Config.MaxOutputRows against genuine chDB-produced cardinality. Reading
+// executor.go and cursor.go together shows the enforcement site is the
+// COMPOSED shardCursor (cursor.go's Next, gated on cfg.MaxOutputRows), never
+// the Executor and never the Planner: the Planner has already committed to
+// route B before any row streams (routing is a structural, cost-based
+// decision independent of actual result cardinality), and the Executor
+// opens every shard's cursor unconditionally. There is no route-A fallback
+// anywhere in this package for an over-cap composed result — the composed
+// stream instead TRUNCATES at exactly the configured cap and the cursor's
+// terminal error becomes a distinct *solver.OutputCapError. This test drives
+// that real code path — not a synthetic double — against a real chDB
+// dataset, so a future change to where/how the cap is enforced has to keep
+// a genuine chDB result set passing, not just a fake generator.
+func TestSolver_AvsB_ChDB_OutputCapContract(t *testing.T) {
+	ctx := context.Background()
+	db := openLaneChDB(t)
+	applyLaneSeed(t, db, laneSeed)
+
+	// A bare selector projects one row per input sample with no
+	// aggregation — the widest real row count among laneFixtures, giving
+	// the cap plenty of room to land strictly inside the composed stream.
+	const query = "http_requests_total"
+	plan := optimizedPlan(t, ctx, query)
+
+	cfg := solver.DefaultConfig()
+	cfg.Mode = solver.ModeSharded
+	pl := &solver.Planner{Cfg: cfg}
+	gs, ge, gstep := solver.GridOf(plan)
+	dec, isRouted := pl.Plan(plan, solver.RequestMeta{
+		Lang: solver.LangPromQL, Start: gs, End: ge, Step: gstep,
+	})
+	if !isRouted || dec.K < 2 {
+		t.Fatalf("fixture %q did not force-route under Mode=sharded (routed=%v K=%d) — "+
+			"the output-cap contract needs a real multi-shard composition", query, isRouted, dec.K)
+	}
+
+	// Learn the REAL total row count from route A before picking a cap: the
+	// cap must cross a genuine composed cardinality, never a guessed one.
+	aSQL, aArgs, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		t.Fatalf("emit route A: %v", err)
+	}
+	total := len(execLane(t, db, query, "route-A (cap sizing)", aSQL, aArgs))
+	if total < 4 {
+		t.Fatalf("fixture %q returned only %d real rows — too few to prove a mid-stream cap crossing", query, total)
+	}
+	// capDivisor halves the real total: the cap lands strictly inside the
+	// composed stream (never at or past its end), so draining MUST observe
+	// the truncation rather than a clean end-of-stream.
+	const capDivisor = 2
+	capRows := int64(total / capDivisor)
+	cfg.MaxOutputRows = capRows
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Config invalid with MaxOutputRows=%d: %v", capRows, err)
+	}
+
+	q := &chdbQuerier{db: db}
+	x := &solver.Executor{Client: q, Emitter: chsqlEmitter{}, Cfg: cfg}
+
+	cur, _, err := x.Execute(ctx, "promql", dec, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	emitted := 0
+	for cur.Next() {
+		_ = cur.Sample()
+		emitted++
+	}
+	derr := cur.Err()
+
+	var capErr *solver.OutputCapError
+	if !errors.As(derr, &capErr) {
+		t.Fatalf("want *solver.OutputCapError from a real over-cap chDB composition, got %v", derr)
+	}
+	if capErr.Limit != cfg.MaxOutputRows {
+		t.Fatalf("OutputCapError.Limit = %d, want %d", capErr.Limit, cfg.MaxOutputRows)
+	}
+	if int64(emitted) != cfg.MaxOutputRows {
+		t.Fatalf("composed stream emitted %d rows before erroring, want EXACTLY the cap %d "+
+			"(truncate-then-error, not a silent short read and not a route-A fallback)", emitted, cfg.MaxOutputRows)
+	}
+
+	if err := cur.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Close() waits for every launched shard goroutine, so by now every
+	// QueryCursor call the Executor was ever going to make has happened:
+	// exactly one per shard, never a retried/fallback query after the cap
+	// fired.
+	if q.opened != len(dec.Slices) {
+		t.Fatalf("QueryCursor opened %d times, want exactly %d (one per shard, zero fallback queries)",
+			q.opened, len(dec.Slices))
+	}
+
+	t.Logf("output-cap contract: real chDB route-B stream (%d total rows across %d shards) "+
+		"truncated at cap=%d with *OutputCapError, %d QueryCursor calls (no fallback)",
+		total, len(dec.Slices), cfg.MaxOutputRows, q.opened)
+}
+
+// Wall-clock deadline margins for TestSolver_AvsB_ChDB_TimeoutContract's
+// deadline_exceeded subtest. shardArtificialDelay forces genuine
+// ClickHouse-side latency (via chdbQuerier's sleep-cross-join) so the
+// timeout path is proven against real wall-clock execution, never a
+// synthetic clock double. deadlineExceededBudget sits an order of magnitude
+// below it so the timeout fires deterministically on any CI runner — a
+// margin, not a race.
+const (
+	shardArtificialDelay   = 300 * time.Millisecond
+	deadlineExceededBudget = 20 * time.Millisecond
+)
+
+// TestSolver_AvsB_ChDB_TimeoutContract proves the REAL Config.Timeout
+// contract read from executor.go's wall-clock deadline block: a dedicated
+// context.WithCancelCause fires errSolverTimeout when the timer elapses, and
+// the composed cursor maps that cause to a distinct *solver.SolverTimeoutError
+// — there is no route-A retry anywhere in this package (the ONE caller-side
+// consumer of a routed failure is internal/engine's route-memo dispatch,
+// which is a fresh, later request choosing a DIFFERENT route, never an
+// in-flight retry of this one). Within a generous budget, route B completes
+// cleanly over real chDB execution; forced past a budget too tight for any
+// (deliberately slowed) shard to finish, it surfaces the typed timeout error
+// instead.
+func TestSolver_AvsB_ChDB_TimeoutContract(t *testing.T) {
+	ctx := context.Background()
+	db := openLaneChDB(t)
+	applyLaneSeed(t, db, laneSeed)
+
+	const query = "sum(rate(http_requests_total[5m]))"
+	plan := optimizedPlan(t, ctx, query)
+
+	cfg := solver.DefaultConfig()
+	cfg.Mode = solver.ModeSharded
+	pl := &solver.Planner{Cfg: cfg}
+	gs, ge, gstep := solver.GridOf(plan)
+	dec, isRouted := pl.Plan(plan, solver.RequestMeta{
+		Lang: solver.LangPromQL, Start: gs, End: ge, Step: gstep,
+	})
+	if !isRouted || dec.K < 2 {
+		t.Fatalf("fixture %q did not force-route under Mode=sharded (routed=%v K=%d) — "+
+			"the deadline contract needs a real multi-shard composition", query, isRouted, dec.K)
+	}
+
+	t.Run("within_budget", func(t *testing.T) {
+		// cfg's Timeout is DefaultConfig's generous default (60s) — real
+		// chDB execution over the seeded dataset completes in low
+		// milliseconds, so route B must complete with zero error.
+		q := &chdbQuerier{db: db}
+		x := &solver.Executor{Client: q, Emitter: chsqlEmitter{}, Cfg: cfg}
+		cur, _, err := x.Execute(ctx, "promql", dec, nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		defer cur.Close()
+		n := 0
+		for cur.Next() {
+			n++
+		}
+		if err := cur.Err(); err != nil {
+			t.Fatalf("route B must complete within a generous budget over real chDB execution, got %v", err)
+		}
+		if n == 0 {
+			t.Fatalf("route B returned zero rows over a real chDB dataset — the seed does not exercise this shape")
+		}
+	})
+
+	t.Run("deadline_exceeded", func(t *testing.T) {
+		tight := cfg
+		tight.Timeout = deadlineExceededBudget
+		if err := tight.Validate(); err != nil {
+			t.Fatalf("Config invalid with Timeout=%s: %v", tight.Timeout, err)
+		}
+		q := &chdbQuerier{db: db, sleep: shardArtificialDelay}
+		x := &solver.Executor{Client: q, Emitter: chsqlEmitter{}, Cfg: tight}
+		// Execute's own synchronous work (emit + breaker pre-flight +
+		// admission + gate acquire) has nothing to do with shard query
+		// latency, so it returns a cursor immediately; the deadline fires
+		// from WITHIN the drain below, not from this call.
+		cur, _, err := x.Execute(ctx, "promql", dec, nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		defer cur.Close()
+		for cur.Next() {
+			// Drain to the terminal error. Real rows may or may not
+			// surface before the artificially slowed shard loses the
+			// race against the tight deadline.
+		}
+		derr := cur.Err()
+		var timeoutErr *solver.SolverTimeoutError
+		if !errors.As(derr, &timeoutErr) {
+			t.Fatalf("want *solver.SolverTimeoutError from a deadline forced past real "+
+				"(artificially delayed) chDB execution, got %v", derr)
+		}
+		if timeoutErr.Timeout != tight.Timeout.String() {
+			t.Fatalf("SolverTimeoutError.Timeout = %q, want %q", timeoutErr.Timeout, tight.Timeout.String())
+		}
+	})
+}
+
+// liveEdgeMarginSteps mirrors internal/engine's (route_memo_wiring.go)
+// unexported liveEdgeFreshnessMarginSteps: the failure-driven route memo's
+// freshEnoughForRouteMemo gate treats a request as fresh enough for route B
+// only once its End has aged past this many step-widths behind "now". It is
+// duplicated here as a named constant — rather than imported, since
+// internal/engine sits outside this file's scope and the source constant is
+// unexported — because the VALUE is exactly the contract this test pins:
+// End == now - liveEdgeMarginSteps*step is the FIRST (freshest) grid anchor
+// the gate opens up for route B, and this test proves route A and route B
+// agree byte-for-byte at that precise edge.
+const liveEdgeMarginSteps = 1
+
+// TestSolver_AvsB_ChDB_LiveEdgeBoundary proves route A and route B produce
+// byte-identical results when a query's End anchor sits EXACTLY at the
+// live-edge freshness boundary route_memo_wiring.go's freshEnoughForRouteMemo
+// checks — the earliest (freshest) instant the gate still lets through to
+// route B. This is the disjoint-anchor equivalence proof's own boundary
+// condition: a shard reading a strictly newer snapshot than an earlier shard
+// is the documented exception the proof does not cover, and the gate exists
+// to keep every routed request's End at least one step behind "now" — this
+// test pins that "at least" is satisfied, not violated, by one grid step of
+// slack (the recurring window-anchor bug class: an endpoint computed off
+// now()/staleness instead of the request's own [start,end] silently drifts
+// this boundary).
+func TestSolver_AvsB_ChDB_LiveEdgeBoundary(t *testing.T) {
+	ctx := context.Background()
+	db := openLaneChDB(t)
+
+	step := 15 * time.Second
+	// now is a fixed synthetic reference instant (never time.Now()) so the
+	// test is fully deterministic.
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	end := now.Add(-time.Duration(liveEdgeMarginSteps) * step)
+	start := end.Add(-1 * time.Hour)
+
+	seed := fmt.Sprintf(`CREATE OR REPLACE TABLE otel_metrics_sum (
+	MetricName String,
+	Attributes Map(String, String),
+	ResourceAttributes Map(String, String) DEFAULT map(),
+	ServiceName LowCardinality(String),
+	TimeUnix DateTime64(9),
+	Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT 'http_requests_total', map('job', 'a'), 'svc',
+       toDateTime64('%[1]s', 9) + toIntervalSecond(number * 15),
+       toFloat64(number)
+FROM numbers(241);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Value)
+SELECT 'http_requests_total', map('job', 'b'), 'svc',
+       toDateTime64('%[1]s', 9) + toIntervalSecond(number * 15),
+       toFloat64(number * 2)
+FROM numbers(241);`, start.UTC().Format("2006-01-02 15:04:05"))
+	applyLaneSeed(t, db, seed)
+
+	const query = "sum(rate(http_requests_total[5m]))"
+	plan := optimizedPlanAt(t, ctx, query, start, end, step)
+
+	gs, ge, gstep := solver.GridOf(plan)
+	if !ge.Equal(end) {
+		t.Fatalf("lowered plan's grid End = %v, want the exact live-edge boundary %v — "+
+			"the window-anchor bug class this test guards against", ge, end)
+	}
+
+	cfg := solver.DefaultConfig()
+	cfg.Mode = solver.ModeSharded
+	pl := &solver.Planner{Cfg: cfg}
+	dec, isRouted := pl.Plan(plan, solver.RequestMeta{
+		Lang: solver.LangPromQL, Start: gs, End: ge, Step: gstep,
+	})
+	if !isRouted || dec.K < 2 {
+		t.Fatalf("live-edge query did not force-route under Mode=sharded (routed=%v K=%d) — "+
+			"the boundary parity proof needs a real multi-shard composition", isRouted, dec.K)
+	}
+
+	aSQL, aArgs, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		t.Fatalf("emit route A: %v", err)
+	}
+	routeA := execLane(t, db, query, "route-A (live edge)", aSQL, aArgs)
+	if len(routeA) == 0 {
+		t.Fatalf("live-edge fixture returned zero rows — the seed does not reach the boundary anchor")
+	}
+
+	var routeB [][]any
+	for _, sl := range dec.Slices {
+		sSQL, sArgs, err := chsql.Emit(ctx, sl.Plan)
+		if err != nil {
+			t.Fatalf("emit shard %d [%v,%v]: %v", sl.Index, sl.Start, sl.End, err)
+		}
+		label := fmt.Sprintf("shard-%d (live edge)", sl.Index)
+		routeB = append(routeB, execLane(t, db, query, label, sSQL, sArgs)...)
+	}
+
+	assertRowSetsEqual(t, query+" @ live-edge boundary", routeA, routeB)
+	t.Logf("live-edge boundary contract: End=%s sits exactly at now-%d*step (now=%s) — "+
+		"route A and route B byte-identical (%d rows across %d shards)",
+		end.Format(time.RFC3339), liveEdgeMarginSteps, now.Format(time.RFC3339), len(routeA), len(dec.Slices))
 }
