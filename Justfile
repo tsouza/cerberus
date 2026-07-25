@@ -104,8 +104,11 @@ spec-chdb:
 # default install path). Mirrors the `chdb` CI job.
 # Includes ./internal/routerrules/... so the chDB cross-backend parity test
 # (parity_chdb_test.go) actually RUNS, not just compiles.
+# Includes ./internal/solver/... so the A-vs-B route memo chDB differential
+# lane (avb_chdb_lane_test.go) actually RUNS the parity proof against a real
+# ClickHouse engine instead of only typechecking under `go vet -tags chdb`.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./test/consumer-corpus/...
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
