@@ -156,13 +156,23 @@ const LangPromQL = "promql"
 // engine-internal type), so the solver derives the grid from the plan
 // the same way the emitter reads it.
 //
-// The carrier is the first (outermost, depth-first pre-order) node that
-// owns an eval grid: a StepGrid, or a RangeWindow / RangeLWR /
-// RangeBucketFanout with Step > 0. The dominant routed shape
-// sum(rate(m[5m])) carries its grid on the outermost RangeWindow. For an
-// instant / non-range plan no carrier with Step > 0 exists, so GridOf
-// returns a zero grid (Step == 0) and the Planner routes A on the
+// The carrier is the first (outermost, depth-first pre-order) node
+// implementing [chplan.GridCarrier] with Step > 0. The dominant routed
+// shape sum(rate(m[5m])) carries its grid on the outermost RangeWindow.
+// For an instant / non-range plan no carrier with Step > 0 exists, so
+// GridOf returns a zero grid (Step == 0) and the Planner routes A on the
 // (2)-prefix instant guard.
+//
+// Dispatching on the interface rather than on concrete node kinds is
+// load-bearing, not stylistic. A kind-by-kind type switch has to list
+// every grid-bearing node, and the failure mode when it misses one is
+// SILENT: the walk finds no carrier, GridOf returns a zero grid, and the
+// Planner's Step <= 0 guard classifies the plan as an instant query
+// before analyze() ever runs — so a range query is recorded as an
+// instant one with no cost grid at all, rather than raising an error.
+// chplan closes the carrier set in both directions (a grid-declaring
+// node must implement GridCarrier; see the completeness ratchet there),
+// so every current and future carrier is visible here by construction.
 //
 // GridOf only reads the OUTER bounds; the Planner re-walks the full
 // spine to validate inner-grid commensurability and grid-prediction.
@@ -172,22 +182,9 @@ func GridOf(plan chplan.Node) (start, end time.Time, step time.Duration) {
 			// Outer carrier already found; stop descending.
 			return false
 		}
-		switch v := n.(type) {
-		case *chplan.StepGrid:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
-			}
-		case *chplan.RangeWindow:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
-			}
-		case *chplan.RangeLWR:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
-			}
-		case *chplan.RangeBucketFanout:
-			if v.Step > 0 {
-				start, end, step = v.Start, v.End, v.Step
+		if gc, ok := n.(chplan.GridCarrier); ok {
+			if s, e, st := gc.EvalGrid(); st > 0 {
+				start, end, step = s, e, st
 			}
 		}
 		return true
