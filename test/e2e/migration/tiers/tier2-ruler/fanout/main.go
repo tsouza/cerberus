@@ -98,7 +98,10 @@ func mustParseTargetEnv(name string) *url.URL {
 	}
 	target, err := url.Parse(raw)
 	if err != nil {
-		log.Fatalf("query-write-fanout: %s=%q: %v", name, raw, err)
+		// %q already quotes/escapes raw, so control characters from the env
+		// var can't forge a fake log line — gosec's taint tracking doesn't
+		// credit the verb, only the source.
+		log.Fatalf("query-write-fanout: %s=%q: %v", name, raw, err) //nolint:gosec // %q escapes control chars
 	}
 	return target
 }

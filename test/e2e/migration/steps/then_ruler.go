@@ -70,11 +70,11 @@ const (
 	rulerCHAddrEnvKey      = "TIER1_CH_ADDR"
 	rulerCHDatabaseEnvKey  = "TIER1_CH_DATABASE"
 	rulerCHUsernameEnvKey  = "TIER1_CH_USERNAME"
-	rulerCHPasswordEnvKey  = "TIER1_CH_PASSWORD"
+	rulerCHPasswordEnvKey  = "TIER1_CH_PASSWORD" //nolint:gosec // env var NAME, not a credential value
 	defaultRulerCHAddr     = "127.0.0.1:27000"
 	defaultRulerCHDatabase = "otel"
 	defaultRulerCHUsername = "cerberus"
-	defaultRulerCHPassword = "cerberus"
+	defaultRulerCHPassword = "cerberus" //nolint:gosec // default fixture credential, not a real one
 )
 
 // The recording rule fixture (grafana/alerting/rules.yaml) is reused
@@ -551,7 +551,7 @@ func sendGrafanaTestNotification(ctx context.Context, grafanaBase string) error 
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, rulerErrBodyLimit))
 	if resp.StatusCode != http.StatusOK {
 		if readErr != nil {
-			return fmt.Errorf("POST %s returned %d (body unreadable: %v)", url, resp.StatusCode, readErr)
+			return fmt.Errorf("POST %s returned %d (body unreadable: %w)", url, resp.StatusCode, readErr)
 		}
 		return fmt.Errorf("POST %s returned %d: %s", url, resp.StatusCode, string(respBody))
 	}
