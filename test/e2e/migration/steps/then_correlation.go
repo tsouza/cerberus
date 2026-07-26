@@ -146,10 +146,13 @@ func (w *World) givenCorrelationProbe() error {
 		archetype:   a,
 		// Every label in the stream (not just job) — the fixture crosses
 		// every service with every log format under the SAME job label, so a
-		// job-only selector matches every stream at once and the first
-		// traced line the query returns need not be THIS record's stream at
-		// all. Pinning every label narrows the query to the exact stream the
-		// picked record belongs to.
+		// job-only selector would sweep in far more than this record's data.
+		//
+		// It still does not pin ONE live stream, and must not be relied on to:
+		// cerberus synthesizes `detected_level` the way Loki does, a label the
+		// fixture never declares, so this selector matches one live stream per
+		// detected level. The record is identified by its timestamp in
+		// correlationQueryLogs, not by its position in the response.
 		logSelector:    logQLSelectorFor(stream.Labels),
 		logStart:       manifest.VerifyStart,
 		logEnd:         manifest.VerifyEnd,
@@ -242,7 +245,8 @@ func (w *World) whenResolveCorrelation() error {
 		return fmt.Errorf("no correlation probe established; the scenario must establish one first")
 	}
 
-	line, shape, err := correlationQueryLogs(w.live.CerberusURL, w.correlation.logSelector, w.correlation.logStart, w.correlation.logEnd)
+	line, shape, err := correlationQueryLogs(w.live.CerberusURL, w.correlation.logSelector,
+		w.correlation.logStart, w.correlation.logEnd, w.correlation.wantRecordTime)
 	if err != nil {
 		return fmt.Errorf("migration harness: query cerberus's log API: %w", err)
 	}
@@ -291,7 +295,7 @@ const correlationLogLimit = 500
 // backend happened to order first", and the mismatch that surfaces upstream is
 // indistinguishable from a genuine correlation bug. The caller reports this in
 // its failure message so one CI run tells the two apart.
-func correlationQueryLogs(base, selector string, start, end time.Time) (string, string, error) {
+func correlationQueryLogs(base, selector string, start, end, at time.Time) (string, string, error) {
 	q := base + "/loki/api/v1/query_range?query=" + url.QueryEscape(selector) +
 		"&start=" + strconv.FormatInt(start.UnixNano(), 10) +
 		"&end=" + strconv.FormatInt(end.UnixNano(), 10) +
@@ -308,19 +312,52 @@ func correlationQueryLogs(base, selector string, start, end time.Time) (string, 
 		return "", "", fmt.Errorf("loki query_range status %q, want success", resp.Status)
 	}
 
+	// Find the entry at the ORACLE's own instant, across every returned
+	// stream — never "the first traced line of the first stream".
+	//
+	// The fixture's stream label set is not the live stream's: cerberus
+	// synthesizes `detected_level` the way Loki does, so a selector pinning
+	// every label the FIXTURE declares still matches one live stream per
+	// detected level (three, here). Position is then meaningless — which
+	// stream comes back first is not ordered by anything the probe controls,
+	// and the leading line of whichever arrived first belongs to a different
+	// record on different runs. That is a flake, and it read as a correlation
+	// mismatch.
+	//
+	// The timestamp is the identity the oracle actually pinned, so matching on
+	// it is both deterministic and a stronger claim than "some traced line
+	// came back": it holds cerberus to returning THIS record.
 	shape := describeLogResponse(resp)
+	wantNano := strconv.FormatInt(at.UnixNano(), 10)
+	var found []string
 	for _, res := range resp.Data.Result {
 		for _, v := range res.Values {
-			if len(v) < 2 {
+			if len(v) < 2 || v[0] != wantNano {
 				continue
 			}
-			if traceIDInLineRe.MatchString(v[1]) {
-				return v[1], shape, nil
-			}
+			found = append(found, v[1])
 		}
 	}
-	return "", shape, fmt.Errorf("cerberus returned no log line carrying a trace_id for selector %s (%s)",
-		selector, shape)
+	switch len(found) {
+	case 0:
+		return "", shape, fmt.Errorf(
+			"cerberus returned no log line at %s (the instant the fixture's picked record carries) for selector %s (%s)",
+			at.UTC().Format(time.RFC3339Nano), selector, shape,
+		)
+	case 1:
+		if !traceIDInLineRe.MatchString(found[0]) {
+			return "", shape, fmt.Errorf("cerberus's log line at %s carries no trace_id: %q (%s)",
+				at.UTC().Format(time.RFC3339Nano), found[0], shape)
+		}
+		return found[0], shape, nil
+	default:
+		// Two lines at one instant under one selector means the selector no
+		// longer identifies a single record, so "the" trace_id is undefined.
+		return "", shape, fmt.Errorf(
+			"cerberus returned %d log lines at %s for selector %s, so no single record is identified (%s)",
+			len(found), at.UTC().Format(time.RFC3339Nano), selector, shape,
+		)
+	}
 }
 
 // correlationShapeStreams bounds how many streams describeLogResponse names
