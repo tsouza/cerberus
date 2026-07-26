@@ -646,7 +646,22 @@ parsing Gherkin itself:
   silently never runs.
 - `MODE=run` drives the suite — `godog` filtered to the tier's tag, narrowed
   to one story's tag when asked — and reports. `go test`'s exit status is the
-  verdict; the script parses no logs and re-derives no result.
+  verdict; the script parses no logs and re-derives no result. It also owns the
+  path the suite writes its cucumber-JSON run report to, so a tier that runs
+  always leaves an execution record behind rather than depending on a workflow
+  author remembering a step.
+- `MODE=attest` closes the gap between *enumerated* and *executed*. `verify`
+  walks feature files, so a scenario that never ran counts exactly the same as
+  one that passed — the shape that let a branch report "30/30 across 26/26
+  stories; 0 violations" while its five Tier-2 scenarios had never executed
+  once, their job skipped by a `needs:` cascade. `attest` reads every tier's
+  run report back and holds each counted scenario to *appeared in a report,
+  with every step passed*. It attests only the tiers this run **selected**
+  (`emit`'s `tiers` output, the same value the roll-up reads), so a dispatch
+  narrowed to one tier is not failed by the tiers it deliberately skipped, and
+  `verify`'s own notice reports enumerated and attested coverage as two
+  different numbers so the caveat lives in the gate's output rather than in
+  prose beside it.
 
 The `verify` mode and a `migration-e2e.test.mjs` unit guard both run on the
 required `lint` job. `verify` is pure file walking, so a story/scenario drift
@@ -893,6 +908,53 @@ instead of ossifying at whatever number was first written down.
 - **Read-only where the CLI is read-only.** Scenarios never auto-provision
   schema (MIG-10 keeps DDL application a deliberate human step) and never mutate
   a real Grafana; the synthetic Grafana in the stack is the only thing driven.
+
+### 6.4. The PASS-assertion pin, and what it is compensating for
+
+The ratchet derives its anchors *live* from this document, which means the
+anchor is editable in the same commit as the code it anchors. It checks a
+scenario's tier tag against the **Tier(s)** column but never looked at the PASS
+assertion's *text*, so narrowing a PASS cell was always a valid route to "full
+coverage": weaken what the document demands, implement the weaker thing, stay
+green. That happened twice in one session — MIG-23's "the old backend is kept
+read-only as a historical tier" clause was deleted, and MIG-18's PASS assertion
+was narrowed from an incumbent-vs-shadow notification-stream diff to a
+single-ruler lifecycle in the same commit that implemented the narrower thing.
+
+`test/e2e/migration/pass-assertions.pin.json` records the SHA-256 of every
+section-6 PASS cell (and its **Tier(s)** cell), and `MODE=verify` fails on any
+mismatch. This deliberately does **not** forbid narrowing: a spec legitimately
+evolves, and a gate that froze section 6 would be a gate people route around.
+What it forbids is narrowing *silently*. Changing a cell fails until the pin is
+updated in the **same diff** — one reviewed line saying "this story now demands
+less", sitting next to the commit that implements less. There is no
+regeneration command, on purpose: the failure prints the new hash to paste,
+because a one-command re-pin is a re-pin nobody reads. The pin is hashed over
+whitespace-normalised text, so a markdownlint reflow or a column realignment is
+not a failure while a wording change is.
+
+Two known gaps between a PASS cell and what the lane executes today, recorded
+here so they are legible rather than buried:
+
+- **MIG-18.** The PASS cell demands an *incumbent-vs-shadow* diff: two
+  independently-ticking rulers over the same overlap, their Alertmanager
+  notification streams compared. The Tier-2 stack under
+  `test/e2e/migration/tiers/tier2-ruler` stands up only the **shadow** leg, so
+  the scenarios as written exercise a single-ruler lifecycle plus a
+  unit-tested comparator, not the two-ruler parity diff. The second ruler and
+  Alertmanager leg is the missing substrate. Until it lands, MIG-18's scenarios
+  under-serve their PASS cell — and the pin is what makes narrowing the cell to
+  match the implementation a visible line rather than a quiet fix.
+- **MIG-23.** The PASS cell says queries reaching back before ClickHouse's
+  ingest-start "transparently route to the incumbent read path". That
+  split-router is **operator-owned infrastructure outside this repository** —
+  cerberus is one of the two backends it fans out to, not the router. What the
+  Tier-1 scenario can and does assert is everything on cerberus's side of that
+  boundary: the ingest-start instant is real and measured from ClickHouse's own
+  rows, cerberus returns nothing before it, the incumbent still answers there,
+  and the retention gate refuses teardown until ClickHouse has aged past the
+  boundary. The routing hop itself is out of scope by construction, not by
+  omission.
 
 ## 7. Archetype seed profiles
 
