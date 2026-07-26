@@ -331,20 +331,41 @@ jobs:
       # when `--threshold-efficacy` is violated in v0.6.0, so we
       # do the gating ourselves against the parsed JSON below).
       #
-      # We consume gremlins via the tsouza/gremlins fork pinned to
-      # v0.6.0-cerberus-sigterm-consume so that in-flight mutants killed by
-      # the runner's SIGTERM at job timeout are recorded as NOT_RUN
-      # (via --on-shutdown-status=not-run) rather than LIVED, which
-      # used to falsely deflate test_efficacy. Upstream PR:
-      # https://github.com/go-gremlins/gremlins/pull/283
+      # We consume gremlins via the tsouza/gremlins fork, which carries two
+      # fixes cerberus needs:
+      #
+      #   --on-shutdown-status=not-run   in-flight mutants killed by the
+      #     runner's SIGTERM are recorded as NOT_RUN rather than LIVED, which
+      #     used to falsely deflate test_efficacy. Upstream PR:
+      #     https://github.com/go-gremlins/gremlins/pull/283
+      #
+      #   --timeout-max                  an absolute ceiling on a single
+      #     mutant's test run. See the `gremlins unleash` step below.
       - name: install gremlins
-        run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm-consume
+        run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
+      #
+      # MUTANT_TIMEOUT_MAX is the absolute ceiling on a single mutant's test
+      # run. gremlins otherwise derives that timeout as `timeout-coefficient x
+      # the package's baseline test duration`, which scales the leash by how
+      # SLOW a package's tests are — a quantity unrelated to how much damage a
+      # runaway mutant does in that time. A mutant that inverts a scanner's
+      # loop-advance (i++ -> i--) never terminates and allocates per iteration,
+      # so on a slow-baseline package it gets minutes to exhaust the runner's
+      # memory. The OOM killer then reaps the runner agent and the job dies
+      # with no verdict at all, which reads as flake rather than as a missing
+      # bound.
+      #
+      # Do NOT "fix" a recurrence by excluding whichever file the log names:
+      # that relocates the file's runaway mutants into whichever leg still owns
+      # it, and burns real mutation coverage. The ceiling is the fix.
       - name: gremlins unleash
+        env:
+          MUTANT_TIMEOUT_MAX: 15s
         run: |
-          args=(unleash --output gremlins.json --on-shutdown-status=not-run)
+          args=(unleash --output gremlins.json --on-shutdown-status=not-run --timeout-max "$MUTANT_TIMEOUT_MAX")
           if [ "${{ matrix.workers }}" != "0" ]; then
             args+=(--workers "${{ matrix.workers }}")
           fi
