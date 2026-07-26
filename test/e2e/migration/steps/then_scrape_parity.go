@@ -50,6 +50,13 @@ const (
 	scrapeCollectorInstanceLabel = "service_instance_id"
 )
 
+// scrapeCollectorInstanceAttr is the same attribute as
+// scrapeCollectorInstanceLabel, in the DOTTED form the collector writes into
+// ClickHouse's ResourceAttributes map. cerberus sanitises it to the
+// underscored label above on the read path, so a direct column probe has to
+// ask for the dotted key.
+const scrapeCollectorInstanceAttr = "service.instance.id"
+
 // scrapeUpMetric, scrapeDurationMetric and scrapeSamplesMetric are the three
 // meta-metrics MIG-07's PASS assertion names by name. The parity assertion
 // does not stop at them — it enumerates whatever the reference path actually
@@ -422,22 +429,50 @@ func (w *World) thenScrapeLabelTranslationIsTheOnlyDifference() error {
 	}
 	if len(lost) > 0 {
 		sort.Strings(lost)
-		return fmt.Errorf("migration harness: %v are present on the reference path's %s but absent under the collector path; the only difference the OTel translation accounts for is %s->%s and %s->%s. Collector-path labels: %v",
+		// A missing `service_name` has two very different causes and the label
+		// set alone cannot tell them apart, so ask ClickHouse which one it is
+		// before reporting. cerberus resolves that label from the dedicated
+		// ServiceName COLUMN and, following Prometheus semantics, omits a
+		// label whose value is empty — so an empty column and a dropped
+		// projection look identical from the query side.
+		//
+		//   ServiceName empty     -> the receiver never set service.name for
+		//                            this scrape, and the target identity
+		//                            really does live in server_address /
+		//                            server_port / url_scheme. The declared
+		//                            translation is wrong; fix the harness.
+		//   ServiceName populated -> the collector DID set it and cerberus's
+		//                            read path is dropping it. That is a
+		//                            product bug and must stay red.
+		if slices.Contains(lost, fmt.Sprintf("%s (expected under %s)", scrapeReferenceLabel, scrapeCollectorLabel)) {
+			probeCtx, cancel := context.WithTimeout(context.Background(), scrapeSettleWait)
+			landed, probeErr := w.scrapeServiceNameColumn(probeCtx, w.scrape.refUpLabels[scrapeReferenceInstanceLabel])
+			cancel()
+			switch {
+			case probeErr != nil:
+				return fmt.Errorf("migration harness: %s is absent under the collector path and the ServiceName column could not be probed to say why: %w",
+					scrapeCollectorLabel, probeErr)
+			case landed != "":
+				return fmt.Errorf("migration harness: ClickHouse holds ServiceName=%q for the collector path's %s, but cerberus did not project it as %s — the read path is dropping a populated service name",
+					landed, scrapeUpMetric, scrapeCollectorLabel)
+			}
+		}
+		// Report the collector path's label VALUES, not just its names. The
+		// first live run showed `service_instance_id` present while
+		// `service_name` was absent entirely, and the names alone cannot say
+		// why: either the receiver never sets `service.name` on this metric —
+		// in which case the declared job->service_name translation is simply
+		// wrong — or it does set it and cerberus's read path drops it, which
+		// is a real gap. The values distinguish the two. Relaxing this
+		// assertion to match the observed set without knowing which would
+		// bury the second case.
+		return fmt.Errorf("migration harness: %v are present on the reference path's %s but absent under the collector path; the only difference the OTel translation accounts for is %s->%s and %s->%s. Collector-path labels (name=value): %v",
 			lost, scrapeUpMetric,
 			scrapeReferenceLabel, scrapeCollectorLabel,
 			scrapeReferenceInstanceLabel, scrapeCollectorInstanceLabel,
-			sortedSet(labelNames(got)))
+			got)
 	}
 	return nil
-}
-
-// labelNames renders a label set as a name set.
-func labelNames(labels map[string]string) map[string]struct{} {
-	out := make(map[string]struct{}, len(labels))
-	for k := range labels {
-		out[k] = struct{}{}
-	}
-	return out
 }
 
 // scrapeBucketQuery renders `sum by (le) (rate(<hist>_bucket{<sel>}[<win>]))`
@@ -574,4 +609,33 @@ func (w *World) thenScrapeHistogramQuantileConsumable() error {
 			scrapeHistogramMetric, refQ, gotQ, epsilon)
 	}
 	return nil
+}
+
+// scrapeServiceNameColumn reads the ServiceName column ClickHouse holds for
+// the collector path's `up` row. It is the tie-breaker for a missing
+// `service_name` label: cerberus omits an empty label the way Prometheus does,
+// so the query side cannot distinguish "the receiver never set service.name"
+// from "cerberus dropped a populated one". The column can.
+//
+// It reads the row the collector wrote, identified by the metric name and the
+// scrape target's own instance value, so it cannot pick up the fixture's own
+// seeded series.
+func (w *World) scrapeServiceNameColumn(ctx context.Context, instance string) (string, error) {
+	conn, err := w.bridgeCHConn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("dial clickhouse: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	const q = `SELECT ServiceName FROM otel_metrics_gauge
+		WHERE MetricName = ? AND ResourceAttributes[?] = ?
+		ORDER BY TimeUnix DESC LIMIT 1`
+	var got string
+	if err := conn.QueryRow(
+		ctx, q,
+		scrapeUpMetric, scrapeCollectorInstanceAttr, instance,
+	).Scan(&got); err != nil {
+		return "", fmt.Errorf("read ServiceName for %s: %w", scrapeUpMetric, err)
+	}
+	return got, nil
 }

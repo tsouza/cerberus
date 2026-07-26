@@ -200,39 +200,54 @@ func isIntLiteral(s string) bool {
 // helper tables stay untouched.
 const metricsTablePrefix = "otel_metrics_"
 
-// resourceAttributesColumnDDL is the column definition the backfill
-// injects. DEFAULT map() lets the existing positional INSERTs keep their
-// value count: the backfilled INSERTs carry an explicit column list that
-// omits this column, so the empty map is filled — matching production,
-// where every metric table carries a (possibly empty) ResourceAttributes
-// map.
-const resourceAttributesColumnDDL = "ResourceAttributes Map(String, String) DEFAULT map()"
+// backfilledColumn pairs a column name with the definition the backfill
+// injects for it. Every DEFAULT lets the existing positional INSERTs keep
+// their value count: the backfilled INSERTs carry an explicit column list
+// that omits these columns, so the defaults are filled — matching
+// production, where every metric table carries a (possibly empty)
+// ResourceAttributes map and a (possibly empty) ServiceName.
+type backfilledColumn struct {
+	name string
+	ddl  string
+}
 
-// backfillResourceAttributes mirrors the production OTel-CH invariant —
-// every metric table (`otel_metrics_*`) carries a `ResourceAttributes`
-// Map column — onto the spec fixtures' simplified seed DDL. The rc.5
-// read-path always projects
-// `mapUpdate(sanitize(ResourceAttributes), Attributes)`, so a seed table
-// that omits the column would fail with UNKNOWN_IDENTIFIER. Rather than
+// backfilledColumns is the ordered registry of production OTel-CH metric
+// columns the spec fixtures' simplified seed DDL may omit. Both are read
+// unconditionally by the read path — ResourceAttributes by the resource
+// merge, ServiceName by the dedicated-column overlay — so a seed table
+// missing either fails with UNKNOWN_IDENTIFIER. Extend this slice when a
+// new column joins the unconditional projection.
+var backfilledColumns = []backfilledColumn{
+	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
+	{name: "ServiceName", ddl: "ServiceName LowCardinality(String) DEFAULT ''"},
+}
+
+// backfillMetricsColumns mirrors the production OTel-CH invariant — every
+// metric table (`otel_metrics_*`) carries the [backfilledColumns] — onto
+// the spec fixtures' simplified seed DDL. The read path projects
+// `mapConcat(mapUpdate(sanitize(ResourceAttributes), Attributes),
+// map('service_name', ServiceName))` on every selector, so a seed table
+// that omits either column would fail with UNKNOWN_IDENTIFIER. Rather than
 // hand-editing ~300 fixtures (and every future one), the harness backfills
-// the column centrally:
+// them centrally:
 //
 //   - A `CREATE TABLE otel_metrics_*` whose body declares an `Attributes`
-//     Map column but no `ResourceAttributes` gets the column injected
-//     (DEFAULT map()) and its ordered column names recorded.
+//     Map column gets every missing [backfilledColumns] entry injected
+//     (with its DEFAULT) and its ordered column names recorded.
 //   - Every subsequent `INSERT INTO <that table> VALUES …` with no
 //     explicit column list is rewritten to carry the recorded column
-//     list (sans ResourceAttributes), so the existing positional VALUES
-//     tuples keep working and the DEFAULT fills the new column.
+//     list (sans the injected columns), so the existing positional VALUES
+//     tuples keep working and the DEFAULTs fill the new columns.
 //
-// Seeds that already declare ResourceAttributes, or that already use an
-// explicit INSERT column list, pass through untouched — so a fixture that
-// deliberately populates resource attributes (the rc.5 contract fixtures)
-// is honoured verbatim.
-// BackfillResourceAttributes is the exported, build-tag-free seam onto
-// [backfillResourceAttributes] for the strict-scan differential's seed loop.
-func BackfillResourceAttributes(stmts []string) []string {
-	return backfillResourceAttributes(stmts)
+// Seeds that already declare every backfilled column, or that already use
+// an explicit INSERT column list, pass through untouched — so a fixture
+// that deliberately populates resource attributes (the rc.5 contract
+// fixtures) is honoured verbatim.
+//
+// BackfillMetricsColumns is the exported, build-tag-free seam onto
+// [backfillMetricsColumns] for the strict-scan differential's seed loop.
+func BackfillMetricsColumns(stmts []string) []string {
+	return backfillMetricsColumns(stmts)
 }
 
 // SplitSeedStatements splits a seed script on top-level semicolons, shielding
@@ -251,9 +266,9 @@ func PromoteCreateTable(stmt string) string {
 	return promoteCreateTable(stmt)
 }
 
-func backfillResourceAttributes(stmts []string) []string {
+func backfillMetricsColumns(stmts []string) []string {
 	// table name -> ordered column names (pre-backfill) for tables we
-	// injected the column into. Only these tables' INSERTs are rewritten.
+	// injected a column into. Only these tables' INSERTs are rewritten.
 	cols := map[string][]string{}
 	out := make([]string, 0, len(stmts))
 	for _, stmt := range stmts {
@@ -272,10 +287,10 @@ func backfillResourceAttributes(stmts []string) []string {
 }
 
 // parseMetricsCreate reports whether stmt is a `CREATE TABLE
-// otel_metrics_*` that declares an `Attributes` column but no
-// `ResourceAttributes`. On a match it returns the table name, the ordered
-// pre-backfill column names, and the rewritten statement with the
-// ResourceAttributes column injected right after the Attributes column.
+// otel_metrics_*` that declares an `Attributes` column and omits at least
+// one [backfilledColumns] entry. On a match it returns the table name, the
+// ordered pre-backfill column names, and the rewritten statement with the
+// missing columns injected right after the Attributes column.
 func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
 	trimmed := stripLeadingNoise(stmt)
 	upper := strings.ToUpper(trimmed)
@@ -302,31 +317,39 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	}
 	bodyCols := stmt[open+1 : closeParen]
 	defs := splitTopLevelCommas(bodyCols)
-	hasAttributes, hasResource := false, false
+	hasAttributes := false
+	declared := make(map[string]bool, len(defs))
 	names := make([]string, 0, len(defs))
 	for _, d := range defs {
 		cn := firstToken(strings.TrimSpace(d))
-		switch cn {
-		case "Attributes":
+		if cn == "Attributes" {
 			hasAttributes = true
-		case "ResourceAttributes":
-			hasResource = true
 		}
 		if cn != "" {
+			declared[cn] = true
 			names = append(names, cn)
 		}
 	}
-	if !hasAttributes || hasResource {
+	missing := make([]string, 0, len(backfilledColumns))
+	for _, c := range backfilledColumns {
+		if !declared[c.name] {
+			missing = append(missing, c.ddl)
+		}
+	}
+	if !hasAttributes || len(missing) == 0 {
 		return "", nil, "", false
 	}
-	// Inject the column directly after the Attributes definition so the
+	// Inject the columns directly after the Attributes definition so the
 	// rewritten DDL reads naturally; column order is otherwise irrelevant
 	// because the INSERTs become explicit-column.
-	newDefs := make([]string, 0, len(defs)+1)
+	newDefs := make([]string, 0, len(defs)+len(missing))
 	for _, d := range defs {
 		newDefs = append(newDefs, d)
-		if firstToken(strings.TrimSpace(d)) == "Attributes" {
-			newDefs = append(newDefs, " "+resourceAttributesColumnDDL)
+		if firstToken(strings.TrimSpace(d)) != "Attributes" {
+			continue
+		}
+		for _, ddl := range missing {
+			newDefs = append(newDefs, " "+ddl)
 		}
 	}
 	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
@@ -334,8 +357,8 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 }
 
 // rewriteMetricsInsert rewrites a positional `INSERT INTO <table> VALUES`
-// into one carrying the recorded column list (sans ResourceAttributes) so
-// the DEFAULT-filled column does not break the value count. Inserts into
+// into one carrying the recorded column list (sans the injected columns)
+// so the DEFAULT-filled columns do not break the value count. Inserts into
 // untracked tables, or that already carry an explicit column list, pass
 // through unchanged.
 func rewriteMetricsInsert(stmt string, cols map[string][]string) (string, bool) {

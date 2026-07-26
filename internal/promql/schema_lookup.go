@@ -41,44 +41,40 @@ func schemaTopLevelColumn(s schema.Metrics, labelName string) string {
 	return ""
 }
 
-// promqlTopLevelKeysForOuterBy returns the list of Prom-grammar label
-// names that the inner augmenting Project should synthesise into
-// Attributes. The names are normalised to the underscored form
-// (`service_name`) so the outer aggregate's `Attributes[<label>]`
-// lookup — which iterates over [internal/api/format.PromLabelToOTelCandidates] —
-// hits the synthesised key on the underscored candidate. Order
-// mirrors `outerByLabels` (first-seen wins) with duplicates dropped.
+// promqlTopLevelKeys returns every `(promLabel, topLevelColumn)` pair the
+// selector Project must synthesise into Attributes for schema s. The
+// names are normalised to the underscored form (`service_name`) so both
+// a wire response reading the map directly and an outer aggregate's
+// `Attributes[<label>]` lookup — which iterates over
+// [internal/api/format.PromLabelToOTelCandidates] — hit the synthesised
+// key on the underscored candidate.
 //
-// Each returned tuple is `(promLabel, topLevelColumn)`. Both spellings
-// of `service.name` collapse to `service_name` here so the wire
-// response carries the Prom-canonical form regardless of which
-// spelling the user typed in the by-clause.
-func promqlTopLevelKeysForOuterBy(labels []string, s schema.Metrics) [][2]string {
-	if len(labels) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(labels))
-	out := make([][2]string, 0, len(labels))
-	for _, lbl := range labels {
-		col := schemaTopLevelColumn(s, lbl)
+// The set is derived from the schema, NOT from the query: a dedicated
+// column is part of the series' identity whether or not the query names
+// it. Deriving it from an enclosing by-clause is what made a bare
+// selector silently drop the label — see [dedicatedResourceKeys], which
+// removes the same keys from the ResourceAttributes arm on the promise
+// that this path surfaces them.
+//
+// Pairs whose column is unconfigured in s are omitted, so a custom
+// schema that clears [schema.Metrics.ServiceNameColumn] opts out and the
+// ResourceAttributes arm becomes the only path again.
+func promqlTopLevelKeys(s schema.Metrics) [][2]string {
+	out := make([][2]string, 0, len(dedicatedResourceKeys))
+	for _, d := range dedicatedResourceKeys {
+		col := d.column(s)
 		if col == "" {
 			continue
 		}
-		key := promCanonicalTopLevelLabel(lbl)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, [2]string{key, col})
+		out = append(out, [2]string{promCanonicalTopLevelLabel(d.otelKey), col})
 	}
 	return out
 }
 
 // promCanonicalTopLevelLabel returns the Prom-canonical underscored
 // spelling of a label that routes to a top-level OTel-CH column.
-// `service.name` → `service_name`. Used by
-// [promqlTopLevelKeysForOuterBy] to normalise the synthesised
-// Attributes-map key so the outer aggregate's
+// `service.name` → `service_name`. Used by [promqlTopLevelKeys] to
+// normalise the synthesised Attributes-map key so the outer aggregate's
 // `Attributes['service_name']` lookup hits regardless of which
 // spelling the user wrote.
 func promCanonicalTopLevelLabel(label string) string {
@@ -89,9 +85,9 @@ func promCanonicalTopLevelLabel(label string) string {
 	return label
 }
 
-// augmentAttributesForOuterByExpr returns a chplan expression that wraps
+// augmentAttributesForTopLevelExpr returns a chplan expression that wraps
 // the supplied base Attributes expression with one synthesised key per
-// top-level OTel-CH column referenced by `outerByLabels`. The shape is
+// dedicated top-level OTel-CH column configured in s. The shape is
 //
 //	mapConcat(
 //	    <base>,
@@ -116,11 +112,11 @@ func promCanonicalTopLevelLabel(label string) string {
 // #232 precedence (dedicated column wins) regardless of what the base
 // merge produced.
 //
-// Returns nil when `outerByLabels` contains no top-level-routed
-// labels — callers fold a nil augmentation into "no Project wrap"
-// rather than emitting a degenerate identity map.
-func augmentAttributesForOuterByExpr(s schema.Metrics, outerByLabels []string, base chplan.Expr) chplan.Expr {
-	pairs := promqlTopLevelKeysForOuterBy(outerByLabels, s)
+// Returns nil when s configures no dedicated top-level column — callers
+// fold a nil augmentation into "no Project wrap" rather than emitting a
+// degenerate identity map.
+func augmentAttributesForTopLevelExpr(s schema.Metrics, base chplan.Expr) chplan.Expr {
+	pairs := promqlTopLevelKeys(s)
 	if len(pairs) == 0 {
 		return nil
 	}

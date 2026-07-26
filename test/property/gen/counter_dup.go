@@ -100,7 +100,7 @@ func CounterDupTimestampDataset() property.Dataset {
 // series. It reuses renderRow / renderMap / formatFloat (the gauge
 // renderer's row helpers — the four-column positional VALUES shape is
 // identical). The CREATE omits the ResourceAttributes column and uses a
-// positional VALUES list; the chDB seed harness's backfillResourceAttributes
+// positional VALUES list; the chDB seed harness's backfillMetricsColumns
 // injects `ResourceAttributes Map DEFAULT map()` and the bare CREATE TABLE
 // is promoted to CREATE OR REPLACE, exactly as the spec roundtrip harness
 // does — so the read path's resource-attribute merge arm resolves and the

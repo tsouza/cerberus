@@ -13,7 +13,7 @@ requests_total
 k8s.namespace.name
 service.version
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> transform(k, array(?, ?), array(?, ?), k), mapKeys(mapFilter((k, v) -> ((k NOT IN (?, ?)) AND (k IN (?, ?))), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> ((k NOT IN (?, ?)) AND (k IN (?, ?))), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> transform(k, array(?, ?), array(?, ?), k), mapKeys(mapFilter((k, v) -> ((k NOT IN (?, ?)) AND (k IN (?, ?))), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> ((k NOT IN (?, ?)) AND (k IN (?, ?))), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
 -- args --
 [0] string = "k8s.namespace.name"
 [1] string = "service.version"
@@ -27,18 +27,20 @@ SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `
 [9] string = "service_name"
 [10] string = "k8s.namespace.name"
 [11] string = "service.version"
-[12] string = "requests_total"
-[13] string = "requests.total"
-[14] string = "requests/total"
-[15] string = "2026-01-01 00:00:01.000000000"
-[16] int64 = 9
+[12] string = ""
+[13] string = "service_name"
+[14] string = "requests_total"
+[15] string = "requests.total"
+[16] string = "requests/total"
 [17] string = "2026-01-01 00:00:01.000000000"
 [18] int64 = 9
-[19] int64 = 300000000000
+[19] string = "2026-01-01 00:00:01.000000000"
+[20] int64 = 9
+[21] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
     Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
-      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> transform(k, array("k8s.namespace.name", "service.version"), array("k8s_namespace_name", "service_version"), k), mapKeys(mapFilter((k, v) -> ((k NOT IN ("service.name", "service_name")) AND (k IN ("k8s.namespace.name", "service.version"))), ResourceAttributes))), mapValues(mapFilter((k, v) -> ((k NOT IN ("service.name", "service_name")) AND (k IN ("k8s.namespace.name", "service.version"))), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Project [MetricName AS MetricName, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> transform(k, array("k8s.namespace.name", "service.version"), array("k8s_namespace_name", "service_version"), k), mapKeys(mapFilter((k, v) -> ((k NOT IN ("service.name", "service_name")) AND (k IN ("k8s.namespace.name", "service.version"))), ResourceAttributes))), mapValues(mapFilter((k, v) -> ((k NOT IN ("service.name", "service_name")) AND (k IN ("k8s.namespace.name", "service.version"))), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName)))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
         Filter predicate=(MetricName IN ("requests_total", "requests.total", "requests/total"))
           Scan(otel_metrics_sum)

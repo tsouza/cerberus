@@ -234,13 +234,23 @@ func catalogAttributesProjections(cat *metadataCatalog, s schema.Metrics, attrs 
 
 // selectorAttributesSource returns the Attributes expression a
 // selector-shape Project reads a metric table with: the merged read-path
-// map normally, the raw column in catalog mode (where the merge would be
-// built per row only to be subscripted once).
+// map with the dedicated-column overlay folded in normally, the raw
+// column in catalog mode (where the merge would be built per row only to
+// be subscripted once).
+//
+// The overlay MUST be applied here, not above a UnionAll of these
+// projections: the arms collapse to the canonical Sample quadruple, so
+// the raw ServiceName column is out of scope for anything stacked on top
+// (see [lowerCtx.attributesPreMerged]).
 func selectorAttributesSource(cat *metadataCatalog, s schema.Metrics) chplan.Expr {
 	if cat != nil {
 		return &chplan.ColumnRef{Name: s.AttributesColumn}
 	}
-	return mergeResourceAttributesExpr(s)
+	merged := mergeResourceAttributesExpr(s)
+	if overlay := augmentAttributesForTopLevelExpr(s, merged); overlay != nil {
+		return overlay
+	}
+	return merged
 }
 
 // selectorLabelProjections is [catalogAttributesProjections] over
@@ -251,11 +261,17 @@ func selectorLabelProjections(cat *metadataCatalog, s schema.Metrics) []chplan.P
 }
 
 // dedicatedLabelColumns lists the configured top-level columns that back
-// a Prom label ([schemaTopLevelColumn]'s targets), in a stable order.
+// a Prom label, in a stable order. It reads the same [promqlTopLevelKeys]
+// registry the read-path overlay does, so the metadata surface and the
+// projected series can never disagree about which columns exist.
 func dedicatedLabelColumns(s schema.Metrics) []string {
-	var out []string
-	if s.ServiceNameColumn != "" {
-		out = append(out, s.ServiceNameColumn)
+	pairs := promqlTopLevelKeys(s)
+	if len(pairs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p[1])
 	}
 	return out
 }

@@ -102,10 +102,17 @@ jobs:
           retention-days: 1
 
   migration-tier0:
-    # Named for the tier the shard drives, not for the job. This is the one
-    # generic matrix-driven runner, so its id says `tier0` only because tier0
-    # is the only matrix-driven tier today; the shard name is the honest label.
-    name: migration-${{ matrix.name }}
+    # Static, NOT `migration-${{ matrix.name }}`. When a dispatch narrows to
+    # another tier this job is skipped with an EMPTY matrix, and GitHub cannot
+    # evaluate `matrix.name` against a null matrix context — it renders the
+    # literal `migration-${{ matrix.name }}` in the run list, which reads as a
+    # broken workflow rather than a deliberately skipped job.
+    #
+    # Safe to hardcode because exactly one tier is matrixDriven in TIER_JOBS,
+    # so this job never fans out past a single shard. migration-e2e.test.mjs
+    # asserts that invariant, so adding a second matrix-driven tier fails the
+    # guard rather than silently mislabelling one of its shards.
+    name: migration-tier0
     needs: migration-setup
     # An empty `include:` does not skip a matrix job — it still runs, with the
     # matrix context unset, so `TIER: ${{ matrix.tier }}` resolves to empty and

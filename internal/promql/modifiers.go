@@ -74,19 +74,6 @@ type lowerCtx struct {
 	// ([wrapMetadataCatalog]). Set only by [LowerMetadataLabelValues] /
 	// [LowerMetadataLabelNames].
 	catalog *metadataCatalog
-	// outerByLabels carries the by-clause labels of an enclosing
-	// vector aggregation, threaded down so the inner selector path
-	// can inflate Attributes with the top-level OTel-CH columns
-	// (currently `service_name` → `ServiceName`) the outer aggregate
-	// needs. Empty (the default) means "no outer by-clause referencing
-	// a top-level column" — the augmenting Project is suppressed and
-	// the bare-selector / range-vector plan emits unchanged.
-	//
-	// Only `by(...)` propagates; `without(...)` exclusion semantics
-	// don't reference specific columns so the slot stays nil for the
-	// without branch (see [lowerAggregate]).
-	outerByLabels []string
-
 	// lowerers is the BOOT-WIRED polymorphic dispatch table for the
 	// ClickHouse-native timeSeries*ToGrid family (rate / staleness). It is
 	// decided ONCE at boot from the resolved chopt.EnabledSet and threaded in
@@ -100,14 +87,14 @@ type lowerCtx struct {
 	lowerers RangeLowerers
 
 	// attributesPreMerged signals that the selector input already carries
-	// the resource-attribute merge in its `Attributes` column — i.e. each
-	// arm projected `mapUpdate(sanitize(ResourceAttributes), Attributes)`
-	// itself, so the raw `ResourceAttributes` column is NOT in scope above
-	// the arm (e.g. the classic-histogram companion UnionAll, whose arms
-	// collapse to the canonical Sample quadruple). When set,
-	// [selectorAttributesExpr] uses the bare `Attributes` ColumnRef as the
-	// outer-by overlay base instead of re-deriving the resource merge,
-	// which would reference an out-of-scope `ResourceAttributes`.
+	// the resource-attribute merge AND the dedicated-column overlay in its
+	// `Attributes` column — i.e. each arm projected the full
+	// [selectorAttributesSource] shape itself, so neither the raw
+	// `ResourceAttributes` nor the dedicated `ServiceName` column is in
+	// scope above the arm (e.g. the classic-histogram companion UnionAll,
+	// whose arms collapse to the canonical Sample quadruple). When set,
+	// [selectorAttributesExpr] returns the bare `Attributes` ColumnRef:
+	// re-deriving either layer here would reference out-of-scope columns.
 	attributesPreMerged bool
 }
 
@@ -117,17 +104,6 @@ type lowerCtx struct {
 func (c lowerCtx) withAttributesPreMerged() lowerCtx {
 	out := c
 	out.attributesPreMerged = true
-	return out
-}
-
-// withOuterByLabels returns a copy of c with outerByLabels set to
-// the given list. nil/empty input clears the slot — the inner
-// augmenting Project is suppressed and the lowering produces today's
-// byte-stable plan tree. Mirrors the
-// [internal/logql.lowerCtx.withOuterByLabels] convention from PR #666.
-func (c lowerCtx) withOuterByLabels(labels []string) lowerCtx {
-	out := c
-	out.outerByLabels = labels
 	return out
 }
 

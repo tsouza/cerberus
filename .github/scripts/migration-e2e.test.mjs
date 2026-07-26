@@ -458,6 +458,21 @@ test('a tier with no job is refused before a matrix entry can be built for it', 
   assert.throws(() => buildMatrix(scenarios, { tiers: [undeclaredTier] }), /no declared ceiling/);
 });
 
+test('exactly one tier is matrix-driven, so migration-tier0 can be named statically', () => {
+  // migration-e2e.yml hardcodes `name: migration-tier0` instead of deriving it
+  // from `matrix.name`, because a narrowed dispatch skips that job with an
+  // EMPTY matrix and GitHub then renders the raw `${{ matrix.name }}` literal
+  // in the run list — a skipped job that looks like a broken workflow.
+  //
+  // The hardcode is only truthful while the job cannot fan out past one shard.
+  // If a second matrix-driven tier is ever added, one of its shards would carry
+  // the other's name, so fail here and make the author revisit the label.
+  const matrixDriven = Object.entries(TIER_JOBS)
+    .filter(([, job]) => job.matrixDriven)
+    .map(([tier]) => tier);
+  assert.deepEqual(matrixDriven, ['tier0']);
+});
+
 test('a runnable tier whose job is not matrix-driven stays out of the matrix', () => {
   // tier1's and tier2's jobs each bring a compose stack up around the suite,
   // so they are fixed stanzas, not matrix shards. Emitting an entry for either

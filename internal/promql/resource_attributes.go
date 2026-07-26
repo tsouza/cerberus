@@ -39,11 +39,15 @@ func resourceAttributesActive(s schema.Metrics) bool {
 // OTel-CH exporter also materialises into a dedicated top-level column
 // with the schema field naming that column. When the dedicated column is
 // configured the resource-attribute arm MUST NOT promote the same key
-// again — the dedicated path (e.g. [schemaTopLevelColumn] →
-// [augmentAttributesForOuterByExpr]) already surfaces it — otherwise the key
+// again — the dedicated path ([promqlTopLevelKeys] →
+// [augmentAttributesForTopLevelExpr]) already surfaces it — otherwise the key
 // double-promotes and the projected series diverges from reference
 // Prometheus on every row (the value lands once via the dedicated column
 // and once via the ResourceAttributes map).
+//
+// The exclusion and the dedicated overlay are a matched pair: both are
+// driven by this same registry, so a key can never be removed from one
+// arm without being added to the other.
 type dedicatedResourceKey struct {
 	otelKey string
 	column  func(schema.Metrics) string
