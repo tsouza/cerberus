@@ -2,21 +2,20 @@
 #
 # The collector has exactly one job here: own the ClickHouse schema. Its
 # clickhouseexporter (create_schema: true) is the SOLE authority that creates
-# the otel_* tables, which is what lets cerberus run with
+# the otel_* tables, which lets cerberus run with
 # CERBERUS_AUTO_CREATE_SCHEMA=false and turns its readiness probe into a live
 # drift detector between the exporter's real table names and cerberus's
 # read-side defaults.
 #
-# Fixture DATA does not flow through this pipeline: the migration seeder writes
-# the ClickHouse side with direct INSERTs from the same in-memory fixture it
-# writes to the reference backends, so both sides of a parity diff are
-# comparable by construction. Collector fan-out would instead surrender the
-# stream-label vs structured-metadata mapping to Loki's OTLP allowlist — a
-# permanent parity diff by construction.
+# Fixture DATA does not flow through this pipeline: the migration seeder
+# writes the ClickHouse side via direct INSERTs from the same in-memory
+# fixture that writes the reference backends, so both sides of a parity diff
+# are comparable by construction. Collector fan-out would instead surrender
+# the stream-label vs structured-metadata mapping to Loki's OTLP allowlist —
+# a permanent parity diff by construction.
 #
 # There is no `batch` processor: the pipelines carry only the schema warm-up
 # records, so batching would add convergence latency to nothing.
-
 receivers:
   otlp:
     protocols:

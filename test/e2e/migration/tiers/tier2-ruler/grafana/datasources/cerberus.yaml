@@ -3,6 +3,12 @@
 # Mirrors the shape of the Layer-9 dashboard smoke's provisioning at
 # test/e2e/grafana/compose/datasources/cerberus.yaml, pared down to what this
 # substrate needs.
+#
+# Two datasources: Cerberus-Prometheus is the READ leg every rule fixture
+# queries directly against cerberus's own Prometheus head. Cerberus-
+# RemoteWrite (below) is the WRITE leg every recording rule's write-back
+# actually lands on — see its own comment for why a rule that queries the
+# former still writes to the latter instead of back to itself.
 apiVersion: 1
 datasources:
   - name: Cerberus-Prometheus

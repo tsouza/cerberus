@@ -31,7 +31,11 @@
 # otel-collector-writeback into the SAME ClickHouse database instead (see
 # docker-compose.ruler.yml's header comment for the full path). Once landed,
 # `node:node_cpu_utilisation:avg1m` IS selectable through cerberus —
-# MIG-13/MIG-19 assert exactly that.
+# MIG-09/MIG-13/MIG-19 all assert exactly that. NodeCPUSaturation's own query
+# against `node:node_cpu_utilisation:avg1m` answers `nodata` for the first
+# few evaluations after a fresh stack comes up (the recording rule's own
+# write, the relay, and the ClickHouse insert all need at least one tick
+# each to land the series) and `ok`/no-alert once it has.
 apiVersion: 1
 groups:
   - orgId: 1
@@ -53,6 +57,11 @@ groups:
         record:
           metric: "node:node_cpu_utilisation:avg1m"
           from: A
+          # No target_datasource_uid: the file-provisioning YAML schema on
+          # this Grafana version silently drops that field rather than
+          # honoring it (confirmed empirically), so the write target is set
+          # instance-wide instead — GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID
+          # in docker-compose.ruler.yml — rather than here.
 
   - orgId: 1
     name: node.alerts

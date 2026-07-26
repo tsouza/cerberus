@@ -21,6 +21,20 @@ import (
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 )
 
+// tier2RulerState is the MIG-09 ruler scenario's accumulated state beyond
+// the live endpoints/liveness flag (tracked separately as World.tier2 /
+// tier2Set, shared with the write-back and alerting scenarios): the most
+// recently polled rule groups, and the dead-end receiver's notification
+// count as observed before the scenario's own trigger — so a Then step
+// asserts against a delta, never an absolute count another scenario (or a
+// previous run against the same long-lived stack) might have already moved.
+type tier2RulerState struct {
+	groups         []rulerRuleGroup
+	recordedSeries recordedSeriesPoll
+	notifBase      int
+	notifSeen      bool
+}
+
 // workspacePattern names the per-scenario temporary directory every `--out`
 // artifact is written into. It is removed after the scenario, so one scenario
 // can never read an artifact another one left behind.
@@ -73,10 +87,11 @@ type World struct {
 	gate gateRun
 
 	// tier2 is the live Tier-2 ruler stack's endpoints, set by "the tier-2
-	// ruler stack is live". tier2Set guards every later tier-2 step so a
-	// scenario that skips establishing the stack fails there, naming the
-	// missing precondition, rather than deep inside an HTTP call with a
-	// nil/zero-value endpoint set.
+	// ruler stack is live" / "the shadow-ruler stack is live" (one shared
+	// precondition, two Gherkin phrasings — see tier2_live.go). tier2Set
+	// guards every later tier-2 step so a scenario that skips establishing
+	// the stack fails there, naming the missing precondition, rather than
+	// deep inside an HTTP call with a nil/zero-value endpoint set.
 	tier2    lib.Tier2Endpoints
 	tier2Set bool
 
@@ -88,6 +103,11 @@ type World struct {
 	// tier2Alerting carries the MIG-18 scenario's captured notification
 	// streams. See steps/tier2_alerting.go.
 	tier2Alerting tier2AlertingState
+
+	// tier2Ruler carries the MIG-09 ruler scenario's state (rule groups
+	// polled, recorded-series/notification deltas). See
+	// steps/then_ruler.go.
+	tier2Ruler tier2RulerState
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -118,6 +138,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.tier2Set = false
 		w.tier2Writeback = tier2WritebackState{}
 		w.tier2Alerting = tier2AlertingState{}
+		w.tier2Ruler = tier2RulerState{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -153,6 +174,8 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerTier2LiveSteps(ctx)
 	w.registerTier2WritebackSteps(ctx)
 	w.registerTier2AlertingSteps(ctx)
+	w.registerCutoverSteps(ctx)
+	w.registerRulerSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.

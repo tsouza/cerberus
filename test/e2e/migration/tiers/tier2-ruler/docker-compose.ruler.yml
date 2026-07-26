@@ -14,7 +14,8 @@
 # Adds the "real query-only external ruler" docs/migration-testing.md
 # section 3 describes for Tier 2 — here, Grafana-managed alerting rather
 # than a Prometheus/Thanos ruler — plus the dead-end receiver its one
-# contact point points at:
+# contact point points at, and the write path MIG-09's recording-rule output
+# needs:
 #
 #   grafana                  Evaluates the rule fixture (kube-prometheus-
 #                            stack's recording rule + NodeCPUSaturation
@@ -24,19 +25,20 @@
 #   dead-end-receiver        Grafana's one contact point. Logs every
 #                            notification to a file and answers 200; never
 #                            forwards anywhere.
-#   relay-prom               MIG-13/MIG-19 write-back leg, part 1: terminates
-#                            the recording rule's Remote Write 1.0 POST
-#                            (Grafana speaks only v1 for recording-rule
+#   relay-prom               MIG-09/MIG-13/MIG-19 write-back leg, part 1:
+#                            terminates the recording rule's Remote Write 1.0
+#                            POST (Grafana speaks only v1 for recording-rule
 #                            write-back — confirmed empirically) and re-emits
 #                            every sample as Remote Write 2.0. Pure protocol
 #                            bridge; nothing queries it.
-#   otel-collector-writeback MIG-13/MIG-19 write-back leg, part 2: the v2
-#                            landing side of that bridge, exporting straight
-#                            into the SAME ClickHouse database tier1-dual's
-#                            collector provisioned (create_schema: false — it
-#                            is never the schema authority), so the recorded
-#                            series becomes selectable through cerberus with
-#                            no further wiring.
+#   otel-collector-writeback MIG-09/MIG-13/MIG-19 write-back leg, part 2: the
+#                            v2 landing side of that bridge, exporting
+#                            straight into the SAME ClickHouse database
+#                            tier1-dual's collector provisioned
+#                            (create_schema: false — it is never the schema
+#                            authority), so the recorded series becomes
+#                            selectable through cerberus with no further
+#                            wiring.
 #
 # Port band: 27400-27500, the next contiguous unclaimed band after Tier-1's
 # own 27000-27400 (see docker-compose.dual.yml's port-band comment).
@@ -62,13 +64,22 @@ services:
       # without this, the `record:` field in rules.yaml provisioning is
       # rejected.
       GF_UNIFIED_ALERTING_RECORDING_RULES_ENABLED: "true"
+      # The feature TOGGLE that gates the write-back leg itself. Without it
+      # Grafana evaluates a `record:` rule's query leg (the provisioning
+      # check above accepts it, and the rule reports health=ok) but silently
+      # never issues the Remote Write POST at all — confirmed empirically.
+      GF_FEATURE_TOGGLES_ENABLE: grafanaManagedRecordingRules
       # The write target every recording rule writes to when its own
       # provisioning entry names none (rules.yaml names none — Grafana's
-      # recording-rule schema has no per-rule write-target field to set).
+      # recording-rule schema has no per-rule write-target field to set, and
+      # `record.target_datasource_uid` in the file-provisioning YAML schema
+      # is silently dropped rather than honored, confirmed empirically via
+      # the provisioning API's own GET never showing it back — even though
+      # the identical field works over the REST provisioning API).
       # cerberus-remotewrite is the Cerberus-RemoteWrite datasource
       # (grafana/datasources/cerberus.yaml), which fronts relay-prom, the
-      # first leg of the MIG-13/MIG-19 write-back bridge (see this file's own
-      # header comment for the full path to ClickHouse).
+      # first leg of the MIG-09/MIG-13/MIG-19 write-back bridge (see this
+      # file's own header comment for the full path to ClickHouse).
       GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID: cerberus-remotewrite
     volumes:
       # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
@@ -115,11 +126,11 @@ services:
       timeout: 2s
       retries: 30
 
-  # === MIG-13/MIG-19 write-back landing leg ===
+  # === MIG-09/MIG-13/MIG-19 write-back landing leg ===
   #
   # See this file's own header comment for the two services' role in the
-  # bridge. Neither is queried by a scenario directly — MIG-13/MIG-19 read
-  # the landed series back through cerberus, the same as every other
+  # bridge. Neither is queried by a scenario directly — MIG-09/MIG-13/MIG-19
+  # read the landed series back through cerberus, the same as every other
   # recorded-series consumer would.
 
   otel-collector-writeback:
