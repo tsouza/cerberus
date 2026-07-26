@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -345,7 +346,7 @@ func (w *World) thenScrapeSeriesParity() error {
 			len(refNames), scrapeJob)
 	}
 	for _, want := range []string{scrapeUpMetric, scrapeDurationMetric, scrapeSamplesMetric} {
-		if !containsString(refMeta, want) {
+		if !slices.Contains(refMeta, want) {
 			return fmt.Errorf("migration harness: the reference path does not produce %s for %s; its meta-metrics are %v",
 				want, scrapeJob, refMeta)
 		}
@@ -357,7 +358,7 @@ func (w *World) thenScrapeSeriesParity() error {
 	}
 	var missing []string
 	for _, name := range refMeta {
-		if !containsString(collectorNames, name) {
+		if !slices.Contains(collectorNames, name) {
 			missing = append(missing, name)
 		}
 	}
@@ -366,12 +367,6 @@ func (w *World) thenScrapeSeriesParity() error {
 			missing, scrapeJob, scrapeMetaNames(collectorNames))
 	}
 	return nil
-}
-
-// containsString reports membership in a sorted slice.
-func containsString(haystack []string, needle string) bool {
-	i := sort.SearchStrings(haystack, needle)
-	return i < len(haystack) && haystack[i] == needle
 }
 
 // thenScrapeLabelTranslationIsTheOnlyDifference asserts the ONE difference

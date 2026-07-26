@@ -3,6 +3,7 @@ package steps
 import (
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -388,11 +389,11 @@ func TestReadSideChecksFollowTheEnvironment(t *testing.T) {
 	if renamedColumns == 0 {
 		t.Fatalf("readSurface() carries %s but no column to check on it", renamed)
 	}
-	if !containsString(tablesCerberusReads(), renamed) {
+	if !slices.Contains(tablesCerberusReads(), renamed) {
 		t.Fatalf("tablesCerberusReads() = %v, which does not follow %s=%s",
 			tablesCerberusReads(), schema.EnvMetricsGaugeTable, renamed)
 	}
-	if containsString(tablesCerberusReads(), schema.DefaultOTelMetrics().GaugeTable) {
+	if slices.Contains(tablesCerberusReads(), schema.DefaultOTelMetrics().GaugeTable) {
 		t.Fatalf("tablesCerberusReads() still demands the compiled-in default gauge table")
 	}
 }
@@ -425,15 +426,6 @@ func TestDiffReadColumnsFailsAnUnresolvedField(t *testing.T) {
 		t.Fatalf("diffReadColumns reports %v missing / %v unresolved on a table that carries everything",
 			missing, unresolved)
 	}
-}
-
-func containsString(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // TestForeignTenantPlantMatchesGaugeProbeLayout holds MIG-15's plant in the

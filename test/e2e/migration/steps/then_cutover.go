@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cucumber/godog"
