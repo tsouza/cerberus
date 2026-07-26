@@ -120,6 +120,14 @@ type World struct {
 	// cerberus. See steps/tier2_writeback.go.
 	tier2Writeback tier2WritebackState
 
+	// tier2SeedScope is the identity THIS scenario's Tier-2 source-series seed
+	// writes under, and the identity every later step of the same scenario
+	// selects on. It is derived per scenario in the Before hook rather than
+	// per step, because the seeding Given and the asserting Then must agree on
+	// it. See steps/tier2_seed_scope.go for why two Tier-2 scenarios must
+	// never share one stored series identity.
+	tier2SeedScope string
+
 	// tier2Alerting carries the MIG-18 scenario's captured notification
 	// streams. See steps/tier2_alerting.go.
 	tier2Alerting tier2AlertingState
@@ -241,6 +249,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.lookback = map[string]migrate.Lookback{}
 		w.envUsed = map[string][]string{}
 		w.tier2Set = false
+		w.tier2SeedScope = tier2SeedScopeFor(sc.Name)
 		w.tier2Writeback = tier2WritebackState{}
 		w.tier2Alerting = tier2AlertingState{}
 		w.tier2Ruler = tier2RulerState{}
