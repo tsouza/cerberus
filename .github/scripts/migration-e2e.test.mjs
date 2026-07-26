@@ -579,16 +579,26 @@ test('the pin hash ignores a reflow but not a wording change', () => {
   assert.notEqual(hashPassAssertion(cell), hashPassAssertion('the boundary is observable'));
 });
 
-test('V19 fires when a PASS cell is narrowed — the MIG-23 shape, verbatim', () => {
-  // The observed narrowing: MIG-23's "the old backend is kept read-only as a
-  // historical tier" clause deleted from the PASS cell, in the same commit
-  // that implemented the narrower thing.
+test('V19 fires when a PASS cell is narrowed — the MIG-23 shape', () => {
+  // The observed narrowing was a dropped clause: MIG-23's "the old backend is
+  // kept read-only as a historical tier" deleted from the PASS cell, in the
+  // same commit that implemented the narrower thing.
+  //
+  // The mutation drops the cell's LAST semicolon-delimited clause rather than
+  // a hardcoded sentence. Pinning the literal wording made this detector test
+  // silently stop mutating anything the moment MIG-23's cell was legitimately
+  // rewritten: `replace()` matched nothing, the cell came back unchanged, and
+  // the test then reported the DETECTOR as rotted when it was the test that
+  // had. A detector test that can quietly stop testing is the same failure
+  // mode as the ratchet it guards.
   const w = world();
   const cells = parsePassAssertions(DOC);
   const mig23 = cells.get('MIG-23');
+  const clauses = mig23.pass.split(';');
+  assert.ok(clauses.length > 1, "MIG-23's PASS cell has no clause to drop, so the mutation would be a no-op");
   w.passAssertions = new Map(cells).set('MIG-23', {
     ...mig23,
-    pass: mig23.pass.replace(' the old backend is kept read-only as a historical tier;', ''),
+    pass: clauses.slice(0, -1).join(';'),
   });
   const v = collectViolations(w);
   assert.ok(

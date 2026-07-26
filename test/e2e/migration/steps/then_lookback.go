@@ -28,11 +28,22 @@ const (
 	signalTraces  = "traces"
 )
 
-// ttlClauseRe captures the retention a rendered CREATE TABLE provisions:
-// `TTL toDateTime(<column>) + toInterval<Unit>(<count>)`. Reading the runway
-// out of the DDL measures what would ACTUALLY be provisioned, rather than
-// re-deriving it from the same environment variable the renderer read.
-var ttlClauseRe = regexp.MustCompile(`TTL\s+toDateTime\([^)]*\)\s*\+\s*toInterval([A-Za-z]+)\((\d+)\)`)
+// ttlClauseRe captures the retention a CREATE TABLE provisions, in EITHER of
+// the two DDL dialects this harness has to read. Reading the runway out of the
+// DDL measures what would ACTUALLY be provisioned, rather than re-deriving it
+// from the same environment variable the renderer read.
+//
+// The two dialects differ in one token and the difference is load-bearing:
+// cerberus's own renderer wraps the TTL key in `toDateTime(<column>)`, while
+// the OTel-CH exporter's GenerateTTLExpr — the sole schema authority on the
+// tier-1 stack — emits the column bare (`TTL TimeUnix + toIntervalDay(30)`).
+// A pattern that knew only cerberus's shape read a live cluster's DDL as
+// carrying no TTL at all, and because "no TTL" is how this harness spells an
+// unset retention, every gate derived from that read passed on evidence
+// nobody ever obtained. One pattern over both shapes is what makes that
+// failure mode impossible: the key is whatever sits between `TTL` and the
+// interval it is offset by, wrapper or no wrapper.
+var ttlClauseRe = regexp.MustCompile(`TTL\s+(\S+)\s*\+\s*toInterval([A-Za-z]+)\((\d+)\)`)
 
 // ttlUnits maps the interval units the schema renderer emits to their duration.
 // A unit outside this table is a renderer change the harness must be taught
@@ -80,20 +91,31 @@ func (w *World) givenConfiguredRetention() error {
 		return fmt.Errorf("rendering the %s schema exited %d: %s",
 			w.schema.caseName, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 	}
-	byLine, err := retentionBySignal(schemaStatements(res.Stdout))
+	// retentionBySignal itself refuses to hand back an empty map, so "the
+	// render provisions nothing" arrives here as an error naming this case
+	// rather than as a retention of zero signals a later Then would loop over
+	// without ever comparing anything.
+	byLine, err := retentionBySignal("the "+w.schema.caseName+" rendered schema", schemaStatements(res.Stdout))
 	if err != nil {
 		return err
-	}
-	if len(byLine) == 0 {
-		return fmt.Errorf("the %s schema provisions no retention at all, so it bounds nothing", w.schema.caseName)
 	}
 	w.retention = signalRetention{read: true, bySignal: byLine}
 	return nil
 }
 
-// retentionBySignal reads each rendered statement's TTL and folds it into the
-// signal its table belongs to, keeping the shortest per signal.
-func retentionBySignal(stmts []string) (map[string]time.Duration, error) {
+// retentionBySignal reads each statement's TTL and folds it into the signal
+// its table belongs to, keeping the shortest per signal. source names where
+// the DDL came from — a rendered schema, a live database — so a failure blames
+// the authority that emitted the text rather than "the schema", of which there
+// are two.
+//
+// It never hands back an empty map. An empty map and "this deployment
+// provisions no retention" are the same value, and every caller reads the
+// latter as a blocker it must fail closed on; returning it silently would
+// turn a parser that no longer understands the DDL it was handed into a green
+// gate on retention nobody read. A statement list that yields no TTL at all
+// is therefore an error, and so is a TTL in a unit the harness cannot convert.
+func retentionBySignal(source string, stmts []string) (map[string]time.Duration, error) {
 	out := map[string]time.Duration{}
 	for _, stmt := range stmts {
 		m := createObjectRe.FindStringSubmatch(stmt)
@@ -108,18 +130,24 @@ func retentionBySignal(stmts []string) (map[string]time.Duration, error) {
 		if ttl == nil {
 			continue
 		}
-		unit, ok := ttlUnits[ttl[1]]
+		unit, ok := ttlUnits[ttl[2]]
 		if !ok {
-			return nil, fmt.Errorf("the rendered schema uses the interval unit %q, which the harness cannot convert", ttl[1])
+			return nil, fmt.Errorf("%s uses the interval unit %q, which the harness cannot convert", source, ttl[2])
 		}
-		n, err := strconv.Atoi(ttl[2])
+		n, err := strconv.Atoi(ttl[3])
 		if err != nil {
-			return nil, fmt.Errorf("unreadable retention count %q: %w", ttl[2], err)
+			return nil, fmt.Errorf("%s carries the unreadable retention count %q: %w", source, ttl[3], err)
 		}
 		d := time.Duration(n) * unit
 		if cur, seen := out[signal]; !seen || d < cur {
 			out[signal] = d
 		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf(
+			"%s: read %d statement(s), none of which declared a signal table carrying a TTL clause this harness could parse, so no retention was established at all",
+			source, len(stmts),
+		)
 	}
 	return out, nil
 }

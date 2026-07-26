@@ -159,6 +159,24 @@ const (
 	// from the verify window, so every range selector in a corpus has full
 	// lookback on both sides at the very first queried step.
 	RangeLookbackMargin = 10 * time.Minute
+	// PreIngestWindow is the span of history the INCUMBENT alone holds,
+	// ending one SampleStep before SeedStart: the fixture's model of an
+	// operator whose old Prometheus has been recording since long before
+	// ClickHouse ingest was switched on. It is written to reference
+	// Prometheus ONLY (Fixture.PromPreIngestSeries) — ClickHouse's earliest
+	// row stays at SeedStart — which is what makes the ingest-start boundary
+	// a measurable split rather than a claim, and what makes "the incumbent
+	// has to stay" falsifiable: without it, both sides are equally empty
+	// before SeedStart and the contrast asserts nothing.
+	//
+	// Nothing the parity lane queries can reach these samples: the earliest
+	// instant it reads is VerifyStart, and the deepest lookback any corpus
+	// range selector may carry is RangeLookbackMargin, which bottoms out
+	// exactly at SeedStart. The span also stays short enough that
+	// PreIngestWindow+SeedWindow sits inside reference Prometheus's own
+	// appendable floor — head max time minus half its chunk range — below
+	// which remote-write rejects a sample as out of bounds.
+	PreIngestWindow = 10 * time.Minute
 )
 
 // Window is the fixture's time geometry: where its samples sit, and which
@@ -206,6 +224,25 @@ func NewWindow(now time.Time) Window {
 func (w Window) SampleTimes() []time.Time {
 	out := make([]time.Time, 0, int(SeedWindow/SampleStep)+1)
 	for t := w.SeedStart; !t.After(w.AnchorEnd); t = t.Add(SampleStep) {
+		out = append(out, t)
+	}
+	return out
+}
+
+// PreIngestStart is the first instant the incumbent-only history covers.
+func (w Window) PreIngestStart() time.Time {
+	return w.SeedStart.Add(-PreIngestWindow)
+}
+
+// PreIngestSampleTimes returns every instant the incumbent-only history is
+// written at: PreIngestStart, PreIngestStart+SampleStep, … , up to but NOT
+// including SeedStart, on the same grid the in-window fixture uses. The last
+// one therefore lands exactly one SampleStep before SeedStart, so a probe one
+// step before ClickHouse's ingest-start hits a real reference-side sample
+// rather than a gap.
+func (w Window) PreIngestSampleTimes() []time.Time {
+	out := make([]time.Time, 0, int(PreIngestWindow/SampleStep))
+	for t := w.PreIngestStart(); t.Before(w.SeedStart); t = t.Add(SampleStep) {
 		out = append(out, t)
 	}
 	return out

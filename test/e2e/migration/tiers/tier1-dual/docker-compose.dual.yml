@@ -175,6 +175,25 @@ services:
       # defaults; with auto-create off, /readyz stays 503 until the exporter
       # has provisioned the schema cerberus expects.
       CERBERUS_AUTO_CREATE_SCHEMA: "false"
+      # No CERBERUS_QUERY_TIMEOUT here, deliberately: cerberus keeps its
+      # two-minute default for every scenario on this shared service. MIG-08
+      # needs a much shorter per-query cap to prove a paused ClickHouse is
+      # bounded by the GATEWAY rather than by its own HTTP client, and it gets
+      # one by sending the standard Prometheus `?timeout=` parameter on its
+      # own four requests (faultGatewayQueryTimeout in
+      # steps/then_fault_injection.go), which cerberus min's against this
+      # default. Setting the cap here instead would put every @tier1 query
+      # under it, so one slow query on a cold runner would surface as a 503 in
+      # an unrelated scenario — and it would duplicate the number, leaving a
+      # copy that can drift.
+
+      # The per-query sample budget, pinned to the product default rather than
+      # left implicit. Under MIG-15's tenancy model — one cerberus per tenant,
+      # each bound to its own CH database — this IS the per-tenant read budget
+      # the story asserts is enforced, and that scenario derives its
+      # over-budget subquery grid from this exact number.
+      # test/regression/migration_tier1_test.go holds the two equal.
+      CERBERUS_QUERY_MAX_SAMPLES: "5000000"
     depends_on:
       clickhouse:
         condition: service_healthy

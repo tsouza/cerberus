@@ -153,6 +153,21 @@ rather than dependent on the exporter's start-time behaviour; the seeder then
 polls for all six `otel_*` tables against a hard deadline before it writes a
 single fixture row. Nothing in the seeder creates a table.
 
+The fixture carries exactly one deliberate asymmetry between the two sides:
+reference Prometheus additionally receives `seed.PreIngestWindow` of gauge
+history ending one sample step BELOW the first ClickHouse row, on the fixture's
+own label sets and its own grid. That models the operator's incumbent having
+recorded since long before ClickHouse ingest was switched on, and it is what
+gives MIG-23's ingest-start boundary two distinguishable sides to be measured
+against — without it both backends are equally empty below the boundary and the
+split-read story compares two empty answers. It is written first, because
+reference Prometheus rejects an out-of-order sample outright, and it is written
+to the incumbent only, because ClickHouse's earliest row IS the boundary. No
+lane query can reach it: the earliest instant any of them reads is
+`verify_start`, and the deepest lookback a corpus range selector may carry
+bottoms out exactly at `seed_start` (pinned offline by
+`test/regression/migration_tier1_test.go`).
+
 **Determinism.** Five devices, and the fixture is byte-identical run to run
 apart from its offset from the epoch:
 
@@ -481,6 +496,71 @@ cell uses only the verified flags from [section 2](#2-the-cerberus-migrate-cli-s
 | MIG-08 | 1       | replay heaviest harvested queries at production QPS; fault-inject via `docker compose kill/pause/stop` on CH / cerberus / collector         | widest-window × highest-cardinality queries from the kube-prometheus-stack + Thanos corpora; loaded CH | Any query tripping a resource-bound guard or Go-side result-buffering OOM is listed; `query.maxSamples` + result-buffering bound proven to stop one heavy range query OOMing the gateway; p50/p95/p99 + memory captured; a `docker compose kill` shows graceful degradation + a working datasource-flip rollback. |
 | MIG-09 | 2       | stand up query-only ruler → cerberus HTTP → CH; assert recorded series selectable via cerberus                                              | Tier-2 shadow ruler + dead-end Alertmanager; a small recording+alerting rule set                       | Ruler evaluates rules against cerberus and lands recording-rule output back into CH; those recorded series become selectable through cerberus; the shadow ruler fires into a null receiver (computes, never pages); the full loop validated in-lab.                                                               |
 
+**What MIG-08's shipped scenario does not yet reach.** The Tier-1 scenario
+asserts the fault-injection and rollback half of that PASS cell — a paused
+ClickHouse is refused inside cerberus's own per-query wall-clock cap, with a
+named error envelope, measurably slower than the healthy p50/p95/p99 the same
+query just recorded, while the reference Prometheus still serves the identical
+series set and cerberus recovers it on resume. Five clauses of the cell are
+outside what it exercises, and none of them is retired by it: no memory figure
+is captured beside the latencies; neither `query.maxSamples` nor the Go-side
+result-buffering bound is proven to stop a heavy range query exhausting the
+gateway; the fault is `docker compose pause` only, so `kill` and `stop` — and
+with them a hard process death rather than a freeze — stay unexercised, as do
+faults injected at cerberus and the collector rather than at ClickHouse; the
+heaviest query is synthesised from the archetype's own fixture declaration
+instead of drawn from the harvested corpus, so "heaviest harvested at
+production QPS" is a replay of one wide, high-churn range query at bounded
+concurrency; and the `prometheus-thanos` corpus half has no seeded Tier-1
+fixture, so only `kube-prometheus-stack` is soaked. Each remains owed by
+MIG-08, not reassigned and not dropped.
+
+#### How MIG-06 and MIG-07 discharge those PASS assertions, and what they cannot reach
+
+MIG-06 does not stop at "a row landed in the declared table". The columns that
+CARRY each type are read back off the landed row and compared against what the
+push declared: `AggregationTemporality` and `IsMonotonic` for the counter, the
+explicit bounds and per-bucket counts for the classic histogram, the
+scale/offset/counts triple for the exponential one, and the pre-computed
+quantile pairs for the summary. Every probe — including the "landed nowhere
+else" one, which waits past the exporter's own flush interval before
+concluding, so a later-flushing duplicate cannot hide behind the right-table
+row appearing first — is scoped by a per-run resource attribute rather than by
+a global row count, so a second run against a live stack cannot go red for a
+reason that has nothing to do with the bridge. `cerberus migrate explain` then
+supplies the touched-table half from the other side: the set of physical tables
+it names for the shapes' read queries must equal the set the rows were actually
+located in.
+
+**Stated limit (MIG-06).** That explain comparison covers the four shapes
+cerberus's PromQL read path can reach. The summary is excluded: the read path
+has no route to `otel_metrics_summary` at all, so no expression could make
+explain name that table. The summary's landing and its type are asserted by the
+direct ClickHouse probe alone.
+
+MIG-07 enumerates the scrape meta-metric set from the REFERENCE path
+(`/api/v1/label/__name__/values` under the shared target's selector) and diffs
+it against the collector path's own enumeration, rather than spot-checking
+names the harness already knows — what a Prometheus release synthesises for a
+target is its own decision, so the reference path is the oracle. The label
+difference between the two paths must be exactly the named OTel translation —
+`job` → `service.name`, `instance` → `service.instance.id` — values included,
+which is why both paths address the target as `prometheus:9090`; any other
+reference-path label absent under the collector path is listed and fails. The
+surviving `_bucket` layout is compared as parsed bucket edges (a formatting
+convention for `1` or `+Inf` is not part of a layout), and the quantile is
+parsed — NaN, infinities and non-positive values rejected — then diffed against
+the reference Prometheus's OWN `histogram_quantile` over the same target within
+an epsilon derived live from that shared layout: the narrowest finite bucket
+width, which is the resolution `histogram_quantile` itself has.
+
+**Stated limit (MIG-07).** The collector path additionally carries the
+prometheusreceiver's own scrape-target resource attributes (the target's
+address and scheme), whose attribute names track the semantic conventions of
+the collector release in use. Those are additive context rather than a lost
+series, so the assertion pins the loss direction and the translated values, and
+does not pin the additive set by name.
+
 ### VALIDATE scenarios
 
 | ID     | Tier(s) | CLI                                                                                          | Fixtures                                                                                                                                                | PASS assertion                                                                                                                                                                                                                                                                                         |
@@ -589,11 +669,11 @@ fine; colliding identities are not.
 
 ### CUTOVER scenarios
 
-| ID     | Tier(s) | CLI                                                                                                      | Fixtures                                                                               | PASS assertion                                                                                                                                                                                                                                                                                                      |
-| ------ | ------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MIG-22 | 1       | script Grafana datasource/ruler URL flip + one-line rollback; re-run a probe query after each move       | Grafana provisioned with both incumbent + cerberus datasources                         | Cerberus stood up as an **additional** (shadow) datasource before any flip; read traffic moved and reverted per datasource/dashboard/alert-group by URL change alone; every step has a documented one-line rollback; no big-bang swap path exists in the runbook the scenario executes.                             |
-| MIG-23 | 1       | query spanning before/after the CH ingest-start boundary; assert routing                                 | Thanos/SaaS seed where CH ingest-start < the queried range                             | Queries starting earlier than CH ingest-start transparently route to the incumbent read path; the boundary is configurable + observable; the old backend is kept read-only as a historical tier; the split-router is only removable once CH retention has aged past the ingest-start boundary (asserted as a gate). |
-| MIG-24 | 2       | stage the cutover order; block each paging repoint on MIG-18 parity evidence via `cerberus migrate gate` | Tier-2 ruler + staged rule inventory (informational → dashboards → recording → paging) | Cutover order documented + enforced; **no** alerting rule repointed until the external evaluator has proven fire/resolve parity live; each stage has an explicit go/no-go gate tied to parity evidence; recording-rule write-back confirmed live before dashboards on recorded series flip.                         |
+| ID     | Tier(s) | CLI                                                                                                                                           | Fixtures                                                                                                                                                             | PASS assertion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MIG-22 | 1       | script Grafana datasource/ruler URL flip + one-line rollback; re-run a probe query after each move                                            | Grafana provisioned with both incumbent + cerberus datasources                                                                                                       | Cerberus stood up as an **additional** (shadow) datasource before any flip; read traffic moved and reverted per datasource/dashboard/alert-group by URL change alone; every step has a documented one-line rollback; no big-bang swap path exists in the runbook the scenario executes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| MIG-23 | 1       | no CLI — direct instant probes either side of the boundary against both backends, plus a one-pass ClickHouse row census over the probe metric | three-signal seed; reference Prometheus additionally holds `seed.PreIngestWindow` of history strictly BELOW ClickHouse's ingest-start, written to the incumbent only | The split-router itself is operator-owned infrastructure — an ingress rule, a proxy route, or a per-datasource pattern in Grafana — and lives OUTSIDE this repository: cerberus ships no boundary configuration and no backend-routing layer, and this scenario asserts against none. What it asserts is the substrate such a router is built on. ClickHouse's ingest-start is MEASURED off the live table (`min(TimeUnix)`) and must equal the boundary the seeder declared, so the split point is observable rather than a deployment note; ClickHouse holds zero rows below it and exactly the seeder's declared row count at or above it; cerberus answers a post-boundary instant with the declared series cardinality and a pre-boundary instant with nothing at all, while the incumbent answers that SAME instant with the declared pre-ingest cardinality — which is what makes "the old backend has to stay" falsifiable; and the live CH TTL still reaches back past the pre-boundary instant without having aged to ingest-start, which both attributes cerberus's empty answer to ingest-start rather than to expiry and keeps the split non-removable (asserted as a gate that fails closed when no live TTL can be read at all). |
+| MIG-24 | 2       | stage the cutover order; block each paging repoint on MIG-18 parity evidence via `cerberus migrate gate`                                      | Tier-2 ruler + staged rule inventory (informational → dashboards → recording → paging)                                                                               | Cutover order documented + enforced; **no** alerting rule repointed until the external evaluator has proven fire/resolve parity live; each stage has an explicit go/no-go gate tied to parity evidence; recording-rule write-back confirmed live before dashboards on recorded series flip.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ### DECOMMISSION scenarios
 
@@ -1004,6 +1084,52 @@ here so they are legible rather than buried:
   and the retention gate refuses teardown until ClickHouse has aged past the
   boundary. The routing hop itself is out of scope by construction, not by
   omission.
+
+### 6.4. Declared scope limits
+
+A PASS cell in [section 6](#6-story--scenario-map) is the contract; where a
+scenario cannot reach a clause of it on the substrate it runs on, the gap is
+written down HERE rather than left for a reader to infer from the step list. A
+clause absent from both the scenario and this section is a bug, not a decision.
+
+**MIG-10, tier 1 — projection bodies are not diffed.** The render emits, per
+metrics catalog table, two idempotent `ALTER TABLE … ADD PROJECTION IF NOT
+EXISTS` statements. The tier-1 stack makes the collector's `clickhouseexporter`
+the sole schema authority, and those projections are a cerberus-side read
+accelerator the exporter never creates — so they are genuinely absent from the
+live database, and demanding their presence would assert that a human had
+already applied the render, the exact step MIG-10 exists to keep deliberate.
+What IS diffed is each ALTER's target: it must be qualified with the live
+tenant database and name a table that really exists there, so an operator
+piping the render into a client cannot hit a missing target. The parse is held
+to the ALTERs' exact set (`TestParseRenderedSchemaReadsEveryAddProjection`), so
+"not diffed" cannot quietly become "not read".
+
+**MIG-10, tier 1 — what "the schema cerberus reads" means.** The read-side leg
+covers every `*Table` / `*Column` field of `schema.Metrics`, `schema.Logs` and
+`schema.Traces`, mapped onto the live table that carries it.
+`TestReadSurfaceCoversEveryReadSideSchemaField` holds that mapping TOTAL
+against the three config structs, so the claim stays the whole read surface
+rather than a hand-picked subset of it. The two fields that resolve to the
+empty string on the OTel-CH schema — `Metrics.ZeroThresholdColumn` and
+`Traces.ScopeAttributesColumn`, both of which the emitters branch on as "this
+deployment has no such column" — address nothing and so are checked by nobody;
+every field that DOES resolve to a name is checked, and a field that resolves
+to nothing while being listed is a failure, never a skip.
+
+**MIG-15 — tenancy is a ClickHouse database boundary, not a header.** The PASS
+cell names `X-Scope-OrgID` queries and a mimir/cortex row-policy fixture.
+Cerberus has no tenant header: its deployment model for a mimir-cortex
+migration is one cerberus per tenant, each bound to that tenant's own CH
+database via `CERBERUS_CH_DATABASE`, which is the boundary the scenario plants
+across and reads against. For the same reason the per-tenant read budget under
+test is the per-process `CERBERUS_QUERY_MAX_SAMPLES`
+(`TestMigrationTier1SampleBudgetIsPinned` holds the scenario's derivation equal
+to the compose stack's setting). The metadata half is carried by
+`/api/v1/label/__name__/values` and `/api/v1/labels` rather than `/series`;
+both absence claims are gated on their positive control having observed a
+populated surface in the same run, so an empty answer fails instead of reading
+as perfect isolation.
 
 ## 7. Archetype seed profiles
 

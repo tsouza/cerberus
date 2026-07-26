@@ -28,4 +28,11 @@ global:
 scrape_configs:
   - job_name: prometheus-self
     static_configs:
-      - targets: ["localhost:9090"]
+      # The compose service address, NOT localhost, even though Prometheus is
+      # scraping itself. MIG-07 asserts the collector's OTel translation of
+      # the target identity carries the same VALUES across
+      # (`instance` -> `service.instance.id`), and the collector reaches this
+      # same process as `prometheus:9090`. Scraping via localhost would give
+      # the two paths different instance values for one physical target, and
+      # the parity assertion could then only compare label NAMES.
+      - targets: ["prometheus:9090"]

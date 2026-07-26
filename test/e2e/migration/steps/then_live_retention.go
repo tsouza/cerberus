@@ -3,9 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -19,17 +17,6 @@ import (
 // answering by the time a Tier-1 scenario reaches this step, so this is a
 // generous ceiling against a stalled query, not a cold-start allowance.
 const liveRetentionBudget = 30 * time.Second
-
-// liveTTLClauseRe captures the retention the COLLECTOR actually provisioned on
-// a live table, read straight out of `SHOW CREATE TABLE`. It is deliberately a
-// different pattern than then_lookback.go's ttlClauseRe: cerberus's own
-// renderer wraps the TTL column in toDateTime(...), but the OTel-CH exporter's
-// GenerateTTLExpr (internal/clickhouse.go in the vendored fork) emits the
-// column bare — `TTL <column> + toIntervalDay(30)`, no wrapper — which is
-// exactly the byte-for-byte difference MIG-10 exists to catch. This step reads
-// what the collector actually applied, not what cerberus would render, so it
-// must match the collector's own shape rather than reusing ttlClauseRe.
-var liveTTLClauseRe = regexp.MustCompile(`TTL\s+\S+\s*\+\s*toInterval([A-Za-z]+)\((\d+)\)`)
 
 // registerLiveRetentionSteps binds MIG-14's Tier-1 half: the collector-applied
 // retention read off the live stack, compared against the same corpus-derived
@@ -74,51 +61,19 @@ func (w *World) givenLiveRetention() error {
 		stmts = append(stmts, stmt)
 	}
 
-	bySignal, err := liveRetentionBySignal(stmts)
+	// The fold is then_lookback.go's, unchanged: ttlClauseRe reads the
+	// collector's bare-column TTL as readily as cerberus's own
+	// toDateTime(...)-wrapped one, and signalOfTable/ttlUnits are shared, so
+	// both halves of MIG-14 fold "shortest TTL wins per signal" identically.
+	// It refuses an empty result, so a collector whose DDL this harness can no
+	// longer read arrives as a failure here rather than as a retention of no
+	// signals the Then below would loop over without comparing anything.
+	bySignal, err := retentionBySignal("the live collector-provisioned tables", stmts)
 	if err != nil {
 		return err
 	}
-	if len(bySignal) == 0 {
-		return fmt.Errorf("the live collector provisions no retention at all on any signal table, so it bounds nothing")
-	}
 	w.retention = signalRetention{read: true, bySignal: bySignal}
 	return nil
-}
-
-// liveRetentionBySignal is then_lookback.go's retentionBySignal, reading the
-// collector's bare-column TTL shape (liveTTLClauseRe) instead of cerberus's
-// own toDateTime(...)-wrapped one. It shares signalOfTable/unqualify/ttlUnits
-// with the Tier-0 path so both halves fold "shortest TTL wins per signal" the
-// same way.
-func liveRetentionBySignal(stmts []string) (map[string]time.Duration, error) {
-	out := map[string]time.Duration{}
-	for _, stmt := range stmts {
-		m := createObjectRe.FindStringSubmatch(stmt)
-		if m == nil {
-			continue
-		}
-		signal, ok := signalOfTable(unqualify(m[1]))
-		if !ok {
-			continue
-		}
-		ttl := liveTTLClauseRe.FindStringSubmatch(stmt)
-		if ttl == nil {
-			continue
-		}
-		unit, ok := ttlUnits[ttl[1]]
-		if !ok {
-			return nil, fmt.Errorf("the live table for %s uses the interval unit %q, which the harness cannot convert", signal, ttl[1])
-		}
-		n, err := strconv.Atoi(ttl[2])
-		if err != nil {
-			return nil, fmt.Errorf("unreadable live retention count %q: %w", ttl[2], err)
-		}
-		d := time.Duration(n) * unit
-		if cur, seen := out[signal]; !seen || d < cur {
-			out[signal] = d
-		}
-	}
-	return out, nil
 }
 
 // thenLiveRetentionCoversLookback is the Tier-1 twin of then_lookback.go's
@@ -155,6 +110,19 @@ func (w *World) thenLiveRetentionCoversLookback() error {
 	}
 	if len(needed) == 0 {
 		return fmt.Errorf("no signal has a computed runway, so the live retention comparison would decide nothing")
+	}
+	// A corpus whose every query reads back no distance would make the
+	// comparison below true for any retention at all, including one this
+	// harness misread as zero. The runway has to be a real, positive number
+	// before the retention it is held against means anything.
+	var longest time.Duration
+	for _, want := range needed {
+		if want > longest {
+			longest = want
+		}
+	}
+	if longest <= 0 {
+		return fmt.Errorf("the corpus requires no runway at all across %d signal(s), so no live retention could fail this comparison", len(needed))
 	}
 	for _, signal := range sortedLiveSignals(needed) {
 		want := needed[signal]

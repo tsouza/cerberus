@@ -207,6 +207,20 @@ func run(logger *slog.Logger) error {
 
 	// 6. Write the reference side — the same fixture, re-shaped into each
 	//    backend's wire vocabulary and nothing more.
+	//    The incumbent's own pre-ingest history goes FIRST, and the order is
+	//    load-bearing twice over. Its samples are older than every fixture
+	//    sample on the same series, and reference Prometheus rejects an
+	//    out-of-order sample outright (its out-of-order window is zero by
+	//    default), so writing it after the fixture would fail the seed. And it
+	//    is written HERE and nowhere else: ClickHouse's earliest row has to stay
+	//    at SeedStart for the ingest-start boundary to exist at all (see
+	//    seed.PreIngestWindow).
+	logger.Info("remote-writing the incumbent's pre-ingest history into reference prometheus",
+		"url", *promAddr, "from", manifest.PreIngestStart, "series", manifest.PreIngestSeries,
+		"samples_per_series", manifest.PreIngestSamplesPerSeries)
+	if err := seed.WriteSeries(ctx, *promAddr, fixture.PromPreIngestSeries()); err != nil {
+		return err
+	}
 	logger.Info("remote-writing the fixture into reference prometheus", "url", *promAddr)
 	if err := seed.WriteSeries(ctx, *promAddr, fixture.PromSeries()); err != nil {
 		return err
