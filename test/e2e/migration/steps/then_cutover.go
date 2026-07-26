@@ -90,14 +90,14 @@ func (w *World) givenProbeMetric() error {
 	if err := w.requireArchetypes("the probe metric"); err != nil {
 		return err
 	}
-	m, err := w.live.LoadManifest()
-	if err != nil {
-		return err
-	}
-	if m.GaugeMetric == "" {
-		return fmt.Errorf("the seeder's manifest names no gauge metric; the scenario has nothing to probe")
-	}
 	for _, a := range w.archetypes {
+		m, err := w.live.LoadManifest(a)
+		if err != nil {
+			return err
+		}
+		if m.GaugeMetric == "" {
+			return fmt.Errorf("archetype %s: the seeder's manifest names no gauge metric; the scenario has nothing to probe", a)
+		}
 		w.manifest[a] = m
 		w.cutover[a] = cutoverProbe{query: m.GaugeMetric, at: m.VerifyEnd}
 	}
@@ -243,14 +243,14 @@ func (w *World) givenIngestStart() error {
 	if err := w.requireArchetypes("the ingest-start boundary"); err != nil {
 		return err
 	}
-	m, err := w.live.LoadManifest()
-	if err != nil {
-		return err
-	}
-	if m.GaugeMetric == "" {
-		return fmt.Errorf("the seeder's manifest names no gauge metric; the scenario has nothing to probe")
-	}
 	for _, a := range w.archetypes {
+		m, err := w.live.LoadManifest(a)
+		if err != nil {
+			return err
+		}
+		if m.GaugeMetric == "" {
+			return fmt.Errorf("archetype %s: the seeder's manifest names no gauge metric; the scenario has nothing to probe", a)
+		}
 		w.manifest[a] = m
 		w.boundary[a] = boundaryProbe{
 			metric:      m.GaugeMetric,

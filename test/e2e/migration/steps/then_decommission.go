@@ -201,7 +201,7 @@ func (w *World) thenBaselineDeltaIsZero() error {
 // client that keeps querying the incumbent after cutover would have begun.
 func (w *World) whenResidualReaderRuns() error {
 	return w.eachDecommission(func(a string, dr decommissionRun) (decommissionRun, error) {
-		m, err := w.live.LoadManifest()
+		m, err := w.live.LoadManifest(a)
 		if err != nil {
 			return dr, err
 		}

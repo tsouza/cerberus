@@ -14,9 +14,12 @@ import (
 )
 
 // The four committed Tier-1 verify corpora, all hand-authored against the
-// three-signal archetype's seed/fixture.json data declaration (the only
-// archetype the Tier-1 stack currently seeds — see
-// test/e2e/migration/cmd/seed). verifyCorpusFull is the breadth pass MIG-16
+// three-signal archetype's seed/fixture.json data declaration — the only
+// archetype any `@tier1` scenario replays a `cerberus migrate verify` corpus
+// against (MIG-02/06/07/08 drive the kube-prometheus-stack archetype the
+// stack also seeds, but through `inventory` / the ingest-bridge / scrape
+// parity / fault injection, never through `verify`). verifyCorpusFull is the
+// breadth pass MIG-16
 // drives; verifyCorpusHotspots is the semantic-hotspot subset (rate/increase
 // over the seeded counter, absence over a genuinely never-seeded series
 // selector, histogram_quantile over the seeded classic histogram) MIG-17
@@ -158,11 +161,11 @@ func (w *World) whenVerifyCorpus() error {
 	if err := w.requireArchetypes("the verify replay"); err != nil {
 		return err
 	}
-	manifest, err := w.live.LoadManifest()
-	if err != nil {
-		return err
-	}
 	for _, a := range w.archetypes {
+		manifest, err := w.live.LoadManifest(a)
+		if err != nil {
+			return err
+		}
 		w.manifest[a] = manifest
 		out, err := w.workPath(a, verifyReportName)
 		if err != nil {

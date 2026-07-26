@@ -103,7 +103,7 @@ func (w *World) givenCorrelationProbe() error {
 	}
 	a := w.archetypes[0]
 
-	manifest, err := w.live.LoadManifest()
+	manifest, err := w.live.LoadManifest(a)
 	if err != nil {
 		return err
 	}

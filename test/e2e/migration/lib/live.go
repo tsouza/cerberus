@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
@@ -98,6 +100,16 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
+// defaultManifestArchetype is the archetype whose manifest lives at the
+// unsuffixed default path (TIER1_MANIFEST / ".out/manifest.json"). It is the
+// same "three-signal" default `migration-tier1-seed` has always used, and the
+// plain-Go substrate self-check (tier1_parity_test.go) hardcodes this exact
+// unsuffixed path, so it stays the one archetype that does NOT get a
+// "-<archetype>" suffix — every other archetype seeded into the same live
+// stack gets its own sibling manifest file instead (see
+// archetypeManifestPath).
+const defaultManifestArchetype = "three-signal"
+
 // defaultTier1ManifestPath is TIER1_MANIFEST's fallback: the path
 // `just migration-tier1-seed` writes by default, resolved against the
 // repository root rather than hardcoded relative to the working directory —
@@ -110,6 +122,19 @@ func defaultTier1ManifestPath() (string, error) {
 		return "", err
 	}
 	return HarnessPath(root, ".out", "manifest.json"), nil
+}
+
+// archetypeManifestPath derives one archetype's manifest path from the
+// resolved default/override path (TIER1_MANIFEST or its fallback), so a
+// stack published on non-default ports/paths still gets one manifest per
+// seeded archetype without a second env var per archetype. It inserts
+// "-<archetype>" before the file extension: ".out/manifest.json" becomes
+// ".out/manifest-kube-prometheus-stack.json".
+func archetypeManifestPath(base, archetype string) string {
+	dir, file := filepath.Split(base)
+	ext := filepath.Ext(file)
+	stem := strings.TrimSuffix(file, ext)
+	return filepath.Join(dir, stem+"-"+archetype+ext)
 }
 
 // LoadLiveEndpoints reads the Tier-1 env vars the harness needs, falling back
@@ -160,21 +185,33 @@ func (le LiveEndpoints) RequireLive(ctx context.Context) error {
 	return nil
 }
 
-// LoadManifest reads the seeder's manifest: the fixture's [VerifyStart,
-// VerifyEnd] window, its step, and the metric handles it seeded. A Tier-1
-// scenario reads its query window from here rather than from a live
-// `[-1h, now]`, because the seeder's data stopped moving the moment
-// `migration-tier1-seed` returned and a window that keeps sliding cannot be
-// compared.
-func (le LiveEndpoints) LoadManifest() (seed.Manifest, error) {
+// LoadManifest reads the seeder's manifest for one archetype: the fixture's
+// [VerifyStart, VerifyEnd] window, its step, and the metric handles it
+// seeded. A Tier-1 scenario reads its query window from here rather than
+// from a live `[-1h, now]`, because the seeder's data stopped moving the
+// moment `migration-tier1-seed` returned and a window that keeps sliding
+// cannot be compared.
+//
+// `migration-tier1-seed` seeds every archetype the @tier1 scenario set needs
+// into ONE live-stack lifecycle, each into its own disjoint fixture window
+// (see cmd/seed's --window-offset), and publishes one manifest per
+// archetype. Reading the archetype-specific manifest here — rather than one
+// manifest shared across every tagged archetype — is what lets a scenario
+// tagged e.g. `@archetype:kube-prometheus-stack` see ITS OWN window and
+// metric names, not whichever archetype happened to be seeded last.
+func (le LiveEndpoints) LoadManifest(archetype string) (seed.Manifest, error) {
 	if le.ManifestPath == "" {
 		return seed.Manifest{}, fmt.Errorf(
 			"migration harness: no manifest path bound; the tier-1 stack must be established first",
 		)
 	}
-	m, err := seed.ReadManifest(le.ManifestPath)
+	path := le.ManifestPath
+	if archetype != "" && archetype != defaultManifestArchetype {
+		path = archetypeManifestPath(le.ManifestPath, archetype)
+	}
+	m, err := seed.ReadManifest(path)
 	if err != nil {
-		return seed.Manifest{}, fmt.Errorf("migration harness: read the seeder's manifest: %w", err)
+		return seed.Manifest{}, fmt.Errorf("migration harness: read the seeder's manifest for archetype %s: %w", archetype, err)
 	}
 	return m, nil
 }

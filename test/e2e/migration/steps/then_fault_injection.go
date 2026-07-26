@@ -128,7 +128,7 @@ func (w *World) whenReplayHeavyQuery() error {
 	if err != nil {
 		return fmt.Errorf("migration harness: %w", err)
 	}
-	manifest, err := w.live.LoadManifest()
+	manifest, err := w.live.LoadManifest(archetype)
 	if err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func (w *World) thenHeavyQueryDegradesCleanly() error {
 	if err != nil {
 		return fmt.Errorf("migration harness: %w", err)
 	}
-	manifest, err := w.live.LoadManifest()
+	manifest, err := w.live.LoadManifest(archetype)
 	if err != nil {
 		return err
 	}
@@ -295,7 +295,7 @@ func (w *World) thenReferenceStillAnswersDirectly() error {
 	if err != nil {
 		return fmt.Errorf("migration harness: %w", err)
 	}
-	manifest, err := w.live.LoadManifest()
+	manifest, err := w.live.LoadManifest(archetype)
 	if err != nil {
 		return err
 	}
@@ -329,7 +329,7 @@ func (w *World) thenResumeAndRecover() error {
 	if err != nil {
 		return fmt.Errorf("migration harness: %w", err)
 	}
-	manifest, err := w.live.LoadManifest()
+	manifest, err := w.live.LoadManifest(archetype)
 	if err != nil {
 		return err
 	}

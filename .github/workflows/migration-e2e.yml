@@ -189,15 +189,17 @@ jobs:
       - name: Tier-1 substrate + parity assertions
         run: go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
 
-      # The seeder's manifest is what every assertion reads its window and
-      # cardinalities from, so a failing run is only diagnosable with it in
-      # hand. Uploaded on failure as well as success.
-      - name: upload seed manifest
+      # Every seeded archetype's manifest is what its scenarios read their
+      # window and cardinalities from, so a failing run is only diagnosable
+      # with all of them in hand — migration-tier1-seed's default writes one
+      # per archetype (manifest.json for three-signal, manifest-<name>.json
+      # for every other archetype). Uploaded on failure as well as success.
+      - name: upload seed manifests
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: migration-tier1-manifest
-          path: test/e2e/migration/.out/manifest.json
+          path: test/e2e/migration/.out/manifest*.json
           if-no-files-found: warn
 
       # Teardown always runs, even when an earlier step fails. Reclaim the

@@ -1264,21 +1264,59 @@ migration-tier1-up:
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         up --build --wait --wait-timeout 300
 
-# Load the deterministic all-signal fixture into the running stack: ONE
-# in-memory fixture written twice — directly into ClickHouse and into the
-# reference Prometheus / Loki / Tempo — so both sides of a parity diff are
-# comparable by construction. Publishes the manifest the assertions read their
-# query window from, so the lane never queries a window ending at `now`.
+# Every archetype an `@tier1` scenario actually reads fixture data from:
+# MIG-02/06/07/08 read kube-prometheus-stack, every other `@tier1` scenario
+# reads three-signal (see the `@archetype:` tags in
+# test/e2e/migration/features/*.feature). migration-tier1-seed's empty
+# default seeds all of them into ONE compose-stack lifecycle — bringing the
+# stack up twice in one CI run just to seed a second archetype costs another
+# full rebuild + boot + healthcheck wait for no reason.
+MIGRATION_TIER1_ARCHETYPES := "three-signal kube-prometheus-stack"
+
+# Minutes each archetype's fixture window is pushed further into the past
+# than the previous archetype's (cmd/seed's --window-offset), so archetypes
+# seeded back-to-back into the same live stack land in disjoint windows even
+# when their fixtures share a label value. three-signal and
+# kube-prometheus-stack both declare a "checkout" trace service, and
+# reference Tempo's /api/search is window-scoped: an overlapping window let
+# one archetype's search see the other's "checkout" traces too. 45 minutes
+# clears the fixture window (seed.SeedWindow, 30 minutes) with margin for how
+# long seeding the prior archetype took, while staying under reference
+# Tempo's 1-hour ingestion slack (cmd/seed validates this at seed time).
+MIGRATION_TIER1_WINDOW_STEP_MIN := "45"
+
+# Load the deterministic all-signal fixture into the running stack: one
+# in-memory fixture per archetype, each written twice — directly into
+# ClickHouse and into the reference Prometheus / Loki / Tempo — so both sides
+# of a parity diff are comparable by construction. Publishes one manifest per
+# archetype: three-signal's stays at the historical unsuffixed
+# `manifest.json` path (the plain-Go substrate self-check in
+# tier1_parity_test.go hardcodes that exact path), every other archetype gets
+# `manifest-<archetype>.json`. A Tier-1 scenario tagged `@archetype:<name>`
+# reads exactly that archetype's manifest (test/e2e/migration/lib/live.go's
+# LoadManifest), so it always sees its own window and metric names.
 #
-# `archetype` selects which archetype's seed/fixture.json is loaded (default:
-# three-signal, the fixture migration-tier1-run's parity proof reads). The
-# Tier-1 scenario slice seeds a different archetype per story under test, e.g.
-# `just migration-tier1-seed kube-prometheus-stack`.
-migration-tier1-seed archetype="three-signal":
-    @echo "==> migration tier-1 seed ({{archetype}})"
-    go run ./test/e2e/migration/cmd/seed \
-        --fixture test/e2e/migration/archetypes/{{archetype}}/seed/fixture.json \
-        --manifest test/e2e/migration/.out/manifest.json
+# `archetype` seeds ONLY that one archetype — for iterating on a single story
+# locally once the stack is already up, e.g.
+# `just migration-tier1-seed kube-prometheus-stack`. Its empty default seeds
+# every archetype MIGRATION_TIER1_ARCHETYPES lists, which is what the
+# canonical `just migration-tier1` composite (and the CI migration-tier1 job)
+# drives — the whole `@tier1` scenario set is green off one seed pass, not
+# just whichever archetype happened to be seeded last.
+migration-tier1-seed archetype="":
+    @archetypes="{{archetype}}"; \
+    [ -n "$archetypes" ] || archetypes="{{MIGRATION_TIER1_ARCHETYPES}}"; \
+    offset=0; \
+    for a in $archetypes; do \
+        manifest="test/e2e/migration/.out/manifest.json"; \
+        [ "$a" = "three-signal" ] || manifest="test/e2e/migration/.out/manifest-$a.json"; \
+        echo "==> migration tier-1 seed ($a, window offset ${offset}m, manifest $manifest)"; \
+        go run ./test/e2e/migration/cmd/seed \
+            --fixture test/e2e/migration/archetypes/$a/seed/fixture.json \
+            --manifest "$manifest" \
+            --window-offset "${offset}m"; \
+        offset=$((offset + {{MIGRATION_TIER1_WINDOW_STEP_MIN}})); \
+    done
 
 # Assert the Tier-1 substrate contract against the seeded stack: the collector
 # provisioned the OTel schema, cerberus serves all three heads off it, each

@@ -65,10 +65,11 @@ func (w *World) whenCompareDownsampled() error {
 	if !w.downsample.established {
 		return fmt.Errorf("no downsample band has been established; the scenario must establish one first")
 	}
-	if err := w.requireArchetypes("the downsample comparison"); err != nil {
+	archetype, err := w.singleArchetype("the downsample comparison")
+	if err != nil {
 		return err
 	}
-	manifest, err := w.live.LoadManifest()
+	manifest, err := w.live.LoadManifest(archetype)
 	if err != nil {
 		return err
 	}
