@@ -9,8 +9,8 @@ Feature: MIG-08 — soak the heaviest queries and confirm graceful degradation
     Given the dual-backend stack is live
     And the seeded archetype's fixture declaration
     When the operator replays the heaviest query against cerberus repeatedly
-    Then every replay succeeds and cerberus reports latency percentiles
+    Then every replay returns the fixture's declared series set and cerberus reports latency percentiles
     When the operator pauses the ClickHouse container
     Then cerberus degrades the same heavy query cleanly instead of hanging
-    And the reference Prometheus still answers a rollback query directly
-    Then the operator resumes the ClickHouse container and cerberus recovers
+    And the reference Prometheus still answers the rollback query with the same series set
+    Then the operator resumes the ClickHouse container and cerberus recovers the same series set

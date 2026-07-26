@@ -175,6 +175,18 @@ services:
       # defaults; with auto-create off, /readyz stays 503 until the exporter
       # has provisioned the schema cerberus expects.
       CERBERUS_AUTO_CREATE_SCHEMA: "false"
+      # Per-query wall-clock cap, far below the two-minute default. MIG-08
+      # fault-injects by pausing ClickHouse and asserts cerberus refuses the
+      # in-flight heavy query within a bound — that bound has to be THIS one.
+      # On the default, the gateway would still be waiting when the scenario's
+      # own HTTP client gave up, and "the harness hung" would have read as
+      # "cerberus degraded gracefully". Kept in lock-step with
+      # faultGatewayQueryTimeout in steps/then_fault_injection.go; the
+      # scenario fails if the two drift apart, because the degraded reply then
+      # lands outside the budget derived from it. The fixture is small enough
+      # that every other Tier-1 query answers in well under a second, so no
+      # legitimate query is capped by this.
+      CERBERUS_QUERY_TIMEOUT: "15s"
     depends_on:
       clickhouse:
         condition: service_healthy
