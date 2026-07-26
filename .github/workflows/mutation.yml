@@ -194,7 +194,7 @@ jobs:
             # Mutate only lower.go (~50 KB, the package's largest
             # source file). Excludes every other logql source plus the
             # lsyntax subtree (own dedicated legs below).
-            exclude_files: '^lsyntax/|(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\.go$'
+            exclude_files: '^lsyntax/|(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\.go$'
           - phase: phase4-logql-aggregation
             scope: ./internal/logql
             efficacy: 95
@@ -202,29 +202,32 @@ jobs:
             # Mutate range_aggregation.go + vector_aggregation.go +
             # lang.go (~54 KB total). Excludes everything else.
             # Bar at 93 (not 95) — see round-10 rationale above.
-            exclude_files: '^lsyntax/|(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|lower)\.go$'
+            exclude_files: '^lsyntax/|(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|lower)\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\.go$'
           - phase: phase4-logql-other-a
             scope: ./internal/logql
             efficacy: 95
             workers: 1
-            # Mutate binary.go + detected_level.go (~21 KB total).
-            # Round 8's `other-a` (which also included
-            # dotted_labels.go) ran cleanly through these two
-            # files in ~2.5 min before OOMing inside
-            # dotted_labels.go; this slice now stops there.
-            # dotted_labels.go is also excluded globally via
-            # `.gremlins.yaml` (round 10); kept in the per-phase
-            # regex too as belt-and-braces in case gremlins
-            # treats CLI `--exclude-files` as an override rather
-            # than an additional filter.
-            exclude_files: '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|literal|label_fns|top_level_columns|dotted_labels)\.go$'
+            # Mutate binary.go + detected_level.go + dotted_labels.go
+            # (~21 KB total). Round 8's `other-a` OOM-killed the runner
+            # inside dotted_labels.go, which is why later rounds carved
+            # it out. That was the runaway-mutant class — now bounded by
+            # --timeout-max — so the file is mutated here again rather
+            # than left uncovered.
+            exclude_files: '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|literal|label_fns|top_level_columns)\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\.go$'
           - phase: phase4-logql-other-b
             scope: ./internal/logql
             efficacy: 95
             workers: 1
-            # Mutate literal.go + label_fns.go +
-            # top_level_columns.go (~21 KB total). Unchanged from
-            # round 8.
+            # The catch-all leg: literal.go + label_fns.go +
+            # top_level_columns.go, plus every file no other leg claims
+            # (doc.go, duration.go, ip.go, jsonpath.go, numbytes.go,
+            # pattern_filter.go, variants.go, logpattern/). Those
+            # stragglers used to fall through all four ./internal/logql
+            # legs' regexes, so they were mutated four times over; they
+            # are now excluded from the other three and land here.
+            # A file newly added to internal/logql needs no edit — it is
+            # picked up here automatically, which is why this leg keeps
+            # no positive file list to fall out of sync.
             exclude_files: '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\.go$'
           - phase: phase4-logql-parser
             scope: ./internal/logql/lsyntax
@@ -233,19 +236,16 @@ jobs:
             # Mutate parser.go only (~27 KB, the recursive-descent
             # LogQL parser — the densest control-flow surface in the
             # package, same shape as phase4-traceql-parser below).
-            # dotted_labels.go stays excluded here too: it is
-            # structurally un-mutatable on ubuntu-latest regardless of
-            # which package it lives in (rounds 9-10 above).
-            exclude_files: '^dotted_labels\.go$|^(ast|binop|errors|labelfilter|lexer|ops|string)\.go$'
+            # dotted_labels.go belongs to the phase4-logql-lsyntax leg.
+            exclude_files: '^(ast|binop|dotted_labels|errors|labelfilter|lexer|ops|string)\.go$'
           - phase: phase4-logql-lsyntax
             scope: ./internal/logql/lsyntax
             efficacy: 95
             workers: 1
             # Mutate the rest of the lsyntax package (AST node defs,
-            # lexer, label-filter matching, operators); parser.go runs
-            # in its own leg above. dotted_labels.go excluded — see
-            # phase4-logql-parser.
-            exclude_files: '^dotted_labels\.go$|^parser\.go$'
+            # lexer, label-filter matching, operators, dotted-label
+            # normalisation); parser.go runs in its own leg above.
+            exclude_files: '^parser\.go$'
           # phase4-traceql historically OOM-killed the ubuntu-latest runner
           # (~7 GB RAM) after ~3 minutes. The original monolithic phase
           # contained ~109 timeout-inducing mutants in the recursive-descent
