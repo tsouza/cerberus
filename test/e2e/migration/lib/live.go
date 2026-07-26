@@ -11,10 +11,14 @@ import (
 
 // Tier-1 live-stack env var names. These are the operator-facing contract
 // between `just migration-tier1-up` / `just migration-tier1-seed` and the
-// Gherkin harness: the compose stack and the seeder publish endpoints and a
-// manifest, and a Tier-1 scenario reads them rather than assuming the
-// published port map in docker-compose.dual.yml, so the same scenarios run
-// unchanged against a stack published on different ports.
+// Gherkin harness: a Tier-1 scenario reads them rather than hardcoding a
+// literal, so the same scenarios run unchanged against a stack published on
+// different ports. Every one of them falls back to the exact port map
+// `docker-compose.dual.yml` publishes (mirrored in tier1_stack_test.go's own
+// `default*` constants, which the compose stack's substrate self-checks pin
+// against), so the common case — `just migration-tier1-up` then
+// `just migration-tier1-seed` then driving this suite — needs no export at
+// all; only a stack published on non-default ports needs one.
 const (
 	EnvTier1CHAddr        = "TIER1_CH_ADDR"
 	EnvTier1CHDatabase    = "TIER1_CH_DATABASE"
@@ -26,6 +30,23 @@ const (
 	EnvTier1TempoOTLPAddr = "TIER1_TEMPO_OTLP_ADDR"
 	EnvTier1CerberusURL   = "TIER1_CERBERUS_URL"
 	EnvTier1Manifest      = "TIER1_MANIFEST"
+)
+
+// defaultTier1* mirror the published port map in
+// tiers/tier1-dual/docker-compose.dual.yml, byte-for-byte the same defaults
+// tier1_stack_test.go's substrate self-checks already pin against — so a
+// stack `just migration-tier1-up` just brought up is reachable without
+// exporting anything.
+const (
+	defaultTier1CHAddr      = "127.0.0.1:27000"
+	defaultTier1CHDatabase  = "otel"
+	defaultTier1CHUsername  = "cerberus"
+	defaultTier1CHPassword  = "cerberus" //nolint:gosec // default fixture credential, not a real one
+	defaultTier1PromURL     = "http://127.0.0.1:27090"
+	defaultTier1LokiURL     = "http://127.0.0.1:27100"
+	defaultTier1TempoURL    = "http://127.0.0.1:27200"
+	defaultTier1TempoOTLP   = "127.0.0.1:27201"
+	defaultTier1CerberusURL = "http://127.0.0.1:27080"
 )
 
 // LiveEndpoints is the live Tier-1 stack a scenario drives `cerberus migrate`
@@ -40,51 +61,67 @@ type LiveEndpoints struct {
 	ManifestPath                               string
 }
 
-// tier1RequiredVars pairs every env var LoadLiveEndpoints reads with the
-// struct field it fills in, so a missing var is reported by the exact name an
-// operator would export, and the "fails clearly if unset" contract lives in
-// one table rather than one hand-written check per field.
-var tier1RequiredVars = []struct {
+// tier1Vars pairs every env var LoadLiveEndpoints reads with the struct field
+// it fills in and the default that matches docker-compose.dual.yml's
+// published port map, so an operator overriding one endpoint (a stack
+// published on non-default ports) does not have to export all ten.
+var tier1Vars = []struct {
 	name string
+	dflt string
 	dst  func(*LiveEndpoints) *string
 }{
-	{EnvTier1CHAddr, func(e *LiveEndpoints) *string { return &e.CHAddr }},
-	{EnvTier1CHDatabase, func(e *LiveEndpoints) *string { return &e.CHDatabase }},
-	{EnvTier1CHUsername, func(e *LiveEndpoints) *string { return &e.CHUsername }},
-	{EnvTier1CHPassword, func(e *LiveEndpoints) *string { return &e.CHPassword }},
-	{EnvTier1PromURL, func(e *LiveEndpoints) *string { return &e.PromURL }},
-	{EnvTier1LokiURL, func(e *LiveEndpoints) *string { return &e.LokiURL }},
-	{EnvTier1TempoURL, func(e *LiveEndpoints) *string { return &e.TempoURL }},
-	{EnvTier1TempoOTLPAddr, func(e *LiveEndpoints) *string { return &e.TempoOTLPAddr }},
-	{EnvTier1CerberusURL, func(e *LiveEndpoints) *string { return &e.CerberusURL }},
-	{EnvTier1Manifest, func(e *LiveEndpoints) *string { return &e.ManifestPath }},
+	{EnvTier1CHAddr, defaultTier1CHAddr, func(e *LiveEndpoints) *string { return &e.CHAddr }},
+	{EnvTier1CHDatabase, defaultTier1CHDatabase, func(e *LiveEndpoints) *string { return &e.CHDatabase }},
+	{EnvTier1CHUsername, defaultTier1CHUsername, func(e *LiveEndpoints) *string { return &e.CHUsername }},
+	{EnvTier1CHPassword, defaultTier1CHPassword, func(e *LiveEndpoints) *string { return &e.CHPassword }},
+	{EnvTier1PromURL, defaultTier1PromURL, func(e *LiveEndpoints) *string { return &e.PromURL }},
+	{EnvTier1LokiURL, defaultTier1LokiURL, func(e *LiveEndpoints) *string { return &e.LokiURL }},
+	{EnvTier1TempoURL, defaultTier1TempoURL, func(e *LiveEndpoints) *string { return &e.TempoURL }},
+	{EnvTier1TempoOTLPAddr, defaultTier1TempoOTLP, func(e *LiveEndpoints) *string { return &e.TempoOTLPAddr }},
+	{EnvTier1CerberusURL, defaultTier1CerberusURL, func(e *LiveEndpoints) *string { return &e.CerberusURL }},
 }
 
-// LoadLiveEndpoints reads every Tier-1 env var the harness needs. Unlike
-// Tier-0's OfflineEnv (which SETS a fixed environment), a Tier-1 scenario
-// runs against a stack the operator already brought up out-of-band
-// (`just migration-tier1-up` / `just migration-tier1-seed`), so this READS
-// what that step published rather than assuming its default port map. A
-// missing var is a hard, named error — a scenario that fell back to a
-// hardcoded default could pass against a stray container left over from a
-// different lane rather than against the stack this run actually seeded.
+// envOr returns the named env var, or fallback when it is unset or empty.
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// defaultTier1ManifestPath is TIER1_MANIFEST's fallback: the path
+// `just migration-tier1-seed` writes by default, resolved against the
+// repository root rather than hardcoded relative to the working directory —
+// a Tier-1 test package's working directory is its own package directory
+// (e.g. tiers/tier1-dual/), not the harness root tier1_parity_test.go's own
+// relative default assumes.
+func defaultTier1ManifestPath() (string, error) {
+	root, err := RepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return HarnessPath(root, ".out", "manifest.json"), nil
+}
+
+// LoadLiveEndpoints reads the Tier-1 env vars the harness needs, falling back
+// to the docker-compose.dual.yml port map for anything unset. Unlike Tier-0's
+// OfflineEnv (which SETS a fixed environment), a Tier-1 scenario runs against
+// a stack the operator already brought up out-of-band
+// (`just migration-tier1-up` / `just migration-tier1-seed`); reading rather
+// than assuming lets the same scenarios run unchanged against a stack
+// published on different ports, while the default keeps the common case —
+// the stack `just migration-tier1-up` just brought up — reachable without
+// exporting anything.
 func LoadLiveEndpoints() (LiveEndpoints, error) {
 	var le LiveEndpoints
-	var missing []string
-	for _, v := range tier1RequiredVars {
-		val := os.Getenv(v.name)
-		if val == "" {
-			missing = append(missing, v.name)
-			continue
-		}
-		*v.dst(&le) = val
+	for _, v := range tier1Vars {
+		*v.dst(&le) = envOr(v.name, v.dflt)
 	}
-	if len(missing) > 0 {
-		return LiveEndpoints{}, fmt.Errorf(
-			"migration harness: the tier-1 stack is not live: %v unset — run `just migration-tier1-up` and "+
-				"`just migration-tier1-seed` first, and export their endpoints before driving this suite", missing,
-		)
+	manifestDefault, err := defaultTier1ManifestPath()
+	if err != nil {
+		return LiveEndpoints{}, fmt.Errorf("migration harness: resolve the default manifest path: %w", err)
 	}
+	le.ManifestPath = envOr(EnvTier1Manifest, manifestDefault)
 	return le, nil
 }
 

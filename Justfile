@@ -1280,9 +1280,21 @@ migration-tier1-seed:
 # reference backend returns exactly what was written to it, both sides hold the
 # same telemetry over the manifest window, and a deliberately injected
 # disagreement is observed.
+#
+# Two SEPARATE `go test` invocations, in this exact order, not one
+# `./test/e2e/migration/...` sweep: the root package's negative control
+# (`TestTier1Parity/negative_control_the_lane_can_see_disagreement`)
+# deliberately and PERMANENTLY corrupts ClickHouse with an extra gauge series
+# to prove drift is observable — see test/e2e/migration/seed/drift.go. Nothing
+# undoes that injection, and go test gives no ordering guarantee across
+# packages in one invocation, so a single sweep makes the Gherkin corpus
+# replay's diverge-zero assertion order-dependent: it must read the seeded
+# stack before the negative control ever touches it, never after.
 migration-tier1-run:
+    @echo "==> migration tier-1 dual-backend Gherkin scenarios"
+    go test -tags=migration_tier1 -count=1 ./test/e2e/migration/tiers/tier1-dual/...
     @echo "==> migration tier-1 substrate + parity assertions"
-    go test -tags=migration_tier1 -count=1 ./test/e2e/migration/...
+    go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
 
 # Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
 # images declare their own VOLUMEs, and a surviving volume would carry one
