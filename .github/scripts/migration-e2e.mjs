@@ -148,6 +148,15 @@ export const TIER0_TIMEOUT_MIN = 15;
 // apart.
 export const TIER1_TIMEOUT_MIN = 45;
 
+// Tier 2 brings up everything Tier 1 does PLUS the ruler leg (Grafana with
+// provisioned alerting, the relay-prom -> otel-collector-writeback write-back
+// bridge, the dead-end receiver), and its scenarios then wait on real
+// evaluation cadences — a rule group tick, a hold-down, a notification-policy
+// flush — that no amount of runner speed shortens. It therefore gets a
+// strictly larger ceiling than Tier 1's, and mirrors the migration-tier2 job's
+// own `timeout-minutes: 60` so the two cannot drift apart.
+export const TIER2_TIMEOUT_MIN = 60;
+
 // The tiers migration-e2e.yml has a job for — one table, so a tier cannot
 // have a job without a bound or a bound without a job. A scenario tagged with
 // a tier absent from here is a scenario that would silently never execute, so
@@ -159,7 +168,10 @@ export const TIER1_TIMEOUT_MIN = 45;
 // by `strategy.matrix`, so its tiers must appear in the emitted matrix.
 // migration-tier1 is a fixed job — it brings a compose stack up, seeds it and
 // tears it down around the suite, steps a matrix shard cannot express — so it
-// must NOT appear there.
+// must NOT appear there. migration-tier2 is the same fixed shape for the same
+// reason, and additionally `needs:` migration-tier1 — docs section 8's build
+// order is that firing parity cannot be proven before query parity is, so a
+// tier-2 verdict reached while tier-1 is red would be meaningless.
 //
 // Getting this wrong is quiet rather than loud: a tier1 entry in the matrix
 // spawns a shard that runs the tier-1 suite on a bare runner with no stack
@@ -169,6 +181,7 @@ export const TIER1_TIMEOUT_MIN = 45;
 export const TIER_JOBS = {
   tier0: { timeoutMinutes: TIER0_TIMEOUT_MIN, matrixDriven: true },
   tier1: { timeoutMinutes: TIER1_TIMEOUT_MIN, matrixDriven: false },
+  tier2: { timeoutMinutes: TIER2_TIMEOUT_MIN, matrixDriven: false },
 };
 export const RUNNABLE_TIERS = Object.keys(TIER_JOBS);
 
@@ -182,6 +195,15 @@ const MIGRATION_BUILD_TAG = 'migration';
 // substrate and the Gherkin suite together against the same live stack.
 const TIER1_PACKAGE = './test/e2e/migration/tiers/tier1-dual/...';
 const MIGRATION_TIER1_BUILD_TAG = 'migration_tier1';
+
+// The Go package the tier-2 ruler suite lives in, and the tag that selects
+// it. Deliberately NOT the whole `./test/e2e/migration/...` tree: the
+// package-root substrate self-check (tier2_ruler_test.go) carries the same
+// build tag and drives the SAME dead-end receiver, and go test gives no
+// ordering guarantee across packages in one invocation — see the
+// migration-tier2-run recipe's comment in the Justfile.
+const TIER2_PACKAGE = './test/e2e/migration/tiers/tier2-ruler/...';
+const MIGRATION_TIER2_BUILD_TAG = 'migration_tier2';
 
 // A story id is exactly `MIG-` plus two digits; the doc's list runs from
 // MIG-01 to MIG-26 with no gaps, which V1 asserts structurally.
@@ -1034,6 +1056,7 @@ function runEmit() {
 const RUN_TIERS = {
   tier0: { pkg: TIER0_PACKAGE, buildTag: MIGRATION_BUILD_TAG },
   tier1: { pkg: TIER1_PACKAGE, buildTag: MIGRATION_TIER1_BUILD_TAG },
+  tier2: { pkg: TIER2_PACKAGE, buildTag: MIGRATION_TIER2_BUILD_TAG },
 };
 
 function runRun() {

@@ -1,0 +1,168 @@
+# Tier-2 ruler substrate for the migration lane (Layer 14). Extends the
+# Tier-1 dual-backend stack (../tier1-dual/docker-compose.dual.yml) — always
+# invoked alongside it via `-f`, never standalone, the same multi-file merge
+# `docker-compose.dual.yml` itself documents:
+#
+#   docker compose -f tiers/tier1-dual/docker-compose.dual.yml \
+#                   -f tiers/tier2-ruler/docker-compose.ruler.yml up --wait
+#
+# No `name:` here on purpose: leaving it unset keeps the merged project on
+# Tier-1's `cerberus-migration-tier1` name, so these two new services join
+# the SAME default network as cerberus/clickhouse/prometheus/etc. instead of
+# minting a second, disconnected compose project.
+#
+# Adds the "real query-only external ruler" docs/migration-testing.md
+# section 3 describes for Tier 2 — here, Grafana-managed alerting rather
+# than a Prometheus/Thanos ruler — plus the dead-end receiver its one
+# contact point points at, and the write path MIG-09's recording-rule output
+# needs:
+#
+#   grafana                  Evaluates the rule fixture (kube-prometheus-
+#                            stack's recording rule + NodeCPUSaturation
+#                            alert, reused verbatim — see
+#                            grafana/alerting/rules.yaml) against cerberus's
+#                            Prometheus head over the shared network.
+#   dead-end-receiver        Grafana's one contact point. Logs every
+#                            notification to a file and answers 200; never
+#                            forwards anywhere.
+#   relay-prom               MIG-09/MIG-13/MIG-19 write-back leg, part 1:
+#                            terminates the recording rule's Remote Write 1.0
+#                            POST (Grafana speaks only v1 for recording-rule
+#                            write-back — confirmed empirically) and re-emits
+#                            every sample as Remote Write 2.0. Pure protocol
+#                            bridge; nothing queries it.
+#   otel-collector-writeback MIG-09/MIG-13/MIG-19 write-back leg, part 2: the
+#                            v2 landing side of that bridge, exporting
+#                            straight into the SAME ClickHouse database
+#                            tier1-dual's collector provisioned
+#                            (create_schema: false — it is never the schema
+#                            authority), so the recorded series becomes
+#                            selectable through cerberus with no further
+#                            wiring.
+#
+# Port band: 27400-27500, the next contiguous unclaimed band after Tier-1's
+# own 27000-27400 (see docker-compose.dual.yml's port-band comment).
+#
+# Usage:
+#   just migration-tier2-up
+#   just migration-tier2-run
+#   just migration-tier2-down
+
+services:
+  grafana:
+    image: grafana/grafana:12.2.9
+    environment:
+      # Anonymous-Admin so the substrate self-check and any future MIG-09/13/
+      # 18/19/24 scenario can call Grafana's provisioning + alerting APIs
+      # without a login flow — same posture as the repo-root compose
+      # quickstart's Grafana service.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # Recording rules are opt-in even with unified alerting on by default;
+      # without this, the `record:` field in rules.yaml provisioning is
+      # rejected.
+      GF_UNIFIED_ALERTING_RECORDING_RULES_ENABLED: "true"
+      # The feature TOGGLE that gates the write-back leg itself. Without it
+      # Grafana evaluates a `record:` rule's query leg (the provisioning
+      # check above accepts it, and the rule reports health=ok) but silently
+      # never issues the Remote Write POST at all — confirmed empirically.
+      GF_FEATURE_TOGGLES_ENABLE: grafanaManagedRecordingRules
+      # The write target every recording rule writes to when its own
+      # provisioning entry names none (rules.yaml names none — Grafana's
+      # recording-rule schema has no per-rule write-target field to set, and
+      # `record.target_datasource_uid` in the file-provisioning YAML schema
+      # is silently dropped rather than honored, confirmed empirically via
+      # the provisioning API's own GET never showing it back — even though
+      # the identical field works over the REST provisioning API).
+      # cerberus-remotewrite is the Cerberus-RemoteWrite datasource
+      # (grafana/datasources/cerberus.yaml), which fronts relay-prom, the
+      # first leg of the MIG-09/MIG-13/MIG-19 write-back bridge (see this
+      # file's own header comment for the full path to ClickHouse).
+      GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID: cerberus-remotewrite
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own: `docker compose -f a -f b` resolves every relative host
+      # path in every merged file against the FIRST `-f` file's directory —
+      # confirmed via `docker inspect`'s Mounts.Source on a real run, where a
+      # naïve `./grafana/...` here silently bound tier1-dual/grafana/... (a
+      # directory that does not exist) instead of this directory.
+      - ../tier2-ruler/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ../tier2-ruler/grafana/alerting:/etc/grafana/provisioning/alerting:ro
+    ports:
+      - "27400:3000"
+    depends_on:
+      cerberus:
+        condition: service_healthy
+      relay-prom:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 24
+
+  dead-end-receiver:
+    image: cerberus-migration-tier2:dead-end-receiver
+    pull_policy: build
+    build:
+      # Also resolved against tier1-dual's directory (see the grafana
+      # volumes comment above), which is why this is five `../` rather than
+      # this file's own depth from the repo root — tier1-dual and
+      # tier2-ruler sit at the same depth under tiers/, so the count happens
+      # to be identical either way. Don't "simplify" this without re-checking
+      # docker inspect if tier2-ruler ever moves to a different depth.
+      context: ../../../../..
+      dockerfile: test/e2e/migration/tiers/tier2-ruler/receiver/Dockerfile
+    ports:
+      - "27450:8090"
+    healthcheck:
+      # Distroless image: no shell, no wget. The binary's own -healthcheck
+      # mode is the liveness signal, same posture as cerberus's --version
+      # healthcheck in docker-compose.dual.yml.
+      test: ["CMD", "/dead-end-receiver", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # === MIG-09/MIG-13/MIG-19 write-back landing leg ===
+  #
+  # See this file's own header comment for the two services' role in the
+  # bridge. Neither is queried by a scenario directly — MIG-09/MIG-13/MIG-19
+  # read the landed series back through cerberus, the same as every other
+  # recorded-series consumer would.
+
+  otel-collector-writeback:
+    image: otel/opentelemetry-collector-contrib:0.152.1
+    command: ["--config=/etc/otel/writeback-config.yaml"]
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own — see the grafana service's volumes comment above for why.
+      - ../tier2-ruler/otel-collector-writeback-config.yaml:/etc/otel/writeback-config.yaml:ro
+    depends_on:
+      # Waits on the Tier-1 collector's own healthiness proxy (cerberus
+      # healthy implies the Tier-1 collector already provisioned the OTel
+      # schema this exporter writes into with create_schema: false) rather
+      # than a healthcheck of its own — same posture as tier1-dual's own
+      # otel-collector, which the FROM-scratch contrib image cannot self-probe
+      # (no shell, no wget, no nc).
+      cerberus:
+        condition: service_healthy
+
+  relay-prom:
+    image: prom/prometheus:v3.11.3
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own — see the grafana service's volumes comment above for why.
+      - ../tier2-ruler/relay-prom.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - otel-collector-writeback
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 24

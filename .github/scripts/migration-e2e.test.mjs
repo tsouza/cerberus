@@ -64,10 +64,11 @@ const TIER0_STORIES = ['MIG-01', 'MIG-03', 'MIG-04', 'MIG-05', 'MIG-10', 'MIG-14
 // (the mechanism-proving scenarios); MIG-02/MIG-06/MIG-07/MIG-08 (live
 // cardinality inventory, ingest bridge, scrape parity, fault injection);
 // MIG-11/MIG-12 (label mapping and metric-type/histogram fidelity); MIG-13
-// (recording-rule read-back — tier-1-only today, since its Tier-2 write-back
-// half is not yet built); MIG-15/MIG-20/MIG-21 (tenant isolation, tolerant
-// downsample, trace/log correlation); and MIG-22/MIG-23/MIG-25 (cutover
-// flip/revert, ingest-boundary, residual-reader decommission gate).
+// (recording-rule read-back — its Tier-2 write-back half is a SEPARATE
+// scenario in the same file, listed in TIER2_SPLIT_STORIES);
+// MIG-15/MIG-20/MIG-21 (tenant isolation, tolerant downsample, trace/log
+// correlation); and MIG-22/MIG-23/MIG-25 (cutover flip/revert,
+// ingest-boundary, residual-reader decommission gate).
 const TIER1_STORIES = [
   'MIG-02',
   'MIG-06',
@@ -92,6 +93,21 @@ const TIER1_STORIES = [
 // file as its Tier-0 half.
 const TIER1_SPLIT_STORIES = ['MIG-10', 'MIG-14', 'MIG-26'];
 
+// The tier-2-only stories the live feature tree covers today, all against the
+// ruler substrate: MIG-09 (the shadow ruler evaluates against cerberus and its
+// recording-rule output round-trips back through it), MIG-18 (the shadow
+// ruler's own fire/resolve lifecycle at the dead-end receiver), MIG-19
+// (recorded-sample parity against a live re-evaluation) and MIG-24 (the staged
+// cutover gate).
+const TIER2_STORIES = ['MIG-09', 'MIG-18', 'MIG-19', 'MIG-24'];
+
+// Split-tier stories that carry a Tier-2 Scenario ALONGSIDE their Tier-1 one.
+// MIG-13 is the only one: section 6 declares it at "1, 2" — the landing-zone
+// read-back is provable on the dual-backend stack, but the ruler write-back
+// that produces the recorded series needs the ruler tier. Both Scenarios live
+// in MIG-13.feature, so this contributes no additional feature file.
+const TIER2_SPLIT_STORIES = ['MIG-13'];
+
 // A synthetic scenario in the enumerator's emitted shape.
 function scenario(story, overrides = {}) {
   return {
@@ -112,16 +128,25 @@ function scenario(story, overrides = {}) {
   };
 }
 
-// A clean synthetic world: the tier-0 scenarios, the tier-1-only scenarios
-// and the tier-1 halves of the split-tier stories, over the real story list
-// — the same shape the live feature tree carries today, so it agrees with
-// the committed baseline.
+// A clean synthetic world: the tier-0 scenarios, the tier-1-only scenarios,
+// the tier-2-only scenarios and the extra-tier halves of both split-tier
+// groups, over the real story list — the same shape the live feature tree
+// carries today, so it agrees with the committed baseline.
+//
+// Keeping this in step with the live tree is the whole point: a synthetic
+// world that knows only about the tiers that existed when it was written
+// reports "clean" while the real tree has grown past the committed floor,
+// which is precisely how a stale scenarios_covered ships.
 function world(overrides = {}) {
   const scenarios = [
     ...TIER0_STORIES.map((s) => scenario(s)),
     ...TIER1_STORIES.map((s) => scenario(s, { tiers: ['tier1'], archetypes: ['three-signal'] })),
     ...TIER1_SPLIT_STORIES.map((s) =>
       scenario(s, { name: `${s} tier1`, tiers: ['tier1'], archetypes: ['three-signal'] }),
+    ),
+    ...TIER2_STORIES.map((s) => scenario(s, { tiers: ['tier2'], archetypes: ['three-signal'] })),
+    ...TIER2_SPLIT_STORIES.map((s) =>
+      scenario(s, { name: `${s} tier2`, tiers: ['tier2'], archetypes: ['three-signal'] }),
     ),
   ];
   const stories = parseStories(DOC);
@@ -133,10 +158,10 @@ function world(overrides = {}) {
     pin: PIN,
     archetypes: ARCHETYPES,
     archetypeDirNames: ARCHETYPES,
-    // TIER1_SPLIT_STORIES' scenarios live in the SAME feature file as their
-    // tier-0 half (already counted via TIER0_STORIES), so they contribute no
-    // additional file here.
-    featureFiles: [...TIER0_STORIES, ...TIER1_STORIES].map((s) => `${s}.feature`),
+    // Both SPLIT groups' scenarios live in the SAME feature file as the half
+    // already counted (TIER0_STORIES for the tier-1 splits, TIER1_STORIES for
+    // MIG-13's tier-2 split), so neither contributes an additional file here.
+    featureFiles: [...TIER0_STORIES, ...TIER1_STORIES, ...TIER2_STORIES].map((s) => `${s}.feature`),
     baseline: BASELINE,
     ...overrides,
   };
@@ -178,7 +203,18 @@ test('live doc: section 7 lists the eight archetypes the fixtures ship', () => {
 test('the committed baseline declares the schema version the ratchet reads', () => {
   assert.equal(BASELINE.schema_version, BASELINE_SCHEMA_VERSION);
   assert.equal(BASELINE.stories_total, 26);
-  assert.equal(BASELINE.scenarios_covered, TIER0_STORIES.length + TIER1_STORIES.length + TIER1_SPLIT_STORIES.length);
+  assert.equal(
+    BASELINE.scenarios_covered,
+    TIER0_STORIES.length +
+      TIER1_STORIES.length +
+      TIER1_SPLIT_STORIES.length +
+      TIER2_STORIES.length +
+      TIER2_SPLIT_STORIES.length,
+  );
+  // Every declared (story, tier) pair is covered: the enumerated floor has
+  // caught up with what section 6 asks for, so the two numbers are equal
+  // rather than merely ordered.
+  assert.equal(BASELINE.scenarios_covered, BASELINE.scenarios_total);
 });
 
 // --- 2. a clean set is clean -------------------------------------------------
@@ -288,11 +324,14 @@ test('V8 fires for a misnamed feature file and for one that contributes nothing'
   misnamed.featureFiles = ['assess.feature', ...misnamed.featureFiles.slice(1)];
   assert.ok(codes(collectViolations(misnamed)).includes('V8'));
 
+  // Every one of the 26 stories now has a feature file that contributes a
+  // Scenario, so the "contributes nothing" case needs a file no story claims.
+  const orphan = 'MIG-99.feature';
   const empty = world();
-  empty.featureFiles = [...empty.featureFiles, 'MIG-09.feature'];
+  empty.featureFiles = [...empty.featureFiles, orphan];
   const v = collectViolations(empty);
   assert.ok(
-    v.some((x) => x.code === 'V8' && x.message.includes('MIG-09.feature')),
+    v.some((x) => x.code === 'V8' && x.message.includes(orphan)),
     `expected the empty feature file to be flagged, got ${JSON.stringify(v)}`,
   );
 });
@@ -396,42 +435,63 @@ test('buildMatrix emits one tier-0 entry carrying every tier-0 story and its cei
 });
 
 test('a tier no scenario declares never reaches the matrix', () => {
-  // `all` resolves to the tiers the feature tree actually declares — tier0
-  // and tier1 here — so tier2 (which nothing in the synthetic world
-  // declares) is filtered before the matrix is built rather than emitted as
-  // a job with nothing to run.
-  assert.deepEqual(requestedTiers('all', world().scenarios), ['tier0', 'tier1']);
+  // `all` resolves to the tiers the feature tree actually declares. Every
+  // known tier is declared today, so drop one from the synthetic world and it
+  // must drop out of the resolution rather than being emitted as a job with
+  // nothing to run.
+  assert.deepEqual(requestedTiers('all', world().scenarios), ['tier0', 'tier1', 'tier2']);
+  const withoutTier2 = world().scenarios.filter((s) => !s.tiers.includes('tier2'));
+  assert.deepEqual(requestedTiers('all', withoutTier2), ['tier0', 'tier1']);
 });
 
 test('a tier with no job is refused before a matrix entry can be built for it', () => {
   // A scenario tagged with a tier migration-e2e.yml has no job for would
   // silently never run. emit rejects it by name, and buildMatrix throws
-  // rather than emitting an entry with no ceiling. tier2 is the current
-  // example (no migration-tier2 job yet); tier0/tier1 both have one.
-  assert.deepEqual(nonRunnableTiers(['tier0', 'tier1']), []);
-  assert.deepEqual(nonRunnableTiers(['tier0', 'tier1', 'tier2']), ['tier2']);
-  const scenarios = [scenario('MIG-09', { tiers: ['tier2'], archetypes: ['kube-prometheus-stack'] })];
-  assert.throws(() => buildMatrix(scenarios, { tiers: ['tier2'] }), /no declared ceiling/);
+  // rather than emitting an entry with no ceiling. All three KNOWN_TIERS have
+  // a job today, so the guard is exercised against a tier ordinal beyond them
+  // — which is exactly the state tier2 itself was in before its job landed.
+  const undeclaredTier = 'tier3';
+  assert.ok(!KNOWN_TIERS.includes(undeclaredTier), 'the guard needs a tier with no declared job');
+  assert.deepEqual(nonRunnableTiers(KNOWN_TIERS), []);
+  assert.deepEqual(nonRunnableTiers([...KNOWN_TIERS, undeclaredTier]), [undeclaredTier]);
+  const scenarios = [scenario('MIG-09', { tiers: [undeclaredTier], archetypes: ['kube-prometheus-stack'] })];
+  assert.throws(() => buildMatrix(scenarios, { tiers: [undeclaredTier] }), /no declared ceiling/);
 });
 
 test('a runnable tier whose job is not matrix-driven stays out of the matrix', () => {
-  // tier1's job brings a compose stack up around the suite, so it is a fixed
-  // stanza, not a matrix shard. Emitting a tier1 entry here would spawn a
-  // matrix shard running the tier-1 suite on a bare runner with no stack
-  // behind it — green for the wrong reason, or red for a reason that has
-  // nothing to do with the scenarios. It would also be named exactly like the
-  // real fixed job, since both shapes render as `migration-<tier>`.
+  // tier1's and tier2's jobs each bring a compose stack up around the suite,
+  // so they are fixed stanzas, not matrix shards. Emitting an entry for either
+  // here would spawn a matrix shard running that tier's suite on a bare runner
+  // with no stack behind it — green for the wrong reason, or red for a reason
+  // that has nothing to do with the scenarios. It would also be named exactly
+  // like the real fixed job, since both shapes render as `migration-<tier>`.
   assert.equal(TIER_JOBS.tier1.matrixDriven, false);
-  const { include } = buildMatrix(world().scenarios, { tiers: ['tier0', 'tier1'] });
+  assert.equal(TIER_JOBS.tier2.matrixDriven, false);
+  const { include } = buildMatrix(world().scenarios, { tiers: KNOWN_TIERS });
   assert.deepEqual(include.map((e) => e.tier), ['tier0']);
-  // ...but it is still RUNNABLE, and still selected, so the roll-up expects it.
-  assert.deepEqual(nonRunnableTiers(['tier1']), []);
-  assert.deepEqual(tiersWithScenarios(world().scenarios, ['tier0', 'tier1']), ['tier0', 'tier1']);
+  // ...but both are still RUNNABLE, and still selected, so the roll-up expects
+  // a result from each.
+  assert.deepEqual(nonRunnableTiers(['tier1', 'tier2']), []);
+  assert.deepEqual(tiersWithScenarios(world().scenarios, KNOWN_TIERS), ['tier0', 'tier1', 'tier2']);
+});
+
+test('every tier2 story the live tree declares carries a scenario in the synthetic world', () => {
+  // The synthetic world is only a guard if it mirrors the live tree. Section 6
+  // is the anchor for which stories reach tier 2, so derive the expectation
+  // from the doc rather than from the same literal list under test.
+  const tierMap = parseTierMap(DOC);
+  const declared = [...tierMap.entries()]
+    .filter(([, tiers]) => tiers.includes('tier2'))
+    .map(([story]) => story)
+    .sort();
+  assert.deepEqual(declared, [...TIER2_STORIES, ...TIER2_SPLIT_STORIES].sort());
+  assert.deepEqual(storiesForTier(world().scenarios, 'tier2'), declared);
 });
 
 test('tiersWithScenarios drops a requested tier the tree has no scenario for', () => {
-  assert.deepEqual(storiesForTier(world().scenarios, 'tier2'), []);
-  assert.deepEqual(tiersWithScenarios(world().scenarios, ['tier0', 'tier2']), ['tier0']);
+  const withoutTier2 = world().scenarios.filter((s) => !s.tiers.includes('tier2'));
+  assert.deepEqual(storiesForTier(withoutTier2, 'tier2'), []);
+  assert.deepEqual(tiersWithScenarios(withoutTier2, ['tier0', 'tier2']), ['tier0']);
 });
 
 test('the roll-up holds every selected tier to success and nothing else', () => {
@@ -467,9 +527,10 @@ test('the roll-up accepts a narrowed dispatch, but not a tier that ran unselecte
 
 test('requestedTiers resolves all to the tiers the tree declares, and rejects a bad name', () => {
   const scenarios = world().scenarios;
-  assert.deepEqual(requestedTiers('all', scenarios), ['tier0', 'tier1']);
-  assert.deepEqual(requestedTiers('tier0', scenarios), ['tier0']);
-  assert.deepEqual(requestedTiers('tier1', scenarios), ['tier1']);
+  assert.deepEqual(requestedTiers('all', scenarios), KNOWN_TIERS);
+  for (const tier of KNOWN_TIERS) {
+    assert.deepEqual(requestedTiers(tier, scenarios), [tier]);
+  }
   assert.equal(requestedTiers('nightly', scenarios), null);
 });
 
@@ -772,4 +833,14 @@ test('the run report path is owned by this module, not by the workflow', () => {
   const p = reportPathFor('tier2', 'build/migration-reports');
   assert.ok(p.startsWith('/'), `expected an absolute path, got ${p}`);
   assert.ok(p.endsWith(`tier2${REPORT_SUFFIX}`), p);
+});
+test('the roll-up holds tier2 to success alongside the other two', () => {
+  // tier2's job is `needs: migration-tier1`, so a red tier1 makes tier2
+  // `skipped` — which the fold must report as a failure, not wave through as
+  // "nothing to see". Otherwise a broken tier1 would hide tier2 entirely.
+  assert.deepEqual(rollUp({ expected: KNOWN_TIERS, results: { tier0: 'success', tier1: 'success', tier2: 'success' } }), []);
+  assert.deepEqual(
+    rollUp({ expected: KNOWN_TIERS, results: { tier0: 'success', tier1: 'failure', tier2: 'skipped' } }),
+    ['tier1 did not succeed (failure)', 'tier2 did not succeed (skipped)'],
+  );
 });

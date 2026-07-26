@@ -23,6 +23,38 @@ import (
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
+// tier2RulerState is the MIG-09 ruler scenario's accumulated state beyond
+// the live endpoints/liveness flag (tracked separately as World.tier2 /
+// tier2Set, shared with the write-back and alerting scenarios): the most
+// recently polled rule groups, and the dead-end receiver's notification
+// count as observed before the scenario's own trigger — so a Then step
+// asserts against a delta, never an absolute count another scenario (or a
+// previous run against the same long-lived stack) might have already moved.
+type tier2RulerState struct {
+	groups    []rulerRuleGroup
+	notifBase int
+	notifSeen bool
+}
+
+// recordedReadBack is the ONE slot every "did the recording rule's output
+// come back out of cerberus?" poll publishes into, so the single
+// `the recorded series is selectable through cerberus` step definition
+// (registered once, in tier2_writeback.go) serves both scenarios that assert
+// it. MIG-09 reaches it through an instant query for the recorded name;
+// MIG-13's Tier-2 half reaches it through a range query over the window it
+// seeded. Both prove the same thing — the write-back landed and reads back —
+// so they share one step rather than racing two definitions of one step text
+// past godog's Strict ambiguity check.
+//
+// `polled` distinguishes "a poll ran and saw nothing" (a real failure, with
+// `detail` naming what cerberus answered) from "no poll ran at all" (a
+// scenario-construction bug, reported as one).
+type recordedReadBack struct {
+	polled bool
+	series int
+	detail string
+}
+
 // workspacePattern names the per-scenario temporary directory every `--out`
 // artifact is written into. It is removed after the scenario, so one scenario
 // can never read an artifact another one left behind.
@@ -73,6 +105,32 @@ type World struct {
 	envUsed map[string][]string
 
 	gate gateRun
+
+	// tier2 is the live Tier-2 ruler stack's endpoints, set by "the tier-2
+	// ruler stack is live" / "the shadow-ruler stack is live" (one shared
+	// precondition, two Gherkin phrasings — see tier2_live.go). tier2Set
+	// guards every later tier-2 step so a scenario that skips establishing
+	// the stack fails there, naming the missing precondition, rather than
+	// deep inside an HTTP call with a nil/zero-value endpoint set.
+	tier2    lib.Tier2Endpoints
+	tier2Set bool
+
+	// tier2Writeback carries the MIG-13/MIG-19 write-back scenario's state:
+	// the seeded input window and the recorded series read back through
+	// cerberus. See steps/tier2_writeback.go.
+	tier2Writeback tier2WritebackState
+
+	// tier2Alerting carries the MIG-18 scenario's captured notification
+	// streams. See steps/tier2_alerting.go.
+	tier2Alerting tier2AlertingState
+
+	// tier2Ruler carries the MIG-09 ruler scenario's state (rule groups
+	// polled, notification delta). See steps/then_ruler.go.
+	tier2Ruler tier2RulerState
+
+	// tier2ReadBack is the shared recorded-series read-back slot MIG-09 and
+	// MIG-13's Tier-2 half both publish into — see recordedReadBack.
+	tier2ReadBack recordedReadBack
 
 	// live is the Tier-1 stack's endpoints, established by "the tier-1 stack
 	// is live" — nil-valued (a zero LiveEndpoints) until that Given runs, so
@@ -182,6 +240,11 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.explainRaw, w.explain = map[string][]byte{}, map[string]explainReport{}
 		w.lookback = map[string]migrate.Lookback{}
 		w.envUsed = map[string][]string{}
+		w.tier2Set = false
+		w.tier2Writeback = tier2WritebackState{}
+		w.tier2Alerting = tier2AlertingState{}
+		w.tier2Ruler = tier2RulerState{}
+		w.tier2ReadBack = recordedReadBack{}
 		w.live, w.liveSet = lib.LiveEndpoints{}, false
 		w.manifest = map[string]seed.Manifest{}
 		w.verifyCorpusFile = ""
@@ -242,6 +305,11 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerExplainSteps(ctx)
 	w.registerLookbackSteps(ctx)
 	w.registerGateSteps(ctx)
+	w.registerTier2LiveSteps(ctx)
+	w.registerTier2WritebackSteps(ctx)
+	w.registerTier2AlertingSteps(ctx)
+	w.registerCutoverGateSteps(ctx)
+	w.registerRulerSteps(ctx)
 	w.registerVerifySteps(ctx)
 	w.registerInventorySteps(ctx)
 	w.registerIngestBridgeSteps(ctx)

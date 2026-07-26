@@ -8,7 +8,16 @@ name: migration-e2e
 # Prometheus/Loki/Tempo alongside ClickHouse and cerberus), seeds it, then
 # runs both the plain-Go substrate self-checks and the `@tier1`-tagged
 # Gherkin scenarios against it — one compose lifecycle, not two separate
-# Docker-backed lanes (this consolidates the former migration.yml).
+# Docker-backed lanes (this consolidates the former migration.yml). The
+# Tier-2 slice extends that same stack with the ruler leg (Grafana-managed
+# alerting against cerberus, the recording-rule write-back bridge, and the
+# dead-end notification receiver) and runs the `@tier2`-tagged scenarios plus
+# its own substrate self-check.
+#
+# migration-tier2 `needs:` migration-tier1, not just migration-setup: docs
+# section 8's build order is that alert-firing parity cannot be proven before
+# query parity is, so a Tier-2 verdict reached while Tier 1 is red asserts
+# nothing. It also keeps two Docker-heavy stacks off one runner concurrently.
 #
 # There is deliberately NO `pull_request:` trigger, so this workflow can
 # never become a branch-protection check. Informational does not mean
@@ -29,7 +38,7 @@ on:
       tier:
         description: 'which tier(s) to run'
         type: choice
-        options: [all, tier0, tier1]
+        options: [all, tier0, tier1, tier2]
         default: all
       story:
         description: 'a single MIG id to drive, e.g. MIG-04'
@@ -185,19 +194,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just
-
-      # The stack pulls six images (ClickHouse, the collector, reference
-      # Prometheus/Loki/Tempo, golang) onto a runner whose default free space
-      # does not comfortably hold them. Same reclaim e2e.yml runs before its
-      # compose lanes.
+      # Free runner disk BEFORE the compose stack boots. The stack builds
+      # cerberus from the repo-root Dockerfile.local and then runs ClickHouse
+      # plus three reference backends; the build layers and CH's data exhaust
+      # bone-stock ubuntu-latest's ~14 GB free root fs, which surfaces as "no
+      # space left on device" / unhealthy-container compose aborts rather than
+      # as a scenario failure. Reclaim the unused pre-baked toolchains; KEEP
+      # Docker images, the stack needs them. Same shape as compatibility.yml's
+      # reclaim, pinned to a commit SHA (the action only ships @main).
       - name: Disk free (before reclaim)
         run: df -h
       - name: Free disk space
@@ -209,11 +213,20 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      # Anonymous Docker Hub pulls are rate-limited hard enough to fail a
-      # cold runner mid-`compose up`; the other Docker-backed lanes log in
-      # first for exactly this reason. Gated on the secret being present so a
-      # fork PR degrades to anonymous rather than erroring on an empty
-      # password.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      # Anonymous Docker Hub pulls are rate-limited hard enough to fail a cold
+      # runner mid-`compose up` from a shared runner IP, and this stack pulls
+      # five upstream images; the other Docker-backed lanes log in first for
+      # exactly this reason. Gated on the secret being present so a fork PR
+      # degrades to anonymous rather than erroring on an empty password.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -288,12 +301,124 @@ jobs:
           path: test/e2e/migration/.out/manifest*.json
           if-no-files-found: warn
 
+      # Evidence dump BEFORE teardown — teardown deletes the containers this
+      # reads from. The recipe self-guards every command, so this step cannot
+      # turn a passing lane red or mask the real failure with its own.
+      - name: dump the Tier-1 compose state and logs on failure
+        if: failure()
+        run: just migration-tier1-logs
+
       # Teardown always runs, even when an earlier step fails. Reclaim the
       # volumes explicitly — otherwise a self-hosted or reused runner
       # carries one run's reference data into the next.
       - name: tear the stack down
         if: always()
         run: just migration-tier1-down
+
+  # Tier-2 ruler substrate + the @tier2 Gherkin scenarios (Layer 14). Same
+  # fixed (non-matrix) shape as migration-tier1 and for the same reason — it
+  # owns a compose lifecycle a matrix shard cannot express — over the Tier-1
+  # compose file PLUS tiers/tier2-ruler's, merged into the one compose project
+  # (see docker-compose.ruler.yml's header comment).
+  #
+  # `needs: migration-tier1` is a real ordering constraint, not tidiness: docs
+  # section 8 builds firing parity on top of proven query parity, and every
+  # @tier2 scenario reads the same cerberus/ClickHouse pair Tier 1 proves. A
+  # green tier-2 over a red tier-1 would be a verdict about nothing.
+  migration-tier2:
+    name: migration-tier2
+    needs: [migration-setup, migration-tier1]
+    # `tiers` is emit's own answer to "what does this run execute", so the gate
+    # and the roll-up read the same source and cannot disagree. A dispatch that
+    # narrows to another tier must not pay for this stack.
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier2')
+    runs-on: ubuntu-latest
+    # Strictly larger than Tier 1's: the same stack plus the ruler leg, and the
+    # scenarios then wait on real evaluation cadences (a rule-group tick, an
+    # alert hold-down, a notification-policy flush) that no runner speed
+    # shortens. Mirrors TIER2_TIMEOUT_MIN in migration-e2e.mjs.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # See the identical block in migration-tier1 — this stack is a strict
+      # superset of that one, so the disk pressure is strictly worse.
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: download migration scenarios enumeration
+        uses: actions/download-artifact@v7
+        with:
+          name: migration-scenarios
+          path: build
+
+      - name: bring the Tier-2 stack up
+        run: just migration-tier2-up
+
+      - name: seed the Tier-2 stack
+        run: just migration-tier2-seed
+
+      # Gherkin first, substrate self-check second — the same ordering
+      # migration-tier2-run's Justfile recipe documents: both halves assert a
+      # notification arrived by bracketing their own trigger with a read of the
+      # ONE dead-end receiver's count, so they must not observe each other's
+      # traffic. Two steps rather than one `just migration-tier2-run` so a
+      # Gherkin failure and a substrate failure are separate lines in the log.
+      - name: run the Tier-2 Gherkin scenarios
+        run: node .github/scripts/migration-e2e.mjs
+        env:
+          MODE: run
+          SCENARIOS_JSON: build/migration-scenarios.json
+          TIER: tier2
+
+      - name: Tier-2 ruler substrate assertions
+        run: go test -tags=migration_tier2 -count=1 ./test/e2e/migration/
+
+      - name: upload seed manifests
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: migration-tier2-manifest
+          path: test/e2e/migration/.out/manifest*.json
+          if-no-files-found: warn
+
+      # Before teardown, for the same reason as migration-tier1's dump. Grafana
+      # and the write-back bridge are in the service list, since a Tier-2
+      # failure is usually a rejected rule fixture or a dropped write-back
+      # sample rather than anything a scenario message can name.
+      - name: dump the Tier-2 compose state and logs on failure
+        if: failure()
+        run: just migration-tier2-logs
+
+      - name: tear the stack down
+        if: always()
+        run: just migration-tier2-down
 
   # Roll-up. `contains(needs.*.result, 'failure')` is the shape e2e.yml
   # documents as unsafe: a matrix rolls up to `cancelled`, not `failure`, when
@@ -304,7 +429,7 @@ jobs:
   # so it is testable (see .github/scripts/README.md).
   migration-aggregate:
     name: migration-e2e
-    needs: [migration-setup, migration-tier0, migration-tier1]
+    needs: [migration-setup, migration-tier0, migration-tier1, migration-tier2]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -361,3 +486,4 @@ jobs:
           EXPECTED_TIERS: ${{ needs.migration-setup.outputs.tiers }}
           RESULT_TIER0: ${{ needs.migration-tier0.result }}
           RESULT_TIER1: ${{ needs.migration-tier1.result }}
+          RESULT_TIER2: ${{ needs.migration-tier2.result }}
