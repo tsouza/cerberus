@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "cerberus_migration_queue_depth",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/gauge selector",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(cerberus_migration_queue_depth)",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/gauge total",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (service_name) (cerberus_migration_queue_depth)",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/gauge by service",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cerberus_migration_queue_depth{http_status_code=\"200\"}",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/gauge filtered by status",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "rate(cerberus_migration_requests_total[5m])",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/counter rate",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "increase(cerberus_migration_requests_total[5m])",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/counter increase",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (service_name) (rate(cerberus_migration_requests_total[5m]))",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/counter rate by service",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cerberus_migration_requests_total{service_name=\"checkout\"}",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/counter filtered by service",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum(cerberus_migration_requests_total{http_status_code=\"500\"})",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/counter filtered by status",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cerberus_migration_request_duration_seconds_sum",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/histogram sum",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cerberus_migration_request_duration_seconds_count",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/histogram count",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "histogram_quantile(0.95, sum by (le) (rate(cerberus_migration_request_duration_seconds_bucket[5m])))",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-corpus.json/histogram quantile",
+      "kind": "panel",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

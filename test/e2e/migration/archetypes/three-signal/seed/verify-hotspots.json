@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "rate(cerberus_migration_requests_total[5m])",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/counter rate",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "increase(cerberus_migration_requests_total[5m])",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/counter increase",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "absent(cerberus_migration_requests_total{service_name=\"offline\"})",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/staleness absence",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "histogram_quantile(0.95, sum by (le) (rate(cerberus_migration_request_duration_seconds_bucket[5m])))",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/histogram quantile",
+      "kind": "panel",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

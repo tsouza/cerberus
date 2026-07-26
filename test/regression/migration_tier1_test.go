@@ -250,11 +250,23 @@ func TestMigrationTier1SchemaAuthority(t *testing.T) {
 	}
 }
 
+// tier1SelfScrapeJob is MIG-07's one deliberate exception to the reference
+// Prometheus being otherwise remote-write only: a real scrape target both the
+// reference AND the collector's own prometheusreceiver pull from, so MIG-07
+// can prove the collector's scrape path is equivalent. It names Prometheus's
+// own process metrics (`up`, `scrape_duration_seconds`,
+// `prometheus_http_request_duration_seconds_bucket`, …) — a namespace the
+// seeder's fixture never writes a sample under — so it cannot inject a second
+// sample path for any fixture series. Mirrors then_scrape_parity.go's own
+// scrapeJob constant.
+const tier1SelfScrapeJob = "prometheus-self"
+
 // TestMigrationTier1ReferencePrometheusIsWriteOnly pins the reference
-// Prometheus to a single sample path. A scrape config would give the reference
-// a second, independent source of samples, and two paths cannot land identical
-// timestamps — while the migration comparator keys samples by exact timestamp,
-// so every scraped sample would read as a divergence.
+// Prometheus to a single sample path for FIXTURE data. A scrape config for
+// any target other than tier1SelfScrapeJob would give the reference a second,
+// independent source of fixture samples, and two paths cannot land identical
+// timestamps — while the migration comparator keys samples by exact
+// timestamp, so every such scraped sample would read as a divergence.
 func TestMigrationTier1ReferencePrometheusIsWriteOnly(t *testing.T) {
 	t.Parallel()
 
@@ -262,13 +274,20 @@ func TestMigrationTier1ReferencePrometheusIsWriteOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", tier1PrometheusPath, err)
 	}
-	var parsed map[string]any
+	var parsed struct {
+		ScrapeConfigs []struct {
+			JobName string `yaml:"job_name"`
+		} `yaml:"scrape_configs"`
+	}
 	if err := yaml.Unmarshal(promCfg, &parsed); err != nil {
 		t.Fatalf("parse %s: %v", tier1PrometheusPath, err)
 	}
-	if _, found := parsed["scrape_configs"]; found {
-		t.Fatalf("%s declares scrape_configs. The reference side is remote-write only: a scrape is a "+
-			"second sample path, and the comparator keys samples by exact timestamp.", tier1PrometheusPath)
+	for _, sc := range parsed.ScrapeConfigs {
+		if sc.JobName != tier1SelfScrapeJob {
+			t.Fatalf("%s declares scrape job %q. The reference side is remote-write only for fixture data: "+
+				"only the %q self-scrape job is allowed, because any other scrape is a second sample path and "+
+				"the comparator keys samples by exact timestamp.", tier1PrometheusPath, sc.JobName, tier1SelfScrapeJob)
+		}
 	}
 
 	cf := readCompose(t, tier1ComposePath)
@@ -337,8 +356,15 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 // tier1Composite is the lane's full lifecycle, in order.
 const tier1Composite = "migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down"
 
-// tier1WorkflowPath is the scheduled lane that executes the tagged assertions.
-const tier1WorkflowPath = "../../.github/workflows/migration.yml"
+// tier1WorkflowPath is the workflow whose migration-tier1 job executes the
+// tagged assertions. It used to be its own migration.yml; the Tier-1 lane
+// was folded into migration-e2e.yml as a sibling of migration-tier0 so the
+// dual-backend compose stack has exactly one lifecycle per run.
+const tier1WorkflowPath = "../../.github/workflows/migration-e2e.yml"
+
+// tier1JobName is the job inside tier1WorkflowPath that drives the Tier-1
+// lane.
+const tier1JobName = "migration-tier1"
 
 // TestMigrationTier1LaneIsWiredIntoCI pins the two things that keep the
 // `migration_tier1`-tagged sources from rotting unobserved.
@@ -374,8 +400,13 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v — the tagged Tier-1 assertions are executed by no workflow", tier1WorkflowPath, err)
 	}
+	body := string(workflow)
+
 	var parsed struct {
 		On struct {
+			Push struct {
+				Branches []string `yaml:"branches"`
+			} `yaml:"push"`
 			Schedule []struct {
 				Cron string `yaml:"cron"`
 			} `yaml:"schedule"`
@@ -383,6 +414,15 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 	}
 	if err := yaml.Unmarshal(workflow, &parsed); err != nil {
 		t.Fatalf("parse %s: %v", tier1WorkflowPath, err)
+	}
+	onMain := false
+	for _, b := range parsed.On.Push.Branches {
+		if b == "main" {
+			onMain = true
+		}
+	}
+	if !onMain {
+		t.Fatalf("%s does not push-trigger on main; the Tier-1 lane docs call push-to-main", tier1WorkflowPath)
 	}
 	if len(parsed.On.Schedule) == 0 {
 		t.Fatalf("%s declares no schedule; the lane the docs call scheduled would run only on dispatch",
@@ -393,20 +433,66 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 			t.Fatalf("%s declares an empty cron expression", tier1WorkflowPath)
 		}
 	}
-	if !strings.Contains(string(workflow), "run: just migration-tier1\n") {
-		t.Fatalf("%s does not run `just migration-tier1`, so it exercises no part of the substrate",
-			tier1WorkflowPath)
+	if !strings.Contains(body, "\n  workflow_dispatch:\n") {
+		t.Fatalf("%s declares no workflow_dispatch trigger", tier1WorkflowPath)
+	}
+
+	job := workflowJobBody(t, body, tier1JobName)
+	if !strings.Contains(job, "needs: migration-setup") {
+		t.Fatalf("%s job %q does not declare `needs: migration-setup`", tier1WorkflowPath, tier1JobName)
+	}
+	for _, want := range []string{
+		"just migration-tier1-up",
+		"just migration-tier1-seed",
+		"-tags=migration_tier1",
+		"migration-e2e.mjs",
+		"TIER: tier1",
+		"just migration-tier1-down",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("%s job %q does not %q, so the Tier-1 lane is incompletely wired. Body:\n%s",
+				tier1WorkflowPath, tier1JobName, want, job)
+		}
 	}
 }
 
+// workflowJobBody returns the lines of a workflow job: everything from the
+// `  <job>:` header up to (not including) the next line at 2-space indent —
+// mirroring justRecipeBody's Justfile-recipe extraction, one indent level in.
+func workflowJobBody(t *testing.T, workflow, job string) string {
+	t.Helper()
+	lines := strings.Split(workflow, "\n")
+	header := "  " + job + ":"
+	start := -1
+	for i, line := range lines {
+		if line == header {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("workflow has no %q job", job)
+	}
+	var out []string
+	for _, line := range lines[start:] {
+		if len(out) > 0 && strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "   ") {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // justRecipeBody returns the lines of a Justfile recipe: everything from its
-// `name:` header up to the next non-indented, non-blank line.
+// `name:` header up to the next non-indented, non-blank line. A recipe with
+// parameters (`recipe param="default":`) has a space, not a colon, right
+// after its name, so both header shapes are matched.
 func justRecipeBody(t *testing.T, justfile, recipe string) string {
 	t.Helper()
 	lines := strings.Split(justfile, "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, recipe+":") {
+		if strings.HasPrefix(line, recipe+":") || strings.HasPrefix(line, recipe+" ") {
 			start = i
 			break
 		}
@@ -435,7 +521,26 @@ const (
 	tier1ExpectedPath   = tier1ArchetypeDir + "/expected/tier1.json"
 	tier1SeedCmdPath    = "./test/e2e/migration/cmd/seed"
 	tier1ManifestOutput = "test/e2e/migration/.out/manifest.json"
+	// tier1ArchetypeFixtureDir and tier1ArchetypeFixtureFile are the
+	// directory/filename halves of migration-tier1-seed's fixture path, split
+	// because the recipe parameterises the archetype segment between them
+	// (`archetypes/$a/seed/fixture.json`) rather than hardcoding one
+	// archetype — see TestMigrationTier1SeedRecipe.
+	tier1ArchetypeFixtureDir  = "test/e2e/migration/archetypes/"
+	tier1ArchetypeFixtureFile = "seed/fixture.json"
+	// tier1ArchetypesVarName is the Justfile variable migration-tier1-seed's
+	// empty-archetype default reads its archetype list from.
+	tier1ArchetypesVarName = "MIGRATION_TIER1_ARCHETYPES"
 )
+
+// tier1RequiredArchetypes are the archetypes whose fixture data an @tier1
+// scenario actually reads (see the `@archetype:` tags in
+// test/e2e/migration/features/*.feature): three-signal for every scenario
+// except MIG-02/06/07/08, which read kube-prometheus-stack. Both must be
+// seeded into the ONE live stack `just migration-tier1` brings up, or
+// whichever archetype is missing silently fails its scenarios — exactly the
+// gap TestMigrationTier1SeedRecipe exists to keep from recurring.
+var tier1RequiredArchetypes = []string{"three-signal", "kube-prometheus-stack"}
 
 // compatSeederSources are the compatibility harnesses' seeders. They gate on
 // the same upstream readiness metrics the migration seeder does, and that
@@ -693,11 +798,39 @@ func TestMigrationTier1SeedRecipe(t *testing.T) {
 	recipe := justRecipeBody(t, body, "migration-tier1-seed")
 	for _, want := range []string{
 		tier1SeedCmdPath,
-		strings.TrimPrefix(tier1DeclPath, "../../"),
+		tier1ArchetypeFixtureDir,
+		tier1ArchetypeFixtureFile,
 		tier1ManifestOutput,
 	} {
 		if !strings.Contains(recipe, want) {
 			t.Fatalf("Justfile recipe migration-tier1-seed does not reference %q; body:\n%s", want, recipe)
 		}
 	}
+
+	// The recipe's empty-archetype default must seed every archetype the
+	// @tier1 scenario set needs, not just one — see tier1RequiredArchetypes.
+	archetypesLine := tier1JustVarLine(t, body, tier1ArchetypesVarName)
+	for _, archetype := range tier1RequiredArchetypes {
+		if !strings.Contains(archetypesLine, archetype) {
+			t.Fatalf("Justfile's %s does not list archetype %q, so migration-tier1-seed's default would not seed it: %s",
+				tier1ArchetypesVarName, archetype, archetypesLine)
+		}
+	}
+}
+
+// tier1JustVarLine returns the single Justfile line declaring a top-level
+// `NAME := "..."` variable, failing the test if the variable is not declared
+// exactly once.
+func tier1JustVarLine(t *testing.T, justfile, name string) string {
+	t.Helper()
+	var found []string
+	for _, line := range strings.Split(justfile, "\n") {
+		if strings.HasPrefix(line, name+" :=") || strings.HasPrefix(line, name+":=") {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("Justfile declares %q %d time(s), want exactly 1", name, len(found))
+	}
+	return found[0]
 }

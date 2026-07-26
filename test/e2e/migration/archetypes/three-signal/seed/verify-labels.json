@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "expr": "cerberus_migration_requests_total",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-labels.json/raw series carries the full label set",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (service_name) (cerberus_migration_requests_total)",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-labels.json/group by the resource-attribute-mapped label",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (http_status_code) (cerberus_migration_requests_total)",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-labels.json/group by the datapoint-attribute label",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "sum by (service_name, http_status_code) (cerberus_migration_queue_depth)",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-labels.json/group by both labels together",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "cerberus_migration_queue_depth{service_name=\"checkout\"}",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-labels.json/select by the resource-attribute-mapped label",
+      "kind": "panel",
+      "lang": "promql"
+    }
+  ],
+  "skipped": []
+}

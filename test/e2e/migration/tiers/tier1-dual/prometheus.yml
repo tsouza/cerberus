@@ -1,19 +1,31 @@
 # Reference Prometheus configuration for the Tier-1 migration stack.
 #
-# Remote-write receiver ONLY — there is no `scrape_configs` block and there
-# must never be one. A scrape is a second, independent sample path: two paths
-# cannot land identical timestamps, and the migration comparator keys samples
-# by exact timestamp, so a scraped series would inject sample-level skew into
-# the one place ground truth exists for a differential diff. Every sample the
-# reference holds arrives over /api/v1/write from the same in-memory fixture
-# that is INSERTed into ClickHouse.
+# Remote-write receiver for the FIXTURE data — there is no scrape target for
+# any `cerberus_migration_*` name and there must never be one. A scrape is a
+# second, independent sample path: two paths cannot land identical
+# timestamps, and the migration comparator keys samples by exact timestamp,
+# so a scraped fixture series would inject sample-level skew into the one
+# place ground truth exists for a differential diff. Every fixture sample
+# arrives over /api/v1/write from the same in-memory fixture that is
+# INSERTed into ClickHouse.
 #
 # The receiver itself is enabled on the command line
 # (--web.enable-remote-write-receiver in docker-compose.dual.yml), not here.
+#
+# The one exception is MIG-07's self-scrape job below: it names Prometheus's
+# OWN process metrics (`up`, `scrape_duration_seconds`,
+# `prometheus_http_request_duration_seconds_bucket`, …), a namespace the
+# seeder's fixture never writes a sample under on either side. MIG-07 needs a
+# real scrape target both the reference AND the collector's own
+# prometheusreceiver pull from, to prove the collector's scrape path is
+# equivalent — the invariant above is about the FIXTURE path staying
+# scrape-free, not about this stack never scraping anything at all.
 
 global:
-  # The stack has no scrape targets, so this interval governs nothing but
-  # Prometheus's own bookkeeping. It is stated explicitly so a future reader
-  # does not infer a scrape cadence that does not exist.
   scrape_interval: 15s
   evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus-self
+    static_configs:
+      - targets: ["localhost:9090"]

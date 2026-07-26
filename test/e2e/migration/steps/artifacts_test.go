@@ -278,7 +278,7 @@ func TestEveryCommittedArchetypeShipsItsInputsAndDecision(t *testing.T) {
 			read := map[string]struct{}{
 				corpusGolden: {}, explainGolden: {}, gateGolden: {},
 				classifyGolden: {}, ruleGraphGolden: {}, lookbackGolden: {},
-				tier1Golden: {},
+				tier1Golden: {}, complianceRetentionFixture: {},
 			}
 			entries, err := os.ReadDir(harnessPath(root, archetypeDir, a, expectedDir))
 			if err != nil {

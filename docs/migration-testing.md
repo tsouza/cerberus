@@ -455,7 +455,7 @@ performed, by the lane.
 ## 6. Story → scenario map
 
 Scenario ids track the story order. The **Tier(s)** column lists every tier a
-scenario's PASS assertion needs; a split-tier scenario (MIG-10, MIG-14, MIG-26)
+scenario's PASS assertion needs; a split-tier scenario (MIG-10, MIG-13, MIG-14, MIG-26)
 declares two, and carries one tagged `Scenario` per tier
 ([section 6.1](#61-harness-shape)) rather than a single tier. A scenario is
 never downgraded to a cheaper tier to make it pass
@@ -488,7 +488,7 @@ cell uses only the verified flags from [section 2](#2-the-cerberus-migrate-cli-s
 | MIG-10 | 0, 1    | `cerberus migrate schema` (render), then diff vs live CH `SHOW CREATE`                       | `CERBERUS_SCHEMA_*` env matrix incl. an override case                                                                                                   | Rendered `CREATE` = the schema cerberus reads; diff vs collector-created tables lists every missing/renamed column/table; each deviation is resolved by a documented `CERBERUS_SCHEMA_*` override or flagged a blocker; schema application stays a deliberate human step.                              |
 | MIG-11 | 1       | cerberus `/api/v1/series`, `/label/<n>/values`, `sum by (…)` replays                         | already-otel + kube-prometheus-stack seeds exercising `job`/`instance` ↔ `service.name`/`service.instance.id`, dots→underscores, `_total`/unit suffixes | Resource attributes map to the Prometheus label names/values queries expect; `sum by (namespace)` groups correctly; template vars resolve; alert label-sets (Alertmanager routing keys) are byte-identical pre/post so silences/routes are unchanged.                                                  |
 | MIG-12 | 1       | targeted `rate()`/`increase()`/`histogram_quantile()` replays; direct CH table-routing probe | counter/gauge/classic-histogram/native-exp-histogram/summary seeds incl. a delta-temporality case                                                       | Each type routes to the correct `otel_metrics_*` table with the temporality PromQL assumes; cumulative-vs-delta confirmed; classic `le`-bucket layout preserved OR exp-histogram mapping documented with a stated quantile epsilon; exp-histogram path confirmed healthy before quantiles are trusted. |
-| MIG-13 | 2       | `cerberus migrate rulegraph` (which names must land) → ruler write-back → cerberus read-back | rulegraph output from MIG-04 + Tier-2 ruler                                                                                                             | Every recorded series is reproducible in the CH landing zone (ruler→collector→CH) or explicitly marked inline-rewrite/drop with sign-off; dashboards on low-cardinality recorded series don't regress to scanning raw high-cardinality data; no derived name silently disappears.                      |
+| MIG-13 | 1, 2    | `cerberus migrate rulegraph` (which names must land) → ruler write-back → cerberus read-back | rulegraph output from MIG-04; a landing-zone row for the Tier-1 read-back half, a Tier-2 ruler for the write-back half                                  | Every recorded series is reproducible in the CH landing zone (ruler→collector→CH) or explicitly marked inline-rewrite/drop with sign-off; dashboards on low-cardinality recorded series don't regress to scanning raw high-cardinality data; no derived name silently disappears.                      |
 | MIG-14 | 0, 1    | compute longest lookback from corpus offline; compare to live CH `TTL` per table             | corpus + live CH TTL config                                                                                                                             | Longest lookback across all dashboards/alerts computed and compared to configured CH TTL per table; any table whose TTL < a query's lookback flagged a blocker; retention shown as an explicitly-set value, never assumed from `prometheus.yml`; rollup-MV requirements for long ranges surfaced.      |
 | MIG-15 | 1       | per-tenant `X-Scope-OrgID` queries + `/series` + `/label/*/values`                           | mimir/cortex archetype with ≥2 tenants mapped to CH database/row-policy; a per-tenant read budget                                                       | A cross-tenant query returns **exactly zero** foreign-tenant series; an over-budget tenant read is **refused with a specific error**; metadata endpoints return correct per-tenant label sets; any noisy-neighbor gap without CH-side quotas is a documented blocker.                                  |
 
@@ -570,7 +570,7 @@ second language where they would drift.
 The feature files ARE the manifest: there is no separate scenario registry to
 keep in step with them. Metadata rides on tags — `@MIG-16` binds the story,
 `@tier0`/`@tier1`/`@tier2` the tier(s), `@archetype:<name>` the archetypes. A
-split-tier story (MIG-10, MIG-14, MIG-26) carries two `Scenario`s, one per tier
+split-tier story (MIG-10, MIG-13, MIG-14, MIG-26) carries two `Scenario`s, one per tier
 tag, instead of a tier list. `test/e2e/migration/cmd/scenarios/` walks the
 features with godog's own parser and emits one record per `Scenario` node —
 `{feature, line, keyword, name, stories, tiers, archetypes, unknown_tags,

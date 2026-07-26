@@ -12,7 +12,8 @@
 #                   authority for this stack, exactly as in the repo-root
 #                   quickstart. cerberus never mints its own tables, so its
 #                   readiness probe is a live schema-drift detector.
-#   prometheus      reference Prometheus, remote-write receiver only
+#   prometheus      reference Prometheus, remote-write receiver for fixture
+#                   data plus one MIG-07 self-scrape job (prometheus.yml)
 #   loki            reference Loki, mounting the ONE reference-Loki config in
 #                   the tree (compatibility/loki/loki-config.yaml)
 #   tempo           reference Tempo, mounting the ONE reference-Tempo config in

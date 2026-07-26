@@ -1,21 +1,29 @@
 # OpenTelemetry Collector config for the Tier-1 migration stack.
 #
-# The collector has exactly one job here: own the ClickHouse schema. Its
-# clickhouseexporter (create_schema: true) is the SOLE authority that creates
-# the otel_* tables, which is what lets cerberus run with
-# CERBERUS_AUTO_CREATE_SCHEMA=false and turns its readiness probe into a live
-# drift detector between the exporter's real table names and cerberus's
+# The collector has two jobs here: own the ClickHouse schema, and (MIG-07)
+# scrape the exact same target the reference Prometheus's own self-scrape job
+# scrapes, so a scenario can compare the two scrape paths over equivalent
+# data. Its clickhouseexporter (create_schema: true) remains the SOLE
+# authority that creates the otel_* tables, which is what lets cerberus run
+# with CERBERUS_AUTO_CREATE_SCHEMA=false and turns its readiness probe into a
+# live drift detector between the exporter's real table names and cerberus's
 # read-side defaults.
 #
-# Fixture DATA does not flow through this pipeline: the migration seeder writes
-# the ClickHouse side with direct INSERTs from the same in-memory fixture it
-# writes to the reference backends, so both sides of a parity diff are
-# comparable by construction. Collector fan-out would instead surrender the
-# stream-label vs structured-metadata mapping to Loki's OTLP allowlist — a
-# permanent parity diff by construction.
+# Fixture DATA does not flow through either receiver here: the migration
+# seeder writes the ClickHouse side with direct INSERTs from the same
+# in-memory fixture it writes to the reference backends, so both sides of a
+# parity diff are comparable by construction. Collector fan-out would instead
+# surrender the stream-label vs structured-metadata mapping to Loki's OTLP
+# allowlist — a permanent parity diff by construction. The prometheus
+# receiver below scrapes Prometheus's OWN process metrics
+# (`up`/`scrape_duration_seconds`/`prometheus_http_request_duration_seconds_bucket`),
+# a namespace the fixture never touches on either side, so it carries no such
+# risk.
 #
-# There is no `batch` processor: the pipelines carry only the schema warm-up
-# records, so batching would add convergence latency to nothing.
+# There is no `batch` processor: the metrics pipeline carries only the schema
+# warm-up record plus the MIG-07 scrape, the logs/traces pipelines carry only
+# their own warm-up records, so batching would add convergence latency to
+# very little.
 
 receivers:
   otlp:
@@ -24,6 +32,17 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  # MIG-07's "equivalent collector prometheusreceiver over the same targets":
+  # scrapes the identical target (the reference Prometheus's own /metrics)
+  # that prometheus.yml's `prometheus-self` job scrapes directly, so the two
+  # paths land through the SAME clickhouseexporter cerberus reads.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: prometheus-self
+          scrape_interval: 5s
+          static_configs:
+            - targets: ["prometheus:9090"]
 
 exporters:
   clickhouse:
@@ -31,7 +50,19 @@ exporters:
     database: otel
     username: cerberus
     password: cerberus
-    ttl: 0
+    # A real, finite TTL (rather than the exporter's 0 = disabled default) is
+    # what MIG-14's Tier-1 half actually needs: it reads the retention the
+    # collector ACTUALLY provisioned off the live tables and compares it
+    # against the corpus's computed lookback runway. A disabled TTL would
+    # leave every signal with no retention clause at all, which the harness
+    # correctly treats as an unset-retention blocker rather than "infinite,
+    # therefore fine" (see steps/then_live_retention.go) — that is honest
+    # behavior for a REAL unset-TTL deployment, but it would make this
+    # fixture's own scenario permanently red for a reason that is a fixture
+    # choice, not a cerberus bug. 720h (30 days) comfortably exceeds every
+    # archetype's committed dashboard/alert lookback while staying far short
+    # of the fixture's own single-run lifetime.
+    ttl: 720h
     create_schema: true
     logs_table_name: otel_logs
     traces_table_name: otel_traces
@@ -49,7 +80,7 @@ service:
       level: info
   pipelines:
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, prometheus]
       exporters: [clickhouse]
     logs:
       receivers: [otlp]
