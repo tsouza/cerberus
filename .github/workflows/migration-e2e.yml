@@ -95,6 +95,14 @@ jobs:
   migration-tier0:
     name: migration-tier0 (${{ matrix.name }})
     needs: migration-setup
+    # An empty `include:` does not skip a matrix job — it still runs, with the
+    # matrix context unset, so `TIER: ${{ matrix.tier }}` resolves to empty and
+    # the run fails on an unknown tier. A dispatch narrowed to tier1 therefore
+    # reported a tier0 FAILURE for a tier it never meant to run (the roll-up
+    # caught it: "tier0 ran (failure) but was not in the tier set this run
+    # selected"). Gate on the same `tiers` output the roll-up reads, exactly as
+    # migration-tier1 does, so selection is decided in one place.
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier0')
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     strategy:
