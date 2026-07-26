@@ -45,6 +45,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -737,13 +738,18 @@ type chdbQuerier struct {
 	db                  *sql.DB
 	maxQueryMemoryBytes int64
 	sleep               time.Duration
-	opened              int
+	// opened counts QueryCursor calls. The Executor runs its shards under an
+	// errgroup with SetLimit(P_eff), so every shard's QueryCursor lands on a
+	// different goroutine concurrently — a plain int here loses increments to
+	// interleaved read-modify-write and under-reports the open count, which
+	// reads as "a shard never opened" in the assertions below.
+	opened atomic.Int64
 }
 
 func (q *chdbQuerier) MaxQueryMemoryBytes() int64 { return q.maxQueryMemoryBytes }
 
 func (q *chdbQuerier) QueryCursor(ctx context.Context, sqlText string, args ...any) (chclient.Cursor, error) {
-	q.opened++
+	q.opened.Add(1)
 	wrapped := wrapMapColumns(sqlText)
 	if q.sleep > 0 {
 		// CROSS JOIN forces ClickHouse to evaluate the scalar sleep()
@@ -961,14 +967,14 @@ func TestSolver_AvsB_ChDB_OutputCapContract(t *testing.T) {
 	// QueryCursor call the Executor was ever going to make has happened:
 	// exactly one per shard, never a retried/fallback query after the cap
 	// fired.
-	if q.opened != len(dec.Slices) {
+	if opened := q.opened.Load(); opened != int64(len(dec.Slices)) {
 		t.Fatalf("QueryCursor opened %d times, want exactly %d (one per shard, zero fallback queries)",
-			q.opened, len(dec.Slices))
+			opened, len(dec.Slices))
 	}
 
 	t.Logf("output-cap contract: real chDB route-B stream (%d total rows across %d shards) "+
 		"truncated at cap=%d with *OutputCapError, %d QueryCursor calls (no fallback)",
-		total, len(dec.Slices), cfg.MaxOutputRows, q.opened)
+		total, len(dec.Slices), cfg.MaxOutputRows, q.opened.Load())
 }
 
 // Wall-clock deadline margins for TestSolver_AvsB_ChDB_TimeoutContract's
