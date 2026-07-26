@@ -109,13 +109,17 @@ export const TIER1_TIMEOUT_MIN = 45;
 // tier's dispatch option, job stanza and ceiling land with its first scenario.
 //
 // `matrixDriven` records WHICH job shape the tier's stanza has, because the
-// two are not interchangeable. migration-tier0 is one generic runner fanned
-// out by `strategy.matrix`, so its tiers must appear in the emitted matrix.
+// two are not interchangeable. The matrix job is one generic runner fanned out
+// by `strategy.matrix`, so its tiers must appear in the emitted matrix.
 // migration-tier1 is a fixed job — it brings a compose stack up, seeds it and
 // tears it down around the suite, steps a matrix shard cannot express — so it
-// must NOT appear there: a tier1 entry in the matrix would spawn a
-// `migration-tier0 (tier1)` shard that runs the tier-1 suite on a bare runner
-// with no stack behind it.
+// must NOT appear there.
+//
+// Getting this wrong is quiet rather than loud: a tier1 entry in the matrix
+// spawns a shard that runs the tier-1 suite on a bare runner with no stack
+// behind it. Both job shapes render as `migration-<tier>`, so that shard is
+// named exactly like the real fixed job — the run would show two
+// `migration-tier1` jobs, one of which never had a backend.
 export const TIER_JOBS = {
   tier0: { timeoutMinutes: TIER0_TIMEOUT_MIN, matrixDriven: true },
   tier1: { timeoutMinutes: TIER1_TIMEOUT_MIN, matrixDriven: false },
@@ -631,10 +635,13 @@ function runEmit() {
       '',
       '| tier | stories | timeout (min) | job |',
       '| --- | --- | --- | --- |',
+      // Both job shapes render as `migration-<tier>`: the matrix-driven job is
+      // named for the shard it is running, not for itself, so the summary
+      // names the job the reader will actually find in the run.
       ...running.map((tier) => {
         const stories = storiesForTier(scenarios, tier).join(', ');
-        const { timeoutMinutes, matrixDriven } = TIER_JOBS[tier];
-        return `| \`${tier}\` | ${stories} | ${timeoutMinutes} | ${matrixDriven ? `migration-tier0 (${tier})` : `migration-${tier}`} |`;
+        const { timeoutMinutes } = TIER_JOBS[tier];
+        return `| \`${tier}\` | ${stories} | ${timeoutMinutes} | migration-${tier} |`;
       }),
     ].join('\n'),
   );
