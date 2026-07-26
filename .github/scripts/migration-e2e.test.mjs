@@ -47,6 +47,10 @@ const ARCHETYPES = [
 ];
 const TIER0_STORIES = ['MIG-01', 'MIG-03', 'MIG-04', 'MIG-05', 'MIG-10', 'MIG-14', 'MIG-26'];
 
+// The tier-1 stories the live feature tree covers today (MIG-16, MIG-17 —
+// this PR's dual-backend scenarios).
+const TIER1_STORIES = ['MIG-16', 'MIG-17'];
+
 // A synthetic scenario in the enumerator's emitted shape.
 function scenario(story, overrides = {}) {
   return {
@@ -67,9 +71,14 @@ function scenario(story, overrides = {}) {
   };
 }
 
-// A clean synthetic world: seven tier-0 scenarios over the real story list.
+// A clean synthetic world: the tier-0 scenarios plus the tier-1 scenarios
+// (MIG-16, MIG-17) over the real story list — the same shape the live
+// feature tree carries today, so it agrees with the committed baseline.
 function world(overrides = {}) {
-  const scenarios = TIER0_STORIES.map((s) => scenario(s));
+  const scenarios = [
+    ...TIER0_STORIES.map((s) => scenario(s)),
+    ...TIER1_STORIES.map((s) => scenario(s, { tiers: ['tier1'], archetypes: ['three-signal'] })),
+  ];
   const stories = parseStories(DOC);
   return {
     scenarios,
@@ -77,7 +86,7 @@ function world(overrides = {}) {
     tierMap: parseTierMap(DOC),
     archetypes: ARCHETYPES,
     archetypeDirNames: ARCHETYPES,
-    featureFiles: TIER0_STORIES.map((s) => `${s}.feature`),
+    featureFiles: [...TIER0_STORIES, ...TIER1_STORIES].map((s) => `${s}.feature`),
     baseline: BASELINE,
     ...overrides,
   };
@@ -119,7 +128,7 @@ test('live doc: section 7 lists the eight archetypes the fixtures ship', () => {
 test('the committed baseline declares the schema version the ratchet reads', () => {
   assert.equal(BASELINE.schema_version, BASELINE_SCHEMA_VERSION);
   assert.equal(BASELINE.stories_total, 26);
-  assert.equal(BASELINE.scenarios_covered, TIER0_STORIES.length);
+  assert.equal(BASELINE.scenarios_covered, TIER0_STORIES.length + TIER1_STORIES.length);
 });
 
 // --- 2. a clean set is clean -------------------------------------------------
@@ -337,10 +346,11 @@ test('buildMatrix emits one tier-0 entry carrying every tier-0 story and its cei
 });
 
 test('a tier no scenario declares never reaches the matrix', () => {
-  // `all` resolves to the tiers the feature tree actually declares, so an
-  // empty tier is filtered before the matrix is built rather than emitted as
+  // `all` resolves to the tiers the feature tree actually declares — tier0
+  // and tier1 here — so tier2 (which nothing in the synthetic world
+  // declares) is filtered before the matrix is built rather than emitted as
   // a job with nothing to run.
-  assert.deepEqual(requestedTiers('all', world().scenarios), ['tier0']);
+  assert.deepEqual(requestedTiers('all', world().scenarios), ['tier0', 'tier1']);
 });
 
 test('a tier with no job is refused before a matrix entry can be built for it', () => {
@@ -355,7 +365,7 @@ test('a tier with no job is refused before a matrix entry can be built for it', 
 
 test('requestedTiers resolves all to the tiers the tree declares, and rejects a bad name', () => {
   const scenarios = world().scenarios;
-  assert.deepEqual(requestedTiers('all', scenarios), ['tier0']);
+  assert.deepEqual(requestedTiers('all', scenarios), ['tier0', 'tier1']);
   assert.deepEqual(requestedTiers('tier0', scenarios), ['tier0']);
   assert.deepEqual(requestedTiers('tier1', scenarios), ['tier1']);
   assert.equal(requestedTiers('nightly', scenarios), null);

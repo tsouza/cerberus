@@ -103,6 +103,27 @@ export const RUNNABLE_TIERS = Object.keys(TIER_TIMEOUT_MINUTES);
 const TIER0_PACKAGE = './test/e2e/migration/tiers/tier0-offline/...';
 const MIGRATION_BUILD_TAG = 'migration';
 
+// The Go package the tier-1 dual-backend suite lives in, and the tag that
+// selects it — shared with tier1_stack_test.go / tier1_parity_test.go, the
+// plain-Go substrate self-checks, so one `go test` invocation exercises the
+// substrate and the Gherkin suite together against the same live stack.
+//
+// TIER1_PACKAGE/MIGRATION_TIER1_BUILD_TAG exist so `MODE=run TIER=tier1`
+// works manually/locally today (`just migration-tier1-run` drives the whole
+// `./test/e2e/migration/...` tree, which already includes this package).
+// tier1 is deliberately NOT added to TIER_TIMEOUT_MINUTES/RUNNABLE_TIERS in
+// this change: doing so would flip V16 (every RUNNABLE tier a story
+// declares in section 6 must have a matching Scenario) on for every OTHER
+// tier1 story section 6 lists (MIG-02, MIG-06 .. MIG-15, MIG-20 .. MIG-26's
+// tier-1 half) — the required `lint` job's coverage ratchet, not merely this
+// lane — long before those scenarios exist. Flipping RUNNABLE_TIERS is the
+// same kind of gate-flip moment `compatibility.yml` went through once its
+// three heads were actually green (see CLAUDE.md); it lands in the PR that
+// finishes tier1's section-6 coverage and wires migration-e2e.yml's tier1
+// job (deliberately out of THIS change's scope), not here.
+const TIER1_PACKAGE = './test/e2e/migration/tiers/tier1-dual/...';
+const MIGRATION_TIER1_BUILD_TAG = 'migration_tier1';
+
 // A story id is exactly `MIG-` plus two digits; the doc's list runs from
 // MIG-01 to MIG-26 with no gaps, which V1 asserts structurally.
 const STORY_ID_RE = /^MIG-\d{2}$/;
@@ -586,31 +607,43 @@ function runEmit() {
   process.exit(0);
 }
 
+// RUN_TIERS is MODE=run's own supported-tier table — deliberately separate
+// from RUNNABLE_TIERS (the coverage-ratchet/matrix table): a tier can be
+// driven manually here before RUNNABLE_TIERS declares it has a CI job (see
+// the TIER1_PACKAGE comment above). Each entry is the Go package and build
+// tag `go test` runs for that tier.
+const RUN_TIERS = {
+  tier0: { pkg: TIER0_PACKAGE, buildTag: MIGRATION_BUILD_TAG },
+  tier1: { pkg: TIER1_PACKAGE, buildTag: MIGRATION_TIER1_BUILD_TAG },
+};
+
 function runRun() {
   const scenarios = loadScenarios();
   const story = (process.env.STORY || '').trim();
   const tiers = requestedTiers(process.env.TIER, scenarios);
-  if (tiers === null || tiers.length !== 1 || tiers[0] !== 'tier0') {
+  const tier = tiers === null || tiers.length !== 1 ? null : tiers[0];
+  const run = tier === null ? undefined : RUN_TIERS[tier];
+  if (run === undefined) {
     error(
-      `migration-e2e: MODE=run drives the offline tier; TIER "${process.env.TIER || 'all'}" resolved to ${tiers === null ? 'an unknown tier' : `[${tiers.join(', ')}]`}`,
+      `migration-e2e: MODE=run drives one tier at a time (${Object.keys(RUN_TIERS).join(', ')}); TIER "${process.env.TIER || 'all'}" resolved to ${tiers === null ? 'an unknown tier' : `[${tiers.join(', ')}]`}`,
     );
     process.exit(1);
   }
-  let tags = '@tier0';
+  let tags = `@${tier}`;
   if (story !== '') {
     if (!STORY_ID_RE.test(story)) {
       error(`migration-e2e: STORY "${story}" is not a MIG id (want e.g. MIG-04)`);
       process.exit(1);
     }
-    const matching = scenarios.filter((s) => s.stories.includes(story) && s.tiers.includes('tier0'));
+    const matching = scenarios.filter((s) => s.stories.includes(story) && s.tiers.includes(tier));
     if (matching.length === 0) {
-      error(`migration-e2e: STORY ${story} has no @tier0 scenario in ${SCENARIOS_JSON}`);
+      error(`migration-e2e: STORY ${story} has no @${tier} scenario in ${SCENARIOS_JSON}`);
       process.exit(1);
     }
-    tags = `@${story} && @tier0`;
+    tags = `@${story} && @${tier}`;
   }
 
-  const args = ['test', `-tags=${MIGRATION_BUILD_TAG}`, TIER0_PACKAGE, '-count=1', '-v'];
+  const args = ['test', `-tags=${run.buildTag}`, run.pkg, '-count=1', '-v'];
   log(`migration-e2e: go ${args.join(' ')} (MIGRATION_TAGS=${tags})`);
   const res = spawnSync('go', args, {
     stdio: 'inherit',

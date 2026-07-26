@@ -18,7 +18,9 @@ import (
 
 	"github.com/tsouza/cerberus/internal/migrate"
 	"github.com/tsouza/cerberus/internal/migrategate"
+	"github.com/tsouza/cerberus/internal/migrateverify"
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
+	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
 // workspacePattern names the per-scenario temporary directory every `--out`
@@ -71,6 +73,23 @@ type World struct {
 	envUsed map[string][]string
 
 	gate gateRun
+
+	// live is the Tier-1 stack's endpoints, established by "the tier-1 stack
+	// is live" — nil-valued (a zero LiveEndpoints) until that Given runs, so
+	// a Tier-1 step used from a Tier-0 scenario fails with a clear "establish
+	// it first" rather than dialing an empty URL.
+	live     lib.LiveEndpoints
+	liveSet  bool
+	manifest map[string]seed.Manifest
+
+	// verifyCorpusFile names which committed corpus a Tier-1 "When the
+	// operator verifies" step replays — set by the Given that selects breadth
+	// (MIG-16) or a semantic-hotspot subset (MIG-17), so the When step never
+	// guesses which fixture a scenario meant.
+	verifyCorpusFile string
+	verifyReport     map[string]migrateverify.Report
+	verifyRaw        map[string][]byte
+	verifyExitCode   map[string]int
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -98,6 +117,12 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.explainRaw, w.explain = map[string][]byte{}, map[string]explainReport{}
 		w.lookback = map[string]migrate.Lookback{}
 		w.envUsed = map[string][]string{}
+		w.live, w.liveSet = lib.LiveEndpoints{}, false
+		w.manifest = map[string]seed.Manifest{}
+		w.verifyCorpusFile = ""
+		w.verifyReport = map[string]migrateverify.Report{}
+		w.verifyRaw = map[string][]byte{}
+		w.verifyExitCode = map[string]int{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -130,6 +155,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerExplainSteps(ctx)
 	w.registerLookbackSteps(ctx)
 	w.registerGateSteps(ctx)
+	w.registerVerifySteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.
@@ -148,6 +174,23 @@ func (w *World) run(extraEnv []string, args ...string) (lib.Result, error) {
 		Args: args,
 		Dir:  w.root,
 		Env:  lib.OfflineEnv(extraEnv...),
+	})
+}
+
+// runLive executes the cerberus binary with the live environment (lib.LiveEnv
+// — no blackholed network) plus extraEnv, from the repository root. It is the
+// Tier-1 counterpart of run: every `cerberus migrate verify` invocation
+// against the live stack goes through this, never through run, because run's
+// OfflineEnv would blackhole exactly the HTTP routes a Tier-1 command needs.
+func (w *World) runLive(extraEnv []string, args ...string) (lib.Result, error) {
+	if w.bin == "" {
+		return lib.Result{}, fmt.Errorf("migration harness: no cerberus binary bound to the scenario world")
+	}
+	return lib.Run(lib.RunSpec{
+		Bin:  w.bin,
+		Args: args,
+		Dir:  w.root,
+		Env:  lib.LiveEnv(extraEnv...),
 	})
 }
 
