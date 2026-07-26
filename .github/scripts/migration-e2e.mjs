@@ -163,25 +163,15 @@ export const TIER2_TIMEOUT_MIN = 60;
 // emit rejects it rather than producing a matrix entry no job consumes. Each
 // tier's dispatch option, job stanza and ceiling land with its first scenario.
 //
-// `matrixDriven` records WHICH job shape the tier's stanza has, because the
-// two are not interchangeable. The matrix job is one generic runner fanned out
-// by `strategy.matrix`, so its tiers must appear in the emitted matrix.
-// migration-tier1 is a fixed job — it brings a compose stack up, seeds it and
-// tears it down around the suite, steps a matrix shard cannot express — so it
-// must NOT appear there. migration-tier2 is the same fixed shape for the same
-// reason, and additionally `needs:` migration-tier1 — docs section 8's build
-// order is that firing parity cannot be proven before query parity is, so a
-// tier-2 verdict reached while tier-1 is red would be meaningless.
-//
-// Getting this wrong is quiet rather than loud: a tier1 entry in the matrix
-// spawns a shard that runs the tier-1 suite on a bare runner with no stack
-// behind it. Both job shapes render as `migration-<tier>`, so that shard is
-// named exactly like the real fixed job — the run would show two
-// `migration-tier1` jobs, one of which never had a backend.
+// Each tier is one fixed job driving one tag filter on one runner: there is
+// nothing to shard, so none of the three is matrix-driven. migration-tier2
+// additionally `needs:` migration-tier1 — docs section 8's build order is
+// that firing parity cannot be proven before query parity is, so a tier-2
+// verdict reached while tier-1 is red would be meaningless.
 export const TIER_JOBS = {
-  tier0: { timeoutMinutes: TIER0_TIMEOUT_MIN, matrixDriven: true },
-  tier1: { timeoutMinutes: TIER1_TIMEOUT_MIN, matrixDriven: false },
-  tier2: { timeoutMinutes: TIER2_TIMEOUT_MIN, matrixDriven: false },
+  tier0: { timeoutMinutes: TIER0_TIMEOUT_MIN },
+  tier1: { timeoutMinutes: TIER1_TIMEOUT_MIN },
+  tier2: { timeoutMinutes: TIER2_TIMEOUT_MIN },
 };
 export const RUNNABLE_TIERS = Object.keys(TIER_JOBS);
 
@@ -651,14 +641,6 @@ export function nonRunnableTiers(tiers) {
   return tiers.filter((t) => !RUNNABLE_TIERS.includes(t));
 }
 
-// buildMatrix — the `strategy.matrix` migration-tier0 fans out over. One entry
-// per MATRIX-DRIVEN tier that has scenarios, carrying the stories it drives and
-// its own ceiling, in GitHub's `{include: [...]}` form so
-// `matrix: ${{ fromJSON(...) }}` binds `matrix.name` / `matrix.tier` /
-// `matrix.timeoutMinutes` directly. A tier with no declared job never reaches
-// here — the caller rejects it first, and this throws rather than emitting an
-// entry the workflow would read a null timeout out of. A tier whose job is its
-// own fixed stanza (tier1) is skipped: it is runnable, but not by this matrix.
 // storiesForTier — the sorted stories a tier's scenarios drive.
 export function storiesForTier(scenarios, tier) {
   return [
@@ -672,22 +654,6 @@ export function storiesForTier(scenarios, tier) {
 // not run, and the roll-up must not expect a result from it.
 export function tiersWithScenarios(scenarios, tiers) {
   return KNOWN_TIERS.filter((t) => tiers.includes(t) && storiesForTier(scenarios, t).length > 0);
-}
-
-export function buildMatrix(scenarios, { tiers }) {
-  const include = [];
-  for (const tier of tiers) {
-    const job = TIER_JOBS[tier];
-    if (job === undefined) {
-      throw new Error(`buildMatrix: ${tier} has no declared ceiling, so migration-e2e.yml has no job for it`);
-    }
-    if (!job.matrixDriven) continue;
-    const timeoutMinutes = job.timeoutMinutes;
-    const stories = storiesForTier(scenarios, tier);
-    if (stories.length === 0) continue;
-    include.push({ name: tier, tier, stories, timeoutMinutes });
-  }
-  return { include };
 }
 
 // TIER_NEEDS — the tiers a tier's JOB depends on, mirroring the `needs:` edges
@@ -1047,18 +1013,13 @@ function runEmit() {
     error(`migration-e2e: no scenario matched TIER "${process.env.TIER || 'all'}" — the lane would run nothing`);
     process.exit(1);
   }
-  const matrix = buildMatrix(scenarios, { tiers });
-  setOutput('matrix', JSON.stringify(matrix));
   setOutput('tiers', JSON.stringify(running));
   appendStepSummary(
     [
-      '### migration scenario matrix',
+      '### migration scenario tiers',
       '',
       '| tier | stories | timeout (min) | job |',
       '| --- | --- | --- | --- |',
-      // Both job shapes render as `migration-<tier>`: the matrix-driven job is
-      // named for the shard it is running, not for itself, so the summary
-      // names the job the reader will actually find in the run.
       ...running.map((tier) => {
         const stories = storiesForTier(scenarios, tier).join(', ');
         const { timeoutMinutes } = TIER_JOBS[tier];
@@ -1066,12 +1027,12 @@ function runEmit() {
       }),
     ].join('\n'),
   );
-  log(`migration-e2e: ${running.join(', ')} will run (${matrix.include.length} of them via the matrix).`);
+  log(`migration-e2e: ${running.join(', ')} will run.`);
   process.exit(0);
 }
 
 // RUN_TIERS is MODE=run's own supported-tier table — deliberately separate
-// from RUNNABLE_TIERS (the coverage-ratchet/matrix table): a tier can be
+// from RUNNABLE_TIERS (the coverage-ratchet table): a tier can be
 // driven manually here before RUNNABLE_TIERS declares it has a CI job (see
 // the TIER1_PACKAGE comment above). Each entry is the Go package and build
 // tag `go test` runs for that tier.

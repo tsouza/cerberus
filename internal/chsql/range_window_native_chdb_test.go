@@ -65,14 +65,7 @@ import (
 // column-explicit, so the existing positional VALUES tuples keep working
 // and the merged label map collapses to Attributes alone — keeping the
 // native/fan-out parity assertion unchanged.
-const dualEmitSeed = `
-CREATE OR REPLACE TABLE otel_metrics_sum (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+var dualEmitSeed = metricsSeedDDL("otel_metrics_sum") + `
 INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),

@@ -73,14 +73,7 @@ import (
 // present, DEFAULT map(), column-explicit INSERT). Two host series with
 // distinct, non-constant slopes so the regression value is non-trivial and
 // differs per series, on a clean 1-minute grid.
-const derivSeed = `
-CREATE OR REPLACE TABLE otel_metrics_gauge (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+var derivSeed = metricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 10.0),

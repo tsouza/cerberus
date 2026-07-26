@@ -286,6 +286,32 @@ func backfillMetricsColumns(stmts []string) []string {
 	return out
 }
 
+// createTableHeads are the `CREATE … TABLE ` spellings a seed may open a
+// metric-table definition with. Matching only the bare `CREATE TABLE `
+// form is what let the exotic-PromQL and perf seeds — both written as
+// `CREATE OR REPLACE TABLE` — slip past the backfill and fail at query
+// time with UNKNOWN_IDENTIFIER on a column the read path projects.
+// Longest-first, so `CREATE OR REPLACE TABLE ` is never mis-read as the
+// bare form.
+var createTableHeads = []string{
+	"CREATE OR REPLACE TABLE ",
+	"CREATE TABLE IF NOT EXISTS ",
+	"CREATE TABLE ",
+}
+
+// createTableTail returns everything after whichever [createTableHeads]
+// spelling stmt opens with — i.e. the text starting at the table name.
+// Mirrors internal/chclienttest/rewrite.go::ddlCreateTableTail.
+func createTableTail(trimmed string) (string, bool) {
+	upper := strings.ToUpper(trimmed)
+	for _, head := range createTableHeads {
+		if strings.HasPrefix(upper, head) {
+			return trimmed[len(head):], true
+		}
+	}
+	return "", false
+}
+
 // parseMetricsCreate reports whether stmt is a `CREATE TABLE
 // otel_metrics_*` that declares an `Attributes` column and omits at least
 // one [backfilledColumns] entry. On a match it returns the table name, the
@@ -293,12 +319,10 @@ func backfillMetricsColumns(stmts []string) []string {
 // missing columns injected right after the Attributes column.
 func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
 	trimmed := stripLeadingNoise(stmt)
-	upper := strings.ToUpper(trimmed)
-	idx := strings.Index(upper, "CREATE TABLE ")
-	if idx != 0 {
+	rest, ok := createTableTail(trimmed)
+	if !ok {
 		return "", nil, "", false
 	}
-	rest := trimmed[len("CREATE TABLE "):]
 	name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
 	if !strings.HasPrefix(name, metricsTablePrefix) {
 		return "", nil, "", false
