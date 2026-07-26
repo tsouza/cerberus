@@ -48,12 +48,21 @@ func TestTier0(t *testing.T) {
 		tags = defaultTags
 	}
 
+	// The pretty formatter plus, when the migration lane asked for one, a
+	// cucumber-JSON run report at the path it owns. That report is what
+	// `MODE=attest` reads to prove this suite actually EXECUTED the scenarios
+	// the coverage ratchet counts — enumerating a scenario is not running it.
+	format, err := lib.SuiteFormat()
+	if err != nil {
+		t.Fatalf("resolve the godog formatter: %v", err)
+	}
+
 	world := steps.NewWorld(root, bin)
 	suite := godog.TestSuite{
 		Name:                "migration-tier0",
 		ScenarioInitializer: world.InitializeScenario,
 		Options: &godog.Options{
-			Format: "pretty",
+			Format: format,
 			Output: os.Stdout,
 			Paths:  []string{featurePath},
 			Tags:   tags,

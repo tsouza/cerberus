@@ -12,7 +12,7 @@
 // script consumes that JSON — it never parses Gherkin itself — and holds the
 // feature tree to the story list.
 //
-// Three modes (env MODE, or argv[2]; default `verify`):
+// Five modes (env MODE, or argv[2]; default `verify`):
 //
 //   - verify : the ratchet. Derives its anchors LIVE from the doc (the story
 //              table in section 4, the Tier(s) column in section 6, the
@@ -28,7 +28,34 @@
 //              runs.
 //   - run    : drives the godog suite for the requested tier filter and
 //              reports. `go test`'s exit status is the verdict — this script
-//              parses no logs and re-derives no result.
+//              parses no logs and re-derives no result. It also OWNS the
+//              cucumber-JSON run report's path (see MIGRATION_REPORT below),
+//              so a tier that runs always leaves an execution record behind.
+//   - attest : the execution gate. Reads the tier run reports back and holds
+//              every scenario the ratchet COUNTS to "appeared in a report,
+//              and passed there". See "Enumeration is not execution" below.
+//   - rollup : the lane verdict from the tier jobs' results.
+//
+// Enumeration is not execution
+// ----------------------------
+// `verify` walks feature FILES. On 2026-07-26 it reported "scenarios 30/30
+// across 26/26 stories; 0 violations" on a branch whose five tier-2 scenarios
+// had never executed once — the tier-2 job had been skipped by a `needs:`
+// cascade after tier 1 failed. A scenario that never ran counted exactly the
+// same as one that passed, which is the green-but-meaningless shape this repo
+// treats as the cardinal sin.
+//
+// `attest` closes that: each tier's godog suite writes a cucumber-JSON report
+// at a path MODE=run chooses, the tier job uploads it, and the aggregate job
+// downloads them all and proves every counted scenario is in one with every
+// step `passed`. It attests only the tiers this run SELECTED (emit's `tiers`
+// output, the same value the roll-up reads) — a dispatch narrowed to
+// `tier=tier0` must not fail because tier1's scenarios did not run — and, when
+// the dispatch narrowed to one story, only that story's scenarios.
+//
+// `verify`'s own notice reports enumerated and attested coverage as two
+// DIFFERENT numbers, so the caveat is in the gate's output rather than in
+// prose somebody has to remember to write.
 //
 // The coverage floor in COVERAGE_BASELINE is an AGGREGATE integer, the same
 // shape compat-ratchet.mjs pins. It is NOT an allow-list: it names no story,
@@ -39,7 +66,7 @@
 // tighten instead of ossify.
 //
 // Env:
-//   MODE               verify | emit | run | rollup           (default: verify)
+//   MODE               verify | emit | run | attest | rollup  (default: verify)
 //   SCENARIOS_JSON     path to the cmd/scenarios output
 //                                      (default: build/migration-scenarios.json)
 //   STORIES_DOC        the 26-story anchor
@@ -50,21 +77,34 @@
 //                                    (default: test/e2e/migration/features)
 //   COVERAGE_BASELINE  the raise-only coverage floor
 //                            (default: test/e2e/migration/coverage-baseline.json)
+//   PASS_ASSERTION_PIN the section-6 PASS-cell hash pin
+//                        (default: test/e2e/migration/pass-assertions.pin.json)
+//   REPORT_DIR         where tier run reports are written / read back
+//                                     (run, attest, verify's notice;
+//                                      default: build/migration-reports)
 //   TIER               all | tier0 | tier1 | tier2            (emit, run; default: all)
-//   STORY              a single MIG id to drive               (run; optional)
+//   STORY              a single MIG id to drive               (run, attest; optional)
 //   CERBERUS_BIN       prebuilt binary the runner execs       (run; optional)
+//   MIGRATION_REPORT   NOT an input — MODE=run EXPORTS it to the `go test`
+//                      child as the absolute cucumber-JSON report path, and
+//                      test/e2e/migration/lib.SuiteFormat reads it. Owned
+//                      here so a tier job cannot ship without a report by
+//                      forgetting a workflow step.
 //   GITHUB_OUTPUT      runner file the matrix + tiers outputs append to (emit)
 //   SETUP_RESULT       migration-setup's job result                  (rollup)
-//   EXPECTED_TIERS     emit's `tiers` output, verbatim               (rollup)
+//   EXPECTED_TIERS     emit's `tiers` output, verbatim        (rollup, attest)
 //   RESULT_TIER0/1/2   each tier job's result, one var per tier      (rollup)
 //
-// Exit: 0 = clean, 1 = a coverage/correctness violation, an unknown MODE, a
-//       missing or malformed SCENARIOS_JSON/baseline, a requested tier the
-//       workflow has no job for, or a failed suite run.
+// Exit: 0 = clean, 1 = a coverage/correctness violation, an unattested
+//       scenario, a PASS-cell pin mismatch, an unknown MODE, a missing or
+//       malformed SCENARIOS_JSON/baseline/pin, a requested tier the workflow
+//       has no job for, or a failed suite run.
 //
 // node: builtins only (via lib/gh.mjs) — no npm deps, no setup-node needed.
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 import { error, notice, log, setOutput, appendStepSummary } from './lib/gh.mjs';
@@ -75,6 +115,9 @@ const ARCHETYPE_ROOT = process.env.ARCHETYPE_ROOT || 'test/e2e/migration/archety
 const FEATURE_ROOT = process.env.FEATURE_ROOT || 'test/e2e/migration/features';
 const COVERAGE_BASELINE =
   process.env.COVERAGE_BASELINE || 'test/e2e/migration/coverage-baseline.json';
+const PASS_ASSERTION_PIN =
+  process.env.PASS_ASSERTION_PIN || 'test/e2e/migration/pass-assertions.pin.json';
+const REPORT_DIR = process.env.REPORT_DIR || 'build/migration-reports';
 
 // The enumerator stamps this into its output; a reader that does not
 // understand the version rejects the document rather than misreading it.
@@ -82,6 +125,9 @@ export const SCENARIOS_SCHEMA_VERSION = 1;
 
 // The baseline carries its own version for the same reason.
 export const BASELINE_SCHEMA_VERSION = 1;
+
+// So does the PASS-assertion pin.
+export const PIN_SCHEMA_VERSION = 1;
 
 // The tiers a Scenario may declare.
 export const KNOWN_TIERS = ['tier0', 'tier1', 'tier2'];
@@ -207,6 +253,73 @@ export function parseTierMap(docText) {
   return map;
 }
 
+// --- the PASS-assertion pin -------------------------------------------------
+//
+// WHY THIS EXISTS — read before "simplifying" it away.
+//
+// The ratchet above derives its anchors LIVE from section 6, which means the
+// anchor is editable in the same commit as the code it anchors. It checks a
+// scenario's tier tag against the Tier(s) column but never looks at the PASS
+// assertion's TEXT, so narrowing a PASS cell has always been a valid route to
+// "full coverage": weaken what the doc demands, implement the weaker thing,
+// and every gate stays green. That happened twice in one session — MIG-23's
+// "the old backend is kept read-only as a historical tier" clause was deleted,
+// and MIG-18's PASS assertion was narrowed from an incumbent-vs-shadow
+// notification-stream diff to a single-ruler lifecycle IN THE SAME COMMIT that
+// implemented the narrower thing.
+//
+// The pin does NOT forbid narrowing. A spec legitimately evolves, and a gate
+// that froze section 6 would be a gate people route around. What it forbids is
+// narrowing SILENTLY: the hash of every PASS cell is committed beside the
+// coverage baseline, so changing a cell fails `MODE=verify` until the pin is
+// updated in the SAME diff — one reviewed line that says "this story now
+// demands less", sitting next to the commit that implements less. That line is
+// the whole point. There is deliberately no `MODE=pin` regeneration mode: the
+// failure prints the new hash to paste, because a one-command re-pin is a
+// re-pin nobody reads.
+
+// A section-6 row is `| ID | Tier(s) | CLI | Fixtures | PASS assertion |`.
+// The count is asserted rather than assumed, so a table that grows a column
+// fails loudly instead of hashing the wrong cell.
+const SECTION6_COLUMNS = 5;
+const SECTION6_TIERS_COLUMN = 1;
+const SECTION6_PASS_COLUMN = 4;
+
+// The hash algorithm the pin file declares and this module computes with.
+const PIN_HASH_ALGORITHM = 'sha256';
+
+// hashPassAssertion — the pinned digest of one PASS cell. Normalising
+// whitespace first means a markdownlint reflow or a column-width realignment
+// (both of which this doc's wide tables attract) is not a spurious failure,
+// while any change to the WORDS is.
+export function hashPassAssertion(text) {
+  const normalized = text.trim().replace(/\s+/g, ' ');
+  return createHash(PIN_HASH_ALGORITHM).update(normalized, 'utf8').digest('hex');
+}
+
+// parsePassAssertions — story -> { tiers, pass, columns } from section 6's
+// tables. `columns` is carried so a malformed row is reported as malformed
+// rather than silently hashing whichever cell happened to land last.
+export function parsePassAssertions(docText) {
+  const map = new Map();
+  const section = sectionOf(docText, 6);
+  for (const line of section.split('\n')) {
+    if (!/^\|\s*MIG-\d{2}\s*\|/.test(line)) continue;
+    const cells = line.split('|').slice(1, -1);
+    const story = cells[0].trim();
+    if (cells.length !== SECTION6_COLUMNS) {
+      map.set(story, { tiers: null, pass: null, columns: cells.length });
+      continue;
+    }
+    map.set(story, {
+      tiers: cells[SECTION6_TIERS_COLUMN].trim(),
+      pass: cells[SECTION6_PASS_COLUMN].trim(),
+      columns: cells.length,
+    });
+  }
+  return map;
+}
+
 // parseArchetypes — the archetype names from section 7's table. The first
 // column IS the directory name under ARCHETYPE_ROOT, the `@archetype:` tag
 // value and the matrix key, so one string carries all three.
@@ -285,6 +398,8 @@ export function collectViolations({
   scenarios,
   stories,
   tierMap,
+  passAssertions,
+  pin,
   archetypes,
   archetypeDirNames,
   featureFiles,
@@ -481,6 +596,51 @@ export function collectViolations({
     );
   }
 
+  // V17..V21 — the PASS-assertion pin. See the block comment above
+  // parsePassAssertions for why a live-derived anchor needs pinning at all.
+  if (pin.schema_version !== PIN_SCHEMA_VERSION) {
+    add('V17', `${PASS_ASSERTION_PIN} declares schema_version ${pin.schema_version}, want ${PIN_SCHEMA_VERSION}`);
+  }
+  if (pin.algorithm !== PIN_HASH_ALGORITHM) {
+    add('V17', `${PASS_ASSERTION_PIN} declares algorithm "${pin.algorithm}", want "${PIN_HASH_ALGORITHM}"`);
+  }
+  const pinned = pin.assertions || {};
+  for (const [story, cell] of passAssertions) {
+    if (cell.columns !== SECTION6_COLUMNS) {
+      add(
+        'V21',
+        `${STORIES_DOC} section 6's ${story} row has ${cell.columns} columns, want ${SECTION6_COLUMNS} (| ID | Tier(s) | CLI | Fixtures | PASS assertion |) — a malformed row cannot be pinned`,
+      );
+      continue;
+    }
+    const want = pinned[story];
+    if (want === undefined) {
+      add(
+        'V18',
+        `${STORIES_DOC} section 6 lists ${story} but ${PASS_ASSERTION_PIN} pins no PASS assertion for it; add { "tiers": "${cell.tiers}", "${PIN_HASH_ALGORITHM}": "${hashPassAssertion(cell.pass)}" }`,
+      );
+      continue;
+    }
+    const got = hashPassAssertion(cell.pass);
+    if (want[PIN_HASH_ALGORITHM] !== got) {
+      add(
+        'V19',
+        `${story}'s PASS assertion in ${STORIES_DOC} section 6 changed: pinned ${want[PIN_HASH_ALGORITHM]}, now ${got}. If the change is intended — including a deliberate narrowing — update ${PASS_ASSERTION_PIN} to the new hash IN THE SAME DIFF, so the weakening is a reviewed line rather than a side effect of the commit that implements it.`,
+      );
+    }
+    if (want.tiers !== cell.tiers) {
+      add(
+        'V20',
+        `${story}'s Tier(s) cell in ${STORIES_DOC} section 6 changed: pinned "${want.tiers}", now "${cell.tiers}" — update ${PASS_ASSERTION_PIN} in the same diff`,
+      );
+    }
+  }
+  for (const story of Object.keys(pinned)) {
+    if (!passAssertions.has(story)) {
+      add('V18', `${PASS_ASSERTION_PIN} pins ${story}, which ${STORIES_DOC} section 6 has no row for`);
+    }
+  }
+
   return v;
 }
 
@@ -563,6 +723,197 @@ export function requestedTiers(tierInput, scenarios) {
   return KNOWN_TIERS.filter((t) => selected.has(t));
 }
 
+// --- attestation: the executed-not-enumerated gate ---------------------------
+
+// godog's cucumber formatter writes a per-STEP status and no element-level
+// verdict, so a scenario passed iff every one of its steps did. `skipped`,
+// `undefined`, `pending`, `ambiguous` and `failed` are all not-passed — none
+// of them is tolerated, and a Scenario with no steps at all is not a pass
+// either (there is nothing there to have run).
+const STEP_PASSED = 'passed';
+
+// The tag vocabulary the report carries. godog prepends the FEATURE's tags to
+// every element, which is where the migration features declare @MIG-nn /
+// @tierN, so the element tags alone identify the (story, tier) pair the
+// coverage ratchet keys on — the same key V7 pins to one Scenario. Keying on
+// tags rather than on scenario name/line survives Scenario Outline expansion,
+// where one enumerated node becomes one report element per Examples row.
+const STORY_TAG_RE = /^@(MIG-\d{2})$/;
+const TIER_TAG_RE = /^@(tier\d)$/;
+
+// The suffix a tier's run report is written with. MODE=run builds the whole
+// path from REPORT_DIR + tier + this, so the runner and the attester agree by
+// construction rather than by two workflow steps quoting the same string.
+export const REPORT_SUFFIX = '.cucumber.json';
+
+// reportPathFor — the absolute path MODE=run hands the godog suite for a tier.
+export function reportPathFor(tier, dir = REPORT_DIR) {
+  return resolve(join(dir, `${tier}${REPORT_SUFFIX}`));
+}
+
+// readReportDir — every `*.json` under `dir`, recursively. Recursive because
+// `actions/download-artifact` puts each artifact in its own subdirectory
+// unless `merge-multiple` is set, and a gate that silently found nothing
+// because of a layout detail is exactly the failure this whole file exists to
+// prevent. A missing directory yields an empty list rather than an error: the
+// `lint` job runs MODE=verify with no reports at all, and its notice reports
+// attested coverage as 0 rather than dying.
+export function readReportDir(dir = REPORT_DIR) {
+  const found = [];
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name.endsWith('.json')) found.push(p);
+    }
+  };
+  walk(dir);
+  return found.sort();
+}
+
+// outcomesFromReports — key -> the report elements that claim it, where key is
+// `MIG-nn/tierN`. `unkeyable` collects elements whose tags do not resolve to
+// exactly one story and one tier; they are reported rather than dropped, since
+// a report the attester cannot read is not evidence of anything.
+export function outcomesFromReports(reports) {
+  const outcomes = new Map();
+  const unkeyable = [];
+  for (const { path, features } of reports) {
+    for (const feature of features) {
+      for (const el of feature.elements || []) {
+        const tags = (el.tags || []).map((t) => t.name);
+        const stories = tags.map((t) => (STORY_TAG_RE.exec(t) || [])[1]).filter(Boolean);
+        const tiers = tags.map((t) => (TIER_TAG_RE.exec(t) || [])[1]).filter(Boolean);
+        const where = `${path}: ${feature.uri || feature.name}:${el.line} "${el.name}"`;
+        if (stories.length !== 1 || tiers.length !== 1) {
+          unkeyable.push({ where, stories, tiers });
+          continue;
+        }
+        const steps = el.steps || [];
+        const failed = steps.filter((s) => (s.result || {}).status !== STEP_PASSED);
+        const detail =
+          steps.length === 0
+            ? 'the report records no steps for it'
+            : failed.map((s) => `"${s.keyword || ''}${s.name}" ${(s.result || {}).status}`).join('; ');
+        const key = `${stories[0]}/${tiers[0]}`;
+        const list = outcomes.get(key) || [];
+        list.push({ where, passed: steps.length > 0 && failed.length === 0, detail });
+        outcomes.set(key, list);
+      }
+    }
+  }
+  return { outcomes, unkeyable };
+}
+
+// collectAttestations — every attestation rule, collect-all in the same style
+// as collectViolations: one run names every scenario that did not run and
+// every one that ran red, so a fix lands in one pass.
+//
+// `tiers` is the set this run SELECTED — emit's `tiers` output, the same value
+// the roll-up reads. A dispatch narrowed to `tier=tier0` legitimately never
+// runs tier1's scenarios, so attesting them would turn a correct narrowing
+// into a failure. `story`, when set, narrows the same way for the workflow's
+// single-story dispatch input.
+export function collectAttestations({ scenarios, tiers, story, outcomes, unkeyable, reportCount }) {
+  const a = [];
+  const add = (code, message) => a.push({ code, message });
+
+  const selected = scenarios.filter(
+    (s) => s.tiers.some((t) => tiers.includes(t)) && (story === '' || s.stories.includes(story)),
+  );
+
+  if (selected.length > 0 && reportCount === 0) {
+    add(
+      'A0',
+      `no run report was found under ${REPORT_DIR}, so none of the ${selected.length} selected scenario(s) can be attested — MODE=run writes one per tier and each tier job uploads it`,
+    );
+  }
+
+  const wanted = new Map();
+  for (const sc of selected) {
+    for (const st of sc.stories) {
+      for (const t of sc.tiers) {
+        if (!tiers.includes(t)) continue;
+        const key = `${st}/${t}`;
+        wanted.set(key, (wanted.get(key) || 0) + 1);
+      }
+    }
+  }
+
+  for (const [key, want] of [...wanted].sort()) {
+    const [st, tier] = key.split('/');
+    const got = outcomes.get(key) || [];
+    if (got.length === 0) {
+      add(
+        'A1',
+        `${st} is counted as covered at ${tier} but NEVER RAN — no run report contains a scenario tagged @${st} @${tier}. Enumerating a scenario is not executing it.`,
+      );
+      continue;
+    }
+    // A Scenario Outline expands to one report element per Examples row, so
+    // MORE elements than enumerated nodes is normal; FEWER means an
+    // enumerated node produced no element and its execution is unproven.
+    if (got.length < want) {
+      add(
+        'A1',
+        `${st}/${tier} enumerates ${want} scenario node(s) but only ${got.length} ran — ${want - got.length} of them never executed`,
+      );
+    }
+    for (const o of got) {
+      if (!o.passed) {
+        add('A2', `${st}/${tier} ran but did not pass — ${o.where}: ${o.detail}`);
+      }
+    }
+  }
+
+  // A3 is drift between the report and the ENUMERATION, so it is judged
+  // against every scenario the selected tiers declare — not against `wanted`,
+  // which a single-story dispatch has already narrowed. Narrowing to one story
+  // means the other scenarios are not attested; it does not mean a report
+  // mentioning them is corrupt.
+  const enumerated = new Set(
+    scenarios.flatMap((s) => s.stories.flatMap((st) => s.tiers.map((t) => `${st}/${t}`))),
+  );
+  for (const key of [...outcomes.keys()].sort()) {
+    if (enumerated.has(key)) continue;
+    const [st, tier] = key.split('/');
+    if (!tiers.includes(tier)) continue;
+    add(
+      'A3',
+      `a run report attests @${st} @${tier}, which this run's enumeration does not list — the report and the feature tree disagree about what exists`,
+    );
+  }
+
+  for (const u of unkeyable) {
+    add(
+      'A4',
+      `${u.where} carries ${u.stories.length} @MIG-nn and ${u.tiers.length} tier tag(s) in its run report, so its execution cannot be attributed to a counted scenario`,
+    );
+  }
+
+  return a;
+}
+
+// attestedCount — how many of `scenarios` are proven executed-and-passed by
+// the reports on disk. Used by MODE=verify's notice so enumerated and attested
+// coverage are reported as two different numbers rather than one number and a
+// caveat somebody has to remember to write in prose.
+export function attestedCount(scenarios, outcomes) {
+  let n = 0;
+  for (const sc of scenarios) {
+    const keys = sc.stories.flatMap((st) => sc.tiers.map((t) => `${st}/${t}`));
+    const got = keys.flatMap((k) => outcomes.get(k) || []);
+    if (got.length > 0 && got.every((o) => o.passed)) n += 1;
+  }
+  return n;
+}
+
 // --- IO ---------------------------------------------------------------------
 
 function readJSON(path, label) {
@@ -607,6 +958,22 @@ function readDoc() {
   return '';
 }
 
+// loadReports — every run report under REPORT_DIR, parsed. A file that is not
+// a cucumber-JSON array is a hard error rather than an ignored file: silently
+// skipping an unreadable report is how "attested" would quietly become
+// "attested by nothing".
+function loadReports(dir = REPORT_DIR) {
+  const paths = readReportDir(dir);
+  return paths.map((path) => {
+    const features = readJSON(path, 'a tier run report');
+    if (!Array.isArray(features)) {
+      error(`migration-e2e: the run report at ${path} is not a cucumber-JSON feature array`);
+      process.exit(1);
+    }
+    return { path, features };
+  });
+}
+
 // --- modes ------------------------------------------------------------------
 
 // runVerify — the ratchet. Returns the loaded scenario set so `emit` can reuse
@@ -618,11 +985,14 @@ function runVerify() {
   const tierMap = parseTierMap(docText);
   const archetypes = parseArchetypes(docText);
   const baseline = readJSON(COVERAGE_BASELINE, 'the coverage baseline');
+  const pin = readJSON(PASS_ASSERTION_PIN, 'the PASS-assertion pin');
 
   const violations = collectViolations({
     scenarios,
     stories,
     tierMap,
+    passAssertions: parsePassAssertions(docText),
+    pin,
     archetypes,
     archetypeDirNames: archetypeDirs(),
     featureFiles: featureFileNames(),
@@ -634,15 +1004,22 @@ function runVerify() {
       error(message, { title: `migration-coverage ${code}` });
     }
     error(
-      `migration-e2e: ${violations.length} coverage violation(s). The story list in ${STORIES_DOC} section 4 is the anchor; the scenarios live under ${FEATURE_ROOT}; the floor lives in ${COVERAGE_BASELINE}.`,
+      `migration-e2e: ${violations.length} coverage violation(s). The story list in ${STORIES_DOC} section 4 is the anchor; the scenarios live under ${FEATURE_ROOT}; the floor lives in ${COVERAGE_BASELINE}; the PASS-assertion hashes live in ${PASS_ASSERTION_PIN}.`,
       { title: 'migration-e2e coverage ratchet' },
     );
     process.exit(1);
   }
 
+  // Two numbers, never one. ENUMERATED is what this mode can prove by walking
+  // feature files; ATTESTED is what a tier run report proves actually
+  // executed and passed. On the `lint` job no report exists, so attested is 0
+  // — and saying so out loud is the point: the honest caveat lives in the
+  // gate's own output instead of in prose beside it.
   const covered = new Set(scenarios.flatMap((s) => s.stories));
+  const { outcomes } = outcomesFromReports(loadReports());
+  const attested = attestedCount(scenarios, outcomes);
   notice(
-    `migration-e2e: scenarios ${scenarios.length}/${baseline.scenarios_total} across ${covered.size}/${stories.length} stories; 0 violations`,
+    `migration-e2e: ENUMERATED ${scenarios.length}/${baseline.scenarios_total} scenarios across ${covered.size}/${stories.length} stories, 0 violations; ATTESTED (executed and passed) ${attested}/${scenarios.length} from ${REPORT_DIR}. Enumeration is not execution — MODE=attest in the migration-aggregate roll-up is what closes the gap.`,
   );
   return scenarios;
 }
@@ -730,11 +1107,22 @@ function runRun() {
     tags = `@${story} && @${tier}`;
   }
 
+  // The run report's path is chosen HERE, not in the workflow. A tier job's
+  // YAML stanza can forget an upload step and be caught by MODE=attest's A0/A1
+  // ("counted but never ran"); it cannot silently produce no report at all,
+  // because every tier goes through this one code path and lib.SuiteFormat
+  // turns the variable into a godog formatter. `go test` runs the test binary
+  // with the PACKAGE directory as its working directory, so the path must be
+  // absolute — lib.SuiteFormat refuses a relative one rather than writing the
+  // report somewhere nobody looks.
+  const reportPath = reportPathFor(tier);
+  mkdirSync(resolve(REPORT_DIR), { recursive: true });
+
   const args = ['test', `-tags=${run.buildTag}`, run.pkg, '-count=1', '-v'];
-  log(`migration-e2e: go ${args.join(' ')} (MIGRATION_TAGS=${tags})`);
+  log(`migration-e2e: go ${args.join(' ')} (MIGRATION_TAGS=${tags}, MIGRATION_REPORT=${reportPath})`);
   const res = spawnSync('go', args, {
     stdio: 'inherit',
-    env: { ...process.env, MIGRATION_TAGS: tags },
+    env: { ...process.env, MIGRATION_TAGS: tags, MIGRATION_REPORT: reportPath },
   });
   const status = res.error ? 1 : (res.status ?? 1);
   if (status !== 0) {
@@ -744,7 +1132,73 @@ function runRun() {
     });
     process.exit(1);
   }
-  notice(`migration-e2e: the migration scenarios passed for tag filter ${tags}`);
+  // A green suite that wrote no report is a green run nothing can attest, so
+  // it is a failure here rather than an A1 storm two jobs later with no
+  // evidence to explain it.
+  if (!existsSync(reportPath) || statSync(reportPath).size === 0) {
+    error(
+      `migration-e2e: the ${tier} suite passed but wrote no run report at ${reportPath} — the tier's godog Options.Format must come from lib.SuiteFormat()`,
+      { title: 'migration-e2e' },
+    );
+    process.exit(1);
+  }
+  notice(`migration-e2e: the migration scenarios passed for tag filter ${tags}; run report at ${reportPath}`);
+  process.exit(0);
+}
+
+// runAttest — the execution gate. Reads the tier run reports back and proves
+// every scenario the ratchet counts for the SELECTED tiers actually executed
+// and passed. Selection comes from EXPECTED_TIERS, the same emit output the
+// roll-up reads, so "which tiers did this run mean to execute" is decided in
+// exactly one place and the two gates cannot disagree.
+function runAttest() {
+  const scenarios = loadScenarios();
+  let tiers;
+  try {
+    tiers = JSON.parse(process.env.EXPECTED_TIERS || '[]');
+  } catch (e) {
+    error(`migration-e2e: EXPECTED_TIERS is not JSON: ${e.message}`);
+    process.exit(1);
+  }
+  if (!Array.isArray(tiers)) {
+    error(`migration-e2e: EXPECTED_TIERS must be a JSON array of tier names, got ${process.env.EXPECTED_TIERS}`);
+    process.exit(1);
+  }
+  const story = (process.env.STORY || '').trim();
+  if (story !== '' && !STORY_ID_RE.test(story)) {
+    error(`migration-e2e: STORY "${story}" is not a MIG id (want e.g. MIG-04)`);
+    process.exit(1);
+  }
+
+  const reports = loadReports();
+  const { outcomes, unkeyable } = outcomesFromReports(reports);
+  const problems = collectAttestations({
+    scenarios,
+    tiers,
+    story,
+    outcomes,
+    unkeyable,
+    reportCount: reports.length,
+  });
+
+  if (problems.length > 0) {
+    for (const { code, message } of problems) {
+      error(`migration-e2e: ${message}`, { title: `migration-attestation ${code}` });
+    }
+    error(
+      `migration-e2e: ${problems.length} attestation violation(s) across tier(s) ${tiers.join(', ') || 'none'}. Coverage counts EXECUTED scenarios, not enumerated ones — fix the scenario or the tier job, never the count.`,
+      { title: 'migration-e2e attestation' },
+    );
+    process.exit(1);
+  }
+
+  const attested = attestedCount(
+    scenarios.filter((s) => s.tiers.some((t) => tiers.includes(t))),
+    outcomes,
+  );
+  notice(
+    `migration-e2e: attested ${attested} scenario(s) as executed and passed across tier(s) ${tiers.join(', ') || 'none'}, from ${reports.length} run report(s) under ${REPORT_DIR}`,
+  );
   process.exit(0);
 }
 
@@ -822,10 +1276,12 @@ if (invokedDirectly) {
     runEmit();
   } else if (mode === 'run') {
     runRun();
+  } else if (mode === 'attest') {
+    runAttest();
   } else if (mode === 'rollup') {
     runRollUp();
   } else {
-    error(`migration-e2e: unknown MODE "${mode}" (want verify|emit|run|rollup)`);
+    error(`migration-e2e: unknown MODE "${mode}" (want verify|emit|run|attest|rollup)`);
     process.exit(1);
   }
 }

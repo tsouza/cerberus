@@ -20,7 +20,13 @@ import {
   parseStories,
   parseTierMap,
   parseArchetypes,
+  parsePassAssertions,
+  hashPassAssertion,
   collectViolations,
+  collectAttestations,
+  outcomesFromReports,
+  attestedCount,
+  reportPathFor,
   buildMatrix,
   requestedTiers,
   nonRunnableTiers,
@@ -30,11 +36,14 @@ import {
   KNOWN_TIERS,
   TIER_JOBS,
   BASELINE_SCHEMA_VERSION,
+  PIN_SCHEMA_VERSION,
+  REPORT_SUFFIX,
   TIER0_TIMEOUT_MIN,
 } from './migration-e2e.mjs';
 
 const DOC = readFileSync('docs/migration-testing.md', 'utf8');
 const BASELINE = JSON.parse(readFileSync('test/e2e/migration/coverage-baseline.json', 'utf8'));
+const PIN = JSON.parse(readFileSync('test/e2e/migration/pass-assertions.pin.json', 'utf8'));
 
 // The eight archetypes and the seven stories Tier 0 covers today. Written out
 // so a synthetic fixture stays readable; the live-tree assertions below check
@@ -145,6 +154,8 @@ function world(overrides = {}) {
     scenarios,
     stories,
     tierMap: parseTierMap(DOC),
+    passAssertions: parsePassAssertions(DOC),
+    pin: PIN,
     archetypes: ARCHETYPES,
     archetypeDirNames: ARCHETYPES,
     // Both SPLIT groups' scenarios live in the SAME feature file as the half
@@ -531,6 +542,306 @@ test('narrowing to a tier also selects the tiers its job needs', () => {
   assert.deepEqual(requestedTiers('tier2', world().scenarios), ['tier1', 'tier2']);
 });
 
+// --- 3. the PASS-assertion pin ----------------------------------------------
+//
+// The ratchet derives its anchors LIVE from section 6, so narrowing a PASS
+// cell used to be a valid route to "full coverage": weaken the doc, implement
+// the weaker thing, stay green. The pin does not forbid narrowing — it forbids
+// narrowing SILENTLY. These tests hold its detectors to firing, because a pin
+// that rotted into a no-op looks exactly like a pin nobody has had to update.
+
+test('live doc: the pin covers every section-6 row and matches it today', () => {
+  const cells = parsePassAssertions(DOC);
+  const stories = parseStories(DOC);
+  assert.equal(cells.size, stories.length);
+  assert.equal(Object.keys(PIN.assertions).length, stories.length);
+  assert.equal(PIN.schema_version, PIN_SCHEMA_VERSION);
+  assert.equal(PIN.algorithm, 'sha256');
+  for (const story of stories) {
+    const cell = cells.get(story);
+    assert.ok(cell, `${story} has no section-6 row`);
+    assert.equal(cell.columns, 5, `${story}'s row is not | ID | Tier(s) | CLI | Fixtures | PASS |`);
+    assert.ok(cell.pass.length > 0, `${story}'s PASS cell is empty`);
+    assert.equal(PIN.assertions[story].sha256, hashPassAssertion(cell.pass), `${story}'s pin is stale`);
+    assert.equal(PIN.assertions[story].tiers, cell.tiers, `${story}'s pinned Tier(s) cell is stale`);
+  }
+});
+
+test('the pin hash ignores a reflow but not a wording change', () => {
+  // Markdownlint reflows these very wide tables, and a column realignment
+  // shifts every cell's padding, so whitespace must not be a failure — while
+  // a deleted clause must be.
+  const cell = 'the boundary is observable;   the old backend is\n  kept read-only';
+  assert.equal(
+    hashPassAssertion(cell),
+    hashPassAssertion(' the boundary is observable; the old backend is kept read-only '),
+  );
+  assert.notEqual(hashPassAssertion(cell), hashPassAssertion('the boundary is observable'));
+});
+
+test('V19 fires when a PASS cell is narrowed — the MIG-23 shape, verbatim', () => {
+  // The observed narrowing: MIG-23's "the old backend is kept read-only as a
+  // historical tier" clause deleted from the PASS cell, in the same commit
+  // that implemented the narrower thing.
+  const w = world();
+  const cells = parsePassAssertions(DOC);
+  const mig23 = cells.get('MIG-23');
+  w.passAssertions = new Map(cells).set('MIG-23', {
+    ...mig23,
+    pass: mig23.pass.replace(' the old backend is kept read-only as a historical tier;', ''),
+  });
+  const v = collectViolations(w);
+  assert.ok(
+    v.some((x) => x.code === 'V19' && x.message.includes('MIG-23') && x.message.includes('IN THE SAME DIFF')),
+    `expected V19 naming MIG-23, got ${JSON.stringify(v)}`,
+  );
+});
+
+test('V20 fires when a Tier(s) cell is narrowed', () => {
+  // The other observed shape: MIG-13 moved from "1, 2" to "2", dropping its
+  // Tier-1 read-back half.
+  const w = world();
+  const cells = parsePassAssertions(DOC);
+  w.passAssertions = new Map(cells).set('MIG-13', { ...cells.get('MIG-13'), tiers: '2' });
+  assert.ok(codes(collectViolations(w)).includes('V20'));
+});
+
+test('V18 fires in both directions: a new story with no pin, a pin with no story', () => {
+  const added = world();
+  added.passAssertions = new Map(parsePassAssertions(DOC)).set('MIG-27', {
+    tiers: '0',
+    pass: 'something new',
+    columns: 5,
+  });
+  assert.ok(
+    collectViolations(added).some((x) => x.code === 'V18' && x.message.includes('pins no PASS assertion')),
+    'expected V18 for a section-6 row with no pin entry',
+  );
+
+  const orphaned = world();
+  orphaned.pin = { ...PIN, assertions: { ...PIN.assertions, 'MIG-99': { tiers: '0', sha256: 'deadbeef' } } };
+  assert.ok(
+    collectViolations(orphaned).some((x) => x.code === 'V18' && x.message.includes('MIG-99')),
+    'expected V18 for a pin entry with no section-6 row',
+  );
+});
+
+test('V17 fires when the pin declares a schema or algorithm the reader does not implement', () => {
+  const bumped = world();
+  bumped.pin = { ...PIN, schema_version: PIN_SCHEMA_VERSION + 1 };
+  assert.ok(codes(collectViolations(bumped)).includes('V17'));
+
+  const rehashed = world();
+  rehashed.pin = { ...PIN, algorithm: 'md5' };
+  assert.ok(codes(collectViolations(rehashed)).includes('V17'));
+});
+
+test('V21 fires on a malformed section-6 row rather than hashing the wrong cell', () => {
+  const w = world();
+  w.passAssertions = new Map(parsePassAssertions(DOC)).set('MIG-01', {
+    tiers: null,
+    pass: null,
+    columns: 4,
+  });
+  assert.ok(codes(collectViolations(w)).includes('V21'));
+});
+
+// --- 4. attestation: coverage means EXECUTED, not enumerated ----------------
+//
+// MODE=verify walks feature FILES. On 2026-07-26 it reported "scenarios 30/30
+// across 26/26 stories; 0 violations" on a branch whose five tier-2 scenarios
+// had never executed once, because their job had been skipped by a `needs:`
+// cascade after tier 1 failed. These tests hold the detector that closes that
+// to firing.
+
+// element — one cucumber-JSON scenario in godog's own emitted shape. godog
+// prepends the FEATURE's tags to every element, which is where the migration
+// features declare @MIG-nn / @tierN, so the tags alone carry the (story, tier)
+// key the coverage ratchet counts on.
+function element(story, tier, { statuses = ['passed'], name = `${story} scenario`, line = 9 } = {}) {
+  return {
+    id: `${story};${name}`,
+    keyword: 'Scenario',
+    name,
+    line,
+    type: 'scenario',
+    tags: [
+      { name: `@${story}`, line: 1 },
+      { name: `@${tier}`, line: 1 },
+    ],
+    steps: statuses.map((status, i) => ({
+      keyword: 'Then ',
+      name: `step ${i}`,
+      line: line + i + 1,
+      result: { status },
+    })),
+  };
+}
+
+function report(path, elements) {
+  return {
+    path,
+    features: elements.map((el) => ({
+      uri: `../../features/${el.tags[0].name.slice(1)}.feature`,
+      elements: [el],
+    })),
+  };
+}
+
+// A world whose enumeration is two tier-0 scenarios and one tier-1 scenario,
+// with a report that (by default) covers all three.
+function attestWorld({ tiers = ['tier0', 'tier1'], story = '', elements = null } = {}) {
+  const scenarios = [
+    scenario('MIG-01'),
+    scenario('MIG-03'),
+    scenario('MIG-02', { tiers: ['tier1'], archetypes: ['three-signal'] }),
+  ];
+  const els = elements || [element('MIG-01', 'tier0'), element('MIG-03', 'tier0'), element('MIG-02', 'tier1')];
+  const reports = [report('build/migration-reports/all.cucumber.json', els)];
+  const { outcomes, unkeyable } = outcomesFromReports(reports);
+  return { scenarios, tiers, story, outcomes, unkeyable, reportCount: reports.length };
+}
+
+test('a fully-executed run attests clean', () => {
+  assert.deepEqual(collectAttestations(attestWorld()), []);
+});
+
+test('A1 fires for a counted scenario that never ran — the skipped-tier hole', () => {
+  // The exact 2026-07-26 shape: tier1 is SELECTED, its job never ran, so no
+  // report mentions its scenarios — while the enumeration still counts them.
+  const w = attestWorld({ elements: [element('MIG-01', 'tier0'), element('MIG-03', 'tier0')] });
+  const a = collectAttestations(w);
+  assert.deepEqual(
+    a.map((x) => x.code),
+    ['A1'],
+  );
+  assert.ok(a[0].message.includes('MIG-02'), a[0].message);
+  assert.ok(a[0].message.includes('tier1'), a[0].message);
+  assert.ok(a[0].message.includes('NEVER RAN'), a[0].message);
+});
+
+test('A0 fires when no run report exists at all', () => {
+  const w = attestWorld();
+  w.outcomes = new Map();
+  w.reportCount = 0;
+  const a = collectAttestations(w);
+  assert.ok(
+    a.some((x) => x.code === 'A0'),
+    `expected A0, got ${JSON.stringify(a)}`,
+  );
+});
+
+test('A2 fires for a scenario that ran but did not pass, on every non-passed status', () => {
+  for (const status of ['failed', 'skipped', 'undefined', 'pending', 'ambiguous']) {
+    const w = attestWorld({
+      elements: [
+        element('MIG-01', 'tier0', { statuses: ['passed', status] }),
+        element('MIG-03', 'tier0'),
+        element('MIG-02', 'tier1'),
+      ],
+    });
+    const a = collectAttestations(w);
+    assert.ok(
+      a.some((x) => x.code === 'A2' && x.message.includes('MIG-01')),
+      `expected A2 for step status ${status}, got ${JSON.stringify(a)}`,
+    );
+  }
+});
+
+test('A2 fires for a scenario whose report records no steps at all', () => {
+  // An element with an empty step list has nothing that could have run, so it
+  // is not evidence of a pass.
+  const w = attestWorld({
+    elements: [element('MIG-01', 'tier0', { statuses: [] }), element('MIG-03', 'tier0'), element('MIG-02', 'tier1')],
+  });
+  assert.ok(collectAttestations(w).some((x) => x.code === 'A2' && x.message.includes('MIG-01')));
+});
+
+test('A1 fires when fewer nodes ran than the enumeration declares', () => {
+  const w = attestWorld({ tiers: ['tier0'] });
+  w.scenarios = [scenario('MIG-01'), scenario('MIG-01', { name: 'MIG-01 second' }), scenario('MIG-03')];
+  const a = collectAttestations(w);
+  assert.ok(
+    a.some((x) => x.code === 'A1' && x.message.includes('never executed')),
+    `expected an under-count A1, got ${JSON.stringify(a)}`,
+  );
+});
+
+test('a Scenario Outline expanding to more elements than nodes is not a violation', () => {
+  const w = attestWorld({
+    tiers: ['tier0'],
+    elements: [
+      element('MIG-01', 'tier0', { name: 'outline row one', line: 9 }),
+      element('MIG-01', 'tier0', { name: 'outline row two', line: 10 }),
+      element('MIG-03', 'tier0'),
+    ],
+  });
+  w.scenarios = [scenario('MIG-01'), scenario('MIG-03')];
+  assert.deepEqual(collectAttestations(w), []);
+});
+
+test('A3 fires when a report attests a scenario the enumeration does not list', () => {
+  const w = attestWorld({
+    elements: [
+      element('MIG-01', 'tier0'),
+      element('MIG-03', 'tier0'),
+      element('MIG-02', 'tier1'),
+      element('MIG-99', 'tier0'),
+    ],
+  });
+  assert.ok(collectAttestations(w).some((x) => x.code === 'A3' && x.message.includes('MIG-99')));
+});
+
+test('A4 fires when a report element cannot be attributed to one story and one tier', () => {
+  const bad = element('MIG-01', 'tier0');
+  bad.tags = [
+    { name: '@MIG-01', line: 1 },
+    { name: '@MIG-05', line: 1 },
+    { name: '@tier0', line: 1 },
+  ];
+  const w = attestWorld({ elements: [bad, element('MIG-03', 'tier0'), element('MIG-02', 'tier1')] });
+  assert.ok(
+    collectAttestations(w).some((x) => x.code === 'A4'),
+    'expected A4 for an element carrying two story tags',
+  );
+});
+
+test('attestation respects the tier set the run SELECTED', () => {
+  // A dispatch narrowed to tier0 must not fail because tier1's scenarios did
+  // not run — the whole reason attest reads emit's `tiers` output rather than
+  // attesting everything the feature tree declares.
+  const w = attestWorld({ tiers: ['tier0'], elements: [element('MIG-01', 'tier0'), element('MIG-03', 'tier0')] });
+  assert.deepEqual(collectAttestations(w), []);
+});
+
+test('attestation respects a single-story dispatch without calling the rest drift', () => {
+  // STORY=MIG-01 narrows what must be attested, but a report that still
+  // mentions the other tier-0 scenarios is not corrupt — A3 is judged against
+  // the enumeration, not against the narrowed selection.
+  const w = attestWorld({ tiers: ['tier0'], story: 'MIG-01' });
+  assert.deepEqual(collectAttestations(w), []);
+});
+
+test('attestedCount counts only scenarios a report proves executed AND passed', () => {
+  const { outcomes } = outcomesFromReports([
+    report('r.json', [element('MIG-01', 'tier0'), element('MIG-03', 'tier0', { statuses: ['failed'] })]),
+  ]);
+  const scenarios = [scenario('MIG-01'), scenario('MIG-03'), scenario('MIG-02', { tiers: ['tier1'] })];
+  assert.equal(attestedCount(scenarios, outcomes), 1);
+  // With no report at all — the `lint` job's case — nothing is attested, and
+  // MODE=verify's notice reports that number rather than implying otherwise.
+  assert.equal(attestedCount(scenarios, new Map()), 0);
+});
+
+test('the run report path is owned by this module, not by the workflow', () => {
+  // MODE=run derives it from REPORT_DIR + the tier, so a tier job cannot ship
+  // without a report by forgetting a step, and lib.SuiteFormat receives an
+  // absolute path (`go test` runs a test binary with the PACKAGE directory as
+  // its working directory, so a relative one would land in the wrong place).
+  const p = reportPathFor('tier2', 'build/migration-reports');
+  assert.ok(p.startsWith('/'), `expected an absolute path, got ${p}`);
+  assert.ok(p.endsWith(`tier2${REPORT_SUFFIX}`), p);
+});
 test('the roll-up holds tier2 to success alongside the other two', () => {
   // tier2's job is `needs: migration-tier1`, so a red tier1 makes tier2
   // `skipped` — which the fold must report as a failure, not wave through as

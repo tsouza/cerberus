@@ -457,19 +457,41 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   every scenario that exists. `migration-e2e.test.mjs` is the `node --test`
   guard (run on the required `lint` lane) that pins the doc parsers against
   the live doc and proves each detector fires.
-  - Env: `MODE` (`verify` | `emit` | `run`; also `argv[2]`; default
-    `verify`), `SCENARIOS_JSON` (default `build/migration-scenarios.json`),
-    `STORIES_DOC` (default `docs/migration-testing.md`), `ARCHETYPE_ROOT`
-    (default `test/e2e/migration/archetypes`), `FEATURE_ROOT` (default
+  `MODE=attest` is the execution gate: `verify` walks feature FILES, so a
+  scenario that never ran counts exactly the same as one that passed — the
+  shape that let a branch report "30/30 across 26/26 stories; 0 violations"
+  while its Tier-2 scenarios had been skipped by a `needs:` cascade.
+  `MODE=run` therefore owns the path each tier's godog suite writes a
+  cucumber-JSON run report to (via `test/e2e/migration/lib.SuiteFormat`, so a
+  new tier is attestable by construction), each tier job uploads it, and the
+  `migration-aggregate` job downloads them all and holds every counted
+  scenario to *appeared in a report, every step passed*. It attests only the
+  tiers `emit` SELECTED — the same `tiers` output the roll-up reads — so a
+  narrowed dispatch is not failed by the tiers it deliberately skipped.
+  `verify`'s notice reports enumerated and attested coverage as two different
+  numbers. `test/e2e/migration/pass-assertions.pin.json` hashes every
+  section-6 PASS cell: it does not forbid narrowing a PASS assertion, it
+  forbids narrowing one *silently*, by making the re-pin a reviewed line in
+  the same diff (there is deliberately no regeneration mode).
+  - Env: `MODE` (`verify` | `emit` | `run` | `attest` | `rollup`; also
+    `argv[2]`; default `verify`), `SCENARIOS_JSON` (default
+    `build/migration-scenarios.json`), `STORIES_DOC` (default
+    `docs/migration-testing.md`), `ARCHETYPE_ROOT` (default
+    `test/e2e/migration/archetypes`), `FEATURE_ROOT` (default
     `test/e2e/migration/features`), `COVERAGE_BASELINE` (default
-    `test/e2e/migration/coverage-baseline.json`), `TIER` (emit/run: `all` |
-    `tier0` | `tier1` | `tier2`; default `all`), `STORY` (run: a single MIG
-    id), `CERBERUS_BIN` (run: a prebuilt binary, passed through to the
-    suite), `GITHUB_OUTPUT` (emit: the runner file the `matrix` output is
-    written to).
-  - Exit: `0` clean, `1` on any coverage violation, an unknown `MODE`, a
-    missing/malformed input, a requested tier the workflow has no job for, or
-    a failed suite run.
+    `test/e2e/migration/coverage-baseline.json`), `PASS_ASSERTION_PIN`
+    (default `test/e2e/migration/pass-assertions.pin.json`), `REPORT_DIR`
+    (run/attest/verify's notice; default `build/migration-reports`), `TIER`
+    (emit/run: `all` | `tier0` | `tier1` | `tier2`; default `all`), `STORY`
+    (run/attest: a single MIG id), `CERBERUS_BIN` (run: a prebuilt binary,
+    passed through to the suite), `GITHUB_OUTPUT` (emit: the runner file the
+    `matrix` output is written to), `EXPECTED_TIERS` (rollup/attest: `emit`'s
+    `tiers` output, verbatim), `SETUP_RESULT` / `RESULT_TIER0..2` (rollup).
+    `MIGRATION_REPORT` is an OUTPUT, not an input: `MODE=run` exports it to
+    the `go test` child as the absolute report path.
+  - Exit: `0` clean, `1` on any coverage violation, an unattested scenario, a
+    PASS-cell pin mismatch, an unknown `MODE`, a missing/malformed input, a
+    requested tier the workflow has no job for, or a failed suite run.
 
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
