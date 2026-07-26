@@ -750,9 +750,15 @@ func vectorServices(body []byte) ([]string, error) {
 // transport error, losing the errorType and message the story asks to be
 // specific about.
 func tenantQuery(ctx context.Context, baseURL, query string, at time.Time) (int, []byte, error) {
+	// RFC3339 rather than a Unix stamp: the `time` parameter takes Unix
+	// SECONDS (optionally fractional) or RFC3339, and a millisecond count with
+	// an `ms` suffix is neither — cerberus rejected it with
+	// `bad_data: time parameter must be Unix seconds/milliseconds or RFC3339`,
+	// correctly. RFC3339Nano keeps the instant exact without raising the
+	// question of how many fractional digits the seconds form should carry.
 	target := strings.TrimRight(baseURL, "/") + "/api/v1/query?" + url.Values{
 		"query": []string{query},
-		"time":  []string{strconv.FormatInt(at.UnixMilli(), 10) + "ms"},
+		"time":  []string{at.UTC().Format(time.RFC3339Nano)},
 	}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {

@@ -422,11 +422,20 @@ func (w *World) thenScrapeLabelTranslationIsTheOnlyDifference() error {
 	}
 	if len(lost) > 0 {
 		sort.Strings(lost)
-		return fmt.Errorf("migration harness: %v are present on the reference path's %s but absent under the collector path; the only difference the OTel translation accounts for is %s->%s and %s->%s. Collector-path labels: %v",
+		// Report the collector path's label VALUES, not just its names. The
+		// first live run showed `service_instance_id` present while
+		// `service_name` was absent entirely, and the names alone cannot say
+		// why: either the receiver never sets `service.name` on this metric —
+		// in which case the declared job->service_name translation is simply
+		// wrong — or it does set it and cerberus's read path drops it, which
+		// is a real gap. The values distinguish the two. Relaxing this
+		// assertion to match the observed set without knowing which would
+		// bury the second case.
+		return fmt.Errorf("migration harness: %v are present on the reference path's %s but absent under the collector path; the only difference the OTel translation accounts for is %s->%s and %s->%s. Collector-path labels (name=value): %v",
 			lost, scrapeUpMetric,
 			scrapeReferenceLabel, scrapeCollectorLabel,
 			scrapeReferenceInstanceLabel, scrapeCollectorInstanceLabel,
-			sortedSet(labelNames(got)))
+			got)
 	}
 	return nil
 }
