@@ -172,7 +172,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.work = ""
 		if err := os.RemoveAll(dir); err != nil {
 			if faultErr != nil {
-				return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w (also: %v)", dir, err, faultErr)
+				return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w (also: %w)", dir, err, faultErr)
 			}
 			return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w", dir, err)
 		}

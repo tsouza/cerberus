@@ -350,7 +350,7 @@ func (w *World) thenResumeAndRecover() error {
 			lastErr = fmt.Errorf("HTTP %d: %s", status, string(body))
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("migration harness: cerberus never recovered within %s after ClickHouse resumed: %v",
+			return fmt.Errorf("migration harness: cerberus never recovered within %s after ClickHouse resumed: %w",
 				faultUnpauseWait, lastErr)
 		}
 		time.Sleep(bridgePollInterval)
