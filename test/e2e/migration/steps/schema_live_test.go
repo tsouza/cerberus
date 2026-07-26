@@ -2,6 +2,8 @@ package steps
 
 import (
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -13,7 +15,7 @@ import (
 // case — the exact stdout `cerberus migrate schema` produces, which is what
 // MIG-10's tier-1 step parses at run time. Parsing the committed golden here
 // is what lets the parser be verified offline, without the Docker stack.
-func readDefaultSchemaGolden(t *testing.T) []renderedObject {
+func readDefaultSchemaGolden(t *testing.T) renderedSchema {
 	t.Helper()
 	root, err := lib.RepoRoot()
 	if err != nil {
@@ -23,38 +25,208 @@ func readDefaultSchemaGolden(t *testing.T) []renderedObject {
 	if err != nil {
 		t.Fatalf("read the committed default schema render: %v", err)
 	}
-	objects, err := parseRenderedSchema(schemaStatements(buf))
+	rendered, err := parseRenderedSchema(schemaStatements(buf))
 	if err != nil {
 		t.Fatalf("parse the committed default schema render: %v", err)
 	}
-	return objects
+	return rendered
+}
+
+// gaugeRenderedColumns is the FULL column list the rendered gauge table
+// declares, Nested block expanded the way ClickHouse materialises it. It is
+// the shape pin for the parser: a regression that drops, merges or truncates
+// column definitions still satisfies "every read column is present" (the
+// read-side config names a subset), but cannot survive an exact set compare.
+// The one table is enough — every metrics CREATE shares this element grammar.
+var gaugeRenderedColumns = []string{
+	"Attributes",
+	"Exemplars.FilteredAttributes",
+	"Exemplars.SpanId",
+	"Exemplars.TimeUnix",
+	"Exemplars.TraceId",
+	"Exemplars.Value",
+	"Flags",
+	"MetricDescription",
+	"MetricName",
+	"MetricUnit",
+	"ResourceAttributes",
+	"ResourceSchemaUrl",
+	"ScopeAttributes",
+	"ScopeDroppedAttrCount",
+	"ScopeName",
+	"ScopeSchemaUrl",
+	"ScopeVersion",
+	"ServiceName",
+	"StartTimeUnix",
+	"TimeUnix",
+	"Value",
 }
 
 // TestParseRenderedSchemaCoversEveryTableCerberusReads proves the parser reads
 // the rendered DDL rather than agreeing with cerberus's schema config by
 // construction: every table the read-side config names must be found IN THE
-// RENDERED TEXT, qualified with the database the renderer was pointed at.
+// RENDERED TEXT, qualified with the database the renderer was pointed at, and
+// carrying every column that table's read-side config addresses.
+//
+// The column leg is what stops a parser that finds a table but reads two
+// columns off it from passing: the read-side config is an INDEPENDENT oracle
+// here (it is not derived from the rendered text), so it pins a real shape
+// rather than restating the parse.
 func TestParseRenderedSchemaCoversEveryTableCerberusReads(t *testing.T) {
 	t.Parallel()
 
 	byName := map[string]renderedObject{}
-	for _, obj := range readDefaultSchemaGolden(t) {
+	for _, obj := range readDefaultSchemaGolden(t).objects {
 		byName[obj.name] = obj
 	}
-	for _, want := range tablesCerberusReads() {
-		obj, ok := byName[want]
+	for _, rt := range readSurface() {
+		obj, ok := byName[rt.name]
 		if !ok {
-			t.Fatalf("the rendered schema declares no table %q, which cerberus reads", want)
+			t.Fatalf("the rendered schema declares no table %q, which cerberus reads", rt.name)
 		}
 		// The golden is rendered under the default CERBERUS_CH_DATABASE; the
 		// tier-1 step renders under the live stack's own. Either way the
 		// qualifier must be there — an unqualified render would make the
 		// step's misqualified-object check silently unreachable.
 		if obj.database == "" {
-			t.Fatalf("the rendered CREATE for %q carries no database qualifier", want)
+			t.Fatalf("the rendered CREATE for %q carries no database qualifier", rt.name)
 		}
-		if len(obj.columns) == 0 {
-			t.Fatalf("the rendered CREATE for %q declares no column", want)
+		parsed := map[string]struct{}{}
+		for _, col := range obj.columns {
+			parsed[col.name] = struct{}{}
+		}
+		for _, col := range rt.columns {
+			if col.name == "" {
+				t.Fatalf("%s resolves to the empty string, so %q's read-side check would address nothing",
+					col.field, rt.name)
+			}
+			if !liveCarriesReadColumn(parsed, col) {
+				t.Fatalf("the rendered %s declares no %q (%s); the parser read %d columns: %v",
+					rt.name, col.name, col.field, len(obj.columns), sortedKeys(parsed))
+			}
+		}
+	}
+}
+
+// TestParseRenderedSchemaReadsEveryGaugeColumn pins the parser's output for
+// one whole table, so a regression that keeps the columns cerberus reads but
+// loses the rest still fails.
+func TestParseRenderedSchemaReadsEveryGaugeColumn(t *testing.T) {
+	t.Parallel()
+
+	gaugeTable := schema.DefaultOTelMetrics().GaugeTable
+	for _, obj := range readDefaultSchemaGolden(t).objects {
+		if obj.name != gaugeTable {
+			continue
+		}
+		got := make([]string, 0, len(obj.columns))
+		for _, col := range obj.columns {
+			got = append(got, col.name)
+		}
+		sort.Strings(got)
+		if strings.Join(got, ",") != strings.Join(gaugeRenderedColumns, ",") {
+			t.Fatalf("the parser read %v off the rendered %s, want %v", got, gaugeTable, gaugeRenderedColumns)
+		}
+		return
+	}
+	t.Fatalf("the rendered schema declares no %s table", gaugeTable)
+}
+
+// TestParseRenderedSchemaReadsEveryAddProjection pins the half of the render
+// that carries no column list. The renderer emits one ADD PROJECTION per
+// curated projection per catalog table; dropping them on the floor is how the
+// diff stopped seeing them at all, so the parse is held to their exact set.
+//
+// Only the target is pinned, not the projection body: the tier-1 stack makes
+// the collector's exporter the sole schema authority, so cerberus's own
+// projections are genuinely absent live and MIG-10 leaves applying them the
+// operator's deliberate step.
+func TestParseRenderedSchemaReadsEveryAddProjection(t *testing.T) {
+	t.Parallel()
+
+	metrics := schema.DefaultOTelMetrics()
+	want := []string{}
+	for _, table := range []string{metrics.GaugeTable, metrics.SumTable, metrics.HistogramTable} {
+		want = append(want, table+"/proj_series", table+"/proj_metric_metadata")
+	}
+	sort.Strings(want)
+
+	var got []string
+	for _, proj := range readDefaultSchemaGolden(t).projections {
+		if proj.database == "" {
+			t.Fatalf("the rendered ADD PROJECTION for %s.%s carries no database qualifier", proj.table, proj.name)
+		}
+		got = append(got, proj.table+"/"+proj.name)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the parser read projections %v off the rendered schema, want %v", got, want)
+	}
+}
+
+// TestParseRenderedSchemaRejectsAnUnknownStatement proves a rendered statement
+// the parser does not recognise fails the parse rather than being passed over.
+// Passing over it is what would let a whole new statement kind enter the
+// render and never be diffed against anything.
+func TestParseRenderedSchemaRejectsAnUnknownStatement(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseRenderedSchema([]string{`ALTER TABLE "otel"."otel_metrics_gauge" MODIFY TTL TimeUnix + toIntervalDay(1)`}); err == nil {
+		t.Fatal("parseRenderedSchema accepted an ALTER that adds no projection")
+	}
+	if _, err := parseRenderedSchema([]string{`OPTIMIZE TABLE "otel"."otel_metrics_gauge" FINAL`}); err == nil {
+		t.Fatal("parseRenderedSchema accepted a statement that declares no schema object")
+	}
+}
+
+// TestReadSurfaceCoversEveryReadSideSchemaField is what makes MIG-10's
+// read-side step text honest. readSurface() maps schema fields onto tables by
+// hand — cerberus has no machine-readable per-table column registry — so
+// without this pin the step would claim "every column cerberus reads" while
+// checking whichever subset someone last remembered to list.
+//
+// Every `*Table` / `*Column` field on the three read-side config structs must
+// therefore appear in readSurface(), UNLESS the environment resolves it to the
+// empty string. An empty field addresses no column at all: cerberus's emitters
+// branch on exactly that (schema.Metrics.ZeroThresholdColumn,
+// schema.Traces.ScopeAttributesColumn), and the live step fails loudly on any
+// field readSurface DOES list that resolves to nothing.
+func TestReadSurfaceCoversEveryReadSideSchemaField(t *testing.T) {
+	t.Parallel()
+
+	covered := map[string]struct{}{}
+	for _, rt := range readSurface() {
+		covered[rt.field] = struct{}{}
+		for _, col := range rt.columns {
+			covered[col.field] = struct{}{}
+		}
+	}
+
+	for _, cfg := range []struct {
+		prefix string
+		value  any
+	}{
+		{metricsSchemaField, schema.DefaultOTelMetricsFromEnv()},
+		{logsSchemaField, schema.DefaultOTelLogsFromEnv()},
+		{tracesSchemaField, schema.DefaultOTelTracesFromEnv()},
+	} {
+		v := reflect.ValueOf(cfg.value)
+		for i := 0; i < v.NumField(); i++ {
+			name := v.Type().Field(i).Name
+			if v.Field(i).Kind() != reflect.String {
+				continue
+			}
+			if !strings.HasSuffix(name, "Table") && !strings.HasSuffix(name, "Column") {
+				continue
+			}
+			if v.Field(i).String() == "" {
+				continue
+			}
+			if _, ok := covered[cfg.prefix+name]; !ok {
+				t.Fatalf("%s%s resolves to %q but readSurface() maps it onto no table, so MIG-10's "+
+					"read-side step would claim to check a column it never looks at",
+					cfg.prefix, name, v.Field(i).String())
+			}
 		}
 	}
 }
@@ -69,7 +241,7 @@ func TestParseRenderedSchemaExpandsNestedBlocks(t *testing.T) {
 
 	metrics := schema.DefaultOTelMetrics()
 	var gauge renderedObject
-	for _, obj := range readDefaultSchemaGolden(t) {
+	for _, obj := range readDefaultSchemaGolden(t).objects {
 		if obj.name == metrics.GaugeTable {
 			gauge = obj
 		}
@@ -110,7 +282,7 @@ func TestParseRenderedSchemaKeepsQuotedNamesWhole(t *testing.T) {
 
 	const materialised = "__otel_materialized_k8s.cluster.name"
 	logsTable := schema.DefaultOTelLogs().LogsTable
-	for _, obj := range readDefaultSchemaGolden(t) {
+	for _, obj := range readDefaultSchemaGolden(t).objects {
 		if obj.name != logsTable {
 			continue
 		}
@@ -132,7 +304,7 @@ func TestParseRenderedSchemaSkipsMaterializedViewColumns(t *testing.T) {
 	t.Parallel()
 
 	const mv = "otel_traces_trace_id_ts_mv"
-	for _, obj := range readDefaultSchemaGolden(t) {
+	for _, obj := range readDefaultSchemaGolden(t).objects {
 		if obj.name != mv {
 			continue
 		}
@@ -201,9 +373,20 @@ func TestReadSideChecksFollowTheEnvironment(t *testing.T) {
 	const renamed = "tenant_metrics_gauge"
 	t.Setenv(schema.EnvMetricsGaugeTable, renamed)
 
-	if _, ok := metricsExpectedColumns(schema.DefaultOTelMetricsFromEnv())[renamed]; !ok {
-		t.Fatalf("metricsExpectedColumns ignores %s=%s and still keys on the compiled-in default",
+	var renamedColumns int
+	var seen bool
+	for _, rt := range readSurface() {
+		if rt.name == renamed {
+			seen = true
+			renamedColumns = len(rt.columns)
+		}
+	}
+	if !seen {
+		t.Fatalf("readSurface() ignores %s=%s and still keys on the compiled-in default",
 			schema.EnvMetricsGaugeTable, renamed)
+	}
+	if renamedColumns == 0 {
+		t.Fatalf("readSurface() carries %s but no column to check on it", renamed)
 	}
 	if !containsString(tablesCerberusReads(), renamed) {
 		t.Fatalf("tablesCerberusReads() = %v, which does not follow %s=%s",
@@ -211,6 +394,36 @@ func TestReadSideChecksFollowTheEnvironment(t *testing.T) {
 	}
 	if containsString(tablesCerberusReads(), schema.DefaultOTelMetrics().GaugeTable) {
 		t.Fatalf("tablesCerberusReads() still demands the compiled-in default gauge table")
+	}
+}
+
+// TestDiffReadColumnsFailsAnUnresolvedField proves the read-side leg treats a
+// schema field that names no column as a FAILURE rather than as one fewer
+// column to look at. The skip it replaces was the shape that let a broken
+// resolution green the scenario: nothing to compare, so nothing to report.
+func TestDiffReadColumnsFailsAnUnresolvedField(t *testing.T) {
+	t.Parallel()
+
+	live := map[string]struct{}{"Value": {}, "Exemplars.Value": {}}
+	want := []readColumn{
+		{field: "schema.Metrics.ValueColumn", name: "Value"},
+		{field: "schema.Metrics.FlagsColumn", name: ""},
+		{field: "schema.Metrics.CountColumn", name: "Count"},
+		{field: "schema.Metrics.ExemplarsColumn", name: "Exemplars", nested: true},
+	}
+	missing, unresolved := diffReadColumns(want, live)
+	if strings.Join(missing, ",") != "Count" {
+		t.Fatalf("diffReadColumns reports %v missing, want exactly [Count]", missing)
+	}
+	if strings.Join(unresolved, ",") != "schema.Metrics.FlagsColumn" {
+		t.Fatalf("diffReadColumns reports %v unresolved, want exactly [schema.Metrics.FlagsColumn]", unresolved)
+	}
+
+	full := map[string]struct{}{"Value": {}, "Count": {}, "Exemplars": {}}
+	missing, unresolved = diffReadColumns(want[:1], full)
+	if len(missing) != 0 || len(unresolved) != 0 {
+		t.Fatalf("diffReadColumns reports %v missing / %v unresolved on a table that carries everything",
+			missing, unresolved)
 	}
 }
 

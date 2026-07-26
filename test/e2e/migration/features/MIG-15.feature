@@ -12,9 +12,9 @@ Feature: MIG-15 — multi-tenant isolation holds at the ClickHouse boundary
     When the operator queries cerberus for every metric name and label it can see
     And the operator asks cerberus to read within, and then beyond, its configured sample budget
     Then the planted series is readable in the foreign tenant's own database
-    And the foreign tenant's metric name never appears in cerberus's answer
     And every metric name the archetype declares appears in cerberus's answer
-    And the foreign tenant's label never appears in cerberus's label surface
+    And the foreign tenant's metric name never appears in cerberus's answer
     And every mapped label the archetype declares appears in cerberus's label surface
+    And the foreign tenant's label never appears in cerberus's label surface
     And the read within the sample budget returns every series the archetype declares
     And the read beyond the sample budget is refused with cerberus's sample-budget error

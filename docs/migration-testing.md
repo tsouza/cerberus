@@ -1021,6 +1021,52 @@ here so they are legible rather than buried:
   boundary. The routing hop itself is out of scope by construction, not by
   omission.
 
+### 6.4. Declared scope limits
+
+A PASS cell in [section 6](#6-story--scenario-map) is the contract; where a
+scenario cannot reach a clause of it on the substrate it runs on, the gap is
+written down HERE rather than left for a reader to infer from the step list. A
+clause absent from both the scenario and this section is a bug, not a decision.
+
+**MIG-10, tier 1 — projection bodies are not diffed.** The render emits, per
+metrics catalog table, two idempotent `ALTER TABLE … ADD PROJECTION IF NOT
+EXISTS` statements. The tier-1 stack makes the collector's `clickhouseexporter`
+the sole schema authority, and those projections are a cerberus-side read
+accelerator the exporter never creates — so they are genuinely absent from the
+live database, and demanding their presence would assert that a human had
+already applied the render, the exact step MIG-10 exists to keep deliberate.
+What IS diffed is each ALTER's target: it must be qualified with the live
+tenant database and name a table that really exists there, so an operator
+piping the render into a client cannot hit a missing target. The parse is held
+to the ALTERs' exact set (`TestParseRenderedSchemaReadsEveryAddProjection`), so
+"not diffed" cannot quietly become "not read".
+
+**MIG-10, tier 1 — what "the schema cerberus reads" means.** The read-side leg
+covers every `*Table` / `*Column` field of `schema.Metrics`, `schema.Logs` and
+`schema.Traces`, mapped onto the live table that carries it.
+`TestReadSurfaceCoversEveryReadSideSchemaField` holds that mapping TOTAL
+against the three config structs, so the claim stays the whole read surface
+rather than a hand-picked subset of it. The two fields that resolve to the
+empty string on the OTel-CH schema — `Metrics.ZeroThresholdColumn` and
+`Traces.ScopeAttributesColumn`, both of which the emitters branch on as "this
+deployment has no such column" — address nothing and so are checked by nobody;
+every field that DOES resolve to a name is checked, and a field that resolves
+to nothing while being listed is a failure, never a skip.
+
+**MIG-15 — tenancy is a ClickHouse database boundary, not a header.** The PASS
+cell names `X-Scope-OrgID` queries and a mimir/cortex row-policy fixture.
+Cerberus has no tenant header: its deployment model for a mimir-cortex
+migration is one cerberus per tenant, each bound to that tenant's own CH
+database via `CERBERUS_CH_DATABASE`, which is the boundary the scenario plants
+across and reads against. For the same reason the per-tenant read budget under
+test is the per-process `CERBERUS_QUERY_MAX_SAMPLES`
+(`TestMigrationTier1SampleBudgetIsPinned` holds the scenario's derivation equal
+to the compose stack's setting). The metadata half is carried by
+`/api/v1/label/__name__/values` and `/api/v1/labels` rather than `/series`;
+both absence claims are gated on their positive control having observed a
+populated surface in the same run, so an empty answer fails instead of reading
+as perfect isolation.
+
 ## 7. Archetype seed profiles
 
 Eight archetypes, each a directory named for the archetype under

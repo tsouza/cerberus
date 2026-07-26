@@ -131,6 +131,15 @@ type tenantProbe struct {
 	labelNames  []string
 	queried     bool
 
+	// metricNamesProven / labelNamesProven record that the POSITIVE CONTROL
+	// over each surface passed in THIS run: cerberus's catalog really carried
+	// every name the archetype declares, so the surface was populated when the
+	// matching absence leg looked at it. Without them "the foreign tenant's
+	// name is not in this list" is satisfied by an empty list — cerberus
+	// answering nothing at all would read as perfect isolation.
+	metricNamesProven bool
+	labelNamesProven  bool
+
 	// underBudgetServices holds one entry per series the in-budget read
 	// returned, carrying that series' service_name — the cardinality and the
 	// identity the manifest and the declaration are checked against.
@@ -427,12 +436,22 @@ func readForeignTenantPlant(ctx context.Context, conn driver.Conn, gauge string)
 
 // thenForeignTenantAbsent asserts the foreign tenant's planted metric name
 // never reaches cerberus's own answer — the "exactly zero foreign-tenant
-// series" claim, checked against what cerberus itself returned and made
-// meaningful by the negative control above, which already proved the name is
-// real and readable one database over.
+// series" claim, checked against what cerberus itself returned.
+//
+// Two controls make it mean something, and both are REQUIRED here rather than
+// merely sitting next to it in the feature file. The plant-readable step
+// proved the name is real and readable one database over; the declared-names
+// step proved cerberus's catalog was POPULATED in this same run. A loop over
+// zero names satisfies "the foreign name is not among them" perfectly, so
+// without the second control an outage that emptied the catalog would read as
+// airtight isolation.
 func (w *World) thenForeignTenantAbsent() error {
 	if err := w.requireTenantQueried(); err != nil {
 		return err
+	}
+	if !w.tenant.metricNamesProven {
+		return fmt.Errorf("cerberus's metric-name catalog has not been proven populated in this run; the " +
+			"scenario must assert the archetype's declared metric names are present before this absence claim")
 	}
 	for _, name := range w.tenant.metricNames {
 		if name == foreignTenantMetric {
@@ -465,6 +484,17 @@ func (w *World) thenDeclaredMetricNamesPresent() error {
 		return err
 	}
 	want := declaredMetricNames(decl)
+	// A declaration that leaves a metric name blank yields entries like "_sum",
+	// which cerberus's catalog would never carry — but a blank GaugeMetric
+	// would yield "", and "" is in no catalog either, so the failure would read
+	// as a cerberus bug. Naming it here keeps a broken fixture a fixture
+	// failure, and keeps this control's oracle non-empty by construction.
+	for i, n := range want {
+		if strings.TrimSpace(n) == "" {
+			return fmt.Errorf("archetype %s's fixture declaration leaves metric name %d blank, so this "+
+				"control would measure cerberus's catalog against nothing", w.tenant.archetype, i)
+		}
+	}
 	have := make(map[string]struct{}, len(w.tenant.metricNames))
 	for _, n := range w.tenant.metricNames {
 		have[n] = struct{}{}
@@ -480,6 +510,7 @@ func (w *World) thenDeclaredMetricNamesPresent() error {
 		return fmt.Errorf("archetype %s declares metric names cerberus's catalog does not carry: %v (catalog holds %v)",
 			w.tenant.archetype, missing, w.tenant.metricNames)
 	}
+	w.tenant.metricNamesProven = true
 	return nil
 }
 
@@ -500,9 +531,17 @@ func declaredMetricNames(d seed.Declaration) []string {
 // foreign tenant's database never appears as a label name on cerberus's
 // metadata surface. The metric-name check alone would miss a leak that
 // surfaced the foreign tenant's DIMENSIONS while hiding its series names.
+//
+// It requires its own positive control for the reason thenForeignTenantAbsent
+// does: an empty label surface satisfies every absence claim ever made about
+// it, so the surface has to have been proven populated in the same run.
 func (w *World) thenForeignTenantLabelAbsent() error {
 	if err := w.requireTenantQueried(); err != nil {
 		return err
+	}
+	if !w.tenant.labelNamesProven {
+		return fmt.Errorf("cerberus's label surface has not been proven populated in this run; the scenario " +
+			"must assert the fixture's mapped labels are present before this absence claim")
 	}
 	for _, name := range w.tenant.labelNames {
 		if name == foreignTenantLabel {
@@ -536,16 +575,23 @@ func (w *World) thenMappedLabelsPresent() error {
 		return fmt.Errorf("cerberus's label surface is missing the fixture's mapped labels %v (surface holds %v)",
 			missing, w.tenant.labelNames)
 	}
+	w.tenant.labelNamesProven = true
 	return nil
 }
 
 // thenUnderBudgetReadComplete asserts the in-budget read came back with
 // exactly the gauge-series cardinality the seeder's manifest declares it
-// wrote, and that every returned series belongs to a service the archetype
-// declares. This is the control that keeps the budget rejection honest — a
-// cerberus that refused, or silently emptied, every subquery would fail here
-// — and it is a positive-cardinality assertion against the seeder's own
-// manifest, not a comparison of two query results.
+// wrote, and that the services those series name are EXACTLY the ones the
+// archetype declares. This is the control that keeps the budget rejection
+// honest — a cerberus that refused, or silently emptied, every subquery would
+// fail here — and it is a positive-cardinality assertion against the seeder's
+// own manifest, not a comparison of two query results.
+//
+// Set EQUALITY, not containment: the seeder builds one gauge series per
+// (service × status code), so every declared service has to come back. A
+// one-way "everything returned is declared" check is satisfied by a proper
+// subset — including a single surviving service — which is exactly the read
+// regression this step exists to catch.
 func (w *World) thenUnderBudgetReadComplete() error {
 	if err := w.requireTenantBudgetRead(); err != nil {
 		return err
@@ -565,15 +611,39 @@ func (w *World) thenUnderBudgetReadComplete() error {
 	if err != nil {
 		return err
 	}
+	if len(decl.Services) == 0 {
+		return fmt.Errorf("archetype %s declares no service; the identity half of this read would be vacuous",
+			w.tenant.archetype)
+	}
 	declared := make(map[string]struct{}, len(decl.Services))
 	for _, s := range decl.Services {
 		declared[s] = struct{}{}
 	}
+	returned := make(map[string]struct{}, len(w.tenant.underBudgetServices))
 	for _, got := range w.tenant.underBudgetServices {
+		returned[got] = struct{}{}
+	}
+	var foreign []string
+	for got := range returned {
 		if _, ok := declared[got]; !ok {
-			return fmt.Errorf("the in-budget read returned a series for service %q, which archetype %s does not declare (declares %v)",
-				got, w.tenant.archetype, decl.Services)
+			foreign = append(foreign, got)
 		}
+	}
+	if len(foreign) > 0 {
+		sort.Strings(foreign)
+		return fmt.Errorf("the in-budget read returned series for %v, which archetype %s does not declare (declares %v)",
+			foreign, w.tenant.archetype, decl.Services)
+	}
+	var unread []string
+	for _, want := range decl.Services {
+		if _, ok := returned[want]; !ok {
+			unread = append(unread, want)
+		}
+	}
+	if len(unread) > 0 {
+		sort.Strings(unread)
+		return fmt.Errorf("the in-budget read returned no series for %v, which archetype %s declares (it named %v)",
+			unread, w.tenant.archetype, sortedKeys(returned))
 	}
 	return nil
 }
