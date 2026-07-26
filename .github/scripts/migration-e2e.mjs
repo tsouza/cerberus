@@ -39,7 +39,7 @@
 // tighten instead of ossify.
 //
 // Env:
-//   MODE               verify | emit | run                    (default: verify)
+//   MODE               verify | emit | run | rollup           (default: verify)
 //   SCENARIOS_JSON     path to the cmd/scenarios output
 //                                      (default: build/migration-scenarios.json)
 //   STORIES_DOC        the 26-story anchor
@@ -53,7 +53,10 @@
 //   TIER               all | tier0 | tier1 | tier2            (emit, run; default: all)
 //   STORY              a single MIG id to drive               (run; optional)
 //   CERBERUS_BIN       prebuilt binary the runner execs       (run; optional)
-//   GITHUB_OUTPUT      runner file the matrix JSON is appended to (emit)
+//   GITHUB_OUTPUT      runner file the matrix + tiers outputs append to (emit)
+//   SETUP_RESULT       migration-setup's job result                  (rollup)
+//   EXPECTED_TIERS     emit's `tiers` output, verbatim               (rollup)
+//   RESULT_TIER0/1/2   each tier job's result, one var per tier      (rollup)
 //
 // Exit: 0 = clean, 1 = a coverage/correctness violation, an unknown MODE, a
 //       missing or malformed SCENARIOS_JSON/baseline, a requested tier the
@@ -90,18 +93,45 @@ export const KNOWN_TIERS = ['tier0', 'tier1', 'tier2'];
 // fails fast on a hang.
 export const TIER0_TIMEOUT_MIN = 15;
 
-// The tiers migration-e2e.yml has a job for, keyed by their ceiling — one
-// table, so a tier cannot have a job without a bound or a bound without a job.
-// A scenario tagged with a tier absent from here is a scenario that would
-// silently never execute, so emit rejects it rather than producing a matrix
-// entry no job consumes. Each tier's dispatch option, job stanza and ceiling
-// land with its first scenario.
-export const TIER_TIMEOUT_MINUTES = { tier0: TIER0_TIMEOUT_MIN };
-export const RUNNABLE_TIERS = Object.keys(TIER_TIMEOUT_MINUTES);
+// Tier 1 brings up the full dual-backend compose stack (ClickHouse, OTel
+// collector, reference Prometheus/Loki/Tempo, cerberus), seeds every
+// archetype the @tier1 scenario set needs, then runs the substrate
+// self-checks and the Gherkin suite against it — mirrors the
+// migration-tier1 job's own `timeout-minutes: 45` (image pulls + compose
+// --wait + seeding + the suite itself), so the two ceilings cannot drift
+// apart.
+export const TIER1_TIMEOUT_MIN = 45;
+
+// The tiers migration-e2e.yml has a job for — one table, so a tier cannot
+// have a job without a bound or a bound without a job. A scenario tagged with
+// a tier absent from here is a scenario that would silently never execute, so
+// emit rejects it rather than producing a matrix entry no job consumes. Each
+// tier's dispatch option, job stanza and ceiling land with its first scenario.
+//
+// `matrixDriven` records WHICH job shape the tier's stanza has, because the
+// two are not interchangeable. migration-tier0 is one generic runner fanned
+// out by `strategy.matrix`, so its tiers must appear in the emitted matrix.
+// migration-tier1 is a fixed job — it brings a compose stack up, seeds it and
+// tears it down around the suite, steps a matrix shard cannot express — so it
+// must NOT appear there: a tier1 entry in the matrix would spawn a
+// `migration-tier0 (tier1)` shard that runs the tier-1 suite on a bare runner
+// with no stack behind it.
+export const TIER_JOBS = {
+  tier0: { timeoutMinutes: TIER0_TIMEOUT_MIN, matrixDriven: true },
+  tier1: { timeoutMinutes: TIER1_TIMEOUT_MIN, matrixDriven: false },
+};
+export const RUNNABLE_TIERS = Object.keys(TIER_JOBS);
 
 // The Go package the tier-0 suite lives in, and the tag that selects it.
 const TIER0_PACKAGE = './test/e2e/migration/tiers/tier0-offline/...';
 const MIGRATION_BUILD_TAG = 'migration';
+
+// The Go package the tier-1 dual-backend suite lives in, and the tag that
+// selects it — shared with tier1_stack_test.go / tier1_parity_test.go, the
+// plain-Go substrate self-checks, so one `go test` invocation exercises the
+// substrate and the Gherkin suite together against the same live stack.
+const TIER1_PACKAGE = './test/e2e/migration/tiers/tier1-dual/...';
+const MIGRATION_TIER1_BUILD_TAG = 'migration_tier1';
 
 // A story id is exactly `MIG-` plus two digits; the doc's list runs from
 // MIG-01 to MIG-26 with no gaps, which V1 asserts structurally.
@@ -435,23 +465,39 @@ export function nonRunnableTiers(tiers) {
   return tiers.filter((t) => !RUNNABLE_TIERS.includes(t));
 }
 
-// buildMatrix — the `strategy.matrix` for the tier job(s). One entry per tier
-// that has scenarios, carrying the stories it drives and its own ceiling, in
-// GitHub's `{include: [...]}` form so `matrix: ${{ fromJSON(...) }}` binds
-// `matrix.name` / `matrix.tier` / `matrix.timeoutMinutes` directly. A tier
-// with no declared ceiling has no job either, so it never reaches here — the
-// caller rejects it first, and this throws rather than emitting an entry the
-// workflow would read a null timeout out of.
+// buildMatrix — the `strategy.matrix` migration-tier0 fans out over. One entry
+// per MATRIX-DRIVEN tier that has scenarios, carrying the stories it drives and
+// its own ceiling, in GitHub's `{include: [...]}` form so
+// `matrix: ${{ fromJSON(...) }}` binds `matrix.name` / `matrix.tier` /
+// `matrix.timeoutMinutes` directly. A tier with no declared job never reaches
+// here — the caller rejects it first, and this throws rather than emitting an
+// entry the workflow would read a null timeout out of. A tier whose job is its
+// own fixed stanza (tier1) is skipped: it is runnable, but not by this matrix.
+// storiesForTier — the sorted stories a tier's scenarios drive.
+export function storiesForTier(scenarios, tier) {
+  return [
+    ...new Set(scenarios.filter((s) => s.tiers.includes(tier)).flatMap((s) => s.stories)),
+  ].sort();
+}
+
+// tiersWithScenarios — the requested tiers that actually have a scenario, in
+// KNOWN_TIERS order. A requested tier with no scenario is not an error (a
+// dispatch may narrow to a tier the tree has not grown yet); it simply does
+// not run, and the roll-up must not expect a result from it.
+export function tiersWithScenarios(scenarios, tiers) {
+  return KNOWN_TIERS.filter((t) => tiers.includes(t) && storiesForTier(scenarios, t).length > 0);
+}
+
 export function buildMatrix(scenarios, { tiers }) {
   const include = [];
   for (const tier of tiers) {
-    const timeoutMinutes = TIER_TIMEOUT_MINUTES[tier];
-    if (timeoutMinutes === undefined) {
+    const job = TIER_JOBS[tier];
+    if (job === undefined) {
       throw new Error(`buildMatrix: ${tier} has no declared ceiling, so migration-e2e.yml has no job for it`);
     }
-    const stories = [
-      ...new Set(scenarios.filter((s) => s.tiers.includes(tier)).flatMap((s) => s.stories)),
-    ].sort();
+    if (!job.matrixDriven) continue;
+    const timeoutMinutes = job.timeoutMinutes;
+    const stories = storiesForTier(scenarios, tier);
     if (stories.length === 0) continue;
     include.push({ name: tier, tier, stories, timeoutMinutes });
   }
@@ -567,50 +613,72 @@ function runEmit() {
     );
     process.exit(1);
   }
-  const matrix = buildMatrix(scenarios, { tiers });
-  if (matrix.include.length === 0) {
+  // `tiers` is what the run WILL execute: every requested tier that actually
+  // has scenarios. The roll-up reads it back so a tier the dispatch narrowed
+  // away is judged as legitimately-not-run, while a tier that WAS requested
+  // and came back skipped is a failure. Without it, `skipped` is ambiguous.
+  const running = tiersWithScenarios(scenarios, tiers);
+  if (running.length === 0) {
     error(`migration-e2e: no scenario matched TIER "${process.env.TIER || 'all'}" — the lane would run nothing`);
     process.exit(1);
   }
+  const matrix = buildMatrix(scenarios, { tiers });
   setOutput('matrix', JSON.stringify(matrix));
+  setOutput('tiers', JSON.stringify(running));
   appendStepSummary(
     [
       '### migration scenario matrix',
       '',
-      '| tier | stories | timeout (min) |',
-      '| --- | --- | --- |',
-      ...matrix.include.map((e) => `| \`${e.tier}\` | ${e.stories.join(', ')} | ${e.timeoutMinutes} |`),
+      '| tier | stories | timeout (min) | job |',
+      '| --- | --- | --- | --- |',
+      ...running.map((tier) => {
+        const stories = storiesForTier(scenarios, tier).join(', ');
+        const { timeoutMinutes, matrixDriven } = TIER_JOBS[tier];
+        return `| \`${tier}\` | ${stories} | ${timeoutMinutes} | ${matrixDriven ? `migration-tier0 (${tier})` : `migration-${tier}`} |`;
+      }),
     ].join('\n'),
   );
-  log(`migration-e2e: emitted ${matrix.include.length} tier entr(y|ies).`);
+  log(`migration-e2e: ${running.join(', ')} will run (${matrix.include.length} of them via the matrix).`);
   process.exit(0);
 }
+
+// RUN_TIERS is MODE=run's own supported-tier table — deliberately separate
+// from RUNNABLE_TIERS (the coverage-ratchet/matrix table): a tier can be
+// driven manually here before RUNNABLE_TIERS declares it has a CI job (see
+// the TIER1_PACKAGE comment above). Each entry is the Go package and build
+// tag `go test` runs for that tier.
+const RUN_TIERS = {
+  tier0: { pkg: TIER0_PACKAGE, buildTag: MIGRATION_BUILD_TAG },
+  tier1: { pkg: TIER1_PACKAGE, buildTag: MIGRATION_TIER1_BUILD_TAG },
+};
 
 function runRun() {
   const scenarios = loadScenarios();
   const story = (process.env.STORY || '').trim();
   const tiers = requestedTiers(process.env.TIER, scenarios);
-  if (tiers === null || tiers.length !== 1 || tiers[0] !== 'tier0') {
+  const tier = tiers === null || tiers.length !== 1 ? null : tiers[0];
+  const run = tier === null ? undefined : RUN_TIERS[tier];
+  if (run === undefined) {
     error(
-      `migration-e2e: MODE=run drives the offline tier; TIER "${process.env.TIER || 'all'}" resolved to ${tiers === null ? 'an unknown tier' : `[${tiers.join(', ')}]`}`,
+      `migration-e2e: MODE=run drives one tier at a time (${Object.keys(RUN_TIERS).join(', ')}); TIER "${process.env.TIER || 'all'}" resolved to ${tiers === null ? 'an unknown tier' : `[${tiers.join(', ')}]`}`,
     );
     process.exit(1);
   }
-  let tags = '@tier0';
+  let tags = `@${tier}`;
   if (story !== '') {
     if (!STORY_ID_RE.test(story)) {
       error(`migration-e2e: STORY "${story}" is not a MIG id (want e.g. MIG-04)`);
       process.exit(1);
     }
-    const matching = scenarios.filter((s) => s.stories.includes(story) && s.tiers.includes('tier0'));
+    const matching = scenarios.filter((s) => s.stories.includes(story) && s.tiers.includes(tier));
     if (matching.length === 0) {
-      error(`migration-e2e: STORY ${story} has no @tier0 scenario in ${SCENARIOS_JSON}`);
+      error(`migration-e2e: STORY ${story} has no @${tier} scenario in ${SCENARIOS_JSON}`);
       process.exit(1);
     }
-    tags = `@${story} && @tier0`;
+    tags = `@${story} && @${tier}`;
   }
 
-  const args = ['test', `-tags=${MIGRATION_BUILD_TAG}`, TIER0_PACKAGE, '-count=1', '-v'];
+  const args = ['test', `-tags=${run.buildTag}`, run.pkg, '-count=1', '-v'];
   log(`migration-e2e: go ${args.join(' ')} (MIGRATION_TAGS=${tags})`);
   const res = spawnSync('go', args, {
     stdio: 'inherit',
@@ -628,6 +696,67 @@ function runRun() {
   process.exit(0);
 }
 
+// --- the roll-up ------------------------------------------------------------
+
+// rollUp — the lane's verdict from the tier jobs' results. `contains(needs.*,
+// 'failure')` is the shape e2e.yml documents as unsafe: a matrix rolls up to
+// `cancelled`, not `failure`, when a child is cancelled, so a cancelled tier
+// would pass silently. Every tier that emit said would run must come back
+// `success` — nothing else, `skipped` included, counts.
+//
+// A tier that emit did NOT list (a dispatch narrowed it away) is the one case
+// where `skipped` is correct, and the only case: `expected` is the emit
+// output, not the set of jobs that happen to exist.
+export function rollUp({ expected, results }) {
+  const problems = [];
+  for (const tier of expected) {
+    const got = results[tier];
+    if (got === undefined) {
+      problems.push(`${tier} was expected to run but reported no result at all`);
+    } else if (got !== 'success') {
+      problems.push(`${tier} did not succeed (${got})`);
+    }
+  }
+  for (const [tier, got] of Object.entries(results)) {
+    if (expected.includes(tier)) continue;
+    if (got !== 'skipped') {
+      problems.push(`${tier} ran (${got}) but was not in the tier set this run selected`);
+    }
+  }
+  // migration-setup gates every tier job, so its own failure must not be
+  // reported as "no tier ran" — it is the first thing to say.
+  return problems;
+}
+
+function runRollUp() {
+  const setup = (process.env.SETUP_RESULT || '').trim();
+  if (setup !== 'success') {
+    error(`migration-e2e: migration-setup did not succeed (${setup || 'no result'}), so no tier could run`, {
+      title: 'migration-e2e',
+    });
+    process.exit(1);
+  }
+  let expected;
+  try {
+    expected = JSON.parse(process.env.EXPECTED_TIERS || '[]');
+  } catch (e) {
+    error(`migration-e2e: EXPECTED_TIERS is not JSON: ${e.message}`);
+    process.exit(1);
+  }
+  const results = {};
+  for (const tier of KNOWN_TIERS) {
+    const got = (process.env[`RESULT_${tier.toUpperCase()}`] || '').trim();
+    if (got !== '') results[tier] = got;
+  }
+  const problems = rollUp({ expected, results });
+  if (problems.length > 0) {
+    for (const p of problems) error(`migration-e2e: ${p}`, { title: 'migration-e2e' });
+    process.exit(1);
+  }
+  notice(`migration-e2e: every selected tier succeeded (${expected.join(', ')})`);
+  process.exit(0);
+}
+
 // Only dispatch when run as a script — importing for the unit guard must not
 // exit the test runner.
 const invokedDirectly =
@@ -641,8 +770,10 @@ if (invokedDirectly) {
     runEmit();
   } else if (mode === 'run') {
     runRun();
+  } else if (mode === 'rollup') {
+    runRollUp();
   } else {
-    error(`migration-e2e: unknown MODE "${mode}" (want verify|emit|run)`);
+    error(`migration-e2e: unknown MODE "${mode}" (want verify|emit|run|rollup)`);
     process.exit(1);
   }
 }

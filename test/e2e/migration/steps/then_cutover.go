@@ -1,229 +1,433 @@
 package steps
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"os"
+	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 
-	"github.com/tsouza/cerberus/internal/migrategate"
-	"github.com/tsouza/cerberus/internal/migrateverify"
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
+	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
-// verifyEvidenceName is the workspace filename the synthetic clean parity
-// artifact is written to. Named distinctly from verifyGolden-style names so
-// it reads unambiguously as evidence a Given step manufactured, not an
-// artifact a `cerberus migrate verify` run produced.
-const verifyEvidenceName = "verify-evidence.json"
+// cutoverReadyBudget bounds a single reachability re-probe of a backend the
+// scenario asserts stayed up through a flip or a revert. The compose stack's
+// own healthcheck already gates on `just migration-tier1-up --wait`, so a
+// live backend answering slower than this is a real regression, not a cold
+// start.
+const cutoverReadyBudget = 30 * time.Second
 
-// gateGoGolden is the committed decision the go-path scenario's gate run is
-// compared against — distinct from gateGolden (then_gate.go's no-evidence
-// golden), since the two runs feed the gate different inputs and cannot
-// share one expected artifact.
-const gateGoGolden = "gate-go.json"
+// boundaryPreMargin is how far before ClickHouse's own ingest-start MIG-23
+// probes: one full sample step, which the fixture guarantees carries no
+// written row (see test/e2e/migration/seed/fixture.go's SeedStart/SampleStep
+// geometry — the very first sample lands AT SeedStart).
+const boundaryPreMargin = seed.SampleStep
 
-// gateOKExit is the exit status `cerberus migrate gate` leaves with on a go
-// decision — 0, the ordinary success status, asserted by name here rather
-// than a bare literal so a reader comparing it against gateNoGoExit /
-// gateGenericErrorExit sees all three exit contracts side by side.
-const gateOKExit = 0
+// cutoverProbe is one archetype's MIG-22 run: the probe query and instant it
+// was asked at, plus the three answers a full flip-and-revert collects.
+type cutoverProbe struct {
+	query    string
+	at       time.Time
+	baseline lib.ProbeResult
+	flipped  lib.ProbeResult
+	reverted lib.ProbeResult
+}
 
-// cleanVerifyDataPoints is the compared-unit count the synthetic evidence
-// reports for its one query. It only has to be non-zero — evalVerify's
-// ComparedUnits==0 guard is what a real empty/all-unsupported run would trip
-// — so one is the honest minimum that still proves the guard passes.
-const cleanVerifyDataPoints = 1
+// boundaryProbe is one archetype's MIG-23 run: ClickHouse's own ingest-start,
+// the pre-boundary instant probed on both sides of it, the row counts either
+// side of the boundary, and whether the live retention has aged past the
+// elapsed span since ingest-start.
+type boundaryProbe struct {
+	metric          string
+	ingestStart     time.Time
+	preInstant      time.Time
+	rowsBefore      uint64
+	rowsAtOrAfter   uint64
+	cerberusPre     lib.ProbeResult
+	incumbentPre    lib.ProbeResult
+	routerRemovable bool
+}
 
-// registerCutoverSteps binds the MIG-24 steps that are NOT already covered by
-// registerGateSteps (then_gate.go): establishing CLEAN parity evidence (the
-// mirror image of givenNoParityEvidence) and asserting the gate's go path.
+// registerCutoverSteps binds the MIG-22 (flip-and-revert) and MIG-23
+// (ingest-start boundary) steps.
 func (w *World) registerCutoverSteps(ctx *godog.ScenarioContext) {
-	ctx.Step(`^clean query-parity evidence, because the reference and cerberus already agree$`,
-		w.givenCleanParityEvidence)
-	ctx.Step(`^the operator asks the cutover gate for a go or no-go decision using that evidence$`,
-		w.whenGateWithVerify)
-	ctx.Step(`^the gate returns a go decision$`, w.thenGateSaysGo)
-	ctx.Step(`^the gate leaves with a clean exit status rather than its no-go or tool-error status$`,
-		w.thenGateLeavesClean)
-	ctx.Step(`^the gate reports no blocking stage$`, w.thenGateReportsNoBlockingStage)
+	ctx.Step(`^the seeded fixture's own probe metric for each tagged archetype$`, w.givenProbeMetric)
+	ctx.Step(`^the operator queries the probe metric against the incumbent before any flip$`, w.whenProbeIncumbentBaseline)
+	ctx.Step(`^the operator flips the probe from the incumbent to cerberus by a URL change alone$`, w.whenFlipProbeToCerberus)
+	ctx.Step(`^the flipped probe against cerberus agrees with the incumbent's own pre-flip answer$`, w.thenFlippedAgreesWithBaseline)
+	ctx.Step(`^the incumbent stayed live and reachable through the flip, because cerberus was stood up alongside it rather than in place of it$`,
+		w.thenIncumbentStillLiveAfterFlip)
+	ctx.Step(`^the operator reverts the probe from cerberus back to the incumbent by a URL change alone$`, w.whenRevertProbeToIncumbent)
+	ctx.Step(`^the reverted probe against the incumbent still agrees with its own pre-flip answer$`, w.thenRevertedAgreesWithBaseline)
+	ctx.Step(`^cerberus stayed live and reachable through the revert$`, w.thenCerberusStillLiveAfterRevert)
+	ctx.Step(`^the flip and the revert dialled nothing but a different host for the identical request$`, w.thenFlipRevertDifferOnlyByHost)
+
+	ctx.Step(`^the seeded fixture's own ingest-start instant for each tagged archetype$`, w.givenIngestStart)
+	ctx.Step(`^the operator counts ClickHouse's own rows strictly before and at-or-after ingest-start$`, w.whenCountBoundaryRows)
+	ctx.Step(`^ClickHouse holds exactly zero rows before its own ingest-start$`, w.thenNoRowsBeforeBoundary)
+	ctx.Step(`^ClickHouse holds at least one row at or after ingest-start$`, w.thenRowsAtOrAfterBoundary)
+	ctx.Step(`^the operator queries the probe metric at the pre-boundary instant against cerberus$`, w.whenProbePreBoundaryCerberus)
+	ctx.Step(`^cerberus returns no series at all for the pre-boundary instant, tracing back to ClickHouse holding nothing there$`,
+		w.thenCerberusEmptyPreBoundary)
+	ctx.Step(`^the operator queries the same pre-boundary instant against the incumbent$`, w.whenProbePreBoundaryIncumbent)
+	ctx.Step(`^the incumbent still answers the pre-boundary instant, the precondition any router relies on to serve it from there instead$`,
+		w.thenIncumbentAnswersPreBoundary)
+	ctx.Step(`^the operator reads the live ClickHouse retention and compares it against the time elapsed since ingest-start$`,
+		w.whenCompareLiveRetentionToElapsed)
+	ctx.Step(`^the retention comparison refuses to call the split-router removable, because the live retention has not yet aged past ingest-start$`,
+		w.thenSplitRouterNotYetRemovable)
 }
 
-// givenCleanParityEvidence manufactures a verify.json reporting exactly the
-// shape a real `cerberus migrate verify` run leaves behind after a clean
-// pass: one query, one compared series, zero divergence, zero error, no
-// unconfigured or dead-family gap. It is built from the actual
-// migrateverify.Report struct (not hand-typed JSON) precisely so this
-// fixture can never drift from the schema evalVerify decodes — a field
-// rename on either side breaks the compile, not a silent zero-fill.
-func (w *World) givenCleanParityEvidence() error {
-	if err := w.requireArchetypes("the parity evidence"); err != nil {
+// --- MIG-22: cutover moves and reverts by a URL change alone ---------------
+
+// givenProbeMetric selects the seeded fixture's own gauge metric as the
+// probe every later step queries — read from the manifest the seeder
+// published, never a literal the scenario invented, so the probe always names
+// a metric this exact run actually wrote.
+func (w *World) givenProbeMetric() error {
+	if err := w.requireArchetypes("the probe metric"); err != nil {
 		return err
 	}
 	for _, a := range w.archetypes {
-		rep := cleanVerifyReport(a)
-		data, err := json.MarshalIndent(rep, "", "  ")
-		if err != nil {
-			return fmt.Errorf("archetype %s: encode the synthetic clean verify report: %w", a, err)
-		}
-		out, err := w.workPath(a, verifyEvidenceName)
+		m, err := w.live.LoadManifest(a)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(out, data, workspaceFileMode); err != nil {
-			return fmt.Errorf("archetype %s: write the synthetic clean verify report: %w", a, err)
+		if m.GaugeMetric == "" {
+			return fmt.Errorf("archetype %s: the seeder's manifest names no gauge metric; the scenario has nothing to probe", a)
 		}
+		w.manifest[a] = m
+		w.cutover[a] = cutoverProbe{query: m.GaugeMetric, at: m.VerifyEnd}
 	}
 	return nil
 }
 
-// workspaceFileMode is the permission a scenario-manufactured artifact gets
-// inside the scenario workspace.
-const workspaceFileMode = 0o644
-
-// cleanVerifyReport builds the one-query, zero-divergence report
-// givenCleanParityEvidence writes to disk.
-func cleanVerifyReport(archetype string) migrateverify.Report {
-	family := migrateverify.FamilySummary{
-		Kind:     migrateverify.KindMetricMatrix,
-		Unit:     migrateverify.UnitSeries,
-		Total:    cleanVerifyDataPoints,
-		Match:    cleanVerifyDataPoints,
-		Compared: cleanVerifyDataPoints,
-	}
-	summary := migrateverify.Summary{
-		Total:          cleanVerifyDataPoints,
-		Match:          cleanVerifyDataPoints,
-		ComparedSeries: cleanVerifyDataPoints,
-		ComparedUnits:  cleanVerifyDataPoints,
-	}
-	return migrateverify.Report{
-		SchemaVersion: migrateverify.ReportVersion,
-		Summary:       summary,
-		Heads: []migrateverify.HeadSummary{{
-			Head:       migrateverify.HeadProm,
-			Configured: true,
-			Summary:    summary,
-			Families:   []migrateverify.FamilySummary{family},
-		}},
-		Results: []migrateverify.QueryResult{{
-			Head:           migrateverify.HeadProm,
-			Kind:           migrateverify.KindMetricMatrix,
-			Source:         fmt.Sprintf("synthetic:%s/clean-parity-evidence", archetype),
-			Expr:           "up",
-			Verdict:        migrateverify.VerdictMatch,
-			ComparedSeries: cleanVerifyDataPoints,
-			ComparedUnits:  cleanVerifyDataPoints,
-		}},
-	}
+// whenProbeIncumbentBaseline records what the incumbent answers before any
+// flip — the ground truth every later probe is compared against.
+func (w *World) whenProbeIncumbentBaseline() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		res, err := lib.QueryInstant(context.Background(), w.live.PromURL, cp.query, cp.at)
+		if err != nil {
+			return cp, fmt.Errorf("archetype %s: probe the incumbent before any flip: %w", a, err)
+		}
+		if !res.Vector.NonEmpty() {
+			return cp, fmt.Errorf("archetype %s: the incumbent's pre-flip probe returned no series at all", a)
+		}
+		cp.baseline = res
+		return cp, nil
+	})
 }
 
-// whenGateWithVerify folds each archetype's offline artifacts PLUS the
-// synthetic clean verify evidence into one decision — the mirror image of
-// then_gate.go's whenGate, which deliberately omits --verify.
-func (w *World) whenGateWithVerify() error {
-	if err := w.requireArchetypes("the cutover gate"); err != nil {
+// whenFlipProbeToCerberus re-issues the identical probe against cerberus —
+// the "flip" is nothing but a different base URL on the exact same request.
+func (w *World) whenFlipProbeToCerberus() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		if cp.baseline.Vector == nil {
+			return cp, fmt.Errorf("archetype %s: no pre-flip incumbent answer recorded; the scenario must probe the incumbent first", a)
+		}
+		res, err := lib.QueryInstant(context.Background(), w.live.CerberusURL, cp.query, cp.at)
+		if err != nil {
+			return cp, fmt.Errorf("archetype %s: probe cerberus after the flip: %w", a, err)
+		}
+		cp.flipped = res
+		return cp, nil
+	})
+}
+
+func (w *World) thenFlippedAgreesWithBaseline() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		if !cp.flipped.Vector.Equal(cp.baseline.Vector) {
+			return cp, fmt.Errorf("archetype %s: cerberus's flipped answer disagrees with the incumbent's pre-flip answer", a)
+		}
+		return cp, nil
+	})
+}
+
+// thenIncumbentStillLiveAfterFlip proves the flip was additive, not
+// destructive: the incumbent answers exactly as readily after cerberus took
+// the read as it did before, so nothing about the flip depended on tearing
+// the incumbent down.
+func (w *World) thenIncumbentStillLiveAfterFlip() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		if err := seed.WaitHTTPOK(context.Background(), w.live.PromURL+"/-/ready", cutoverReadyBudget); err != nil {
+			return cp, fmt.Errorf("archetype %s: the incumbent is not reachable after the flip: %w", a, err)
+		}
+		return cp, nil
+	})
+}
+
+// whenRevertProbeToIncumbent re-issues the identical probe against the
+// incumbent — the "revert" is, symmetrically, nothing but the base URL
+// changing back.
+func (w *World) whenRevertProbeToIncumbent() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		res, err := lib.QueryInstant(context.Background(), w.live.PromURL, cp.query, cp.at)
+		if err != nil {
+			return cp, fmt.Errorf("archetype %s: probe the incumbent after the revert: %w", a, err)
+		}
+		cp.reverted = res
+		return cp, nil
+	})
+}
+
+func (w *World) thenRevertedAgreesWithBaseline() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		if !cp.reverted.Vector.Equal(cp.baseline.Vector) {
+			return cp, fmt.Errorf("archetype %s: the incumbent's post-revert answer disagrees with its own pre-flip answer", a)
+		}
+		return cp, nil
+	})
+}
+
+func (w *World) thenCerberusStillLiveAfterRevert() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		if err := seed.WaitHTTPOK(context.Background(), w.live.CerberusURL+"/readyz", cutoverReadyBudget); err != nil {
+			return cp, fmt.Errorf("archetype %s: cerberus is not reachable after the revert: %w", a, err)
+		}
+		return cp, nil
+	})
+}
+
+// thenFlipRevertDifferOnlyByHost is the "one-line rollback" claim made
+// mechanical: the flip's request and the revert's request, once the
+// scheme+host is stripped from each, must be byte-identical. Anything else
+// means the flip touched more than a URL.
+func (w *World) thenFlipRevertDifferOnlyByHost() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		flipPath, err := lib.RequestPath(cp.flipped.RequestURL)
+		if err != nil {
+			return cp, fmt.Errorf("archetype %s: %w", a, err)
+		}
+		revertPath, err := lib.RequestPath(cp.reverted.RequestURL)
+		if err != nil {
+			return cp, fmt.Errorf("archetype %s: %w", a, err)
+		}
+		if flipPath != revertPath {
+			return cp, fmt.Errorf("archetype %s: the flip dialled %q but the revert dialled %q; a one-line rollback changes nothing but the host",
+				a, flipPath, revertPath)
+		}
+		return cp, nil
+	})
+}
+
+// eachCutover runs fn over every tagged archetype's cutover state, writing
+// back whatever fn returns so a chain of When/Then steps accumulates onto the
+// same record.
+func (w *World) eachCutover(fn func(archetype string, cp cutoverProbe) (cutoverProbe, error)) error {
+	if err := w.requireArchetypes("the cutover assertion"); err != nil {
 		return err
 	}
 	for _, a := range w.archetypes {
-		run, err := w.runGateWithVerify(a, gateGoGolden)
+		cp, ok := w.cutover[a]
+		if !ok {
+			return fmt.Errorf("archetype %s: no probe metric selected; the scenario must establish one first", a)
+		}
+		next, err := fn(a, cp)
 		if err != nil {
 			return err
 		}
-		w.gate = run
+		w.cutover[a] = next
 	}
 	return nil
 }
 
-// runGateWithVerify is runGate (then_gate.go) plus a --verify flag pointing
-// at the archetype's synthetic clean evidence.
-func (w *World) runGateWithVerify(archetype, outName string) (gateRun, error) {
-	classify, err := w.workPath(archetype, classifyGolden)
-	if err != nil {
-		return gateRun{}, err
-	}
-	rulegraph, err := w.workPath(archetype, ruleGraphGolden)
-	if err != nil {
-		return gateRun{}, err
-	}
-	verify, err := w.workPath(archetype, verifyEvidenceName)
-	if err != nil {
-		return gateRun{}, err
-	}
-	for _, p := range []string{classify, rulegraph, verify} {
-		if _, err := os.Stat(p); err != nil {
-			return gateRun{}, fmt.Errorf("archetype %s: %s was never produced: %w", archetype, p, err)
-		}
-	}
-	out, err := w.workPath(archetype, outName)
-	if err != nil {
-		return gateRun{}, err
-	}
-	res, err := w.run(nil,
-		"migrate", "gate",
-		"--classify", classify, "--rulegraph", rulegraph, "--verify", verify,
-		"--json", "--out", out)
-	if err != nil {
-		return gateRun{}, err
-	}
-	if err := lib.RequireOffline(res.Env); err != nil {
-		return gateRun{}, err
-	}
-	data, err := lib.ReadArtifact(out)
-	if err != nil {
-		return gateRun{}, err
-	}
-	var dec migrategate.Decision
-	if err := lib.DecodeArtifact(data, &dec); err != nil {
-		return gateRun{}, fmt.Errorf("archetype %s: %w", archetype, err)
-	}
-	return gateRun{ran: true, decision: dec, exitCode: res.ExitCode, raw: data, env: res.Env}, nil
-}
+// --- MIG-23: historical reads split at ClickHouse's ingest-start -----------
 
-// thenGateSaysGo asserts the fold authorized cutover, in both the field a
-// script reads and the word an operator reads.
-func (w *World) thenGateSaysGo() error {
-	dec, err := w.gateDecision()
-	if err != nil {
+// givenIngestStart reads ClickHouse's own ingest-start off the seeder's
+// manifest (SeedStart — the very first fixture sample, written identically to
+// both backends) rather than a literal the scenario invented, so the boundary
+// this scenario probes is always the one the live stack actually holds.
+func (w *World) givenIngestStart() error {
+	if err := w.requireArchetypes("the ingest-start boundary"); err != nil {
 		return err
 	}
-	if !dec.Pass {
-		return fmt.Errorf("the gate refused the cutover despite clean parity evidence: %+v", dec)
-	}
-	if dec.Overall != migrategate.OverallPass {
-		return fmt.Errorf("the gate reports %q rather than %q", dec.Overall, migrategate.OverallPass)
-	}
-	return nil
-}
-
-// thenGateLeavesClean asserts the process status is the ordinary success
-// status — distinguishing "authorized" from both documented refusal
-// statuses, the same way thenGateLeavesWithNoGoStatus distinguishes refusal
-// from a crash.
-func (w *World) thenGateLeavesClean() error {
-	if !w.gate.ran {
-		return fmt.Errorf("the cutover gate has not been run")
-	}
-	if w.gate.exitCode != gateOKExit {
-		return fmt.Errorf("the gate left with status %d, not its clean status %d", w.gate.exitCode, gateOKExit)
+	for _, a := range w.archetypes {
+		m, err := w.live.LoadManifest(a)
+		if err != nil {
+			return err
+		}
+		if m.GaugeMetric == "" {
+			return fmt.Errorf("archetype %s: the seeder's manifest names no gauge metric; the scenario has nothing to probe", a)
+		}
+		w.manifest[a] = m
+		w.boundary[a] = boundaryProbe{
+			metric:      m.GaugeMetric,
+			ingestStart: m.SeedStart,
+			preInstant:  m.SeedStart.Add(-boundaryPreMargin),
+		}
 	}
 	return nil
 }
 
-// thenGateReportsNoBlockingStage asserts every stage the checklist carries
-// came back non-blocking — the positive-path counterpart to
-// thenGateExplainsTheBlockingStage, which pins the SINGLE blocker the
-// no-evidence scenario expects.
-func (w *World) thenGateReportsNoBlockingStage() error {
-	dec, err := w.gateDecision()
+// boundaryCountBeforeSQL / boundaryCountAtOrAfterSQL count rows either side of
+// the ingest-start boundary directly in ClickHouse, so the boundary this
+// scenario asserts is measured from the physical table cerberus itself reads,
+// not merely from cerberus's own query answer (which could be empty for an
+// unrelated reason).
+const (
+	boundaryCountBeforeSQL    = "SELECT count() FROM otel_metrics_gauge WHERE MetricName = ? AND TimeUnix < ?"
+	boundaryCountAtOrAfterSQL = "SELECT count() FROM otel_metrics_gauge WHERE MetricName = ? AND TimeUnix >= ?"
+)
+
+// countBoundaryRows dials the live ClickHouse and counts, for metric, how
+// many rows land strictly before boundary and how many land at or after it.
+func (w *World) countBoundaryRows(ctx context.Context, metric string, boundary time.Time) (before, atOrAfter uint64, err error) {
+	dialCtx, cancel := context.WithTimeout(ctx, liveCHDialBudget)
+	defer cancel()
+	conn, err := seed.DialCH(dialCtx, seed.CHConfig{
+		Addr:     w.live.CHAddr,
+		Database: w.live.CHDatabase,
+		Username: w.live.CHUsername,
+		Password: w.live.CHPassword,
+	})
 	if err != nil {
+		return 0, 0, fmt.Errorf("migration harness: dial the live clickhouse to count boundary rows: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.QueryRow(ctx, boundaryCountBeforeSQL, metric, boundary).Scan(&before); err != nil {
+		return 0, 0, fmt.Errorf("migration harness: count rows before ingest-start: %w", err)
+	}
+	if err := conn.QueryRow(ctx, boundaryCountAtOrAfterSQL, metric, boundary).Scan(&atOrAfter); err != nil {
+		return 0, 0, fmt.Errorf("migration harness: count rows at-or-after ingest-start: %w", err)
+	}
+	return before, atOrAfter, nil
+}
+
+func (w *World) whenCountBoundaryRows() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		before, atOrAfter, err := w.countBoundaryRows(context.Background(), bp.metric, bp.ingestStart)
+		if err != nil {
+			return bp, fmt.Errorf("archetype %s: %w", a, err)
+		}
+		bp.rowsBefore, bp.rowsAtOrAfter = before, atOrAfter
+		return bp, nil
+	})
+}
+
+func (w *World) thenNoRowsBeforeBoundary() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		if bp.rowsBefore != 0 {
+			return bp, fmt.Errorf("archetype %s: clickhouse holds %d row(s) before its own ingest-start, so the boundary is not where the fixture says it is",
+				a, bp.rowsBefore)
+		}
+		return bp, nil
+	})
+}
+
+func (w *World) thenRowsAtOrAfterBoundary() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		if bp.rowsAtOrAfter == 0 {
+			return bp, fmt.Errorf("archetype %s: clickhouse holds no rows at or after its own ingest-start either, so the boundary bounds nothing real", a)
+		}
+		return bp, nil
+	})
+}
+
+func (w *World) whenProbePreBoundaryCerberus() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		res, err := lib.QueryInstant(context.Background(), w.live.CerberusURL, bp.metric, bp.preInstant)
+		if err != nil {
+			return bp, fmt.Errorf("archetype %s: probe cerberus at the pre-boundary instant: %w", a, err)
+		}
+		bp.cerberusPre = res
+		return bp, nil
+	})
+}
+
+func (w *World) thenCerberusEmptyPreBoundary() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		if bp.cerberusPre.Vector.NonEmpty() {
+			return bp, fmt.Errorf("archetype %s: cerberus answered the pre-boundary instant with %d series, but clickhouse holds nothing before ingest-start",
+				a, len(bp.cerberusPre.Vector))
+		}
+		return bp, nil
+	})
+}
+
+func (w *World) whenProbePreBoundaryIncumbent() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		res, err := lib.QueryInstant(context.Background(), w.live.PromURL, bp.metric, bp.preInstant)
+		if err != nil {
+			return bp, fmt.Errorf("archetype %s: probe the incumbent at the pre-boundary instant: %w", a, err)
+		}
+		bp.incumbentPre = res
+		return bp, nil
+	})
+}
+
+// thenIncumbentAnswersPreBoundary asserts the pre-boundary probe was actually
+// dialled at the incumbent's own URL — the structural precondition a split
+// router depends on: the incumbent must be alive and answering at an instant
+// ClickHouse cannot serve at all.
+func (w *World) thenIncumbentAnswersPreBoundary() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		if !strings.HasPrefix(bp.incumbentPre.RequestURL, w.live.PromURL) {
+			return bp, fmt.Errorf("archetype %s: the pre-boundary probe recorded as answered by the incumbent was not dialled at the incumbent's own url (%s)",
+				a, bp.incumbentPre.RequestURL)
+		}
+		return bp, nil
+	})
+}
+
+// whenCompareLiveRetentionToElapsed reads the live ClickHouse retention
+// (never the schema renderer's own text — see readLiveRetention) and compares
+// it against how long it has actually been since ingest-start. A signal whose
+// tables carry no TTL clause at all fails closed, exactly as
+// thenRetentionCoversLookback already does for MIG-14: absence never reads as
+// "unbounded".
+//
+// The router is removable once ClickHouse's OWN retention has aged PAST
+// ingest-start — that is, once elapsed time since ingest-start has grown
+// larger than the TTL, so ClickHouse itself has started expiring rows from
+// right around the original boundary. Only then does the ingest-start-aware
+// special case collapse into ordinary TTL-bounded routing: every query
+// ClickHouse can still legally answer starts after ingest-start anyway, TTL
+// or no TTL, so the dedicated boundary check has nothing left to add. Right
+// after cutover, ClickHouse has not dropped anything yet (elapsed is far
+// smaller than any real TTL), so the router still earns its keep.
+func (w *World) whenCompareLiveRetentionToElapsed() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		retention, err := w.readLiveRetention(context.Background())
+		if err != nil {
+			return bp, fmt.Errorf("archetype %s: %w", a, err)
+		}
+		elapsed := time.Since(bp.ingestStart)
+		have, ok := retention[signalMetrics]
+		bp.routerRemovable = ok && elapsed >= have
+		return bp, nil
+	})
+}
+
+func (w *World) thenSplitRouterNotYetRemovable() error {
+	return w.eachBoundary(func(a string, bp boundaryProbe) (boundaryProbe, error) {
+		if bp.routerRemovable {
+			return bp, fmt.Errorf(
+				"archetype %s: the live retention has already aged past ingest-start; this scenario asserts the router is still required this soon after cutover",
+				a,
+			)
+		}
+		return bp, nil
+	})
+}
+
+// eachBoundary runs fn over every tagged archetype's boundary state, writing
+// back whatever fn returns.
+func (w *World) eachBoundary(fn func(archetype string, bp boundaryProbe) (boundaryProbe, error)) error {
+	if err := w.requireArchetypes("the boundary assertion"); err != nil {
 		return err
 	}
-	for _, s := range dec.Stages {
-		if s.Blocking {
-			return fmt.Errorf("stage %q blocks despite clean parity evidence: %+v", s.Stage, s)
+	for _, a := range w.archetypes {
+		bp, ok := w.boundary[a]
+		if !ok {
+			return fmt.Errorf("archetype %s: no ingest-start boundary established; the scenario must establish one first", a)
 		}
+		next, err := fn(a, bp)
+		if err != nil {
+			return err
+		}
+		w.boundary[a] = next
 	}
 	return nil
 }

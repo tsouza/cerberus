@@ -1,0 +1,14 @@
+{
+  "services": ["frontend", "checkout", "recommendation"],
+  "http_status_codes": ["200", "404", "500", "503"],
+  "log_formats": ["json", "logfmt"],
+  "log_job": "cerberus-migration-kube-prometheus-stack",
+  "gauge_metric": "cerberus_migration_kube_container_up",
+  "counter_metric": "cerberus_migration_kube_http_requests_total",
+  "histogram_metric": "cerberus_migration_kube_request_duration_seconds",
+  "histogram_bounds": [0.1, 0.5, 1.0],
+  "traces_per_service": 5,
+  "spans_per_trace": [2, 3],
+  "churn_label": "container_id",
+  "churn_cardinality": 48
+}

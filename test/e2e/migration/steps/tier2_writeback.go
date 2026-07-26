@@ -270,7 +270,7 @@ func (w *World) thenTier2LandedSamplesMatchLiveReEvaluation() error {
 	checked := 0
 	for _, series := range w.tier2Writeback.landed {
 		for _, sample := range series.Samples {
-			got, err := lib.QueryInstant(ctx, w.tier2.CerberusURL, nodeCPUSourceExpr, sample.Time)
+			got, err := lib.QueryInstantSeries(ctx, w.tier2.CerberusURL, nodeCPUSourceExpr, sample.Time)
 			if err != nil {
 				return fmt.Errorf("re-evaluate %q at %s: %w", nodeCPUSourceExpr, sample.Time, err)
 			}

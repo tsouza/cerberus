@@ -25,6 +25,16 @@
 // CH_ADDR, CH_DATABASE, CH_USERNAME, CH_PASSWORD, OTLP_ADDR, PROM_ADDR,
 // LOKI_ADDR, TEMPO_OTLP_ADDR, TEMPO_HTTP_ADDR. Each defaults to the published
 // port map in tiers/tier1-dual/docker-compose.dual.yml.
+//
+// Running the command more than once against the same live stack — once per
+// archetype the @tier1 scenario set needs — seeds every archetype into ONE
+// compose-stack lifecycle. Each invocation writes its own --manifest, so
+// nothing here is overwritten by the next; --window-offset shifts one
+// archetype's fixture window into the past relative to another's so two
+// archetypes whose declarations happen to share a label value (e.g. a trace
+// service name) still occupy disjoint windows, which is what keeps a
+// window-scoped reference search (Tempo's per-service /api/search) from
+// returning both archetypes' data for what looks like one archetype's query.
 package main
 
 import (
@@ -63,6 +73,14 @@ const (
 	referenceReadyWait = 90 * time.Second
 	// settleWait bounds each reference backend's ingest-to-queryable gate.
 	settleWait = 90 * time.Second
+	// tempoIngestionSlack mirrors reference Tempo's own
+	// wal.ingestion_time_range_slack (compatibility/tempo/tempo-config.yaml,
+	// restated identically in tiers/tier1-dual for the same live-store
+	// module): a span whose timestamp falls outside [now-slack, now+slack] at
+	// ingest time is clamped out of its block's metadata, and /api/search then
+	// returns nothing for it. --window-offset must leave the whole fixture
+	// window inside that slack.
+	tempoIngestionSlack = time.Hour
 )
 
 func main() {
@@ -86,6 +104,8 @@ func run(logger *slog.Logger) error {
 		lokiAddr     = flag.String("loki-addr", envOr("LOKI_ADDR", defaultLokiAddr), "reference Loki base URL")
 		tempoOTLP    = flag.String("tempo-otlp-addr", envOr("TEMPO_OTLP_ADDR", defaultTempoOTLPAddr), "reference Tempo OTLP/gRPC host:port")
 		tempoHTTP    = flag.String("tempo-http-addr", envOr("TEMPO_HTTP_ADDR", defaultTempoHTTPAddr), "reference Tempo base URL")
+		windowOffset = flag.Duration("window-offset", 0, "shift this archetype's fixture window this far into "+
+			"the past from now, so a second archetype seeded into the same live stack occupies a disjoint window")
 	)
 	flag.Parse()
 
@@ -95,6 +115,14 @@ func run(logger *slog.Logger) error {
 	if *manifestPath == "" {
 		return fmt.Errorf("--manifest is required: the parity lane reads its query window from the manifest, " +
 			"never from a live one")
+	}
+	if *windowOffset < 0 {
+		return fmt.Errorf("--window-offset is %s, want a non-negative duration: it shifts the window into the past, never the future", *windowOffset)
+	}
+	if *windowOffset+seed.SeedWindow >= tempoIngestionSlack {
+		return fmt.Errorf("--window-offset %s pushes the fixture window's start %s before now, at or past "+
+			"reference tempo's %s ingestion slack; spans that far back would be clamped out of their block "+
+			"and never become searchable", *windowOffset, *windowOffset+seed.SeedWindow, tempoIngestionSlack)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), runBudget)
@@ -127,8 +155,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// 2. Build the ONE fixture both sides are written from.
-	window := seed.NewWindow(time.Now())
+	// 2. Build the ONE fixture both sides are written from. --window-offset
+	//    shifts the anchor into the past so a second archetype seeded into
+	//    the same live stack lands in a window disjoint from the first's —
+	//    see the package doc comment.
+	window := seed.NewWindow(time.Now().Add(-*windowOffset))
 	fixture, err := seed.Build(declaration, window)
 	if err != nil {
 		return err

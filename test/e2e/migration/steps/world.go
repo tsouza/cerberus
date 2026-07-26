@@ -18,7 +18,9 @@ import (
 
 	"github.com/tsouza/cerberus/internal/migrate"
 	"github.com/tsouza/cerberus/internal/migrategate"
+	"github.com/tsouza/cerberus/internal/migrateverify"
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
+	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
 // tier2RulerState is the MIG-09 ruler scenario's accumulated state beyond
@@ -108,6 +110,88 @@ type World struct {
 	// polled, recorded-series/notification deltas). See
 	// steps/then_ruler.go.
 	tier2Ruler tier2RulerState
+
+	// live is the Tier-1 stack's endpoints, established by "the tier-1 stack
+	// is live" — nil-valued (a zero LiveEndpoints) until that Given runs, so
+	// a Tier-1 step used from a Tier-0 scenario fails with a clear "establish
+	// it first" rather than dialing an empty URL.
+	live     lib.LiveEndpoints
+	liveSet  bool
+	manifest map[string]seed.Manifest
+
+	// verifyCorpusFile names which committed corpus a Tier-1 "When the
+	// operator verifies" step replays — set by the Given that selects breadth
+	// (MIG-16), a semantic-hotspot subset (MIG-17), the label-mapping subset
+	// (MIG-11) or the histogram-fidelity subset (MIG-12), so the When step
+	// never guesses which fixture a scenario meant.
+	verifyCorpusFile string
+	verifyReport     map[string]migrateverify.Report
+	verifyRaw        map[string][]byte
+	verifyExitCode   map[string]int
+
+	// inventory is MIG-02's live-cardinality-inventory state: the decoded
+	// report, the archetype declaration its expectations are checked
+	// against, and the deliberately-unreachable probe source the negative
+	// case stands up.
+	inventory inventoryState
+
+	// bridge is MIG-06's ingest-bridge state: the synthetic OTLP batch a
+	// scenario pushed directly at the collector, keyed by the metric shape
+	// it named so a Then can look each one back up by kind.
+	bridge bridgeState
+
+	// scrape is MIG-07's collector-scrape-parity state: the target both the
+	// reference Prometheus and the collector's prometheusreceiver scrape.
+	scrape scrapeState
+
+	// fault is MIG-08's fault-injection state: the heavy query's measured
+	// latencies and which compose service (if any) is currently paused, so
+	// the scenario's own cleanup can always restore it even on failure.
+	fault faultState
+
+	// schemaLive is what the MIG-10 tier-1 "diff the rendered schema against
+	// the live database" step produced.
+	schemaLive schemaLiveDiff
+
+	// expHist is the MIG-12 exponential-histogram probe: one synthetic row
+	// seeded per tagged archetype, keyed by archetype, carrying the true
+	// quantile the seeding step computed independently and (once the When
+	// step has run) cerberus's own answer.
+	expHist map[string]expHistProbe
+
+	// recordedSeries is the MIG-13 read-back probe: one synthetic
+	// recorded-series row seeded per tagged archetype, as if a ruler's
+	// write-back had produced it, keyed by archetype.
+	recordedSeries map[string]recordedSeriesProbe
+
+	// correlation is MIG-21's probe state: the log record and trace the
+	// Given step establishes from the rebuilt live fixture, and what the
+	// When step's hop through cerberus's own Loki/Tempo read paths resolved.
+	correlation correlationProbe
+
+	// tenant is MIG-15's probe state: the foreign-tenant data planted
+	// directly in ClickHouse, outside cerberus's configured database, and
+	// what cerberus's own query surface did and did not return for it.
+	tenant tenantProbe
+
+	// downsample is MIG-20's probe state: the raw and simulated-downsampled
+	// series fetched from the live stack and the tolerant comparator's
+	// verdict on them.
+	downsample downsampleProbe
+
+	// cutover is MIG-22's per-archetype flip/revert probe state, and boundary
+	// is MIG-23's per-archetype ingest-start state. Both drive live HTTP/CH
+	// probes directly rather than a `cerberus migrate` artifact, mirroring
+	// MIG-20's "dedicated comparator, not verify" posture for a shape none of
+	// the eight CLI subcommands cover.
+	cutover  map[string]cutoverProbe
+	boundary map[string]boundaryProbe
+
+	// decommission is MIG-25's per-archetype residual-read-traffic audit
+	// state, and retentionGate is MIG-26's tier-1 live-retention-vs-mandate
+	// comparison state.
+	decommission  map[string]decommissionRun
+	retentionGate map[string]retentionGateRun
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -139,6 +223,26 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.tier2Writeback = tier2WritebackState{}
 		w.tier2Alerting = tier2AlertingState{}
 		w.tier2Ruler = tier2RulerState{}
+		w.live, w.liveSet = lib.LiveEndpoints{}, false
+		w.manifest = map[string]seed.Manifest{}
+		w.verifyCorpusFile = ""
+		w.verifyReport = map[string]migrateverify.Report{}
+		w.verifyRaw = map[string][]byte{}
+		w.verifyExitCode = map[string]int{}
+		w.inventory = inventoryState{}
+		w.bridge = bridgeState{}
+		w.scrape = scrapeState{}
+		w.fault = faultState{}
+		w.schemaLive = schemaLiveDiff{}
+		w.expHist = map[string]expHistProbe{}
+		w.recordedSeries = map[string]recordedSeriesProbe{}
+		w.correlation = correlationProbe{}
+		w.tenant = tenantProbe{}
+		w.downsample = downsampleProbe{}
+		w.cutover = map[string]cutoverProbe{}
+		w.boundary = map[string]boundaryProbe{}
+		w.decommission = map[string]decommissionRun{}
+		w.retentionGate = map[string]retentionGateRun{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -152,15 +256,23 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	})
 	ctx.After(func(c context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 		w.scenariosRun++
+		// Restore any compose service MIG-08's fault-injection paused,
+		// regardless of whether the scenario's own restoring Then step ever
+		// ran — a failed assertion mid-fault must never leave the shared
+		// Tier-1 stack degraded for the next scenario.
+		faultErr := w.restorePausedService()
 		if w.work == "" {
-			return c, nil
+			return c, faultErr
 		}
 		dir := w.work
 		w.work = ""
 		if err := os.RemoveAll(dir); err != nil {
+			if faultErr != nil {
+				return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w (also: %w)", dir, err, faultErr)
+			}
 			return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w", dir, err)
 		}
-		return c, nil
+		return c, faultErr
 	})
 
 	w.registerSchemaSteps(ctx)
@@ -174,8 +286,23 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerTier2LiveSteps(ctx)
 	w.registerTier2WritebackSteps(ctx)
 	w.registerTier2AlertingSteps(ctx)
-	w.registerCutoverSteps(ctx)
+	w.registerCutoverGateSteps(ctx)
 	w.registerRulerSteps(ctx)
+	w.registerVerifySteps(ctx)
+	w.registerInventorySteps(ctx)
+	w.registerIngestBridgeSteps(ctx)
+	w.registerScrapeParitySteps(ctx)
+	w.registerFaultInjectionSteps(ctx)
+	w.registerSchemaLiveSteps(ctx)
+	w.registerLabelMappingSteps(ctx)
+	w.registerHistogramFidelitySteps(ctx)
+	w.registerRecordedSeriesSteps(ctx)
+	w.registerLiveRetentionSteps(ctx)
+	w.registerTenantIsolationSteps(ctx)
+	w.registerDownsampleSteps(ctx)
+	w.registerCorrelationSteps(ctx)
+	w.registerCutoverSteps(ctx)
+	w.registerDecommissionSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.
@@ -194,6 +321,23 @@ func (w *World) run(extraEnv []string, args ...string) (lib.Result, error) {
 		Args: args,
 		Dir:  w.root,
 		Env:  lib.OfflineEnv(extraEnv...),
+	})
+}
+
+// runLive executes the cerberus binary with the live environment (lib.LiveEnv
+// — no blackholed network) plus extraEnv, from the repository root. It is the
+// Tier-1 counterpart of run: every `cerberus migrate verify` invocation
+// against the live stack goes through this, never through run, because run's
+// OfflineEnv would blackhole exactly the HTTP routes a Tier-1 command needs.
+func (w *World) runLive(extraEnv []string, args ...string) (lib.Result, error) {
+	if w.bin == "" {
+		return lib.Result{}, fmt.Errorf("migration harness: no cerberus binary bound to the scenario world")
+	}
+	return lib.Run(lib.RunSpec{
+		Bin:  w.bin,
+		Args: args,
+		Dir:  w.root,
+		Env:  lib.LiveEnv(extraEnv...),
 	})
 }
 

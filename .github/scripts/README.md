@@ -426,8 +426,19 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     `MODE`.
 
 - **`migration-e2e.mjs`** — `ci.yml`'s `lint` job (`MODE=verify`) and
-  `migration-e2e.yml` (all three modes). The Layer-14 migration lane's
-  coverage ratchet, tier-matrix emitter and scenario runner. It consumes the
+  `migration-e2e.yml` (all four modes). The Layer-14 migration lane's
+  coverage ratchet, tier-matrix emitter, scenario runner and lane roll-up.
+  `TIER_JOBS` is the single table of which tiers `migration-e2e.yml` has a job
+  for, each tier's ceiling, and whether that job is matrix-driven — tier0 is
+  one generic runner fanned out by `strategy.matrix`; tier1 is a fixed stanza
+  that raises a compose stack around the suite, so it is runnable but stays
+  out of the emitted matrix (a tier1 matrix entry would run the tier-1 suite
+  on a bare runner with no stack behind it). `MODE=rollup` folds the tier
+  results: every tier `emit` selected must report `success` — `cancelled` and
+  `skipped` included, which is exactly what a `contains(needs.*.result,
+  'failure')` fold would wave through — and a tier that ran without being
+  selected is reported too, since the job gate and the roll-up read the same
+  `tiers` output and must not disagree. It consumes the
   JSON that `test/e2e/migration/cmd/scenarios` projects out of the Gherkin
   feature files — it never parses Gherkin itself, so exactly one Gherkin
   parser exists in the tree — and holds that scenario set to anchors derived

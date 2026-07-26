@@ -99,9 +99,13 @@ func decodeSample(pair [2]json.RawMessage) (PromSample, error) {
 	return PromSample{Time: time.Unix(int64(unixSeconds), nanos).UTC(), Value: value}, nil
 }
 
-// QueryInstant runs a Prometheus-API instant query at t and decodes the
-// vector result. Like QueryRange, it requires resultType "vector".
-func QueryInstant(ctx context.Context, baseURL, query string, t time.Time) ([]PromSeries, error) {
+// QueryInstantSeries runs a Prometheus-API instant query at t and decodes the
+// vector result into the same PromSeries shape QueryRange returns, so a caller
+// can hold a range answer and an instant answer in one type. Like QueryRange,
+// it requires resultType "vector". Distinct from probe.go's QueryInstant,
+// which returns a sortable ProbeVector plus the dialled request URL — the
+// shape the cutover scenarios compare backend-to-backend.
+func QueryInstantSeries(ctx context.Context, baseURL, query string, t time.Time) ([]PromSeries, error) {
 	target := strings.TrimRight(baseURL, "/") + "/api/v1/query?" + url.Values{
 		"query": {query},
 		"time":  {strconv.FormatInt(t.Unix(), 10)},

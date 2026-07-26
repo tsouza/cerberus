@@ -3,7 +3,6 @@ package lib
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -12,9 +11,9 @@ import (
 )
 
 // Tier-2 live-stack env var names, mirroring Tier-1's TIER1_* contract
-// (lib.LoadLiveEndpoints does not exist on this branch yet — Tier-2's own
-// live-stack plumbing stands alone rather than extending it, since the two
-// tiers never run against the same compose project at once). Every one
+// Tier-2's own live-stack plumbing stands alone rather than extending
+// LoadLiveEndpoints, since the two tiers never run against the same compose
+// project at once. Every one
 // falls back to the exact port map docker-compose.ruler.yml (extending
 // docker-compose.dual.yml) publishes, so the common case — `just
 // migration-tier2-up` then driving this suite — needs no export at all.
@@ -79,14 +78,6 @@ func LoadTier2Endpoints() Tier2Endpoints {
 		*v.dst(&e) = envOr(v.name, v.dflt)
 	}
 	return e
-}
-
-// envOr returns the named env var, or fallback when it is unset or empty.
-func envOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // tier2LiveProbeTimeout bounds how long RequireLive waits for one endpoint.
