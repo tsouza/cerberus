@@ -126,6 +126,21 @@ type World struct {
 	// recorded-series row seeded per tagged archetype, as if a ruler's
 	// write-back had produced it, keyed by archetype.
 	recordedSeries map[string]recordedSeriesProbe
+
+	// correlation is MIG-21's probe state: the log record and trace the
+	// Given step establishes from the rebuilt live fixture, and what the
+	// When step's hop through cerberus's own Loki/Tempo read paths resolved.
+	correlation correlationProbe
+
+	// tenant is MIG-15's probe state: the foreign-tenant data planted
+	// directly in ClickHouse, outside cerberus's configured database, and
+	// what cerberus's own query surface did and did not return for it.
+	tenant tenantProbe
+
+	// downsample is MIG-20's probe state: the raw and simulated-downsampled
+	// series fetched from the live stack and the tolerant comparator's
+	// verdict on them.
+	downsample downsampleProbe
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -166,6 +181,9 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.schemaLive = schemaLiveDiff{}
 		w.expHist = map[string]expHistProbe{}
 		w.recordedSeries = map[string]recordedSeriesProbe{}
+		w.correlation = correlationProbe{}
+		w.tenant = tenantProbe{}
+		w.downsample = downsampleProbe{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -215,6 +233,10 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerLabelMappingSteps(ctx)
 	w.registerHistogramFidelitySteps(ctx)
 	w.registerRecordedSeriesSteps(ctx)
+	w.registerLiveRetentionSteps(ctx)
+	w.registerTenantIsolationSteps(ctx)
+	w.registerDownsampleSteps(ctx)
+	w.registerCorrelationSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.
