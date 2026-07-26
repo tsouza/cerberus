@@ -1,0 +1,18 @@
+# Grafana datasource provisioning for the Tier-2 ruler substrate (Layer 14).
+#
+# Only the Prometheus head is wired: the rule fixture (recording rule +
+# NodeCPUSaturation alert, both PromQL) is the only thing the ruler
+# evaluates here. Mirrors the shape of the Layer-9 dashboard smoke's
+# provisioning at test/e2e/grafana/compose/datasources/cerberus.yaml, pared
+# down to what this substrate needs.
+apiVersion: 1
+datasources:
+  - name: Cerberus-Prometheus
+    uid: cerberus-prometheus
+    type: prometheus
+    access: proxy
+    url: http://cerberus:27080
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

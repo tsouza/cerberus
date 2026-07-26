@@ -1,0 +1,8 @@
+# Single catch-all route: every alert this substrate fires goes to the
+# dead-end receiver. There is no second policy branch to keep in sync
+# because there is no second contact point.
+apiVersion: 1
+policies:
+  - orgId: 1
+    receiver: dead-end
+    group_by: ["alertname"]

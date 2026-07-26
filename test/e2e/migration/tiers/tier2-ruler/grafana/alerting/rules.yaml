@@ -1,0 +1,82 @@
+# Grafana unified-alerting-as-code rule provisioning for the Tier-2 ruler
+# substrate (Layer 14) — the "real query-only external ruler" pointed at
+# cerberus's HTTP API that section 3 of docs/migration-testing.md describes.
+#
+# The rule fixture is NOT invented here: both groups below reuse, verbatim,
+# the kube-prometheus-stack archetype's colon-named recording rule and its
+# NodeCPUSaturation alert (test/e2e/migration/archetypes/kube-prometheus-stack/
+# rules/node-recording.yaml and node-alerts.yaml) — the shape MIG-09's story
+# wants, and the one NodeCPUSaturation's `expr` actually depends on. Keep the
+# `expr`/`for`/threshold fields byte-identical to those two files if either
+# changes; only the Grafana-specific scheduling wrapper (`data`, `condition`,
+# `record.metric`) is new here.
+#
+# `interval: 10s` is a scheduling knob, not part of "the rule" — it is tuned
+# down from a production-realistic 1m so the substrate self-check (which
+# polls this group's live evaluation health) doesn't have to wait a full
+# minute for the first tick. 10s, not some other short value, because
+# Grafana rejects any group interval that isn't an exact multiple of the
+# scheduler's own base interval (10s, unconfigured here) — confirmed the hard
+# way: 15s made the whole provisioning service fail to start with "interval
+# (15s) should be non-zero and divided exactly by scheduler interval: 10".
+#
+# The recording rule's query leg runs for real against cerberus (proving
+# "Grafana evaluates the rule against cerberus"), but its write-back leg
+# posts to the SAME datasource (Grafana's recording-rule default) — and
+# cerberus, a query-only gateway, implements no remote-write receiver. That
+# leg errors until a later phase adds a write path (an OTel-collector
+# Prometheus remote-write receiver in front of ClickHouse); the
+# `node:node_cpu_utilisation:avg1m` series therefore never actually exists in
+# cerberus in this substrate, so NodeCPUSaturation's own query legitimately
+# returns no data rather than a query error — both are expected, and neither
+# blocks proving the mechanism this file exists to prove.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: node.rules
+    folder: kube-prometheus-stack
+    interval: 10s
+    rules:
+      - uid: node-cpu-utilisation-avg1m
+        title: "node:node_cpu_utilisation:avg1m"
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: 1 - avg without (cpu) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+              instant: true
+              refId: A
+        record:
+          metric: "node:node_cpu_utilisation:avg1m"
+          from: A
+
+  - orgId: 1
+    name: node.alerts
+    folder: kube-prometheus-stack
+    interval: 10s
+    rules:
+      - uid: node-cpu-saturation
+        title: NodeCPUSaturation
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: "node:node_cpu_utilisation:avg1m"
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.9] }
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Node CPU saturation" }
+        noDataState: NoData
+        execErrState: Error

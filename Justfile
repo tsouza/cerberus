@@ -77,14 +77,20 @@ migrate *ARGS:
 
 # === Test ===
 
-# Run unit + spec tests with race detector, then type-check the one
-# build-tagged lane no other recipe compiles. `go vet` typechecks, so a rename
-# in an untagged package that breaks a `migration_tier1` assertion fails HERE,
-# in the required `check` lane, instead of surfacing in the scheduled
-# `migration` workflow — the only lane that executes those files.
+# Run unit + spec tests with race detector, then type-check the build-tagged
+# lanes no other recipe compiles. `go vet` typechecks, so a rename in an
+# untagged package that breaks a `migration_tier1` or `migration_tier2`
+# assertion fails HERE, in the required `check` lane, instead of surfacing in
+# the scheduled `migration` workflow — the only lane that executes those
+# files. Two separate invocations, not one `-tags=migration_tier1,migration_tier2`:
+# the two tiers run against different compose stacks and never share a
+# process, and tier2_ruler_test.go's helpers are named to avoid colliding with
+# tier1_stack_test.go's only because both live in package migration — a single
+# combined vet call would silently start requiring that to keep holding.
 test:
     go test -race ./...
     go vet -tags=migration_tier1 ./test/e2e/migration/...
+    go vet -tags=migration_tier2 ./test/e2e/migration/...
 
 # Run the internal/schema/ddl integration tests against a real ClickHouse
 # container (spun up via testcontainers-go). Requires Docker. Gated behind
@@ -1294,6 +1300,54 @@ migration-tier1-down:
 
 # Full Tier-1 lifecycle. Fails fast on the first non-zero recipe.
 migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down
+
+# === Migration lane — Tier-2 ruler substrate (Layer 14) ===
+#
+# The Tier-1 stack plus a real query-only external ruler (Grafana-managed
+# alerting) pointed at cerberus, and the dead-end webhook receiver its one
+# contact point routes to. Mirrors the Tier-1 lifecycle shape exactly — see
+# the comments on the migration-tier1-* recipes above for the rationale each
+# one shares with its tier2 counterpart.
+
+# Bring the Tier-2 stack up: Tier-1's compose file plus tier2-ruler's, merged
+# via the standard multi-`-f` invocation so both sets of services land in the
+# SAME compose project (docker-compose.ruler.yml deliberately declares no
+# `name:` of its own — see that file's header comment).
+migration-tier2-up:
+    @just migration-tier2-down
+    @echo "==> migration tier-2 stack up"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
+        up --build --wait --wait-timeout 300
+
+# Tier-2 runs against the same seeded window Tier-1 does — the ruler tier
+# adds Grafana-managed alerting on top of the SAME cerberus/ClickHouse pair,
+# not a second one — so this is the identical seed step, not a second corpus.
+migration-tier2-seed:
+    @echo "==> migration tier-2 seed"
+    go run ./test/e2e/migration/cmd/seed \
+        --fixture test/e2e/migration/archetypes/three-signal/seed/fixture.json \
+        --manifest test/e2e/migration/.out/manifest.json
+
+# Assert the Tier-2 substrate contract: Grafana provisioned the rule fixture
+# (kube-prometheus-stack's recording rule + NodeCPUSaturation alert) without
+# error, its alert rule evaluates against cerberus for real, and a fired
+# notification actually reaches the dead-end receiver.
+migration-tier2-run:
+    @echo "==> migration tier-2 substrate assertions"
+    go test -tags=migration_tier2 -count=1 ./test/e2e/migration/...
+
+# Tear the Tier-2 stack down. `-v` is mandatory — see migration-tier1-down's
+# comment; the same reference-image VOLUME concern applies here since this
+# compose invocation includes the Tier-1 file too.
+migration-tier2-down:
+    @echo "==> migration tier-2 stack down"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
+        down -v --remove-orphans
+
+# Full Tier-2 lifecycle. Fails fast on the first non-zero recipe.
+migration-tier2: migration-tier2-up migration-tier2-seed migration-tier2-run migration-tier2-down
 
 # === Release (controlled local cut) ===
 #
