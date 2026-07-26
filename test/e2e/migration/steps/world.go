@@ -84,8 +84,9 @@ type World struct {
 
 	// verifyCorpusFile names which committed corpus a Tier-1 "When the
 	// operator verifies" step replays — set by the Given that selects breadth
-	// (MIG-16) or a semantic-hotspot subset (MIG-17), so the When step never
-	// guesses which fixture a scenario meant.
+	// (MIG-16), a semantic-hotspot subset (MIG-17), the label-mapping subset
+	// (MIG-11) or the histogram-fidelity subset (MIG-12), so the When step
+	// never guesses which fixture a scenario meant.
 	verifyCorpusFile string
 	verifyReport     map[string]migrateverify.Report
 	verifyRaw        map[string][]byte
@@ -110,6 +111,21 @@ type World struct {
 	// latencies and which compose service (if any) is currently paused, so
 	// the scenario's own cleanup can always restore it even on failure.
 	fault faultState
+
+	// schemaLive is what the MIG-10 tier-1 "diff the rendered schema against
+	// the live database" step produced.
+	schemaLive schemaLiveDiff
+
+	// expHist is the MIG-12 exponential-histogram probe: one synthetic row
+	// seeded per tagged archetype, keyed by archetype, carrying the true
+	// quantile the seeding step computed independently and (once the When
+	// step has run) cerberus's own answer.
+	expHist map[string]expHistProbe
+
+	// recordedSeries is the MIG-13 read-back probe: one synthetic
+	// recorded-series row seeded per tagged archetype, as if a ruler's
+	// write-back had produced it, keyed by archetype.
+	recordedSeries map[string]recordedSeriesProbe
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -147,6 +163,9 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.bridge = bridgeState{}
 		w.scrape = scrapeState{}
 		w.fault = faultState{}
+		w.schemaLive = schemaLiveDiff{}
+		w.expHist = map[string]expHistProbe{}
+		w.recordedSeries = map[string]recordedSeriesProbe{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -192,6 +211,10 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerIngestBridgeSteps(ctx)
 	w.registerScrapeParitySteps(ctx)
 	w.registerFaultInjectionSteps(ctx)
+	w.registerSchemaLiveSteps(ctx)
+	w.registerLabelMappingSteps(ctx)
+	w.registerHistogramFidelitySteps(ctx)
+	w.registerRecordedSeriesSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.
