@@ -161,30 +161,30 @@ func TestMatcherToExpr_NoResourceColumnStaysAttributesMap(t *testing.T) {
 	}
 }
 
-// TestPromqlTopLevelKeysForOuterBy pins the normalisation of by-clause
-// labels to the underscored Prom-canonical spelling so the outer
-// aggregate's `Attributes['service_name']` lookup hits the synthesised
-// map key regardless of which spelling the user wrote.
-func TestPromqlTopLevelKeysForOuterBy(t *testing.T) {
+// TestPromqlTopLevelKeys pins that the synthesised key set is derived
+// from the SCHEMA, not from the query: the default schema always yields
+// the `service_name` → ServiceName pair under its Prom-canonical
+// underscored spelling, and clearing the column opts the schema out.
+func TestPromqlTopLevelKeys(t *testing.T) {
 	t.Parallel()
-	s := schema.DefaultOTelMetrics()
+
+	def := schema.DefaultOTelMetrics()
+	cleared := schema.DefaultOTelMetrics()
+	cleared.ServiceNameColumn = ""
 
 	cases := []struct {
 		name string
-		in   []string
+		in   schema.Metrics
 		want [][2]string
 	}{
-		{"empty", nil, nil},
-		{"underscored", []string{"service_name"}, [][2]string{{"service_name", s.ServiceNameColumn}}},
-		{"dotted", []string{"service.name"}, [][2]string{{"service_name", s.ServiceNameColumn}}},
-		{"both_collapse", []string{"service_name", "service.name"}, [][2]string{{"service_name", s.ServiceNameColumn}}},
-		{"unrelated_dropped", []string{"job", "service_name", "instance"}, [][2]string{{"service_name", s.ServiceNameColumn}}},
+		{"default", def, [][2]string{{"service_name", def.ServiceNameColumn}}},
+		{"column_cleared", cleared, nil},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := promqlTopLevelKeysForOuterBy(tc.in, s)
+			got := promqlTopLevelKeys(tc.in)
 			if len(got) != len(tc.want) {
 				t.Fatalf("len: got %v, want %v", got, tc.want)
 			}
@@ -197,65 +197,73 @@ func TestPromqlTopLevelKeysForOuterBy(t *testing.T) {
 	}
 }
 
-// TestAugmentSelectorAttributes_NoResourceColumnIsPassThrough pins that
-// the augmenting Project is suppressed when the schema clears
-// ResourceAttributesColumn AND the outer by-clause references no
-// top-level-routed label — the opt-out path stays byte-stable.
-func TestAugmentSelectorAttributes_NoResourceColumnIsPassThrough(t *testing.T) {
+// TestPromCanonicalTopLevelLabel pins that both spellings of the OTel key
+// collapse to the underscored Prom-canonical form, so a `by(service.name)`
+// aggregate's `Attributes['service_name']` lookup hits the synthesised key.
+func TestPromCanonicalTopLevelLabel(t *testing.T) {
 	t.Parallel()
-	s := schema.DefaultOTelMetrics()
-	s.ResourceAttributesColumn = "" // opt out of the resource merge
-	input := &chplan.Scan{Table: s.GaugeTable}
-	ctx := lowerCtx{}
-	if got := augmentSelectorAttributes(input, ctx, s); got != chplan.Node(input) {
-		t.Errorf("no-outer-by: expected pass-through, got %#v", got)
+	for _, in := range []string{"service.name", "service_name"} {
+		if got := promCanonicalTopLevelLabel(in); got != "service_name" {
+			t.Errorf("%q: got %q, want %q", in, got, "service_name")
+		}
 	}
-	// `by(job)` references no top-level column → still pass-through.
-	ctx = ctx.withOuterByLabels([]string{"job"})
-	if got := augmentSelectorAttributes(input, ctx, s); got != chplan.Node(input) {
-		t.Errorf("by(job): expected pass-through, got %#v", got)
+	if got := promCanonicalTopLevelLabel("job"); got != "job" {
+		t.Errorf("unrelated label rewritten: got %q, want %q", got, "job")
 	}
 }
 
-// TestAugmentSelectorAttributes_ResourceMergeWrapsProject pins that with
-// the default schema (ResourceAttributesColumn set) the selector ALWAYS
-// wraps a Project that rebinds Attributes to the resource-merge base
-// `mapUpdate(sanitize(ResourceAttributes), Attributes)` — even with no
-// outer-by label — so bare selectors surface resource labels.
-func TestAugmentSelectorAttributes_ResourceMergeWrapsProject(t *testing.T) {
+// TestAugmentSelectorAttributes_NoColumnsIsPassThrough pins that the
+// augmenting Project is suppressed only when the schema names NEITHER a
+// ResourceAttributes column nor a dedicated top-level one — with nothing
+// to merge or overlay the Project would be an identity map.
+func TestAugmentSelectorAttributes_NoColumnsIsPassThrough(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
+	s.ResourceAttributesColumn = "" // opt out of the resource merge
+	s.ServiceNameColumn = ""        // opt out of the dedicated overlay
+	input := &chplan.Scan{Table: s.GaugeTable}
+	if got := augmentSelectorAttributes(input, lowerCtx{}, s); got != chplan.Node(input) {
+		t.Errorf("expected pass-through, got %#v", got)
+	}
+}
+
+// TestAugmentSelectorAttributes_DedicatedColumnSurvivesResourceOptOut
+// pins that clearing ResourceAttributesColumn alone does NOT drop the
+// dedicated column: the overlay is the only path left that can surface
+// `service_name`, so it must still wrap a Project.
+func TestAugmentSelectorAttributes_DedicatedColumnSurvivesResourceOptOut(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	s.ResourceAttributesColumn = ""
 	input := &chplan.Scan{Table: s.GaugeTable}
 	got := augmentSelectorAttributes(input, lowerCtx{}, s)
 	proj, ok := got.(*chplan.Project)
 	if !ok {
-		t.Fatalf("expected a Project wrap with the resource merge active, got %T", got)
+		t.Fatalf("expected a Project wrap with ServiceNameColumn set, got %T", got)
 	}
-	var attrsExpr chplan.Expr
-	for _, p := range proj.Projections {
-		if p.Alias == s.AttributesColumn {
-			attrsExpr = p.Expr
-		}
-	}
-	call, ok := attrsExpr.(*chplan.FuncCall)
-	if !ok || call.Name != "mapUpdate" {
-		t.Fatalf("Attributes projection: got %v, want mapUpdate(sanitize(RA), Attributes)", attrsExpr)
+	call, ok := attributesProjection(t, proj, s).(*chplan.FuncCall)
+	if !ok || call.Name != "mapConcat" {
+		t.Fatalf("Attributes projection: got %v, want mapConcat(Attributes, <dedicated>)", call)
 	}
 }
 
-// TestAugmentSelectorAttributes_ServiceNameWrapsProject pins the
-// augmenting Project shape when the outer by-clause references
-// `service_name`. The Attributes slot becomes
-// `mapConcat(Attributes, mapFilter(v != ”, map('service_name',
-// toString(ServiceName))))` so the downstream LWR / RangeWindow's
-// `GROUP BY Attributes` partitions over distinct ServiceName values.
-func TestAugmentSelectorAttributes_ServiceNameWrapsProject(t *testing.T) {
+// TestAugmentSelectorAttributes_BareSelectorCarriesServiceName is the
+// regression pin for the Layer-14 MIG-07 finding: a BARE selector — no
+// enclosing aggregation, no by-clause — must still project the dedicated
+// ServiceName column as `service_name`. `service.name` is removed from
+// the ResourceAttributes arm, so when this overlay was gated on an outer
+// by-clause the label vanished from every plain `up` the collector wrote.
+//
+// The expected shape is
+// `mapConcat(mapUpdate(sanitize(RA), sanitize(Attributes)),
+//
+//	mapFilter(v != ”, map('service_name', toString(ServiceName))))`.
+func TestAugmentSelectorAttributes_BareSelectorCarriesServiceName(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
 	input := &chplan.Scan{Table: s.GaugeTable}
-	ctx := lowerCtx{}.withOuterByLabels([]string{"service_name"})
 
-	got := augmentSelectorAttributes(input, ctx, s)
+	got := augmentSelectorAttributes(input, lowerCtx{}, s)
 	proj, ok := got.(*chplan.Project)
 	if !ok {
 		t.Fatalf("got %T, want *chplan.Project", got)
@@ -263,12 +271,74 @@ func TestAugmentSelectorAttributes_ServiceNameWrapsProject(t *testing.T) {
 	if len(proj.Projections) != 4 {
 		t.Fatalf("projections: got %d, want 4", len(proj.Projections))
 	}
-	attrsProj := proj.Projections[1]
-	if attrsProj.Alias != s.AttributesColumn {
-		t.Errorf("alias[1]: got %q, want %q", attrsProj.Alias, s.AttributesColumn)
-	}
-	mapConcat, ok := attrsProj.Expr.(*chplan.FuncCall)
+	mapConcat, ok := attributesProjection(t, proj, s).(*chplan.FuncCall)
 	if !ok || mapConcat.Name != "mapConcat" {
-		t.Fatalf("attrs expr: got %#v, want mapConcat(...)", attrsProj.Expr)
+		t.Fatalf("attrs expr: got %#v, want mapConcat(...)", proj.Projections[1].Expr)
 	}
+	if len(mapConcat.Args) != 2 {
+		t.Fatalf("mapConcat args: got %d, want 2", len(mapConcat.Args))
+	}
+	base, ok := mapConcat.Args[0].(*chplan.FuncCall)
+	if !ok || base.Name != "mapUpdate" {
+		t.Errorf("overlay base: got %v, want the mapUpdate resource merge", mapConcat.Args[0])
+	}
+	if !exprMentions(mapConcat.Args[1], s.ServiceNameColumn) {
+		t.Errorf("overlay does not read %s: %#v", s.ServiceNameColumn, mapConcat.Args[1])
+	}
+	if !exprMentions(mapConcat.Args[1], "service_name") {
+		t.Errorf("overlay does not synthesise the service_name key: %#v", mapConcat.Args[1])
+	}
+}
+
+// TestAugmentSelectorAttributes_CatalogModeSkipsOverlay pins that catalog
+// (metadata) mode keeps the bare Attributes ColumnRef: it resolves the
+// dedicated columns at the leaf via [dedicatedLabelColumns], so building
+// the overlay map here would be immediately subscripted away.
+func TestAugmentSelectorAttributes_CatalogModeSkipsOverlay(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	ctx := lowerCtx{catalog: &metadataCatalog{}}
+	if got := selectorAttributesExpr(ctx, s); !isBareAttributesRef(got, s) {
+		t.Errorf("catalog mode: got %#v, want the bare Attributes ColumnRef", got)
+	}
+}
+
+// attributesProjection returns the Attributes-aliased projection expr.
+func attributesProjection(t *testing.T, proj *chplan.Project, s schema.Metrics) chplan.Expr {
+	t.Helper()
+	for _, p := range proj.Projections {
+		if p.Alias == s.AttributesColumn {
+			return p.Expr
+		}
+	}
+	t.Fatalf("no projection aliased %q", s.AttributesColumn)
+	return nil
+}
+
+// exprMentions reports whether want appears as a column name or string
+// literal anywhere in the expression tree — enough to assert that the
+// overlay reads the dedicated column and names the synthesised key,
+// without pinning the exact nesting the emitter is free to change.
+func exprMentions(e chplan.Expr, want string) bool {
+	switch v := e.(type) {
+	case *chplan.ColumnRef:
+		return v.Name == want
+	case *chplan.LitString:
+		return v.V == want
+	case *chplan.InlineString:
+		return v.V == want
+	case *chplan.BareIdent:
+		return v.Name == want
+	case *chplan.FuncCall:
+		for _, a := range v.Args {
+			if exprMentions(a, want) {
+				return true
+			}
+		}
+	case *chplan.Lambda:
+		return exprMentions(v.Body, want)
+	case *chplan.Binary:
+		return exprMentions(v.Left, want) || exprMentions(v.Right, want)
+	}
+	return false
 }

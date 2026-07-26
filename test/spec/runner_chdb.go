@@ -730,7 +730,7 @@ func openChDB(t *testing.T) *sql.DB {
 // `CREATE TABLE IF NOT EXISTS` themselves.
 func applySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
-	for _, stmt := range backfillResourceAttributes(splitStatements(seed)) {
+	for _, stmt := range backfillMetricsColumns(splitStatements(seed)) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue

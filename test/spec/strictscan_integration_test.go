@@ -261,7 +261,7 @@ func isExperimentalFnError(err error) bool {
 // fixtures that share a table name (otel_metrics_gauge appears in ~250).
 func applyStrictScanSeed(ctx context.Context, t *testing.T, client *chclient.Client, seed string) {
 	t.Helper()
-	for _, stmt := range spec.BackfillResourceAttributes(spec.SplitSeedStatements(seed)) {
+	for _, stmt := range spec.BackfillMetricsColumns(spec.SplitSeedStatements(seed)) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue

@@ -304,7 +304,10 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 //     `Value`. pred passes through to the downstream wrapper.
 //
 // Both companion paths set attributesPreMerged=true because their
-// canonical-quadruple output drops the raw ResourceAttributes column.
+// canonical-quadruple output drops the raw ResourceAttributes and
+// dedicated (ServiceName) columns — so the merge AND the dedicated-column
+// overlay must both be folded in per-arm (they are, via
+// [selectorLabelProjections]) rather than stacked above the union.
 func lowerHistogramSelectorInput(
 	scan *chplan.Scan,
 	pred chplan.Expr,
@@ -826,16 +829,15 @@ func buildLiteralNameCompanionArm(
 
 // augmentSelectorAttributes wraps `input` with a Project that rebinds
 // the Attributes column to `mapConcat(Attributes, <synthesised top-
-// level columns>)` when the enclosing aggregation's by-clause
-// (threaded via [lowerCtx.outerByLabels]) references a label that
-// routes to a dedicated top-level OTel-CH column. When the by-clause
-// references no such label — the common case — the function returns
-// `input` unchanged so existing fixture SQL stays byte-identical.
+// level columns>)` so every projected series carries the dedicated
+// top-level OTel-CH columns the schema configures. The function returns
+// `input` unchanged only when the rebind would be an identity map — a
+// schema with neither a ResourceAttributes column nor a dedicated one.
 //
 // The Project's column shape preserves the canonical Sample-row
 // quadruple (MetricName, Attributes, TimeUnix, Value) the downstream
 // LWR / RangeWindow consumes. The dedicated top-level column
-// (ServiceName) is read by `augmentAttributesForOuterByExpr` from the
+// (ServiceName) is read by `augmentAttributesForTopLevelExpr` from the
 // row's input scope — when `input` is a Scan / Filter the column is
 // directly addressable; when `input` is a `wrapHistogramCompanion-
 // Project` the column flows through unchanged because the histogram
@@ -872,10 +874,16 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 // selectorAttributesExpr returns the rebound Attributes expression for the
 // selector Project: the base resource-merge
 // (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) with the
-// outer-by top-level-column overlay (`mapConcat(<base>, mapFilter(…))`)
-// composed on top when the enclosing aggregation references a top-level
-// label. When neither applies it is the bare Attributes ColumnRef, and
-// [augmentSelectorAttributes] skips the Project entirely.
+// dedicated top-level-column overlay (`mapConcat(<base>, mapFilter(…))`)
+// composed on top. When neither applies it is the bare Attributes
+// ColumnRef, and [augmentSelectorAttributes] skips the Project entirely.
+//
+// The overlay is unconditional because a dedicated column carries part of
+// the series identity on every row, not only on rows a by-clause happens
+// to group by: `service.name` is removed from the ResourceAttributes arm
+// (see [dedicatedResourceKeys]) on the promise that this path re-adds it,
+// so gating the overlay on the query shape dropped `service_name` from
+// every bare selector's projected labels.
 func selectorAttributesExpr(ctx lowerCtx, s schema.Metrics) chplan.Expr {
 	base := mergeResourceAttributesExpr(s)
 	if ctx.catalog != nil {
@@ -886,16 +894,22 @@ func selectorAttributesExpr(ctx lowerCtx, s schema.Metrics) chplan.Expr {
 		// Leaving Attributes bare also keeps the raw ResourceAttributes /
 		// dedicated columns in scope for [catalogLabelValuesExpr], and keeps
 		// the matcher predicate un-sunk so it lands on one Filter with the
-		// metadata window bound.
-		base = &chplan.ColumnRef{Name: s.AttributesColumn}
-	} else if ctx.attributesPreMerged {
-		// The selector input already carries the merge in its Attributes
-		// column (companion-union arms merge per-arm); re-deriving it here
-		// would reference an out-of-scope ResourceAttributes. Overlay the
-		// outer-by columns on the bare (already-merged) Attributes column.
-		base = &chplan.ColumnRef{Name: s.AttributesColumn}
+		// metadata window bound. The dedicated-column overlay is skipped for
+		// the same reason: [dedicatedLabelColumns] already resolves those
+		// columns directly.
+		return &chplan.ColumnRef{Name: s.AttributesColumn}
 	}
-	if overlay := augmentAttributesForOuterByExpr(s, ctx.outerByLabels, base); overlay != nil {
+	if ctx.attributesPreMerged {
+		// The selector input already carries BOTH the merge and the
+		// dedicated-column overlay in its Attributes column — each
+		// companion-union arm folds them in via [selectorAttributesSource].
+		// Re-deriving either here would reference an out-of-scope
+		// ResourceAttributes / ServiceName: the arms collapse to the
+		// canonical Sample quadruple, so the raw columns are gone above the
+		// union.
+		return &chplan.ColumnRef{Name: s.AttributesColumn}
+	}
+	if overlay := augmentAttributesForTopLevelExpr(s, base); overlay != nil {
 		return overlay
 	}
 	return base
@@ -2350,20 +2364,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		return lowerLimitRatio(a, s, ctx)
 	}
 
-	// Thread the outer by-clause's labels down so the inner selector
-	// path can inflate Attributes with the top-level OTel-CH columns
-	// (currently `service_name` → `ServiceName`) the outer aggregate
-	// needs to partition over. Only `by(...)` propagates — `without(...)`
-	// exclusion semantics don't reference specific columns, so the
-	// without branch keeps the lean Attributes shape. See
-	// [augmentAttributesForOuterByExpr] for the resulting Project wrap and
-	// [internal/logql.lowerCtx.OuterByLabels] for the LogQL precedent
-	// (PR #666 / task #218).
-	innerCtx := ctx
-	if !a.Without {
-		innerCtx = ctx.withOuterByLabels(a.Grouping)
-	}
-	input, err := lower(a.Expr, s, innerCtx)
+	input, err := lower(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}

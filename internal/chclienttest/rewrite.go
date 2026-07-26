@@ -327,27 +327,40 @@ func isBlank(s string) bool {
 	return strings.TrimSpace(s) == ""
 }
 
-// metricsTablePrefix scopes the resource-attribute backfill to OTel-CH
-// metric tables; helper tables a test seeds stay untouched.
+// metricsTablePrefix scopes the column backfill to OTel-CH metric tables;
+// helper tables a test seeds stay untouched.
 const metricsTablePrefix = "otel_metrics_"
 
-// resourceAttributesColumnDDL is the column the backfill injects (DEFAULT
-// map() so positional INSERTs keep their value count — the backfilled
-// INSERTs carry an explicit column list omitting this column).
-const resourceAttributesColumnDDL = "ResourceAttributes Map(String, String) DEFAULT map()"
+// backfilledColumn pairs a column name with the definition the backfill
+// injects for it. Every DEFAULT keeps positional INSERTs' value count
+// intact — the backfilled INSERTs carry an explicit column list omitting
+// these columns.
+type backfilledColumn struct {
+	name string
+	ddl  string
+}
 
-// backfillResourceAttributes mirrors the production OTel-CH invariant —
-// every metric table carries a `ResourceAttributes` Map column — onto the
-// handler tests' simplified seed DDL, so the rc.5 read-path projection
-// (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) resolves rather
-// than failing with UNKNOWN_IDENTIFIER. A `CREATE TABLE otel_metrics_*`
-// that declares `Attributes` but no `ResourceAttributes` gets the column
-// injected (DEFAULT map()), and every subsequent positional `INSERT INTO
-// <that table> VALUES …` is rewritten to an explicit column list (sans
-// ResourceAttributes) so the DEFAULT fills the gap. Seeds that already
-// declare the column, or already use an explicit INSERT column list, pass
-// through untouched. Mirrors test/spec/runner_chdb.go::backfillResourceAttributes.
-func backfillResourceAttributes(stmts []string) []string {
+// backfilledColumns is the ordered registry of production OTel-CH metric
+// columns the handler tests' simplified seed DDL may omit. Keep in
+// lock-step with test/spec/roundtrip_prep.go::backfilledColumns.
+var backfilledColumns = []backfilledColumn{
+	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
+	{name: "ServiceName", ddl: "ServiceName LowCardinality(String) DEFAULT ''"},
+}
+
+// backfillMetricsColumns mirrors the production OTel-CH invariant — every
+// metric table carries the [backfilledColumns] — onto the handler tests'
+// simplified seed DDL, so the read-path projection
+// (`mapConcat(mapUpdate(sanitize(ResourceAttributes), Attributes),
+// map('service_name', ServiceName))`) resolves rather than failing with
+// UNKNOWN_IDENTIFIER. A `CREATE TABLE otel_metrics_*` that declares
+// `Attributes` gets every missing column injected with its DEFAULT, and
+// every subsequent positional `INSERT INTO <that table> VALUES …` is
+// rewritten to an explicit column list (sans the injected columns) so the
+// DEFAULTs fill the gap. Seeds that already declare every column, or
+// already use an explicit INSERT column list, pass through untouched.
+// Mirrors test/spec/roundtrip_prep.go::backfillMetricsColumns.
+func backfillMetricsColumns(stmts []string) []string {
 	cols := map[string][]string{}
 	out := make([]string, 0, len(stmts))
 	for _, stmt := range stmts {
@@ -384,28 +397,36 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 		return "", nil, "", false
 	}
 	defs := ddlSplitTopLevelCommas(stmt[open+1 : closeParen])
-	hasAttributes, hasResource := false, false
+	hasAttributes := false
+	declared := make(map[string]bool, len(defs))
 	names := make([]string, 0, len(defs))
 	for _, d := range defs {
 		cn := ddlFirstToken(strings.TrimSpace(d))
-		switch cn {
-		case "Attributes":
+		if cn == "Attributes" {
 			hasAttributes = true
-		case "ResourceAttributes":
-			hasResource = true
 		}
 		if cn != "" {
+			declared[cn] = true
 			names = append(names, cn)
 		}
 	}
-	if !hasAttributes || hasResource {
+	missing := make([]string, 0, len(backfilledColumns))
+	for _, c := range backfilledColumns {
+		if !declared[c.name] {
+			missing = append(missing, c.ddl)
+		}
+	}
+	if !hasAttributes || len(missing) == 0 {
 		return "", nil, "", false
 	}
-	newDefs := make([]string, 0, len(defs)+1)
+	newDefs := make([]string, 0, len(defs)+len(missing))
 	for _, d := range defs {
 		newDefs = append(newDefs, d)
-		if ddlFirstToken(strings.TrimSpace(d)) == "Attributes" {
-			newDefs = append(newDefs, " "+resourceAttributesColumnDDL)
+		if ddlFirstToken(strings.TrimSpace(d)) != "Attributes" {
+			continue
+		}
+		for _, ddl := range missing {
+			newDefs = append(newDefs, " "+ddl)
 		}
 	}
 	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
