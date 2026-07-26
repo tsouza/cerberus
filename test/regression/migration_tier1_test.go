@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 	"github.com/tsouza/cerberus/test/e2e/migration/steps"
 )
@@ -55,6 +56,7 @@ var otherComposeFiles = []string{
 // composeService is the subset of a compose service definition these pins read.
 type composeService struct {
 	Image       string            `yaml:"image"`
+	PullPolicy  string            `yaml:"pull_policy"`
 	Command     []string          `yaml:"command"`
 	Environment map[string]string `yaml:"environment"`
 	Volumes     []string          `yaml:"volumes"`
@@ -1031,3 +1033,265 @@ func TestMigrationTier1SampleBudgetIsPinned(t *testing.T) {
 // tier1SampleBudgetEnv is the per-query sample budget the tier-1 cerberus runs
 // under — MIG-15's per-tenant read budget, in that scenario's tenancy model.
 const tier1SampleBudgetEnv = "CERBERUS_QUERY_MAX_SAMPLES"
+
+// The build-once seam (Layer 14, D2): the migration lane runs the SAME three
+// tier jobs twice against a release commit — once proving the source tree, once
+// proving the image goreleaser built — and the only thing that differs is which
+// cerberus the stack runs and which binary the scenarios exec. Every constant
+// below exists in more than one file by necessity (a compose interpolation
+// default, a Justfile variable, a Node const, a Go const, an ldflag), so the
+// pins here hold them equal. A drift is silent by construction: the lane goes
+// green having tested the wrong build.
+const (
+	// migrationArtifactScript resolves which cerberus the lane drives.
+	migrationArtifactScript = "../../.github/scripts/migration-artifact.mjs"
+	// migrationLocalImageVar is the Justfile variable naming the locally built
+	// image tag.
+	migrationLocalImageVar = "MIGRATION_LOCAL_IMAGE"
+	// migrationImageRecipe is the SINGLE point at which the image enters the
+	// Docker daemon.
+	migrationImageRecipe = "migration-cerberus-image"
+	// dockerfileLocalPath builds the image the stacks run when no released
+	// artifact is supplied; cerberusMainPath declares the source-build stamp.
+	dockerfileLocalPath = "../../Dockerfile.local"
+	cerberusMainPath    = "../../cmd/cerberus/main.go"
+	// buildFlag forces `docker compose up` to compile the build context even
+	// when the image is already present, which is exactly how a released
+	// artifact gets replaced by a recompile of whatever tree the runner holds.
+	buildFlag = "--build"
+)
+
+// composeImageDefaultRe splits a `${VAR:-default}` compose interpolation.
+var composeImageDefaultRe = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*):-(.+)\}$`)
+
+// TestMigrationImageIsAcquiredOnceNeverRebuilt pins the seam that lets the
+// release lane test the artifact it just built.
+//
+// `pull_policy: build` plus `up --build` — the shape this replaced — means
+// pointing `image:` at a released tag does NOT stop compose recompiling the
+// source tree over it. The lane would report "tested the release artifact"
+// having tested source, and every gate in the pipeline would stay green.
+func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
+	t.Parallel()
+
+	cf := readCompose(t, tier1ComposePath)
+	cerb, ok := cf.Services[tier1CerberusService]
+	if !ok {
+		t.Fatalf("%s has no %q service", tier1ComposePath, tier1CerberusService)
+	}
+
+	m := composeImageDefaultRe.FindStringSubmatch(cerb.Image)
+	if m == nil {
+		t.Fatalf("%s's %s service declares image %q, want a `${VAR:-default}` interpolation. A literal "+
+			"tag gives release.yml's artifact lane no way to point the stack at the image goreleaser "+
+			"built, so it would prove the source tree under an artifact-shaped job name.",
+			tier1ComposePath, tier1CerberusService, cerb.Image)
+	}
+	imageEnvVar, localTag := m[1], m[2]
+	if imageEnvVar != lib.ImageEnv {
+		t.Fatalf("the compose image interpolates %s but the harness and the resolver read %s; the "+
+			"release lane would set a variable nothing consumes", imageEnvVar, lib.ImageEnv)
+	}
+	if cerb.PullPolicy != composePullPolicyNever {
+		t.Fatalf("%s's %s service declares pull_policy %q, want %q. Anything else lets the up path "+
+			"acquire the image itself, which is how a source rebuild silently replaces a released "+
+			"artifact. The image is put in the daemon by `just %s` BEFORE up runs.",
+			tier1ComposePath, tier1CerberusService, cerb.PullPolicy, composePullPolicyNever, migrationImageRecipe)
+	}
+
+	// The same tag lives in three files. Hold them equal, or a `just` run and a
+	// compose run would disagree about which image "locally built" means and
+	// the stack would fail to resolve one.
+	justfile, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+	body := string(justfile)
+	justTag := justVariableList(t, body, migrationLocalImageVar)
+	if len(justTag) != 1 || justTag[0] != localTag {
+		t.Fatalf("Justfile's %s is %v but %s defaults to %q; `just %s` would build one tag while "+
+			"compose looked for another", migrationLocalImageVar, justTag, tier1ComposePath, localTag,
+			migrationImageRecipe)
+	}
+	resolver, err := os.ReadFile(migrationArtifactScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationArtifactScript, err)
+	}
+	if want := "export const LOCAL_IMAGE_TAG = '" + localTag + "'"; !strings.Contains(string(resolver), want) {
+		t.Fatalf("%s does not declare %s, so the resolver would export a CERBERUS_IMAGE the compose "+
+			"stack does not recognise", migrationArtifactScript, want)
+	}
+
+	// The up recipes must acquire the image through the one recipe that knows
+	// the build-or-pull decision, and must not carry --build.
+	for _, recipe := range []string{"migration-tier1-up", "migration-tier2-up"} {
+		recipeBody := justRecipeBody(t, body, recipe)
+		if !strings.Contains(recipeBody, "just "+migrationImageRecipe) {
+			t.Fatalf("Justfile recipe %s does not invoke `just %s`, so nothing puts the image in the "+
+				"daemon and `up` (pull_policy: %s) cannot resolve it. Body:\n%s",
+				recipe, migrationImageRecipe, composePullPolicyNever, recipeBody)
+		}
+		if strings.Contains(recipeBody, buildFlag) {
+			t.Fatalf("Justfile recipe %s passes %s to `docker compose up`. That forces a source build "+
+				"regardless of pull_policy, so a release run would recompile this tree over the "+
+				"released image and still report green. Body:\n%s", recipe, buildFlag, recipeBody)
+		}
+	}
+
+	// The acquisition recipe itself must be able to do BOTH halves: build the
+	// local tag from Dockerfile.local, and pull anything else.
+	acquire := justRecipeBody(t, body, migrationImageRecipe)
+	for _, want := range []string{"docker build", "Dockerfile.local", "docker pull", lib.ImageEnv} {
+		if !strings.Contains(acquire, want) {
+			t.Fatalf("Justfile recipe %s does not reference %q; it must build the local tag from "+
+				"Dockerfile.local and pull a released one, decided by %s alone. Body:\n%s",
+				migrationImageRecipe, want, lib.ImageEnv, acquire)
+		}
+	}
+}
+
+// composePullPolicyNever is the only pull policy compatible with the
+// acquire-then-up contract.
+const composePullPolicyNever = "never"
+
+// TestMigrationVersionStampsMatchTheirBuilds holds the two stamps the harness
+// computes its expectations from equal to the builds that actually produce
+// them. lib.ExpectedServerVersion() asserting against a stale LocalImageVersion
+// would pass for the wrong reason on every from-source run and then hide a real
+// mis-wiring on the release path.
+func TestMigrationVersionStampsMatchTheirBuilds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		path, want, why string
+	}{
+		{
+			path: dockerfileLocalPath,
+			want: "-X main.Version=" + lib.LocalImageVersion,
+			why: "the tier-1/tier-2 compose stacks run this image, and the live GET /info probe in " +
+				"tier1_stack_test.go holds the server to lib.LocalImageVersion",
+		},
+		{
+			path: cerberusMainPath,
+			want: `var Version = "` + lib.SourceBuildVersion + `"`,
+			why: "a from-source `go build` carries no ldflags, and lib.BuildCerberus holds the CLI it " +
+				"produced to lib.SourceBuildVersion",
+		},
+	} {
+		buf, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.path, err)
+		}
+		if !strings.Contains(string(buf), tc.want) {
+			t.Fatalf("%s does not contain %q — %s. Move the stamp and the constant together.",
+				tc.path, tc.want, tc.why)
+		}
+	}
+
+	// The resolver computes the same source stamp on the Node side.
+	resolver, err := os.ReadFile(migrationArtifactScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationArtifactScript, err)
+	}
+	if want := "export const SOURCE_BUILD_VERSION = '" + lib.SourceBuildVersion + "'"; !strings.Contains(string(resolver), want) {
+		t.Fatalf("%s does not declare %s, so its `--version` probe would expect a different stamp "+
+			"than lib.BuildCerberus does and one of the two would fail on a healthy build",
+			migrationArtifactScript, want)
+	}
+
+	// The two stamps must differ, or neither probe could tell a from-source run
+	// from an image run.
+	if lib.SourceBuildVersion == lib.LocalImageVersion {
+		t.Fatalf("lib.SourceBuildVersion and lib.LocalImageVersion are both %q; the CLI and the "+
+			"server probes would agree on every path and prove nothing", lib.SourceBuildVersion)
+	}
+}
+
+// TestMigrationTiersAcquireTheProbedBinary asserts every tier package gets its
+// cerberus through lib.BuildCerberus — the ONE path that probes `--version` and
+// holds the answer to what this run is supposed to be testing. A tier that
+// `go build`s its own binary, or reads CERBERUS_BIN directly, would run its
+// whole scenario set against an unverified executable.
+func TestMigrationTiersAcquireTheProbedBinary(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(tiersDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", tiersDir, err)
+	}
+
+	var scanned int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		scanned++
+		dir := filepath.Join(tiersDir, e.Name())
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		var probed bool
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".go") {
+				continue
+			}
+			buf, err := os.ReadFile(filepath.Join(dir, f.Name()))
+			if err != nil {
+				t.Fatalf("read %s: %v", filepath.Join(dir, f.Name()), err)
+			}
+			if strings.Contains(string(buf), "lib.BuildCerberus(") {
+				probed = true
+			}
+		}
+		if !probed {
+			t.Fatalf("tier package %s never calls lib.BuildCerberus, so the binary its scenarios exec "+
+				"is never held to the version this run drives", dir)
+		}
+	}
+
+	if scanned != wantTierSuites {
+		t.Fatalf("scanned %d tier package(s) under %s, want %d. A loop over vanished directories is "+
+			"vacuously green; a new tier must be wired through lib.BuildCerberus and this count raised.",
+			scanned, tiersDir, wantTierSuites)
+	}
+}
+
+// migrationTierJobs are the jobs in migration-e2e.yml that drive a tier.
+var migrationTierJobs = []string{"migration-tier0", tier1JobName, "migration-tier2"}
+
+// TestMigrationTierJobsResolveTheArtifact pins the resolver into every tier
+// job. A tier that skips it either compiles no CLI at all (release path: no
+// binary to hand the scenarios) or, worse, builds one from source while the job
+// claims to be driving a released image.
+func TestMigrationTierJobsResolveTheArtifact(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := os.ReadFile(tier1WorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", tier1WorkflowPath, err)
+	}
+	body := string(workflow)
+
+	for _, job := range migrationTierJobs {
+		jobBody := workflowJobBody(t, body, job)
+		for _, want := range []string{
+			"node .github/scripts/migration-artifact.mjs",
+			"CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}",
+			"CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}",
+		} {
+			if !strings.Contains(jobBody, want) {
+				t.Fatalf("%s job %q does not carry %q, so the release lane's `cerberus_image` input "+
+					"would not reach it and the tier would silently test this tree instead. Body:\n%s",
+					tier1WorkflowPath, job, want, jobBody)
+			}
+		}
+		// The raw compile the resolver replaced. Leaving one behind would hand
+		// the scenarios an unprobed binary on the release path.
+		if strings.Contains(jobBody, "go build -o build/cerberus") {
+			t.Fatalf("%s job %q still compiles the CLI directly. That binary bypasses the resolver's "+
+				"version probe, so a release run would exec a source build while claiming to test the "+
+				"released artifact. Body:\n%s", tier1WorkflowPath, job, jobBody)
+		}
+	}
+}

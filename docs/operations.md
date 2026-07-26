@@ -1075,6 +1075,37 @@ a raw tag is pushed (release-please-style). The flow:
    A merge that bumped **neither** line publishes nothing — both gates return
    `publish=false`, so an ordinary code/docs merge is a complete no-op.
 
+The job graph on a publishing merge is:
+
+```text
+gate ─▶ preflight ─▶ goreleaser ─▶ release-artifact-migration ─▶ publish ─┬▶ brew-smoke
+                  │                                                       └▶ eol-retire
+                  └▶ chart-release
+```
+
+Each edge is a gate, not a sequence:
+
+- **`preflight`** runs on **both** paths (main and maintenance) whenever either
+  version gate says something would publish. Branch protection alone is not
+  enough even on main: it can only require lanes eligible to *be* a
+  branch-protection check, and the heavyweight push-triggered lanes — notably
+  `migration-e2e` (Layer 14) — are not. So the preflight carries its own
+  **expected set** (`RELEASE_REQUIRED_CHECKS`) and refuses to publish when a
+  required lane posted *no* check-run on the commit. A lane that did not run has
+  not passed.
+- **`goreleaser`** builds and uploads, but leaves the GitHub release a **draft**.
+- **`release-artifact-migration`** re-runs the migration lane
+  (`uses: ./.github/workflows/migration-e2e.yml`) against the image that was just
+  built, asserting the running server reports the released version. The
+  push-triggered run the preflight required proves the *source tree*; this proves
+  the *artifact* — a bad ldflag or Dockerfile drift lives only in the latter.
+- **`publish`** performs the draft→published flip. It is a separate job precisely
+  so everything that validates the built artifact sits before the point of no
+  return.
+- **`brew-smoke`** installs from the tap and smokes the published binary (see
+  below); **`eol-retire`** retires the line that just fell out of the support
+  window.
+
 The two version lines are independent: a chart-only fix (template change, new
 toggle) ships by bumping `version:` alone, and an app-only release bumps
 `appVersion:` (plus a patch to `version:` for the new default image). The
@@ -1105,6 +1136,19 @@ Two prerequisites make the push work, and both are one-time:
    secret is mandatory — without it the brew push on the next stable release
    fails.
 
+The `brew-smoke` job closes the loop on both of those prerequisites. It reads the
+tap's `Formula/cerberus.rb` through the API *before* touching `brew`, because a
+deleted `brews:` block or an expired `HOMEBREW_TAP_GITHUB_TOKEN` leaves a stale
+formula that an install would happily consume. A stable release must find the
+formula declaring exactly the version that just shipped; it then installs it and
+asserts `cerberus --version` equals that version and that two offline verbs
+(`migrate schema`, `config-docs -check`) work from the installed binary. A
+prerelease is **not** skipped — it takes the opposite assertion: `skip_upload:
+auto` means an `rc.*` must have written no formula, so a formula declaring the
+prerelease version is a reported regression. The job runs after `publish` because
+`brew install` downloads the release tarball, which 404s while the release is
+still a draft.
+
 #### Maintenance lines (hotfix backports)
 
 Beyond the main line, a hotfix can be cut on a **maintenance line** —
@@ -1115,9 +1159,13 @@ main release PR branch shape `release/v1.5.0-chart-0.6.4`). The same per-line
 version gates decide what to publish, and because the gates are
 absence-keyed (tag-absent / OCI-absent, not newest-wins) a hotfix older than the
 latest tag — `v1.4.1` cut after `v1.5.0` — still publishes. A maintenance push
-has no PR gate, so the `preflight` job (`release-preflight.mjs`) re-reads the
-pushed commit's check-runs and refuses to publish unless the commit is the
-branch tip and every required check is settled green.
+has no PR gate at all, so the `preflight` job (`release-preflight.mjs`) adds two
+rules on this path that the main path does not need: the pushed commit must be
+the **branch tip**, and the line must still be **inside the support window**. The
+required-set check is the same on both paths — every lane in
+`RELEASE_REQUIRED_CHECKS` must have posted a green check-run on the commit. That
+is why `migration-e2e.yml` push-triggers on `release/*.x` as well as `main`: a
+required lane that never runs on the branch would block every hotfix release.
 
 ### Release support window / EOL policy
 

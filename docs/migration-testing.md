@@ -138,6 +138,56 @@ rather than `chdb_substrate`: the migration lane models the deployment surface
 an operator runs, not the SQL-parity substrate the chDB suites run on
 (asserted by `.github/scripts/clickhouse-version-sync.mjs`).
 
+### 3.0. Which cerberus the lane proves
+
+Every tier job resolves its cerberus through one module,
+`.github/scripts/migration-artifact.mjs`, before any scenario runs. Two workflow
+inputs travel together and decide the answer:
+
+| `cerberus_image` | `expect_version`   | What the lane proves                                                                                                                   |
+| ---------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| unset            | unset              | **This tree.** The CLI is `go build`-ed from source; the compose stacks run `cerberus:migration-tier1`, built from `Dockerfile.local`. |
+| a tag            | that tag's version | **That artifact.** The image is pulled, the CLI is `docker cp`-ed out of it, and the compose stacks run the same image.                |
+| one of the two   | —                  | An error.                                                                                                                              |
+
+A half pair is rejected rather than defaulted, because the failure it produces
+is invisible: the job would build from source while its name, its logs, and the
+roll-up all say it exercised a released artifact.
+
+The CLI comes **out of the image** rather than out of a release tarball, so on
+the artifact path the binary the scenarios exec and the server the stack answers
+from are the same bytes. A tarball would leave the two free to diverge, and the
+30 scenarios would pass across a mixed pair.
+
+Whatever binary the module produced is then held to a version stamp before the
+lane proceeds: it runs `--version`, requires exit 0 and exactly one non-empty
+line, and string-compares the result. The three build paths stamp differently by
+construction, which is what makes the comparison a real discriminator:
+
+| Build                                      | Stamp               | Read back by               |
+| ------------------------------------------ | ------------------- | -------------------------- |
+| `go build ./cmd/cerberus` (no ldflags)     | `dev`               | `lib.SourceBuildVersion`   |
+| `Dockerfile.local` (`-X main.Version=e2e`) | `e2e`               | `lib.LocalImageVersion`    |
+| goreleaser                                 | the release version | the `expect_version` input |
+
+The Go side reads the same stamps from `test/e2e/migration/lib/provenance.go`.
+`lib.BuildCerberus` probes the CLI it hands each tier suite, and the tier-1
+substrate test probes the *server* over `GET /info`, so the two halves of the
+stack are checked independently — on a from-source run they legitimately
+disagree (`dev` CLI, `e2e` server), and only the artifact path collapses them
+onto one version. `CERBERUS_EXPECT_VERSION` is therefore exported only on the
+artifact path; on the source path each half falls back to its own stamp.
+
+The stacks are pinned so nothing can quietly rebuild over the artifact under
+test. `docker-compose.dual.yml` declares `image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}`
+with `pull_policy: never`, and the `up` recipes carry no `--build`: the image is
+put into the daemon exactly once, by `just migration-cerberus-image` (which
+builds the local tag from `Dockerfile.local` or pulls anything else), before
+`up` runs. A missing image aborts `up` loudly instead of silently recompiling
+whatever tree the runner is holding. `test/regression/migration_tier1_test.go`
+pins every copy of the tag and every copy of the stamps equal, and pins the
+resolver step into all three tier jobs.
+
 ### 3.1. The all-signal seeder
 
 `test/e2e/migration/cmd/seed` builds one in-memory fixture from an archetype's

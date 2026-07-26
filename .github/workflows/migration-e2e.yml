@@ -29,7 +29,12 @@ name: migration-e2e
 
 on:
   push:
-    branches: [main]
+    # `release/*.x` is here because release.yml's `preflight` REQUIRES a green
+    # `migration-e2e` check-run on the released commit, and a maintenance
+    # backport publishes from its own line. Without this branch the required
+    # lane would simply never run there and every patch release would (correctly)
+    # block forever.
+    branches: [main, 'release/*.x']
   schedule:
     # Nightly, offset from the e2e and compatibility lanes.
     - cron: '37 4 * * *'
@@ -44,12 +49,45 @@ on:
         description: 'a single MIG id to drive, e.g. MIG-04'
         type: string
         required: false
+  # Called by release.yml's `release-artifact-migration`, which re-runs this lane
+  # against the image goreleaser just built — the push-triggered run above proves
+  # the SOURCE TREE, this one proves the ARTIFACT. `inputs.*` reads identically
+  # for workflow_dispatch and workflow_call, so the job bodies are unchanged.
+  #
+  # This is still NOT a `pull_request:` trigger: the workflow remains ineligible
+  # as a branch-protection check, and release.yml's preflight is what makes it
+  # blocking.
+  workflow_call:
+    inputs:
+      tier:
+        description: 'which tier(s) to run'
+        type: string
+        default: all
+      story:
+        description: 'a single MIG id to drive, e.g. MIG-04'
+        type: string
+        required: false
+      cerberus_image:
+        description: 'released image to drive instead of a locally built one; empty = build from this tree'
+        type: string
+        default: ''
+      expect_version:
+        description: 'version the running server must report; empty = no version assertion'
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  # Pulling the released image from GHCR. A called workflow gets the
+  # INTERSECTION of the caller's grant and this block, so omitting it here would
+  # silently drop the caller's `packages: read`.
+  packages: read
 
 concurrency:
-  group: migration-e2e-${{ github.ref }}
+  # The artifact run and the source-tree run share a ref, so the image tag is
+  # part of the key: without it the release's call would queue behind (or be
+  # queued behind) the push run on the same commit.
+  group: migration-e2e-${{ github.ref }}-${{ inputs.cerberus_image || 'source-tree' }}
   cancel-in-progress: false
 
 jobs:
@@ -130,11 +168,32 @@ jobs:
           name: migration-scenarios
           path: build
 
-      # The scenarios exec a real `cerberus migrate`. Building it here and
-      # handing it over via CERBERUS_BIN keeps the build failure separate
-      # from a scenario failure in the log.
-      - name: build the cerberus binary the scenarios drive
-        run: go build -o build/cerberus ./cmd/cerberus
+      # Unconditional, in every tier job, ahead of the resolver: the released
+      # image lives in GHCR, and a first-publish package is not necessarily
+      # public at the instant the artifact lane pulls it. No `if:` guard, so
+      # there is no condition whose falsification would let the release path
+      # silently fall back to a source build.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # WHICH cerberus this run tests. On a PR / dispatch / push run both inputs
+      # are empty and the resolver compiles the CLI from this tree; on
+      # release.yml's `release-artifact-migration` call it extracts the CLI out
+      # of the released image, so the binary the scenarios exec and the server
+      # the stack runs are the same bytes. Either way it probes `--version` and
+      # refuses a binary that is not the one this run claims to test, and
+      # exports CERBERUS_BIN / CERBERUS_IMAGE / CERBERUS_EXPECT_VERSION for
+      # every later step. Keeping it its own step also keeps a build failure
+      # separate from a scenario failure in the log.
+      - name: resolve the cerberus artifact under test
+        run: node .github/scripts/migration-artifact.mjs
+        env:
+          CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}
+          CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}
 
       - name: run the migration scenarios
         run: node .github/scripts/migration-e2e.mjs
@@ -143,7 +202,6 @@ jobs:
           SCENARIOS_JSON: build/migration-scenarios.json
           TIER: tier0
           STORY: ${{ inputs.story }}
-          CERBERUS_BIN: ${{ github.workspace }}/build/cerberus
 
       # The cucumber-JSON run report MODE=run made the suite write. This is
       # the EVIDENCE half of the coverage ratchet: migration-aggregate
@@ -226,6 +284,15 @@ jobs:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
+      # See migration-tier0's identical block: unconditional so the artifact
+      # lane's GHCR pull can never silently degrade into a source build.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # migration-tier1 runs on a separate runner with a fresh checkout, so
       # the enumerator output from migration-setup must travel as an
       # artifact — same reason migration-tier0 downloads it too.
@@ -234,6 +301,18 @@ jobs:
         with:
           name: migration-scenarios
           path: build
+
+      # See migration-tier0's identical step. This tier used to acquire no CLI
+      # at all (lib.BuildCerberus compiled one in-process), which meant the
+      # release path had no seam to hand a released binary through and no place
+      # to fail early on a wrong one. It also puts CERBERUS_IMAGE into the env
+      # `just migration-cerberus-image` and the compose file read, so the stack
+      # below runs the image this run resolved.
+      - name: resolve the cerberus artifact under test
+        run: node .github/scripts/migration-artifact.mjs
+        env:
+          CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}
+          CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}
 
       - name: bring the Tier-1 stack up
         run: just migration-tier1-up
@@ -361,11 +440,28 @@ jobs:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
+      # See migration-tier0's identical block.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: download migration scenarios enumeration
         uses: actions/download-artifact@v7
         with:
           name: migration-scenarios
           path: build
+
+      # See migration-tier1's identical step — the Tier-2 stack is a superset of
+      # Tier-1's and runs the same `cerberus` service, so it resolves the same
+      # artifact.
+      - name: resolve the cerberus artifact under test
+        run: node .github/scripts/migration-artifact.mjs
+        env:
+          CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}
+          CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}
 
       - name: bring the Tier-2 stack up
         run: just migration-tier2-up

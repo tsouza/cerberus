@@ -1,37 +1,59 @@
-// release-preflight.mjs — the green-check guard for the MAINTENANCE-line
-// release path (a push to a `release/<major>.<minor>.x` hotfix branch).
+// release-preflight.mjs — the green-check guard for the release path. It runs
+// on BOTH release paths and refuses to publish unless the tree being released
+// is provably green.
 //
-// Why this exists ONLY for the maintenance path:
-//   A push to `main` is implicitly green — branch protection refuses to merge a
-//   PR whose required checks are red or whose tree is behind main, so the merge
-//   commit is releasable by construction. The publish-on-merge release.yml
-//   trusts that and runs no preflight on the main path.
+// Two MODES, selected from the pushed branch:
+//   MAINLINE     (`main`) — the merge commit of a release PR. Branch protection
+//                already refused to merge a PR whose REQUIRED checks were red,
+//                but that is not the whole story: a lane with no
+//                `pull_request:` trigger (today `migration-e2e`) has NEVER run
+//                on the tree being released, so the merge commit is the FIRST
+//                tree it sees. The mainline preflight is what makes those lanes
+//                gate. release.yml gates the job on "something actually
+//                publishes", so an ordinary merge pays nothing for it.
+//   MAINTENANCE  (`release/<major>.<minor>.x`) — a hotfix cherry-picked
+//                straight onto the line, with NO PR gate at all. Everything
+//                mainline mode does, PLUS two maintenance-only rules: the pushed
+//                commit must be the current TIP of its line, and the line must
+//                be inside the support window (an EOL line gets no hotfixes).
+//                Both are maintenance concepts — `main` legitimately moves
+//                under a release that is still waiting on CI, and the EOL
+//                window describes maintenance lines.
 //
-//   A push to a `release/*.x` maintenance branch has NO PR gate: a maintainer
-//   cherry-picks a hotfix straight onto the branch and pushes. Publishing that
-//   unguarded would risk shipping a RED commit. So before the publish jobs run,
-//   this preflight re-reads the pushed commit's check-runs + legacy statuses and
-//   refuses to release unless EVERY required check is settled GREEN.
+// ABSENCE IS A FAILURE (the rule an observation-derived gate cannot express):
+//   The green-check evaluation below iterates the check-runs the API RETURNED,
+//   so a lane that never ran contributes zero entries and therefore zero
+//   problems — a silently smaller gate that still reports "all N gated check(s)
+//   are settled green". RELEASE_REQUIRED_CHECKS is the EXPECTED set, and it is
+//   NOT derived from observation: every name in it must have posted a check-run
+//   on the commit, and a missing one is a blocking problem. An EMPTY
+//   RELEASE_REQUIRED_CHECKS is itself a blocking problem, so the gate cannot
+//   degrade back to pure observation by deleting one workflow env line. A
+//   required name that RELEASE_INFORMATIONAL_CHECKS would swallow by prefix, or
+//   that RELEASE_SELF_JOBS excludes, is a WIRING ERROR and blocks too —
+//   de-gating a required lane is not a de-gate, it is a hole.
 //
 // WAIT-then-EVALUATE (why it can't snapshot once):
 //   release.yml fires on the SAME push event as the CI workflows
-//   (ci / e2e / compatibility / chdb / …), so a one-shot snapshot taken the
-//   moment preflight starts sees every lane `queued` / `in_progress` and aborts
-//   with "still queued (not completed)" — a guaranteed false negative that used
-//   to force a manual re-run of release.yml after CI finished. So the driver
-//   first POLLS the commit's check-SUITES until every suite EXCEPT this release
-//   run's own suite is `completed`, THEN runs the existing one-shot green/tip/EOL
-//   evaluation exactly as before. Waiting on our own suite would deadlock (it is
-//   necessarily in-progress while we poll), so it is resolved by GITHUB_RUN_ID ->
-//   check_suite_id and excluded. The wait is bounded (maxWaitMs / pollIntervalMs);
-//   on timeout the preflight ABORTS naming the still-running suites — fail-safe,
-//   never publish on an unknown/incomplete state.
+//   (ci / e2e / compatibility / chdb / migration-e2e / …), so a one-shot
+//   snapshot taken the moment preflight starts sees every lane `queued` /
+//   `in_progress` and aborts with "still queued (not completed)" — a guaranteed
+//   false negative that used to force a manual re-run of release.yml after CI
+//   finished. So the driver first POLLS until BOTH (a) every check-SUITE except
+//   this release run's own is `completed` AND (b) every RELEASE_REQUIRED_CHECKS
+//   name has posted a COMPLETED check-run, THEN runs the one-shot
+//   green/tip/EOL evaluation. Condition (b) is what makes a lane that never
+//   started fail on the timeout rather than pass on its silence: a suite-only
+//   wait is `done` the instant the suites that DID run finish. Waiting on our
+//   own suite would deadlock (it is necessarily in-progress while we poll), so
+//   it is resolved by GITHUB_RUN_ID -> check_suite_id and excluded. The wait is
+//   bounded (releaseWaitMinutes / pollIntervalMs); on timeout the preflight
+//   ABORTS naming the MISSING and the still-RUNNING lanes separately —
+//   fail-safe, never publish on an unknown/incomplete state.
 //
 // The rule, with no softening:
-//   1. The pushed commit MUST be the current tip of the `release/*.x` branch
-//      it was pushed to. You release the tip of a maintenance line, never an
-//      older/side commit. (For a branch push GITHUB_SHA is normally already the
-//      tip; the check defends against a stale re-drive racing a newer push.)
+//   1. Every RELEASE_REQUIRED_CHECKS name must have posted a check-run on the
+//      commit. Silence is a failure, not a pass. (Both modes.)
 //   2. Every gated check-run + legacy status on the commit must be COMPLETED
 //      (nothing still running / queued) AND green (success / skipped / neutral).
 //      One running check, one failure, one cancelled/timed-out lane -> release
@@ -42,17 +64,28 @@
 //      are deliberately not part of the required gate (the required compose-smoke
 //      aggregate already rolls up the gating shards), so a flake there must not
 //      block a hotfix. Everything else gates by default — a new lane is never
-//      silently un-gated.
-//   3. The maintenance line must be INSIDE the support window — the latest
+//      silently un-gated. (Both modes.)
+//   3. The pushed commit MUST be the current tip of the `release/*.x` branch
+//      it was pushed to. You release the tip of a maintenance line, never an
+//      older/side commit. (For a branch push GITHUB_SHA is normally already the
+//      tip; the check defends against a stale re-drive racing a newer push.)
+//      MAINTENANCE only.
+//   4. The maintenance line must be INSIDE the support window — the latest
 //      SUPPORTED_MINOR_LINES minor lines (current + the two prior). A push to a
 //      line that is end-of-life (3+ minors behind the highest released minor)
 //      is REFUSED: an EOL line gets no further hotfixes. See the "Release
 //      support window / EOL policy" subsection of docs/operations.md.
+//      MAINTENANCE only.
 //
-// The ONLY exclusion is THIS release run's own jobs (gate / preflight /
-// goreleaser / chart-release): they are necessarily in-progress while the
-// preflight runs, so gating on them would deadlock. They are identified by name
-// via RELEASE_SELF_JOBS — structural, not a flakiness heuristic.
+// The ONLY structural exclusion is THIS release run's own jobs (gate /
+// preflight / goreleaser / release-artifact-migration / publish / brew-smoke /
+// chart-release): they are necessarily in-progress while the preflight runs, so
+// gating on them would deadlock. They are identified by name via
+// RELEASE_SELF_JOBS — structural, not a flakiness heuristic. A reusable
+// workflow called from one of those jobs posts its children as
+// "<job> / <child>", so self-job matching also covers that prefix
+// (REUSABLE_JOB_SEPARATOR); without it, `release-artifact-migration`'s children
+// would be gated on by the very preflight that must finish before they start.
 //
 // `skipped` counts as green: a job whose path-filter / `if:` guard deliberately
 // did not run is a settled non-failure (e.g. `changes` / `gate` no-ops), not a
@@ -65,33 +98,50 @@
 // Env contract (the single source of truth):
 //   GITHUB_TOKEN       token with checks:read + statuses:read + contents:read.
 //   GITHUB_REPOSITORY  "owner/name".
-//   GITHUB_SHA         the pushed (maintenance) commit SHA.
-//   GITHUB_REF_NAME    the pushed branch name, e.g. `release/1.4.x`. Must match
-//                      the `release/<major>.<minor>.x` shape — the preflight is
-//                      ONLY meaningful on the maintenance path and refuses to
-//                      run otherwise (a wiring guard, not a silent pass).
+//   GITHUB_SHA         the pushed commit SHA.
+//   GITHUB_REF_NAME    the pushed branch name. `release/<major>.<minor>.x`
+//                      selects MAINTENANCE mode; anything else (in practice
+//                      `main`) selects MAINLINE mode.
 //   GITHUB_API_URL     API base (default https://api.github.com).
 //   GITHUB_RUN_ID      this release run's id — resolved to its check_suite_id so
 //                      the wait phase can skip our own (in-progress) suite.
 //                      Auto-present in the Actions runtime; absent off-runner.
 //   RELEASE_SELF_JOBS  comma-separated check-run names belonging to THIS release
 //                      workflow, excluded from the gate.
+//   RELEASE_REQUIRED_CHECKS
+//                      comma-separated EXACT check-run names that MUST have
+//                      posted a run on the commit. The expected set — not
+//                      derived from the API response, which is the whole point.
+//                      Empty/unset is a blocking problem.
+//   RELEASE_INFORMATIONAL_CHECKS
+//                      comma-separated name PREFIXES of explicitly de-gated
+//                      informational lanes. An entry that swallows a
+//                      RELEASE_REQUIRED_CHECKS name is a wiring error.
 //
 // `evaluate(...)` takes the branch HEAD sha, the pushed sha, the raw check-runs,
-// the legacy statuses, the self-job name set, and the released-version tags, and
-// returns a list of blocking problems (empty == release may proceed) plus the
-// count of gated checks. It is a ONE-SHOT decision run AFTER the wait phase has
-// confirmed the CI matrix settled. No network, no exclusions beyond self-jobs —
-// exported so the self-test pins the exact pass/fail boundary. The support-window
-// check is a pure helper (`supportWindowProblem`) folded into the same problems
-// list.
+// the legacy statuses, the self-job name set, the REQUIRED name set, the mode,
+// and the released-version tags, and returns a list of blocking problems (empty
+// == release may proceed) plus the count of gated checks. It is a ONE-SHOT
+// decision run AFTER the wait phase has confirmed the CI matrix settled. No
+// network — exported so the self-test and release-preflight.test.mjs pin the
+// exact pass/fail boundary. The support-window check is a pure helper
+// (`supportWindowProblem`) folded into the same problems list.
 //
 // `allSuitesSettled(suites, ownSuiteId)` is the pure decision behind the wait
 // loop: a check-suite is settled when `status === "completed"`; the release run's
 // own suite (`ownSuiteId`) is ignored. Returns { done, pending } — side-effect
 // free so the self-test pins it; the polling / sleep wrapper lives in main().
 //
-// argv `--self-test` runs the in-process assertion suite and exits.
+// `requiredChecksPending(checkRuns, required)` is its companion: the required
+// names that have posted NO check-run (`missing`) and those whose latest run is
+// not yet `completed` (`running`). The wait loop keeps polling while either is
+// non-empty, so a required lane that never starts times out loudly instead of
+// being read as absent-and-therefore-fine.
+//
+// argv `--self-test` runs the in-process assertion suite and exits. The same
+// pure core is covered by `release-preflight.test.mjs` on the required `lint`
+// lane — release.yml has no `pull_request:` trigger, so `--self-test` alone
+// would leave every change here unverified until a release is cut.
 //
 // Imports only node: builtins (Node ships `fetch`). Run with
 // `node .github/scripts/release-preflight.mjs`.
@@ -102,6 +152,20 @@ import process from 'node:process';
 // `release/1.3.x`. It explicitly does NOT match a main release PR branch like
 // `release/v1.5.0-chart-0.6.4` (those don't end in `.x`).
 export const MAINTENANCE_BRANCH_RE = /^release\/(\d+)\.(\d+)\.x$/;
+
+// The two evaluation modes. MAINTENANCE additionally enforces the branch-tip
+// and support-window rules; MAINLINE does not (main legitimately moves under a
+// release that is still waiting on CI, and the EOL window is a maintenance
+// concept). Everything else — the required-set diff and the green gate — is
+// identical, which is what makes the mainline path a real gate rather than the
+// no-preflight hole it used to be.
+export const MODE_MAINTENANCE = 'maintenance';
+export const MODE_MAINLINE = 'mainline';
+
+// A reusable workflow called from job `X` posts its child check-runs as
+// "X / <child>". Self-job exclusion has to cover those children too: they are
+// downstream of this preflight, so gating on them deadlocks the release.
+export const REUSABLE_JOB_SEPARATOR = ' / ';
 
 // Conclusions that count as a settled, non-blocking check-run.
 const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
@@ -121,12 +185,19 @@ const APP_TAG_RE = /^v(\d+)\.(\d+)\.\d+$/;
 // publishes — `release-version-gate.mjs` emits `version` without the `v`).
 const APP_VERSION_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 
-// Wait-phase bounds. The preflight polls the commit's check-suites until every
-// non-own suite is `completed`, then evaluates once. maxWaitMs caps the total
-// wall-clock wait (after which the preflight ABORTS — fail-safe, never publish on
-// an unknown state); pollIntervalMs is the gap between check-suite polls.
-const maxWaitMs = 50 * 60 * 1000; // 50 min — comfortably past the slowest CI lane
-const pollIntervalMs = 30 * 1000; // 30 s between check-suite polls
+// Wait-phase bounds. The preflight polls until every non-own check-suite is
+// `completed` AND every required lane has posted a completed run, then evaluates
+// once. releaseWaitMinutes caps the total wall-clock wait (after which the
+// preflight ABORTS — fail-safe, never publish on an unknown state);
+// pollIntervalMs is the gap between polls.
+//
+// The ceiling has to outlast the SLOWEST required lane, which is now
+// migration-e2e's serial path: setup (10) + tier1 (45) + tier2 (60) = 115 min
+// of job timeouts, plus runner queueing. 150 leaves headroom without letting a
+// wedged lane hold a release runner indefinitely.
+const releaseWaitMinutes = 150;
+const maxWaitMs = releaseWaitMinutes * 60 * 1000;
+const pollIntervalMs = 30 * 1000; // 30 s between polls
 
 // ---------------------------------------------------------------------------
 // pure core (exported for the self-test — no network, no process.exit)
@@ -156,6 +227,47 @@ export function allSuitesSettled(suites, ownSuiteId) {
     }
   }
   return { done: pending.length === 0, pending };
+}
+
+// latestByName — re-runs leave several check-runs with the same name; the
+// highest id is the check's current state, so a green re-run supersedes an
+// earlier red. Shared by the wait phase and the one-shot evaluation so the two
+// can never disagree about which run represents a lane.
+function latestByName(checkRuns) {
+  const latest = new Map();
+  for (const cr of checkRuns ?? []) {
+    const prev = latest.get(cr.name);
+    if (!prev || cr.id > prev.id) latest.set(cr.name, cr);
+  }
+  return latest;
+}
+
+// requiredChecksPending — the wait-phase companion to allSuitesSettled, and the
+// reason a lane that never starts cannot be mistaken for a lane that passed.
+// Given the commit's check-runs and the EXPECTED required names, split them:
+//   missing — no check-run with that name exists on the commit at all;
+//   running — a run exists but is not yet `completed`.
+// The wait loop keeps polling while either bucket is non-empty. Suite-level
+// settledness alone is `done` the moment the suites that DID run finish, which
+// is exactly the silence the required set exists to catch.
+//
+// Legacy combined statuses are deliberately NOT consulted here: the required
+// set names check-runs (Actions jobs), and a required name that only ever
+// appeared as a legacy status would sit in `missing` until the timeout — a loud
+// wiring failure rather than a silent pass.
+export function requiredChecksPending(checkRuns, required) {
+  const latest = latestByName(checkRuns);
+  const missing = [];
+  const running = [];
+  for (const name of required ?? []) {
+    const cr = latest.get(name);
+    if (!cr) {
+      missing.push(name);
+      continue;
+    }
+    if (cr.status !== 'completed') running.push(name);
+  }
+  return { missing, running };
 }
 
 // currentMinor — the highest released `<major>.<minor>` from the stable `v*`
@@ -259,35 +371,23 @@ export function retireLineForPublish({ version, tags, windowSize = SUPPORTED_MIN
 }
 
 // evaluate — given the branch tip sha, the pushed sha, the commit's raw
-// check-runs + legacy statuses, and the set of self-job names to exclude,
-// return { problems, gated }. `problems` empty == release may proceed.
-export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags, informational }) {
+// check-runs + legacy statuses, the self-job names to exclude, the EXPECTED
+// required names and the mode, return { problems, gated }. `problems` empty ==
+// release may proceed.
+export function evaluate({
+  branchHead,
+  pushedSha,
+  checkRuns,
+  statuses,
+  selfJobs,
+  branchLabel,
+  tags,
+  informational,
+  required,
+  mode = MODE_MAINTENANCE,
+}) {
   const problems = [];
-
-  // Support-window / EOL gate — independent of the tip + green-check gates, so
-  // it is evaluated even when the tip check below short-circuits. A push to an
-  // end-of-life line is refused regardless of how green it is.
-  const eol = supportWindowProblem({ branch: branchLabel, tags });
-  if (eol) problems.push(eol);
-
-  if (!branchHead) {
-    problems.push(`could not resolve HEAD of ${branchLabel}`);
-    return { problems, gated: 0 };
-  }
-  if (pushedSha !== branchHead) {
-    problems.push(
-      `pushed commit ${pushedSha.slice(0, 8)} is NOT the tip of ${branchLabel} ` +
-        `(${branchHead.slice(0, 8)}) — a maintenance release may only be cut from the tip of its line`,
-    );
-    return { problems, gated: 0 };
-  }
-
-  // Latest-per-name: the most recent run is the check's current state.
-  const latest = new Map();
-  for (const cr of checkRuns) {
-    const prev = latest.get(cr.name);
-    if (!prev || cr.id > prev.id) latest.set(cr.name, cr);
-  }
+  const requiredNames = required ?? [];
 
   // A check is excluded from the gate if it is one of THIS release run's own
   // jobs (structural — gating on them would deadlock) or an explicitly de-gated
@@ -298,10 +398,73 @@ export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs,
   // info shard is redundant — a flake there must not block a release. Everything
   // else that ran must be completed + green (a new lane gates by default).
   const isInformational = (name) => (informational ?? []).some((p) => p && name.startsWith(p));
+  // Self-jobs match exactly, or as the parent of a reusable workflow's children
+  // ("<job> / <child>"). Both are structurally downstream of this preflight.
+  const isSelfJob = (name) =>
+    selfJobs.has(name) || [...selfJobs].some((j) => name.startsWith(j + REUSABLE_JOB_SEPARATOR));
+
+  if (mode === MODE_MAINTENANCE) {
+    // Support-window / EOL gate — independent of the tip + green-check gates, so
+    // it is evaluated even when the tip check below short-circuits. A push to an
+    // end-of-life line is refused regardless of how green it is.
+    const eol = supportWindowProblem({ branch: branchLabel, tags });
+    if (eol) problems.push(eol);
+
+    if (!branchHead) {
+      problems.push(`could not resolve HEAD of ${branchLabel}`);
+      return { problems, gated: 0 };
+    }
+    if (pushedSha !== branchHead) {
+      problems.push(
+        `pushed commit ${pushedSha.slice(0, 8)} is NOT the tip of ${branchLabel} ` +
+          `(${branchHead.slice(0, 8)}) — a maintenance release may only be cut from the tip of its line`,
+      );
+      return { problems, gated: 0 };
+    }
+  }
+
+  // Latest-per-name: the most recent run is the check's current state.
+  const latest = latestByName(checkRuns);
+
+  // --- the EXPECTED set ------------------------------------------------------
+  // Everything below this point is observation-derived and therefore blind to a
+  // lane that never ran. The required set is the only part of the gate that is
+  // not, so it is checked first and it is checked against a set the caller
+  // supplied, never against the API response.
+  if (requiredNames.length === 0) {
+    problems.push(
+      'RELEASE_REQUIRED_CHECKS is empty — the gate would degrade to the observational deny-list, ' +
+        'where a lane that never posted a check-run contributes zero problems and publishes silently',
+    );
+  }
+
+  const present = new Set([...latest.keys(), ...(statuses ?? []).map((s) => s.context)]);
+  for (const name of requiredNames) {
+    if (isSelfJob(name)) {
+      problems.push(
+        `${name} is both REQUIRED and excluded by RELEASE_SELF_JOBS — a required lane cannot be one of ` +
+          `this release run's own jobs; gating on it would deadlock. Fix the wiring, do not de-gate.`,
+      );
+      continue;
+    }
+    if (isInformational(name)) {
+      problems.push(
+        `${name} is both REQUIRED and de-gated by RELEASE_INFORMATIONAL_CHECKS (prefix match) — ` +
+          `the informational prefix swallows a required lane, which is a hole, not a de-gate.`,
+      );
+      continue;
+    }
+    if (!present.has(name)) {
+      problems.push(
+        `${name}: REQUIRED lane posted no check-run on ${String(pushedSha).slice(0, 8)} — ` +
+          `it never ran on this commit`,
+      );
+    }
+  }
 
   let gated = 0;
   for (const cr of latest.values()) {
-    if (selfJobs.has(cr.name) || isInformational(cr.name)) continue;
+    if (isSelfJob(cr.name) || isInformational(cr.name)) continue;
     gated += 1;
     if (cr.status !== 'completed') {
       problems.push(`${cr.name}: still ${cr.status} (not completed)`);
@@ -312,7 +475,7 @@ export function evaluate({ branchHead, pushedSha, checkRuns, statuses, selfJobs,
 
   // Legacy combined statuses (e.g. GitGuardian) — each gated context must succeed.
   for (const st of statuses ?? []) {
-    if (selfJobs.has(st.context) || isInformational(st.context)) continue;
+    if (isSelfJob(st.context) || isInformational(st.context)) continue;
     gated += 1;
     if (st.state !== 'success') {
       problems.push(`${st.context}: status ${st.state}`);
@@ -339,8 +502,14 @@ function selfTest() {
     if (!c) throw new Error('self-test: ' + m);
   };
   const cr = (name, status, conclusion, id = 1) => ({ name, status, conclusion, id });
-  const self = new Set(['gate', 'preflight', 'goreleaser', 'chart-release']);
+  const self = new Set(['gate', 'preflight', 'goreleaser', 'release-artifact-migration', 'publish', 'chart-release']);
   const label = 'release/1.4.x';
+  // Every evaluate() world below supplies `required` explicitly: an EMPTY
+  // required set is itself a blocking problem, so a world that omitted it would
+  // pin the degradation guard rather than the detector it means to pin. These
+  // sets are satisfied by construction in their world, so the only problems
+  // reported are the ones each case is about.
+  const requiredCheck = ['check'];
 
   // Branch-shape discrimination: maintenance lines match, main release PR
   // branches do NOT.
@@ -412,6 +581,7 @@ function selfTest() {
       cr('gate', 'in_progress', null), // self-job, excluded even mid-run
     ],
     statuses: [{ context: 'GitGuardian', state: 'success' }],
+    required: requiredCheck,
   });
   assert(r.problems.length === 0, 'all-green tip should pass: ' + r.problems.join('; '));
   assert(r.gated === 6, `expected 6 gated (self-jobs excluded), got ${r.gated}`);
@@ -431,6 +601,7 @@ function selfTest() {
       cr('dashboard-shard (shard-smoke-b)', 'completed', 'failure'),
     ],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.length === 0, 'informational red must NOT block: ' + r.problems.join('; '));
   assert(r.gated === 2, `informational lanes excluded from the gate, got ${r.gated}`);
@@ -440,6 +611,7 @@ function selfTest() {
     branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label, informational: info,
     checkRuns: [cr('check', 'completed', 'success'), cr('compose-smoke', 'completed', 'failure')],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.some((p) => /compose-smoke: failure/.test(p)), 'a red gating check must still block');
 
@@ -449,15 +621,22 @@ function selfTest() {
     branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label, informational: info,
     checkRuns: [cr('check', 'completed', 'success'), cr('some-new-lane', 'completed', 'failure')],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.some((p) => /some-new-lane: failure/.test(p)), 'an unlisted lane must gate by default');
 
   // Pushed commit is NOT the branch tip -> reject (stale re-drive).
-  r = evaluate({ branchHead: 'def', pushedSha: 'abc', selfJobs: self, branchLabel: label, checkRuns: [], statuses: [] });
+  r = evaluate({
+    branchHead: 'def', pushedSha: 'abc', selfJobs: self, branchLabel: label,
+    checkRuns: [], statuses: [], required: requiredCheck,
+  });
   assert(r.problems.length === 1 && /NOT the tip/.test(r.problems[0]), 'non-tip commit must fail');
 
   // Unresolved branch head -> reject.
-  r = evaluate({ branchHead: null, pushedSha: 'abc', selfJobs: self, branchLabel: label, checkRuns: [], statuses: [] });
+  r = evaluate({
+    branchHead: null, pushedSha: 'abc', selfJobs: self, branchLabel: label,
+    checkRuns: [], statuses: [], required: requiredCheck,
+  });
   assert(r.problems.length === 1 && /could not resolve HEAD/.test(r.problems[0]), 'unresolved head must fail');
 
   // A still-running NON-self check -> reject (no "running" allowed).
@@ -468,6 +647,7 @@ function selfTest() {
     branchLabel: label,
     checkRuns: [cr('check', 'in_progress', null)],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.some((p) => /check: still in_progress/.test(p)), 'running lane must block');
 
@@ -482,6 +662,7 @@ function selfTest() {
       cr('compatibility/loki', 'completed', 'cancelled'),
     ],
     statuses: [],
+    required: ['compose-smoke'],
   });
   assert(r.problems.length === 2, 'two reds must BOTH block (no exclusion)');
 
@@ -496,6 +677,7 @@ function selfTest() {
       cr('check', 'completed', 'success', 2),
     ],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.length === 0, 'green re-run should supersede earlier fail');
 
@@ -507,6 +689,7 @@ function selfTest() {
     branchLabel: label,
     checkRuns: [],
     statuses: [{ context: 'GitGuardian', state: 'failure' }],
+    required: ['GitGuardian'],
   });
   assert(r.problems.length === 1 && /GitGuardian: status failure/.test(r.problems[0]), 'legacy status red must block');
 
@@ -538,6 +721,7 @@ function selfTest() {
     tags: releasedTags,
     checkRuns: [cr('check', 'completed', 'success')],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.some((p) => /end-of-life/.test(p)), 'all-green EOL line must still be blocked');
 
@@ -550,6 +734,7 @@ function selfTest() {
     tags: releasedTags,
     checkRuns: [cr('check', 'completed', 'success')],
     statuses: [],
+    required: requiredCheck,
   });
   assert(r.problems.length === 0, 'in-window green line should pass: ' + r.problems.join('; '));
 
@@ -587,6 +772,100 @@ function selfTest() {
     assert(supportWindowProblem({ branch: 'release/1.4.x', tags }) === null, 'the line kept (1.4.x) is still in-window');
   }
 
+  // --- the EXPECTED set: absence must FAIL ---------------------------------
+  // The whole point of `required`. A lane that never ran contributes nothing to
+  // `checkRuns`, so every observation-derived detector above is blind to it.
+  const fullRequired = ['check', 'compose-smoke', 'migration-e2e'];
+  const greenWorld = (names) => ({
+    branchHead: 'abcdef1234',
+    pushedSha: 'abcdef1234',
+    selfJobs: self,
+    branchLabel: label,
+    checkRuns: names.map((n) => cr(n, 'completed', 'success')),
+    statuses: [],
+  });
+
+  // Positive control: every required lane ran green -> no problems.
+  r = evaluate({ ...greenWorld(fullRequired), required: fullRequired });
+  assert(r.problems.length === 0, 'all required lanes green -> pass: ' + r.problems.join('; '));
+
+  // migration-e2e never posted a run: green everywhere else, still BLOCKED.
+  r = evaluate({ ...greenWorld(['check', 'compose-smoke']), required: fullRequired });
+  assert(
+    r.problems.length === 1 && /migration-e2e: REQUIRED lane posted no check-run/.test(r.problems[0]),
+    'an absent REQUIRED lane must block: ' + r.problems.join('; '),
+  );
+  // Negative control: the SAME world with migration-e2e out of `required` is
+  // green — so the detector fires on absence, not unconditionally.
+  r = evaluate({ ...greenWorld(['check', 'compose-smoke']), required: ['check', 'compose-smoke'] });
+  assert(r.problems.length === 0, 'the absence detector must fire on absence only: ' + r.problems.join('; '));
+
+  // Empty required set -> the degradation guard, not a silent pass.
+  r = evaluate({ ...greenWorld(fullRequired), required: [] });
+  assert(
+    r.problems.some((p) => /RELEASE_REQUIRED_CHECKS is empty/.test(p)),
+    'an empty required set must be a blocking problem',
+  );
+
+  // An informational PREFIX that swallows a required name is a wiring error,
+  // reported as such rather than as mere absence.
+  r = evaluate({ ...greenWorld(fullRequired), required: fullRequired, informational: ['migration'] });
+  assert(
+    r.problems.length === 1 && /migration-e2e is both REQUIRED and de-gated/.test(r.problems[0]),
+    'a required lane swallowed by an informational prefix must be a wiring problem: ' + r.problems.join('; '),
+  );
+
+  // A required name that is also a self-job is the other wiring error.
+  r = evaluate({ ...greenWorld(fullRequired), required: [...fullRequired, 'goreleaser'] });
+  assert(
+    r.problems.some((p) => /goreleaser is both REQUIRED and excluded by RELEASE_SELF_JOBS/.test(p)),
+    'a required lane that is a self-job must be a wiring problem',
+  );
+
+  // A reusable workflow's children ("<self-job> / <child>") are self-jobs too.
+  r = evaluate({
+    branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: label,
+    checkRuns: [cr('release-artifact-migration / migration-tier1', 'in_progress', null)],
+    statuses: [], required: [],
+  });
+  assert(r.gated === 0, `reusable-workflow children of a self-job must not gate, got ${r.gated}`);
+  assert(
+    !r.problems.some((p) => /release-artifact-migration/.test(p)),
+    "a self-job's reusable children must raise no problem: " + r.problems.join('; '),
+  );
+
+  // --- wait phase: requiredChecksPending ------------------------------------
+  {
+    const runs = [cr('check', 'completed', 'success'), cr('compose-smoke', 'in_progress', null)];
+    const pending = requiredChecksPending(runs, fullRequired);
+    assert(pending.missing.length === 1 && pending.missing[0] === 'migration-e2e', 'a never-posted lane is MISSING');
+    assert(pending.running.length === 1 && pending.running[0] === 'compose-smoke', 'an incomplete lane is RUNNING');
+    const settled = requiredChecksPending(greenWorld(fullRequired).checkRuns, fullRequired);
+    assert(settled.missing.length === 0 && settled.running.length === 0, 'all required completed -> nothing pending');
+  }
+
+  // --- mode split -----------------------------------------------------------
+  // The branch-tip and EOL rules are MAINTENANCE-only; the required set and the
+  // green gate are not.
+  r = evaluate({
+    branchHead: 'def', pushedSha: 'abc', selfJobs: self, branchLabel: 'main',
+    checkRuns: [cr('check', 'completed', 'success')], statuses: [],
+    required: requiredCheck, mode: MODE_MAINLINE,
+  });
+  assert(r.problems.length === 0, 'mainline mode does not enforce the branch tip: ' + r.problems.join('; '));
+  r = evaluate({
+    branchHead: 'def', pushedSha: 'abc', selfJobs: self, branchLabel: label,
+    checkRuns: [cr('check', 'completed', 'success')], statuses: [],
+    required: requiredCheck, mode: MODE_MAINTENANCE,
+  });
+  assert(r.problems.some((p) => /NOT the tip/.test(p)), 'maintenance mode DOES enforce the branch tip');
+  r = evaluate({
+    branchHead: 'abc', pushedSha: 'abc', selfJobs: self, branchLabel: 'release/1.2.x', tags: releasedTags,
+    checkRuns: [cr('check', 'completed', 'success')], statuses: [],
+    required: requiredCheck, mode: MODE_MAINLINE,
+  });
+  assert(!r.problems.some((p) => /end-of-life/.test(p)), 'mainline mode does not enforce the EOL window');
+
   ghNotice('release-preflight --self-test: all assertions passed');
 }
 
@@ -614,14 +893,21 @@ async function main() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  // The EXPECTED set — exact check-run names that MUST have posted a run on the
+  // commit. Parsed the same way as the informational list, but consumed as EXACT
+  // names, not prefixes: a required lane is a specific job, not a family.
+  const required = (process.env.RELEASE_REQUIRED_CHECKS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  if (!MAINTENANCE_BRANCH_RE.test(branch)) {
-    ghError(
-      `release-preflight is the MAINTENANCE-path guard and must only run on a release/<major>.<minor>.x branch; ` +
-        `got GITHUB_REF_NAME="${branch}". This is a workflow-wiring error.`,
-    );
-    process.exit(1);
-  }
+  // Mode is derived from the branch, not passed in: a `release/*.x` push is the
+  // maintenance path (tip + support-window rules apply), anything else is the
+  // mainline path. There is no "not applicable" third state — the preflight
+  // always gates.
+  const mode = MAINTENANCE_BRANCH_RE.test(branch) ? MODE_MAINTENANCE : MODE_MAINLINE;
+  const label = mode === MODE_MAINTENANCE ? 'maintenance preflight' : 'mainline preflight';
+
   if (!repo || !pushedSha || !token) {
     ghError('GITHUB_REPOSITORY, GITHUB_SHA, and GITHUB_TOKEN are all required');
     process.exit(1);
@@ -714,33 +1000,47 @@ async function main() {
 
   // --- WAIT PHASE: poll until the CI matrix on the commit settles -------------
   // release.yml fires on the same push as CI, so a one-shot snapshot here would
-  // see everything queued/in_progress and false-abort. Poll the check-suites
-  // until every non-own suite is completed, bounded by maxWaitMs. On timeout,
-  // ABORT naming the still-running suites (fail-safe — never publish on an
-  // unknown state).
+  // see everything queued/in_progress and false-abort. Poll until BOTH every
+  // non-own check-SUITE is completed AND every REQUIRED lane has posted a
+  // completed check-run, bounded by maxWaitMs. The second condition is what
+  // makes a lane that never started time out loudly: suite settledness alone is
+  // satisfied by the suites that DID run, so silence would read as "settled".
+  // On timeout, ABORT naming missing and running lanes separately (fail-safe —
+  // never publish on an unknown state).
   const ownId = await ownSuiteId();
   const waitDeadline = Date.now() + maxWaitMs;
   for (;;) {
     const suites = await allCheckSuites();
     const { done, pending } = allSuitesSettled(suites, ownId);
-    if (done) {
+    const { missing, running } = requiredChecksPending(await allCheckRuns(), required);
+    if (done && missing.length === 0 && running.length === 0) {
       ghNotice(
-        `maintenance preflight: CI matrix on ${pushedSha.slice(0, 8)} has settled ` +
-          `(${suites.length} check-suite(s)); evaluating green gate.`,
+        `${label}: CI matrix on ${pushedSha.slice(0, 8)} has settled ` +
+          `(${suites.length} check-suite(s)) and all ${required.length} required lane(s) have completed; ` +
+          `evaluating green gate.`,
       );
       break;
     }
     if (Date.now() >= waitDeadline) {
+      if (missing.length > 0) {
+        ghError(
+          `${label}: REQUIRED lane(s) never posted a check-run on ${branch}@${pushedSha.slice(0, 8)}: ` +
+            `${missing.join(', ')}. Either the workflow does not trigger on this branch, or it failed to ` +
+            `start. A lane that did not run has not passed — refusing to publish.`,
+        );
+      }
       ghError(
-        `maintenance preflight: timed out after ${Math.round(maxWaitMs / 60000)} min waiting for CI on ` +
-          `${branch}@${pushedSha.slice(0, 8)} to finish — still running: ${pending.join(', ')}. ` +
+        `${label}: timed out after ${releaseWaitMinutes} min waiting for CI on ` +
+          `${branch}@${pushedSha.slice(0, 8)} to finish — required still running: ` +
+          `${running.join(', ') || '(none)'}; suites still running: ${pending.join(', ') || '(none)'}. ` +
           `Refusing to publish on an incomplete state; re-run once CI settles.`,
       );
       process.exit(1);
     }
     ghNotice(
-      `maintenance preflight: ${pending.length} check-suite(s) still running ` +
-        `(${pending.join(', ')}); re-polling in ${Math.round(pollIntervalMs / 1000)}s.`,
+      `${label}: ${pending.length} check-suite(s) still running (${pending.join(', ') || 'none'}); ` +
+        `required missing: ${missing.join(', ') || 'none'}; required running: ${running.join(', ') || 'none'}; ` +
+        `re-polling in ${Math.round(pollIntervalMs / 1000)}s.`,
     );
     await sleep(pollIntervalMs);
   }
@@ -760,19 +1060,23 @@ async function main() {
     branchLabel: branch,
     tags,
     informational,
+    required,
+    mode,
   });
 
   if (problems.length > 0) {
-    for (const p of problems) ghError(`maintenance preflight: ${p}`);
+    for (const p of problems) ghError(`${label}: ${p}`);
     ghError(
-      `maintenance release of ${branch}@${pushedSha.slice(0, 8)} BLOCKED: ` +
-        `${problems.length} problem(s) across ${gated} gated check(s). Fix the red/running checks and re-push.`,
+      `release of ${branch}@${pushedSha.slice(0, 8)} BLOCKED: ${problems.length} problem(s) across ` +
+        `${gated} gated check(s) and ${required.length} required lane(s). ` +
+        `Fix the red/running/absent checks and re-push.`,
     );
     process.exit(1);
   }
 
   ghNotice(
-    `maintenance preflight OK: ${branch}@${pushedSha.slice(0, 8)} is the branch tip and all ${gated} gated check(s) are settled green.`,
+    `${label} OK: ${branch}@${pushedSha.slice(0, 8)} has all ${required.length} required lane(s) present and ` +
+      `all ${gated} gated check(s) settled green.`,
   );
   process.exit(0);
 }
@@ -919,21 +1223,28 @@ async function retireLine() {
 // dispatcher
 // ---------------------------------------------------------------------------
 
-if (process.argv.includes('--self-test')) {
-  selfTest();
-  process.exit(0);
-}
+// Only dispatch when run as a script — importing the pure core for
+// release-preflight.test.mjs must not fire the network driver or exit the test
+// runner. (Same idiom as migration-e2e.mjs / compose-smoke-matrix.mjs.)
+const invokedDirectly = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 
-const cmd = process.argv[2];
-if (cmd === 'eol-retire-line') {
-  retireLine().catch((e) => {
-    // Even an unexpected throw is fail-open: the release already shipped.
-    ghError(`eol-retire-line: unexpected failure (${e.message}) — retiring nothing (fail-open)`);
+if (invokedDirectly) {
+  if (process.argv.includes('--self-test')) {
+    selfTest();
     process.exit(0);
-  });
-} else {
-  main().catch((e) => {
-    ghError(`release-preflight failed: ${e.message}`);
-    process.exit(1);
-  });
+  }
+
+  const cmd = process.argv[2];
+  if (cmd === 'eol-retire-line') {
+    retireLine().catch((e) => {
+      // Even an unexpected throw is fail-open: the release already shipped.
+      ghError(`eol-retire-line: unexpected failure (${e.message}) — retiring nothing (fail-open)`);
+      process.exit(0);
+    });
+  } else {
+    main().catch((e) => {
+      ghError(`release-preflight failed: ${e.message}`);
+      process.exit(1);
+    });
+  }
 }

@@ -157,8 +157,25 @@ services:
     # proven by polling /ready from the host, the same posture as loki above.
 
   cerberus:
-    image: cerberus:migration-tier1
-    pull_policy: build
+    # The cerberus under test, and the ONE knob that decides whether this lane
+    # proves the source tree or a released artifact.
+    #
+    # `CERBERUS_IMAGE` is written by .github/scripts/migration-artifact.mjs:
+    # unset (every PR / dispatch / push run) it falls back to the locally built
+    # tag and the stack runs this tree; on release.yml's
+    # `release-artifact-migration` call it names the image goreleaser just
+    # built and the stack runs THAT.
+    #
+    # The image is put into the daemon by `just migration-cerberus-image`
+    # (built from Dockerfile.local, or pulled) BEFORE `up` runs, and nothing in
+    # the up path may build or pull it: `pull_policy: never` plus the removal of
+    # `--build` from the up recipes is what stops compose recompiling the source
+    # tree over a released artifact and reporting green having tested source. A
+    # missing image therefore aborts `up` loudly instead of silently rebuilding.
+    # The `build:` stanza stays so `docker compose build` still works for humans.
+    # test/regression/migration_tier1_test.go pins all of it.
+    image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}
+    pull_policy: never
     build:
       context: ../../../../..
       dockerfile: Dockerfile.local

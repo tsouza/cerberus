@@ -228,26 +228,39 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
     version-gate cannot definitively determine existence (fails closed, with one
     `::error::`).
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
-  green-check guard for the MAINTENANCE-line release path ONLY (a push to a
-  `release/<major>.<minor>.x` hotfix branch). A push to `main` is implicitly
-  green (branch protection won't merge a red/behind PR), so the main path runs
-  no preflight; a `release/*.x` push has no PR gate, so before the publish jobs
-  run this re-reads the pushed commit's check-runs + legacy statuses via the
-  GitHub API and FAILS the release unless the commit is the branch tip AND every
-  non-self check is settled green (success / skipped / neutral). Because
-  `release.yml` fires on the SAME push as the CI workflows, the driver first
-  WAITS — polling the commit's check-SUITES (`allSuitesSettled`) until every
-  suite except this release run's own (resolved via `GITHUB_RUN_ID` ->
-  `check_suite_id`) is `completed` — THEN runs the one-shot green evaluation.
-  The wait is bounded (`maxWaitMs` ~50 min / `pollIntervalMs` ~30 s); on timeout
-  it ABORTS naming the still-running suites (fail-safe — never publish on an
-  incomplete state). The release
-  run's own jobs (`gate` / `preflight` / `goreleaser` / `chart-release`) are
-  excluded via `RELEASE_SELF_JOBS` (gating on in-flight self-jobs would
-  deadlock). Latest-per-name dedup means a green re-run supersedes an earlier
-  red. The publish jobs guard `needs.preflight.result == 'success' ||
-  == 'skipped'`, so the main path (preflight skipped) stays preflight-free while
-  a failed/cancelled maintenance preflight blocks the publish. It ALSO enforces
+  green-check guard for BOTH release paths, gated on the publish decision rather
+  than on the branch: it runs whenever `app_publish` or `chart_publish` is true,
+  in `mainline` mode on `main` and in `maintenance` mode on a
+  `release/<major>.<minor>.x` push. Before the publish jobs run it reads the
+  pushed commit's check-runs + legacy statuses via the GitHub API and FAILS the
+  release unless every check it gates is settled green (success / skipped /
+  neutral). Branch protection is not sufficient on either path: it can only
+  cover lanes eligible to BE a branch-protection check, and the heavyweight
+  push/schedule-only lanes (`migration-e2e`) are not.
+  **ABSENCE IS A FAILURE.** The gate is not derived from what the API returned —
+  `RELEASE_REQUIRED_CHECKS` is an EXPECTED SET, and a required lane that posted
+  no check-run on the commit is a blocking problem, not a silence. Three
+  degradations are themselves blocking problems: an EMPTY required set (the gate
+  would collapse back into an observational deny-list), a required name also
+  listed in `RELEASE_SELF_JOBS`, and a required name swallowed by a
+  `RELEASE_INFORMATIONAL_CHECKS` prefix. Because `release.yml` fires on the SAME
+  push as the CI workflows, the driver first WAITS — polling the commit's
+  check-SUITES (`allSuitesSettled`) until every suite except this release run's
+  own (resolved via `GITHUB_RUN_ID` -> `check_suite_id`) is `completed`, AND
+  polling `requiredChecksPending` until every required lane is present and
+  completed, so a lane that never starts times out loudly instead of reading as
+  settled. The wait is bounded (`releaseWaitMinutes` / `pollIntervalMs` ~30 s);
+  on timeout it ABORTS naming the missing lanes and the still-running suites
+  (fail-safe — never publish on an incomplete state). The release run's own jobs
+  (`gate` / `preflight` / `goreleaser` / `release-artifact-migration` /
+  `publish` / `brew-smoke` / `chart-release`) are excluded via
+  `RELEASE_SELF_JOBS`, along with their reusable-workflow children (`<self-job>
+  / <child>`, split on `REUSABLE_JOB_SEPARATOR`) — gating on in-flight self-jobs
+  would deadlock. Latest-per-name dedup means a green re-run supersedes an
+  earlier red. The branch-tip rule is `maintenance`-only: `main` legitimately
+  moves while a release waits on CI. The publish jobs guard
+  `needs.preflight.result == 'success'` with no `|| skipped` disjunction, since
+  the preflight now fires on every publishing run. It ALSO enforces
   the **release support-window / EOL policy** (`SUPPORTED_MINOR_LINES = 3`): the
   pushed line must be within the latest 3 minor lines (current + the two prior);
   a push to a line 3+ minors behind the current minor (derived from the stable
@@ -267,26 +280,68 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   exported `MAINTENANCE_BRANCH_RE` + `currentMinor(tags)` +
   `supportWindowProblem({branch, tags, windowSize})` +
   `retireLineForPublish({version, tags, windowSize})` + `evaluate({branchHead,
-  pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags})` (no network, no
-  `process.exit`) + a `--self-test`.
+  pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags, informational,
+  required, mode})` + `requiredChecksPending(checkRuns, required)` (no network,
+  no `process.exit`) + a `--self-test`. `release-preflight.test.mjs` is the
+  `node --test` sibling wired into the required `lint` lane — `release.yml` has
+  no `pull_request:` trigger, so without it every edit to the gate would be
+  unverified until a release is cut. Its headline case is an absent required
+  lane blocking the publish, paired with the negative control that the same
+  world is green once the name leaves `required`.
   - Env (preflight, default command): `GITHUB_TOKEN` (checks:read +
     statuses:read + contents:read), `GITHUB_REPOSITORY`, `GITHUB_SHA` (pushed
-    commit), `GITHUB_REF_NAME` (must be `release/<major>.<minor>.x`),
-    `GITHUB_API_URL` (default `https://api.github.com`), `RELEASE_SELF_JOBS`
-    (comma-separated self-job names to exclude).
+    commit), `GITHUB_REF_NAME` (`main` -> `mainline` mode,
+    `release/<major>.<minor>.x` -> `maintenance` mode), `GITHUB_API_URL`
+    (default `https://api.github.com`), `RELEASE_SELF_JOBS` (comma-separated
+    self-job names to exclude), `RELEASE_REQUIRED_CHECKS` (comma-separated
+    EXPECTED set — every name must have posted a green check-run; empty is a
+    hard failure), `RELEASE_INFORMATIONAL_CHECKS` (comma-separated name
+    PREFIXES to observe but not gate on).
   - Env (`eol-retire-line` command): `GITHUB_TOKEN` (contents:write — the
     workflow passes `RELEASE_PAT || github.token`), `GITHUB_REPOSITORY`,
     `RELEASE_APP_VERSION` (the just-published `X.Y.Z`), `GITHUB_API_URL`.
   - Args: argv `--self-test` runs the assertion suite; `eol-retire-line` runs
-    the active-EOL retirement; no command runs the maintenance preflight gate.
-  - Exit (preflight): `0` when the line is in-window, the commit is the branch
-    tip, and all gated checks are green (or a green self-test); `1` on an
-    end-of-life line, any red/running gated check, a non-tip / unresolved
-    commit, a non-maintenance `GITHUB_REF_NAME` (a wiring error), or a missing
-    required env var.
+    the active-EOL retirement; no command runs the preflight gate.
+  - Exit (preflight): `0` when every required lane ran green and all other gated
+    checks are green (plus, in `maintenance` mode, the line is in-window and the
+    commit is the branch tip) — or a green self-test; `1` on a required lane
+    that never ran, an empty / self-colliding / informational-swallowed required
+    set, any red/running gated check, an end-of-life line, a non-tip /
+    unresolved commit, or a missing required env var.
   - Exit (`eol-retire-line`): `0` always (fail-open — a retirement failure must
     never fail an already-published release); `1` only on a gross wiring error
     (missing repo/token) before any publish-affecting work.
+- **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`).
+  Proves the Homebrew tap actually serves the version that just shipped. Reads
+  `Formula/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
+  is the anti-vacuous check, because a deleted `brews:` block or an expired
+  `HOMEBREW_TAP_GITHUB_TOKEN` leaves a STALE formula that a warm `brew install`
+  would install happily. Then it branches EXPLICITLY on the release kind rather
+  than skipping: a stable `X.Y.Z` requires the formula to declare exactly that
+  version, then installs it and asserts the binary lands under `brew --prefix`,
+  that `cerberus --version` EQUALS the bare release version (string equality, so
+  an off-by-`v` or a stale ldflag cannot pass a substring test), and that two
+  OFFLINE payload verbs work — `migrate schema` (emits `CREATE` DDL) and
+  `config-docs -check` against `REPO_ROOT`'s `docs/configuration.md`. A
+  prerelease takes the negative branch: `.goreleaser.yml` sets
+  `skip_upload: auto`, so an `rc.*` must NOT have written a formula, and a
+  formula declaring the prerelease version is a reported regression. `migrate
+  gate` / `migrate verify` are deliberately unused — they exit non-zero on a
+  legitimate no-go, so they cannot distinguish a broken binary from a correct
+  verdict. Pure exports `isStableRelease(version)`, `formulaVersion(rbSource)`
+  (declaration, then archive-name fallback, then THROWS — an unparseable formula
+  never degrades into a pass) and `verdict({version, formulaSource})`, covered
+  by `brew-smoke.test.mjs` on the required `lint` lane and as the job's own
+  first step.
+  - Env: `RELEASE_VERSION` (the BARE `X.Y.Z[-rc.N]`, i.e.
+    `needs.gate.outputs.app_version`, never the `v`-prefixed tag),
+    `GITHUB_TOKEN` (contents:read on the tap), `GITHUB_API_URL` (default
+    `https://api.github.com`), `REPO_ROOT` (checkout root, for the
+    `config-docs -check` payload).
+  - Exit: `0` when the formula state matches the release kind and (stable only)
+    the installed binary passes every assertion; `1` on a stale / missing /
+    unparseable formula, a prerelease formula that should not exist, a failed
+    install, a version mismatch, or a failing payload verb.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
@@ -492,6 +547,46 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Exit: `0` clean, `1` on any coverage violation, an unattested scenario, a
     PASS-cell pin mismatch, an unknown `MODE`, a missing/malformed input, a
     requested tier the workflow has no job for, or a failed suite run.
+
+- **`migration-artifact.mjs`** — `migration-e2e.yml`, the first step of every
+  tier job (`migration-tier0` / `migration-tier1` / `migration-tier2`). The
+  single decision point for *which cerberus the lane proves*, and the reason the
+  lane can be pointed at a released artifact at all. Two inputs travel together
+  and are the whole contract: supply both `cerberus_image` + `expect_version`
+  (`release.yml` calls the lane this way, naming the image goreleaser just
+  built) and the module pulls that image, `docker cp`s
+  `/usr/local/bin/cerberus` out of it, and exports it as `CERBERUS_BIN`;
+  supply neither (every PR / dispatch / push run) and it `go build`s the CLI
+  from the tree instead. Supplying exactly one is an error, not a default — a
+  half pair would run a source build under an artifact-shaped job name, which
+  is the exact hollow green the module exists to prevent. The CLI is extracted
+  FROM the image rather than from a release tarball so the binary the scenarios
+  exec and the server the stack runs are the same bytes. Whichever binary it
+  produced is then held to its expected version: the module runs `--version`,
+  requires exit 0 and exactly one non-empty line, and string-compares it — a
+  build that is not the build this run claims to drive fails here, before a
+  single scenario runs, instead of passing thirty of them against the wrong
+  artifact. The two paths carry different stamps by construction (`dev` for a
+  bare `go build`, `e2e` for `Dockerfile.local`, `<version>` for a goreleaser
+  build), which is what makes the probe a real discriminator; the same
+  constants live in `test/e2e/migration/lib/provenance.go` for the Go side, and
+  `test/regression/migration_tier1_test.go` holds every copy equal. The
+  exported `CERBERUS_IMAGE` is what the tier-1/tier-2 compose stacks
+  interpolate (`image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}`,
+  `pull_policy: never`), and `CERBERUS_EXPECT_VERSION` is exported only on the
+  image path — on the source path the CLI and the compose image are two
+  different builds, so each is held to its own stamp rather than to a shared
+  one. `migration-artifact.test.mjs` is a `node --test` guard on the required
+  `lint` lane covering the plan resolver, including the mutation control that a
+  half pair never yields a plan in either direction.
+  - Env: `CERBERUS_IMAGE_INPUT` / `CERBERUS_EXPECT_VERSION_INPUT` (the two
+    workflow inputs; both empty = build from source, both set = test that
+    image, exactly one set = error), `BUILD_DIR` (default `build`),
+    `GITHUB_ENV` (the runner file `CERBERUS_BIN` / `CERBERUS_IMAGE` /
+    `CERBERUS_EXPECT_VERSION` are appended to).
+  - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
+    pair, a failed build / pull / extract, a `--version` that errors, prints
+    nothing, prints more than one line, or prints the wrong stamp.
 
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the

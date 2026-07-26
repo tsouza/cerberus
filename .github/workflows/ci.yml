@@ -302,6 +302,33 @@ jobs:
           MODE: verify
           SCENARIOS_JSON: build/migration-scenarios.json
 
+      # The release gate's own guards. release.yml has NO `pull_request:`
+      # trigger, so `release-preflight.mjs --self-test` and the brew smoke only
+      # ever execute while a release is being cut — the one moment a regression
+      # in them is most expensive. These two suites are pure (no network, no
+      # brew, no GitHub API), so they run here, on every PR, where a break is
+      # cheap.
+      #
+      # The preflight suite's headline case is that a REQUIRED lane which posted
+      # no check-run blocks the publish, with the negative control that the same
+      # world is green once the name leaves the required set — the gate used to
+      # be observation-derived, so "lane X now gates the release" was satisfiable
+      # by changing nothing.
+      - name: release-preflight self-test (required-set guard)
+        run: node --test .github/scripts/release-preflight.test.mjs
+
+      - name: brew-smoke self-test (formula-freshness guard)
+        run: node --test .github/scripts/brew-smoke.test.mjs
+
+      # The migration lane's artifact resolver, here for the same reason:
+      # migration-e2e.yml has no `pull_request:` trigger either, so this is the
+      # only place a loosening of `resolvePlan` — accepting a half-supplied
+      # (cerberus_image, expect_version) pair and quietly building from source
+      # under an artifact-shaped job name — is caught before a release run
+      # depends on it.
+      - name: migration-artifact self-test (build-once seam guard)
+        run: node --test .github/scripts/migration-artifact.test.mjs
+
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
   # NON-NEGOTIABLE rule is "no t.Skip in test files — fix the bug, do
   # not skip." Greps `*_test.go` for `t.Skip` / `t.Skipf` / `t.SkipNow`
