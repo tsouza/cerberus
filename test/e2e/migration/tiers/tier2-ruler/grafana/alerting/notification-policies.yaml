@@ -1,0 +1,19 @@
+# Single catch-all route: every alert this substrate fires goes to the
+# dead-end receiver. There is no second policy branch to keep in sync
+# because there is no second contact point.
+#
+# The three timers are tuned for a CI budget, not for production: MIG-18
+# observes a real fire edge and then a real resolve edge through this policy,
+# and Grafana's stock 30s/5m/4h would put the resolve flush alone past the
+# whole job's ceiling. `repeat_interval` deliberately stays long — a
+# re-notification of an unchanged group would inflate the notification-count
+# deltas MIG-09 and the substrate self-check each bracket their own trigger
+# with.
+apiVersion: 1
+policies:
+  - orgId: 1
+    receiver: dead-end
+    group_by: ["alertname"]
+    group_wait: 5s
+    group_interval: 10s
+    repeat_interval: 4h

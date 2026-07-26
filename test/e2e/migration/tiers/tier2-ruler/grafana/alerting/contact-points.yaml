@@ -1,0 +1,13 @@
+# The one contact point this substrate has: the dead-end webhook receiver
+# (../../receiver/main.go). It logs every notification and never forwards
+# anywhere — "computes, never pages" per docs/migration-testing.md section 3.
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: dead-end
+    receivers:
+      - uid: dead-end-webhook
+        type: webhook
+        settings:
+          url: http://dead-end-receiver:8090/webhook
+          httpMethod: POST

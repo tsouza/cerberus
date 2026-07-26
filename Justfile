@@ -77,14 +77,20 @@ migrate *ARGS:
 
 # === Test ===
 
-# Run unit + spec tests with race detector, then type-check the one
-# build-tagged lane no other recipe compiles. `go vet` typechecks, so a rename
-# in an untagged package that breaks a `migration_tier1` assertion fails HERE,
-# in the required `check` lane, instead of surfacing in the scheduled
-# `migration` workflow — the only lane that executes those files.
+# Run unit + spec tests with race detector, then type-check the build-tagged
+# lanes no other recipe compiles. `go vet` typechecks, so a rename in an
+# untagged package that breaks a `migration_tier1` or `migration_tier2`
+# assertion fails HERE, in the required `check` lane, instead of surfacing in
+# the scheduled `migration` workflow — the only lane that executes those
+# files. Two separate invocations, not one `-tags=migration_tier1,migration_tier2`:
+# the two tiers run against different compose stacks and never share a
+# process, and tier2_ruler_test.go's helpers are named to avoid colliding with
+# tier1_stack_test.go's only because both live in package migration — a single
+# combined vet call would silently start requiring that to keep holding.
 test:
     go test -race ./...
     go vet -tags=migration_tier1 ./test/e2e/migration/...
+    go vet -tags=migration_tier2 ./test/e2e/migration/...
 
 # Run the internal/schema/ddl integration tests against a real ClickHouse
 # container (spun up via testcontainers-go). Requires Docker. Gated behind
@@ -1273,10 +1279,15 @@ migration-tier1-up:
 # full rebuild + boot + healthcheck wait for no reason.
 MIGRATION_TIER1_ARCHETYPES := "three-signal kube-prometheus-stack"
 
-# Lines per service kept when dumping the stack's logs after a failure. Enough
-# to cover a service's boot and its last work, short enough that the cause is
-# not buried under six boot logs.
-MIGRATION_TIER1_LOG_TAIL := "200"
+# The services each migration-tier*-logs recipe dumps, and how many trailing
+# lines it quotes per service. The Tier-2 list is Tier-1's plus the ruler leg,
+# spelled out rather than derived from `compose config --services` so a service
+# silently dropped from a compose file shows up as a missing dump rather than a
+# quietly shorter one. 200 lines carries a boot failure's stack or a Grafana
+# provisioning rejection while keeping ten services readable in a job log.
+MIGRATION_TIER1_SERVICES := "clickhouse otel-collector prometheus loki tempo cerberus"
+MIGRATION_TIER2_SERVICES := MIGRATION_TIER1_SERVICES + " grafana relay-prom otel-collector-writeback dead-end-receiver"
+MIGRATION_LOG_TAIL := "200"
 
 # Archetypes sharing one live stack are kept apart by their IDENTITIES, not by
 # their windows: every archetype in MIGRATION_TIER1_ARCHETYPES declares trace
@@ -1346,14 +1357,20 @@ migration-tier1-run:
     @echo "==> migration tier-1 substrate + parity assertions"
     go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
 
-# Every service's log, for when an assertion fails and the reason is upstream
-# of the assertion — a collector that never provisioned the schema, a reference
-# backend that never became ready. CI runs this on failure only; the tail bound
-# keeps a red run readable instead of burying the cause under a boot log.
+# Dump the Tier-1 stack's container state and per-service log tail on demand.
+# The CI job runs this on failure BEFORE teardown, so a red run carries the
+# evidence instead of a bare assertion message; teardown then deletes the
+# containers this reads from, which is why that ordering matters. Every command
+# is `|| true`-guarded: a dump must never turn a lane red on its own, nor mask
+# the real failure with a container that has already exited.
 migration-tier1-logs:
-    @echo "==> migration tier-1 stack logs"
-    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
-        logs --no-color --tail {{MIGRATION_TIER1_LOG_TAIL}}
+    @echo "==> migration tier-1 compose state"; \
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml ps || true; \
+    for svc in {{MIGRATION_TIER1_SERVICES}}; do \
+        echo "==> migration tier-1 logs: $svc"; \
+        docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+            logs --tail={{MIGRATION_LOG_TAIL}} "$svc" || true; \
+    done
 
 # Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
 # images declare their own VOLUMEs, and a surviving volume would carry one
@@ -1365,6 +1382,85 @@ migration-tier1-down:
 
 # Full Tier-1 lifecycle. Fails fast on the first non-zero recipe.
 migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down
+
+# === Migration lane — Tier-2 ruler substrate (Layer 14) ===
+#
+# The Tier-1 stack plus a real query-only external ruler (Grafana-managed
+# alerting) pointed at cerberus, and the dead-end webhook receiver its one
+# contact point routes to. Mirrors the Tier-1 lifecycle shape exactly — see
+# the comments on the migration-tier1-* recipes above for the rationale each
+# one shares with its tier2 counterpart.
+
+# Bring the Tier-2 stack up: Tier-1's compose file plus tier2-ruler's, merged
+# via the standard multi-`-f` invocation so both sets of services land in the
+# SAME compose project (docker-compose.ruler.yml deliberately declares no
+# `name:` of its own — see that file's header comment).
+migration-tier2-up:
+    @just migration-tier2-down
+    @echo "==> migration tier-2 stack up"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
+        up --build --wait --wait-timeout 300
+
+# Tier-2 runs against the same seeded window Tier-1 does — the ruler tier
+# adds Grafana-managed alerting on top of the SAME cerberus/ClickHouse pair,
+# not a second one — so this is the identical seed step, not a second corpus.
+migration-tier2-seed:
+    @echo "==> migration tier-2 seed"
+    go run ./test/e2e/migration/cmd/seed \
+        --fixture test/e2e/migration/archetypes/three-signal/seed/fixture.json \
+        --manifest test/e2e/migration/.out/manifest.json
+
+# Assert the Tier-2 substrate contract: Grafana provisioned the rule fixture
+# (kube-prometheus-stack's recording rule + NodeCPUSaturation alert, plus the
+# MIG-18 fire/resolve probe) without error, its alert rules evaluate against
+# cerberus for real, and a fired notification actually reaches the dead-end
+# receiver.
+#
+# Two SEPARATE `go test` invocations, in this exact order, not one
+# `./test/e2e/migration/...` sweep — the same reason migration-tier1-run is
+# split, with a different shared resource. Both packages carry the
+# migration_tier2 tag and both drive the ONE dead-end receiver, and each
+# asserts a notification arrived by reading the receiver's count before its own
+# trigger and polling for a rise. Run concurrently (go test's default is one
+# process per package) those two deltas observe each other's notifications, so
+# each can be satisfied by the other's traffic. Sequencing them makes each
+# delta bracket only its own trigger. Gherkin first, substrate second, mirroring
+# migration-tier1-run: the Gherkin corpus reads the receiver's captured stream
+# for MIG-18's fire/resolve edges, and the substrate self-check's synthetic
+# test notification is one more entry in that stream.
+migration-tier2-run:
+    @echo "==> migration tier-2 ruler Gherkin scenarios"
+    go test -tags=migration_tier2 -count=1 ./test/e2e/migration/tiers/tier2-ruler/...
+    @echo "==> migration tier-2 substrate assertions"
+    go test -tags=migration_tier2 -count=1 ./test/e2e/migration/
+
+# Dump the Tier-2 stack's container state and per-service log tail — the ruler
+# leg included, since a Tier-2 failure is usually Grafana rejecting the rule
+# fixture or the write-back bridge dropping a sample. See
+# migration-tier1-logs' comment for the ordering-before-teardown rationale.
+migration-tier2-logs:
+    @echo "==> migration tier-2 compose state"; \
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml ps || true; \
+    for svc in {{MIGRATION_TIER2_SERVICES}}; do \
+        echo "==> migration tier-2 logs: $svc"; \
+        docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+            -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
+            logs --tail={{MIGRATION_LOG_TAIL}} "$svc" || true; \
+    done
+
+# Tear the Tier-2 stack down. `-v` is mandatory — see migration-tier1-down's
+# comment; the same reference-image VOLUME concern applies here since this
+# compose invocation includes the Tier-1 file too.
+migration-tier2-down:
+    @echo "==> migration tier-2 stack down"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
+        down -v --remove-orphans
+
+# Full Tier-2 lifecycle. Fails fast on the first non-zero recipe.
+migration-tier2: migration-tier2-up migration-tier2-seed migration-tier2-run migration-tier2-down
 
 # === Release (controlled local cut) ===
 #

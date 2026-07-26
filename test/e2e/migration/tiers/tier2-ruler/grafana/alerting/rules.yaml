@@ -1,0 +1,159 @@
+# Grafana unified-alerting-as-code rule provisioning for the Tier-2 ruler
+# substrate (Layer 14) — the "real query-only external ruler" pointed at
+# cerberus's HTTP API that section 3 of docs/migration-testing.md describes.
+#
+# The rule fixture is NOT invented here: both groups below reuse, verbatim,
+# the kube-prometheus-stack archetype's colon-named recording rule and its
+# NodeCPUSaturation alert (test/e2e/migration/archetypes/kube-prometheus-stack/
+# rules/node-recording.yaml and node-alerts.yaml) — the shape MIG-09's story
+# wants, and the one NodeCPUSaturation's `expr` actually depends on. Keep the
+# `expr`/`for`/threshold fields byte-identical to those two files if either
+# changes; only the Grafana-specific scheduling wrapper (`data`, `condition`,
+# `record.metric`) is new here.
+#
+# `interval: 10s` is a scheduling knob, not part of "the rule" — it is tuned
+# down from a production-realistic 1m so the substrate self-check (which
+# polls this group's live evaluation health) doesn't have to wait a full
+# minute for the first tick. 10s, not some other short value, because
+# Grafana rejects any group interval that isn't an exact multiple of the
+# scheduler's own base interval (10s, unconfigured here) — confirmed the hard
+# way: 15s made the whole provisioning service fail to start with "interval
+# (15s) should be non-zero and divided exactly by scheduler interval: 10".
+#
+# The recording rule's query leg runs for real against cerberus (proving
+# "Grafana evaluates the rule against cerberus"). Its write-back leg writes
+# to the Cerberus-RemoteWrite datasource
+# (GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID in docker-compose.ruler.yml —
+# Grafana's recording-rule schema has no per-rule write-target field, so the
+# target is set instance-wide, not here) rather than the SAME datasource this
+# rule queries: cerberus, a query-only gateway, implements no remote-write
+# receiver, so the write leg is bridged through relay-prom +
+# otel-collector-writeback into the SAME ClickHouse database instead (see
+# docker-compose.ruler.yml's header comment for the full path). Once landed,
+# `node:node_cpu_utilisation:avg1m` IS selectable through cerberus —
+# MIG-09/MIG-13/MIG-19 all assert exactly that. NodeCPUSaturation's own query
+# against `node:node_cpu_utilisation:avg1m` answers `nodata` for the first
+# few evaluations after a fresh stack comes up (the recording rule's own
+# write, the relay, and the ClickHouse insert all need at least one tick
+# each to land the series) and `ok`/no-alert once it has.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: node.rules
+    folder: kube-prometheus-stack
+    interval: 10s
+    rules:
+      - uid: node-cpu-utilisation-avg1m
+        title: "node:node_cpu_utilisation:avg1m"
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: 1 - avg without (cpu) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+              instant: true
+              refId: A
+        record:
+          metric: "node:node_cpu_utilisation:avg1m"
+          from: A
+          # No target_datasource_uid: the file-provisioning YAML schema on
+          # this Grafana version silently drops that field rather than
+          # honoring it (confirmed empirically), so the write target is set
+          # instance-wide instead — GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID
+          # in docker-compose.ruler.yml — rather than here.
+
+  - orgId: 1
+    name: node.alerts
+    folder: kube-prometheus-stack
+    interval: 10s
+    rules:
+      - uid: node-cpu-saturation
+        title: NodeCPUSaturation
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: "node:node_cpu_utilisation:avg1m"
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.9] }
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Node CPU saturation" }
+        noDataState: NoData
+        execErrState: Error
+
+  # === MIG-18's fire/resolve probe ===
+  #
+  # Unlike the two groups above, this one is NOT reused from an archetype: it
+  # exists so MIG-18 can observe a REAL alert lifecycle — pending, firing,
+  # resolved — inside a CI budget. NodeCPUSaturation cannot serve that purpose
+  # (its `for: 15m` hold-down alone outlasts the whole Tier-2 job, and its
+  # input is the recorded series whose own write-back MIG-13 is still proving),
+  # and inventing a shorter copy of it would silently weaken the archetype
+  # fixture MIG-09 depends on.
+  #
+  # Every field here is load-bearing for an assertion in
+  # steps/tier2_alerting.go, whose mig18* constants mirror them and name this
+  # file back:
+  #
+  #   expr             MIG-18's Given seeds `cerberus_migration_alert_probe`
+  #                    into ClickHouse straddling the threshold below. `max()`
+  #                    collapses it to exactly ONE alert instance, so "the
+  #                    probe alert" is a single, countable identity rather than
+  #                    whatever cardinality the seed happened to write.
+  #   for: 30s         the hold-down MIG-18 asserts the ruler actually honored
+  #                    before firing. Three group ticks — long enough that a
+  #                    rule which fired immediately is unambiguously
+  #                    distinguishable, short enough for a CI budget.
+  #   labels           asserted verbatim on the captured notification.
+  #   annotations      `{{ $labels.probe }}` is asserted to arrive RENDERED
+  #                    (carrying `fire-resolve`, and no leftover template
+  #                    delimiters). The referenced label is a rule label, not a
+  #                    query label, so the assertion tests Grafana's annotation
+  #                    rendering rather than cerberus's label mapping — that is
+  #                    MIG-11's subject, and conflating the two would make a
+  #                    MIG-11 regression surface here instead.
+  #   noDataState: OK  before MIG-18's Given seeds the probe, the series does
+  #                    not exist. Firing on absent data would put notifications
+  #                    in the dead-end receiver during MIG-09's own
+  #                    notification-delta assertion, which runs earlier in the
+  #                    same suite against the same receiver.
+  - orgId: 1
+    name: migration.probe
+    folder: migration-lane
+    interval: 10s
+    rules:
+      - uid: migration-fire-resolve-probe
+        title: MigrationShadowRulerProbe
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: max(cerberus_migration_alert_probe)
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+        for: 30s
+        labels: { severity: warning, probe: fire-resolve }
+        annotations:
+          summary: "the shadow ruler observed the {{ $labels.probe }} probe above its firing threshold"
+        noDataState: OK
+        execErrState: Error
