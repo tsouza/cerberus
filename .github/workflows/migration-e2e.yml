@@ -29,7 +29,7 @@ on:
       tier:
         description: 'which tier(s) to run'
         type: choice
-        options: [all, tier0]
+        options: [all, tier0, tier1]
         default: all
       story:
         description: 'a single MIG id to drive, e.g. MIG-04'
@@ -52,6 +52,9 @@ jobs:
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
+      # The tiers this run selected — what the roll-up holds to `success`, and
+      # what gates the fixed (non-matrix) tier jobs below.
+      tiers: ${{ steps.emit.outputs.tiers }}
     steps:
       - uses: actions/checkout@v7
 
@@ -130,21 +133,28 @@ jobs:
           CERBERUS_BIN: ${{ github.workspace }}/build/cerberus
 
   # Tier-1 dual-backend substrate + parity + Gherkin (Layer 14). Unlike
-  # migration-tier0, this is not matrix-driven: RUNNABLE_TIERS in
-  # migration-e2e.mjs deliberately does not carry tier1 yet (see the
-  # TIER1_PACKAGE comment there), so this job drives the fixed `TIER=tier1`
-  # scenario slice directly, alongside the plain-Go substrate self-checks
-  # that prove the stack, seeder and comparator are sound. Consolidated
-  # here (formerly its own migration.yml workflow) so the dual-backend
-  # compose stack is brought up and torn down exactly once per run instead
-  # of running two separate Docker-backed lanes side by side.
+  # migration-tier0, this is not matrix-driven: it brings a compose stack up,
+  # seeds every @tier1 archetype and tears it down around the suite — steps a
+  # matrix shard cannot express — so migration-e2e.mjs marks tier1
+  # `matrixDriven: false` and keeps it out of the emitted matrix while still
+  # declaring it runnable. It drives the fixed `TIER=tier1` scenario slice
+  # alongside the plain-Go substrate self-checks that prove the stack, seeder
+  # and comparator are sound. Consolidated here (formerly its own
+  # migration.yml workflow) so the dual-backend compose stack is brought up
+  # and torn down exactly once per run instead of running two separate
+  # Docker-backed lanes side by side.
   migration-tier1:
     name: migration-tier1
     needs: migration-setup
+    # A dispatch that narrows to another tier must not pay for this stack.
+    # `tiers` is emit's own answer to "what does this run execute", so the
+    # gate and the roll-up read the same source and cannot disagree.
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier1')
     runs-on: ubuntu-latest
     # The stack build + boot + seed + assertions; generous enough that a slow
     # image pull is not a failure, tight enough that a hung backend releases
-    # the runner instead of riding to the 6h ceiling.
+    # the runner instead of riding to the 6h ceiling. Mirrors
+    # TIER1_TIMEOUT_MIN in migration-e2e.mjs.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -210,9 +220,12 @@ jobs:
         run: just migration-tier1-down
 
   # Roll-up. `contains(needs.*.result, 'failure')` is the shape e2e.yml
-  # documents as unsafe: a matrix rolls up to `cancelled`, not `failure`,
-  # when a child is cancelled, so a cancelled tier would pass the fold
-  # silently. Assert `== 'success'` per need instead.
+  # documents as unsafe: a matrix rolls up to `cancelled`, not `failure`, when
+  # a child is cancelled, so a cancelled tier would pass the fold silently.
+  # The fold is `MODE=rollup` rather than inline bash because it is real logic
+  # — it holds every tier emit SELECTED to `success`, and separately refuses a
+  # tier that ran without being selected — and this repo keeps that in a .mjs
+  # so it is testable (see .github/scripts/README.md).
   migration-aggregate:
     name: migration-e2e
     needs: [migration-setup, migration-tier0, migration-tier1]
@@ -220,14 +233,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v7
+
       - name: roll up the migration lane
+        run: node .github/scripts/migration-e2e.mjs
         env:
-          SETUP: ${{ needs.migration-setup.result }}
-          TIER0: ${{ needs.migration-tier0.result }}
-          TIER1: ${{ needs.migration-tier1.result }}
-        run: |
-          echo "setup=$SETUP tier0=$TIER0 tier1=$TIER1"
-          if [ "$SETUP" != "success" ] || [ "$TIER0" != "success" ] || [ "$TIER1" != "success" ]; then
-            echo "::error title=migration-e2e::a migration lane job did not succeed (setup=$SETUP tier0=$TIER0 tier1=$TIER1)"
-            exit 1
-          fi
+          MODE: rollup
+          SETUP_RESULT: ${{ needs.migration-setup.result }}
+          EXPECTED_TIERS: ${{ needs.migration-setup.outputs.tiers }}
+          RESULT_TIER0: ${{ needs.migration-tier0.result }}
+          RESULT_TIER1: ${{ needs.migration-tier1.result }}
