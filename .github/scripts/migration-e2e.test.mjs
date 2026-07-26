@@ -48,15 +48,36 @@ const ARCHETYPES = [
 const TIER0_STORIES = ['MIG-01', 'MIG-03', 'MIG-04', 'MIG-05', 'MIG-10', 'MIG-14', 'MIG-26'];
 
 // The tier-1-only stories the live feature tree covers today: MIG-16/MIG-17
-// (the mechanism-proving scenarios), plus MIG-11/MIG-12 (label mapping and
-// metric-type/histogram fidelity) and MIG-13 (recording-rule read-back —
-// tier-1-only today, since its Tier-2 write-back half is not yet built).
-const TIER1_STORIES = ['MIG-11', 'MIG-12', 'MIG-13', 'MIG-16', 'MIG-17'];
+// (the mechanism-proving scenarios); MIG-02/MIG-06/MIG-07/MIG-08 (live
+// cardinality inventory, ingest bridge, scrape parity, fault injection);
+// MIG-11/MIG-12 (label mapping and metric-type/histogram fidelity); MIG-13
+// (recording-rule read-back — tier-1-only today, since its Tier-2 write-back
+// half is not yet built); MIG-15/MIG-20/MIG-21 (tenant isolation, tolerant
+// downsample, trace/log correlation); and MIG-22/MIG-23/MIG-25 (cutover
+// flip/revert, ingest-boundary, residual-reader decommission gate).
+const TIER1_STORIES = [
+  'MIG-02',
+  'MIG-06',
+  'MIG-07',
+  'MIG-08',
+  'MIG-11',
+  'MIG-12',
+  'MIG-13',
+  'MIG-15',
+  'MIG-16',
+  'MIG-17',
+  'MIG-20',
+  'MIG-21',
+  'MIG-22',
+  'MIG-23',
+  'MIG-25',
+];
 
-// Split-tier stories that carry a Tier-1 Scenario ALONGSIDE their Tier-0 one
-// (MIG-10's live-schema-diff half, added in the same feature file as its
-// Tier-0 render half).
-const TIER1_SPLIT_STORIES = ['MIG-10'];
+// Split-tier stories that carry a Tier-1 Scenario ALONGSIDE their Tier-0 one:
+// MIG-10's live-schema-diff half, MIG-14's live-retention half and MIG-26's
+// live-retention-vs-compliance-mandate half, each added in the same feature
+// file as its Tier-0 half.
+const TIER1_SPLIT_STORIES = ['MIG-10', 'MIG-14', 'MIG-26'];
 
 // A synthetic scenario in the enumerator's emitted shape.
 function scenario(story, overrides = {}) {
@@ -253,10 +274,10 @@ test('V8 fires for a misnamed feature file and for one that contributes nothing'
   assert.ok(codes(collectViolations(misnamed)).includes('V8'));
 
   const empty = world();
-  empty.featureFiles = [...empty.featureFiles, 'MIG-02.feature'];
+  empty.featureFiles = [...empty.featureFiles, 'MIG-09.feature'];
   const v = collectViolations(empty);
   assert.ok(
-    v.some((x) => x.code === 'V8' && x.message.includes('MIG-02.feature')),
+    v.some((x) => x.code === 'V8' && x.message.includes('MIG-09.feature')),
     `expected the empty feature file to be flagged, got ${JSON.stringify(v)}`,
   );
 });
