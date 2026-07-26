@@ -12,27 +12,31 @@ import (
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
-// cutoverReadyBudget bounds a single reachability re-probe of a backend the
-// scenario asserts stayed up through a flip or a revert. The compose stack's
-// own healthcheck already gates on `just migration-tier1-up --wait`, so a
-// live backend answering slower than this is a real regression, not a cold
-// start.
-const cutoverReadyBudget = 30 * time.Second
-
 // boundaryPreMargin is how far before ClickHouse's own ingest-start MIG-23
 // probes: one full sample step, which the fixture guarantees carries no
 // written row (see test/e2e/migration/seed/fixture.go's SeedStart/SampleStep
 // geometry — the very first sample lands AT SeedStart).
 const boundaryPreMargin = seed.SampleStep
 
-// cutoverProbe is one archetype's MIG-22 run: the probe query and instant it
-// was asked at, plus the three answers a full flip-and-revert collects.
+// cutoverProbe is one archetype's MIG-22 run: the probe query and the instant
+// it is asked at, plus every answer a retarget-and-roll-back collects.
+//
+//   - baseline   — the incumbent, before anything moves.
+//   - retargeted — cerberus, same request, cerberus's base URL.
+//   - alongside  — the incumbent again, WHILE cerberus is serving the read:
+//     the "additional datasource, not a replacement" claim measured rather
+//     than assumed.
+//   - rolledBack — the incumbent after the rollback.
+//   - afterRollback — cerberus after the rollback, so a rollback that took
+//     cerberus down with it is a failure and not an unobserved side effect.
 type cutoverProbe struct {
-	query    string
-	at       time.Time
-	baseline lib.ProbeResult
-	flipped  lib.ProbeResult
-	reverted lib.ProbeResult
+	query         string
+	at            time.Time
+	baseline      lib.ProbeResult
+	retargeted    lib.ProbeResult
+	alongside     lib.ProbeResult
+	rolledBack    lib.ProbeResult
+	afterRollback lib.ProbeResult
 }
 
 // boundaryProbe is one archetype's MIG-23 run: ClickHouse's own ingest-start,
@@ -54,15 +58,18 @@ type boundaryProbe struct {
 // (ingest-start boundary) steps.
 func (w *World) registerCutoverSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the seeded fixture's own probe metric for each tagged archetype$`, w.givenProbeMetric)
-	ctx.Step(`^the operator queries the probe metric against the incumbent before any flip$`, w.whenProbeIncumbentBaseline)
-	ctx.Step(`^the operator flips the probe from the incumbent to cerberus by a URL change alone$`, w.whenFlipProbeToCerberus)
-	ctx.Step(`^the flipped probe against cerberus agrees with the incumbent's own pre-flip answer$`, w.thenFlippedAgreesWithBaseline)
-	ctx.Step(`^the incumbent stayed live and reachable through the flip, because cerberus was stood up alongside it rather than in place of it$`,
-		w.thenIncumbentStillLiveAfterFlip)
-	ctx.Step(`^the operator reverts the probe from cerberus back to the incumbent by a URL change alone$`, w.whenRevertProbeToIncumbent)
-	ctx.Step(`^the reverted probe against the incumbent still agrees with its own pre-flip answer$`, w.thenRevertedAgreesWithBaseline)
-	ctx.Step(`^cerberus stayed live and reachable through the revert$`, w.thenCerberusStillLiveAfterRevert)
-	ctx.Step(`^the flip and the revert dialled nothing but a different host for the identical request$`, w.thenFlipRevertDifferOnlyByHost)
+	ctx.Step(`^the operator queries the probe metric against the incumbent before anything is retargeted$`, w.whenProbeIncumbentBaseline)
+	ctx.Step(`^the operator retargets the identical probe request at cerberus, changing nothing but the base URL$`, w.whenRetargetProbeAtCerberus)
+	ctx.Step(`^cerberus answers the retargeted probe with series of its own, agreeing with the incumbent's own earlier answer$`,
+		w.thenRetargetedAgreesWithBaseline)
+	ctx.Step(`^the incumbent still answers the same probe itself while cerberus is serving it, because cerberus was stood up alongside it rather than in place of it$`,
+		w.thenIncumbentServesAlongsideCerberus)
+	ctx.Step(`^the operator retargets the identical probe request back at the incumbent, changing nothing but the base URL$`,
+		w.whenRetargetProbeBackAtIncumbent)
+	ctx.Step(`^the incumbent's answer after the rollback still agrees with its own earlier answer$`, w.thenRolledBackAgreesWithBaseline)
+	ctx.Step(`^cerberus still answers the probe itself after the rollback$`, w.thenCerberusStillAnswersAfterRollback)
+	ctx.Step(`^the retarget and the rollback dialled one identical request path at the two different hosts, cerberus's and the incumbent's$`,
+		w.thenRetargetDifferedOnlyByHost)
 
 	ctx.Step(`^the seeded fixture's own ingest-start instant for each tagged archetype$`, w.givenIngestStart)
 	ctx.Step(`^the operator counts ClickHouse's own rows strictly before and at-or-after ingest-start$`, w.whenCountBoundaryRows)
@@ -80,7 +87,16 @@ func (w *World) registerCutoverSteps(ctx *godog.ScenarioContext) {
 		w.thenSplitRouterNotYetRemovable)
 }
 
-// --- MIG-22: cutover moves and reverts by a URL change alone ---------------
+// --- MIG-22: the read moves and rolls back by a base-URL change alone ------
+//
+// What this half does NOT do, and why: the tier-1 stack runs no Grafana, so
+// nothing here provisions a datasource, edits one, or rolls a provisioning
+// file back. What it drives is the property a datasource flip rests on — the
+// identical Prometheus-wire request, dialled at cerberus's base URL and then
+// at the incumbent's, answers identically at both while both stay live and
+// serving. Driving a real provisioned datasource waits on the Grafana leg
+// being added to the tier-1 stack; until then the scenario's own text says
+// what it checks rather than claiming a flip it never performs.
 
 // givenProbeMetric selects the seeded fixture's own gauge metric as the
 // probe every later step queries — read from the manifest the seeder
@@ -104,109 +120,173 @@ func (w *World) givenProbeMetric() error {
 	return nil
 }
 
-// whenProbeIncumbentBaseline records what the incumbent answers before any
-// flip — the ground truth every later probe is compared against.
+// whenProbeIncumbentBaseline records what the incumbent answers before
+// anything is retargeted — the ground truth every later probe is compared
+// against, and the one answer this scenario requires to carry series before
+// any comparison is worth making.
 func (w *World) whenProbeIncumbentBaseline() error {
 	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
 		res, err := lib.QueryInstant(context.Background(), w.live.PromURL, cp.query, cp.at)
 		if err != nil {
-			return cp, fmt.Errorf("archetype %s: probe the incumbent before any flip: %w", a, err)
+			return cp, fmt.Errorf("archetype %s: probe the incumbent before anything is retargeted: %w", a, err)
 		}
 		if !res.Vector.NonEmpty() {
-			return cp, fmt.Errorf("archetype %s: the incumbent's pre-flip probe returned no series at all", a)
+			return cp, fmt.Errorf("archetype %s: the incumbent's own probe returned no series at all, so nothing compared against it would decide anything", a)
 		}
 		cp.baseline = res
 		return cp, nil
 	})
 }
 
-// whenFlipProbeToCerberus re-issues the identical probe against cerberus —
-// the "flip" is nothing but a different base URL on the exact same request.
-func (w *World) whenFlipProbeToCerberus() error {
+// whenRetargetProbeAtCerberus re-issues the identical probe at cerberus's base
+// URL. The retarget is nothing but a different host on the exact same request
+// — which is the whole claim, and why thenRetargetDifferedOnlyByHost checks
+// the recorded request URLs rather than trusting this wiring.
+func (w *World) whenRetargetProbeAtCerberus() error {
 	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
 		if cp.baseline.Vector == nil {
-			return cp, fmt.Errorf("archetype %s: no pre-flip incumbent answer recorded; the scenario must probe the incumbent first", a)
+			return cp, fmt.Errorf("archetype %s: no incumbent answer recorded; the scenario must probe the incumbent first", a)
 		}
 		res, err := lib.QueryInstant(context.Background(), w.live.CerberusURL, cp.query, cp.at)
 		if err != nil {
-			return cp, fmt.Errorf("archetype %s: probe cerberus after the flip: %w", a, err)
+			return cp, fmt.Errorf("archetype %s: probe cerberus with the retargeted request: %w", a, err)
 		}
-		cp.flipped = res
+		cp.retargeted = res
 		return cp, nil
 	})
 }
 
-func (w *World) thenFlippedAgreesWithBaseline() error {
+// thenRetargetedAgreesWithBaseline asserts cerberus answered with series of
+// its own AND that those series are the incumbent's, value for value. The
+// cardinality check is stated rather than inherited: an operator moving a
+// panel cares that cerberus returns data, not merely that two answers were
+// comparable.
+func (w *World) thenRetargetedAgreesWithBaseline() error {
 	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
-		if !cp.flipped.Vector.Equal(cp.baseline.Vector) {
-			return cp, fmt.Errorf("archetype %s: cerberus's flipped answer disagrees with the incumbent's pre-flip answer", a)
+		if !cp.retargeted.Vector.NonEmpty() {
+			return cp, fmt.Errorf("archetype %s: cerberus answered the retargeted probe with no series at all", a)
+		}
+		if !cp.retargeted.Vector.Equal(cp.baseline.Vector) {
+			return cp, fmt.Errorf("archetype %s: cerberus's answer (%d series) disagrees with the incumbent's own (%d series)",
+				a, len(cp.retargeted.Vector), len(cp.baseline.Vector))
 		}
 		return cp, nil
 	})
 }
 
-// thenIncumbentStillLiveAfterFlip proves the flip was additive, not
-// destructive: the incumbent answers exactly as readily after cerberus took
-// the read as it did before, so nothing about the flip depended on tearing
-// the incumbent down.
-func (w *World) thenIncumbentStillLiveAfterFlip() error {
-	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
-		if err := seed.WaitHTTPOK(context.Background(), w.live.PromURL+"/-/ready", cutoverReadyBudget); err != nil {
-			return cp, fmt.Errorf("archetype %s: the incumbent is not reachable after the flip: %w", a, err)
-		}
-		return cp, nil
-	})
-}
-
-// whenRevertProbeToIncumbent re-issues the identical probe against the
-// incumbent — the "revert" is, symmetrically, nothing but the base URL
-// changing back.
-func (w *World) whenRevertProbeToIncumbent() error {
+// thenIncumbentServesAlongsideCerberus proves the move was additive rather
+// than destructive, by measurement and not by reachability: with cerberus
+// already serving the read, the incumbent still answers the same probe with
+// the same series it did before. A backend that had been swapped out would
+// answer nothing here — and a bare readiness endpoint would not have noticed.
+func (w *World) thenIncumbentServesAlongsideCerberus() error {
 	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
 		res, err := lib.QueryInstant(context.Background(), w.live.PromURL, cp.query, cp.at)
 		if err != nil {
-			return cp, fmt.Errorf("archetype %s: probe the incumbent after the revert: %w", a, err)
+			return cp, fmt.Errorf("archetype %s: the incumbent stopped answering while cerberus served the read: %w", a, err)
 		}
-		cp.reverted = res
+		if !res.Vector.NonEmpty() {
+			return cp, fmt.Errorf("archetype %s: the incumbent answered with no series while cerberus served the read, so it was displaced rather than joined", a)
+		}
+		if !res.Vector.Equal(cp.baseline.Vector) {
+			return cp, fmt.Errorf("archetype %s: the incumbent's answer changed while cerberus served the read", a)
+		}
+		cp.alongside = res
 		return cp, nil
 	})
 }
 
-func (w *World) thenRevertedAgreesWithBaseline() error {
+// whenRetargetProbeBackAtIncumbent re-issues the identical probe at the
+// incumbent's base URL — the rollback is, symmetrically, nothing but the host
+// changing back.
+func (w *World) whenRetargetProbeBackAtIncumbent() error {
 	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
-		if !cp.reverted.Vector.Equal(cp.baseline.Vector) {
-			return cp, fmt.Errorf("archetype %s: the incumbent's post-revert answer disagrees with its own pre-flip answer", a)
-		}
-		return cp, nil
-	})
-}
-
-func (w *World) thenCerberusStillLiveAfterRevert() error {
-	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
-		if err := seed.WaitHTTPOK(context.Background(), w.live.CerberusURL+"/readyz", cutoverReadyBudget); err != nil {
-			return cp, fmt.Errorf("archetype %s: cerberus is not reachable after the revert: %w", a, err)
-		}
-		return cp, nil
-	})
-}
-
-// thenFlipRevertDifferOnlyByHost is the "one-line rollback" claim made
-// mechanical: the flip's request and the revert's request, once the
-// scheme+host is stripped from each, must be byte-identical. Anything else
-// means the flip touched more than a URL.
-func (w *World) thenFlipRevertDifferOnlyByHost() error {
-	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
-		flipPath, err := lib.RequestPath(cp.flipped.RequestURL)
+		res, err := lib.QueryInstant(context.Background(), w.live.PromURL, cp.query, cp.at)
 		if err != nil {
-			return cp, fmt.Errorf("archetype %s: %w", a, err)
+			return cp, fmt.Errorf("archetype %s: probe the incumbent after the rollback: %w", a, err)
 		}
-		revertPath, err := lib.RequestPath(cp.reverted.RequestURL)
+		cp.rolledBack = res
+		return cp, nil
+	})
+}
+
+func (w *World) thenRolledBackAgreesWithBaseline() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		if !cp.rolledBack.Vector.NonEmpty() {
+			return cp, fmt.Errorf("archetype %s: the incumbent answered the rolled-back probe with no series at all", a)
+		}
+		if !cp.rolledBack.Vector.Equal(cp.baseline.Vector) {
+			return cp, fmt.Errorf("archetype %s: the incumbent's answer after the rollback disagrees with its own earlier answer", a)
+		}
+		return cp, nil
+	})
+}
+
+// thenCerberusStillAnswersAfterRollback is the rollback's own cost measured:
+// rolling the read back to the incumbent must leave cerberus exactly as it
+// was, still serving the same series, so the step is reversible again in the
+// other direction rather than one-way.
+func (w *World) thenCerberusStillAnswersAfterRollback() error {
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		res, err := lib.QueryInstant(context.Background(), w.live.CerberusURL, cp.query, cp.at)
 		if err != nil {
-			return cp, fmt.Errorf("archetype %s: %w", a, err)
+			return cp, fmt.Errorf("archetype %s: cerberus stopped answering after the rollback: %w", a, err)
 		}
-		if flipPath != revertPath {
-			return cp, fmt.Errorf("archetype %s: the flip dialled %q but the revert dialled %q; a one-line rollback changes nothing but the host",
-				a, flipPath, revertPath)
+		if !res.Vector.NonEmpty() {
+			return cp, fmt.Errorf("archetype %s: cerberus answered with no series after the rollback", a)
+		}
+		if !res.Vector.Equal(cp.baseline.Vector) {
+			return cp, fmt.Errorf("archetype %s: cerberus's answer changed across the rollback", a)
+		}
+		cp.afterRollback = res
+		return cp, nil
+	})
+}
+
+// thenRetargetDifferedOnlyByHost is the "one-line rollback" claim made
+// mechanical, over the request URLs the probes RECORDED as dialled rather than
+// over anything re-derived here:
+//
+//   - the two backends must actually be two backends (a stack that published
+//     one URL for both would make every agreement above trivially true);
+//   - the retargeted request must have been dialled at cerberus's own host and
+//     the rolled-back one at the incumbent's, so a retarget that quietly went
+//     back to the incumbent fails instead of agreeing with itself;
+//   - all three requests must share one byte-identical path, so the move
+//     touched the host and nothing else.
+func (w *World) thenRetargetDifferedOnlyByHost() error {
+	if w.live.CerberusURL == w.live.PromURL {
+		return fmt.Errorf("cerberus and the incumbent are published at the same base url %q, so no retarget could move anything", w.live.PromURL)
+	}
+	return w.eachCutover(func(a string, cp cutoverProbe) (cutoverProbe, error) {
+		dialled := []struct {
+			what string
+			res  lib.ProbeResult
+			host string
+		}{
+			{"the incumbent's own answer", cp.baseline, w.live.PromURL},
+			{"the retarget at cerberus", cp.retargeted, w.live.CerberusURL},
+			{"the incumbent alongside cerberus", cp.alongside, w.live.PromURL},
+			{"the rollback to the incumbent", cp.rolledBack, w.live.PromURL},
+			{"cerberus after the rollback", cp.afterRollback, w.live.CerberusURL},
+		}
+		var want string
+		for _, d := range dialled {
+			if !strings.HasPrefix(d.res.RequestURL, d.host) {
+				return cp, fmt.Errorf("archetype %s: %s was dialled at %q, not at %q", a, d.what, d.res.RequestURL, d.host)
+			}
+			path, err := lib.RequestPath(d.res.RequestURL)
+			if err != nil {
+				return cp, fmt.Errorf("archetype %s: %w", a, err)
+			}
+			if want == "" {
+				want = path
+				continue
+			}
+			if path != want {
+				return cp, fmt.Errorf("archetype %s: %s dialled %q where every other probe dialled %q; a move that is one line changes the host and nothing else",
+					a, d.what, path, want)
+			}
 		}
 		return cp, nil
 	})
