@@ -530,15 +530,37 @@ export function buildMatrix(scenarios, { tiers }) {
   return { include };
 }
 
+// TIER_NEEDS — the tiers a tier's JOB depends on, mirroring the `needs:` edges
+// in migration-e2e.yml. migration-tier2 needs migration-tier1 because docs
+// section 8's build order is that firing parity cannot be proven before query
+// parity is: a tier-2 verdict reached while tier-1 is red means nothing.
+const TIER_NEEDS = { tier2: ['tier1'] };
+
 // requestedTiers — the TIER input resolved to a tier list. `all` means every
 // tier the feature tree declares.
+//
+// A narrowed request also pulls in whatever its job DEPENDS on. Without that,
+// `TIER=tier2` selected tier2 alone, migration-tier1 was gated off by the
+// emitted tier set, and migration-tier2 — which `needs:` it — was skipped by
+// the needs-cascade. The dispatch option existed but could only ever produce a
+// run where nothing executed and the roll-up went red for a tier the operator
+// had explicitly asked for (observed: run 30210906040). Selecting a tier has
+// to mean selecting the tiers that make it runnable.
 export function requestedTiers(tierInput, scenarios) {
   const raw = (tierInput || 'all').trim().toLowerCase();
   if (raw === 'all') {
     return KNOWN_TIERS.filter((t) => scenarios.some((s) => s.tiers.includes(t)));
   }
   if (!KNOWN_TIERS.includes(raw)) return null;
-  return [raw];
+  const selected = new Set([raw]);
+  // One pass per known tier closes the graph: TIER_NEEDS is a DAG over at most
+  // KNOWN_TIERS.length nodes, so no dependency can be more hops away than that.
+  for (let i = 0; i < KNOWN_TIERS.length; i += 1) {
+    for (const tier of [...selected]) {
+      for (const need of TIER_NEEDS[tier] ?? []) selected.add(need);
+    }
+  }
+  return KNOWN_TIERS.filter((t) => selected.has(t));
 }
 
 // --- IO ---------------------------------------------------------------------

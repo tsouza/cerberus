@@ -405,17 +405,26 @@ func TestMig18ProbeQueryKeepsTheAnnotatedLabel(t *testing.T) {
 // about a rule that never changes state.
 func TestMig18SeedValuesStraddleProvisionedThreshold(t *testing.T) {
 	probe, _ := findProvisionedProbeRule(t)
+	// Every threshold on every condition of every leg, counted — not the first
+	// one found. Returning after the first condition asserted nothing at all
+	// when that condition carried no threshold param, and left the "no
+	// evaluator" fatal below unreachable: a vacuous pass in the very test that
+	// exists to stop the lifecycle scenario asserting about a rule that never
+	// changes state. staticcheck caught it as SA4004.
+	checked := 0
 	for _, leg := range probe.Data {
 		for _, condition := range leg.Model.Conditions {
 			for _, threshold := range condition.Evaluator.Params {
+				checked++
 				if threshold <= mig18ClearedValue || threshold >= mig18FiringValue {
 					t.Fatalf("the probe rule's threshold %g is not straddled by the seeded cleared value %g "+
 						"and armed value %g — arming or clearing the probe would not change its state",
 						threshold, mig18ClearedValue, mig18FiringValue)
 				}
 			}
-			return
 		}
 	}
-	t.Fatal("the probe rule provisions no threshold evaluator — nothing decides when it fires")
+	if checked == 0 {
+		t.Fatal("the probe rule provisions no threshold evaluator — nothing decides when it fires")
+	}
 }
