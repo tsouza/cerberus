@@ -337,8 +337,15 @@ func TestMigrationTier1JustfileRecipes(t *testing.T) {
 // tier1Composite is the lane's full lifecycle, in order.
 const tier1Composite = "migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run migration-tier1-down"
 
-// tier1WorkflowPath is the scheduled lane that executes the tagged assertions.
-const tier1WorkflowPath = "../../.github/workflows/migration.yml"
+// tier1WorkflowPath is the workflow whose migration-tier1 job executes the
+// tagged assertions. It used to be its own migration.yml; the Tier-1 lane
+// was folded into migration-e2e.yml as a sibling of migration-tier0 so the
+// dual-backend compose stack has exactly one lifecycle per run.
+const tier1WorkflowPath = "../../.github/workflows/migration-e2e.yml"
+
+// tier1JobName is the job inside tier1WorkflowPath that drives the Tier-1
+// lane.
+const tier1JobName = "migration-tier1"
 
 // TestMigrationTier1LaneIsWiredIntoCI pins the two things that keep the
 // `migration_tier1`-tagged sources from rotting unobserved.
@@ -374,8 +381,13 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v — the tagged Tier-1 assertions are executed by no workflow", tier1WorkflowPath, err)
 	}
+	body := string(workflow)
+
 	var parsed struct {
 		On struct {
+			Push struct {
+				Branches []string `yaml:"branches"`
+			} `yaml:"push"`
 			Schedule []struct {
 				Cron string `yaml:"cron"`
 			} `yaml:"schedule"`
@@ -383,6 +395,15 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 	}
 	if err := yaml.Unmarshal(workflow, &parsed); err != nil {
 		t.Fatalf("parse %s: %v", tier1WorkflowPath, err)
+	}
+	onMain := false
+	for _, b := range parsed.On.Push.Branches {
+		if b == "main" {
+			onMain = true
+		}
+	}
+	if !onMain {
+		t.Fatalf("%s does not push-trigger on main; the Tier-1 lane docs call push-to-main", tier1WorkflowPath)
 	}
 	if len(parsed.On.Schedule) == 0 {
 		t.Fatalf("%s declares no schedule; the lane the docs call scheduled would run only on dispatch",
@@ -393,10 +414,54 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 			t.Fatalf("%s declares an empty cron expression", tier1WorkflowPath)
 		}
 	}
-	if !strings.Contains(string(workflow), "run: just migration-tier1\n") {
-		t.Fatalf("%s does not run `just migration-tier1`, so it exercises no part of the substrate",
-			tier1WorkflowPath)
+	if !strings.Contains(body, "\n  workflow_dispatch:\n") {
+		t.Fatalf("%s declares no workflow_dispatch trigger", tier1WorkflowPath)
 	}
+
+	job := workflowJobBody(t, body, tier1JobName)
+	if !strings.Contains(job, "needs: migration-setup") {
+		t.Fatalf("%s job %q does not declare `needs: migration-setup`", tier1WorkflowPath, tier1JobName)
+	}
+	for _, want := range []string{
+		"just migration-tier1-up",
+		"just migration-tier1-seed",
+		"-tags=migration_tier1",
+		"migration-e2e.mjs",
+		"TIER: tier1",
+		"just migration-tier1-down",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("%s job %q does not %q, so the Tier-1 lane is incompletely wired. Body:\n%s",
+				tier1WorkflowPath, tier1JobName, want, job)
+		}
+	}
+}
+
+// workflowJobBody returns the lines of a workflow job: everything from the
+// `  <job>:` header up to (not including) the next line at 2-space indent —
+// mirroring justRecipeBody's Justfile-recipe extraction, one indent level in.
+func workflowJobBody(t *testing.T, workflow, job string) string {
+	t.Helper()
+	lines := strings.Split(workflow, "\n")
+	header := "  " + job + ":"
+	start := -1
+	for i, line := range lines {
+		if line == header {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("workflow has no %q job", job)
+	}
+	var out []string
+	for _, line := range lines[start:] {
+		if len(out) > 0 && strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "   ") {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 // justRecipeBody returns the lines of a Justfile recipe: everything from its
