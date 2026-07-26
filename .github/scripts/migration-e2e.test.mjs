@@ -528,10 +528,18 @@ test('the roll-up accepts a narrowed dispatch, but not a tier that ran unselecte
 test('requestedTiers resolves all to the tiers the tree declares, and rejects a bad name', () => {
   const scenarios = world().scenarios;
   assert.deepEqual(requestedTiers('all', scenarios), KNOWN_TIERS);
-  for (const tier of KNOWN_TIERS) {
-    assert.deepEqual(requestedTiers(tier, scenarios), [tier]);
-  }
+  assert.deepEqual(requestedTiers('tier0', scenarios), ['tier0']);
+  assert.deepEqual(requestedTiers('tier1', scenarios), ['tier1']);
   assert.equal(requestedTiers('nightly', scenarios), null);
+});
+
+test('narrowing to a tier also selects the tiers its job needs', () => {
+  // migration-tier2 `needs:` migration-tier1. Selecting tier2 alone gated
+  // tier1 off, which skipped tier2 through the needs-cascade — a dispatch
+  // option that could only ever run nothing and then report the very tier the
+  // operator asked for as failed (observed: run 30210906040). Selecting a tier
+  // must select whatever makes it runnable.
+  assert.deepEqual(requestedTiers('tier2', world().scenarios), ['tier1', 'tier2']);
 });
 
 // --- 3. the PASS-assertion pin ----------------------------------------------

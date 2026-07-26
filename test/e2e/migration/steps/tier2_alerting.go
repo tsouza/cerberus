@@ -26,15 +26,17 @@ import (
 // receiver:
 //
 //   - the shadow ruler puts the probe alert into PENDING and keeps it there
-//     for its provisioned hold-down before it reports it firing — a real
-//     state-machine observation, not a timestamp guess;
+//     for its provisioned hold-down before it reports it firing — measured
+//     between two instants the RULER reports about itself, so the check is
+//     about the rule's `for:` rather than about how fast this harness noticed;
 //   - the firing notification actually reaches the dead-end receiver, and no
 //     other receiver exists for it to reach;
 //   - that notification carries the rule's provisioned labels verbatim, and
 //     an annotation RENDERED from the alert's own label set rather than
 //     shipped as an unexpanded template;
-//   - clearing the condition produces a matching RESOLVE edge for the same
-//     alert identity, ordered after the firing edge.
+//   - clearing the condition produces a RESOLVE edge that closes the SAME
+//     alert instance the firing edge opened, at an evaluation that could have
+//     seen the clearing.
 //
 // What it does NOT assert, and why: MIG-18's story ultimately wants alert
 // firing PARITY — the eval-interval-quantized diff of an INCUMBENT ruler's
@@ -60,6 +62,13 @@ type AlertEvent struct {
 	Annotations map[string]string
 	Status      string // "firing" or "resolved"
 	At          time.Time
+	// StartsAt is the alert INSTANCE's own start instant, carried verbatim on
+	// both the firing and the resolved notification of one lifecycle. It is
+	// what makes a resolve edge attributable to a particular fire edge rather
+	// than merely to a rule of the same name: a re-fire after a resolve opens
+	// a new instance with a new StartsAt, so two edges that disagree here
+	// belong to two lifecycles.
+	StartsAt time.Time
 }
 
 // QuantizeToEvalInterval floors t to the evaluation-interval boundary at or
@@ -93,11 +102,11 @@ func (d AlertStreamDiff) Clean() bool {
 	return d.FalsePositive == 0 && d.FalseNegative == 0 && d.TimingSkew == 0
 }
 
-// alertEventKey identifies "the same alert" across two independently
-// evaluated streams: rule name, status and the full label set (sorted, so
-// two label maps with the same pairs in different iteration order compare
-// equal).
-func alertEventKey(e AlertEvent) string {
+// alertIdentity is the rule name plus the full label set (sorted, so two
+// label maps with the same pairs in different iteration order compare equal)
+// — "which alert is this", independent of which edge of its lifecycle the
+// event happens to be.
+func alertIdentity(e AlertEvent) string {
 	keys := make([]string, 0, len(e.Labels))
 	for k := range e.Labels {
 		keys = append(keys, k)
@@ -105,8 +114,6 @@ func alertEventKey(e AlertEvent) string {
 	sort.Strings(keys)
 	var b strings.Builder
 	b.WriteString(e.RuleName)
-	b.WriteByte('|')
-	b.WriteString(e.Status)
 	for _, k := range keys {
 		b.WriteByte('|')
 		b.WriteString(k)
@@ -114,6 +121,13 @@ func alertEventKey(e AlertEvent) string {
 		b.WriteString(e.Labels[k])
 	}
 	return b.String()
+}
+
+// alertEventKey identifies "the same alert edge" across two independently
+// evaluated streams: the alert identity plus the status, so a fire and a
+// resolve of one alert never match each other.
+func alertEventKey(e AlertEvent) string {
+	return alertIdentity(e) + "|" + e.Status
 }
 
 // DiffAlertStreams matches an incumbent and a shadow ruler's notification
@@ -236,7 +250,10 @@ func parseGrafanaWebhook(body []byte, alertName string) ([]AlertEvent, error) {
 		if alertName != "" && name != alertName {
 			continue
 		}
-		ev := AlertEvent{RuleName: name, Labels: a.Labels, Annotations: a.Annotations, Status: a.Status}
+		ev := AlertEvent{
+			RuleName: name, Labels: a.Labels, Annotations: a.Annotations,
+			Status: a.Status, StartsAt: a.StartsAt,
+		}
 		switch a.Status {
 		case alertStatusFiring:
 			ev.At = a.StartsAt
@@ -260,30 +277,57 @@ const (
 //
 // Every constant below mirrors a field of the `migration.probe` rule group in
 // tiers/tier2-ruler/grafana/alerting/rules.yaml, whose own comment names this
-// file back. A drift on either side turns a real assertion into a vacuous one,
-// so they are spelled out here rather than read out of the ruler at runtime:
-// reading them back from the thing under test would make every assertion
-// self-fulfilling.
+// file back. A drift on either side turns a real assertion into a vacuous one
+// — raise the fixture's `for:` and the hold-down check degrades to a
+// tautology — so the two are pinned equal by the TestMig18* fixture pins in
+// tier2_alerting_test.go.
+//
+// That pin reads the FIXTURE, never the running ruler. The fixture is the
+// specification these constants restate, so agreeing with it is a real check;
+// reading the values back out of the thing under test would instead make every
+// assertion self-fulfilling.
 const (
 	mig18ProbeMetric     = "cerberus_migration_alert_probe"
 	mig18ProbeAlertName  = "MigrationShadowRulerProbe"
 	mig18ProbeService    = "migration-lane"
+	mig18ProbeGroup      = "migration.probe"
+	mig18ProbeFolder     = "migration-lane"
 	mig18SeverityKey     = "severity"
 	mig18SeverityValue   = "warning"
 	mig18ProbeLabelKey   = "probe"
 	mig18ProbeLabelValue = "fire-resolve"
 	mig18SummaryKey      = "summary"
+	// mig18ProbeNoDataState is the probe rule's `noDataState`. Pinned because
+	// the rule's own comment explains what a different value would break: an
+	// alert that fires on absent data drops notifications into the shared
+	// dead-end receiver while MIG-09 is counting its own delta.
+	mig18ProbeNoDataState = "OK"
 	// mig18TemplateOpen is Grafana's annotation-template opening delimiter. An
 	// annotation that still carries it was shipped verbatim rather than
 	// rendered, which is the failure the rendered-annotation assertion exists
 	// to catch.
 	mig18TemplateOpen = "{{"
+	// mig18TemplateLabelRef is how an annotation template names a label. The
+	// pin asserts the fixture's summary reads the probe label through it, so
+	// renaming mig18ProbeLabelKey without editing the template fails offline
+	// rather than as a `[no value]` on a live run.
+	mig18TemplateLabelRef = "$labels."
+	// mig18ProbeGroupBy is the grouping the probe rule's query must keep. An
+	// aggregation that drops it leaves an UNLABELLED result, and Grafana
+	// expands annotations against the result's labels — so the summary would
+	// render `[no value]` no matter what the rule declares in `labels:`. That
+	// is exactly what the first live Tier-2 run reported.
+	mig18ProbeGroupBy = "by (" + mig18ProbeLabelKey + ")"
 	// mig18ProbeHoldDown must equal the probe rule's `for:`. It is the pending
 	// window MIG-18 asserts the shadow ruler actually honored before firing.
 	mig18ProbeHoldDown = 30 * time.Second
+	// mig18ProbeEvalInterval must equal the probe group's `interval:`. It is
+	// the ruler's scheduling quantum: the granularity at which its own clock
+	// and this harness's can be compared at all.
+	mig18ProbeEvalInterval = 10 * time.Second
 	// mig18FiringValue and mig18ClearedValue straddle the probe rule's
-	// threshold (`gt 0.5`), so arming and clearing are unambiguous rather than
-	// borderline.
+	// threshold, so arming and clearing are unambiguous rather than borderline.
+	// The pin asserts the fixture's evaluator sits strictly between them.
 	mig18FiringValue  = 1.0
 	mig18ClearedValue = 0.0
 )
@@ -324,23 +368,37 @@ var (
 )
 
 // tier2AlertingState is MIG-18's accumulated state across its steps.
+//
+// The two hold-down instants are both read off the RULER, never off this
+// harness's own clock. A harness-side measurement (observed-firing minus
+// armed) is dominated by ClickHouse visibility and poll latency, not by the
+// rule's `for:`, so with any slack at all it passes for the wrong reason —
+// and with none it fails a healthy substrate. Only the ruler knows when it
+// started and stopped counting.
 type tier2AlertingState struct {
-	// armedAt is the wall-clock instant the above-threshold samples became
-	// visible — read AFTER the insert returned, so it is the EARLIEST moment
-	// the ruler could have started its pending clock. Measuring the hold-down
-	// from here can only under-state it, never over-state it, which is the
-	// direction an assertion is allowed to be wrong in.
-	armedAt time.Time
 	// armedLastSample is the instant the last above-threshold sample carries.
 	// The clearing batch starts strictly after it so the two never collide on
 	// one instant.
 	armedLastSample time.Time
-	// pendingSeen records that the ruler reported the probe alert PENDING at
-	// least once before it reported it firing.
-	pendingSeen bool
-	// firingSeenAt is when this harness first observed the ruler reporting the
-	// probe alert firing.
-	firingSeenAt time.Time
+	// pendingActiveAt is the ruler-reported instant the probe instance entered
+	// PENDING — its `activeAt` as read while it was still pending, which is
+	// the evaluation at which the ruler started the hold-down clock. Captured
+	// during, not after, the pending window: Grafana re-stamps `activeAt` to
+	// the firing evaluation on the pending-to-firing transition, so reading it
+	// once the alert has fired would measure nothing.
+	pendingActiveAt time.Time
+	// firingEvalAt is the ruler-reported timestamp of the evaluation that
+	// produced the firing state — the rule's `lastEvaluation` as of the first
+	// observation reporting the instance firing. It can only be at or after
+	// the evaluation that actually fired (a later tick may have run before
+	// this harness polled), so a hold-down measured against it can over-state
+	// the window but never under-state it: the direction an assertion is
+	// allowed to be wrong in.
+	firingEvalAt time.Time
+	// clearedAt is this harness's own instant immediately BEFORE the clearing
+	// samples are written. It anchors "the resolve was caused by the operator
+	// clearing the condition" rather than by the alert lapsing on its own.
+	clearedAt time.Time
 	// firing and resolving are the edges the dead-end receiver captured for
 	// the probe alert.
 	firing    []AlertEvent
@@ -367,7 +425,14 @@ func (w *World) registerTier2AlertingSteps(ctx *godog.ScenarioContext) {
 		w.whenMig18ProbeCleared,
 	)
 	ctx.Step(`^the dead-end receiver captured a resolving edge for the probe alert$`, w.thenMig18ResolvingEdgeCaptured)
-	ctx.Step(`^the resolving edge does not precede the firing edge$`, w.thenMig18ResolveFollowsFire)
+	ctx.Step(
+		`^the resolving edge closes the alert instance the firing edge opened$`,
+		w.thenMig18ResolveClosesFiringInstance,
+	)
+	ctx.Step(
+		`^the resolving edge did not land before the operator cleared the probe$`,
+		w.thenMig18ResolveFollowsClearing,
+	)
 }
 
 // givenMig18ProbeArmed writes above-threshold samples for the probe series,
@@ -381,7 +446,6 @@ func (w *World) givenMig18ProbeArmed() error {
 		return err
 	}
 	w.tier2Alerting.armedLastSample = last
-	w.tier2Alerting.armedAt = time.Now().UTC()
 	return nil
 }
 
@@ -425,9 +489,17 @@ func (w *World) seedMig18Probe(start, end time.Time, value float64) (time.Time, 
 }
 
 // whenMig18ProbeFires polls the ruler's own live rule state until the probe
-// alert reports firing, recording on the way whether it passed through
-// PENDING first. Both facts are what the two Then steps assert; neither is
-// re-derived from a timestamp the ruler reported about itself.
+// alert reports firing, capturing on the way the two instants the hold-down
+// assertion is measured from: the instance's `activeAt` while it is PENDING,
+// and the rule's `lastEvaluation` at the first firing observation. Both are
+// the ruler's own report of its own clock; this harness's poll times never
+// enter the measurement.
+//
+// A rule that is not provisioned at all fails here IMMEDIATELY rather than at
+// the budget: the highest-risk substrate failure (Grafana rejecting the
+// probe's rule group, or never creating its folder) would otherwise spend the
+// whole budget and then surface as an empty health/lastError/lastEvaluation
+// triple, indistinguishable from a rule that exists but never evaluated.
 func (w *World) whenMig18ProbeFires() error {
 	if err := w.requireTier2Live(); err != nil {
 		return err
@@ -438,24 +510,48 @@ func (w *World) whenMig18ProbeFires() error {
 	for {
 		groups, err := fetchRulerGroups(ctx, w.tier2.GrafanaURL)
 		if err == nil {
-			rule, instance, found := findProbeInstance(groups)
+			found := findProbeInstance(groups)
 			switch {
-			case !found:
+			case !found.ruleFound:
+				return fmt.Errorf(
+					"the shadow ruler serves no rule named %q at all; %s/%s was never provisioned from "+
+						"tiers/tier2-ruler/grafana/alerting/rules.yaml. The ruler reports these groups: %v",
+					mig18ProbeAlertName, mig18ProbeFolder, mig18ProbeGroup, rulerGroupNames(groups),
+				)
+			case !found.instanceFound:
 				// Quote the rule's own health, not just "no instance": a rule
 				// whose query against cerberus is erroring produces no instance
 				// either, and the two failures need different fixes.
 				last = fmt.Errorf(
 					"the ruler reports no alert instance for %q yet (rule health=%q lastError=%q lastEvaluation=%q)",
-					mig18ProbeAlertName, rule.Health, rule.LastError, rule.LastEvaluation,
+					mig18ProbeAlertName, found.rule.Health, found.rule.LastError, found.rule.LastEvaluation,
 				)
-			case mig18FiringStates[strings.ToLower(instance.State)]:
-				w.tier2Alerting.firingSeenAt = time.Now().UTC()
+			case mig18FiringStates[strings.ToLower(found.instance.State)]:
+				firedAt, err := parseRulerInstant(found.rule.LastEvaluation)
+				if err != nil {
+					return fmt.Errorf("the ruler reported %q firing but no usable evaluation timestamp: %w",
+						mig18ProbeAlertName, err)
+				}
+				w.tier2Alerting.firingEvalAt = firedAt
 				return nil
-			case mig18PendingStates[strings.ToLower(instance.State)]:
-				w.tier2Alerting.pendingSeen = true
+			case mig18PendingStates[strings.ToLower(found.instance.State)]:
+				// Capture the pending start on the FIRST pending observation
+				// only; a later read of the same field would still be the same
+				// instant, but pinning the first keeps the measurement
+				// independent of how many times the loop happened to poll.
+				if w.tier2Alerting.pendingActiveAt.IsZero() {
+					activeAt, err := parseRulerInstant(found.instance.ActiveAt)
+					if err != nil {
+						return fmt.Errorf(
+							"the ruler reported %q pending but no usable activeAt, so its hold-down cannot be "+
+								"measured on its own clock: %w", mig18ProbeAlertName, err,
+						)
+					}
+					w.tier2Alerting.pendingActiveAt = activeAt
+				}
 				last = fmt.Errorf("the probe alert is still pending")
 			default:
-				last = fmt.Errorf("the probe alert reports state %q", instance.State)
+				last = fmt.Errorf("the probe alert reports state %q", found.instance.State)
 			}
 		} else {
 			last = err
@@ -468,34 +564,70 @@ func (w *World) whenMig18ProbeFires() error {
 	}
 }
 
+// probeLookup is findProbeInstance's tri-state answer. "The rule is missing"
+// and "the rule is there but has produced no instance yet" are different
+// substrate failures with different fixes, so they are different fields
+// rather than one bool.
+type probeLookup struct {
+	rule          rulerRule
+	instance      rulerAlertInstance
+	ruleFound     bool
+	instanceFound bool
+}
+
 // findProbeInstance locates the probe rule and its single live alert
-// instance. The rule's expression collapses to one series precisely so "the
+// instance. The rule's expression reduces to one series precisely so "the
 // probe alert" is one identity rather than whatever cardinality the seed
-// happened to write. The rule itself is returned even when it has no instance
-// yet, so a caller can report its health rather than only its absence.
-func findProbeInstance(groups []rulerRuleGroup) (rulerRule, rulerAlertInstance, bool) {
+// happened to write.
+func findProbeInstance(groups []rulerRuleGroup) probeLookup {
 	for _, g := range groups {
 		for _, r := range g.Rules {
 			if r.Name != mig18ProbeAlertName {
 				continue
 			}
 			if len(r.Alerts) == 0 {
-				return r, rulerAlertInstance{}, false
+				return probeLookup{rule: r, ruleFound: true}
 			}
-			return r, r.Alerts[0], true
+			return probeLookup{rule: r, instance: r.Alerts[0], ruleFound: true, instanceFound: true}
 		}
 	}
-	return rulerRule{}, rulerAlertInstance{}, false
+	return probeLookup{}
+}
+
+// rulerGroupNames lists what the ruler DOES serve, so an absent-rule failure
+// names the gap instead of only the expectation.
+func rulerGroupNames(groups []rulerRuleGroup) []string {
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, g.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parseRulerInstant decodes one timestamp the ruler reports about itself.
+// An empty or malformed value is an error rather than the zero instant: a
+// zero instant silently satisfies every "at or after" comparison downstream,
+// which would turn a measurement into a formality.
+func parseRulerInstant(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, errors.New("the ruler reported an empty timestamp")
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse ruler timestamp %q: %w", value, err)
+	}
+	return t.UTC(), nil
 }
 
 // thenMig18ProbeWasPending asserts the ruler held the alert in PENDING rather
 // than jumping straight to firing — the observable half of "a hold-down
 // happened at all".
 func (w *World) thenMig18ProbeWasPending() error {
-	if w.tier2Alerting.firingSeenAt.IsZero() {
+	if w.tier2Alerting.firingEvalAt.IsZero() {
 		return fmt.Errorf("the probe alert was never observed firing; the scenario must wait for it first")
 	}
-	if !w.tier2Alerting.pendingSeen {
+	if w.tier2Alerting.pendingActiveAt.IsZero() {
 		return fmt.Errorf(
 			"the shadow ruler never reported %q pending before reporting it firing — an alert that skips the "+
 				"pending state has no hold-down, so a repointed pager would fire on a single stray evaluation",
@@ -505,23 +637,33 @@ func (w *World) thenMig18ProbeWasPending() error {
 	return nil
 }
 
-// thenMig18HoldDownHonored asserts the measured half: the firing report could
-// not have arrived before the provisioned pending window had elapsed since the
-// condition was armed. Measured against this harness's own clock, not against
-// a timestamp the ruler self-reported.
+// thenMig18HoldDownHonored asserts the measured half, entirely on the RULER's
+// clock: the evaluation that reported the alert firing is at least the
+// provisioned pending window later than the evaluation at which the ruler
+// started counting.
+//
+// Both instants come from the ruler's own report — the instance's `activeAt`
+// while pending, and the rule's `lastEvaluation` at the firing observation.
+// Measuring instead from this harness's own arming and observation instants
+// would measure ClickHouse visibility plus poll latency: on a 10s evaluation
+// interval that gap comfortably exceeds a 30s `for:` even for a rule that
+// never held anything down, so the check would pass for the wrong reason.
 func (w *World) thenMig18HoldDownHonored() error {
-	armed, fired := w.tier2Alerting.armedAt, w.tier2Alerting.firingSeenAt
-	if armed.IsZero() {
-		return fmt.Errorf("the probe was never armed; the scenario must arm it first")
+	pendingFrom, firedAt := w.tier2Alerting.pendingActiveAt, w.tier2Alerting.firingEvalAt
+	if pendingFrom.IsZero() {
+		return fmt.Errorf(
+			"the ruler never reported %q pending, so it never reported when its hold-down clock started",
+			mig18ProbeAlertName,
+		)
 	}
-	if fired.IsZero() {
+	if firedAt.IsZero() {
 		return fmt.Errorf("the probe alert was never observed firing; the scenario must wait for it first")
 	}
-	if held := fired.Sub(armed); held < mig18ProbeHoldDown {
+	if held := firedAt.Sub(pendingFrom); held < mig18ProbeHoldDown {
 		return fmt.Errorf(
-			"%q was reported firing %s after its condition was armed, sooner than its provisioned pending "+
-				"window of %s — the ruler did not honor the hold-down",
-			mig18ProbeAlertName, held, mig18ProbeHoldDown,
+			"the shadow ruler reported %q pending at %s and firing at its %s evaluation, holding it down for "+
+				"%s — short of the %s pending window rules.yaml provisions, so the ruler did not honor it",
+			mig18ProbeAlertName, pendingFrom, firedAt, held, mig18ProbeHoldDown,
 		)
 	}
 	return nil
@@ -547,6 +689,11 @@ func (w *World) whenMig18ProbeCleared() error {
 		return fmt.Errorf("the probe was never armed; the scenario must arm it first")
 	}
 	start := w.tier2Alerting.armedLastSample.Add(mig18SeedStep)
+	// Stamped BEFORE the write, so the resolve-attribution check below is
+	// anchored to the earliest instant the operator's clearing could have
+	// influenced anything. Stamping it after the insert returned would move
+	// the anchor forward and could fail a healthy run.
+	w.tier2Alerting.clearedAt = time.Now().UTC()
 	if _, err := w.seedMig18Probe(start, time.Now().UTC(), mig18ClearedValue); err != nil {
 		return err
 	}
@@ -642,6 +789,14 @@ func (w *World) thenMig18FiringEdgeCarriesLabels() error {
 // label's value and must not still carry the template delimiter. An
 // unexpanded annotation is exactly the class of breakage a repointed pager
 // notices only once it has already woken somebody.
+//
+// The label the template reads comes from the QUERY RESULT, not from the
+// rule's `labels:` block — Grafana expands a rule's annotations against the
+// evaluated result's label set, since the rule's own labels are templates
+// being expanded in the same pass. So this step fails in two distinct ways,
+// and the message below names both: an unexpanded template (Grafana's
+// rendering), or an expanded-but-empty one (the label never arrived from
+// cerberus, e.g. because the rule's aggregation dropped it).
 func (w *World) thenMig18FiringEdgeCarriesRenderedAnnotation() error {
 	if err := w.thenMig18FiringEdgeCaptured(); err != nil {
 		return err
@@ -658,9 +813,11 @@ func (w *World) thenMig18FiringEdgeCarriesRenderedAnnotation() error {
 	}
 	if !strings.Contains(summary, mig18ProbeLabelValue) {
 		return fmt.Errorf(
-			"the %q annotation %q does not carry the alert's own %s label value %q, so it was not rendered "+
-				"from the alert's label set",
+			"the %q annotation %q does not carry the alert's own %s label value %q — the template expanded but "+
+				"resolved to nothing, so the label never reached the alert instance: either cerberus did not "+
+				"return %s as a label on %q, or the rule's aggregation dropped it before Grafana saw it",
 			mig18SummaryKey, summary, mig18ProbeLabelKey, mig18ProbeLabelValue,
+			mig18ProbeLabelKey, mig18ProbeMetric,
 		)
 	}
 	return nil
@@ -679,21 +836,72 @@ func (w *World) thenMig18ResolvingEdgeCaptured() error {
 	return nil
 }
 
-// thenMig18ResolveFollowsFire asserts the two edges are ordered as a lifecycle
-// rather than as two unrelated notifications that happened to share a name.
-func (w *World) thenMig18ResolveFollowsFire() error {
+// thenMig18ResolveClosesFiringInstance asserts the two edges are one alert
+// INSTANCE's lifecycle rather than two notifications that happened to share a
+// name.
+//
+// The oracle is the alert's own identity as the ruler stamped it on each
+// notification independently: the same label set, and the same instance start
+// instant. Comparing one alert's start against its own end instead — which
+// Grafana never emits inverted — could not fail against any working
+// substrate, so it asserted nothing. These two can: an alert that flapped
+// (fired, resolved, re-fired) opens a second instance with a later startsAt,
+// and a resolve routed from a differently-labelled instance carries a
+// different label set.
+func (w *World) thenMig18ResolveClosesFiringInstance() error {
 	if err := w.thenMig18FiringEdgeCaptured(); err != nil {
 		return err
 	}
 	if err := w.thenMig18ResolvingEdgeCaptured(); err != nil {
 		return err
 	}
-	firedAt := w.tier2Alerting.firing[0].At
-	resolvedAt := w.tier2Alerting.resolving[0].At
-	if resolvedAt.Before(firedAt) {
+	fired, resolved := w.tier2Alerting.firing[0], w.tier2Alerting.resolving[0]
+	if firedID, resolvedID := alertIdentity(fired), alertIdentity(resolved); firedID != resolvedID {
 		return fmt.Errorf(
-			"%q resolved at %s, before it fired at %s — the captured edges are not one alert's lifecycle",
-			mig18ProbeAlertName, resolvedAt, firedAt,
+			"the resolving edge for %q carries identity %q, the firing edge %q — the receiver captured two "+
+				"different alerts, not one alert's lifecycle",
+			mig18ProbeAlertName, resolvedID, firedID,
+		)
+	}
+	if !resolved.StartsAt.Equal(fired.StartsAt) {
+		return fmt.Errorf(
+			"the resolving edge for %q closes an instance that started at %s, but the firing edge opened one "+
+				"at %s — the alert re-fired between the two edges rather than resolving the one that fired",
+			mig18ProbeAlertName, resolved.StartsAt, fired.StartsAt,
+		)
+	}
+	return nil
+}
+
+// thenMig18ResolveFollowsClearing asserts the resolve is attributable to the
+// operator's action: the ruler ended the alert at or after the point the
+// clearing samples were written. An alert that lapsed on its own — flapping,
+// or a NoData window swallowing the armed series — would resolve BEFORE that
+// instant and pass every identity check above while proving nothing about
+// clearing the condition.
+//
+// The comparison is against the clearing instant less one evaluation
+// interval, not against the raw instant. That is not slack: the ruler
+// evaluates on a fixed grid, and the tick that first observed the cleared
+// samples carries the grid instant it was scheduled at, which can precede the
+// wall-clock moment the write landed by up to one interval. Anything earlier
+// than that is an evaluation which could not have seen the clearing at all.
+func (w *World) thenMig18ResolveFollowsClearing() error {
+	if err := w.thenMig18ResolvingEdgeCaptured(); err != nil {
+		return err
+	}
+	cleared := w.tier2Alerting.clearedAt
+	if cleared.IsZero() {
+		return fmt.Errorf("the probe was never cleared; the scenario must clear it first")
+	}
+	earliest := cleared.Add(-mig18ProbeEvalInterval)
+	resolvedAt := w.tier2Alerting.resolving[0].At
+	if resolvedAt.Before(earliest) {
+		return fmt.Errorf(
+			"the shadow ruler ended %q at %s, an evaluation that ran before the operator cleared the condition "+
+				"at %s — the alert lapsed on its own rather than resolving because the probe went below its "+
+				"threshold",
+			mig18ProbeAlertName, resolvedAt, cleared,
 		)
 	}
 	return nil

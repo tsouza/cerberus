@@ -116,6 +116,9 @@ func (w *World) givenUnderlyingSeriesSeeded() error {
 	if err := w.requireTier2Live(); err != nil {
 		return err
 	}
+	if w.tier2SeedScope == "" {
+		return fmt.Errorf("migration harness: no seed scope was derived for this scenario; the Before hook must set one")
+	}
 	ctx := context.Background()
 	// The live endpoint set the scenario's own Given established, not a second
 	// env-var contract of this file's own: Tier-2 reuses Tier-1's ClickHouse
@@ -127,7 +130,7 @@ func (w *World) givenUnderlyingSeriesSeeded() error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := seed.InsertCounterSeries(ctx, conn, rulerUnderlyingCPUSeries(time.Now())); err != nil {
+	if err := seed.InsertCounterSeries(ctx, conn, rulerUnderlyingCPUSeries(time.Now(), w.tier2SeedScope)); err != nil {
 		return fmt.Errorf("seed %s: %w", nodeCPUMetricName, err)
 	}
 	return nil
@@ -138,7 +141,14 @@ func (w *World) givenUnderlyingSeriesSeeded() error {
 // rulerCPUSeedWindow up to now, so the recording rule's
 // `rate(...[5m])` has real, in-window samples to compute over the moment
 // this step returns.
-func rulerUnderlyingCPUSeries(now time.Time) []seed.MetricSeries {
+//
+// The scope label is what keeps MIG-09's seed a DIFFERENT stored series from
+// MIG-13/MIG-19's, which write the same metric name at a different counter
+// rate over an overlapping window into the same long-lived ClickHouse. Before
+// the scope existed the two interleaved into one non-monotonic series and
+// `rate()` read every interleaving as a counter reset — see
+// tier2_seed_scope.go.
+func rulerUnderlyingCPUSeries(now time.Time, scope string) []seed.MetricSeries {
 	start := now.Add(-rulerCPUSeedWindow)
 	out := make([]seed.MetricSeries, 0, rulerCPUCoreCount)
 	for core := range rulerCPUCoreCount {
@@ -151,8 +161,12 @@ func rulerUnderlyingCPUSeries(now time.Time) []seed.MetricSeries {
 		out = append(out, seed.MetricSeries{
 			MetricName:  nodeCPUMetricName,
 			ServiceName: nodeCPUServiceName,
-			Attributes:  map[string]string{"cpu": strconv.Itoa(core), "mode": nodeCPUMode},
-			Samples:     samples,
+			Attributes: map[string]string{
+				"cpu":               strconv.Itoa(core),
+				"mode":              nodeCPUMode,
+				tier2SeedScopeLabel: scope,
+			},
+			Samples: samples,
 		})
 	}
 	return out
@@ -184,6 +198,13 @@ type rulerAlertInstance struct {
 	Labels      map[string]string `json:"labels"`
 	Annotations map[string]string `json:"annotations"`
 	State       string            `json:"state"`
+	// ActiveAt is the ruler's OWN statement of when this instance entered its
+	// current active state — for a Pending instance, the evaluation at which
+	// the condition first went true and the hold-down clock started. It is
+	// kept as the wire string rather than a time.Time so an absent or
+	// unparseable value fails loudly where it is read (MIG-18's hold-down
+	// measurement) instead of silently decoding to the zero instant.
+	ActiveAt string `json:"activeAt"`
 }
 
 type rulerRulesResponse struct {
@@ -324,15 +345,20 @@ func (w *World) whenRecordedSeriesLands() error {
 		return err
 	}
 	ctx := context.Background()
+	// Narrowed to THIS scenario's own seed scope. An unscoped query for the
+	// recorded name would also match whatever an earlier scenario — or an
+	// earlier run against the same long-lived stack — already landed, so it
+	// could be satisfied without MIG-09's own write-back ever completing.
+	selector := tier2ScopedRecordedSelector(w.tier2SeedScope)
 	deadline := time.Now().Add(rulerLandingWait)
 	var last error
 	for {
-		count, raw, err := queryCerberusInstant(ctx, w.tier2.CerberusURL, nodeCPURecordedMetricName)
+		count, raw, err := queryCerberusInstant(ctx, w.tier2.CerberusURL, selector)
 		if err == nil {
 			w.tier2ReadBack = recordedReadBack{
 				polled: true,
 				series: count,
-				detail: fmt.Sprintf("instant query for %q answered: %s", nodeCPURecordedMetricName, raw),
+				detail: fmt.Sprintf("instant query for %q answered: %s", selector, raw),
 			}
 			if count > 0 {
 				return nil
@@ -344,7 +370,7 @@ func (w *World) whenRecordedSeriesLands() error {
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%q never landed in ClickHouse and became selectable through cerberus within %s: %w",
-				nodeCPURecordedMetricName, rulerLandingWait, last)
+				selector, rulerLandingWait, last)
 		}
 		time.Sleep(rulerPoll)
 	}
