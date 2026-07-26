@@ -56,7 +56,16 @@ func SuiteFormat() (string, error) {
 		// better than writing the report somewhere the reader will not look.
 		return "", fmt.Errorf("%s must be an absolute path, got %q", EnvSuiteReport, path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), reportDirPerm); err != nil {
+	// Clean collapses any `..` segment before the path is used, so the
+	// directory created and the file godog writes are the same resolved
+	// location the caller named — not one an unresolved traversal walked to.
+	path = filepath.Clean(path)
+	// gosec reads an env-derived path as tainted (G703). The value is supplied
+	// by this repo's own MODE=run, is required to be absolute above, and is
+	// cleaned here; the same posture seed/fixture.go takes for its
+	// harness-supplied fixture path. This is test-harness code, never reached
+	// by the shipped binary.
+	if err := os.MkdirAll(filepath.Dir(path), reportDirPerm); err != nil { //nolint:gosec // harness-supplied, absolute, cleaned report path
 		return "", fmt.Errorf("create the directory for %s=%s: %w", EnvSuiteReport, path, err)
 	}
 	return prettyFormat + "," + cucumberFormat + ":" + path, nil
