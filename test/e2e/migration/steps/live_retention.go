@@ -27,10 +27,16 @@ const liveCHDialBudget = 15 * time.Second
 // per-signal retention it actually provisions, keeping the shortest TTL per
 // signal — exactly what retentionBySignal already does for the offline
 // (rendered-text) half, reused here unchanged against a different text
-// source. A signal whose tables carry no TTL clause at all is absent from the
-// result — never coerced to zero or read as "unbounded" — so a caller
-// comparing against a mandate fails closed exactly as
-// thenRetentionCoversLookback already does for MIG-14.
+// source. The live text is the COLLECTOR's DDL, not cerberus's own render;
+// ttlClauseRe reads both dialects precisely so this reuse is sound.
+//
+// A signal whose tables carry no TTL clause at all is absent from the result
+// — never coerced to zero or read as "unbounded" — so a caller comparing
+// against a mandate fails closed exactly as thenRetentionCoversLookback
+// already does for MIG-14. A read that establishes NO signal's retention is an
+// error rather than an empty map: callers spell "absent" as a refusal, so an
+// empty map would let a total parse failure be reported as a refusal the
+// operator earned.
 func (w *World) readLiveRetention(ctx context.Context) (map[string]time.Duration, error) {
 	if !w.liveSet {
 		return nil, fmt.Errorf("the tier-1 stack has not been established; the scenario must establish it first")
@@ -68,5 +74,30 @@ func (w *World) readLiveRetention(ctx context.Context) (map[string]time.Duration
 	if len(stmts) == 0 {
 		return nil, fmt.Errorf("migration harness: the live clickhouse database %q holds no tables at all", w.live.CHDatabase)
 	}
-	return retentionBySignal(stmts)
+	return retentionBySignal("the live clickhouse database "+w.live.CHDatabase, stmts)
+}
+
+// requireLiveSignalRetention reads the live cluster's retention and returns
+// what it provisions for signal, failing when the read establishes nothing for
+// that signal.
+//
+// It exists so no caller can spell "we could not read a retention" and "the
+// retention we read does not cover what is asked of it" the same way. The
+// second is a verdict an operator earned; the first is a harness that proved
+// nothing, and a gate deciding on it is a gate with no evidence behind it.
+// Every derived assertion goes through here first, so a scenario that asserts
+// a refusal has already asserted the refusal rests on a real, positive number.
+func (w *World) requireLiveSignalRetention(ctx context.Context, signal string) (time.Duration, error) {
+	bySignal, err := w.readLiveRetention(ctx)
+	if err != nil {
+		return 0, err
+	}
+	have, ok := bySignal[signal]
+	if !ok || have <= 0 {
+		return 0, fmt.Errorf(
+			"migration harness: the live clickhouse provisions no %s retention at all, so nothing compared against it has been decided either way",
+			signal,
+		)
+	}
+	return have, nil
 }

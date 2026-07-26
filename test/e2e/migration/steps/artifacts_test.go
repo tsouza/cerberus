@@ -115,7 +115,7 @@ func TestRetentionBySignalReadsTheShortestTTL(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS otel_traces (a Int) ENGINE = MergeTree",
 		"CREATE TABLE IF NOT EXISTS something_else (a Int) ENGINE = MergeTree TTL toDateTime(t) + toIntervalDay(1)",
 	}
-	got, err := retentionBySignal(stmts)
+	got, err := retentionBySignal("the rendered schema", stmts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestRetentionBySignalReadsTheShortestTTL(t *testing.T) {
 // runway comparison silently pass on a signal nobody bounded.
 func TestRetentionBySignalRefusesAnUnknownUnit(t *testing.T) {
 	stmt := "CREATE TABLE IF NOT EXISTS otel_logs (a Int) ENGINE = MergeTree TTL toDateTime(t) + toIntervalQuarter(1)"
-	if _, err := retentionBySignal([]string{stmt}); err == nil {
+	if _, err := retentionBySignal("the rendered schema", []string{stmt}); err == nil {
 		t.Fatal("an unconvertible interval unit was accepted")
 	}
 }
