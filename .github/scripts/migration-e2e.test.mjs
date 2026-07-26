@@ -28,6 +28,7 @@ import {
   attestedCount,
   reportPathFor,
   requestedTiers,
+  tierToRun,
   nonRunnableTiers,
   tiersWithScenarios,
   storiesForTier,
@@ -529,6 +530,30 @@ test('narrowing to a tier also selects the tiers its job needs', () => {
   // operator asked for as failed (observed: run 30210906040). Selecting a tier
   // must select whatever makes it runnable.
   assert.deepEqual(requestedTiers('tier2', world().scenarios), ['tier1', 'tier2']);
+});
+
+test('the tier a job RUNS is its own, not the closure of what its job needs', () => {
+  // The two resolvers answer different questions and must not be swapped.
+  // requestedTiers schedules JOBS, so it closes over TIER_NEEDS; tierToRun
+  // names the ONE tier a job executes. Routing MODE=run through the scheduler
+  // aborted every tier2 job with `TIER "tier2" resolved to [tier1, tier2]`
+  // before its first step (run 30216721405): needing tier1's substrate is not
+  // running tier1's scenarios.
+  for (const tier of KNOWN_TIERS) assert.equal(tierToRun(tier), tier);
+  assert.equal(tierToRun('TIER2'), 'tier2');
+  assert.equal(tierToRun(' tier1 '), 'tier1');
+  // A runner drives one tier; `all`, empty and unknown names are all refused
+  // rather than silently widened.
+  assert.equal(tierToRun('all'), null);
+  assert.equal(tierToRun(''), null);
+  assert.equal(tierToRun(undefined), null);
+  assert.equal(tierToRun('nightly'), null);
+});
+
+test('every tier a job can be told to run has a runner behind that name', () => {
+  // tierToRun refuses anything outside RUN_TIERS, so a tier the tree declares
+  // but RUN_TIERS omits would be dispatchable, selectable — and unrunnable.
+  for (const tier of KNOWN_TIERS) assert.ok(tierToRun(tier) !== null, `${tier} has no runner`);
 });
 
 // --- 3. the PASS-assertion pin ----------------------------------------------

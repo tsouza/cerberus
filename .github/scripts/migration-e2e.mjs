@@ -1042,15 +1042,34 @@ const RUN_TIERS = {
   tier2: { pkg: TIER2_PACKAGE, buildTag: MIGRATION_TIER2_BUILD_TAG },
 };
 
+// tierToRun reads MODE=run's TIER as the ONE tier this job executes.
+//
+// Deliberately NOT [requestedTiers]: that answers a different question. It
+// resolves a DISPATCH input into the set of jobs to schedule, so it closes
+// over TIER_NEEDS — `tier2` selects tier1 too, because tier2's job needs
+// tier1's substrate stood up before it can prove firing parity. That closure
+// is right for scheduling and wrong here: migration-tier2 depending on
+// migration-tier1 does not mean migration-tier2 runs tier1's SCENARIOS.
+// Routing MODE=run through the scheduler's resolver made every tier2 job
+// abort with `TIER "tier2" resolved to [tier1, tier2]` before it ran a single
+// step — the tier could be dispatched but never executed (run 30216721405).
+//
+// A tier job's TIER is a literal in its YAML stanza, so the only valid input
+// is one RUN_TIERS key; `all` and an unknown name are both refused by the
+// table lookup.
+export function tierToRun(tierInput) {
+  const raw = (tierInput || '').trim().toLowerCase();
+  return Object.hasOwn(RUN_TIERS, raw) ? raw : null;
+}
+
 function runRun() {
   const scenarios = loadScenarios();
   const story = (process.env.STORY || '').trim();
-  const tiers = requestedTiers(process.env.TIER, scenarios);
-  const tier = tiers === null || tiers.length !== 1 ? null : tiers[0];
+  const tier = tierToRun(process.env.TIER);
   const run = tier === null ? undefined : RUN_TIERS[tier];
   if (run === undefined) {
     error(
-      `migration-e2e: MODE=run drives one tier at a time (${Object.keys(RUN_TIERS).join(', ')}); TIER "${process.env.TIER || 'all'}" resolved to ${tiers === null ? 'an unknown tier' : `[${tiers.join(', ')}]`}`,
+      `migration-e2e: MODE=run drives one tier at a time (${Object.keys(RUN_TIERS).join(', ')}); TIER "${process.env.TIER || ''}" names none of them`,
     );
     process.exit(1);
   }
