@@ -50,14 +50,7 @@ import (
 // resetsSeed mirrors the production OTel-CH default schema. Two job series: api
 // is a sawtooth counter (multiple resets), web is monotonic (zero resets), so
 // the per-series count differs and a 0-count series is exercised.
-const resetsSeed = `
-CREATE OR REPLACE TABLE otel_metrics_sum (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+var resetsSeed = metricsSeedDDL("otel_metrics_sum") + `
 INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
     ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),

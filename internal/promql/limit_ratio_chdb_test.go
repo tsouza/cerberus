@@ -190,10 +190,10 @@ func seedLimitRatioCorpus(t *testing.T, db *sql.DB) {
 	// so the seed tables must carry the column or the chDB round-trip 502s
 	// with UNKNOWN_IDENTIFIER. The INSERTs stay column-explicit (sans
 	// ResourceAttributes) so the empty default fills it.
-	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
+	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
 		t.Fatalf("create gauge: %v", err)
 	}
-	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
+	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
 		t.Fatalf("create sum: %v", err)
 	}
 	for _, inst := range seriesInstances {

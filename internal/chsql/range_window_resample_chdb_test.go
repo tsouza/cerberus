@@ -54,14 +54,7 @@ import (
 // present, DEFAULT map(), column-explicit INSERT) — see the rate dual-emit seed
 // for the rationale. Two series (api, web) with off-boundary samples so the
 // closed-vs-half-open left-edge distinction never bites.
-const resampleSeed = `
-CREATE OR REPLACE TABLE otel_metrics_gauge (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+var resampleSeed = metricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:30', 9), 1.0),
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:02:30', 9), 7.0),
