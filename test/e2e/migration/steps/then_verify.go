@@ -13,20 +13,24 @@ import (
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 )
 
-// The two committed Tier-1 verify corpora, both hand-authored against the
+// The four committed Tier-1 verify corpora, all hand-authored against the
 // three-signal archetype's seed/fixture.json data declaration (the only
 // archetype the Tier-1 stack currently seeds — see
 // test/e2e/migration/cmd/seed). verifyCorpusFull is the breadth pass MIG-16
 // drives; verifyCorpusHotspots is the semantic-hotspot subset (rate/increase
 // over the seeded counter, absence over a genuinely never-seeded series
 // selector, histogram_quantile over the seeded classic histogram) MIG-17
-// drives. Both live under the archetype's seed/ directory because they are
-// tightly coupled to that declaration's metric and label names, not to its
-// rules/dashboards fixtures (which exist for the unrelated Tier-0 harvest
-// scenarios and use different, unseeded metric names).
+// drives; verifyCorpusLabels is the resource-attribute/grouping subset
+// MIG-11 drives; verifyCorpusHistogram is the temporality/bucket-layout
+// subset MIG-12 drives. All four live under the archetype's seed/ directory
+// because they are tightly coupled to that declaration's metric and label
+// names, not to its rules/dashboards fixtures (which exist for the unrelated
+// Tier-0 harvest scenarios and use different, unseeded metric names).
 const (
-	verifyCorpusFull     = "verify-corpus.json"
-	verifyCorpusHotspots = "verify-hotspots.json"
+	verifyCorpusFull      = "verify-corpus.json"
+	verifyCorpusHotspots  = "verify-hotspots.json"
+	verifyCorpusLabels    = "verify-labels.json"
+	verifyCorpusHistogram = "verify-histogram.json"
 )
 
 // verifyReportName is the workspace filename each archetype's `migrate
@@ -48,6 +52,8 @@ func (w *World) registerVerifySteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the dual-backend stack is live$`, w.givenTier1Live)
 	ctx.Step(`^the committed differential-parity corpus for each tagged archetype$`, w.givenParityCorpus)
 	ctx.Step(`^the committed semantic-hotspot corpus for each tagged archetype$`, w.givenHotspotCorpus)
+	ctx.Step(`^the committed label-mapping corpus for each tagged archetype$`, w.givenLabelMappingCorpus)
+	ctx.Step(`^the committed histogram-fidelity corpus for each tagged archetype$`, w.givenHistogramFidelityCorpus)
 	ctx.Step(`^the operator verifies the corpus against the incumbent$`, w.whenVerifyCorpus)
 	ctx.Step(`^the verify report replayed more than zero queries$`, w.thenReplayedSomething)
 	ctx.Step(`^every configured head returned at least one comparison unit$`, w.thenEveryConfiguredHeadCompared)
@@ -93,6 +99,26 @@ func (w *World) givenHotspotCorpus() error {
 		return err
 	}
 	w.verifyCorpusFile = verifyCorpusHotspots
+	return w.requireVerifyCorpusFixtures()
+}
+
+// givenLabelMappingCorpus selects the resource-attribute/grouping subset
+// MIG-11 replays.
+func (w *World) givenLabelMappingCorpus() error {
+	if err := w.requireArchetypes("the label-mapping corpus"); err != nil {
+		return err
+	}
+	w.verifyCorpusFile = verifyCorpusLabels
+	return w.requireVerifyCorpusFixtures()
+}
+
+// givenHistogramFidelityCorpus selects the temporality/bucket-layout subset
+// MIG-12 replays.
+func (w *World) givenHistogramFidelityCorpus() error {
+	if err := w.requireArchetypes("the histogram-fidelity corpus"); err != nil {
+		return err
+	}
+	w.verifyCorpusFile = verifyCorpusHistogram
 	return w.requireVerifyCorpusFixtures()
 }
 

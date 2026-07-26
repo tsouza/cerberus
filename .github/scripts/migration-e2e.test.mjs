@@ -47,9 +47,16 @@ const ARCHETYPES = [
 ];
 const TIER0_STORIES = ['MIG-01', 'MIG-03', 'MIG-04', 'MIG-05', 'MIG-10', 'MIG-14', 'MIG-26'];
 
-// The tier-1 stories the live feature tree covers today (MIG-16, MIG-17 —
-// this PR's dual-backend scenarios).
-const TIER1_STORIES = ['MIG-16', 'MIG-17'];
+// The tier-1-only stories the live feature tree covers today: MIG-16/MIG-17
+// (the mechanism-proving scenarios), plus MIG-11/MIG-12 (label mapping and
+// metric-type/histogram fidelity) and MIG-13 (recording-rule read-back —
+// tier-1-only today, since its Tier-2 write-back half is not yet built).
+const TIER1_STORIES = ['MIG-11', 'MIG-12', 'MIG-13', 'MIG-16', 'MIG-17'];
+
+// Split-tier stories that carry a Tier-1 Scenario ALONGSIDE their Tier-0 one
+// (MIG-10's live-schema-diff half, added in the same feature file as its
+// Tier-0 render half).
+const TIER1_SPLIT_STORIES = ['MIG-10'];
 
 // A synthetic scenario in the enumerator's emitted shape.
 function scenario(story, overrides = {}) {
@@ -71,13 +78,17 @@ function scenario(story, overrides = {}) {
   };
 }
 
-// A clean synthetic world: the tier-0 scenarios plus the tier-1 scenarios
-// (MIG-16, MIG-17) over the real story list — the same shape the live
-// feature tree carries today, so it agrees with the committed baseline.
+// A clean synthetic world: the tier-0 scenarios, the tier-1-only scenarios
+// and the tier-1 halves of the split-tier stories, over the real story list
+// — the same shape the live feature tree carries today, so it agrees with
+// the committed baseline.
 function world(overrides = {}) {
   const scenarios = [
     ...TIER0_STORIES.map((s) => scenario(s)),
     ...TIER1_STORIES.map((s) => scenario(s, { tiers: ['tier1'], archetypes: ['three-signal'] })),
+    ...TIER1_SPLIT_STORIES.map((s) =>
+      scenario(s, { name: `${s} tier1`, tiers: ['tier1'], archetypes: ['three-signal'] }),
+    ),
   ];
   const stories = parseStories(DOC);
   return {
@@ -86,6 +97,9 @@ function world(overrides = {}) {
     tierMap: parseTierMap(DOC),
     archetypes: ARCHETYPES,
     archetypeDirNames: ARCHETYPES,
+    // TIER1_SPLIT_STORIES' scenarios live in the SAME feature file as their
+    // tier-0 half (already counted via TIER0_STORIES), so they contribute no
+    // additional file here.
     featureFiles: [...TIER0_STORIES, ...TIER1_STORIES].map((s) => `${s}.feature`),
     baseline: BASELINE,
     ...overrides,
@@ -106,7 +120,7 @@ test('live doc: section 4 lists MIG-01..MIG-26 contiguously', () => {
   }
 });
 
-test('live doc: section 6 declares a tier for every story, split-tier exactly MIG-10/14/26', () => {
+test('live doc: section 6 declares a tier for every story, split-tier exactly MIG-10/13/14/26', () => {
   const tierMap = parseTierMap(DOC);
   const stories = parseStories(DOC);
   assert.equal(tierMap.size, stories.length);
@@ -116,7 +130,7 @@ test('live doc: section 6 declares a tier for every story, split-tier exactly MI
     for (const t of tiers) assert.ok(KNOWN_TIERS.includes(t), `${story} declares unknown ${t}`);
   }
   const split = stories.filter((s) => tierMap.get(s).length > 1);
-  assert.deepEqual(split, ['MIG-10', 'MIG-14', 'MIG-26']);
+  assert.deepEqual(split, ['MIG-10', 'MIG-13', 'MIG-14', 'MIG-26']);
   const total = [...tierMap.values()].reduce((n, t) => n + t.length, 0);
   assert.equal(total, BASELINE.scenarios_total);
 });
@@ -128,7 +142,7 @@ test('live doc: section 7 lists the eight archetypes the fixtures ship', () => {
 test('the committed baseline declares the schema version the ratchet reads', () => {
   assert.equal(BASELINE.schema_version, BASELINE_SCHEMA_VERSION);
   assert.equal(BASELINE.stories_total, 26);
-  assert.equal(BASELINE.scenarios_covered, TIER0_STORIES.length + TIER1_STORIES.length);
+  assert.equal(BASELINE.scenarios_covered, TIER0_STORIES.length + TIER1_STORIES.length + TIER1_SPLIT_STORIES.length);
 });
 
 // --- 2. a clean set is clean -------------------------------------------------

@@ -1,9 +1,10 @@
-@MIG-10 @tier0
+@MIG-10
 Feature: MIG-10 — render the ClickHouse schema cerberus reads
   As an operator I want to review the exact CREATE statements cerberus expects
   before anything is provisioned, rendered from the same environment the server
   reads, so that applying them stays a deliberate decision I make by hand.
 
+  @tier0
   Scenario Outline: render the schema under a schema environment
     Given the <case> cerberus schema environment
     When the operator renders the ClickHouse schema offline
@@ -16,3 +17,12 @@ Feature: MIG-10 — render the ClickHouse schema cerberus reads
       | case                 |
       | default              |
       | metrics-ttl-override |
+
+  @tier1
+  Scenario: diff the rendered schema against the live collector-created tables
+    Given the dual-backend stack is live
+    And the default cerberus schema environment
+    When the operator renders the ClickHouse schema offline
+    And the operator diffs the rendered schema against the live database
+    Then every rendered table exists in the live database
+    And every rendered column exists on its live table
