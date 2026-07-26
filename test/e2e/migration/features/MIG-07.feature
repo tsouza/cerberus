@@ -10,4 +10,5 @@ Feature: MIG-07 — the collector scrape path is equivalent to Prometheus scrapi
     Given the dual-backend stack is live
     Then scrape meta-metrics are produced under both the reference path and the collector path
     And every meta-metric present under the reference path is also present under the collector path
-    And the classic histogram from the scrape target survives through cerberus in a quantile-consumable form
+    And the labels the collector path drops are exactly the ones the named OTel translation replaces
+    And the classic histogram from the scrape target yields through cerberus the quantile the reference itself yields

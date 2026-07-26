@@ -500,6 +500,52 @@ concurrency; and the `prometheus-thanos` corpus half has no seeded Tier-1
 fixture, so only `kube-prometheus-stack` is soaked. Each remains owed by
 MIG-08, not reassigned and not dropped.
 
+#### How MIG-06 and MIG-07 discharge those PASS assertions, and what they cannot reach
+
+MIG-06 does not stop at "a row landed in the declared table". The columns that
+CARRY each type are read back off the landed row and compared against what the
+push declared: `AggregationTemporality` and `IsMonotonic` for the counter, the
+explicit bounds and per-bucket counts for the classic histogram, the
+scale/offset/counts triple for the exponential one, and the pre-computed
+quantile pairs for the summary. Every probe — including the "landed nowhere
+else" one, which waits past the exporter's own flush interval before
+concluding, so a later-flushing duplicate cannot hide behind the right-table
+row appearing first — is scoped by a per-run resource attribute rather than by
+a global row count, so a second run against a live stack cannot go red for a
+reason that has nothing to do with the bridge. `cerberus migrate explain` then
+supplies the touched-table half from the other side: the set of physical tables
+it names for the shapes' read queries must equal the set the rows were actually
+located in.
+
+**Stated limit (MIG-06).** That explain comparison covers the four shapes
+cerberus's PromQL read path can reach. The summary is excluded: the read path
+has no route to `otel_metrics_summary` at all, so no expression could make
+explain name that table. The summary's landing and its type are asserted by the
+direct ClickHouse probe alone.
+
+MIG-07 enumerates the scrape meta-metric set from the REFERENCE path
+(`/api/v1/label/__name__/values` under the shared target's selector) and diffs
+it against the collector path's own enumeration, rather than spot-checking
+names the harness already knows — what a Prometheus release synthesises for a
+target is its own decision, so the reference path is the oracle. The label
+difference between the two paths must be exactly the named OTel translation —
+`job` → `service.name`, `instance` → `service.instance.id` — values included,
+which is why both paths address the target as `prometheus:9090`; any other
+reference-path label absent under the collector path is listed and fails. The
+surviving `_bucket` layout is compared as parsed bucket edges (a formatting
+convention for `1` or `+Inf` is not part of a layout), and the quantile is
+parsed — NaN, infinities and non-positive values rejected — then diffed against
+the reference Prometheus's OWN `histogram_quantile` over the same target within
+an epsilon derived live from that shared layout: the narrowest finite bucket
+width, which is the resolution `histogram_quantile` itself has.
+
+**Stated limit (MIG-07).** The collector path additionally carries the
+prometheusreceiver's own scrape-target resource attributes (the target's
+address and scheme), whose attribute names track the semantic conventions of
+the collector release in use. Those are additive context rather than a lost
+series, so the assertion pins the loss direction and the translated values, and
+does not pin the additive set by name.
+
 ### VALIDATE scenarios
 
 | ID     | Tier(s) | CLI                                                                                          | Fixtures                                                                                                                                                | PASS assertion                                                                                                                                                                                                                                                                                         |
