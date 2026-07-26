@@ -11,6 +11,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -283,6 +284,15 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		// ran — a failed assertion mid-fault must never leave the shared
 		// Tier-1 stack degraded for the next scenario.
 		faultErr := w.restorePausedService()
+		// Drop the foreign-tenant database MIG-15 planted. It lives on the
+		// SHARED live ClickHouse, so leaving it behind leaks one scenario's
+		// plant into every later run against that stack — including the next
+		// run's own isolation assertion, which would then be judging a row
+		// nobody in that run planted. Runs unconditionally, so a scenario that
+		// failed mid-plant still cleans up after itself.
+		if err := w.dropForeignTenantDatabase(); err != nil {
+			faultErr = errors.Join(faultErr, err)
+		}
 		if w.work == "" {
 			return c, faultErr
 		}

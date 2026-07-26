@@ -186,6 +186,14 @@ services:
       # under it, so one slow query on a cold runner would surface as a 503 in
       # an unrelated scenario — and it would duplicate the number, leaving a
       # copy that can drift.
+
+      # The per-query sample budget, pinned to the product default rather than
+      # left implicit. Under MIG-15's tenancy model — one cerberus per tenant,
+      # each bound to its own CH database — this IS the per-tenant read budget
+      # the story asserts is enforced, and that scenario derives its
+      # over-budget subquery grid from this exact number.
+      # test/regression/migration_tier1_test.go holds the two equal.
+      CERBERUS_QUERY_MAX_SAMPLES: "5000000"
     depends_on:
       clickhouse:
         condition: service_healthy

@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
+	"github.com/tsouza/cerberus/test/e2e/migration/steps"
 )
 
 // The Tier-1 migration substrate (Layer 14) is a Docker stack, so the
@@ -910,3 +911,39 @@ func tier1JustVarLine(t *testing.T, justfile, name string) string {
 	}
 	return found[0]
 }
+
+// TestMigrationTier1SampleBudgetIsPinned holds the tier-1 stack's per-query
+// sample budget equal to the constant MIG-15 derives its over-budget subquery
+// grid from. That scenario asks cerberus for an anchor grid one row past the
+// budget and asserts the specific budget rejection; if the compose stack ever
+// raised CERBERUS_QUERY_MAX_SAMPLES on its own, the grid would quietly land
+// INSIDE the budget and the scenario would go green while asserting nothing
+// about a refusal.
+func TestMigrationTier1SampleBudgetIsPinned(t *testing.T) {
+	t.Parallel()
+
+	cf := readCompose(t, tier1ComposePath)
+	cerb, ok := cf.Services[tier1CerberusService]
+	if !ok {
+		t.Fatalf("%s has no %q service", tier1ComposePath, tier1CerberusService)
+	}
+	raw, ok := cerb.Environment[tier1SampleBudgetEnv]
+	if !ok {
+		t.Fatalf("%s's %s service does not pin %s. MIG-15 derives its over-budget subquery grid "+
+			"from steps.Tier1QuerySampleBudget; an implicit budget makes that derivation a guess.",
+			tier1ComposePath, tier1CerberusService, tier1SampleBudgetEnv)
+	}
+	got, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		t.Fatalf("%s's %s = %q, which is not an integer: %v", tier1ComposePath, tier1SampleBudgetEnv, raw, err)
+	}
+	if got != steps.Tier1QuerySampleBudget {
+		t.Fatalf("the tier-1 stack runs cerberus with %s=%d, but MIG-15 derives its over-budget grid "+
+			"from steps.Tier1QuerySampleBudget=%d. Move both together.",
+			tier1SampleBudgetEnv, got, steps.Tier1QuerySampleBudget)
+	}
+}
+
+// tier1SampleBudgetEnv is the per-query sample budget the tier-1 cerberus runs
+// under — MIG-15's per-tenant read budget, in that scenario's tenancy model.
+const tier1SampleBudgetEnv = "CERBERUS_QUERY_MAX_SAMPLES"
