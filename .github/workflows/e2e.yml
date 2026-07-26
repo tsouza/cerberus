@@ -908,6 +908,20 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
+      # `just e2e-up` pulls the k3s node image + every external image on
+      # the HOST docker daemon (then `k3d image import`s them into the
+      # cluster's containerd — see Justfile's e2e-up/_pull-retry), so this
+      # login is what actually raises the pull-rate ceiling for k3d jobs,
+      # exactly like the compose-smoke jobs above.
+      - name: Log in to Docker Hub
+        if: ${{ env.RUN_SHARD == 'true' && env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
       - name: Bring up k3d stack
         if: env.RUN_SHARD == 'true'
         # E2E_MODE drives the chart deployment topology `just e2e-up` installs:
@@ -1333,6 +1347,20 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
+      # `just e2e-up` pulls the k3s node image + every external image on
+      # the HOST docker daemon (then `k3d image import`s them into the
+      # cluster's containerd — see Justfile's e2e-up/_pull-retry), so this
+      # login is what actually raises the pull-rate ceiling for k3d jobs,
+      # exactly like the compose-smoke jobs above.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
       # Reuse the e2e k3d bring-up (same first steps as the dashboard job):
       # cluster, cerberus:e2e image, manifests, host port maps
       # (localhost:8080 cerberus), and live OTel data. The ONE difference
@@ -1503,6 +1531,20 @@ jobs:
       - name: Install k3d
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      # `just e2e-bwc-up` pulls the k3s node image + every external/bwc image
+      # on the HOST docker daemon (then `k3d image import`s them into the
+      # cluster's containerd — see Justfile's e2e-bwc-up/_pull-retry), so
+      # this login is what actually raises the pull-rate ceiling here,
+      # exactly like the compose-smoke jobs above.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Bring up k3d + MinIO + bundled-ClickHouse stack
         run: just e2e-bwc-up
