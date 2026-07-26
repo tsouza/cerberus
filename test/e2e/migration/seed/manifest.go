@@ -38,6 +38,15 @@ type Manifest struct {
 	SamplesPerSeries int         `json:"samples_per_series"`
 	VerifySteps      int         `json:"verify_steps"`
 
+	// The incumbent-only history: what reference Prometheus holds STRICTLY
+	// before SeedStart, which is where ClickHouse's own ingest starts. These
+	// are the oracle a split-read assertion checks the incumbent's
+	// pre-boundary answer against — "the incumbent answered with the series
+	// the seeder left it there", not merely "the incumbent answered".
+	PreIngestStart            time.Time `json:"pre_ingest_start"`
+	PreIngestSeries           int       `json:"pre_ingest_series"`
+	PreIngestSamplesPerSeries int       `json:"pre_ingest_samples_per_series"`
+
 	// The metric, stream and span handles the fixture occupies. A corpus query
 	// names one of these explicitly; nothing in the fixture is selectable by a
 	// bare aggregate, which is what keeps the ClickHouse-only warm-up rows
@@ -73,10 +82,15 @@ func NewManifest(d Declaration, f Fixture) Manifest {
 		Spans:            f.SpanCount(),
 		SamplesPerSeries: len(f.Window.SampleTimes()),
 		VerifySteps:      len(f.Window.VerifySteps()),
-		GaugeMetric:      d.GaugeMetric,
-		CounterMetric:    d.CounterMetric,
-		HistogramMetric:  d.HistogramMetric,
-		LogJob:           d.LogJob,
+
+		PreIngestStart:            f.Window.PreIngestStart(),
+		PreIngestSeries:           len(f.PromPreIngestSeries()),
+		PreIngestSamplesPerSeries: len(f.Window.PreIngestSampleTimes()),
+
+		GaugeMetric:     d.GaugeMetric,
+		CounterMetric:   d.CounterMetric,
+		HistogramMetric: d.HistogramMetric,
+		LogJob:          d.LogJob,
 	}
 }
 

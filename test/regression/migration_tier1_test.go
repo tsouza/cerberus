@@ -818,6 +818,90 @@ func TestMigrationTier1ExpectationsFollowTheDeclaration(t *testing.T) {
 	}
 }
 
+// TestMigrationTier1IncumbentHoldsHistoryBeforeIngestStart pins the ONE
+// deliberate asymmetry between the two sides of the fixture, which is the
+// entire substance of MIG-23's split-read story: reference Prometheus holds
+// history strictly BELOW ClickHouse's ingest-start, and ClickHouse holds none
+// of it. Take the asymmetry away and the scenario's pre-boundary contrast
+// becomes two empty answers agreeing with each other — a hollow green that
+// only a live run would expose, and only if someone read its output closely.
+//
+// It also pins the geometry the live probe depends on: the newest
+// incumbent-only sample sits exactly one SampleStep below ingest-start (so the
+// probe lands ON a sample rather than in a gap), and the whole history stays
+// strictly below the deepest instant the parity lane can reach (VerifyStart
+// minus the widest lookback a corpus range selector may carry), so it can
+// never leak into a parity diff.
+func TestMigrationTier1IncumbentHoldsHistoryBeforeIngestStart(t *testing.T) {
+	t.Parallel()
+
+	decl, err := seed.LoadDeclaration(tier1DeclPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", tier1DeclPath, err)
+	}
+	window := seed.NewWindow(time.Now())
+	fixture, err := seed.Build(decl, window)
+	if err != nil {
+		t.Fatalf("build the fixture: %v", err)
+	}
+
+	pre := fixture.PromPreIngestSeries()
+	if len(pre) != len(fixture.Gauge) {
+		t.Fatalf("the fixture leaves the incumbent %d series before ingest-start but carries %d gauge series; "+
+			"MIG-23 holds the incumbent's pre-boundary answer to the gauge cardinality", len(pre), len(fixture.Gauge))
+	}
+	if len(pre) == 0 {
+		t.Fatalf("the fixture leaves the incumbent nothing before ClickHouse's ingest-start, so MIG-23's " +
+			"pre-boundary contrast is two empty answers agreeing with each other")
+	}
+
+	probedInstant := window.SeedStart.Add(-seed.SampleStep)
+	deepestLaneReach := window.VerifyStart.Add(-seed.RangeLookbackMargin)
+	for _, s := range pre {
+		if len(s.Samples) == 0 {
+			t.Fatalf("an incumbent-only series carries no sample at all; the incumbent would answer nothing below the boundary")
+		}
+		for _, sample := range s.Samples {
+			if !sample.Time.Before(window.SeedStart) {
+				t.Fatalf("an incumbent-only sample lands at %s, at or after ingest-start %s; it would be written to a "+
+					"window ClickHouse also holds and prove nothing about the split", sample.Time, window.SeedStart)
+			}
+			if !sample.Time.Before(deepestLaneReach) {
+				t.Fatalf("an incumbent-only sample lands at %s, within reach of the parity lane's deepest lookback %s; "+
+					"it would read as a reference-only divergence in every range comparison", sample.Time, deepestLaneReach)
+			}
+		}
+		if newest := s.Samples[len(s.Samples)-1].Time; !newest.Equal(probedInstant) {
+			t.Fatalf("the newest incumbent-only sample lands at %s, but MIG-23 probes %s (one sample step below "+
+				"ingest-start); the probe would fall into a gap", newest, probedInstant)
+		}
+	}
+
+	for _, s := range fixture.Gauge {
+		for _, sample := range s.Samples {
+			if sample.Time.Before(window.SeedStart) {
+				t.Fatalf("a ClickHouse-side gauge sample lands at %s, before ingest-start %s; the boundary MIG-23 "+
+					"measures off the live table would not exist", sample.Time, window.SeedStart)
+			}
+		}
+	}
+
+	// The manifest is the oracle the live scenario reads; a history the seeder
+	// wrote but never published cannot be asserted against.
+	m := seed.NewManifest(decl, fixture)
+	if m.PreIngestSeries != len(pre) {
+		t.Fatalf("the manifest publishes %d pre-ingest series but the fixture renders %d", m.PreIngestSeries, len(pre))
+	}
+	if want := len(window.PreIngestSampleTimes()); m.PreIngestSamplesPerSeries != want {
+		t.Fatalf("the manifest publishes %d pre-ingest samples per series but the window carries %d",
+			m.PreIngestSamplesPerSeries, want)
+	}
+	if !m.PreIngestStart.Equal(window.PreIngestStart()) {
+		t.Fatalf("the manifest publishes pre-ingest start %s but the window starts it at %s",
+			m.PreIngestStart, window.PreIngestStart())
+	}
+}
+
 // TestMigrationTier1QueriesNameTheFixture pins the corpus-shape rule that keeps
 // the ClickHouse-only schema warm-up rows unreachable from a comparison: every
 // declared query names a fixture metric explicitly. A bare `sum(rate(...))`

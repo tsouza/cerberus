@@ -23,6 +23,38 @@ func (f Fixture) PromSeries() []Series {
 	return out
 }
 
+// preIngestValue is the constant sample value every incumbent-only history
+// sample carries. The pre-ingest history exists to prove the incumbent still
+// ANSWERS at an instant ClickHouse cannot serve, not to exercise sample
+// arithmetic, so its value carries no meaning beyond "present" — the same
+// posture churnSeriesValue takes for the churn dimension.
+const preIngestValue = 1.0
+
+// PromPreIngestSeries renders the history the INCUMBENT alone holds, from
+// strictly before ClickHouse's ingest-start, in the reference-Prometheus
+// shape. It is deliberately asymmetric: no ClickHouse writer consumes it,
+// because that asymmetry IS the migration fact — an operator who has just
+// pointed ingest at ClickHouse still needs the old read path for anything
+// older than the moment ingest started.
+//
+// It re-uses the gauge series' own label sets, so it adds no series to either
+// side's label surface: a cardinality inventory, a label-mapping diff or a
+// head-series count sees exactly what it saw before. Only the samples are
+// new, and every one of them sits before the first instant either the parity
+// lane or a corpus range selector can reach.
+func (f Fixture) PromPreIngestSeries() []Series {
+	times := f.Window.PreIngestSampleTimes()
+	out := make([]Series, 0, len(f.Gauge))
+	for _, s := range f.Gauge {
+		samples := make([]Sample, 0, len(times))
+		for _, t := range times {
+			samples = append(samples, Sample{Time: t, Value: preIngestValue})
+		}
+		out = append(out, Series{Labels: s.PromSeries().Labels, Samples: samples})
+	}
+	return out
+}
+
 // LokiStreams renders the fixture's log streams in the Loki push shape. The
 // stream label set is the same map the ClickHouse side writes into
 // ResourceAttributes, and structured metadata is restricted to detected_level
