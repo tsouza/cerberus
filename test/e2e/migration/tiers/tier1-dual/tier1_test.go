@@ -59,12 +59,21 @@ func TestTier1(t *testing.T) {
 		tags = defaultTags
 	}
 
+	// Same contract as Tier 0: the pretty formatter for the job log, plus a
+	// cucumber-JSON run report when the migration lane asked for one, so
+	// `MODE=attest` can hold every counted @tier1 scenario to "executed, and
+	// passed" rather than to "exists in a feature file".
+	format, err := lib.SuiteFormat()
+	if err != nil {
+		t.Fatalf("resolve the godog formatter: %v", err)
+	}
+
 	world := steps.NewWorld(root, bin)
 	suite := godog.TestSuite{
 		Name:                "migration-tier1",
 		ScenarioInitializer: world.InitializeScenario,
 		Options: &godog.Options{
-			Format: "pretty",
+			Format: format,
 			Output: os.Stdout,
 			Paths:  []string{featurePath},
 			Tags:   tags,

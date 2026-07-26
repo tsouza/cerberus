@@ -143,6 +143,21 @@ jobs:
           STORY: ${{ inputs.story }}
           CERBERUS_BIN: ${{ github.workspace }}/build/cerberus
 
+      # The cucumber-JSON run report MODE=run made the suite write. This is
+      # the EVIDENCE half of the coverage ratchet: migration-aggregate
+      # downloads every tier's report and runs MODE=attest over them, so a
+      # scenario that is enumerated but never executed fails the lane instead
+      # of counting as coverage. Uploaded on failure too — a red tier's report
+      # is exactly what names the scenario that broke.
+      - name: upload the tier run report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: migration-report-${{ matrix.tier }}
+          path: build/migration-reports/*.json
+          retention-days: 1
+          if-no-files-found: warn
+
   # Tier-1 dual-backend substrate + parity + Gherkin (Layer 14). Unlike
   # migration-tier0, this is not matrix-driven: it brings a compose stack up,
   # seeds every @tier1 archetype and tears it down around the suite — steps a
@@ -237,6 +252,18 @@ jobs:
           TIER: tier1
           STORY: ${{ inputs.story }}
 
+      # Same evidence contract as migration-tier0's upload: the report the
+      # Gherkin step's MODE=run wrote is what migration-aggregate's
+      # MODE=attest holds every counted @tier1 scenario to.
+      - name: upload the tier run report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: migration-report-tier1
+          path: build/migration-reports/*.json
+          retention-days: 1
+          if-no-files-found: warn
+
       - name: Tier-1 substrate + parity assertions
         run: go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
 
@@ -284,7 +311,49 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The enumeration the ratchet counted, and every tier's run report. Both
+      # halves of the attestation live here rather than in a tier job, because
+      # attestation is a statement about the WHOLE run: one tier cannot know
+      # that another was skipped.
+      #
+      # Gated on migration-setup having succeeded only because a failed setup
+      # publishes no enumeration to attest AGAINST — the roll-up below runs
+      # unconditionally and fails the lane on that case with the honest
+      # message, so nothing is waved through.
+      - name: download migration scenarios enumeration
+        if: needs.migration-setup.result == 'success'
+        uses: actions/download-artifact@v7
+        with:
+          name: migration-scenarios
+          path: build
+
+      - name: download the tier run reports
+        if: needs.migration-setup.result == 'success'
+        uses: actions/download-artifact@v7
+        with:
+          pattern: migration-report-*
+          merge-multiple: true
+          path: build/migration-reports
+
+      # The execution gate. Coverage means EXECUTED, not enumerated: every
+      # scenario the ratchet counts for a SELECTED tier must appear in a run
+      # report with every step passed. Selection comes from the same
+      # `tiers` output the roll-up below reads, so a dispatch narrowed to
+      # `tier=tier0` does not fail because tier1's scenarios did not run —
+      # and a tier that WAS selected but got skipped by a `needs:` cascade
+      # cannot pass by leaving no evidence.
+      - name: attest that every counted scenario executed
+        if: needs.migration-setup.result == 'success'
+        run: node .github/scripts/migration-e2e.mjs
+        env:
+          MODE: attest
+          SCENARIOS_JSON: build/migration-scenarios.json
+          REPORT_DIR: build/migration-reports
+          EXPECTED_TIERS: ${{ needs.migration-setup.outputs.tiers }}
+          STORY: ${{ inputs.story }}
+
       - name: roll up the migration lane
+        if: always()
         run: node .github/scripts/migration-e2e.mjs
         env:
           MODE: rollup

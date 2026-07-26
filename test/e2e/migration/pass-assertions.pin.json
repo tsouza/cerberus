@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "why": "docs/migration-testing.md section 6 IS the ratchet's anchor, and it is editable in the same commit as the code it anchors — so narrowing a PASS cell has always been a valid route to \"full coverage\". This pin does not forbid narrowing; a spec legitimately evolves. It forbids narrowing SILENTLY: MODE=verify fails until the hash is updated here, which puts the weakening on its own reviewed line in the diff instead of leaving it a side effect of the commit that implements the narrower thing. There is deliberately no regeneration command — the failure prints the new hash to paste.",
+  "algorithm": "sha256",
+  "normalization": "the cell is trimmed and every run of whitespace is collapsed to one space before hashing, so a markdownlint reflow or a column realignment is not a failure but a wording change is",
+  "assertions": {
+    "MIG-01": {
+      "tiers": "0",
+      "sha256": "a8d7324c135a8dd48c306f9b3628b61d8ef9572ce9fdee139a4598955761714c"
+    },
+    "MIG-02": {
+      "tiers": "1",
+      "sha256": "14b842c7cb790716e404dd5086a413f5dfea875763399c9c80b8823fc8893983"
+    },
+    "MIG-03": {
+      "tiers": "0",
+      "sha256": "c3618282788d33c24af52bc57d52239f0993c37cda8348f21fee79551b092708"
+    },
+    "MIG-04": {
+      "tiers": "0",
+      "sha256": "f0feadd47fdf4f631e3bb676f979f1a3acbfff94e3db6c8290accf111febb751"
+    },
+    "MIG-05": {
+      "tiers": "0",
+      "sha256": "ec190c14b3d3058d58c8ae48fa23db034ada8190eae507ddfbcf52470c63a5de"
+    },
+    "MIG-06": {
+      "tiers": "1",
+      "sha256": "dfefe32f2d12074f1ae3f86cdb0ed1525e1f15823cd03055bb2b311da4d93326"
+    },
+    "MIG-07": {
+      "tiers": "1",
+      "sha256": "209c2e0a67bb2957c5993e55f25ef9e98e3c7fffebf8d89d3544c6498d74c316"
+    },
+    "MIG-08": {
+      "tiers": "1",
+      "sha256": "2a5fc3878ba08b305a974d6500e75971cabe080cb8f6280f82c694050010f71f"
+    },
+    "MIG-09": {
+      "tiers": "2",
+      "sha256": "d4fc2307c718cfab16be3c3c300c9353213e9700f9c63652724f90f3afdd6459"
+    },
+    "MIG-10": {
+      "tiers": "0, 1",
+      "sha256": "d0b7edffdce463c8327110f4282baef734aa30eaab4f5492c55478d8152f6fb5"
+    },
+    "MIG-11": {
+      "tiers": "1",
+      "sha256": "a09682622a33611289c23f4e31a655f62a841c0b8a9ecd33115b4c1b23a1eecc"
+    },
+    "MIG-12": {
+      "tiers": "1",
+      "sha256": "484d49adb543c11c4b2e7f84ad15bfcf219a56f1e82fa2731a86df06676b9b2d"
+    },
+    "MIG-13": {
+      "tiers": "1, 2",
+      "sha256": "13e567ce6bdc002399cb569ef924d73c9bec0269207283f695789a198edb7d2f"
+    },
+    "MIG-14": {
+      "tiers": "0, 1",
+      "sha256": "e264c4b359e5fc47a53ff7391beacfca577b3fd3395135edd9ec8fb5259c6e02"
+    },
+    "MIG-15": {
+      "tiers": "1",
+      "sha256": "24c033c5d8cd6c085f5b6350007aa02c7b7fa2cea16823ce3edf7a057fde1caf"
+    },
+    "MIG-16": {
+      "tiers": "1",
+      "sha256": "68c348141e683813367ad701b9b160796c97070256383c0c3e08327b5cf6efc0"
+    },
+    "MIG-17": {
+      "tiers": "1",
+      "sha256": "4a84ebadee8c60fb8ab78a9c5f754f433b94e18baea35b1f67572694883a0c6f"
+    },
+    "MIG-18": {
+      "tiers": "2",
+      "sha256": "381c9adaa4e84c88a35a934fe26412a7e6d9d0379c88a6e7179aa3c7d2df82b4"
+    },
+    "MIG-19": {
+      "tiers": "2",
+      "sha256": "b9607e87e1dc35f61aafffda102efec2fb909ed60ba656b4d615be9f7b7f9110"
+    },
+    "MIG-20": {
+      "tiers": "1",
+      "sha256": "0dd646c8afa565f679cb452b99a6734eaed02ed233b96f9f05eba4235bfa12c0"
+    },
+    "MIG-21": {
+      "tiers": "1 (three-signal)",
+      "sha256": "ad3010b5f9fcf1ef21853754966283254048d04aa63761bccf02b69ffb7c7d92"
+    },
+    "MIG-22": {
+      "tiers": "1",
+      "sha256": "f73cc96d1b890cc00060dec35a3213afc85fcc60a94c725782ecee2567911ba6"
+    },
+    "MIG-23": {
+      "tiers": "1",
+      "sha256": "50433e479ec5d074c75e46c496d97e5632a3d584fed3a4ae4fa35abc3eaee4f2"
+    },
+    "MIG-24": {
+      "tiers": "2",
+      "sha256": "2706b3525fb22f29aae38d0610f0653811a88f761e1294a6fe28e3911ad25679"
+    },
+    "MIG-25": {
+      "tiers": "1",
+      "sha256": "8208967b7f56f538b843d995ed6896446f2d95eba8b0f4a10e691f96ee6b4b44"
+    },
+    "MIG-26": {
+      "tiers": "0, 1",
+      "sha256": "8b9216f7ca932155ea47efb876b0f404c7fd3c5202850ef702f7b36b557562c7"
+    }
+  }
+}
