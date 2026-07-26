@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
+	"strconv"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -21,9 +21,13 @@ import (
 // reinvented: both must stay in lock-step with
 // grafana/alerting/{rules,contact-points}.yaml, whose own comments name
 // these constants' source files back.
+//
+// The recorded metric name itself is NOT redeclared here: it is
+// nodeCPURecordedMetricName in tier2_writeback.go, the one place in this
+// package that names rules.yaml's `record.metric`, so MIG-09 and MIG-13
+// cannot drift apart on what "the recorded series" is.
 const (
 	rulerRecordingGroup = "node.rules"
-	rulerRecordingRule  = "node:node_cpu_utilisation:avg1m"
 	rulerAlertGroup     = "node.alerts"
 	rulerAlertRule      = "NodeCPUSaturation"
 	rulerContactPoint   = "dead-end"
@@ -60,22 +64,6 @@ const (
 	rulerErrBodyLimit = 4096
 )
 
-// The ClickHouse connection MIG-09's seeding step dials. Tier-2 reuses
-// Tier-1's own ClickHouse instance (same compose project — see
-// tiers/tier2-ruler/docker-compose.ruler.yml's header comment), so these
-// mirror lib/live.go's TIER1_CH_* contract on the Tier-1 Gherkin mechanism
-// rather than inventing a second one.
-const (
-	rulerCHAddrEnvKey      = "TIER1_CH_ADDR"
-	rulerCHDatabaseEnvKey  = "TIER1_CH_DATABASE"
-	rulerCHUsernameEnvKey  = "TIER1_CH_USERNAME"
-	rulerCHPasswordEnvKey  = "TIER1_CH_PASSWORD" //nolint:gosec // env var NAME, not a credential value
-	defaultRulerCHAddr     = "127.0.0.1:27000"
-	defaultRulerCHDatabase = "otel"
-	defaultRulerCHUsername = "cerberus"
-	defaultRulerCHPassword = "cerberus" //nolint:gosec // default fixture credential, not a real one
-)
-
 // The recording rule fixture (grafana/alerting/rules.yaml) is reused
 // verbatim from the kube-prometheus-stack archetype's own rule files, and
 // its expression depends on `node_cpu_seconds_total` — a metric the
@@ -87,11 +75,10 @@ const (
 // broken write path from the outside. This constant set seeds exactly the
 // one series the fixture's `expr` needs, directly into ClickHouse — the same
 // leg InsertFixture uses for the three-signal fixture, just for a series no
-// declaration carries.
+// declaration carries. The metric name, service name and `mode` label value
+// are nodeCPU* in tier2_writeback.go, single-sourced there.
 const (
-	rulerCPUMetric      = "node_cpu_seconds_total"
-	rulerCPUServiceName = "node-exporter"
-	rulerCPUCoreCount   = 2
+	rulerCPUCoreCount = 2
 	// rulerCPUSeedWindow must exceed the recording rule's rate() window (5m,
 	// grafana/alerting/rules.yaml) so cerberus never extrapolates past data
 	// this step actually wrote.
@@ -104,35 +91,23 @@ const (
 	rulerCPUIdleRatePerSecond = 0.95
 )
 
-// rulerEnvOr returns the named env var, or fallback when it is unset or
-// empty — this file's own tiny copy of the pattern every live-stack helper
-// in this harness uses, rather than exporting one more symbol from lib for a
-// single caller.
-func rulerEnvOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
-}
-
 // registerRulerSteps binds the MIG-09 steps.
 func (w *World) registerRulerSteps(ctx *godog.ScenarioContext) {
-	ctx.Step(`^the shadow-ruler stack is live$`, w.givenTier2Live)
 	ctx.Step(`^the recording rule's underlying series is seeded into ClickHouse$`, w.givenUnderlyingSeriesSeeded)
 	ctx.Step(`^the operator waits for the rule fixture to evaluate against cerberus$`, w.whenRuleFixtureEvaluates)
 	ctx.Step(`^the recording rule evaluates against cerberus without a query error$`, w.thenRecordingRuleEvaluates)
 	ctx.Step(`^the alert rule evaluates against cerberus without a query error$`, w.thenAlertRuleEvaluates)
 	ctx.Step(`^the operator polls until the recorded series lands in ClickHouse$`, w.whenRecordedSeriesLands)
-	ctx.Step(`^the recorded series is selectable through cerberus$`, w.thenRecordedSeriesSelectable)
 	ctx.Step(`^the operator records the dead-end receiver's baseline and sends a test notification through its one contact point$`,
 		w.whenTestNotificationSent)
 	ctx.Step(`^the dead-end receiver is the only place the notification reaches$`, w.thenNotificationReachesDeadEnd)
 }
 
-// givenTier2Live and requireTier2Live live in tier2_live.go — both
-// registerTier2LiveSteps (diff-group) and registerRulerSteps (this file)
-// share the one canonical live-stack precondition rather than each
-// establishing it separately.
+// The live-stack precondition ("the shadow-ruler stack is live") is bound
+// once, by registerTier2LiveSteps in tier2_live.go, and shared by every
+// Tier-2 scenario including MIG-09's. It is deliberately NOT re-registered
+// here: godog runs this suite under Strict, where two definitions matching one
+// step text is an ambiguous-step error that fails the whole scenario.
 
 // givenUnderlyingSeriesSeeded writes the recording rule's underlying
 // `node_cpu_seconds_total` series directly into ClickHouse — see the
@@ -142,19 +117,18 @@ func (w *World) givenUnderlyingSeriesSeeded() error {
 		return err
 	}
 	ctx := context.Background()
-	conn, err := seed.DialCH(ctx, seed.CHConfig{
-		Addr:     rulerEnvOr(rulerCHAddrEnvKey, defaultRulerCHAddr),
-		Database: rulerEnvOr(rulerCHDatabaseEnvKey, defaultRulerCHDatabase),
-		Username: rulerEnvOr(rulerCHUsernameEnvKey, defaultRulerCHUsername),
-		Password: rulerEnvOr(rulerCHPasswordEnvKey, defaultRulerCHPassword),
-	})
+	// The live endpoint set the scenario's own Given established, not a second
+	// env-var contract of this file's own: Tier-2 reuses Tier-1's ClickHouse
+	// instance (same compose project), and lib.Tier2Endpoints already carries
+	// exactly that connection.
+	conn, err := w.tier2.DialCH(ctx)
 	if err != nil {
 		return fmt.Errorf("dial clickhouse for the recording rule's underlying series: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 
 	if err := seed.InsertCounterSeries(ctx, conn, rulerUnderlyingCPUSeries(time.Now())); err != nil {
-		return fmt.Errorf("seed %s: %w", rulerCPUMetric, err)
+		return fmt.Errorf("seed %s: %w", nodeCPUMetricName, err)
 	}
 	return nil
 }
@@ -175,9 +149,9 @@ func rulerUnderlyingCPUSeries(now time.Time) []seed.MetricSeries {
 			value += rulerCPUIdleRatePerSecond * rulerCPUSeedStep.Seconds()
 		}
 		out = append(out, seed.MetricSeries{
-			MetricName:  rulerCPUMetric,
-			ServiceName: rulerCPUServiceName,
-			Attributes:  map[string]string{"cpu": fmt.Sprintf("%d", core), "mode": "idle"},
+			MetricName:  nodeCPUMetricName,
+			ServiceName: nodeCPUServiceName,
+			Attributes:  map[string]string{"cpu": strconv.Itoa(core), "mode": nodeCPUMode},
 			Samples:     samples,
 		})
 	}
@@ -198,6 +172,18 @@ type rulerRule struct {
 	Health         string `json:"health"`
 	LastError      string `json:"lastError"`
 	LastEvaluation string `json:"lastEvaluation"`
+	// Alerts is the rule's live alert INSTANCES — present only for alerting
+	// rules, and the only place the ruler reports a per-instance state
+	// (Normal / Pending / Alerting). MIG-18 reads it to watch a real hold-down
+	// happen; MIG-09 ignores it.
+	Alerts []rulerAlertInstance `json:"alerts"`
+}
+
+// rulerAlertInstance is one live alert instance of an alerting rule.
+type rulerAlertInstance struct {
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+	State       string            `json:"state"`
 }
 
 type rulerRulesResponse struct {
@@ -232,7 +218,7 @@ func (w *World) whenRuleFixtureEvaluates() error {
 		groups, err := fetchRulerGroups(ctx, w.tier2.GrafanaURL)
 		if err == nil {
 			w.tier2Ruler.groups = groups
-			recording, recOK := findRulerRule(groups, rulerRecordingGroup, rulerRecordingRule)
+			recording, recOK := findRulerRule(groups, rulerRecordingGroup, nodeCPURecordedMetricName)
 			alert, alertOK := findRulerRule(groups, rulerAlertGroup, rulerAlertRule)
 			recClean := recOK && recording.LastEvaluation != "" && recording.Health != "error"
 			alertClean := alertOK && alert.LastEvaluation != "" && alert.Health != "error"
@@ -255,7 +241,7 @@ func (w *World) whenRuleFixtureEvaluates() error {
 // real query round-trip against cerberus, not a translation or provisioning
 // error.
 func (w *World) thenRecordingRuleEvaluates() error {
-	return w.thenRuleHealthOK(rulerRecordingGroup, rulerRecordingRule, "recording")
+	return w.thenRuleHealthOK(rulerRecordingGroup, nodeCPURecordedMetricName, "recording")
 }
 
 // thenAlertRuleEvaluates is thenRecordingRuleEvaluates' sibling for the
@@ -322,58 +308,46 @@ type cerberusInstantQueryResponse struct {
 	} `json:"data"`
 }
 
-// recordedSeriesResultCount is stored on the World after
-// whenRecordedSeriesLands so the Then step can report a real number, not
-// just pass/fail.
-type recordedSeriesPoll struct {
-	seriesCount int
-	lastRaw     string
-}
-
 // whenRecordedSeriesLands polls cerberus's OWN Prometheus query API for the
 // recording rule's metric name until it returns at least one series, or the
 // budget expires. This is the "lands recording-rule output back into CH;
 // those recorded series become selectable through cerberus" half of MIG-09's
 // PASS assertion: it proves the write leg by reading the result back through
 // cerberus's ordinary read path, not by inspecting ClickHouse directly.
+//
+// It publishes what it saw into the World's ONE recorded-read-back slot, the
+// same slot MIG-13's own write-back poll publishes into, so the shared
+// "the recorded series is selectable through cerberus" Then step (registered
+// once, in tier2_writeback.go) reads whichever poll this scenario ran.
 func (w *World) whenRecordedSeriesLands() error {
 	if err := w.requireTier2Live(); err != nil {
 		return err
 	}
 	ctx := context.Background()
 	deadline := time.Now().Add(rulerLandingWait)
-	var poll recordedSeriesPoll
 	var last error
 	for {
-		count, raw, err := queryCerberusInstant(ctx, w.tier2.CerberusURL, rulerRecordingRule)
+		count, raw, err := queryCerberusInstant(ctx, w.tier2.CerberusURL, nodeCPURecordedMetricName)
 		if err == nil {
-			poll = recordedSeriesPoll{seriesCount: count, lastRaw: raw}
+			w.tier2ReadBack = recordedReadBack{
+				polled: true,
+				series: count,
+				detail: fmt.Sprintf("instant query for %q answered: %s", nodeCPURecordedMetricName, raw),
+			}
 			if count > 0 {
-				w.tier2Ruler.recordedSeries = poll
 				return nil
 			}
 			last = fmt.Errorf("query returned zero series (raw: %s)", raw)
 		} else {
 			last = err
+			w.tier2ReadBack = recordedReadBack{polled: true, detail: err.Error()}
 		}
 		if time.Now().After(deadline) {
-			w.tier2Ruler.recordedSeries = poll
 			return fmt.Errorf("%q never landed in ClickHouse and became selectable through cerberus within %s: %w",
-				rulerRecordingRule, rulerLandingWait, last)
+				nodeCPURecordedMetricName, rulerLandingWait, last)
 		}
 		time.Sleep(rulerPoll)
 	}
-}
-
-// thenRecordedSeriesSelectable asserts the poll in whenRecordedSeriesLands
-// actually observed at least one series, quoting the raw response so a
-// failure names what cerberus really answered.
-func (w *World) thenRecordedSeriesSelectable() error {
-	if w.tier2Ruler.recordedSeries.seriesCount == 0 {
-		return fmt.Errorf("%q is not selectable through cerberus (last response: %s)",
-			rulerRecordingRule, w.tier2Ruler.recordedSeries.lastRaw)
-	}
-	return nil
 }
 
 // queryCerberusInstant issues one instant PromQL query against cerberus and

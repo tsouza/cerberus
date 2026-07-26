@@ -91,3 +91,69 @@ groups:
         annotations: { summary: "Node CPU saturation" }
         noDataState: NoData
         execErrState: Error
+
+  # === MIG-18's fire/resolve probe ===
+  #
+  # Unlike the two groups above, this one is NOT reused from an archetype: it
+  # exists so MIG-18 can observe a REAL alert lifecycle — pending, firing,
+  # resolved — inside a CI budget. NodeCPUSaturation cannot serve that purpose
+  # (its `for: 15m` hold-down alone outlasts the whole Tier-2 job, and its
+  # input is the recorded series whose own write-back MIG-13 is still proving),
+  # and inventing a shorter copy of it would silently weaken the archetype
+  # fixture MIG-09 depends on.
+  #
+  # Every field here is load-bearing for an assertion in
+  # steps/tier2_alerting.go, whose mig18* constants mirror them and name this
+  # file back:
+  #
+  #   expr             MIG-18's Given seeds `cerberus_migration_alert_probe`
+  #                    into ClickHouse straddling the threshold below. `max()`
+  #                    collapses it to exactly ONE alert instance, so "the
+  #                    probe alert" is a single, countable identity rather than
+  #                    whatever cardinality the seed happened to write.
+  #   for: 30s         the hold-down MIG-18 asserts the ruler actually honored
+  #                    before firing. Three group ticks — long enough that a
+  #                    rule which fired immediately is unambiguously
+  #                    distinguishable, short enough for a CI budget.
+  #   labels           asserted verbatim on the captured notification.
+  #   annotations      `{{ $labels.probe }}` is asserted to arrive RENDERED
+  #                    (carrying `fire-resolve`, and no leftover template
+  #                    delimiters). The referenced label is a rule label, not a
+  #                    query label, so the assertion tests Grafana's annotation
+  #                    rendering rather than cerberus's label mapping — that is
+  #                    MIG-11's subject, and conflating the two would make a
+  #                    MIG-11 regression surface here instead.
+  #   noDataState: OK  before MIG-18's Given seeds the probe, the series does
+  #                    not exist. Firing on absent data would put notifications
+  #                    in the dead-end receiver during MIG-09's own
+  #                    notification-delta assertion, which runs earlier in the
+  #                    same suite against the same receiver.
+  - orgId: 1
+    name: migration.probe
+    folder: migration-lane
+    interval: 10s
+    rules:
+      - uid: migration-fire-resolve-probe
+        title: MigrationShadowRulerProbe
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: max(cerberus_migration_alert_probe)
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+        for: 30s
+        labels: { severity: warning, probe: fire-resolve }
+        annotations:
+          summary: "the shadow ruler observed the {{ $labels.probe }} probe above its firing threshold"
+        noDataState: OK
+        execErrState: Error

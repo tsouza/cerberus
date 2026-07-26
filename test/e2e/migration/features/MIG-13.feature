@@ -15,7 +15,7 @@ Feature: MIG-13 — recording-rule output lands in the ClickHouse landing zone
 
   @tier2
   Scenario: the recording rule's output is reproducible in the CH landing zone
-    Given the tier-2 ruler stack is live
+    Given the shadow-ruler stack is live
     And the recording rule's source series is seeded with live samples
     When the operator waits for the ruler's write-back to land
     Then the recorded series is selectable through cerberus

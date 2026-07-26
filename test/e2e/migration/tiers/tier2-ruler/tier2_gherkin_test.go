@@ -10,7 +10,15 @@
 // self-check that proves the mechanism), not a replacement for it — that
 // file stays the pre-scenario proof that Grafana evaluates rules against
 // cerberus and the dead-end receiver captures notifications; this one runs
-// the actual MIG-13/MIG-18/MIG-19 scenarios against the same live stack.
+// the actual MIG-09/MIG-13/MIG-18/MIG-19/MIG-24 scenarios against the same
+// live stack.
+//
+// The two are driven as two SEPARATE, ORDERED `go test` invocations (see the
+// migration-tier2-run recipe in the Justfile, and the migration-tier2 job in
+// .github/workflows/migration-e2e.yml), never one `./test/e2e/migration/...`
+// sweep: both halves bracket their own trigger with a read of the ONE dead-end
+// receiver's notification count, so run concurrently each delta would observe
+// the other's traffic.
 package tier2
 
 import (

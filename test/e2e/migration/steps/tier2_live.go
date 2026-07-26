@@ -11,10 +11,10 @@ import (
 )
 
 // errTier2NotLive is every Tier-2 step's precondition failure when a
-// scenario never ran "the tier-2 ruler stack is live" first.
-var errTier2NotLive = errors.New("the tier-2 ruler stack has not been established; the scenario must establish it first")
+// scenario never ran "the shadow-ruler stack is live" first.
+var errTier2NotLive = errors.New("the shadow-ruler stack has not been established; the scenario must establish it first")
 
-// tier2LiveProbeBudget bounds "the tier-2 ruler stack is live"'s wait for
+// tier2LiveProbeBudget bounds "the shadow-ruler stack is live"'s wait for
 // every endpoint. The stack `just migration-tier2-up` brings up already
 // waits `--wait` on container healthchecks, so this only guards a stale env
 // var left over from a torn-down run.
@@ -23,8 +23,14 @@ const tier2LiveProbeBudget = 2 * time.Minute
 // registerTier2LiveSteps binds the one precondition every Tier-2 scenario
 // shares: the ruler stack (Grafana, the dead-end receiver, cerberus, and the
 // MIG-13/MIG-19 write-back bridge) answers.
+//
+// One phrasing, registered once. It reads "shadow-ruler", not "tier-2 ruler",
+// because a tier ordinal in step text is a numeric literal and the coverage
+// ratchet's V12 rejects those outright — and rightly: "shadow ruler" is what
+// the thing IS (docs section 3), while "tier 2" is where the harness happens
+// to run it.
 func (w *World) registerTier2LiveSteps(ctx *godog.ScenarioContext) {
-	ctx.Step(`^the tier-2 ruler stack is live$`, w.givenTier2Live)
+	ctx.Step(`^the shadow-ruler stack is live$`, w.givenTier2Live)
 }
 
 // givenTier2Live reads the live Tier-2 endpoints from the environment `just

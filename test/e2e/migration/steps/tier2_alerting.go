@@ -14,36 +14,52 @@ import (
 
 	"github.com/cucumber/godog"
 
-	"github.com/tsouza/cerberus/internal/migrateverify"
+	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
-// This file holds MIG-18's comparator: alert-firing parity between an
-// incumbent ruler and cerberus's shadow ruler (Grafana-managed alerting),
-// per docs/migration-testing.md section 5's explicit non-epsilon predicate —
-// "comparator quantizes fire/resolve timestamps to the shared evaluation
-// interval; that quantization is the correct definition of 'fired in the
-// same evaluation', not an allow-list" — plus the multi-window
-// multi-burn-rate (MWMBR) SLO delta-holds-zero-across-the-bake-window check
-// the same section requires.
+// This file holds MIG-18: what the single-ruler Tier-2 substrate can honestly
+// prove about the shadow ruler's alert lifecycle, plus the comparator the
+// eventual incumbent-versus-shadow diff will use.
 //
-// The comparator (AlertEvent / QuantizeToEvalInterval / DiffAlertStreams /
-// BakeWindowHoldsZero) is real, pure, unit-tested logic — see
-// tier2_alerting_test.go — independent of any live stack. The step bindings
-// below wire it into a live scenario for the SHADOW leg only: this Tier-2
-// substrate (tiers/tier2-ruler) stands up Grafana-managed alerting plus one
-// dead-end receiver, but no genuinely independent INCUMBENT ruler +
-// Alertmanager leg exists yet — MIG-18's own fixture requirement is "Tier-2
-// dual rulers + dead-end Alertmanagers" (docs/migration-testing.md's TEST
-// table), which this substrate does not provide. The incumbent-side step
-// below fails with that gap named explicitly rather than fabricating a
-// result; see this branch's task report for the full accounting.
+// What the live scenario asserts (steps at the bottom of this file), all of it
+// against tiers/tier2-ruler's real Grafana, real cerberus and real dead-end
+// receiver:
+//
+//   - the shadow ruler puts the probe alert into PENDING and keeps it there
+//     for its provisioned hold-down before it reports it firing — a real
+//     state-machine observation, not a timestamp guess;
+//   - the firing notification actually reaches the dead-end receiver, and no
+//     other receiver exists for it to reach;
+//   - that notification carries the rule's provisioned labels verbatim, and
+//     an annotation RENDERED from the alert's own label set rather than
+//     shipped as an unexpanded template;
+//   - clearing the condition produces a matching RESOLVE edge for the same
+//     alert identity, ordered after the firing edge.
+//
+// What it does NOT assert, and why: MIG-18's story ultimately wants alert
+// firing PARITY — the eval-interval-quantized diff of an INCUMBENT ruler's
+// notification stream against the shadow's, and an MWMBR SLO burn-rate delta
+// held at zero across a full bake window. Both need a second, genuinely
+// independent ruler with its own dead-end Alertmanager (the story's own
+// fixture line in docs/migration-testing.md section 6: "Tier-2 dual rulers +
+// dead-end Alertmanagers"), and an MWMBR rule fixture provisioned on both
+// sides. This substrate stands up ONE ruler and ONE receiver, so there is no
+// second stream to diff — one ruler diffed against itself is definitionally
+// clean and would prove nothing.
+//
+// The comparator for that future diff is nonetheless real, pure and
+// unit-tested here and now — QuantizeToEvalInterval / DiffAlertStreams /
+// BakeWindowHoldsZero, pinned by tier2_alerting_test.go — so landing the
+// incumbent leg is a substrate change, not an algorithm change. Section 6's
+// MIG-18 row records exactly that split.
 
 // AlertEvent is one fire or resolve edge from a ruler's notification stream.
 type AlertEvent struct {
-	RuleName string
-	Labels   map[string]string
-	Status   string // "firing" or "resolved"
-	At       time.Time
+	RuleName    string
+	Labels      map[string]string
+	Annotations map[string]string
+	Status      string // "firing" or "resolved"
+	At          time.Time
 }
 
 // QuantizeToEvalInterval floors t to the evaluation-interval boundary at or
@@ -193,17 +209,38 @@ type grafanaWebhookPayload struct {
 // body into its AlertEvents: a firing alert's edge is its startsAt, a
 // resolved alert's edge is its endsAt.
 func ParseGrafanaWebhookEvents(body []byte) ([]AlertEvent, error) {
+	return parseGrafanaWebhook(body, "")
+}
+
+// ParseGrafanaWebhookEventsNamed is ParseGrafanaWebhookEvents narrowed to one
+// alert name. It exists because the ONE dead-end receiver captures every
+// notification the substrate produces — MIG-09's synthetic contact-point test
+// among them — while a scenario asserts about exactly one alert. Narrowing is
+// scoping, not tolerance: a MALFORMED notification for the named alert still
+// fails, and the narrowing is by the alert's own identity rather than by any
+// property of what went wrong.
+func ParseGrafanaWebhookEventsNamed(body []byte, alertName string) ([]AlertEvent, error) {
+	return parseGrafanaWebhook(body, alertName)
+}
+
+// parseGrafanaWebhook decodes a captured webhook body, keeping every alert
+// when alertName is empty and only the named one otherwise.
+func parseGrafanaWebhook(body []byte, alertName string) ([]AlertEvent, error) {
 	var payload grafanaWebhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("parse grafana webhook payload: %w", err)
 	}
 	out := make([]AlertEvent, 0, len(payload.Alerts))
 	for _, a := range payload.Alerts {
-		ev := AlertEvent{RuleName: a.Labels["alertname"], Labels: a.Labels, Status: a.Status}
+		name := a.Labels["alertname"]
+		if alertName != "" && name != alertName {
+			continue
+		}
+		ev := AlertEvent{RuleName: name, Labels: a.Labels, Annotations: a.Annotations, Status: a.Status}
 		switch a.Status {
-		case "firing":
+		case alertStatusFiring:
 			ev.At = a.StartsAt
-		case "resolved":
+		case alertStatusResolved:
 			ev.At = a.EndsAt
 		default:
 			return nil, fmt.Errorf("alert %q carries unrecognised status %q", ev.RuleName, a.Status)
@@ -213,127 +250,453 @@ func ParseGrafanaWebhookEvents(body []byte) ([]AlertEvent, error) {
 	return out, nil
 }
 
-// tier2AlertingState is MIG-18's accumulated state: the incumbent and
-// shadow rulers' notification streams, plus any MWMBR bake-window samples.
+// The two notification statuses Grafana's webhook notifier emits.
+const (
+	alertStatusFiring   = "firing"
+	alertStatusResolved = "resolved"
+)
+
+// === MIG-18's live fire/resolve probe ===
+//
+// Every constant below mirrors a field of the `migration.probe` rule group in
+// tiers/tier2-ruler/grafana/alerting/rules.yaml, whose own comment names this
+// file back. A drift on either side turns a real assertion into a vacuous one,
+// so they are spelled out here rather than read out of the ruler at runtime:
+// reading them back from the thing under test would make every assertion
+// self-fulfilling.
+const (
+	mig18ProbeMetric     = "cerberus_migration_alert_probe"
+	mig18ProbeAlertName  = "MigrationShadowRulerProbe"
+	mig18ProbeService    = "migration-lane"
+	mig18SeverityKey     = "severity"
+	mig18SeverityValue   = "warning"
+	mig18ProbeLabelKey   = "probe"
+	mig18ProbeLabelValue = "fire-resolve"
+	mig18SummaryKey      = "summary"
+	// mig18TemplateOpen is Grafana's annotation-template opening delimiter. An
+	// annotation that still carries it was shipped verbatim rather than
+	// rendered, which is the failure the rendered-annotation assertion exists
+	// to catch.
+	mig18TemplateOpen = "{{"
+	// mig18ProbeHoldDown must equal the probe rule's `for:`. It is the pending
+	// window MIG-18 asserts the shadow ruler actually honored before firing.
+	mig18ProbeHoldDown = 30 * time.Second
+	// mig18FiringValue and mig18ClearedValue straddle the probe rule's
+	// threshold (`gt 0.5`), so arming and clearing are unambiguous rather than
+	// borderline.
+	mig18FiringValue  = 1.0
+	mig18ClearedValue = 0.0
+)
+
+// Seed geometry for the probe series. The arming window only has to outlast
+// the rule's own lookback resolution — the rule reads an INSTANT vector, so a
+// couple of minutes of samples ending at "now" is ample, and a shorter window
+// than the recording rule's keeps the seed cheap.
+const (
+	mig18SeedWindow = 2 * time.Minute
+	mig18SeedStep   = 15 * time.Second
+)
+
+// Budgets. Each is a bounded deadline on a poll loop — never a sleep, never a
+// retry-then-continue: each one fails its step when it expires.
+const (
+	// mig18FiringWait covers the rule group's next tick, the full hold-down,
+	// and a couple of missed ticks besides.
+	mig18FiringWait = 3 * time.Minute
+	// mig18NotifyWait covers the notification policy's group_wait plus
+	// delivery to the dead-end receiver.
+	mig18NotifyWait = 2 * time.Minute
+	// mig18ResolveWait covers the evaluation ticks it takes the cleared series
+	// to drive the alert back to normal, plus the policy's group_interval
+	// flush of the resolved notification.
+	mig18ResolveWait = 3 * time.Minute
+	mig18Poll        = 2 * time.Second
+)
+
+// Grafana reports an alert instance's state as "Pending"/"Alerting" while the
+// Prometheus-compatible shape the same endpoint serves uses
+// "pending"/"firing". Both spellings are accepted, compared lower-cased —
+// this is protocol tolerance about how one state is NAMED, not tolerance about
+// whether the state was reached.
+var (
+	mig18PendingStates = map[string]bool{"pending": true}
+	mig18FiringStates  = map[string]bool{"alerting": true, "firing": true}
+)
+
+// tier2AlertingState is MIG-18's accumulated state across its steps.
 type tier2AlertingState struct {
-	incumbent []AlertEvent
-	shadow    []AlertEvent
-	diff      AlertStreamDiff
-	diffSet   bool
-	mwmbr     []MWMBRSample
+	// armedAt is the wall-clock instant the above-threshold samples became
+	// visible — read AFTER the insert returned, so it is the EARLIEST moment
+	// the ruler could have started its pending clock. Measuring the hold-down
+	// from here can only under-state it, never over-state it, which is the
+	// direction an assertion is allowed to be wrong in.
+	armedAt time.Time
+	// armedLastSample is the instant the last above-threshold sample carries.
+	// The clearing batch starts strictly after it so the two never collide on
+	// one instant.
+	armedLastSample time.Time
+	// pendingSeen records that the ruler reported the probe alert PENDING at
+	// least once before it reported it firing.
+	pendingSeen bool
+	// firingSeenAt is when this harness first observed the ruler reporting the
+	// probe alert firing.
+	firingSeenAt time.Time
+	// firing and resolving are the edges the dead-end receiver captured for
+	// the probe alert.
+	firing    []AlertEvent
+	resolving []AlertEvent
 }
 
-// errTier2NoIncumbentRuler is the honest, specific gap this substrate has
-// today: MIG-18 needs a genuinely independent SECOND ruler + Alertmanager
-// leg to diff against (docs/migration-testing.md's own TEST-table fixture
-// requirement: "Tier-2 dual rulers + dead-end Alertmanagers"), and
-// tiers/tier2-ruler stands up only the shadow leg (Grafana-managed
-// alerting). Landing a real incumbent Prometheus ruler + Alertmanager +
-// second dead-end receiver is out of this change's scope — see the task
-// report for the full accounting of why.
-var errTier2NoIncumbentRuler = errors.New(
-	"MIG-18 needs an independent incumbent ruler + Alertmanager leg to diff the shadow ruler against; " +
-		"this Tier-2 substrate (tiers/tier2-ruler) stands up only the shadow leg (Grafana-managed alerting) " +
-		"plus its dead-end receiver — no incumbent Prometheus ruler / Alertmanager exists in this compose stack yet",
-)
-
-// errTier2NoMWMBRRule is the same class of gap for the MWMBR half: the rule
-// fixture this substrate provisions (grafana/alerting/rules.yaml) is the
-// kube-prometheus-stack recording rule + NodeCPUSaturation threshold alert
-// only — no multi-window multi-burn-rate SLO rule is provisioned on either
-// side to sample a bake-window delta from.
-var errTier2NoMWMBRRule = errors.New(
-	"MIG-18's MWMBR check needs a multi-window multi-burn-rate SLO rule provisioned on both the incumbent and " +
-		"shadow rulers; this Tier-2 substrate's rule fixture (grafana/alerting/rules.yaml) provisions only the " +
-		"kube-prometheus-stack recording rule + NodeCPUSaturation threshold alert — no MWMBR rule exists yet",
-)
-
-// registerTier2AlertingSteps binds MIG-18. The shadow-ruler leg is real and
-// live; the incumbent-ruler and MWMBR-rule legs fail with the specific gap
-// named above rather than fabricating a result — see this file's header.
+// registerTier2AlertingSteps binds MIG-18: the shadow ruler's own fire and
+// resolve lifecycle, end to end against the live substrate. See this file's
+// header for what this deliberately does not claim.
 func (w *World) registerTier2AlertingSteps(ctx *godog.ScenarioContext) {
-	ctx.Step(`^the incumbent ruler evaluates the same rule set over the same overlap$`, w.givenTier2IncumbentRulerEvaluated)
-	ctx.Step(`^the shadow ruler evaluates the same rule set over the same overlap$`, w.whenTier2ShadowRulerEvaluated)
-	ctx.Step(`^fire and resolve timestamps are diffed, eval-interval-quantized$`, w.whenTier2FireResolveDiffed)
-	ctx.Step(`^false-positive, false-negative and timing-skew counts are all zero$`, w.thenTier2AlertStreamsClean)
-	ctx.Step(`^a multi-window multi-burn-rate SLO rule is armed near threshold on both rulers$`, w.givenTier2MWMBRRuleArmed)
+	ctx.Step(`^the shadow ruler's fire-and-resolve probe is armed above its firing threshold$`, w.givenMig18ProbeArmed)
+	ctx.Step(`^the operator waits for the shadow ruler to report the probe alert firing$`, w.whenMig18ProbeFires)
+	ctx.Step(`^the shadow ruler reported the probe alert pending before it reported it firing$`, w.thenMig18ProbeWasPending)
+	ctx.Step(`^the probe alert did not fire before its provisioned pending window had elapsed$`, w.thenMig18HoldDownHonored)
+	ctx.Step(`^the operator waits for the firing notification to reach the dead-end receiver$`, w.whenMig18FiringNotificationArrives)
+	ctx.Step(`^the dead-end receiver captured a firing edge for the probe alert$`, w.thenMig18FiringEdgeCaptured)
+	ctx.Step(`^that firing edge carries the probe alert's provisioned labels$`, w.thenMig18FiringEdgeCarriesLabels)
 	ctx.Step(
-		`^the multi-window multi-burn-rate SLO delta holds zero across the full bake window$`,
-		w.thenTier2MWMBRBakeWindowHoldsZero,
+		`^that firing edge carries an annotation rendered from the probe alert's own label set$`,
+		w.thenMig18FiringEdgeCarriesRenderedAnnotation,
 	)
+	ctx.Step(
+		`^the operator clears the probe below its firing threshold and waits for the resolve notification$`,
+		w.whenMig18ProbeCleared,
+	)
+	ctx.Step(`^the dead-end receiver captured a resolving edge for the probe alert$`, w.thenMig18ResolvingEdgeCaptured)
+	ctx.Step(`^the resolving edge does not precede the firing edge$`, w.thenMig18ResolveFollowsFire)
 }
 
-// givenTier2IncumbentRulerEvaluated is the honest blocker: see
-// errTier2NoIncumbentRuler.
-func (w *World) givenTier2IncumbentRulerEvaluated() error {
-	if err := w.requireTier2Live(); err != nil {
-		return err
-	}
-	return errTier2NoIncumbentRuler
-}
-
-// whenTier2ShadowRulerEvaluated fetches the shadow ruler's (Grafana's)
-// captured notification stream from the dead-end receiver — the one leg of
-// MIG-18 this substrate can genuinely exercise today.
-func (w *World) whenTier2ShadowRulerEvaluated() error {
-	if err := w.requireTier2Live(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), tier2QueryTimeout)
-	defer cancel()
-	events, err := fetchDeadEndAlertEvents(ctx, w.tier2.DeadEndURL)
+// givenMig18ProbeArmed writes above-threshold samples for the probe series,
+// ending at "now". Nothing in the Tier-2 ingest path produces this series, and
+// the probe rule's own query window is wall-clock-relative, so a fixed
+// historical window would age out of its lookback before the rule ever saw it.
+func (w *World) givenMig18ProbeArmed() error {
+	now := time.Now().UTC()
+	last, err := w.seedMig18Probe(now.Add(-mig18SeedWindow), now, mig18FiringValue)
 	if err != nil {
-		return fmt.Errorf("fetch the shadow ruler's captured notifications: %w", err)
+		return err
 	}
-	w.tier2Alerting.shadow = events
+	w.tier2Alerting.armedLastSample = last
+	w.tier2Alerting.armedAt = time.Now().UTC()
 	return nil
 }
 
-// whenTier2FireResolveDiffed computes the eval-interval-quantized diff. It
-// is unreachable in this substrate today because
-// givenTier2IncumbentRulerEvaluated always fails first — it is implemented
-// in full so the comparator wiring is ready the moment an incumbent leg
-// lands.
-func (w *World) whenTier2FireResolveDiffed() error {
-	w.tier2Alerting.diff = DiffAlertStreams(w.tier2Alerting.incumbent, w.tier2Alerting.shadow, tier2RecordingRuleInterval)
-	w.tier2Alerting.diffSet = true
-	return nil
+// seedMig18Probe writes the probe gauge at one constant value across
+// [start, end], returning the instant the last sample landed at.
+func (w *World) seedMig18Probe(start, end time.Time, value float64) (time.Time, error) {
+	if err := w.requireTier2Live(); err != nil {
+		return time.Time{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tier2SeedBudget)
+	defer cancel()
+
+	conn, err := w.tier2.DialCH(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("migration harness: dial clickhouse to seed the fire/resolve probe: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	samples := make([]seed.Sample, 0, int(end.Sub(start)/mig18SeedStep)+1)
+	last := start
+	for t := start; !t.After(end); t = t.Add(mig18SeedStep) {
+		samples = append(samples, seed.Sample{Time: t, Value: value})
+		last = t
+	}
+	if len(samples) == 0 {
+		return time.Time{}, fmt.Errorf(
+			"migration harness: the fire/resolve probe seed window [%s, %s] holds no sample instant, so it would arm nothing",
+			start, end,
+		)
+	}
+	fixture := seed.Fixture{Gauge: []seed.MetricSeries{{
+		MetricName:  mig18ProbeMetric,
+		ServiceName: mig18ProbeService,
+		Attributes:  map[string]string{mig18ProbeLabelKey: mig18ProbeLabelValue},
+		Samples:     samples,
+	}}}
+	if err := seed.InsertFixture(ctx, conn, fixture); err != nil {
+		return time.Time{}, fmt.Errorf("migration harness: seed %s at %g: %w", mig18ProbeMetric, value, err)
+	}
+	return last, nil
 }
 
-// thenTier2AlertStreamsClean asserts MIG-18's PASS shape: zero divergence of
-// every kind the diff tracks.
-func (w *World) thenTier2AlertStreamsClean() error {
-	if !w.tier2Alerting.diffSet {
-		return fmt.Errorf("the fire/resolve streams were never diffed; the scenario must diff them first")
+// whenMig18ProbeFires polls the ruler's own live rule state until the probe
+// alert reports firing, recording on the way whether it passed through
+// PENDING first. Both facts are what the two Then steps assert; neither is
+// re-derived from a timestamp the ruler reported about itself.
+func (w *World) whenMig18ProbeFires() error {
+	if err := w.requireTier2Live(); err != nil {
+		return err
 	}
-	d := w.tier2Alerting.diff
-	if !d.Clean() {
+	ctx := context.Background()
+	deadline := time.Now().Add(mig18FiringWait)
+	var last error
+	for {
+		groups, err := fetchRulerGroups(ctx, w.tier2.GrafanaURL)
+		if err == nil {
+			rule, instance, found := findProbeInstance(groups)
+			switch {
+			case !found:
+				// Quote the rule's own health, not just "no instance": a rule
+				// whose query against cerberus is erroring produces no instance
+				// either, and the two failures need different fixes.
+				last = fmt.Errorf(
+					"the ruler reports no alert instance for %q yet (rule health=%q lastError=%q lastEvaluation=%q)",
+					mig18ProbeAlertName, rule.Health, rule.LastError, rule.LastEvaluation,
+				)
+			case mig18FiringStates[strings.ToLower(instance.State)]:
+				w.tier2Alerting.firingSeenAt = time.Now().UTC()
+				return nil
+			case mig18PendingStates[strings.ToLower(instance.State)]:
+				w.tier2Alerting.pendingSeen = true
+				last = fmt.Errorf("the probe alert is still pending")
+			default:
+				last = fmt.Errorf("the probe alert reports state %q", instance.State)
+			}
+		} else {
+			last = err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the shadow ruler never reported %q firing within %s: %w",
+				mig18ProbeAlertName, mig18FiringWait, last)
+		}
+		time.Sleep(mig18Poll)
+	}
+}
+
+// findProbeInstance locates the probe rule and its single live alert
+// instance. The rule's expression collapses to one series precisely so "the
+// probe alert" is one identity rather than whatever cardinality the seed
+// happened to write. The rule itself is returned even when it has no instance
+// yet, so a caller can report its health rather than only its absence.
+func findProbeInstance(groups []rulerRuleGroup) (rulerRule, rulerAlertInstance, bool) {
+	for _, g := range groups {
+		for _, r := range g.Rules {
+			if r.Name != mig18ProbeAlertName {
+				continue
+			}
+			if len(r.Alerts) == 0 {
+				return r, rulerAlertInstance{}, false
+			}
+			return r, r.Alerts[0], true
+		}
+	}
+	return rulerRule{}, rulerAlertInstance{}, false
+}
+
+// thenMig18ProbeWasPending asserts the ruler held the alert in PENDING rather
+// than jumping straight to firing — the observable half of "a hold-down
+// happened at all".
+func (w *World) thenMig18ProbeWasPending() error {
+	if w.tier2Alerting.firingSeenAt.IsZero() {
+		return fmt.Errorf("the probe alert was never observed firing; the scenario must wait for it first")
+	}
+	if !w.tier2Alerting.pendingSeen {
 		return fmt.Errorf(
-			"alert-firing parity diverged: false_positive=%d false_negative=%d timing_skew=%d (matched=%d)",
-			d.FalsePositive, d.FalseNegative, d.TimingSkew, d.Matched,
+			"the shadow ruler never reported %q pending before reporting it firing — an alert that skips the "+
+				"pending state has no hold-down, so a repointed pager would fire on a single stray evaluation",
+			mig18ProbeAlertName,
 		)
 	}
 	return nil
 }
 
-// givenTier2MWMBRRuleArmed is the honest blocker for the MWMBR half: see
-// errTier2NoMWMBRRule.
-func (w *World) givenTier2MWMBRRuleArmed() error {
-	if err := w.requireTier2Live(); err != nil {
-		return err
+// thenMig18HoldDownHonored asserts the measured half: the firing report could
+// not have arrived before the provisioned pending window had elapsed since the
+// condition was armed. Measured against this harness's own clock, not against
+// a timestamp the ruler self-reported.
+func (w *World) thenMig18HoldDownHonored() error {
+	armed, fired := w.tier2Alerting.armedAt, w.tier2Alerting.firingSeenAt
+	if armed.IsZero() {
+		return fmt.Errorf("the probe was never armed; the scenario must arm it first")
 	}
-	return errTier2NoMWMBRRule
+	if fired.IsZero() {
+		return fmt.Errorf("the probe alert was never observed firing; the scenario must wait for it first")
+	}
+	if held := fired.Sub(armed); held < mig18ProbeHoldDown {
+		return fmt.Errorf(
+			"%q was reported firing %s after its condition was armed, sooner than its provisioned pending "+
+				"window of %s — the ruler did not honor the hold-down",
+			mig18ProbeAlertName, held, mig18ProbeHoldDown,
+		)
+	}
+	return nil
 }
 
-// thenTier2MWMBRBakeWindowHoldsZero asserts the bake-window predicate over
-// whatever samples were collected, reusing migrateverify.DefaultTolerance —
-// the same exact-parity epsilon MIG-13/MIG-19 reuse — rather than inventing
-// a second, unexplained float tolerance for what is still "the same value,
-// computed twice" at bottom. Like whenTier2FireResolveDiffed, it is
-// unreachable today (givenTier2MWMBRRuleArmed always fails first) but
-// implemented in full.
-func (w *World) thenTier2MWMBRBakeWindowHoldsZero() error {
-	return BakeWindowHoldsZero(w.tier2Alerting.mwmbr, migrateverify.DefaultTolerance)
+// whenMig18FiringNotificationArrives polls the dead-end receiver until it has
+// captured a firing edge for the probe alert.
+func (w *World) whenMig18FiringNotificationArrives() error {
+	events, err := w.pollProbeEdges(alertStatusFiring, mig18NotifyWait)
+	if err != nil {
+		return err
+	}
+	w.tier2Alerting.firing = events
+	return nil
+}
+
+// whenMig18ProbeCleared drives the probe series back below its threshold and
+// then polls for the resolve edge. The cleared samples start strictly AFTER
+// the last armed sample, so the two batches never collide on one instant and
+// the instant vector the rule evaluates unambiguously reads the cleared value.
+func (w *World) whenMig18ProbeCleared() error {
+	if w.tier2Alerting.armedLastSample.IsZero() {
+		return fmt.Errorf("the probe was never armed; the scenario must arm it first")
+	}
+	start := w.tier2Alerting.armedLastSample.Add(mig18SeedStep)
+	if _, err := w.seedMig18Probe(start, time.Now().UTC(), mig18ClearedValue); err != nil {
+		return err
+	}
+	events, err := w.pollProbeEdges(alertStatusResolved, mig18ResolveWait)
+	if err != nil {
+		return err
+	}
+	w.tier2Alerting.resolving = events
+	return nil
+}
+
+// pollProbeEdges polls the dead-end receiver until it has captured at least
+// one edge of the given status for the probe alert, returning every such edge.
+func (w *World) pollProbeEdges(status string, budget time.Duration) ([]AlertEvent, error) {
+	if err := w.requireTier2Live(); err != nil {
+		return nil, err
+	}
+	ctx := context.Background()
+	deadline := time.Now().Add(budget)
+	var last error
+	for {
+		events, err := fetchProbeAlertEvents(ctx, w.tier2.DeadEndURL)
+		if err == nil {
+			matching := filterByStatus(events, status)
+			if len(matching) > 0 {
+				return matching, nil
+			}
+			last = fmt.Errorf("the receiver holds %d edge(s) for %q, none of them %s",
+				len(events), mig18ProbeAlertName, status)
+		} else {
+			last = err
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("the dead-end receiver never captured a %s edge for %q within %s: %w",
+				status, mig18ProbeAlertName, budget, last)
+		}
+		time.Sleep(mig18Poll)
+	}
+}
+
+// filterByStatus keeps the edges of one status.
+func filterByStatus(events []AlertEvent, status string) []AlertEvent {
+	out := make([]AlertEvent, 0, len(events))
+	for _, e := range events {
+		if e.Status == status {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// thenMig18FiringEdgeCaptured asserts the poll actually observed a firing
+// edge, and reports how many.
+func (w *World) thenMig18FiringEdgeCaptured() error {
+	if len(w.tier2Alerting.firing) == 0 {
+		return fmt.Errorf(
+			"the dead-end receiver captured no firing edge for %q; the shadow ruler evaluated but nothing "+
+				"reached the one contact point this substrate provisions", mig18ProbeAlertName,
+		)
+	}
+	return nil
+}
+
+// thenMig18FiringEdgeCarriesLabels asserts the captured notification carries
+// the rule's provisioned label set verbatim — the routing keys an operator's
+// existing Alertmanager silences and routes are written against.
+func (w *World) thenMig18FiringEdgeCarriesLabels() error {
+	if err := w.thenMig18FiringEdgeCaptured(); err != nil {
+		return err
+	}
+	edge := w.tier2Alerting.firing[0]
+	want := map[string]string{
+		"alertname":        mig18ProbeAlertName,
+		mig18SeverityKey:   mig18SeverityValue,
+		mig18ProbeLabelKey: mig18ProbeLabelValue,
+	}
+	for key, value := range want {
+		got, ok := edge.Labels[key]
+		if !ok {
+			return fmt.Errorf("the firing edge for %q carries no %q label; it carries %v",
+				mig18ProbeAlertName, key, edge.Labels)
+		}
+		if got != value {
+			return fmt.Errorf("the firing edge for %q carries %s=%q, want %q",
+				mig18ProbeAlertName, key, got, value)
+		}
+	}
+	return nil
+}
+
+// thenMig18FiringEdgeCarriesRenderedAnnotation asserts the notification's
+// annotation was RENDERED from the alert's own label set: it must carry the
+// label's value and must not still carry the template delimiter. An
+// unexpanded annotation is exactly the class of breakage a repointed pager
+// notices only once it has already woken somebody.
+func (w *World) thenMig18FiringEdgeCarriesRenderedAnnotation() error {
+	if err := w.thenMig18FiringEdgeCaptured(); err != nil {
+		return err
+	}
+	edge := w.tier2Alerting.firing[0]
+	summary, ok := edge.Annotations[mig18SummaryKey]
+	if !ok {
+		return fmt.Errorf("the firing edge for %q carries no %q annotation; it carries %v",
+			mig18ProbeAlertName, mig18SummaryKey, edge.Annotations)
+	}
+	if strings.Contains(summary, mig18TemplateOpen) {
+		return fmt.Errorf("the %q annotation arrived unrendered, still carrying %q: %q",
+			mig18SummaryKey, mig18TemplateOpen, summary)
+	}
+	if !strings.Contains(summary, mig18ProbeLabelValue) {
+		return fmt.Errorf(
+			"the %q annotation %q does not carry the alert's own %s label value %q, so it was not rendered "+
+				"from the alert's label set",
+			mig18SummaryKey, summary, mig18ProbeLabelKey, mig18ProbeLabelValue,
+		)
+	}
+	return nil
+}
+
+// thenMig18ResolvingEdgeCaptured asserts the resolve half of the lifecycle
+// reached the receiver too — a ruler that fires but never resolves leaves an
+// operator's incident open forever.
+func (w *World) thenMig18ResolvingEdgeCaptured() error {
+	if len(w.tier2Alerting.resolving) == 0 {
+		return fmt.Errorf(
+			"the dead-end receiver captured no resolving edge for %q after its condition cleared",
+			mig18ProbeAlertName,
+		)
+	}
+	return nil
+}
+
+// thenMig18ResolveFollowsFire asserts the two edges are ordered as a lifecycle
+// rather than as two unrelated notifications that happened to share a name.
+func (w *World) thenMig18ResolveFollowsFire() error {
+	if err := w.thenMig18FiringEdgeCaptured(); err != nil {
+		return err
+	}
+	if err := w.thenMig18ResolvingEdgeCaptured(); err != nil {
+		return err
+	}
+	firedAt := w.tier2Alerting.firing[0].At
+	resolvedAt := w.tier2Alerting.resolving[0].At
+	if resolvedAt.Before(firedAt) {
+		return fmt.Errorf(
+			"%q resolved at %s, before it fired at %s — the captured edges are not one alert's lifecycle",
+			mig18ProbeAlertName, resolvedAt, firedAt,
+		)
+	}
+	return nil
 }
 
 // deadEndNotification mirrors the dead-end receiver's /notifications/list
@@ -347,9 +710,11 @@ type deadEndListResponse struct {
 	Notifications []deadEndNotification `json:"notifications"`
 }
 
-// fetchDeadEndAlertEvents fetches every notification the dead-end receiver
-// has captured and parses each one's body into its AlertEvents.
-func fetchDeadEndAlertEvents(ctx context.Context, deadEndURL string) ([]AlertEvent, error) {
+// fetchProbeAlertEvents fetches every notification the dead-end receiver has
+// captured and returns the edges belonging to MIG-18's probe alert. The
+// receiver is shared with MIG-09's contact-point test, so the narrowing is by
+// alert identity — see ParseGrafanaWebhookEventsNamed.
+func fetchProbeAlertEvents(ctx context.Context, deadEndURL string) ([]AlertEvent, error) {
 	target := strings.TrimRight(deadEndURL, "/") + "/notifications/list"
 	var resp deadEndListResponse
 	if err := fetchJSONGet(ctx, target, &resp); err != nil {
@@ -357,7 +722,7 @@ func fetchDeadEndAlertEvents(ctx context.Context, deadEndURL string) ([]AlertEve
 	}
 	out := make([]AlertEvent, 0, len(resp.Notifications))
 	for _, n := range resp.Notifications {
-		events, err := ParseGrafanaWebhookEvents(n.Body)
+		events, err := ParseGrafanaWebhookEventsNamed(n.Body, mig18ProbeAlertName)
 		if err != nil {
 			return nil, fmt.Errorf("notification received at %s: %w", n.ReceivedAt, err)
 		}

@@ -87,7 +87,7 @@ type tier2WritebackState struct {
 func (w *World) registerTier2WritebackSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the recording rule's source series is seeded with live samples$`, w.givenTier2SourceSeriesSeeded)
 	ctx.Step(`^the operator waits for the ruler's write-back to land$`, w.whenTier2WritebackLands)
-	ctx.Step(`^the recorded series is selectable through cerberus$`, w.thenTier2RecordedSeriesSelectable)
+	ctx.Step(`^the recorded series is selectable through cerberus$`, w.thenRecordedSeriesSelectable)
 	ctx.Step(`^the recorded series carries at least one sample$`, w.thenTier2RecordedSeriesHasSamples)
 	ctx.Step(`^no recorded metric name is silently missing from the landing zone$`, w.thenTier2NoMetricNameMissingFromLandingZone)
 	ctx.Step(
@@ -158,10 +158,13 @@ func (w *World) whenTier2WritebackLands() error {
 		switch {
 		case err != nil:
 			lastErr = err
+			w.tier2ReadBack = recordedReadBack{polled: true, detail: err.Error()}
 		case countSamples(got) >= tier2WritebackMinSamples:
 			w.tier2Writeback.landed = got
+			w.publishRecordedReadBack(got)
 			return nil
 		default:
+			w.publishRecordedReadBack(got)
 			lastErr = fmt.Errorf("only %d sample(s) landed so far, want at least %d", countSamples(got), tier2WritebackMinSamples)
 		}
 		if time.Now().After(deadline) {
@@ -194,11 +197,38 @@ func countSamples(series []lib.PromSeries) int {
 	return n
 }
 
-// thenTier2RecordedSeriesSelectable is MIG-13's core assertion: the
-// recording rule's output round-trips ruler -> collector -> CH -> cerberus.
-func (w *World) thenTier2RecordedSeriesSelectable() error {
-	if len(w.tier2Writeback.landed) == 0 {
-		return fmt.Errorf("no recorded series was read back through cerberus; the scenario must wait for write-back to land first")
+// publishRecordedReadBack records what a write-back poll last saw in the
+// World's shared read-back slot, so the single "selectable through cerberus"
+// step can report a real cardinality whichever scenario ran the poll.
+func (w *World) publishRecordedReadBack(got []lib.PromSeries) {
+	w.tier2ReadBack = recordedReadBack{
+		polled: true,
+		series: len(got),
+		detail: fmt.Sprintf(
+			"range query for %q over the seeded window answered %d series carrying %d sample(s)",
+			nodeCPURecordedMetricName, len(got), countSamples(got),
+		),
+	}
+}
+
+// thenRecordedSeriesSelectable is the ONE definition of "the recorded series
+// is selectable through cerberus" — MIG-09's core assertion and MIG-13's
+// alike: the recording rule's output round-trips ruler -> relay -> collector
+// -> ClickHouse -> cerberus and comes back out under its declared name. Each
+// scenario's own When populates the shared slot this reads (see
+// recordedReadBack in world.go); registering it twice would be an
+// ambiguous-step error under godog's Strict mode, which is exactly how it
+// used to fail both scenarios at once.
+func (w *World) thenRecordedSeriesSelectable() error {
+	rb := w.tier2ReadBack
+	if !rb.polled {
+		return fmt.Errorf(
+			"no step has read %q back through cerberus; the scenario must poll for the write-back first",
+			nodeCPURecordedMetricName,
+		)
+	}
+	if rb.series == 0 {
+		return fmt.Errorf("%q is not selectable through cerberus: %s", nodeCPURecordedMetricName, rb.detail)
 	}
 	return nil
 }
@@ -206,8 +236,13 @@ func (w *World) thenTier2RecordedSeriesSelectable() error {
 // thenTier2RecordedSeriesHasSamples asserts the selectable series actually
 // carries data, not merely an empty result shape.
 func (w *World) thenTier2RecordedSeriesHasSamples() error {
-	if err := w.thenTier2RecordedSeriesSelectable(); err != nil {
+	if err := w.thenRecordedSeriesSelectable(); err != nil {
 		return err
+	}
+	if len(w.tier2Writeback.landed) == 0 {
+		return fmt.Errorf(
+			"no recorded series was read back over the seeded window; this assertion needs MIG-13's own write-back poll, not MIG-09's instant read",
+		)
 	}
 	if n := countSamples(w.tier2Writeback.landed); n == 0 {
 		return fmt.Errorf("the recorded series %q carries zero samples", nodeCPURecordedMetricName)

@@ -31,10 +31,28 @@ import (
 // asserts against a delta, never an absolute count another scenario (or a
 // previous run against the same long-lived stack) might have already moved.
 type tier2RulerState struct {
-	groups         []rulerRuleGroup
-	recordedSeries recordedSeriesPoll
-	notifBase      int
-	notifSeen      bool
+	groups    []rulerRuleGroup
+	notifBase int
+	notifSeen bool
+}
+
+// recordedReadBack is the ONE slot every "did the recording rule's output
+// come back out of cerberus?" poll publishes into, so the single
+// `the recorded series is selectable through cerberus` step definition
+// (registered once, in tier2_writeback.go) serves both scenarios that assert
+// it. MIG-09 reaches it through an instant query for the recorded name;
+// MIG-13's Tier-2 half reaches it through a range query over the window it
+// seeded. Both prove the same thing — the write-back landed and reads back —
+// so they share one step rather than racing two definitions of one step text
+// past godog's Strict ambiguity check.
+//
+// `polled` distinguishes "a poll ran and saw nothing" (a real failure, with
+// `detail` naming what cerberus answered) from "no poll ran at all" (a
+// scenario-construction bug, reported as one).
+type recordedReadBack struct {
+	polled bool
+	series int
+	detail string
 }
 
 // workspacePattern names the per-scenario temporary directory every `--out`
@@ -107,9 +125,12 @@ type World struct {
 	tier2Alerting tier2AlertingState
 
 	// tier2Ruler carries the MIG-09 ruler scenario's state (rule groups
-	// polled, recorded-series/notification deltas). See
-	// steps/then_ruler.go.
+	// polled, notification delta). See steps/then_ruler.go.
 	tier2Ruler tier2RulerState
+
+	// tier2ReadBack is the shared recorded-series read-back slot MIG-09 and
+	// MIG-13's Tier-2 half both publish into — see recordedReadBack.
+	tier2ReadBack recordedReadBack
 
 	// live is the Tier-1 stack's endpoints, established by "the tier-1 stack
 	// is live" — nil-valued (a zero LiveEndpoints) until that Given runs, so
@@ -223,6 +244,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.tier2Writeback = tier2WritebackState{}
 		w.tier2Alerting = tier2AlertingState{}
 		w.tier2Ruler = tier2RulerState{}
+		w.tier2ReadBack = recordedReadBack{}
 		w.live, w.liveSet = lib.LiveEndpoints{}, false
 		w.manifest = map[string]seed.Manifest{}
 		w.verifyCorpusFile = ""
