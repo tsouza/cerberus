@@ -90,6 +90,20 @@ type World struct {
 	verifyReport     map[string]migrateverify.Report
 	verifyRaw        map[string][]byte
 	verifyExitCode   map[string]int
+
+	// cutover is MIG-22's per-archetype flip/revert probe state, and boundary
+	// is MIG-23's per-archetype ingest-start state. Both drive live HTTP/CH
+	// probes directly rather than a `cerberus migrate` artifact, mirroring
+	// MIG-20's "dedicated comparator, not verify" posture for a shape none of
+	// the eight CLI subcommands cover.
+	cutover  map[string]cutoverProbe
+	boundary map[string]boundaryProbe
+
+	// decommission is MIG-25's per-archetype residual-read-traffic audit
+	// state, and retentionGate is MIG-26's tier-1 live-retention-vs-mandate
+	// comparison state.
+	decommission  map[string]decommissionRun
+	retentionGate map[string]retentionGateRun
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -123,6 +137,10 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.verifyReport = map[string]migrateverify.Report{}
 		w.verifyRaw = map[string][]byte{}
 		w.verifyExitCode = map[string]int{}
+		w.cutover = map[string]cutoverProbe{}
+		w.boundary = map[string]boundaryProbe{}
+		w.decommission = map[string]decommissionRun{}
+		w.retentionGate = map[string]retentionGateRun{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -156,6 +174,8 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerLookbackSteps(ctx)
 	w.registerGateSteps(ctx)
 	w.registerVerifySteps(ctx)
+	w.registerCutoverSteps(ctx)
+	w.registerDecommissionSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.
