@@ -62,7 +62,17 @@ type correlationProbe struct {
 	// real log record in this window actually carries. It seeds the LogQL
 	// query's time bound but is deliberately NOT what drives the trace-by-id
 	// fetch — see traceIDInLineRe.
-	wantTraceID   string
+	wantTraceID string
+	// wantRecordTime is the timestamp of the record wantTraceID was taken
+	// from. It is reported on failure so a mismatch says WHICH record the
+	// oracle pinned, without which "returned X, wanted Y" cannot be told
+	// apart from the query having simply started somewhere else.
+	wantRecordTime time.Time
+	// responseShape describes how many streams the live query matched and how
+	// its leading entries were ordered — the evidence that separates "the
+	// selector stopped pinning one stream" from "cerberus resolved the wrong
+	// trace".
+	responseShape string
 	wantSpanCount int
 
 	// Populated by the When step from what cerberus's own responses said.
@@ -140,11 +150,12 @@ func (w *World) givenCorrelationProbe() error {
 		// traced line the query returns need not be THIS record's stream at
 		// all. Pinning every label narrows the query to the exact stream the
 		// picked record belongs to.
-		logSelector:   logQLSelectorFor(stream.Labels),
-		logStart:      manifest.VerifyStart,
-		logEnd:        manifest.VerifyEnd,
-		wantTraceID:   record.TraceID,
-		wantSpanCount: spans,
+		logSelector:    logQLSelectorFor(stream.Labels),
+		logStart:       manifest.VerifyStart,
+		logEnd:         manifest.VerifyEnd,
+		wantTraceID:    record.TraceID,
+		wantRecordTime: record.Time,
+		wantSpanCount:  spans,
 	}
 	return nil
 }
@@ -231,10 +242,11 @@ func (w *World) whenResolveCorrelation() error {
 		return fmt.Errorf("no correlation probe established; the scenario must establish one first")
 	}
 
-	line, err := correlationQueryLogs(w.live.CerberusURL, w.correlation.logSelector, w.correlation.logStart, w.correlation.logEnd)
+	line, shape, err := correlationQueryLogs(w.live.CerberusURL, w.correlation.logSelector, w.correlation.logStart, w.correlation.logEnd)
 	if err != nil {
 		return fmt.Errorf("migration harness: query cerberus's log API: %w", err)
 	}
+	w.correlation.responseShape = shape
 	m := traceIDInLineRe.FindStringSubmatch(line)
 	if m == nil {
 		return fmt.Errorf("cerberus returned a log line carrying no recognisable trace_id: %q", line)
@@ -270,34 +282,85 @@ const correlationLogLimit = 500
 
 // correlationQueryLogs issues one LogQL query_range against base (cerberus's
 // own base URL) and returns the first returned line carrying any trace_id
-// token, failing when the query itself fails or returns nothing at all.
-func correlationQueryLogs(base, selector string, start, end time.Time) (string, error) {
+// token, together with a description of the shape the response came back in.
+//
+// The shape is returned rather than discarded because "the first traced line"
+// is only well-defined when the selector matched exactly ONE stream. The
+// selector pins every label of the picked stream precisely so that holds; if
+// it ever stops holding, "first" silently means "first of whichever stream the
+// backend happened to order first", and the mismatch that surfaces upstream is
+// indistinguishable from a genuine correlation bug. The caller reports this in
+// its failure message so one CI run tells the two apart.
+func correlationQueryLogs(base, selector string, start, end time.Time) (string, string, error) {
 	q := base + "/loki/api/v1/query_range?query=" + url.QueryEscape(selector) +
 		"&start=" + strconv.FormatInt(start.UnixNano(), 10) +
 		"&end=" + strconv.FormatInt(end.UnixNano(), 10) +
 		"&direction=forward&limit=" + strconv.Itoa(correlationLogLimit)
 	body, err := correlationGET(q)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var resp lokiQueryRangeResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("decode loki query_range response: %w", err)
+		return "", "", fmt.Errorf("decode loki query_range response: %w", err)
 	}
 	if resp.Status != "success" {
-		return "", fmt.Errorf("loki query_range status %q, want success", resp.Status)
+		return "", "", fmt.Errorf("loki query_range status %q, want success", resp.Status)
 	}
+
+	shape := describeLogResponse(resp)
 	for _, res := range resp.Data.Result {
 		for _, v := range res.Values {
 			if len(v) < 2 {
 				continue
 			}
 			if traceIDInLineRe.MatchString(v[1]) {
-				return v[1], nil
+				return v[1], shape, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("cerberus returned no log line carrying a trace_id for selector %s", selector)
+	return "", shape, fmt.Errorf("cerberus returned no log line carrying a trace_id for selector %s (%s)",
+		selector, shape)
+}
+
+// correlationShapeStreams bounds how many streams describeLogResponse names
+// individually. One is the expected case; more than a handful means the
+// selector is not pinning a stream at all, which the count alone already says.
+const correlationShapeStreams = 4
+
+// correlationShapeEntries bounds how many leading entries of the first stream
+// are timestamped in the description. Enough to see whether the backend
+// ordered forward and where the first traced line sits, short enough that a
+// failure message stays readable.
+const correlationShapeEntries = 5
+
+// describeLogResponse renders the returned streams and the first few entries
+// of the first one, so a failing correlation assertion carries the evidence
+// needed to attribute it: how many streams matched, their labels, and the
+// leading timestamps in the order the backend returned them.
+func describeLogResponse(resp lokiQueryRangeResponse) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d stream(s) returned", len(resp.Data.Result))
+	for i, res := range resp.Data.Result {
+		if i >= correlationShapeStreams {
+			fmt.Fprintf(&b, "; +%d more", len(resp.Data.Result)-correlationShapeStreams)
+			break
+		}
+		fmt.Fprintf(&b, "; [%d] labels=%v entries=%d", i, res.Stream, len(res.Values))
+	}
+	if len(resp.Data.Result) > 0 {
+		b.WriteString("; first stream's leading entries:")
+		for i, v := range resp.Data.Result[0].Values {
+			if i >= correlationShapeEntries {
+				break
+			}
+			if len(v) < 2 {
+				continue
+			}
+			fmt.Fprintf(&b, " (ts=%s traced=%v)", v[0], traceIDInLineRe.MatchString(v[1]))
+		}
+	}
+	return b.String()
 }
 
 // tempoTraceByIDResponse is cerberus's trace-by-id JSON envelope: one
@@ -437,8 +500,14 @@ func (w *World) thenLogLineCarriesFixtureTraceID() error {
 		return err
 	}
 	if w.correlation.logLineTraceID != w.correlation.wantTraceID {
-		return fmt.Errorf("cerberus's log query returned trace_id %s, the fixture wrote %s for this record",
-			w.correlation.logLineTraceID, w.correlation.wantTraceID)
+		return fmt.Errorf("cerberus's log query returned trace_id %s, the fixture wrote %s for the record at %s "+
+			"(selector %s over [%s, %s]; %s)",
+			w.correlation.logLineTraceID, w.correlation.wantTraceID,
+			w.correlation.wantRecordTime.UTC().Format(time.RFC3339Nano),
+			w.correlation.logSelector,
+			w.correlation.logStart.UTC().Format(time.RFC3339Nano),
+			w.correlation.logEnd.UTC().Format(time.RFC3339Nano),
+			w.correlation.responseShape)
 	}
 	return nil
 }
