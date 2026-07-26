@@ -43,7 +43,8 @@ import (
 
 // nativeScanProjSeed builds a wide otel_metrics_sum carrying the columns a
 // real OTel-CH export drags: the per-sample (MetricName, Attributes,
-// TimeUnix, Value) the rate aggregate needs PLUS the wide
+// TimeUnix, Value) the rate aggregate needs, the dedicated ServiceName
+// column every selector's label projection reads, PLUS the wide
 // ResourceAttributes / ScopeAttributes maps and an exemplar-style array
 // that the native rate path never reads. min_bytes_for_wide_part=0 forces a
 // wide part so system.parts_columns reports real per-column bytes.
@@ -54,6 +55,7 @@ CREATE OR REPLACE TABLE otel_metrics_sum (
     ResourceAttributes Map(String, String),
     ScopeAttributes Map(String, String),
     ExemplarValues Array(Float64),
+    ServiceName LowCardinality(String),
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix)
@@ -61,7 +63,9 @@ SETTINGS min_bytes_for_wide_part = 0;
 `
 
 // nativeScanProjInsert populates the seed with a wide resource/scope map
-// per row so the unread columns are genuinely heavy on disk.
+// per row so the unread columns are genuinely heavy on disk. ServiceName
+// carries the same value the resource map's `service.name` does, exactly as
+// the OTel-CH exporter writes it into both.
 const nativeScanProjInsert = `
 INSERT INTO otel_metrics_sum
 SELECT
@@ -75,6 +79,7 @@ SELECT
         'host.id', concat('host-', toString(number % 1024))) AS ResourceAttributes,
     map('otel.scope.name', 'cerberus', 'otel.scope.version', '1.0.0') AS ScopeAttributes,
     [toFloat64(number), toFloat64(number) * 2, toFloat64(number) * 3] AS ExemplarValues,
+    concat('svc-', toString(number % 128)) AS ServiceName,
     toDateTime64('2026-01-01 00:00:00', 9) + toIntervalSecond(number % 300) AS TimeUnix,
     toFloat64(number) AS Value
 FROM numbers(200000);

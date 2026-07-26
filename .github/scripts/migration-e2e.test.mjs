@@ -27,7 +27,6 @@ import {
   outcomesFromReports,
   attestedCount,
   reportPathFor,
-  buildMatrix,
   requestedTiers,
   nonRunnableTiers,
   tiersWithScenarios,
@@ -423,18 +422,9 @@ test('a Scenario Outline placeholder is not read as an operator', () => {
   assert.deepEqual(collectViolations(w), []);
 });
 
-// --- the matrix --------------------------------------------------------------
+// --- tier selection ----------------------------------------------------------
 
-test('buildMatrix emits one tier-0 entry carrying every tier-0 story and its ceiling', () => {
-  const { include } = buildMatrix(world().scenarios, { tiers: ['tier0'] });
-  assert.equal(include.length, 1);
-  assert.equal(include[0].name, 'tier0');
-  assert.equal(include[0].tier, 'tier0');
-  assert.deepEqual(include[0].stories, TIER0_STORIES);
-  assert.equal(include[0].timeoutMinutes, TIER0_TIMEOUT_MIN);
-});
-
-test('a tier no scenario declares never reaches the matrix', () => {
+test('a tier no scenario declares never reaches the tier list', () => {
   // `all` resolves to the tiers the feature tree actually declares. Every
   // known tier is declared today, so drop one from the synthetic world and it
   // must drop out of the resolution rather than being emitted as a job with
@@ -444,48 +434,32 @@ test('a tier no scenario declares never reaches the matrix', () => {
   assert.deepEqual(requestedTiers('all', withoutTier2), ['tier0', 'tier1']);
 });
 
-test('a tier with no job is refused before a matrix entry can be built for it', () => {
+test('a tier with no job is refused by name before it can be selected', () => {
   // A scenario tagged with a tier migration-e2e.yml has no job for would
-  // silently never run. emit rejects it by name, and buildMatrix throws
-  // rather than emitting an entry with no ceiling. All three KNOWN_TIERS have
+  // silently never run, so emit rejects it by name. All three KNOWN_TIERS have
   // a job today, so the guard is exercised against a tier ordinal beyond them
   // — which is exactly the state tier2 itself was in before its job landed.
   const undeclaredTier = 'tier3';
   assert.ok(!KNOWN_TIERS.includes(undeclaredTier), 'the guard needs a tier with no declared job');
   assert.deepEqual(nonRunnableTiers(KNOWN_TIERS), []);
   assert.deepEqual(nonRunnableTiers([...KNOWN_TIERS, undeclaredTier]), [undeclaredTier]);
-  const scenarios = [scenario('MIG-09', { tiers: [undeclaredTier], archetypes: ['kube-prometheus-stack'] })];
-  assert.throws(() => buildMatrix(scenarios, { tiers: [undeclaredTier] }), /no declared ceiling/);
 });
 
-test('exactly one tier is matrix-driven, so migration-tier0 can be named statically', () => {
-  // migration-e2e.yml hardcodes `name: migration-tier0` instead of deriving it
-  // from `matrix.name`, because a narrowed dispatch skips that job with an
-  // EMPTY matrix and GitHub then renders the raw `${{ matrix.name }}` literal
-  // in the run list — a skipped job that looks like a broken workflow.
-  //
-  // The hardcode is only truthful while the job cannot fan out past one shard.
-  // If a second matrix-driven tier is ever added, one of its shards would carry
-  // the other's name, so fail here and make the author revisit the label.
-  const matrixDriven = Object.entries(TIER_JOBS)
-    .filter(([, job]) => job.matrixDriven)
-    .map(([tier]) => tier);
-  assert.deepEqual(matrixDriven, ['tier0']);
+test('every tier declares a ceiling, because its job interpolates one literally', () => {
+  // Each of the three tier jobs is a fixed stanza owning one tag filter, and
+  // each hardcodes `timeout-minutes:` to mirror the constant here. A tier
+  // added to TIER_JOBS without a ceiling would leave its job with none.
+  assert.deepEqual(Object.keys(TIER_JOBS), KNOWN_TIERS);
+  for (const [tier, job] of Object.entries(TIER_JOBS)) {
+    assert.equal(typeof job.timeoutMinutes, 'number', `${tier} has no ceiling`);
+    assert.ok(job.timeoutMinutes > 0, `${tier} has a non-positive ceiling`);
+  }
+  assert.equal(TIER_JOBS.tier0.timeoutMinutes, TIER0_TIMEOUT_MIN);
 });
 
-test('a runnable tier whose job is not matrix-driven stays out of the matrix', () => {
-  // tier1's and tier2's jobs each bring a compose stack up around the suite,
-  // so they are fixed stanzas, not matrix shards. Emitting an entry for either
-  // here would spawn a matrix shard running that tier's suite on a bare runner
-  // with no stack behind it — green for the wrong reason, or red for a reason
-  // that has nothing to do with the scenarios. It would also be named exactly
-  // like the real fixed job, since both shapes render as `migration-<tier>`.
-  assert.equal(TIER_JOBS.tier1.matrixDriven, false);
-  assert.equal(TIER_JOBS.tier2.matrixDriven, false);
-  const { include } = buildMatrix(world().scenarios, { tiers: KNOWN_TIERS });
-  assert.deepEqual(include.map((e) => e.tier), ['tier0']);
-  // ...but both are still RUNNABLE, and still selected, so the roll-up expects
-  // a result from each.
+test('every runnable tier with scenarios is selected, and the roll-up expects each', () => {
+  // All three tiers are fixed jobs gated on the same `tiers` output, so
+  // selection and the roll-up's expectation are the same list.
   assert.deepEqual(nonRunnableTiers(['tier1', 'tier2']), []);
   assert.deepEqual(tiersWithScenarios(world().scenarios, KNOWN_TIERS), ['tier0', 'tier1', 'tier2']);
 });

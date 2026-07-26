@@ -74,14 +74,7 @@ import (
 // inside (0s,300s]; under whole-second flooring it collapses to second 0 and
 // falls outside. The remaining samples are whole-second so the divergence is
 // attributable to exactly that one straddling point.
-const subSecondDerivSeed = `
-CREATE OR REPLACE TABLE otel_metrics_gauge (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+var subSecondDerivSeed = metricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00.5', 9), 5.0),
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 10.0),

@@ -378,13 +378,38 @@ func backfillMetricsColumns(stmts []string) []string {
 	return out
 }
 
+// createTableHeads are the `CREATE … TABLE ` spellings a seed may open a
+// metric-table definition with. Matching only the bare `CREATE TABLE `
+// form is what let the exotic-PromQL and perf seeds — both written as
+// `CREATE OR REPLACE TABLE` — slip past the backfill and fail at query
+// time with UNKNOWN_IDENTIFIER on a column the read path projects.
+// Longest-first, so `CREATE OR REPLACE TABLE ` is never mis-read as the
+// bare form.
+var createTableHeads = []string{
+	"CREATE OR REPLACE TABLE ",
+	"CREATE TABLE IF NOT EXISTS ",
+	"CREATE TABLE ",
+}
+
+// ddlCreateTableTail returns everything after whichever [createTableHeads]
+// spelling stmt opens with — i.e. the text starting at the table name.
+func ddlCreateTableTail(trimmed string) (string, bool) {
+	upper := strings.ToUpper(trimmed)
+	for _, head := range createTableHeads {
+		if strings.HasPrefix(upper, head) {
+			return trimmed[len(head):], true
+		}
+	}
+	return "", false
+}
+
 func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
 	trimmed := strings.TrimLeft(stmt, " \t\n\r")
-	upper := strings.ToUpper(trimmed)
-	if !strings.HasPrefix(upper, "CREATE TABLE ") {
+	tail, ok := ddlCreateTableTail(trimmed)
+	if !ok {
 		return "", nil, "", false
 	}
-	name := strings.ToLower(strings.TrimSpace(ddlFirstToken(trimmed[len("CREATE TABLE "):])))
+	name := strings.ToLower(strings.TrimSpace(ddlFirstToken(tail)))
 	if !strings.HasPrefix(name, metricsTablePrefix) {
 		return "", nil, "", false
 	}

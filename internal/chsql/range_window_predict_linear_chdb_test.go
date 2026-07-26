@@ -73,14 +73,7 @@ import (
 // deriv fixture's two distinct-slope host series (a rising, b falling) so the
 // forecast is non-trivial, non-constant, and differs per series — the same clean
 // 1-minute grid.
-const predictLinearSeed = `
-CREATE OR REPLACE TABLE otel_metrics_gauge (
-    MetricName String,
-    Attributes Map(String, String),
-    ResourceAttributes Map(String, String) DEFAULT map(),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+var predictLinearSeed = metricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 10.0),

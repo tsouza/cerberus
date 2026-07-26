@@ -54,15 +54,14 @@ concurrency:
 
 jobs:
   # Enumerate the Gherkin features, hold them to the 26-story anchor, and
-  # emit the tier matrix the run job fans out over.
+  # emit the tier list the three tier jobs gate on.
   migration-setup:
     name: migration-setup
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.emit.outputs.matrix }}
       # The tiers this run selected — what the roll-up holds to `success`, and
-      # what gates the fixed (non-matrix) tier jobs below.
+      # what gates the three tier jobs below.
       tiers: ${{ steps.emit.outputs.tiers }}
     steps:
       - uses: actions/checkout@v7
@@ -83,7 +82,7 @@ jobs:
           MODE: verify
           SCENARIOS_JSON: build/migration-scenarios.json
 
-      - name: emit tier matrix
+      - name: emit the tier list
         id: emit
         run: node .github/scripts/migration-e2e.mjs
         env:
@@ -93,7 +92,7 @@ jobs:
 
       # migration-tier0 runs on a separate runner with a fresh checkout, so
       # the enumerator output above must travel as an artifact — the job
-      # `matrix` output only carries the small tier-list JSON, not this file.
+      # `tiers` output only carries the small tier-list JSON, not this file.
       - name: upload migration scenarios enumeration
         uses: actions/upload-artifact@v7
         with:
@@ -101,34 +100,21 @@ jobs:
           path: build/migration-scenarios.json
           retention-days: 1
 
+  # Tier-0 offline slice: godog over committed fixtures, no Docker, no
+  # reference backend. A fixed job like its two siblings — it drives one
+  # tag filter on one runner, so there is nothing to fan out over.
   migration-tier0:
-    # Static, NOT `migration-${{ matrix.name }}`. When a dispatch narrows to
-    # another tier this job is skipped with an EMPTY matrix, and GitHub cannot
-    # evaluate `matrix.name` against a null matrix context — it renders the
-    # literal `migration-${{ matrix.name }}` in the run list, which reads as a
-    # broken workflow rather than a deliberately skipped job.
-    #
-    # Safe to hardcode because exactly one tier is matrixDriven in TIER_JOBS,
-    # so this job never fans out past a single shard. migration-e2e.test.mjs
-    # asserts that invariant, so adding a second matrix-driven tier fails the
-    # guard rather than silently mislabelling one of its shards.
     name: migration-tier0
     needs: migration-setup
-    # An empty `include:` does not skip a matrix job — it still runs, with the
-    # matrix context unset, so `TIER: ${{ matrix.tier }}` resolves to empty and
-    # the run fails on an unknown tier. A dispatch narrowed to tier1 therefore
-    # reported a tier0 FAILURE for a tier it never meant to run (the roll-up
-    # caught it: "tier0 ran (failure) but was not in the tier set this run
-    # selected"). Gate on the same `tiers` output the roll-up reads, exactly as
-    # migration-tier1 does, so selection is decided in one place.
+    # `tiers` is emit's own answer to "what does this run execute", so the
+    # gate and the roll-up read the same source and cannot disagree.
     if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier0')
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeoutMinutes }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.migration-setup.outputs.matrix) }}
+    # Offline fixtures and a `go build`; the ceiling only has to outlast a
+    # cold module cache. Mirrors TIER0_TIMEOUT_MIN in migration-e2e.mjs.
+    timeout-minutes: 15
     concurrency:
-      group: migration-tier0-${{ github.ref }}-${{ matrix.name }}
+      group: migration-tier0-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -155,7 +141,7 @@ jobs:
         env:
           MODE: run
           SCENARIOS_JSON: build/migration-scenarios.json
-          TIER: ${{ matrix.tier }}
+          TIER: tier0
           STORY: ${{ inputs.story }}
           CERBERUS_BIN: ${{ github.workspace }}/build/cerberus
 
@@ -169,17 +155,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: migration-report-${{ matrix.tier }}
+          name: migration-report-tier0
           path: build/migration-reports/*.json
           retention-days: 1
           if-no-files-found: warn
 
   # Tier-1 dual-backend substrate + parity + Gherkin (Layer 14). Unlike
-  # migration-tier0, this is not matrix-driven: it brings a compose stack up,
-  # seeds every @tier1 archetype and tears it down around the suite — steps a
-  # matrix shard cannot express — so migration-e2e.mjs marks tier1
-  # `matrixDriven: false` and keeps it out of the emitted matrix while still
-  # declaring it runnable. It drives the fixed `TIER=tier1` scenario slice
+  # migration-tier0 it brings a compose stack up, seeds every @tier1 archetype
+  # and tears it down around the suite. It drives the fixed `TIER=tier1` slice
   # alongside the plain-Go substrate self-checks that prove the stack, seeder
   # and comparator are sound. Consolidated here (formerly its own
   # migration.yml workflow) so the dual-backend compose stack is brought up
@@ -323,9 +306,8 @@ jobs:
         run: just migration-tier1-down
 
   # Tier-2 ruler substrate + the @tier2 Gherkin scenarios (Layer 14). Same
-  # fixed (non-matrix) shape as migration-tier1 and for the same reason — it
-  # owns a compose lifecycle a matrix shard cannot express — over the Tier-1
-  # compose file PLUS tiers/tier2-ruler's, merged into the one compose project
+  # shape as migration-tier1, over the Tier-1 compose file PLUS
+  # tiers/tier2-ruler's, merged into the one compose project
   # (see docker-compose.ruler.yml's header comment).
   #
   # `needs: migration-tier1` is a real ordering constraint, not tidiness: docs
@@ -428,8 +410,8 @@ jobs:
         run: just migration-tier2-down
 
   # Roll-up. `contains(needs.*.result, 'failure')` is the shape e2e.yml
-  # documents as unsafe: a matrix rolls up to `cancelled`, not `failure`, when
-  # a child is cancelled, so a cancelled tier would pass the fold silently.
+  # documents as unsafe: a job rolls up to `cancelled`, not `failure`, when it
+  # is cancelled, so a cancelled tier would pass the fold silently.
   # The fold is `MODE=rollup` rather than inline bash because it is real logic
   # — it holds every tier emit SELECTED to `success`, and separately refuses a
   # tier that ran without being selected — and this repo keeps that in a .mjs
