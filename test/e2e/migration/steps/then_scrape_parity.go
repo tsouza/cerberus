@@ -475,15 +475,6 @@ func (w *World) thenScrapeLabelTranslationIsTheOnlyDifference() error {
 	return nil
 }
 
-// labelNames renders a label set as a name set.
-func labelNames(labels map[string]string) map[string]struct{} {
-	out := make(map[string]struct{}, len(labels))
-	for k := range labels {
-		out[k] = struct{}{}
-	}
-	return out
-}
-
 // scrapeBucketQuery renders `sum by (le) (rate(<hist>_bucket{<sel>}[<win>]))`
 // — the bucket-rate vector histogram_quantile consumes, and the vector whose
 // `le` labels ARE the surviving bucket layout.
