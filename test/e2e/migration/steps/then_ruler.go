@@ -184,6 +184,13 @@ type rulerAlertInstance struct {
 	Labels      map[string]string `json:"labels"`
 	Annotations map[string]string `json:"annotations"`
 	State       string            `json:"state"`
+	// ActiveAt is the ruler's OWN statement of when this instance entered its
+	// current active state — for a Pending instance, the evaluation at which
+	// the condition first went true and the hold-down clock started. It is
+	// kept as the wire string rather than a time.Time so an absent or
+	// unparseable value fails loudly where it is read (MIG-18's hold-down
+	// measurement) instead of silently decoding to the zero instant.
+	ActiveAt string `json:"activeAt"`
 }
 
 type rulerRulesResponse struct {
