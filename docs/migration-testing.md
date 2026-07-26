@@ -481,6 +481,25 @@ cell uses only the verified flags from [section 2](#2-the-cerberus-migrate-cli-s
 | MIG-08 | 1       | replay heaviest harvested queries at production QPS; fault-inject via `docker compose kill/pause/stop` on CH / cerberus / collector         | widest-window × highest-cardinality queries from the kube-prometheus-stack + Thanos corpora; loaded CH | Any query tripping a resource-bound guard or Go-side result-buffering OOM is listed; `query.maxSamples` + result-buffering bound proven to stop one heavy range query OOMing the gateway; p50/p95/p99 + memory captured; a `docker compose kill` shows graceful degradation + a working datasource-flip rollback. |
 | MIG-09 | 2       | stand up query-only ruler → cerberus HTTP → CH; assert recorded series selectable via cerberus                                              | Tier-2 shadow ruler + dead-end Alertmanager; a small recording+alerting rule set                       | Ruler evaluates rules against cerberus and lands recording-rule output back into CH; those recorded series become selectable through cerberus; the shadow ruler fires into a null receiver (computes, never pages); the full loop validated in-lab.                                                               |
 
+**What MIG-08's shipped scenario does not yet reach.** The Tier-1 scenario
+asserts the fault-injection and rollback half of that PASS cell — a paused
+ClickHouse is refused inside cerberus's own per-query wall-clock cap, with a
+named error envelope, measurably slower than the healthy p50/p95/p99 the same
+query just recorded, while the reference Prometheus still serves the identical
+series set and cerberus recovers it on resume. Five clauses of the cell are
+outside what it exercises, and none of them is retired by it: no memory figure
+is captured beside the latencies; neither `query.maxSamples` nor the Go-side
+result-buffering bound is proven to stop a heavy range query exhausting the
+gateway; the fault is `docker compose pause` only, so `kill` and `stop` — and
+with them a hard process death rather than a freeze — stay unexercised, as do
+faults injected at cerberus and the collector rather than at ClickHouse; the
+heaviest query is synthesised from the archetype's own fixture declaration
+instead of drawn from the harvested corpus, so "heaviest harvested at
+production QPS" is a replay of one wide, high-churn range query at bounded
+concurrency; and the `prometheus-thanos` corpus half has no seeded Tier-1
+fixture, so only `kube-prometheus-stack` is soaked. Each remains owed by
+MIG-08, not reassigned and not dropped.
+
 ### VALIDATE scenarios
 
 | ID     | Tier(s) | CLI                                                                                          | Fixtures                                                                                                                                                | PASS assertion                                                                                                                                                                                                                                                                                         |

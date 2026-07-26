@@ -175,18 +175,17 @@ services:
       # defaults; with auto-create off, /readyz stays 503 until the exporter
       # has provisioned the schema cerberus expects.
       CERBERUS_AUTO_CREATE_SCHEMA: "false"
-      # Per-query wall-clock cap, far below the two-minute default. MIG-08
-      # fault-injects by pausing ClickHouse and asserts cerberus refuses the
-      # in-flight heavy query within a bound — that bound has to be THIS one.
-      # On the default, the gateway would still be waiting when the scenario's
-      # own HTTP client gave up, and "the harness hung" would have read as
-      # "cerberus degraded gracefully". Kept in lock-step with
-      # faultGatewayQueryTimeout in steps/then_fault_injection.go; the
-      # scenario fails if the two drift apart, because the degraded reply then
-      # lands outside the budget derived from it. The fixture is small enough
-      # that every other Tier-1 query answers in well under a second, so no
-      # legitimate query is capped by this.
-      CERBERUS_QUERY_TIMEOUT: "15s"
+      # No CERBERUS_QUERY_TIMEOUT here, deliberately: cerberus keeps its
+      # two-minute default for every scenario on this shared service. MIG-08
+      # needs a much shorter per-query cap to prove a paused ClickHouse is
+      # bounded by the GATEWAY rather than by its own HTTP client, and it gets
+      # one by sending the standard Prometheus `?timeout=` parameter on its
+      # own four requests (faultGatewayQueryTimeout in
+      # steps/then_fault_injection.go), which cerberus min's against this
+      # default. Setting the cap here instead would put every @tier1 query
+      # under it, so one slow query on a cold runner would surface as a 503 in
+      # an unrelated scenario — and it would duplicate the number, leaving a
+      # copy that can drift.
     depends_on:
       clickhouse:
         condition: service_healthy

@@ -21,29 +21,41 @@ import (
 )
 
 // faultReplicas is how many times the heavy range query is replayed to
-// compute p50/p95/p99 — small (this is a Docker Compose harness, not a load
-// rig), but real: every replica is a genuine HTTP round trip against the live
-// stack, never a stubbed timing, and every replica's BODY is checked against
-// the fixture's declared cardinality.
-const faultReplicas = 9
+// compute p50/p95/p99. Every replica is a genuine HTTP round trip against the
+// live stack, never a stubbed timing, and every replica's BODY is checked
+// against the fixture's declared cardinality.
+//
+// The count is not just "some small number": percentile() indexes a sorted
+// copy at int(p*(n-1)), so p95 and p99 resolve to the SAME sample until
+// (0.99-0.95)*(n-1) reaches one — that is, until n reaches 26. Below that the
+// report would print one measurement twice under two different percentile
+// names, which is evidence that misleads. At this count the three points land
+// on three distinct samples (indices 12, 23 and 24 of the sorted 26).
+const faultReplicas = 26
 
 // faultConcurrency bounds how many of the faultReplicas run at once, so the
 // replay exercises more than strictly-sequential request handling without
 // pretending this small stack models "production QPS" literally.
 const faultConcurrency = 3
 
-// faultGatewayQueryTimeout is the per-query wall-clock cap the Tier-1
-// cerberus service runs under — it MUST stay equal to CERBERUS_QUERY_TIMEOUT
-// in docker-compose.dual.yml. MIG-08's whole claim is that a ClickHouse
-// outage is bounded BY THE GATEWAY, so the bound has to come from cerberus's
-// own budget, never from the test client giving up first. cerberus's default
-// is two minutes; leaving it defaulted would make a client-side deadline the
-// expected outcome, and "the harness hung" would read as "cerberus degraded".
+// faultGatewayQueryTimeout is the per-query wall-clock cap MIG-08's heavy
+// query runs under. MIG-08's whole claim is that a ClickHouse outage is
+// bounded BY THE GATEWAY, so the bound has to come from cerberus's own
+// budget, never from the test client giving up first: cerberus's default is
+// two minutes, and on the default a client-side deadline would be the
+// expected outcome, so "the harness hung" would read as "cerberus degraded".
 //
-// The coupling is asserted behaviourally rather than by re-reading the
-// compose file: raise or drop the compose value and the degraded reply lands
-// past faultDegradeBudget (or never lands inside faultQueryTimeout at all),
-// which fails thenHeavyQueryDegradesCleanly outright.
+// The cap is carried ON THE REQUEST as the standard Prometheus `?timeout=`
+// parameter (see faultQueryTimeoutParam), which cerberus min's against its
+// configured default in internal/api/prom.applyQueryTimeout. That is a
+// deliberate choice over setting CERBERUS_QUERY_TIMEOUT on the shared Tier-1
+// cerberus service, and it buys two things no compose value can:
+//
+//   - the number in this file IS the number the gateway enforces, so there
+//     is no second copy anywhere to drift in either direction; and
+//   - the cap is scoped to MIG-08's own four requests, so no other @tier1
+//     scenario has its per-query budget cut from two minutes to this on a
+//     cold runner.
 const faultGatewayQueryTimeout = 15 * time.Second
 
 // faultDegradeBudget is the wall clock a degraded reply must arrive inside:
@@ -58,11 +70,18 @@ const faultDegradeBudget = 2 * faultGatewayQueryTimeout
 // it as a failure rather than counting it as "degraded cleanly".
 const faultQueryTimeout = 3 * faultGatewayQueryTimeout
 
-// faultBaselineP99Budget caps the healthy replay's p99. It is the gateway's
-// own query budget: a baseline p99 at or above the cap means the heavy query
-// only survived by a hair, and the "degraded vs healthy" contrast MIG-08
-// draws would be measuring runner noise rather than the injected fault.
-const faultBaselineP99Budget = faultGatewayQueryTimeout
+// faultDegradeContrastFactor is how many times the healthy baseline's p99 the
+// degraded reply must exceed before MIG-08 accepts that the injected fault —
+// rather than ordinary runner noise — is what ended the request. Both sides
+// of that comparison are measured on the live stack inside the same scenario,
+// so the check holds by measurement, never by construction.
+//
+// The factor is bounded above by headroom, not by taste: a degraded reply
+// lands at faultGatewayQueryTimeout, so demanding a factor of f is demanding
+// a healthy p99 under faultGatewayQueryTimeout/f. At this factor the
+// fixture's small grid clears that with seconds to spare even on a cold
+// runner, while still being a gap no ordinary scheduling jitter produces.
+const faultDegradeContrastFactor = 4
 
 // faultComposeService is the compose service MIG-08 fault-injects — the
 // ClickHouse container cerberus reads every sample from, so pausing it is the
@@ -100,6 +119,12 @@ const unchurnedGaugeGroups = 1
 // measured — plus which compose service (if any) fault injection currently
 // has paused, so the harness can always restore it — including from World's
 // own After hook, if the scenario's own restoring Then step never runs.
+//
+// baselineP99 and report carry the healthy replay FORWARD to the
+// fault-injected hop: the degraded reply is asserted against the healthy p99
+// measured moments earlier on the same stack, and the captured artifact is
+// re-written with the degraded measurement so the evidence file holds both
+// halves of that contrast rather than only the half that was fast.
 type faultState struct {
 	archetype     string
 	queryURL      string
@@ -107,6 +132,8 @@ type faultState struct {
 	wantSeries    int
 	maxPoints     int
 	latencies     []time.Duration
+	baselineP99   time.Duration
+	report        faultLatencyReport
 	pausedService string
 }
 
@@ -134,11 +161,20 @@ func heavyQueryGroupCount(d seed.Declaration) int {
 	return d.ChurnCardinality + unchurnedGaugeGroups
 }
 
+// faultQueryTimeoutParam is the Prometheus query-API parameter that carries a
+// per-request wall-clock budget. Both cerberus and the reference Prometheus
+// honour it the same way — the effective cap is the smaller of the server's
+// configured default and this value — so one URL builder gives both sides of
+// MIG-08 the identical question AND gives cerberus the bound MIG-08 asserts
+// against, without a second copy of the number living in the compose file.
+const faultQueryTimeoutParam = "timeout"
+
 // heavyRangeQueryURL builds the widest-window, highest-cardinality query this
 // harness's seeded fixture supports: a range sum grouped by the archetype's
 // declared high-churn label, over the manifest's own published window — the
 // closed [VerifyStart, VerifyEnd] interval every live-backend scenario reads
-// from, never a live one ending at `now`.
+// from, never a live one ending at `now` — under MIG-08's own per-request
+// wall-clock cap.
 func heavyRangeQueryURL(base, promQuery string, m seed.Manifest) (string, error) {
 	step, err := m.StepDuration()
 	if err != nil {
@@ -149,6 +185,7 @@ func heavyRangeQueryURL(base, promQuery string, m seed.Manifest) (string, error)
 	v.Set("start", strconv.FormatInt(m.VerifyStart.Unix(), 10))
 	v.Set("end", strconv.FormatInt(m.VerifyEnd.Unix(), 10))
 	v.Set("step", step.String())
+	v.Set(faultQueryTimeoutParam, faultGatewayQueryTimeout.String())
 	return base + "/api/v1/query_range?" + v.Encode(), nil
 }
 
@@ -372,8 +409,10 @@ func percentile(lats []time.Duration, p float64) time.Duration {
 	return sorted[idx]
 }
 
-// Percentile points MIG-08's report names explicitly, so the assertion below
-// reads as the same p50/p95/p99 the PASS bullet documents.
+// Percentile points MIG-08's report names explicitly, so the captured
+// evidence reads as the same p50/p95/p99 the PASS cell asks for — and so
+// faultReplicas's "the three must land on three distinct samples" derivation
+// is stated against the same three numbers it constrains.
 const (
 	p50 = 0.50
 	p95 = 0.95
@@ -384,24 +423,39 @@ const (
 // captured" half of the doc's PASS cell. It records what was measured AND
 // what it was measured over, so a reader of a red run can tell a slow stack
 // from a query that changed shape.
+//
+// DegradedMillis is absent from the file the baseline hop writes and present
+// in the one the fault-injected hop re-writes over it, so an artifact left
+// behind by a run that never reached the fault says so by omission rather
+// than by reporting a zero that reads like a measurement.
 type faultLatencyReport struct {
-	Archetype       string `json:"archetype"`
-	Query           string `json:"query"`
-	Replicas        int    `json:"replicas"`
-	Concurrency     int    `json:"concurrency"`
-	SeriesPerReplay int    `json:"series_per_replay"`
-	P50Millis       int64  `json:"p50_millis"`
-	P95Millis       int64  `json:"p95_millis"`
-	P99Millis       int64  `json:"p99_millis"`
-	P99BudgetMillis int64  `json:"p99_budget_millis"`
+	Archetype        string `json:"archetype"`
+	Query            string `json:"query"`
+	Replicas         int    `json:"replicas"`
+	Concurrency      int    `json:"concurrency"`
+	SeriesPerReplay  int    `json:"series_per_replay"`
+	P50Millis        int64  `json:"p50_millis"`
+	P95Millis        int64  `json:"p95_millis"`
+	P99Millis        int64  `json:"p99_millis"`
+	GatewayCapMillis int64  `json:"gateway_cap_millis"`
+	ContrastFactor   int    `json:"degraded_contrast_factor"`
+	DegradedMillis   int64  `json:"degraded_millis,omitempty"`
 }
 
 // thenReplayLatencyPercentiles asserts the baseline replay produced one
-// latency per replica (never a hollow "it returned 200 once" pass), that the
-// three percentiles are ordered and positive, and that p99 sits inside
-// faultBaselineP99Budget — then CAPTURES them, to the run log and to a file
-// beside the seeder's manifest, because "captured" is what MIG-08's PASS cell
-// asks for and a number computed then discarded is not captured.
+// latency per replica — never a hollow "it returned 200 once" pass, since a
+// replica whose body failed the fixture's cardinality check never records a
+// latency at all — then CAPTURES the percentiles, to the run log and to a
+// file beside the seeder's manifest, because "captured" is what MIG-08's PASS
+// cell asks for and a number computed then discarded is not captured.
+//
+// It deliberately asserts NOTHING about the percentiles themselves. p50 <=
+// p95 <= p99 holds because percentile() indexes one ascending sort, and a
+// positive p50 holds because time.Since on a monotonic clock over a real
+// round trip cannot be zero — checking either would be checking a pure
+// function against itself. The healthy p99's one job is to be the ORACLE the
+// fault-injected hop is measured against, so it is carried forward on World
+// and asserted there, where the comparison is between two live measurements.
 func (w *World) thenReplayLatencyPercentiles() error {
 	if err := w.requireBoundHeavyQuery(); err != nil {
 		return err
@@ -411,29 +465,20 @@ func (w *World) thenReplayLatencyPercentiles() error {
 			len(w.fault.latencies), faultReplicas)
 	}
 	v50, v95, v99 := percentile(w.fault.latencies, p50), percentile(w.fault.latencies, p95), percentile(w.fault.latencies, p99)
-	if v50 <= 0 {
-		return fmt.Errorf("migration harness: p50 replay latency is %s; a real HTTP round trip cannot take no time", v50)
+	w.fault.baselineP99 = v99
+	w.fault.report = faultLatencyReport{
+		Archetype:        w.fault.archetype,
+		Query:            w.fault.promQuery,
+		Replicas:         faultReplicas,
+		Concurrency:      faultConcurrency,
+		SeriesPerReplay:  w.fault.wantSeries,
+		P50Millis:        v50.Milliseconds(),
+		P95Millis:        v95.Milliseconds(),
+		P99Millis:        v99.Milliseconds(),
+		GatewayCapMillis: faultGatewayQueryTimeout.Milliseconds(),
+		ContrastFactor:   faultDegradeContrastFactor,
 	}
-	if v50 > v95 || v95 > v99 {
-		return fmt.Errorf("migration harness: replay percentiles are not ordered: p50=%s p95=%s p99=%s", v50, v95, v99)
-	}
-	if v99 > faultBaselineP99Budget {
-		return fmt.Errorf(
-			"migration harness: baseline p99 replay latency is %s, over the %s budget — the healthy stack is already at cerberus's own query cap, so the fault-injected contrast would measure noise",
-			v99, faultBaselineP99Budget,
-		)
-	}
-	return w.captureLatencyReport(faultLatencyReport{
-		Archetype:       w.fault.archetype,
-		Query:           w.fault.promQuery,
-		Replicas:        faultReplicas,
-		Concurrency:     faultConcurrency,
-		SeriesPerReplay: w.fault.wantSeries,
-		P50Millis:       v50.Milliseconds(),
-		P95Millis:       v95.Milliseconds(),
-		P99Millis:       v99.Milliseconds(),
-		P99BudgetMillis: faultBaselineP99Budget.Milliseconds(),
-	})
+	return w.captureLatencyReport(w.fault.report)
 }
 
 // captureLatencyReport prints the measured percentiles to the suite's output
@@ -441,8 +486,13 @@ func (w *World) thenReplayLatencyPercentiles() error {
 // measured them) and writes them beside the seeder's manifest, which outlives
 // the per-scenario workspace the After hook removes.
 func (w *World) captureLatencyReport(r faultLatencyReport) error {
-	fmt.Fprintf(os.Stdout, "MIG-08 %s heavy-query replay: p50=%dms p95=%dms p99=%dms (budget %dms, %d series/replay, query %q)\n",
-		r.Archetype, r.P50Millis, r.P95Millis, r.P99Millis, r.P99BudgetMillis, r.SeriesPerReplay, r.Query)
+	if _, err := fmt.Fprintf(
+		os.Stdout,
+		"MIG-08 %s heavy-query replay: p50=%dms p95=%dms p99=%dms degraded=%dms (gateway cap %dms, %d series/replay, query %q)\n",
+		r.Archetype, r.P50Millis, r.P95Millis, r.P99Millis, r.DegradedMillis, r.GatewayCapMillis, r.SeriesPerReplay, r.Query,
+	); err != nil {
+		return fmt.Errorf("migration harness: print the MIG-08 latency report: %w", err)
+	}
 	if w.live.ManifestPath == "" {
 		return fmt.Errorf("migration harness: no manifest path bound; the latency report has nowhere to be captured")
 	}
@@ -496,6 +546,14 @@ func (w *World) whenPauseClickHouse() error {
 // socket's, so both are the contract; anything else is not graceful
 // degradation. An HTTP 200 means no degradation happened at all, and a 404 or
 // a connection refusal means the gateway itself died rather than degraded.
+//
+// The status is only half the contract, and the weaker half: MIG-08's fault
+// is a `pause`, which freezes ClickHouse WITH its sockets open, and the
+// degraded hop is the first query after the pause, so the breaker is still
+// CLOSED and there is no dead transport to report. The wall-clock arm is
+// therefore the one that must fire, and the elapsed floor in
+// thenHeavyQueryDegradesCleanly is what pins it there — an instant 502 or an
+// instant breaker-open 503 carries a status from this set and still fails.
 var faultDegradedStatuses = []int{http.StatusBadGateway, http.StatusServiceUnavailable}
 
 // isDegradedStatus reports whether status is one of the documented
@@ -515,19 +573,33 @@ func isDegradedStatus(status int) bool {
 //
 //   - the request COMPLETED (err == nil). A client-side context deadline is
 //     the hang this step exists to catch, so it can never be the pass path;
-//   - it completed inside faultDegradeBudget, which is a multiple of the
-//     GATEWAY's own CERBERUS_QUERY_TIMEOUT — the bound has to be cerberus's,
-//     not the test client's;
+//   - it took AT LEAST the gateway's own cap. A frozen ClickHouse still holds
+//     its TCP connections open, so the query has nothing to do but wait out
+//     the budget; a reply that lands materially earlier was ended by
+//     something that is not the wall-clock cap the request asked for, and
+//     lowering that cap to a value too small to be a real bound is caught
+//     here rather than passing silently;
+//   - it completed inside faultDegradeBudget, a multiple of the same cap —
+//     so the bound is the gateway's on the late side too, not the client's;
+//   - it took faultDegradeContrastFactor times the p99 the SAME query
+//     measured on the SAME stack moments earlier, which is the "degrades
+//     under fault" contrast itself, stated between two live measurements;
 //   - the status is one of the documented backend-failure statuses, so a 200
 //     (no degradation) and a 404 / dead gateway both fail;
 //   - the body is a Prometheus-shaped error envelope naming the failure, so a
 //     bare status with an empty or success-shaped body fails too.
+//
+// It then re-captures the latency artifact with the degraded measurement
+// folded in, so the evidence file carries both halves of the contrast.
 func (w *World) thenHeavyQueryDegradesCleanly() error {
 	if w.fault.pausedService == "" {
 		return fmt.Errorf("migration harness: no fault has been injected for this scenario")
 	}
 	if err := w.requireBoundHeavyQuery(); err != nil {
 		return err
+	}
+	if w.fault.baselineP99 <= 0 {
+		return fmt.Errorf("migration harness: no healthy baseline p99 was measured for this scenario; the replay step must run first")
 	}
 	status, body, elapsed, err := doHeavyQuery(w.fault.queryURL)
 	if err != nil {
@@ -536,10 +608,22 @@ func (w *World) thenHeavyQueryDegradesCleanly() error {
 			faultQueryTimeout, elapsed, err,
 		)
 	}
+	if elapsed < faultGatewayQueryTimeout {
+		return fmt.Errorf(
+			"migration harness: cerberus refused the heavy query after only %s, inside the %s wall-clock cap the request itself asked for — with ClickHouse frozen the query should have waited the cap out, so the bound that ended it was not that cap (HTTP %d, body: %s)",
+			elapsed, faultGatewayQueryTimeout, status, string(body),
+		)
+	}
 	if elapsed > faultDegradeBudget {
 		return fmt.Errorf(
 			"migration harness: cerberus took %s to refuse the heavy query, past the %s budget derived from its own %s query cap — the bound that ended the request was not the gateway's",
 			elapsed, faultDegradeBudget, faultGatewayQueryTimeout,
+		)
+	}
+	if wantSlower := faultDegradeContrastFactor * w.fault.baselineP99; elapsed < wantSlower {
+		return fmt.Errorf(
+			"migration harness: the faulted heavy query took %s against a healthy p99 of %s — under the %dx contrast (%s) MIG-08 claims, so either the fault did not reach the query path or the healthy stack is already too slow for the contrast to mean anything",
+			elapsed, w.fault.baselineP99, faultDegradeContrastFactor, wantSlower,
 		)
 	}
 	if !isDegradedStatus(status) {
@@ -558,7 +642,8 @@ func (w *World) thenHeavyQueryDegradesCleanly() error {
 			env.Status, env.ErrorType, env.Error, status,
 		)
 	}
-	return nil
+	w.fault.report.DegradedMillis = elapsed.Milliseconds()
+	return w.captureLatencyReport(w.fault.report)
 }
 
 // thenReferenceStillAnswersDirectly asserts the reference Prometheus —
@@ -600,7 +685,16 @@ func (w *World) thenReferenceStillAnswersDirectly() error {
 // accepted that before. A 200 carrying the wrong series set is treated as
 // not-yet-recovered and retried until faultUnpauseWait expires, at which
 // point it is reported as the failure it is.
+//
+// It refuses to run without a fault in flight for the same reason the other
+// two Then steps do, and more sharply: restorePausedService() is idempotent
+// and returns nil when nothing is paused, so without this guard the step
+// would happily "recover" a cerberus that was never faulted — a green pass
+// over a stack that proved nothing.
 func (w *World) thenResumeAndRecover() error {
+	if w.fault.pausedService == "" {
+		return fmt.Errorf("migration harness: no fault has been injected for this scenario")
+	}
 	if err := w.restorePausedService(); err != nil {
 		return err
 	}
