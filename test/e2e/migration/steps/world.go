@@ -21,6 +21,21 @@ import (
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 )
 
+// tier2LiveState is one Tier-2 live scenario's accumulated state: the
+// endpoints it is bound to, whether the live precondition ran, the most
+// recently polled rule groups, and the dead-end receiver's notification
+// count as observed before the scenario's own trigger — so a Then step
+// asserts against a delta, never an absolute count another scenario (or a
+// previous run against the same long-lived stack) might have already moved.
+type tier2LiveState struct {
+	endpoints      lib.Tier2LiveEndpoints
+	live           bool
+	groups         []rulerRuleGroup
+	recordedSeries recordedSeriesPoll
+	notifBase      int
+	notifSeen      bool
+}
+
 // workspacePattern names the per-scenario temporary directory every `--out`
 // artifact is written into. It is removed after the scenario, so one scenario
 // can never read an artifact another one left behind.
@@ -71,6 +86,8 @@ type World struct {
 	envUsed map[string][]string
 
 	gate gateRun
+
+	tier2 tier2LiveState
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -98,6 +115,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.explainRaw, w.explain = map[string][]byte{}, map[string]explainReport{}
 		w.lookback = map[string]migrate.Lookback{}
 		w.envUsed = map[string][]string{}
+		w.tier2 = tier2LiveState{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -130,6 +148,8 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerExplainSteps(ctx)
 	w.registerLookbackSteps(ctx)
 	w.registerGateSteps(ctx)
+	w.registerCutoverSteps(ctx)
+	w.registerRulerSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.

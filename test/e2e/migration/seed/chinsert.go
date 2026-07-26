@@ -152,6 +152,18 @@ func (i *orderedAttrsIterator) Key() any { return i.attrs.keys[i.index] }
 
 func (i *orderedAttrsIterator) Value() any { return i.attrs.values[i.attrs.keys[i.index]] }
 
+// InsertCounterSeries writes hand-built counter (Sum) series directly,
+// bypassing the fixture-declaration path InsertFixture drives. It is the
+// same insertSum every Counter sample in a declared fixture goes through, so
+// a hand-built series lands byte-for-byte the way a declared one would —
+// exported for a caller that needs one specific series a fixture declaration
+// does not carry (see test/e2e/migration/steps/then_ruler.go, MIG-09's
+// recording-rule fixture, whose expression depends on a metric name the
+// three-signal fixture the Tier-2 stack seeds never declares).
+func InsertCounterSeries(ctx context.Context, conn driver.Conn, series []MetricSeries) error {
+	return insertSum(ctx, conn, series)
+}
+
 func insertGauge(ctx context.Context, conn driver.Conn, series []MetricSeries) error {
 	batch, err := conn.PrepareBatch(ctx, insertGaugeSQL)
 	if err != nil {

@@ -14,14 +14,36 @@
 # Adds the "real query-only external ruler" docs/migration-testing.md
 # section 3 describes for Tier 2 — here, Grafana-managed alerting rather
 # than a Prometheus/Thanos ruler — plus the dead-end receiver its one
-# contact point points at:
+# contact point points at, and the write path MIG-09's recording-rule output
+# needs:
 #
-#   grafana             Evaluates the rule fixture (kube-prometheus-stack's
-#                        recording rule + NodeCPUSaturation alert, reused
-#                        verbatim — see grafana/alerting/rules.yaml) against
-#                        cerberus's Prometheus head over the shared network.
-#   dead-end-receiver    Grafana's one contact point. Logs every notification
-#                        to a file and answers 200; never forwards anywhere.
+#   grafana              Evaluates the rule fixture (kube-prometheus-stack's
+#                         recording rule + NodeCPUSaturation alert, reused
+#                         verbatim — see grafana/alerting/rules.yaml)
+#                         against ONE datasource — query-write-fanout, below
+#                         — for both its query AND its write-back leg (a
+#                         Grafana recording rule always writes to the SAME
+#                         datasource it queried; see query-write-fanout's own
+#                         header comment for why that rules out routing the
+#                         two legs at two different datasources).
+#   query-write-fanout    The one Prometheus-shaped endpoint Grafana is
+#                         given: reverse-proxies every read to cerberus and
+#                         the one Remote Write path to write-relay, so
+#                         "evaluates the rule against cerberus" stays
+#                         literally true while the write-back leg still has
+#                         somewhere to land — cerberus itself never accepts
+#                         a write.
+#   dead-end-receiver     Grafana's one contact point. Logs every
+#                         notification to a file and answers 200; never
+#                         forwards anywhere.
+#   write-relay           Plain reference Prometheus, remote-write receiver
+#                         only (see write-relay/prometheus.yml). The landing
+#                         zone for Grafana's recording-rule write-back; the
+#                         otel-collector federates the one series back out
+#                         of it into ClickHouse (see
+#                         otel-collector-config.yaml's `prometheus/write_relay`
+#                         receiver), so it never becomes a second copy of
+#                         anything cerberus itself serves.
 #
 # Port band: 27400-27500, the next contiguous unclaimed band after Tier-1's
 # own 27000-27400 (see docker-compose.dual.yml's port-band comment).
@@ -45,9 +67,30 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       # Recording rules are opt-in even with unified alerting on by default;
       # without this, the `record:` field in rules.yaml provisioning is
-      # rejected. See grafana/alerting/rules.yaml for why its write-back leg
-      # still errors in this substrate regardless.
+      # rejected.
       GF_UNIFIED_ALERTING_RECORDING_RULES_ENABLED: "true"
+      # Distinct from the ini setting above: this is the feature TOGGLE that
+      # gates the write-back leg itself. Without it Grafana evaluates a
+      # `record:` rule's query leg (the provisioning check above accepts it,
+      # and the rule reports health=ok) but silently never issues the
+      # Remote Write POST at all — confirmed empirically: write-relay's own
+      # numSeries stayed 0 with this toggle off, no error anywhere, until
+      # this was added.
+      #
+      # Two things tried and abandoned here, for the next reader who reaches
+      # for them: (1) `grafanaManagedRecordingRulesDatasources` plus
+      # `record.target_datasource_uid` in rules.yaml — the file-provisioning
+      # YAML schema silently drops that field (confirmed via the
+      # provisioning API's own GET, which never shows it back), even though
+      # the identical field works over the REST provisioning API; (2)
+      # `[recording_rules] default_datasource_uid` (`GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID`)
+      # — logged as configured but never actually honored for a
+      # file-provisioned rule, which kept writing to its own query
+      # datasource regardless. query-write-fanout (below) exists BECAUSE
+      # both per-rule and ini-level write-target overrides turned out not to
+      # work for this Grafana version's file-provisioning path — routing on
+      # the ONE datasource Grafana ever tries is what actually works.
+      GF_FEATURE_TOGGLES_ENABLE: grafanaManagedRecordingRules
     volumes:
       # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
       # file's own: `docker compose -f a -f b` resolves every relative host
@@ -60,13 +103,39 @@ services:
     ports:
       - "27400:3000"
     depends_on:
-      cerberus:
+      query-write-fanout:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
       interval: 5s
       timeout: 2s
       retries: 24
+
+  query-write-fanout:
+    image: cerberus-migration-tier2:query-write-fanout
+    pull_policy: build
+    build:
+      # Resolved against tier1-dual's directory — see the grafana volumes
+      # comment above for why every relative path/context in this file is
+      # anchored there rather than here.
+      context: ../../../../..
+      dockerfile: test/e2e/migration/tiers/tier2-ruler/fanout/Dockerfile
+    environment:
+      FANOUT_QUERY_TARGET: http://cerberus:27080
+      FANOUT_WRITE_TARGET: http://write-relay:9090
+    depends_on:
+      cerberus:
+        condition: service_healthy
+      write-relay:
+        condition: service_healthy
+    healthcheck:
+      # Distroless image: no shell, no wget. The binary's own -healthcheck
+      # mode is the liveness signal, same posture as the dead-end receiver's
+      # below.
+      test: ["CMD", "/query-write-fanout", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
 
   dead-end-receiver:
     image: cerberus-migration-tier2:dead-end-receiver
@@ -87,6 +156,30 @@ services:
       # mode is the liveness signal, same posture as cerberus's --version
       # healthcheck in docker-compose.dual.yml.
       test: ["CMD", "/dead-end-receiver", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  write-relay:
+    # Same pinned tag as tier1-dual's own reference Prometheus, for no reason
+    # other than not introducing a third Prometheus version into the lane.
+    # See write-relay/prometheus.yml for why this container exists and why it
+    # is NOT the same instance as tier1-dual's reference Prometheus.
+    image: prom/prometheus:v3.11.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --web.listen-address=:9090
+    volumes:
+      # Resolved against tier1-dual's directory too — see the grafana
+      # volumes comment above for why every relative host path in this file
+      # is anchored there rather than here.
+      - ../tier2-ruler/write-relay/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "27460:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null 2>&1 || exit 1"]
       interval: 2s
       timeout: 2s
       retries: 30

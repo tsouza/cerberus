@@ -2,21 +2,27 @@
 #
 # The collector has exactly one job here: own the ClickHouse schema. Its
 # clickhouseexporter (create_schema: true) is the SOLE authority that creates
-# the otel_* tables, which is what lets cerberus run with
+# the otel_* tables, which lets cerberus run with
 # CERBERUS_AUTO_CREATE_SCHEMA=false and turns its readiness probe into a live
 # drift detector between the exporter's real table names and cerberus's
 # read-side defaults.
 #
-# Fixture DATA does not flow through this pipeline: the migration seeder writes
-# the ClickHouse side with direct INSERTs from the same in-memory fixture it
-# writes to the reference backends, so both sides of a parity diff are
-# comparable by construction. Collector fan-out would instead surrender the
-# stream-label vs structured-metadata mapping to Loki's OTLP allowlist — a
-# permanent parity diff by construction.
+# Fixture DATA does not flow through this pipeline: the migration seeder
+# writes the ClickHouse side via direct INSERTs from the same in-memory
+# fixture that writes the reference backends, so both sides of a parity diff
+# are comparable by construction. Collector fan-out would instead surrender
+# the stream-label vs structured-metadata mapping to Loki's OTLP allowlist —
+# a permanent parity diff by construction.
 #
-# There is no `batch` processor: the pipelines carry only the schema warm-up
-# records, so batching would add convergence latency to nothing.
-
+# The one exception is the Tier-2 `prometheus/write_relay` receiver below: it
+# does not carry fixture data and is never compared against anything, so it
+# is exempt from the "no second path" rule above by construction, not by
+# oversight.
+#
+# There is no `batch` processor: the fixture pipelines carry only schema
+# warm-up records, so batching would add convergence latency for nothing; the
+# write-relay pipeline carries one series on a 15s recording-rule cadence,
+# far below anything batching would help.
 receivers:
   otlp:
     protocols:
@@ -24,6 +30,37 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+
+  # Tier-2 only (Layer 14, MIG-09): pulls the ONE recording-rule series
+  # Grafana wrote to the write-relay Prometheus
+  # (../tier2-ruler/write-relay/prometheus.yml) back out over its /federate
+  # endpoint, so it lands in ClickHouse through the same clickhouseexporter
+  # every other signal uses and cerberus reads it back the ordinary way.
+  #
+  # `match[]` is scoped to exactly that one metric name — never a wildcard —
+  # so this receiver can only ever pull the recording rule's own output, not
+  # accidentally widen into a second path for anything Tier-1 fixture data
+  # already covers. `honor_labels: true` keeps whatever labels the recording
+  # rule itself produced rather than overwriting them with this scrape
+  # job's own.
+  #
+  # Inert when only Tier-1 is up: nothing named `write-relay` exists on the
+  # network in that case, so every scrape attempt is a connection-refused
+  # collector log line, not a startup failure — the receiver retries
+  # indefinitely and blocks nothing else in this config.
+  prometheus/write_relay:
+    config:
+      scrape_configs:
+        - job_name: tier2-write-relay-federate
+          honor_labels: true
+          metrics_path: /federate
+          scrape_interval: 5s
+          scrape_timeout: 4s
+          params:
+            "match[]":
+              - "node:node_cpu_utilisation:avg1m"
+          static_configs:
+            - targets: ["write-relay:9090"]
 
 exporters:
   clickhouse:
@@ -56,4 +93,11 @@ service:
       exporters: [clickhouse]
     traces:
       receivers: [otlp]
+      exporters: [clickhouse]
+    # Separate, named pipeline rather than folding write_relay into the
+    # `metrics` pipeline above: keeps the Tier-1 fixture path's receiver list
+    # ([otlp] only) visibly untouched by the Tier-2 addition, even though
+    # both pipelines happen to share the same clickhouse exporter instance.
+    metrics/tier2_write_relay:
+      receivers: [prometheus/write_relay]
       exporters: [clickhouse]

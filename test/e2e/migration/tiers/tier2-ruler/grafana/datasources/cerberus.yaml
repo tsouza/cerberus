@@ -1,17 +1,30 @@
 # Grafana datasource provisioning for the Tier-2 ruler substrate (Layer 14).
 #
-# Only the Prometheus head is wired: the rule fixture (recording rule +
-# NodeCPUSaturation alert, both PromQL) is the only thing the ruler
-# evaluates here. Mirrors the shape of the Layer-9 dashboard smoke's
-# provisioning at test/e2e/grafana/compose/datasources/cerberus.yaml, pared
-# down to what this substrate needs.
+# Exactly one datasource — deliberately, not two. A Grafana recording rule
+# always writes its output back to the SAME datasource it queried; there is
+# no working way to point the two legs at two different datasources for a
+# file-provisioned rule on this Grafana version (see
+# ../fanout/main.go and docker-compose.ruler.yml's query-write-fanout
+# comments for the two things that were tried and did not work). So this
+# datasource is not "cerberus" in the sense of dialing cerberus directly —
+# it is query-write-fanout, which reverse-proxies every read to cerberus and
+# the one Remote Write path to write-relay, and is what makes "the rule
+# fixture queries cerberus" and "the recording rule's output has somewhere
+# to land" both true through a single URL.
+#
+# Named Cerberus-Prometheus (not Fanout-Prometheus) anyway: from the rule
+# fixture's own perspective (grafana/alerting/rules.yaml) and from an
+# operator reading the provisioned datasource list, this behaves exactly
+# like cerberus's own Prometheus head — the fanout is substrate plumbing,
+# invisible from both those vantage points, the same way a reverse proxy in
+# front of a real Prometheus in production would be.
 apiVersion: 1
 datasources:
   - name: Cerberus-Prometheus
     uid: cerberus-prometheus
     type: prometheus
     access: proxy
-    url: http://cerberus:27080
+    url: http://query-write-fanout:8095
     isDefault: true
     editable: false
     jsonData:

@@ -1,0 +1,32 @@
+# Write-relay Prometheus for the Tier-2 ruler substrate (Layer 14) — MIG-09's
+# recording-rule landing zone.
+#
+# Cerberus is a query-only gateway: it implements no Prometheus Remote Write
+# receiver (see grafana/alerting/rules.yaml's header comment), and the OTel
+# collector's own `prometheusremotewritereceiver` speaks only Remote Write
+# 2.0 (io.prometheus.write.v2.Request), a protocol Grafana's recording-rule
+# writer does not send. This container is the "later phase" write path that
+# comment predicted, built from off-the-shelf pieces instead of a new
+# receiver: a plain reference Prometheus with ONLY its remote-write receiver
+# enabled, standing in as the datasource Grafana's recording rules write to
+# (`[recording_rules] default_datasource_uid`, wired in docker-compose.ruler.yml).
+# The otel-collector then pulls the one series back out over `/federate` (see
+# otel-collector-config.yaml's `prometheus/write_relay` receiver) and lands it
+# in ClickHouse through the SAME clickhouseexporter every other signal uses,
+# so cerberus reads it back the ordinary way — no cerberus code change, no
+# second read path.
+#
+# Deliberately separate from tier1-dual's own reference Prometheus
+# (../../tier1-dual/prometheus.yml): that instance is the Tier-1 parity
+# oracle, and its own header comment forbids adding a scrape path to it —
+# "two paths cannot land identical timestamps". This container carries no
+# fixture data and is never compared against anything; it exists only to be
+# a Prometheus-Remote-Write-compatible bucket for one recording rule's output.
+#
+# No `scrape_configs` here either, for the same reason tier1-dual's reference
+# Prometheus has none: every sample this instance holds must arrive over
+# /api/v1/write, so the federate response the collector pulls is exactly what
+# Grafana wrote — never a config typo away from becoming a second source.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s

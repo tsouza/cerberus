@@ -21,15 +21,25 @@
 # (15s) should be non-zero and divided exactly by scheduler interval: 10".
 #
 # The recording rule's query leg runs for real against cerberus (proving
-# "Grafana evaluates the rule against cerberus"), but its write-back leg
-# posts to the SAME datasource (Grafana's recording-rule default) — and
-# cerberus, a query-only gateway, implements no remote-write receiver. That
-# leg errors until a later phase adds a write path (an OTel-collector
-# Prometheus remote-write receiver in front of ClickHouse); the
-# `node:node_cpu_utilisation:avg1m` series therefore never actually exists in
-# cerberus in this substrate, so NodeCPUSaturation's own query legitimately
-# returns no data rather than a query error — both are expected, and neither
-# blocks proving the mechanism this file exists to prove.
+# "Grafana evaluates the rule against cerberus"), via query-write-fanout
+# (../../docker-compose.ruler.yml) rather than dialing cerberus directly —
+# see that file's own comment for why. The SAME datasourceUid also carries
+# the write-back leg (a Grafana recording rule always writes to the
+# datasource it queried), which the fanout routes to write-relay instead —
+# cerberus, a query-only gateway, implements no remote-write receiver, and
+# never will inside this substrate. write-relay is a plain Prometheus with
+# only its remote-write receiver enabled (../../write-relay/prometheus.yml);
+# the otel-collector then federates that one series back out of it into
+# ClickHouse (../../tier1-dual/otel-collector-config.yaml's
+# `prometheus/write_relay` receiver), which is how
+# `node:node_cpu_utilisation:avg1m` becomes a real series cerberus reads
+# back — MIG-09's "lands recording-rule output back into CH; those recorded
+# series become selectable through cerberus" — without cerberus ever
+# accepting a write itself. NodeCPUSaturation's own query against
+# `node:node_cpu_utilisation:avg1m` answers `nodata` for the first few
+# evaluations after a fresh stack comes up (the recording rule's own write,
+# the federate scrape, and the clickhouse insert all need at least one tick
+# each to land the series) and `ok`/no-alert once it has.
 apiVersion: 1
 groups:
   - orgId: 1
@@ -51,6 +61,13 @@ groups:
         record:
           metric: "node:node_cpu_utilisation:avg1m"
           from: A
+          # No target_datasource_uid: the file-provisioning YAML schema on
+          # this Grafana version silently drops that field rather than
+          # honoring it (confirmed empirically — see docker-compose.ruler.yml's
+          # query-write-fanout comment), so this rule relies on Grafana's
+          # ordinary behaviour of writing back to the same datasourceUid it
+          # queried, and query-write-fanout is what makes that land
+          # somewhere real instead of 404ing on cerberus.
 
   - orgId: 1
     name: node.alerts
