@@ -71,6 +71,23 @@ type World struct {
 	envUsed map[string][]string
 
 	gate gateRun
+
+	// tier2 is the live Tier-2 ruler stack's endpoints, set by "the tier-2
+	// ruler stack is live". tier2Set guards every later tier-2 step so a
+	// scenario that skips establishing the stack fails there, naming the
+	// missing precondition, rather than deep inside an HTTP call with a
+	// nil/zero-value endpoint set.
+	tier2    lib.Tier2Endpoints
+	tier2Set bool
+
+	// tier2Writeback carries the MIG-13/MIG-19 write-back scenario's state:
+	// the seeded input window and the recorded series read back through
+	// cerberus. See steps/tier2_writeback.go.
+	tier2Writeback tier2WritebackState
+
+	// tier2Alerting carries the MIG-18 scenario's captured notification
+	// streams. See steps/tier2_alerting.go.
+	tier2Alerting tier2AlertingState
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -98,6 +115,9 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.explainRaw, w.explain = map[string][]byte{}, map[string]explainReport{}
 		w.lookback = map[string]migrate.Lookback{}
 		w.envUsed = map[string][]string{}
+		w.tier2Set = false
+		w.tier2Writeback = tier2WritebackState{}
+		w.tier2Alerting = tier2AlertingState{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -130,6 +150,9 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerExplainSteps(ctx)
 	w.registerLookbackSteps(ctx)
 	w.registerGateSteps(ctx)
+	w.registerTier2LiveSteps(ctx)
+	w.registerTier2WritebackSteps(ctx)
+	w.registerTier2AlertingSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.

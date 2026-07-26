@@ -2,8 +2,10 @@
 // notification sink (Layer 14). Grafana's "dead-end" contact point posts
 // every alert notification here; it logs each one to a file and answers 200
 // OK, but never re-dispatches anywhere — "computes, never pages". /notifications
-// reports how many it has captured, so the substrate self-check (and later
-// MIG-18's fire/resolve diffing) can assert delivery without parsing the log.
+// reports how many it has captured, so the substrate self-check can assert
+// delivery without parsing the log; /notifications/list returns the captured
+// bodies themselves (each with its receipt time), for MIG-18's fire/resolve
+// diffing to parse.
 package main
 
 import (
@@ -30,12 +32,30 @@ const (
 	// http.ListenAndServe has no timeout at all, so a slow-header client can
 	// hold a connection open indefinitely).
 	readHeaderTimeout = 5 * time.Second
+	// maxCaptured bounds the in-memory /notifications/list buffer. A
+	// substrate run drives at most a handful of scenarios against one
+	// receiver instance, so this is generous headroom, not a tuned limit;
+	// it exists so a runaway rule group can never turn this test double into
+	// an unbounded memory sink.
+	maxCaptured = 10_000
 )
 
 var (
-	mu    sync.Mutex
-	count int
+	mu       sync.Mutex
+	count    int
+	captured []capturedNotification
 )
+
+// capturedNotification is one /webhook POST, as /notifications/list reports
+// it: the raw body (Grafana's webhook JSON — left un-decoded so this receiver
+// stays notifier-schema-agnostic; the consumer parses it) plus the instant
+// this receiver observed it, which fire/resolve diffing needs since the
+// payload's own timestamps only cover the alert's OWN evaluation, not
+// delivery.
+type capturedNotification struct {
+	ReceivedAt time.Time       `json:"received_at"`
+	Body       json.RawMessage `json:"body"`
+}
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "probe /healthz and exit 0/1 (distroless has no shell/wget for Docker's exec-form HEALTHCHECK)")
@@ -59,6 +79,13 @@ func main() {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		count++
+		// A ring-buffer-by-truncation, not append-forever: drop the oldest
+		// entry once at capacity, so a long-running stack never grows this
+		// unbounded even though a single scenario run never gets close.
+		if len(captured) >= maxCaptured {
+			captured = captured[1:]
+		}
+		captured = append(captured, capturedNotification{ReceivedAt: time.Now().UTC(), Body: json.RawMessage(body)})
 		mu.Unlock()
 		if _, err := logFile.Write(append(body, '\n')); err != nil {
 			log.Printf("write notification to log: %v", err)
@@ -70,6 +97,14 @@ func main() {
 		defer mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]int{"count": count})
+	})
+	mux.HandleFunc("/notifications/list", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		out := make([]capturedNotification, len(captured))
+		copy(out, captured)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string][]capturedNotification{"notifications": out})
 	})
 	server := &http.Server{
 		Addr:              listenAddr,

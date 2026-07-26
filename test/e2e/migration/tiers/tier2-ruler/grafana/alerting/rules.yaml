@@ -21,15 +21,17 @@
 # (15s) should be non-zero and divided exactly by scheduler interval: 10".
 #
 # The recording rule's query leg runs for real against cerberus (proving
-# "Grafana evaluates the rule against cerberus"), but its write-back leg
-# posts to the SAME datasource (Grafana's recording-rule default) — and
-# cerberus, a query-only gateway, implements no remote-write receiver. That
-# leg errors until a later phase adds a write path (an OTel-collector
-# Prometheus remote-write receiver in front of ClickHouse); the
-# `node:node_cpu_utilisation:avg1m` series therefore never actually exists in
-# cerberus in this substrate, so NodeCPUSaturation's own query legitimately
-# returns no data rather than a query error — both are expected, and neither
-# blocks proving the mechanism this file exists to prove.
+# "Grafana evaluates the rule against cerberus"). Its write-back leg writes
+# to the Cerberus-RemoteWrite datasource
+# (GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID in docker-compose.ruler.yml —
+# Grafana's recording-rule schema has no per-rule write-target field, so the
+# target is set instance-wide, not here) rather than the SAME datasource this
+# rule queries: cerberus, a query-only gateway, implements no remote-write
+# receiver, so the write leg is bridged through relay-prom +
+# otel-collector-writeback into the SAME ClickHouse database instead (see
+# docker-compose.ruler.yml's header comment for the full path). Once landed,
+# `node:node_cpu_utilisation:avg1m` IS selectable through cerberus —
+# MIG-13/MIG-19 assert exactly that.
 apiVersion: 1
 groups:
   - orgId: 1

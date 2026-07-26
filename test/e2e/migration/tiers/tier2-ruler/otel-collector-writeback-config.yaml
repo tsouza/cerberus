@@ -1,0 +1,47 @@
+# OpenTelemetry Collector config for the Tier-2 write-back landing leg
+# (Layer 14, MIG-13/MIG-19). Separate from tier1-dual's own
+# otel-collector-config.yaml on purpose: that collector's clickhouseexporter
+# (create_schema: true) is the Tier-1 stack's SOLE schema authority, and this
+# collector must never race it — hence create_schema: false below, applying
+# the exact table layout tier1-dual's collector already created.
+#
+# Pipeline: Grafana's recording-rule writer speaks Prometheus Remote Write 1.0
+# only (confirmed empirically: it always sends
+# `X-Prometheus-Remote-Write-Version: 0.1.0`, never 2.0), while this pinned
+# otelcol-contrib's `prometheus_remote_write` receiver speaks ONLY Remote
+# Write 2.0 by design (upstream: "we don't support Prometheus Remote Write
+# v1"). `relay-prom.yml`'s Prometheus instance is the protocol bridge between
+# the two: it terminates Grafana's v1 write via
+# `--web.enable-remote-write-receiver`, then re-emits every sample onward as
+# v2 through its own `remote_write` config. This collector is the v2 landing
+# side of that bridge, exporting straight into the SAME ClickHouse database
+# tier1-dual's collector already provisioned, so cerberus's read side sees
+# the recorded series with zero extra wiring.
+receivers:
+  prometheus_remote_write:
+    endpoint: 0.0.0.0:9095
+
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: cerberus
+    password: cerberus
+    ttl: 0
+    create_schema: false
+    metrics_table_name: otel_metrics
+    timeout: 5s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [prometheus_remote_write]
+      exporters: [clickhouse]

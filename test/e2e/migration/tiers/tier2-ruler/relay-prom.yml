@@ -1,0 +1,20 @@
+# Prometheus config for the Tier-2 write-back protocol bridge (MIG-13/
+# MIG-19). This instance holds no scrape config and answers no query the
+# scenarios read — it exists solely as a Remote Write 1.0 -> 2.0 protocol
+# translator (see otel-collector-writeback-config.yaml's header comment for
+# why the bridge is needed at all). It receives Grafana's recording-rule
+# write (always v1, via --web.enable-remote-write-receiver on the command
+# line) and re-emits every sample it receives, unchanged, as a v2
+# remote_write to the write-back collector.
+global:
+  scrape_interval: 1m
+remote_write:
+  - url: "http://otel-collector-writeback:9095/api/v1/write"
+    protobuf_message: "io.prometheus.write.v2.Request"
+    queue_config:
+      # A relay with no scrape traffic of its own: flush almost immediately
+      # rather than batching on Prometheus's default multi-second timers, so
+      # the write-back landing latency this bridge adds stays negligible next
+      # to the recording rule's own 10s evaluation interval.
+      batch_send_deadline: 1s
+      max_shards: 1

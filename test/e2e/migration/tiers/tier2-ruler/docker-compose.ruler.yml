@@ -16,12 +16,27 @@
 # than a Prometheus/Thanos ruler — plus the dead-end receiver its one
 # contact point points at:
 #
-#   grafana             Evaluates the rule fixture (kube-prometheus-stack's
-#                        recording rule + NodeCPUSaturation alert, reused
-#                        verbatim — see grafana/alerting/rules.yaml) against
-#                        cerberus's Prometheus head over the shared network.
-#   dead-end-receiver    Grafana's one contact point. Logs every notification
-#                        to a file and answers 200; never forwards anywhere.
+#   grafana                  Evaluates the rule fixture (kube-prometheus-
+#                            stack's recording rule + NodeCPUSaturation
+#                            alert, reused verbatim — see
+#                            grafana/alerting/rules.yaml) against cerberus's
+#                            Prometheus head over the shared network.
+#   dead-end-receiver        Grafana's one contact point. Logs every
+#                            notification to a file and answers 200; never
+#                            forwards anywhere.
+#   relay-prom               MIG-13/MIG-19 write-back leg, part 1: terminates
+#                            the recording rule's Remote Write 1.0 POST
+#                            (Grafana speaks only v1 for recording-rule
+#                            write-back — confirmed empirically) and re-emits
+#                            every sample as Remote Write 2.0. Pure protocol
+#                            bridge; nothing queries it.
+#   otel-collector-writeback MIG-13/MIG-19 write-back leg, part 2: the v2
+#                            landing side of that bridge, exporting straight
+#                            into the SAME ClickHouse database tier1-dual's
+#                            collector provisioned (create_schema: false — it
+#                            is never the schema authority), so the recorded
+#                            series becomes selectable through cerberus with
+#                            no further wiring.
 #
 # Port band: 27400-27500, the next contiguous unclaimed band after Tier-1's
 # own 27000-27400 (see docker-compose.dual.yml's port-band comment).
@@ -45,9 +60,16 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       # Recording rules are opt-in even with unified alerting on by default;
       # without this, the `record:` field in rules.yaml provisioning is
-      # rejected. See grafana/alerting/rules.yaml for why its write-back leg
-      # still errors in this substrate regardless.
+      # rejected.
       GF_UNIFIED_ALERTING_RECORDING_RULES_ENABLED: "true"
+      # The write target every recording rule writes to when its own
+      # provisioning entry names none (rules.yaml names none — Grafana's
+      # recording-rule schema has no per-rule write-target field to set).
+      # cerberus-remotewrite is the Cerberus-RemoteWrite datasource
+      # (grafana/datasources/cerberus.yaml), which fronts relay-prom, the
+      # first leg of the MIG-13/MIG-19 write-back bridge (see this file's own
+      # header comment for the full path to ClickHouse).
+      GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID: cerberus-remotewrite
     volumes:
       # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
       # file's own: `docker compose -f a -f b` resolves every relative host
@@ -61,6 +83,8 @@ services:
       - "27400:3000"
     depends_on:
       cerberus:
+        condition: service_healthy
+      relay-prom:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
@@ -90,3 +114,44 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+
+  # === MIG-13/MIG-19 write-back landing leg ===
+  #
+  # See this file's own header comment for the two services' role in the
+  # bridge. Neither is queried by a scenario directly — MIG-13/MIG-19 read
+  # the landed series back through cerberus, the same as every other
+  # recorded-series consumer would.
+
+  otel-collector-writeback:
+    image: otel/opentelemetry-collector-contrib:0.152.1
+    command: ["--config=/etc/otel/writeback-config.yaml"]
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own — see the grafana service's volumes comment above for why.
+      - ../tier2-ruler/otel-collector-writeback-config.yaml:/etc/otel/writeback-config.yaml:ro
+    depends_on:
+      # Waits on the Tier-1 collector's own healthiness proxy (cerberus
+      # healthy implies the Tier-1 collector already provisioned the OTel
+      # schema this exporter writes into with create_schema: false) rather
+      # than a healthcheck of its own — same posture as tier1-dual's own
+      # otel-collector, which the FROM-scratch contrib image cannot self-probe
+      # (no shell, no wget, no nc).
+      cerberus:
+        condition: service_healthy
+
+  relay-prom:
+    image: prom/prometheus:v3.11.3
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own — see the grafana service's volumes comment above for why.
+      - ../tier2-ruler/relay-prom.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - otel-collector-writeback
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 24

@@ -1,10 +1,8 @@
 # Grafana datasource provisioning for the Tier-2 ruler substrate (Layer 14).
 #
-# Only the Prometheus head is wired: the rule fixture (recording rule +
-# NodeCPUSaturation alert, both PromQL) is the only thing the ruler
-# evaluates here. Mirrors the shape of the Layer-9 dashboard smoke's
-# provisioning at test/e2e/grafana/compose/datasources/cerberus.yaml, pared
-# down to what this substrate needs.
+# Mirrors the shape of the Layer-9 dashboard smoke's provisioning at
+# test/e2e/grafana/compose/datasources/cerberus.yaml, pared down to what this
+# substrate needs.
 apiVersion: 1
 datasources:
   - name: Cerberus-Prometheus
@@ -16,3 +14,24 @@ datasources:
     editable: false
     jsonData:
       timeInterval: 15s
+  # The MIG-13/MIG-19 write-back target: every recording rule writes here
+  # (GF_RECORDING_RULES_DEFAULT_DATASOURCE_UID in docker-compose.ruler.yml),
+  # which fronts relay-prom, the first leg of the write-back bridge into
+  # ClickHouse (see docker-compose.ruler.yml's header comment). Cerberus
+  # itself is never the write target: it is a query-only gateway and
+  # implements no remote-write receiver.
+  #
+  # jsonData.prometheusType MUST be set to "Prometheus" explicitly — without
+  # it (confirmed empirically), Grafana's recording-rule writer assumes a
+  # Mimir/Cortex-style target and POSTs to `<url>/api/v1/push`, a path
+  # nothing in this bridge listens on; "Prometheus" makes it POST classic
+  # Remote Write 1.0 to `<url>/api/v1/write`, which relay-prom's
+  # --web.enable-remote-write-receiver does.
+  - name: Cerberus-RemoteWrite
+    uid: cerberus-remotewrite
+    type: prometheus
+    access: proxy
+    url: http://relay-prom:9090
+    editable: false
+    jsonData:
+      prometheusType: Prometheus

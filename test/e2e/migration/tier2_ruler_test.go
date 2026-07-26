@@ -156,10 +156,12 @@ func TestTier2Substrate(t *testing.T) {
 					if alert.LastEvaluation != "" {
 						// "ok" (condition resolved) and "nodata" (the query
 						// round-tripped to cerberus and came back empty,
-						// because the recording rule's write-back leg does
-						// not exist yet in this substrate — see rules.yaml's
-						// header comment) both mean cerberus ANSWERED the
-						// query. Only "error" means the query itself failed.
+						// because this substrate self-check seeds no
+						// node_cpu_seconds_total input — MIG-13/MIG-19 do
+						// that, over the write-back bridge described in
+						// docker-compose.ruler.yml's header comment) both mean
+						// cerberus ANSWERED the query. Only "error" means the
+						// query itself failed.
 						if alert.Health == "ok" || alert.Health == "nodata" {
 							return
 						}
