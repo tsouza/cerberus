@@ -15,11 +15,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 const (
 	listenAddr = ":8090"
 	logPath    = "/var/log/dead-end-receiver/notifications.log"
+	// logDirPerm/logFilePerm are deliberately narrower than the 0755/0644
+	// defaults gosec (G301/G302) flags: this substrate's own container is
+	// the only reader, and the log holds real (if synthetic) alert payloads.
+	logDirPerm  = 0o750
+	logFilePerm = 0o600
+	// readHeaderTimeout bounds one request's header read (gosec G114: a bare
+	// http.ListenAndServe has no timeout at all, so a slow-header client can
+	// hold a connection open indefinitely).
+	readHeaderTimeout = 5 * time.Second
 )
 
 var (
@@ -34,10 +44,10 @@ func main() {
 		os.Exit(probeSelf())
 	}
 
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), logDirPerm); err != nil {
 		log.Fatalf("mkdir %s: %v", filepath.Dir(logPath), err)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, logFilePerm)
 	if err != nil {
 		log.Fatalf("open %s: %v", logPath, err)
 	}
@@ -61,7 +71,12 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]int{"count": count})
 	})
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: readHeaderTimeout,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 // probeSelf is the Docker exec-form HEALTHCHECK body: it hits the server's
