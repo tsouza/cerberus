@@ -21,4 +21,5 @@ Feature: MIG-26 — the cutover gate refuses to go without evidence
     Given the dual-backend stack is live
     And the declared compliance-retention mandate for each tagged archetype
     When the operator reads the retention ClickHouse actually provisions, live
-    Then the live retention does not yet prove the compliance-retention mandate is met
+    Then the retention the gate decides on was actually read off the live ClickHouse
+    And the live retention does not yet prove the compliance-retention mandate is met
