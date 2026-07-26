@@ -93,7 +93,10 @@ jobs:
           retention-days: 1
 
   migration-tier0:
-    name: migration-tier0 (${{ matrix.name }})
+    # Named for the tier the shard drives, not for the job. This is the one
+    # generic matrix-driven runner, so its id says `tier0` only because tier0
+    # is the only matrix-driven tier today; the shard name is the honest label.
+    name: migration-${{ matrix.name }}
     needs: migration-setup
     # An empty `include:` does not skip a matrix job — it still runs, with the
     # matrix context unset, so `TIER: ${{ matrix.tier }}` resolves to empty and

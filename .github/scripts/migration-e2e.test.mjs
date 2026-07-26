@@ -406,9 +406,10 @@ test('a tier with no job is refused before a matrix entry can be built for it', 
 test('a runnable tier whose job is not matrix-driven stays out of the matrix', () => {
   // tier1's job brings a compose stack up around the suite, so it is a fixed
   // stanza, not a matrix shard. Emitting a tier1 entry here would spawn a
-  // `migration-tier0 (tier1)` shard that runs the tier-1 suite on a bare
-  // runner with no stack behind it — green for the wrong reason, or red for a
-  // reason that has nothing to do with the scenarios.
+  // matrix shard running the tier-1 suite on a bare runner with no stack
+  // behind it — green for the wrong reason, or red for a reason that has
+  // nothing to do with the scenarios. It would also be named exactly like the
+  // real fixed job, since both shapes render as `migration-<tier>`.
   assert.equal(TIER_JOBS.tier1.matrixDriven, false);
   const { include } = buildMatrix(world().scenarios, { tiers: ['tier0', 'tier1'] });
   assert.deepEqual(include.map((e) => e.tier), ['tier0']);
