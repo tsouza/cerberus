@@ -50,6 +50,30 @@ type Declaration struct {
 	// SpansPerTrace is the rotation of trace sizes; trace i of a service holds
 	// SpansPerTrace[i % len(SpansPerTrace)] spans.
 	SpansPerTrace []int `json:"spans_per_trace"`
+
+	// ChurnLabel and ChurnCardinality optionally declare ONE additional,
+	// deliberately high-cardinality label: ChurnCardinality synthetic gauge
+	// series, all under GaugeMetric and the declaration's first service,
+	// whose only distinguishing attribute is ChurnLabel taking
+	// ChurnCardinality distinct values. It exists so an archetype can declare
+	// a genuinely high-cardinality dimension (a Kubernetes container_id that
+	// changes on every pod restart is the canonical example) for a
+	// cardinality-inventory scenario to rank, without inflating every other
+	// archetype's series count by default. The zero value (both fields
+	// empty/zero) adds nothing — buildChurn returns nil and every archetype
+	// that does not declare it is byte-for-byte unaffected.
+	ChurnLabel       string `json:"churn_label,omitempty"`
+	ChurnCardinality int    `json:"churn_cardinality,omitempty"`
+
+	// Restarts optionally declares, for a subset of the crossJoin's
+	// (service, status) counter series, the sample INDEX at which that
+	// series' running total resets to zero before continuing to climb — the
+	// shape rate()/increase() must survive across a real pod restart. The map
+	// key is "<service>|<status>" (restartKeySeparator joins them); a key
+	// naming a combination outside the declared cross join is simply never
+	// looked up. Absent or empty leaves buildCounter's counters purely
+	// monotonic — exactly today's behaviour.
+	Restarts map[string][]int `json:"restarts,omitempty"`
 }
 
 // LoadDeclaration reads and validates an archetype's fixture declaration. A
@@ -107,6 +131,13 @@ func (d Declaration) validate() error {
 		if n <= 0 {
 			return fmt.Errorf("spans_per_trace[%d] is %d, want a positive count", i, n)
 		}
+	}
+	if (d.ChurnLabel == "") != (d.ChurnCardinality == 0) {
+		return fmt.Errorf("churn_label and churn_cardinality must be set together (got label=%q cardinality=%d)",
+			d.ChurnLabel, d.ChurnCardinality)
+	}
+	if d.ChurnCardinality < 0 {
+		return fmt.Errorf("churn_cardinality is %d, want a non-negative count", d.ChurnCardinality)
 	}
 	return nil
 }
@@ -439,7 +470,7 @@ func Build(d Declaration, w Window) (Fixture, error) {
 	traces := buildTraces(d, w, rng)
 	fixture := Fixture{
 		Window:     w,
-		Gauge:      buildGauge(d, times, rng),
+		Gauge:      append(buildGauge(d, times, rng), buildChurn(d, times)...),
 		Counter:    buildCounter(d, times, rng),
 		Histogram:  buildHistogram(d, times),
 		LogStreams: buildLogStreams(d, times, traces),
@@ -485,9 +516,13 @@ func buildGauge(d Declaration, times []time.Time, rng *rand.Rand) []MetricSeries
 func buildCounter(d Declaration, times []time.Time, rng *rand.Rand) []MetricSeries {
 	out := make([]MetricSeries, 0, len(d.Services)*len(d.StatusCodes))
 	for _, attrs := range crossJoin(d) {
+		resets := restartIndices(d, attrs[serviceNameLabel], attrs[statusCodeLabel])
 		samples := make([]Sample, 0, len(times))
 		var total float64
-		for _, t := range times {
+		for i, t := range times {
+			if resets[i] {
+				total = 0
+			}
 			total += float64(rng.Intn(counterMaxIncrement))
 			samples = append(samples, Sample{Time: t, Value: total})
 		}
@@ -496,6 +531,65 @@ func buildCounter(d Declaration, times []time.Time, rng *rand.Rand) []MetricSeri
 			ServiceName: attrs[serviceNameLabel],
 			Attributes:  attrs,
 			Samples:     samples,
+		})
+	}
+	return out
+}
+
+// restartKeySeparator joins a Restarts map key's service and status-code
+// components.
+const restartKeySeparator = "|"
+
+// restartIndices returns the sample indices at which one service/status's
+// counter resets, per the declaration's Restarts map. Indexing a nil map is
+// safe and always reports false, so a declaration with no Restarts (or none
+// for this series) leaves buildCounter exactly as monotonic as it has always
+// been.
+func restartIndices(d Declaration, service, status string) map[int]bool {
+	if len(d.Restarts) == 0 {
+		return nil
+	}
+	indices, ok := d.Restarts[service+restartKeySeparator+status]
+	if !ok {
+		return nil
+	}
+	set := make(map[int]bool, len(indices))
+	for _, idx := range indices {
+		set[idx] = true
+	}
+	return set
+}
+
+// churnSeriesValue is the constant sample value every churn series carries.
+// The churn dimension exists to exercise LABEL cardinality, not sample
+// arithmetic, so its value carries no meaning beyond "present".
+const churnSeriesValue = 1.0
+
+// buildChurn returns one small gauge series per declared churn value, all
+// sharing GaugeMetric and the declaration's first service, so their label KEY
+// (ChurnLabel) alone carries ChurnCardinality distinct values — a real,
+// counted, high-cardinality dimension a cardinality inventory can rank. It
+// draws no random values and consumes no RNG state, so its presence never
+// perturbs buildCounter/buildHistogram/buildLogStreams/buildTraces' draws.
+func buildChurn(d Declaration, times []time.Time) []MetricSeries {
+	if d.ChurnLabel == "" || d.ChurnCardinality <= 0 {
+		return nil
+	}
+	service := d.Services[0]
+	out := make([]MetricSeries, 0, d.ChurnCardinality)
+	for i := 0; i < d.ChurnCardinality; i++ {
+		samples := make([]Sample, 0, len(times))
+		for _, t := range times {
+			samples = append(samples, Sample{Time: t, Value: churnSeriesValue})
+		}
+		out = append(out, MetricSeries{
+			MetricName:  d.GaugeMetric,
+			ServiceName: service,
+			Attributes: map[string]string{
+				serviceNameLabel: service,
+				d.ChurnLabel:     fmt.Sprintf("%s-%03d", d.ChurnLabel, i),
+			},
+			Samples: samples,
 		})
 	}
 	return out

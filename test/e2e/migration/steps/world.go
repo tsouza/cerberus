@@ -90,6 +90,26 @@ type World struct {
 	verifyReport     map[string]migrateverify.Report
 	verifyRaw        map[string][]byte
 	verifyExitCode   map[string]int
+
+	// inventory is MIG-02's live-cardinality-inventory state: the decoded
+	// report, the archetype declaration its expectations are checked
+	// against, and the deliberately-unreachable probe source the negative
+	// case stands up.
+	inventory inventoryState
+
+	// bridge is MIG-06's ingest-bridge state: the synthetic OTLP batch a
+	// scenario pushed directly at the collector, keyed by the metric shape
+	// it named so a Then can look each one back up by kind.
+	bridge bridgeState
+
+	// scrape is MIG-07's collector-scrape-parity state: the target both the
+	// reference Prometheus and the collector's prometheusreceiver scrape.
+	scrape scrapeState
+
+	// fault is MIG-08's fault-injection state: the heavy query's measured
+	// latencies and which compose service (if any) is currently paused, so
+	// the scenario's own cleanup can always restore it even on failure.
+	fault faultState
 }
 
 // NewWorld binds a World to the repository root and the binary the scenarios
@@ -123,6 +143,10 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.verifyReport = map[string]migrateverify.Report{}
 		w.verifyRaw = map[string][]byte{}
 		w.verifyExitCode = map[string]int{}
+		w.inventory = inventoryState{}
+		w.bridge = bridgeState{}
+		w.scrape = scrapeState{}
+		w.fault = faultState{}
 
 		if err := requireArchetypeFixtures(w.root, w.archetypes); err != nil {
 			return c, err
@@ -136,15 +160,23 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	})
 	ctx.After(func(c context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 		w.scenariosRun++
+		// Restore any compose service MIG-08's fault-injection paused,
+		// regardless of whether the scenario's own restoring Then step ever
+		// ran — a failed assertion mid-fault must never leave the shared
+		// Tier-1 stack degraded for the next scenario.
+		faultErr := w.restorePausedService()
 		if w.work == "" {
-			return c, nil
+			return c, faultErr
 		}
 		dir := w.work
 		w.work = ""
 		if err := os.RemoveAll(dir); err != nil {
+			if faultErr != nil {
+				return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w (also: %v)", dir, err, faultErr)
+			}
 			return c, fmt.Errorf("migration harness: remove the scenario workspace %s: %w", dir, err)
 		}
-		return c, nil
+		return c, faultErr
 	})
 
 	w.registerSchemaSteps(ctx)
@@ -156,6 +188,10 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerLookbackSteps(ctx)
 	w.registerGateSteps(ctx)
 	w.registerVerifySteps(ctx)
+	w.registerInventorySteps(ctx)
+	w.registerIngestBridgeSteps(ctx)
+	w.registerScrapeParitySteps(ctx)
+	w.registerFaultInjectionSteps(ctx)
 }
 
 // harnessPath resolves a path inside the harness tree under a repository root.

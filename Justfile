@@ -1269,10 +1269,15 @@ migration-tier1-up:
 # reference Prometheus / Loki / Tempo — so both sides of a parity diff are
 # comparable by construction. Publishes the manifest the assertions read their
 # query window from, so the lane never queries a window ending at `now`.
-migration-tier1-seed:
-    @echo "==> migration tier-1 seed"
+#
+# `archetype` selects which archetype's seed/fixture.json is loaded (default:
+# three-signal, the fixture migration-tier1-run's parity proof reads). The
+# Tier-1 scenario slice seeds a different archetype per story under test, e.g.
+# `just migration-tier1-seed kube-prometheus-stack`.
+migration-tier1-seed archetype="three-signal":
+    @echo "==> migration tier-1 seed ({{archetype}})"
     go run ./test/e2e/migration/cmd/seed \
-        --fixture test/e2e/migration/archetypes/three-signal/seed/fixture.json \
+        --fixture test/e2e/migration/archetypes/{{archetype}}/seed/fixture.json \
         --manifest test/e2e/migration/.out/manifest.json
 
 # Assert the Tier-1 substrate contract against the seeded stack: the collector

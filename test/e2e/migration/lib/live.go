@@ -30,6 +30,9 @@ const (
 	EnvTier1TempoOTLPAddr = "TIER1_TEMPO_OTLP_ADDR"
 	EnvTier1CerberusURL   = "TIER1_CERBERUS_URL"
 	EnvTier1Manifest      = "TIER1_MANIFEST"
+	// EnvTier1CollectorOTLPAddr overrides the collector's OTLP/gRPC ingest
+	// address MIG-06's synthetic ingest-bridge push dials directly.
+	EnvTier1CollectorOTLPAddr = "TIER1_COLLECTOR_OTLP_ADDR"
 )
 
 // defaultTier1* mirror the published port map in
@@ -47,6 +50,10 @@ const (
 	defaultTier1TempoURL    = "http://127.0.0.1:27200"
 	defaultTier1TempoOTLP   = "127.0.0.1:27201"
 	defaultTier1CerberusURL = "http://127.0.0.1:27080"
+	// defaultTier1CollectorOTLP is the collector's own OTLP/gRPC ingest port
+	// (MIG-06 pushes a synthetic ingest-bridge batch straight at the
+	// collector, rather than through the seeder's shared fixture path).
+	defaultTier1CollectorOTLP = "127.0.0.1:27317"
 )
 
 // LiveEndpoints is the live Tier-1 stack a scenario drives `cerberus migrate`
@@ -59,6 +66,7 @@ type LiveEndpoints struct {
 	PromURL, LokiURL, TempoURL, TempoOTLPAddr  string
 	CerberusURL                                string
 	ManifestPath                               string
+	CollectorOTLPAddr                          string
 }
 
 // tier1Vars pairs every env var LoadLiveEndpoints reads with the struct field
@@ -79,6 +87,7 @@ var tier1Vars = []struct {
 	{EnvTier1TempoURL, defaultTier1TempoURL, func(e *LiveEndpoints) *string { return &e.TempoURL }},
 	{EnvTier1TempoOTLPAddr, defaultTier1TempoOTLP, func(e *LiveEndpoints) *string { return &e.TempoOTLPAddr }},
 	{EnvTier1CerberusURL, defaultTier1CerberusURL, func(e *LiveEndpoints) *string { return &e.CerberusURL }},
+	{EnvTier1CollectorOTLPAddr, defaultTier1CollectorOTLP, func(e *LiveEndpoints) *string { return &e.CollectorOTLPAddr }},
 }
 
 // envOr returns the named env var, or fallback when it is unset or empty.
