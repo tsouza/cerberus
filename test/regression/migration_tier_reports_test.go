@@ -109,6 +109,69 @@ func TestMigrationTierSuitesResolveTheirFormatter(t *testing.T) {
 	}
 }
 
+// TestMigrationTierJobsUploadTheirRunReport pins the second half of the same
+// evidence chain: writing a run report proves nothing if the job never hands it
+// to the aggregate.
+//
+// MODE=attest runs in migration-aggregate, which reads whatever the
+// `migration-report-*` artifacts contain. A tier that writes its report into
+// the runner's workspace and then uploads nothing leaves the aggregate holding
+// reports for the other tiers — and every scenario of the silent tier reads as
+// enumerated-but-never-run, no matter how green the tier itself was.
+//
+// migration-tier2 did exactly this even after it started writing a report: five
+// scenarios passed, no artifact was uploaded, and the aggregate failed all five
+// @tier2 stories for never having run. Write and upload are pinned together
+// here because either one alone is an unfalsifiable pass.
+func TestMigrationTierJobsUploadTheirRunReport(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := os.ReadFile(tier1WorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", tier1WorkflowPath, err)
+	}
+	body := string(workflow)
+
+	entries, err := os.ReadDir(tiersDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", tiersDir, err)
+	}
+
+	var checked int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Tier packages are named `<tier>-<substrate>`; the tier is the part the
+		// jobs, tags and artifacts all key on.
+		tier, _, ok := strings.Cut(e.Name(), "-")
+		if !ok {
+			t.Fatalf("tier package %q is not named <tier>-<substrate>, so its job and artifact "+
+				"names cannot be derived", e.Name())
+		}
+		checked++
+
+		job := workflowJobBody(t, body, "migration-"+tier)
+		artifact := "name: migration-report-" + tier
+		if !strings.Contains(job, artifact) {
+			t.Errorf("job migration-%s uploads no %q artifact, so migration-aggregate never sees its "+
+				"run report and MODE=attest fails every @%s scenario as never-run — however green the "+
+				"tier itself was. Body:\n%s", tier, "migration-report-"+tier, tier, job)
+		}
+	}
+
+	if checked != wantTierSuites {
+		t.Fatalf("scanned %d tier packages under %s, want %d", checked, tiersDir, wantTierSuites)
+	}
+
+	// The aggregate must collect them all. A pattern that stopped matching would
+	// silently narrow the evidence base rather than fail.
+	if !strings.Contains(body, "pattern: migration-report-*") {
+		t.Fatalf("%s does not download the migration-report-* artifacts; MODE=attest would run over "+
+			"an empty report directory and fail every scenario in the tree", tier1WorkflowPath)
+	}
+}
+
 // isSuiteFormatCall reports whether n is a call to lib.SuiteFormat.
 func isSuiteFormatCall(n ast.Node) bool {
 	call, ok := n.(*ast.CallExpr)

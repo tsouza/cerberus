@@ -386,6 +386,21 @@ jobs:
           SCENARIOS_JSON: build/migration-scenarios.json
           TIER: tier2
 
+      # Same evidence contract as migration-tier0's and migration-tier1's
+      # uploads: the report the Gherkin step's MODE=run wrote is what
+      # migration-aggregate's MODE=attest holds every counted @tier2 scenario
+      # to. Without it the aggregate downloads two reports for three tiers and
+      # every @tier2 story reads as enumerated-but-never-run — which is what it
+      # did, while the tier itself was passing all five scenarios.
+      - name: upload the tier run report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: migration-report-tier2
+          path: build/migration-reports/*.json
+          retention-days: 1
+          if-no-files-found: warn
+
       - name: Tier-2 ruler substrate assertions
         run: go test -tags=migration_tier2 -count=1 ./test/e2e/migration/
 
