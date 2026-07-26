@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "why": "docs/migration-testing.md section 6 IS the ratchet's anchor, and it is editable in the same commit as the code it anchors — so narrowing a PASS cell has always been a valid route to \"full coverage\". This pin does not forbid narrowing; a spec legitimately evolves. It forbids narrowing SILENTLY: MODE=verify fails until the hash is updated here, which puts the weakening on its own reviewed line in the diff instead of leaving it a side effect of the commit that implements the narrower thing. There is deliberately no regeneration command — the failure prints the new hash to paste.",
+  "why": "docs/migration-testing.md section 6 IS the ratchet's anchor, and it is editable in the same commit as the code it anchors \u2014 so narrowing a PASS cell has always been a valid route to \"full coverage\". This pin does not forbid narrowing; a spec legitimately evolves. It forbids narrowing SILENTLY: MODE=verify fails until the hash is updated here, which puts the weakening on its own reviewed line in the diff instead of leaving it a side effect of the commit that implements the narrower thing. There is deliberately no regeneration command \u2014 the failure prints the new hash to paste.",
   "algorithm": "sha256",
   "normalization": "the cell is trimmed and every run of whitespace is collapsed to one space before hashing, so a markdownlint reflow or a column realignment is not a failure but a wording change is",
   "assertions": {
@@ -78,7 +78,7 @@
     },
     "MIG-19": {
       "tiers": "2",
-      "sha256": "b9607e87e1dc35f61aafffda102efec2fb909ed60ba656b4d615be9f7b7f9110"
+      "sha256": "8f518b75262f73aa27c8d0457ea0256dd464d2db6ef758cf80e852785f4f9c48"
     },
     "MIG-20": {
       "tiers": "1",

@@ -36,4 +36,5 @@ Feature: MIG-18 — the shadow ruler's own fire and resolve edges, observed end 
     And that firing edge carries an annotation rendered from the probe alert's own label set
     When the operator clears the probe below its firing threshold and waits for the resolve notification
     Then the dead-end receiver captured a resolving edge for the probe alert
-    And the resolving edge does not precede the firing edge
+    And the resolving edge closes the alert instance the firing edge opened
+    And the resolving edge did not land before the operator cleared the probe

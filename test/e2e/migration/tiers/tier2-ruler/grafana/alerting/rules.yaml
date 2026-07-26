@@ -107,22 +107,42 @@ groups:
   # file back:
   #
   #   expr             MIG-18's Given seeds `cerberus_migration_alert_probe`
-  #                    into ClickHouse straddling the threshold below. `max()`
-  #                    collapses it to exactly ONE alert instance, so "the
-  #                    probe alert" is a single, countable identity rather than
-  #                    whatever cardinality the seed happened to write.
+  #                    into ClickHouse straddling the threshold below, carrying
+  #                    one `probe` attribute. The aggregation keeps that label
+  #                    and drops every other, so the reduce still collapses to
+  #                    exactly ONE alert instance — "the probe alert" stays a
+  #                    single, countable identity rather than whatever
+  #                    cardinality the seed happened to write — while leaving a
+  #                    LABELLED result behind. See the annotations note for why
+  #                    the surviving label is load-bearing rather than cosmetic.
   #   for: 30s         the hold-down MIG-18 asserts the ruler actually honored
   #                    before firing. Three group ticks — long enough that a
   #                    rule which fired immediately is unambiguously
-  #                    distinguishable, short enough for a CI budget.
-  #   labels           asserted verbatim on the captured notification.
+  #                    distinguishable, short enough for a CI budget. Pinned
+  #                    against steps/tier2_alerting.go's mig18ProbeHoldDown by
+  #                    steps/tier2_alerting_test.go, so raising it here fails a
+  #                    unit test instead of silently relaxing the live check.
+  #   labels           asserted verbatim on the captured notification. These are
+  #                    the ROUTING keys — what an operator's existing silences
+  #                    and routes are written against — and Grafana stamps them
+  #                    onto the instance after templating, which is why they
+  #                    cannot serve the annotation below.
   #   annotations      `{{ $labels.probe }}` is asserted to arrive RENDERED
   #                    (carrying `fire-resolve`, and no leftover template
-  #                    delimiters). The referenced label is a rule label, not a
-  #                    query label, so the assertion tests Grafana's annotation
-  #                    rendering rather than cerberus's label mapping — that is
-  #                    MIG-11's subject, and conflating the two would make a
-  #                    MIG-11 regression surface here instead.
+  #                    delimiters). The label the template resolves is the one
+  #                    the QUERY returned, not the rule label of the same name:
+  #                    Grafana expands a rule's annotations against the
+  #                    evaluated result's label set, because the rule's own
+  #                    labels are themselves templates being expanded in the
+  #                    same pass and so are not yet in scope. An unlabelled
+  #                    reduce (`max(...)` with no grouping) therefore renders
+  #                    this as `[no value]` however the rule labels are
+  #                    declared — the defect the first live Tier-2 run caught,
+  #                    and the reason the expr above groups rather than
+  #                    collapses. The assertion consequently rides on cerberus
+  #                    returning the attribute as a query label; the labels
+  #                    assertion above stays a pure provisioning check, so the
+  #                    two claims fail independently.
   #   noDataState: OK  before MIG-18's Given seeds the probe, the series does
   #                    not exist. Firing on absent data would put notifications
   #                    in the dead-end receiver during MIG-09's own
@@ -141,7 +161,7 @@ groups:
             relativeTimeRange: { from: 600, to: 0 }
             datasourceUid: cerberus-prometheus
             model:
-              expr: max(cerberus_migration_alert_probe)
+              expr: max by (probe) (cerberus_migration_alert_probe)
               instant: true
               refId: A
           - refId: C

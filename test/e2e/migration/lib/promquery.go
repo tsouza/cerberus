@@ -105,10 +105,17 @@ func decodeSample(pair [2]json.RawMessage) (PromSample, error) {
 // it requires resultType "vector". Distinct from probe.go's QueryInstant,
 // which returns a sortable ProbeVector plus the dialled request URL — the
 // shape the cutover scenarios compare backend-to-backend.
+// The evaluation instant is sent as RFC3339Nano rather than whole Unix
+// seconds. MIG-19 re-evaluates a recording rule's source expression at the
+// exact timestamp the ruler recorded a sample AT, read out of ClickHouse as a
+// DateTime64(9); truncating that to a whole second would silently move the
+// evaluation instant and turn a correct write-back into a value divergence.
+// cerberus's own parser accepts Unix seconds, Unix millis and RFC3339Nano
+// (internal/api/format.ParseTimeProm), so this loses nothing.
 func QueryInstantSeries(ctx context.Context, baseURL, query string, t time.Time) ([]PromSeries, error) {
 	target := strings.TrimRight(baseURL, "/") + "/api/v1/query?" + url.Values{
 		"query": {query},
-		"time":  {strconv.FormatInt(t.Unix(), 10)},
+		"time":  {t.UTC().Format(time.RFC3339Nano)},
 	}.Encode()
 
 	var decoded struct {
