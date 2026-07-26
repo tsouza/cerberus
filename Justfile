@@ -1255,8 +1255,41 @@ compat-all: compat-promql compat-logql compat-traceql
 # three heads. Explicit lifecycle verbs plus a composite, mirroring the e2e-*
 # shape; the `tier1` prefix leaves room for the ruler tier without renaming.
 
-# Bring the Tier-1 stack up and wait for every healthcheck to pass. Builds
-# cerberus:migration-tier1 from the repo-root Dockerfile.local.
+# The image tag the migration stacks run when no released artifact is supplied.
+# Held equal to the `${CERBERUS_IMAGE:-…}` default in
+# tiers/tier1-dual/docker-compose.dual.yml by
+# test/regression/migration_tier1_test.go, so the recipe below and the compose
+# file cannot disagree about which tag "locally built" means.
+MIGRATION_LOCAL_IMAGE := "cerberus:migration-tier1"
+
+# Put the cerberus image the migration stacks run into the local Docker daemon —
+# the SINGLE acquisition point, shared by CI and local dev.
+#
+# Two paths, decided by CERBERUS_IMAGE alone: unset (every local run, every PR /
+# dispatch / push CI run) it builds MIGRATION_LOCAL_IMAGE from the repo-root
+# Dockerfile.local — whose final unnamed stage IS the cerberus image, so no
+# `--target` is needed — and the stack proves this tree. Set (release.yml's
+# artifact lane) it pulls that released tag and the stack proves the artifact.
+#
+# This exists because the compose up path deliberately cannot acquire the image
+# itself: `pull_policy: never` and no `--build` on the up recipes are what keep
+# a release run from recompiling the source tree over the released image.
+migration-cerberus-image:
+    @local_tag='{{MIGRATION_LOCAL_IMAGE}}'; \
+    img="${CERBERUS_IMAGE:-$local_tag}"; \
+    if [ "$img" = "$local_tag" ]; then \
+        echo "==> migration cerberus image: build $img from Dockerfile.local"; \
+        docker build -f Dockerfile.local -t "$img" .; \
+    else \
+        echo "==> migration cerberus image: pull $img"; \
+        docker pull "$img"; \
+    fi
+
+# Bring the Tier-1 stack up and wait for every healthcheck to pass. The cerberus
+# image is acquired first by migration-cerberus-image; there is deliberately no
+# `--build` here, because `--build` forces a source build regardless of
+# `pull_policy` and that is precisely how a released image gets silently
+# replaced by a recompile of whatever tree the runner has checked out.
 # The teardown is a sub-invocation rather than a `migration-tier1-up:
 # migration-tier1-down` dependency on purpose: just runs a recipe at most once
 # per invocation, so declaring it as a dependency would consume the trailing
@@ -1264,11 +1297,13 @@ compat-all: compat-promql compat-logql compat-traceql
 # running after a clean lane. Seeding an already-seeded stack is the failure
 # this closes — a run aborted by a failing assertion never reaches teardown,
 # and a second seed into the same live window collides on every sample instant.
+# migration-cerberus-image is a sub-invocation for the same reason.
 migration-tier1-up:
     @just migration-tier1-down
+    @just migration-cerberus-image
     @echo "==> migration tier-1 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
-        up --build --wait --wait-timeout 300
+        up --wait --wait-timeout 300
 
 # Every archetype an `@tier1` scenario actually reads fixture data from:
 # MIG-02/06/07/08 read kube-prometheus-stack, every other `@tier1` scenario
@@ -1395,12 +1430,18 @@ migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run mig
 # via the standard multi-`-f` invocation so both sets of services land in the
 # SAME compose project (docker-compose.ruler.yml deliberately declares no
 # `name:` of its own — see that file's header comment).
+#
+# Same image contract as migration-tier1-up: acquire once via
+# migration-cerberus-image, never `--build`. The ruler tier adds services on top
+# of Tier-1's `cerberus`, it does not declare a second one, so this stack runs
+# exactly the image that recipe put in the daemon.
 migration-tier2-up:
     @just migration-tier2-down
+    @just migration-cerberus-image
     @echo "==> migration tier-2 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
-        up --build --wait --wait-timeout 300
+        up --wait --wait-timeout 300
 
 # Tier-2 runs against the same seeded window Tier-1 does — the ruler tier
 # adds Grafana-managed alerting on top of the SAME cerberus/ClickHouse pair,

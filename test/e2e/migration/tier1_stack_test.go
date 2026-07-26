@@ -27,6 +27,7 @@ import (
 
 	otlptrace "go.opentelemetry.io/proto/otlp/trace/v1"
 
+	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
@@ -103,6 +104,10 @@ const (
 	detectedLevelKey = "detected_level"
 	probeLevel       = "info"
 )
+
+// cerberusServiceName is the `service` field GET /info stamps. It identifies
+// the process as cerberus rather than some other thing bound to the port.
+const cerberusServiceName = "cerberus"
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -181,6 +186,41 @@ func TestTier1Substrate(t *testing.T) {
 		body := getBody(t, ctx, base+"/api/echo")
 		if string(body) != "echo" {
 			t.Fatalf("tempo head /api/echo = %q, want %q", string(body), "echo")
+		}
+	})
+
+	// Which cerberus is SERVING this stack. The binary probe in
+	// lib.BuildCerberus only observes the CLI the scenarios exec; on a release
+	// run the whole point is that the compose stack runs the image goreleaser
+	// built, and a stack that quietly rebuilt from Dockerfile.local would leave
+	// every other assertion in this file green while proving nothing about the
+	// artifact. Runs after cerberus_serves_three_heads, which is what waited for
+	// the process to come up.
+	//
+	// GET /info is the cerberus-NATIVE fingerprint: its `version` field is
+	// main.Version verbatim. The Prometheus/Loki `/status/buildinfo` surfaces
+	// are upstream-compat mirrors and report what those APIs are expected to
+	// report, so they are the wrong probe for this question.
+	t.Run("cerberus_artifact_provenance", func(t *testing.T) {
+		base := envOr(cerberusURLEnvKey, defaultCerberusURL)
+
+		var info struct {
+			Service string `json:"service"`
+			Version string `json:"version"`
+		}
+		getJSON(t, ctx, base+"/info", &info)
+
+		if info.Service != cerberusServiceName {
+			t.Fatalf("%s/info reports service %q, want %q — the port is not served by cerberus",
+				base, info.Service, cerberusServiceName)
+		}
+		if want := lib.ExpectedServerVersion(); info.Version != want {
+			t.Fatalf("the tier-1 stack serves cerberus %q but this run drives %q (%s=%q, %s=%q). "+
+				"Either the stack rebuilt from source over the image under test, or the image is not "+
+				"the one the release is publishing — every parity assertion below would be about the "+
+				"wrong binary.",
+				info.Version, want, lib.ExpectVersionEnv, os.Getenv(lib.ExpectVersionEnv),
+				lib.ImageEnv, lib.ResolvedImage())
 		}
 	})
 

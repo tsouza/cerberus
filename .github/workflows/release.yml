@@ -14,10 +14,19 @@ name: release
 #        auto-tag ONLY the changed artifact(s).
 #
 # The merge-when-green branch protection (every required check green on a tree
-# that is up to date with main) is the gate that the deleted `preflight` job
-# used to enforce by re-reading check-runs on the tagged commit. Because the PR
-# merged green against the exact merged tree, the merge commit is releasable by
-# construction — no second "is main green?" probe is needed.
+# that is up to date with main) covers the lanes that CAN be branch-protection
+# checks. It does NOT cover the lanes that carry no `pull_request:` trigger:
+# `migration-e2e` is deliberately push/schedule-only, so it can never become a
+# branch-protection check and has therefore NEVER run on the tree being
+# released — the merge commit is the first tree it sees. That is why the
+# `preflight` job below now runs on the MAIN path too, and why it is handed an
+# EXPECTED set (`RELEASE_REQUIRED_CHECKS`) rather than left to gate on whatever
+# the API happens to return: a lane that never ran contributes zero check-runs,
+# zero problems, and publishes in silence.
+#
+# `preflight` is PUBLISH-gated, not path-gated: it is skipped entirely on the
+# ordinary merges that publish nothing, so no runner time is spent waiting for
+# CI on a commit that ships no artifact.
 #
 # Idempotency / no-op safety: a merge that bumped NEITHER version line is a
 # complete no-op. The app gate (release-version-gate.mjs) sets publish=false
@@ -126,26 +135,40 @@ jobs:
           echo "app:   publish=${{ steps.app.outputs.publish }} version=${{ steps.app.outputs.version }} tag=${{ steps.app.outputs.tag }}"
           echo "chart: publish=${{ steps.chart.outputs.publish }} version=${{ steps.chart.outputs.version }}"
 
-  # Green-check guard — MAINTENANCE PATH ONLY.
+  # Green-check guard — BOTH release paths, gated on "something actually
+  # publishes" rather than on which branch was pushed.
   #
-  # A push to `main` is implicitly green: branch protection refuses to merge a
-  # PR whose required checks are red or whose tree is behind main, so the merge
-  # commit is releasable by construction and needs no preflight. A push to a
-  # `release/*.x` maintenance branch has NO PR gate — a maintainer cherry-picks
-  # a hotfix straight onto the branch — so publishing it unguarded could ship a
-  # RED commit. This job re-reads the pushed commit's check-runs + legacy
-  # statuses and FAILS the release unless the commit is the branch tip AND every
-  # required check is settled green.
+  # MAIN path: branch protection already refused to merge a PR whose REQUIRED
+  # checks were red, but `migration-e2e` has no `pull_request:` trigger by
+  # design, so it never ran on the PR and the merge commit is the first tree it
+  # sees. Without this job nothing re-reads main at all, and a red (or absent)
+  # migration lane publishes unobserved.
   #
-  # It runs ONLY on a `release/*.x` push (the `if` below); on main + dispatch it
-  # is skipped, and the publish jobs' `always() && (preflight skipped || passed)`
-  # guard keeps the main path preflight-free. The standard CI workflows (ci /
-  # compatibility / chdb / e2e) are wired to also run on `release/*.x` pushes,
-  # so there ARE check-runs on the maintenance commit for this gate to read.
+  # MAINTENANCE path (`release/*.x`): no PR gate whatsoever — a maintainer
+  # cherry-picks a hotfix straight onto the line — so on top of the green gate
+  # the script additionally requires the pushed commit to be the branch TIP and
+  # the line to be inside the support window (EOL lines get no hotfixes). Both
+  # rules are maintenance-only; `release-preflight.mjs` derives the mode from
+  # GITHUB_REF_NAME.
+  #
+  # The `if:` is a PUBLISH gate, not a path gate: an ordinary merge that bumps
+  # neither version line skips this job entirely, so no runner sits waiting on
+  # CI for a commit that ships nothing. The publish jobs still wrap their guards
+  # in `always()` — a SKIPPED preflight would otherwise cascade its skip down the
+  # chain — but they require `preflight == 'success'` outright: the old
+  # `|| skipped` disjunction existed only because preflight was maintenance-only,
+  # and keeping it would let a mis-edited `if:` publish unguarded.
+  #
+  # ABSENCE IS A FAILURE: `RELEASE_REQUIRED_CHECKS` is the EXPECTED set the
+  # script does not derive from the API response. Every name in it must have
+  # posted a check-run on the commit; an empty value, or a required name that
+  # `RELEASE_INFORMATIONAL_CHECKS` would swallow by prefix, is itself a blocking
+  # problem. test/regression/release_gate_test.go pins this wiring at PR time —
+  # this workflow has no `pull_request:` trigger, so nothing else does.
   preflight:
     name: preflight
     needs: gate
-    if: startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '.x')
+    if: needs.gate.outputs.app_publish == 'true' || needs.gate.outputs.chart_publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -157,22 +180,38 @@ jobs:
       - name: preflight self-test
         run: node .github/scripts/release-preflight.mjs --self-test
 
-      - name: Verify the line is in-window, the commit is the branch tip, and fully green
+      - name: preflight required-set guard
+        run: node --test .github/scripts/release-preflight.test.mjs
+
+      - name: Verify every required lane ran and the commit is fully green
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # This release run's own jobs are necessarily in-progress while the
           # preflight reads check-runs, so they're excluded structurally (gating
-          # on them would deadlock).
-          RELEASE_SELF_JOBS: gate,preflight,goreleaser,chart-release
+          # on them would deadlock). A reusable workflow called from one of them
+          # posts children as "<job> / <child>"; release-preflight.mjs matches
+          # that prefix too, so release-artifact-migration's tier jobs are
+          # excluded without being named individually.
+          RELEASE_SELF_JOBS: gate,preflight,goreleaser,release-artifact-migration,publish,brew-smoke,chart-release
+          # The EXPECTED set — exact check-run names that MUST have posted a run
+          # on this commit. It is the branch-protection required set (see
+          # CLAUDE.md) PLUS `migration-e2e`, which can never BE a
+          # branch-protection check because migration-e2e.yml has no
+          # `pull_request:` trigger. Deleting a name from here silently shrinks
+          # the gate, so release_gate_test.go asserts `migration-e2e` is present
+          # on every PR.
+          RELEASE_REQUIRED_CHECKS: "check,lint,forbid-skip,compatibility/prometheus,compatibility/loki,compatibility/tempo,probe,roundtrip (promql),roundtrip (logql),roundtrip (traceql),compose-smoke,migration-e2e"
           # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
           # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate
           # does NOT `needs:` the crawl info shard, and `dashboard` is informational
-          # on merges — a flake in either must not block a hotfix release.
+          # on merges — a flake in either must not block a release. A prefix here
+          # that swallows a RELEASE_REQUIRED_CHECKS name fails the preflight as a
+          # wiring error rather than quietly de-gating it.
           RELEASE_INFORMATIONAL_CHECKS: compose-smoke-shard-info,dashboard
-        # Also enforces the support-window / EOL policy: a push to a maintenance
-        # line 3+ minors behind the current minor is refused (the line is EOL,
-        # gets no hotfixes). See docs/operations.md "Release support window / EOL
-        # policy".
+        # On the maintenance path this also enforces the support-window / EOL
+        # policy: a push to a line 3+ minors behind the current minor is refused
+        # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
+        # support window / EOL policy".
         run: node .github/scripts/release-preflight.mjs
 
   # App release — binary archives + multi-arch images (GHCR + Docker Hub) +
@@ -188,16 +227,21 @@ jobs:
   goreleaser:
     name: goreleaser
     needs: [gate, preflight]
-    # Publish when the app gate says the appVersion is new AND the maintenance
-    # green-check guard is satisfied. On the main / dispatch path `preflight` is
-    # SKIPPED (result == 'skipped'), so `always()` unwraps the skip and the main
-    # path goes through preflight-free; on the maintenance path `preflight` must
-    # have SUCCEEDED. Requiring success-OR-skipped (not just `!= failure`) means
-    # a CANCELLED or otherwise non-green preflight also blocks the publish.
+    # Publish when the app gate says the appVersion is new AND the green-check
+    # guard is satisfied. `preflight` is gated on the SAME publish condition, so
+    # on every run that reaches here it ran — requiring SUCCESS outright, with no
+    # `|| skipped` disjunction. That used to be there because preflight was
+    # maintenance-only; keeping it now would be an escape hatch, since a
+    # preflight whose own `if:` was mis-edited into never running would report
+    # `skipped` and publish unguarded.
+    #
+    # `always()` is still load-bearing: without it, a SKIPPED preflight (the
+    # no-publish merge) cascades its skip down the chain rather than letting the
+    # explicit guards decide.
     if: |
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
-      (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+      needs.preflight.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -301,12 +345,69 @@ jobs:
         with:
           subject-path: 'dist/*.tar.gz'
 
+  # Drive the Layer-14 migration lane against the image goreleaser JUST BUILT,
+  # before the release becomes public.
+  #
+  # The push-triggered `migration-e2e` run that `preflight` requires proves the
+  # SOURCE TREE is good; it cannot prove the released artifact is, because the
+  # artifact does not exist until goreleaser runs. A bad ldflag, a wrong-arch
+  # build, Dockerfile drift, or a config default that only holds in
+  # Dockerfile.local would sail past it. So the same lane definition runs a
+  # second time with `cerberus_image` pointed at the published tag; the harness
+  # extracts the CLI from that image and asserts the running server's
+  # `GET /info` version equals `expect_version`, so both halves of the stack are
+  # provably the released bytes.
+  #
+  # `always()` is LOAD-BEARING for the same reason it is on `eol-retire`: this
+  # chain transitively depends on `preflight`, which is SKIPPED on a no-publish
+  # merge, and GitHub's skip-propagation would cascade that skip down the whole
+  # chain.
+  #
+  # The image tag is the bare `{{ .Version }}` form, matching .goreleaser.yml's
+  # `image_templates`.
+  release-artifact-migration:
+    name: release-artifact-migration
+    needs: [gate, goreleaser]
+    if: |
+      always() &&
+      needs.gate.outputs.app_publish == 'true' &&
+      needs.goreleaser.result == 'success'
+    uses: ./.github/workflows/migration-e2e.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
+    with:
+      tier: all
+      cerberus_image: ghcr.io/${{ github.repository_owner }}/cerberus:${{ needs.gate.outputs.app_version }}
+      expect_version: ${{ needs.gate.outputs.app_version }}
+
+  # Make the release public. This is a SEPARATE job from `goreleaser` on
+  # purpose: the draft->published flip is the point of no return, so everything
+  # that validates the built artifact has to sit between the two. Moving these
+  # steps back inside `goreleaser` would publish an image nothing ever drove —
+  # test/regression/release_gate_test.go asserts there is exactly one
+  # draft-to-published flip in this file and that its job `needs:`
+  # `release-artifact-migration`.
+  publish:
+    name: publish
+    needs: [gate, goreleaser, release-artifact-migration]
+    if: |
+      always() &&
+      needs.gate.outputs.app_publish == 'true' &&
+      needs.goreleaser.result == 'success' &&
+      needs.release-artifact-migration.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       # goreleaser created the release as a DRAFT (see .goreleaser.yml
       # release.draft) so it could attach assets while the release is still
       # mutable. Flip it published NOW, AFTER the assets + provenance are in
-      # place: the repo's immutable-releases policy then freezes the release
-      # WITH its assets. Publishing up-front (e.g. `gh release create`) would
-      # lock it before goreleaser could upload — the 422 that broke v1.0.1.
+      # place AND the migration lane has driven the built image: the repo's
+      # immutable-releases policy then freezes the release WITH its assets.
+      # Publishing up-front (e.g. `gh release create`) would lock it before
+      # goreleaser could upload — the 422 that broke v1.0.1.
       # Idempotent: a no-op if already published.
       - name: Publish release (flip draft -> published)
         env:
@@ -324,6 +425,45 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PAT }}
           repository: tsouza/cerberus
           readme-filepath: ./README.md
+
+  # Post-publish install smoke: prove `brew install tsouza/tap/cerberus` works
+  # for the version that just shipped.
+  #
+  # `needs: publish` is ordering, not decoration: `brew install` downloads the
+  # release tarball, which 404s while the release is still a draft. The reflex
+  # fixes for that 404 — a retry loop, `continue-on-error` — would ship the
+  # release unverified and green, so the fix is to run after the flip.
+  #
+  # Prereleases are NOT skipped. `skip_upload: auto` means an `rc.*` writes no
+  # formula, so brew-smoke.mjs takes the NEGATIVE branch instead: the formula
+  # must exist and must NOT declare this version.
+  brew-smoke:
+    name: brew-smoke
+    needs: [gate, publish]
+    if: |
+      always() &&
+      needs.gate.outputs.app_publish == 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The `config-docs -check` payload compares the SHIPPED binary's config
+      # registry against THIS commit's docs/configuration.md, so the release
+      # tree has to be on disk.
+      - uses: actions/checkout@v7
+
+      - name: brew-smoke self-test
+        run: node --test .github/scripts/brew-smoke.test.mjs
+
+      - name: install from the tap and smoke the published binary
+        env:
+          # The BARE version. Comparing `cerberus --version` to `app_tag` would
+          # be a guaranteed off-by-`v` mismatch.
+          RELEASE_VERSION: ${{ needs.gate.outputs.app_version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: node .github/scripts/brew-smoke.mjs
 
   # Active EOL — after a NEW app version actually publishes, retire the release
   # line that just fell out of the latest-3-minor support window by DELETING its
@@ -353,19 +493,22 @@ jobs:
   # protected). See docs/operations.md "Release support window / EOL policy".
   eol-retire:
     name: eol-retire
-    needs: [gate, goreleaser]
-    # Only when a NEW app version actually published (goreleaser ran + succeeded).
+    needs: [gate, publish]
+    # Only when a NEW app version actually went PUBLIC. This hangs off `publish`,
+    # not `goreleaser`: retiring an old line while the new release is still a
+    # draft would shrink the support window on the strength of a release that may
+    # yet be blocked by `release-artifact-migration`.
     # `always()` is LOAD-BEARING: like `goreleaser` and `chart-release`, this job
-    # transitively depends on `preflight`, which is SKIPPED on the main / dispatch
-    # path. Without `always()`, GitHub's skip-propagation cascades the skip down
-    # this whole chain, so the job never runs on a real minor open and EOL lines
-    # never get retired. `always()` unwraps that skip; the two guards below then
-    # keep it a strict no-op on patches / backports / failed publishes — it only
-    # fires when goreleaser actually shipped a new version.
+    # transitively depends on `preflight`, which is SKIPPED on a no-publish merge.
+    # Without `always()`, GitHub's skip-propagation cascades the skip down this
+    # whole chain, so the job never runs on a real minor open and EOL lines never
+    # get retired. `always()` unwraps that skip; the two guards below then keep it
+    # a strict no-op on patches / backports / failed publishes — it only fires
+    # when a new version actually shipped.
     if: |
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
-      needs.goreleaser.result == 'success'
+      needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       # Deleting a branch ref needs contents:write. (The job uses RELEASE_PAT
@@ -401,13 +544,13 @@ jobs:
   chart-release:
     name: chart-release
     needs: [gate, preflight]
-    # Same guard as goreleaser: chart gate says new AND (main path: preflight
-    # skipped) OR (maintenance path: preflight succeeded). A failed / cancelled
-    # maintenance preflight blocks the chart publish too.
+    # Same guard as goreleaser: chart gate says new AND preflight SUCCEEDED.
+    # `preflight` fires on `chart_publish` too, so there is no run that reaches
+    # here with a skipped preflight — no `|| skipped` disjunction to hide behind.
     if: |
       always() &&
       needs.gate.outputs.chart_publish == 'true' &&
-      (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+      needs.preflight.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

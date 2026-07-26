@@ -212,15 +212,25 @@ func TestAssertGoldenRegeneratesLocallyOnly(t *testing.T) {
 	}
 }
 
+// writeVersionStub writes an executable that answers `--version` with the given
+// stamp — the smallest stand-in for a cerberus build whose provenance the
+// harness has to decide about.
+func writeVersionStub(t *testing.T, dir, version string) string {
+	t.Helper()
+	path := filepath.Join(dir, "cerberus")
+	script := "#!/bin/sh\necho " + version + "\n"
+	if err := os.WriteFile(path, []byte(script), goldenDirMode); err != nil {
+		t.Fatalf("write version stub: %v", err)
+	}
+	return path
+}
+
 // TestBuildCerberusHonoursAPrebuiltBinary asserts CERBERUS_BIN short-circuits
 // the compile, and that a path naming a directory is rejected rather than
 // handed on as an unexecutable binary.
 func TestBuildCerberusHonoursAPrebuiltBinary(t *testing.T) {
 	dir := t.TempDir()
-	prebuilt := filepath.Join(dir, "cerberus")
-	if err := os.WriteFile(prebuilt, []byte("#!/bin/sh\n"), goldenDirMode); err != nil {
-		t.Fatalf("write prebuilt binary: %v", err)
-	}
+	prebuilt := writeVersionStub(t, dir, SourceBuildVersion)
 
 	t.Setenv(cerberusBinEnv, prebuilt)
 	got, err := BuildCerberus(t.TempDir(), dir)
@@ -235,6 +245,97 @@ func TestBuildCerberusHonoursAPrebuiltBinary(t *testing.T) {
 	if _, err := BuildCerberus(t.TempDir(), dir); err == nil {
 		t.Fatalf("BuildCerberus accepted a directory as %s", cerberusBinEnv)
 	}
+}
+
+// TestBuildCerberusProvesWhichBinaryItGot is the provenance half. A stat that
+// only proves "a file exists here" is satisfied by a stale artifact, a
+// wrong-GOARCH build, or a release lane that silently fell back to compiling
+// from source — every one of which would run the whole scenario set against a
+// cerberus the run is not supposed to be testing, and report green.
+func TestBuildCerberusProvesWhichBinaryItGot(t *testing.T) {
+	const releaseVersion = "1.11.2"
+
+	t.Run("source_run_expects_the_source_stamp", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv(ExpectVersionEnv, "")
+		t.Setenv(cerberusBinEnv, writeVersionStub(t, dir, SourceBuildVersion))
+		if _, err := BuildCerberus(t.TempDir(), dir); err != nil {
+			t.Fatalf("a from-source run rejected the %q stamp it is supposed to expect: %v",
+				SourceBuildVersion, err)
+		}
+	})
+
+	t.Run("release_run_rejects_a_source_build", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv(ExpectVersionEnv, releaseVersion)
+		t.Setenv(cerberusBinEnv, writeVersionStub(t, dir, SourceBuildVersion))
+		_, err := BuildCerberus(t.TempDir(), dir)
+		if err == nil {
+			t.Fatalf("a run pinned to %s accepted a binary reporting %q; a release lane that fell "+
+				"back to a source build would report green", releaseVersion, SourceBuildVersion)
+		}
+		for _, want := range []string{SourceBuildVersion, releaseVersion} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("the mismatch error does not quote %q, so the log would not name what was "+
+					"actually run: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("release_run_accepts_the_pinned_stamp", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv(ExpectVersionEnv, releaseVersion)
+		t.Setenv(cerberusBinEnv, writeVersionStub(t, dir, releaseVersion))
+		if _, err := BuildCerberus(t.TempDir(), dir); err != nil {
+			t.Fatalf("a run pinned to %s rejected a binary reporting exactly that: %v", releaseVersion, err)
+		}
+	})
+
+	t.Run("a_silent_binary_is_a_failure_not_a_pass", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "cerberus")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), goldenDirMode); err != nil {
+			t.Fatalf("write silent stub: %v", err)
+		}
+		t.Setenv(ExpectVersionEnv, "")
+		t.Setenv(cerberusBinEnv, path)
+		if _, err := BuildCerberus(t.TempDir(), dir); err == nil {
+			t.Fatalf("BuildCerberus accepted a binary that printed no version at all")
+		}
+	})
+}
+
+// TestExpectedVersionsSplitCLIFromServer pins the one asymmetry the provenance
+// helpers encode: on a from-source run the CLI (`go build`, no ldflags) and the
+// compose server (Dockerfile.local, `-X main.Version=e2e`) are DIFFERENT builds,
+// so each is held to its own stamp; on a released-artifact run they are the same
+// bytes and both are held to the run-wide one. Collapsing the two would make one
+// of the two probes assert against a value that can never hold.
+func TestExpectedVersionsSplitCLIFromServer(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv(ExpectVersionEnv, "")
+		if got := ExpectedCLIVersion(); got != SourceBuildVersion {
+			t.Fatalf("ExpectedCLIVersion() = %q, want %q", got, SourceBuildVersion)
+		}
+		if got := ExpectedServerVersion(); got != LocalImageVersion {
+			t.Fatalf("ExpectedServerVersion() = %q, want %q", got, LocalImageVersion)
+		}
+		if SourceBuildVersion == LocalImageVersion {
+			t.Fatalf("the CLI and the server stamps are both %q, so neither probe can tell a "+
+				"from-source run from an image run", SourceBuildVersion)
+		}
+	})
+
+	t.Run("pinned", func(t *testing.T) {
+		const releaseVersion = "1.11.2"
+		t.Setenv(ExpectVersionEnv, releaseVersion)
+		if got := ExpectedCLIVersion(); got != releaseVersion {
+			t.Fatalf("ExpectedCLIVersion() = %q, want %q", got, releaseVersion)
+		}
+		if got := ExpectedServerVersion(); got != releaseVersion {
+			t.Fatalf("ExpectedServerVersion() = %q, want %q", got, releaseVersion)
+		}
+	})
 }
 
 // TestRequireOfflineAcceptsOnlyAClosedEnvironment proves the check a scenario's
