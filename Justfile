@@ -1273,17 +1273,27 @@ migration-tier1-up:
 # full rebuild + boot + healthcheck wait for no reason.
 MIGRATION_TIER1_ARCHETYPES := "three-signal kube-prometheus-stack"
 
-# Minutes each archetype's fixture window is pushed further into the past
-# than the previous archetype's (cmd/seed's --window-offset), so archetypes
-# seeded back-to-back into the same live stack land in disjoint windows even
-# when their fixtures share a label value. three-signal and
-# kube-prometheus-stack both declare a "checkout" trace service, and
-# reference Tempo's /api/search is window-scoped: an overlapping window let
-# one archetype's search see the other's "checkout" traces too. 45 minutes
-# clears the fixture window (seed.SeedWindow, 30 minutes) with margin for how
-# long seeding the prior archetype took, while staying under reference
-# Tempo's 1-hour ingestion slack (cmd/seed validates this at seed time).
-MIGRATION_TIER1_WINDOW_STEP_MIN := "45"
+# Lines per service kept when dumping the stack's logs after a failure. Enough
+# to cover a service's boot and its last work, short enough that the cause is
+# not buried under six boot logs.
+MIGRATION_TIER1_LOG_TAIL := "200"
+
+# Archetypes sharing one live stack are kept apart by their IDENTITIES, not by
+# their windows: every archetype in MIGRATION_TIER1_ARCHETYPES declares trace
+# service names, metric names and a log job that no other one declares, so all
+# of them can occupy the same fixture window without any search seeing another
+# archetype's data. test/regression/migration_tier1_test.go enforces that
+# pairwise disjointness, so adding a ninth archetype that reuses a name fails
+# the required `check` lane rather than a 45-minute Docker job.
+#
+# Pushing each archetype into its own earlier window (cmd/seed's
+# --window-offset) was the previous mechanism and is arithmetically impossible
+# for more than one archetype: disjoint windows need an offset of at least
+# seed.SeedWindow (30m), and reference Tempo's 1h wal.ingestion_time_range_slack
+# rejects any offset where offset + SeedWindow >= 1h. Every value satisfying one
+# constraint violates the other, so the second archetype could never seed. The
+# flag remains on cmd/seed — it is a real capability with a correct guard — but
+# nothing here uses it.
 
 # Load the deterministic all-signal fixture into the running stack: one
 # in-memory fixture per archetype, each written twice — directly into
@@ -1306,16 +1316,13 @@ MIGRATION_TIER1_WINDOW_STEP_MIN := "45"
 migration-tier1-seed archetype="":
     @archetypes="{{archetype}}"; \
     [ -n "$archetypes" ] || archetypes="{{MIGRATION_TIER1_ARCHETYPES}}"; \
-    offset=0; \
     for a in $archetypes; do \
         manifest="test/e2e/migration/.out/manifest.json"; \
         [ "$a" = "three-signal" ] || manifest="test/e2e/migration/.out/manifest-$a.json"; \
-        echo "==> migration tier-1 seed ($a, window offset ${offset}m, manifest $manifest)"; \
+        echo "==> migration tier-1 seed ($a, manifest $manifest)"; \
         go run ./test/e2e/migration/cmd/seed \
             --fixture test/e2e/migration/archetypes/$a/seed/fixture.json \
-            --manifest "$manifest" \
-            --window-offset "${offset}m"; \
-        offset=$((offset + {{MIGRATION_TIER1_WINDOW_STEP_MIN}})); \
+            --manifest "$manifest"; \
     done
 
 # Assert the Tier-1 substrate contract against the seeded stack: the collector
@@ -1338,6 +1345,15 @@ migration-tier1-run:
     go test -tags=migration_tier1 -count=1 ./test/e2e/migration/tiers/tier1-dual/...
     @echo "==> migration tier-1 substrate + parity assertions"
     go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
+
+# Every service's log, for when an assertion fails and the reason is upstream
+# of the assertion — a collector that never provisioned the schema, a reference
+# backend that never became ready. CI runs this on failure only; the tail bound
+# keeps a red run readable instead of burying the cause under a boot log.
+migration-tier1-logs:
+    @echo "==> migration tier-1 stack logs"
+    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        logs --no-color --tail {{MIGRATION_TIER1_LOG_TAIL}}
 
 # Tear the Tier-1 stack down. `-v` is mandatory, not cosmetic: the reference
 # images declare their own VOLUMEs, and a surviving volume would carry one

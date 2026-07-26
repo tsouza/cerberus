@@ -168,6 +168,35 @@ jobs:
         with:
           tool: just
 
+      # The stack pulls six images (ClickHouse, the collector, reference
+      # Prometheus/Loki/Tempo, golang) onto a runner whose default free space
+      # does not comfortably hold them. Same reclaim e2e.yml runs before its
+      # compose lanes.
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
+      # Anonymous Docker Hub pulls are rate-limited hard enough to fail a
+      # cold runner mid-`compose up`; the other Docker-backed lanes log in
+      # first for exactly this reason. Gated on the secret being present so a
+      # fork PR degrades to anonymous rather than erroring on an empty
+      # password.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
       # migration-tier1 runs on a separate runner with a fresh checkout, so
       # the enumerator output from migration-setup must travel as an
       # artifact — same reason migration-tier0 downloads it too.
@@ -195,9 +224,18 @@ jobs:
           MODE: run
           SCENARIOS_JSON: build/migration-scenarios.json
           TIER: tier1
+          STORY: ${{ inputs.story }}
 
       - name: Tier-1 substrate + parity assertions
         run: go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
+
+      # A red tier-1 run is only diagnosable with the stack's own account of
+      # what it was doing. Without this, a failure that originates in the
+      # collector or a reference backend shows up here as an opaque assertion
+      # message and the evidence dies with the runner.
+      - name: dump the stack's logs
+        if: failure()
+        run: just migration-tier1-logs
 
       # Every seeded archetype's manifest is what its scenarios read their
       # window and cardinalities from, so a failing run is only diagnosable
