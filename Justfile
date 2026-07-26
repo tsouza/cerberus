@@ -1289,17 +1289,22 @@ MIGRATION_TIER1_SERVICES := "clickhouse otel-collector prometheus loki tempo cer
 MIGRATION_TIER2_SERVICES := MIGRATION_TIER1_SERVICES + " grafana relay-prom otel-collector-writeback dead-end-receiver"
 MIGRATION_LOG_TAIL := "200"
 
-# Minutes each archetype's fixture window is pushed further into the past
-# than the previous archetype's (cmd/seed's --window-offset), so archetypes
-# seeded back-to-back into the same live stack land in disjoint windows even
-# when their fixtures share a label value. three-signal and
-# kube-prometheus-stack both declare a "checkout" trace service, and
-# reference Tempo's /api/search is window-scoped: an overlapping window let
-# one archetype's search see the other's "checkout" traces too. 45 minutes
-# clears the fixture window (seed.SeedWindow, 30 minutes) with margin for how
-# long seeding the prior archetype took, while staying under reference
-# Tempo's 1-hour ingestion slack (cmd/seed validates this at seed time).
-MIGRATION_TIER1_WINDOW_STEP_MIN := "45"
+# Archetypes sharing one live stack are kept apart by their IDENTITIES, not by
+# their windows: every archetype in MIGRATION_TIER1_ARCHETYPES declares trace
+# service names, metric names and a log job that no other one declares, so all
+# of them can occupy the same fixture window without any search seeing another
+# archetype's data. test/regression/migration_tier1_test.go enforces that
+# pairwise disjointness, so adding a ninth archetype that reuses a name fails
+# the required `check` lane rather than a 45-minute Docker job.
+#
+# Pushing each archetype into its own earlier window (cmd/seed's
+# --window-offset) was the previous mechanism and is arithmetically impossible
+# for more than one archetype: disjoint windows need an offset of at least
+# seed.SeedWindow (30m), and reference Tempo's 1h wal.ingestion_time_range_slack
+# rejects any offset where offset + SeedWindow >= 1h. Every value satisfying one
+# constraint violates the other, so the second archetype could never seed. The
+# flag remains on cmd/seed — it is a real capability with a correct guard — but
+# nothing here uses it.
 
 # Load the deterministic all-signal fixture into the running stack: one
 # in-memory fixture per archetype, each written twice — directly into
@@ -1322,16 +1327,13 @@ MIGRATION_TIER1_WINDOW_STEP_MIN := "45"
 migration-tier1-seed archetype="":
     @archetypes="{{archetype}}"; \
     [ -n "$archetypes" ] || archetypes="{{MIGRATION_TIER1_ARCHETYPES}}"; \
-    offset=0; \
     for a in $archetypes; do \
         manifest="test/e2e/migration/.out/manifest.json"; \
         [ "$a" = "three-signal" ] || manifest="test/e2e/migration/.out/manifest-$a.json"; \
-        echo "==> migration tier-1 seed ($a, window offset ${offset}m, manifest $manifest)"; \
+        echo "==> migration tier-1 seed ($a, manifest $manifest)"; \
         go run ./test/e2e/migration/cmd/seed \
             --fixture test/e2e/migration/archetypes/$a/seed/fixture.json \
-            --manifest "$manifest" \
-            --window-offset "${offset}m"; \
-        offset=$((offset + {{MIGRATION_TIER1_WINDOW_STEP_MIN}})); \
+            --manifest "$manifest"; \
     done
 
 # Assert the Tier-1 substrate contract against the seeded stack: the collector

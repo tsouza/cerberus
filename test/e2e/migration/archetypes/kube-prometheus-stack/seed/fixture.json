@@ -1,5 +1,5 @@
 {
-  "services": ["frontend", "checkout", "recommendation"],
+  "services": ["frontend", "cart", "recommendation"],
   "http_status_codes": ["200", "404", "500", "503"],
   "log_formats": ["json", "logfmt"],
   "log_job": "cerberus-migration-kube-prometheus-stack",

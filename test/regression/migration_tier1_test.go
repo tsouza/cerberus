@@ -308,6 +308,82 @@ func TestMigrationTier1ReferencePrometheusIsWriteOnly(t *testing.T) {
 	}
 }
 
+// TestMigrationTier1ArchetypeIdentitiesAreDisjoint is the invariant that lets
+// every tier-1 archetype share ONE fixture window on ONE live stack.
+//
+// The seeder writes each archetype into the same reference backends over the
+// same interval, so nothing but the names keeps them apart. Reference Tempo's
+// /api/search is per-service and its settle gate demands EXACTLY the trace
+// count this run pushed, so two archetypes declaring the same service name
+// make the second seed fail — which is precisely how the previous mechanism
+// broke: three-signal and kube-prometheus-stack both declared "checkout".
+//
+// The alternative — pushing each archetype into its own earlier window via
+// cmd/seed's --window-offset — cannot work for more than one archetype:
+// disjoint windows need an offset >= seed.SeedWindow, while reference Tempo's
+// ingestion slack rejects offset+SeedWindow >= 1h. No value satisfies both.
+// Disjoint identities have no such ceiling, so this pin is what replaces it.
+//
+// It reads the archetype list out of the Justfile rather than restating it, so
+// a ninth archetype is covered the moment it is seeded.
+func TestMigrationTier1ArchetypeIdentitiesAreDisjoint(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+	archetypes := justVariableList(t, string(buf), "MIGRATION_TIER1_ARCHETYPES")
+	if len(archetypes) < 2 {
+		t.Fatalf("MIGRATION_TIER1_ARCHETYPES lists %d archetype(s) (%v); with fewer than two "+
+			"sharing a stack this invariant would assert nothing", len(archetypes), archetypes)
+	}
+
+	// owner maps each declared identity to the archetype that claimed it, so a
+	// collision names BOTH sides instead of only the second one.
+	owner := map[string]string{}
+	for _, a := range archetypes {
+		path := filepath.Join("..", "..", "test", "e2e", "migration", "archetypes", a, "seed", "fixture.json")
+		decl, err := seed.LoadDeclaration(path)
+		if err != nil {
+			t.Fatalf("archetype %s is seeded by the tier-1 lane but its data declaration does not load: %v", a, err)
+		}
+		// Every identity that reaches a shared backend as a queryable name.
+		// The kind prefix keeps a service named like a metric from reading as
+		// a collision when the two could never be searched the same way.
+		identities := []string{
+			"log-job/" + decl.LogJob,
+			"metric/" + decl.GaugeMetric,
+			"metric/" + decl.CounterMetric,
+			"metric/" + decl.HistogramMetric,
+		}
+		for _, svc := range decl.Services {
+			identities = append(identities, "service/"+svc)
+		}
+		for _, id := range identities {
+			if prev, taken := owner[id]; taken {
+				t.Fatalf("archetypes %s and %s both declare %s; they are seeded into one live stack over one "+
+					"window, so the shared name makes each one's queries see the other's data "+
+					"(reference Tempo's per-service settle gate fails outright). Rename it in "+
+					"test/e2e/migration/archetypes/%s/seed/fixture.json", prev, a, id, a)
+			}
+			owner[id] = a
+		}
+	}
+}
+
+// justVariableList reads a `NAME := "a b c"` Justfile assignment as a slice.
+func justVariableList(t *testing.T, justfile, name string) []string {
+	t.Helper()
+
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*:=\s*"([^"]*)"`)
+	m := re.FindStringSubmatch(justfile)
+	if m == nil {
+		t.Fatalf("Justfile has no %s assignment; the tier-1 seed recipe reads its archetype list from it", name)
+	}
+	return strings.Fields(m[1])
+}
+
 // TestMigrationTier1JustfileRecipes pins the recipe shape the lane is driven
 // through: a `-run` recipe that actually passes the build tag (without it the
 // tagged assertions compile away to "no test files" and the lane reports green

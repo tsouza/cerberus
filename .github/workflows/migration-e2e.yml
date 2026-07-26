@@ -102,8 +102,19 @@ jobs:
           retention-days: 1
 
   migration-tier0:
-    name: migration-tier0 (${{ matrix.name }})
+    # Named for the tier the shard drives, not for the job. This is the one
+    # generic matrix-driven runner, so its id says `tier0` only because tier0
+    # is the only matrix-driven tier today; the shard name is the honest label.
+    name: migration-${{ matrix.name }}
     needs: migration-setup
+    # An empty `include:` does not skip a matrix job — it still runs, with the
+    # matrix context unset, so `TIER: ${{ matrix.tier }}` resolves to empty and
+    # the run fails on an unknown tier. A dispatch narrowed to tier1 therefore
+    # reported a tier0 FAILURE for a tier it never meant to run (the roll-up
+    # caught it: "tier0 ran (failure) but was not in the tier set this run
+    # selected"). Gate on the same `tiers` output the roll-up reads, exactly as
+    # migration-tier1 does, so selection is decided in one place.
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier0')
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     strategy:
@@ -196,9 +207,11 @@ jobs:
         with:
           tool: just
 
-      # Authenticated Docker Hub pulls get a far higher rate limit than
-      # anonymous pulls from shared runner IPs, and this stack pulls five
-      # upstream images. Skips silently when the secret is absent (forks).
+      # Anonymous Docker Hub pulls are rate-limited hard enough to fail a cold
+      # runner mid-`compose up` from a shared runner IP, and this stack pulls
+      # five upstream images; the other Docker-backed lanes log in first for
+      # exactly this reason. Gated on the secret being present so a fork PR
+      # degrades to anonymous rather than erroring on an empty password.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -235,9 +248,18 @@ jobs:
           MODE: run
           SCENARIOS_JSON: build/migration-scenarios.json
           TIER: tier1
+          STORY: ${{ inputs.story }}
 
       - name: Tier-1 substrate + parity assertions
         run: go test -tags=migration_tier1 -count=1 ./test/e2e/migration/
+
+      # A red tier-1 run is only diagnosable with the stack's own account of
+      # what it was doing. Without this, a failure that originates in the
+      # collector or a reference backend shows up here as an opaque assertion
+      # message and the evidence dies with the runner.
+      - name: dump the stack's logs
+        if: failure()
+        run: just migration-tier1-logs
 
       # Every seeded archetype's manifest is what its scenarios read their
       # window and cardinalities from, so a failing run is only diagnosable

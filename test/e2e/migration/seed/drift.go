@@ -33,11 +33,27 @@ import (
 // values at all.
 const DriftFactor = 2.0
 
-// driftStatusCode is the label value the injected series carries. It is
-// deliberately outside the declared status-code list, so the injected series
-// is a NEW member of its group rather than a second copy of an existing
-// series — a duplicate row would leave the group sum ambiguous.
-const driftStatusCode = "503"
+// driftMarkerLabel / driftMarkerValue tag every injected row with a label no
+// archetype's data declaration can produce, which is what makes an injected
+// row identifiable as injected.
+//
+// This was previously an out-of-range `http_status_code` value (503). That only
+// held while ONE archetype was seeded: the value has to be absent from the
+// DECLARED status-code list, and the two archetypes the lane now seeds together
+// declare different lists — kube-prometheus-stack declares 503 legitimately.
+// The pristine guard then counted 363 perfectly ordinary fixture rows as a
+// previous run's injection and refused to run the parity lane at all. A
+// dedicated marker cannot collide with fixture data whatever an archetype
+// declares.
+//
+// The injected series still lands as a NEW member of its group rather than a
+// second copy of an existing one — the extra label makes its attribute set
+// distinct — so the group sum stays unambiguous, which is what the
+// out-of-range status code was for.
+const (
+	driftMarkerLabel = "cerberus_migration_injected_drift"
+	driftMarkerValue = "1"
+)
 
 // DriftRowCount reports how many injected drift rows ClickHouse currently
 // holds. The negative control deliberately corrupts the ClickHouse side, so a
@@ -48,7 +64,7 @@ const driftStatusCode = "503"
 func DriftRowCount(ctx context.Context, conn driver.Conn) (uint64, error) {
 	const countSQL = "SELECT count() FROM otel_metrics_gauge WHERE Attributes[?] = ?"
 	var n uint64
-	if err := conn.QueryRow(ctx, countSQL, statusCodeLabel, driftStatusCode).Scan(&n); err != nil {
+	if err := conn.QueryRow(ctx, countSQL, driftMarkerLabel, driftMarkerValue).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count injected drift rows: %w", err)
 	}
 	return n, nil
@@ -86,7 +102,7 @@ func InjectGaugeDrift(ctx context.Context, conn driver.Conn, f Fixture, service 
 	resource := resourceAttributes(service)
 	driftAttributes := sortedAttrs(map[string]string{
 		serviceNameLabel: service,
-		statusCodeLabel:  driftStatusCode,
+		driftMarkerLabel: driftMarkerValue,
 	})
 	for _, t := range f.Window.SampleTimes() {
 		value := base[t.UnixMilli()] * DriftFactor
