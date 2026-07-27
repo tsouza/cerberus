@@ -138,7 +138,9 @@ populates in ~30s; `docker compose down -v` wipes the volume.
 
 ### From a published release
 
-Cerberus is one stateless binary configured via environment variables.
+Cerberus is one stateless binary, configured from a `cerberus.yaml` or from
+`CERBERUS_*` environment variables — the same settings either way (see
+[`docs/configuration.md`](docs/configuration.md)).
 Pin an explicit tag — `:latest` only moves with stable releases:
 
 ```sh

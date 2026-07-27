@@ -6,10 +6,10 @@
 
 # Configuration
 
-Cerberus is a stateless 12-factor binary configured primarily through
-`CERBERUS_*` environment variables. An optional `cerberus.yaml`
-([below](#configuration-file-optional)) may supply file-level defaults, but the
-environment contract always wins - env vars are the source of truth.
+Cerberus is a stateless 12-factor binary configured through `CERBERUS_*`
+environment variables or an equivalent `cerberus.yaml`
+([below](#configuration-file)) - the same settings either way, with the
+environment winning where both speak.
 ClickHouse and the (optional) OpenTelemetry collector are attached resources
 reached through env-var connection inputs, so swapping a local single-node
 ClickHouse for a managed cluster, or a sidecar collector for a SaaS ingest URL,
@@ -31,48 +31,74 @@ vault-injecting init container - never committed.
 For how these knobs interact with the running service - lifecycle, readiness,
 deployment, scaling - see [`operations.md`](operations.md).
 
-## Configuration file (optional)
+## Configuration file
 
-Cerberus loads configuration through a [viper](https://github.com/spf13/viper)
-loader, so an **optional** `cerberus.yaml` may supply values alongside the
-environment. The resolution order is:
+Everything above can go in a `cerberus.yaml` instead of the environment. The
+file is **exactly equivalent** to exporting the variables it names: no setting
+is parsed differently and none resolves to a different value, so the two are
+interchangeable and mixable. The resolution order is:
 
 1. **Environment variable** (`CERBERUS_*`) - always wins.
 2. **Config file** (`cerberus.yaml`) - fills in anything the environment leaves
    unset.
 3. **Built-in default** - the value `internal/config/config.go` ships.
 
-The loader probes two paths for `cerberus.yaml`, in order: the **working
-directory** (`.`) and **`/etc/cerberus`**. The file is **purely additive** - it
-can only supply a value the operator hasn't set in the environment; it can never
-override an env var. That keeps the 12-factor contract intact (the deployment's
-environment remains the source of truth) while giving a baked-image or
-bare-metal deployment a place to pin defaults without a long `-e` list.
+Cerberus looks for `cerberus.yaml` (or `cerberus.yml`) in two places, in
+order: the **working directory** (`.`) and **`/etc/cerberus`**. A **missing**
+file is not an error - the environment configures cerberus completely on its
+own. A file that **exists but cannot be understood** - malformed YAML, or a key
+cerberus does not recognise - **is** an error, and cerberus refuses to start
+rather than silently running on defaults nobody chose. The error names the key
+and suggests the nearest one that exists:
 
-The file is **optional and best-effort**: a **missing** `cerberus.yaml` is not
-an error, and a **malformed** one is tolerated at load time rather than crashing
-startup - values still resolve from the environment and the built-in defaults.
-Each resolved value, whatever its source, is then run through the **same
+```text
+load config: cerberus.yaml: unknown setting: clickhouse.maxSamples
+  clickhouse.maxSamples — did you mean query.maxSamples?
+```
+
+Each resolved value, whatever its source, then goes through the **same
 fail-fast typed validation** an env value gets: an unparseable duration or an
 out-of-range integer supplied by the file aborts startup with the same clear
 error it would from an env var.
 
-The keys are the literal `CERBERUS_*` names (the loader binds each viper key to
-its environment variable). A minimal example pinning the ClickHouse endpoint and
-log format:
+### The shape
+
+The file is written in the **same shape as the Helm chart's `values.yaml`**, so
+a setting has one name whether you deploy cerberus with the chart or run the
+binary yourself. Every table in this document carries the config-file path in
+its **Config file** column.
 
 ```yaml
-# /etc/cerberus/cerberus.yaml - defaults; any CERBERUS_* env var overrides these
-CERBERUS_CH_ADDR: clickhouse.observability.svc:9000
-CERBERUS_CH_DATABASE: otel
-CERBERUS_LOG_FORMAT: json
-CERBERUS_ADMIT_TEMPO: 24
+# /etc/cerberus/cerberus.yaml
+clickhouse:
+  addr:
+    - clickhouse.observability.svc:9000
+  database: otel
+query:
+  maxSamples: 5000000
+  timeout: 2m
+admit:
+  tempo: 24
+logFormat: json
 ```
+
+The literal `CERBERUS_*` form is valid in the same document and means the same
+thing. It is the escape hatch for the long tail - the settings with a `—` in the
+**Config file** column have no nested name, and this is how you reach them:
+
+```yaml
+clickhouse:
+  database: otel
+CERBERUS_CH_BREAKER_THRESHOLD: 9
+```
+
+`cerberus migrate` reads the same file, under a `migrate:` block - so one
+document configures a migration and the gateway it migrates to. See
+[`migration.md`](migration.md).
 
 Secrets (the ClickHouse password, OTLP bearer tokens) are best left **out** of
 the file and injected through the environment from a Kubernetes `Secret` or a
-vault sidecar, exactly as without a config file - the file is for non-secret
-defaults.
+vault sidecar - the file is for non-secret settings.
 
 ## HTTP server
 
@@ -87,17 +113,17 @@ duration and a non-zero server-side write deadline would sever them
 mid-response. `ReadHeaderTimeout` (the promoted 5s) still bounds slow-header
 attacks; `IdleTimeout` reclaims idle keep-alive connections.
 
-| Variable                            | Type     | Default           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ----------------------------------- | -------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_HTTP_ADDR`                | string   | `:8080`           | HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes.                                                                                                                                                                                                                                                                                                                                                  |
-| `CERBERUS_HTTP_READ_TIMEOUT`        | duration | `0s`              | Whole-request read deadline (headers + body). `0` = unlimited (streaming-safe).                                                                                                                                                                                                                                                                                                                                                              |
-| `CERBERUS_HTTP_READ_HEADER_TIMEOUT` | duration | `5s`              | Request-header read deadline. Must be `<=` `CERBERUS_HTTP_READ_TIMEOUT` when that is `> 0`.                                                                                                                                                                                                                                                                                                                                                  |
-| `CERBERUS_HTTP_WRITE_TIMEOUT`       | duration | `0s`              | Response write deadline. `0` = unlimited - required so `/tail` + long matrices stream uninterrupted.                                                                                                                                                                                                                                                                                                                                         |
-| `CERBERUS_HTTP_IDLE_TIMEOUT`        | duration | `2m0s`            | Idle keep-alive connection lifetime.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `CERBERUS_HTTP_MAX_HEADER_BYTES`    | size     | `0`               | Max request header size in bytes. Accepts a raw byte integer (e.g. `1048576`) **or** a humanized size (`1Mi`, `512Ki`, `1M`); the raw-integer form is unchanged for backward compatibility. `0` leaves Go's 1 MiB default.                                                                                                                                                                                                                   |
-| `CERBERUS_HTTP_MAX_BODY_BYTES`      | size     | `4194304`         | Max inbound HTTP request body size, applied via `http.MaxBytesReader` on the Prom / Loki / Tempo HTTP paths (the gRPC path is unaffected). Accepts a raw byte integer **or** a humanized size (`4Mi`, `1M`). Default `4Mi`; `0` disables the cap.                                                                                                                                                                                            |
-| `CERBERUS_DEBUG_PPROF`              | bool     | `false`           | Mount the `net/http/pprof` debug endpoints (`/debug/pprof/*`) on the HTTP listener. **Off by default** - opt-in only, so the profiling surface never ships open in production.                                                                                                                                                                                                                                                               |
-| `CERBERUS_ENABLED_HEADS`            | string   | `prom,loki,tempo` | Comma-separated subset of query heads this process serves: `prom`, `loki`, `tempo` (case-insensitive). Default (all three) preserves full backward compatibility. A subset skips building **and** mounting the disabled heads' handler/client/limiter (and the Tempo gRPC service) so one head can run isolated in its own process/cgroup; `/healthz` + `/readyz` stay served in every mode. An unknown head or an empty list fails startup. |
+| Variable                            | Config file    | Type     | Default           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------------- | -------------- | -------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_HTTP_ADDR`                | `http.addr`    | string   | `:8080`           | HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes.                                                                                                                                                                                                                                                                                                                                                  |
+| `CERBERUS_HTTP_READ_TIMEOUT`        | —              | duration | `0s`              | Whole-request read deadline (headers + body). `0` = unlimited (streaming-safe).                                                                                                                                                                                                                                                                                                                                                              |
+| `CERBERUS_HTTP_READ_HEADER_TIMEOUT` | —              | duration | `5s`              | Request-header read deadline. Must be `<=` `CERBERUS_HTTP_READ_TIMEOUT` when that is `> 0`.                                                                                                                                                                                                                                                                                                                                                  |
+| `CERBERUS_HTTP_WRITE_TIMEOUT`       | —              | duration | `0s`              | Response write deadline. `0` = unlimited - required so `/tail` + long matrices stream uninterrupted.                                                                                                                                                                                                                                                                                                                                         |
+| `CERBERUS_HTTP_IDLE_TIMEOUT`        | —              | duration | `2m0s`            | Idle keep-alive connection lifetime.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `CERBERUS_HTTP_MAX_HEADER_BYTES`    | —              | size     | `0`               | Max request header size in bytes. Accepts a raw byte integer (e.g. `1048576`) **or** a humanized size (`1Mi`, `512Ki`, `1M`); the raw-integer form is unchanged for backward compatibility. `0` leaves Go's 1 MiB default.                                                                                                                                                                                                                   |
+| `CERBERUS_HTTP_MAX_BODY_BYTES`      | —              | size     | `4194304`         | Max inbound HTTP request body size, applied via `http.MaxBytesReader` on the Prom / Loki / Tempo HTTP paths (the gRPC path is unaffected). Accepts a raw byte integer **or** a humanized size (`4Mi`, `1M`). Default `4Mi`; `0` disables the cap.                                                                                                                                                                                            |
+| `CERBERUS_DEBUG_PPROF`              | `debug.pprof`  | bool     | `false`           | Mount the `net/http/pprof` debug endpoints (`/debug/pprof/*`) on the HTTP listener. **Off by default** - opt-in only, so the profiling surface never ships open in production.                                                                                                                                                                                                                                                               |
+| `CERBERUS_ENABLED_HEADS`            | `enabledHeads` | string   | `prom,loki,tempo` | Comma-separated subset of query heads this process serves: `prom`, `loki`, `tempo` (case-insensitive). Default (all three) preserves full backward compatibility. A subset skips building **and** mounting the disabled heads' handler/client/limiter (and the Tempo gRPC service) so one head can run isolated in its own process/cgroup; `/healthz` + `/readyz` stay served in every mode. An unknown head or an empty list fails startup. |
 
 ## ClickHouse connection
 
@@ -110,22 +136,22 @@ HTTP protocol (port 8123) when only 8123 is reachable. Every knob below is
 unset-by-default to the exact connection cerberus has always opened - setting
 none of them is byte-identical to the pre-knob behaviour.
 
-| Variable                               | Type     | Default          | Description                                                                                                                                                                                                       |
-| -------------------------------------- | -------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_ADDR`                     | string   | `localhost:9000` | ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required).                                                                                                                 |
-| `CERBERUS_CH_DATABASE`                 | string   | `default`        | ClickHouse database name. Matches the upstream OTel ClickHouse exporter default; `AUTO_CREATE_SCHEMA` creates it (idempotently) if absent.                                                                        |
-| `CERBERUS_CH_USERNAME`                 | string   | `default`        | ClickHouse user.                                                                                                                                                                                                  |
-| `CERBERUS_CH_PASSWORD`                 | string   | (empty)          | ClickHouse password. Source from a secret, never commit.                                                                                                                                                          |
-| `CERBERUS_CH_DIAL_TIMEOUT`             | duration | `5s`             | ClickHouse dial timeout (`time.ParseDuration` syntax).                                                                                                                                                            |
-| `CERBERUS_CH_PROTOCOL`                 | enum     | `native`         | Wire protocol: `native` (port 9000) or `http` (port 8123). The HTTP-only knobs below require `http`.                                                                                                              |
-| `CERBERUS_CH_CONN_OPEN_STRATEGY`       | enum     | `in_order`       | Multi-host selection: `in_order` (try hosts in order) or `round_robin` (rotate). Pointless but benign with a single host.                                                                                         |
-| `CERBERUS_CH_READ_TIMEOUT`             | duration | (derived)        | Socket read ceiling. Unset derives it from `CERBERUS_QUERY_TIMEOUT`. When set must be `>=` `CERBERUS_QUERY_TIMEOUT`. clickhouse-go has no write-timeout knob.                                                     |
-| `CERBERUS_CH_COMPRESSION`              | enum     | `none`           | Wire compression: `none`, `lz4`, or `zstd`.                                                                                                                                                                       |
-| `CERBERUS_CH_COMPRESSION_LEVEL`        | int      | `0`              | Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`.                                                                                                                          |
-| `CERBERUS_CH_BLOCK_BUFFER_SIZE`        | int      | `0`              | Per-connection block buffer count (`0` -> driver default 2; valid `1..255`).                                                                                                                                      |
-| `CERBERUS_CH_MAX_COMPRESSION_BUFFER`   | size     | `0`              | Compression buffer cap in bytes. Accepts a raw byte integer **or** a humanized size (`16Mi`, `10M`); the raw-integer form is unchanged for backward compatibility. `0` -> driver default 10 MiB; otherwise `> 0`. |
-| `CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE` | bool     | `false`          | Drop the preserved memory buffer after each query (lower steady-state memory, less buffer reuse).                                                                                                                 |
-| `CERBERUS_CH_DEBUG`                    | bool     | `false`          | clickhouse-go legacy stdout debug logging. Noisy; local diagnosis only.                                                                                                                                           |
+| Variable                               | Config file              | Type     | Default          | Description                                                                                                                                                                                                       |
+| -------------------------------------- | ------------------------ | -------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_ADDR`                     | `clickhouse.addr`        | string   | `localhost:9000` | ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required).                                                                                                                 |
+| `CERBERUS_CH_DATABASE`                 | `clickhouse.database`    | string   | `default`        | ClickHouse database name. Matches the upstream OTel ClickHouse exporter default; `AUTO_CREATE_SCHEMA` creates it (idempotently) if absent.                                                                        |
+| `CERBERUS_CH_USERNAME`                 | `clickhouse.username`    | string   | `default`        | ClickHouse user.                                                                                                                                                                                                  |
+| `CERBERUS_CH_PASSWORD`                 | `clickhouse.password`    | string   | (empty)          | ClickHouse password. Source from a secret, never commit.                                                                                                                                                          |
+| `CERBERUS_CH_DIAL_TIMEOUT`             | `clickhouse.dialTimeout` | duration | `5s`             | ClickHouse dial timeout (`time.ParseDuration` syntax).                                                                                                                                                            |
+| `CERBERUS_CH_PROTOCOL`                 | `clickhouse.protocol`    | enum     | `native`         | Wire protocol: `native` (port 9000) or `http` (port 8123). The HTTP-only knobs below require `http`.                                                                                                              |
+| `CERBERUS_CH_CONN_OPEN_STRATEGY`       | —                        | enum     | `in_order`       | Multi-host selection: `in_order` (try hosts in order) or `round_robin` (rotate). Pointless but benign with a single host.                                                                                         |
+| `CERBERUS_CH_READ_TIMEOUT`             | —                        | duration | (derived)        | Socket read ceiling. Unset derives it from `CERBERUS_QUERY_TIMEOUT`. When set must be `>=` `CERBERUS_QUERY_TIMEOUT`. clickhouse-go has no write-timeout knob.                                                     |
+| `CERBERUS_CH_COMPRESSION`              | —                        | enum     | `none`           | Wire compression: `none`, `lz4`, or `zstd`.                                                                                                                                                                       |
+| `CERBERUS_CH_COMPRESSION_LEVEL`        | —                        | int      | `0`              | Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`.                                                                                                                          |
+| `CERBERUS_CH_BLOCK_BUFFER_SIZE`        | —                        | int      | `0`              | Per-connection block buffer count (`0` -> driver default 2; valid `1..255`).                                                                                                                                      |
+| `CERBERUS_CH_MAX_COMPRESSION_BUFFER`   | —                        | size     | `0`              | Compression buffer cap in bytes. Accepts a raw byte integer **or** a humanized size (`16Mi`, `10M`); the raw-integer form is unchanged for backward compatibility. `0` -> driver default 10 MiB; otherwise `> 0`. |
+| `CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE` | —                        | bool     | `false`          | Drop the preserved memory buffer after each query (lower steady-state memory, less buffer reuse).                                                                                                                 |
+| `CERBERUS_CH_DEBUG`                    | —                        | bool     | `false`          | clickhouse-go legacy stdout debug logging. Noisy; local diagnosis only.                                                                                                                                           |
 
 ## ClickHouse TLS / mTLS
 
@@ -138,26 +164,26 @@ pins a custom CA bundle; `_TLS_SERVER_NAME` overrides the verified hostname
 entirely and is **rejected in combination with** `_TLS_CA_FILE` or
 `_TLS_SERVER_NAME` (skip-verify ignores both - the combo is incoherent).
 
-| Variable                               | Type   | Default | Description                                                              |
-| -------------------------------------- | ------ | ------- | ------------------------------------------------------------------------ |
-| `CERBERUS_CH_TLS_ENABLED`              | bool   | `false` | Dial ClickHouse over TLS. Required for any other TLS sub-knob.           |
-| `CERBERUS_CH_TLS_CA_FILE`              | string | (empty) | PEM CA bundle path. A set-but-unreadable path fails fast.                |
-| `CERBERUS_CH_TLS_CERT_FILE`            | string | (empty) | Client certificate (mTLS). Must be set together with the key file.       |
-| `CERBERUS_CH_TLS_KEY_FILE`             | string | (empty) | Client private key (mTLS). Must be set together with the cert file.      |
-| `CERBERUS_CH_TLS_SERVER_NAME`          | string | (empty) | Verified server hostname / SNI override.                                 |
-| `CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY` | bool   | `false` | Skip certificate verification. Incompatible with CA / server-name knobs. |
+| Variable                               | Config file                         | Type   | Default | Description                                                              |
+| -------------------------------------- | ----------------------------------- | ------ | ------- | ------------------------------------------------------------------------ |
+| `CERBERUS_CH_TLS_ENABLED`              | `clickhouse.tls.enabled`            | bool   | `false` | Dial ClickHouse over TLS. Required for any other TLS sub-knob.           |
+| `CERBERUS_CH_TLS_CA_FILE`              | `clickhouse.tls.caFile`             | string | (empty) | PEM CA bundle path. A set-but-unreadable path fails fast.                |
+| `CERBERUS_CH_TLS_CERT_FILE`            | `clickhouse.tls.certFile`           | string | (empty) | Client certificate (mTLS). Must be set together with the key file.       |
+| `CERBERUS_CH_TLS_KEY_FILE`             | `clickhouse.tls.keyFile`            | string | (empty) | Client private key (mTLS). Must be set together with the cert file.      |
+| `CERBERUS_CH_TLS_SERVER_NAME`          | `clickhouse.tls.serverName`         | string | (empty) | Verified server hostname / SNI override.                                 |
+| `CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY` | `clickhouse.tls.insecureSkipVerify` | bool   | `false` | Skip certificate verification. Incompatible with CA / server-name knobs. |
 
 ## ClickHouse HTTP-protocol knobs
 
 Consulted only under `CERBERUS_CH_PROTOCOL=http`; setting any of them under
 `native` is **rejected at startup** (they would be silently ignored).
 
-| Variable                              | Type   | Default | Description                                                       |
-| ------------------------------------- | ------ | ------- | ----------------------------------------------------------------- |
-| `CERBERUS_CH_HTTP_HEADERS`            | string | (empty) | Extra HTTP request headers, `k=v,k2=v2` (e.g. multi-tenant IDs).  |
-| `CERBERUS_CH_HTTP_URL_PATH`           | string | (empty) | Extra URL path prefix for HTTP requests.                          |
-| `CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST` | int    | `0`     | `http.Transport` per-host connection cap (`0` -> driver default). |
-| `CERBERUS_CH_HTTP_PROXY_URL`          | string | (empty) | HTTP proxy URL (absolute, with scheme + host).                    |
+| Variable                              | Config file | Type   | Default | Description                                                       |
+| ------------------------------------- | ----------- | ------ | ------- | ----------------------------------------------------------------- |
+| `CERBERUS_CH_HTTP_HEADERS`            | —           | string | (empty) | Extra HTTP request headers, `k=v,k2=v2` (e.g. multi-tenant IDs).  |
+| `CERBERUS_CH_HTTP_URL_PATH`           | —           | string | (empty) | Extra URL path prefix for HTTP requests.                          |
+| `CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST` | —           | int    | `0`     | `http.Transport` per-host connection cap (`0` -> driver default). |
+| `CERBERUS_CH_HTTP_PROXY_URL`          | —           | string | (empty) | HTTP proxy URL (absolute, with scheme + host).                    |
 
 ## Connection pool
 
@@ -179,26 +205,26 @@ half-open socket. Probes fire only on idle connections, so long streaming
 queries are never interrupted. `CERBERUS_CH_CONN_MAX_LIFETIME` is the
 age-eviction backstop if keepalive is disabled.
 
-| Variable                         | Type     | Default | Description                                                                                                                                                            |
-| -------------------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_MAX_OPEN_CONNS`     | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.                                                                                                        |
-| `CERBERUS_CH_MAX_IDLE_CONNS`     | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.                                                                                                          |
-| `CERBERUS_CH_CONN_MAX_LIFETIME`  | duration | `30s`   | Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend (keepalive is the primary mechanism). Must be > 0. |
-| `CERBERUS_CH_KEEPALIVE_ENABLED`  | bool     | `true`  | Enable TCP keepalive on ClickHouse connection sockets so the kernel detects a dead peer after a restart.                                                               |
-| `CERBERUS_CH_KEEPALIVE_IDLE`     | duration | `10s`   | Idle time before the first keepalive probe. Must be > 0 when keepalive is enabled.                                                                                     |
-| `CERBERUS_CH_KEEPALIVE_INTERVAL` | duration | `5s`    | Gap between successive keepalive probes. Must be > 0 when keepalive is enabled.                                                                                        |
-| `CERBERUS_CH_KEEPALIVE_COUNT`    | int      | `3`     | Unanswered keepalive probes before the socket is declared dead. Must be > 0 when keepalive is enabled.                                                                 |
+| Variable                         | Config file                       | Type     | Default | Description                                                                                                                                                            |
+| -------------------------------- | --------------------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_MAX_OPEN_CONNS`     | `clickhouse.pool.maxOpenConns`    | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.                                                                                                        |
+| `CERBERUS_CH_MAX_IDLE_CONNS`     | `clickhouse.pool.maxIdleConns`    | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.                                                                                                          |
+| `CERBERUS_CH_CONN_MAX_LIFETIME`  | `clickhouse.pool.connMaxLifetime` | duration | `30s`   | Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend (keepalive is the primary mechanism). Must be > 0. |
+| `CERBERUS_CH_KEEPALIVE_ENABLED`  | —                                 | bool     | `true`  | Enable TCP keepalive on ClickHouse connection sockets so the kernel detects a dead peer after a restart.                                                               |
+| `CERBERUS_CH_KEEPALIVE_IDLE`     | —                                 | duration | `10s`   | Idle time before the first keepalive probe. Must be > 0 when keepalive is enabled.                                                                                     |
+| `CERBERUS_CH_KEEPALIVE_INTERVAL` | —                                 | duration | `5s`    | Gap between successive keepalive probes. Must be > 0 when keepalive is enabled.                                                                                        |
+| `CERBERUS_CH_KEEPALIVE_COUNT`    | —                                 | int      | `3`     | Unanswered keepalive probes before the socket is declared dead. Must be > 0 when keepalive is enabled.                                                                 |
 
 ## Query limits and memory
 
 Per-query wall-clock, memory, and sample budgets. A query crossing any cap gets a breaker-neutral typed rejection rather than holding an admit slot and pooled connection unbounded.
 
-| Variable                              | Type     | Default      | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_QUERY_MAX_MEMORY`        | size     | `1073741824` | Per-query ClickHouse memory cap (`max_memory_usage` on every data-plane query; DDL exempt). Accepts a raw byte integer (e.g. `1073741824`) **or** a humanized size (`2Gi`, `512Mi`, `1G`); the raw-integer form is unchanged for backward compatibility. 1 GiB default. `0` leaves it unset. A query over the cap gets a breaker-neutral resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422).                                                                                                                                                                                                                                                                                                                                             |
-| `CERBERUS_QUERY_MAX_SAMPLES`          | int64    | `5000000`    | Per-query sample budget, mirroring Prometheus `--query.max-samples`. Enforced two ways: it aborts a result-set drain that crosses the budget, **and** it rejects a PromQL subquery whose anchor grid (`OuterRange/Step`) alone would exceed it — before any SQL runs, with the same `too many samples` 422 (the drain sees ~1 row/series for an instant reducer, so it can't catch the subquery-intermediate blowup). It is the only bound on cerberus-process heap (unlike `max_memory_usage`, which ClickHouse enforces server-side), so `0` does **not** disable it — `0` is coerced back to the default and logs a startup warning. Disabling requires an explicit `-1`, which logs a loud startup warning that the process-OOM backstop is off. |
-| `CERBERUS_QUERY_TIMEOUT`              | duration | `2m0s`       | Per-query wall-clock cap, stamped as ClickHouse `max_execution_time` (with `timeout_overflow_mode=throw`) on every data-plane query; DDL exempt. Mirrors Prometheus `--query.timeout`. The `?timeout=` query param min's against this per request. Also derives the driver-level socket `ReadTimeout`. `0` disables both.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE` | bool     | `true`       | Split eligible TraceQL structural searches (`A >> B`, `A << B`, `A !>> B`, and a `select(...)` pipe over them) into a narrow top-N search phase then a wide hydrate restricted to those traces, bounding the wide span projection that OOMs on a dense descendant side. **On by default**; `false` falls back to the traditional single wide query.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Variable                              | Config file         | Type     | Default      | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------- | ------------------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_QUERY_MAX_MEMORY`        | `query.chMaxMemory` | size     | `1073741824` | Per-query ClickHouse memory cap (`max_memory_usage` on every data-plane query; DDL exempt). Accepts a raw byte integer (e.g. `1073741824`) **or** a humanized size (`2Gi`, `512Mi`, `1G`); the raw-integer form is unchanged for backward compatibility. 1 GiB default. `0` leaves it unset. A query over the cap gets a breaker-neutral resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422).                                                                                                                                                                                                                                                                                                                                             |
+| `CERBERUS_QUERY_MAX_SAMPLES`          | `query.maxSamples`  | int64    | `5000000`    | Per-query sample budget, mirroring Prometheus `--query.max-samples`. Enforced two ways: it aborts a result-set drain that crosses the budget, **and** it rejects a PromQL subquery whose anchor grid (`OuterRange/Step`) alone would exceed it — before any SQL runs, with the same `too many samples` 422 (the drain sees ~1 row/series for an instant reducer, so it can't catch the subquery-intermediate blowup). It is the only bound on cerberus-process heap (unlike `max_memory_usage`, which ClickHouse enforces server-side), so `0` does **not** disable it — `0` is coerced back to the default and logs a startup warning. Disabling requires an explicit `-1`, which logs a loud startup warning that the process-OOM backstop is off. |
+| `CERBERUS_QUERY_TIMEOUT`              | `query.timeout`     | duration | `2m0s`       | Per-query wall-clock cap, stamped as ClickHouse `max_execution_time` (with `timeout_overflow_mode=throw`) on every data-plane query; DDL exempt. Mirrors Prometheus `--query.timeout`. The `?timeout=` query param min's against this per request. Also derives the driver-level socket `ReadTimeout`. `0` disables both.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE` | —                   | bool     | `true`       | Split eligible TraceQL structural searches (`A >> B`, `A << B`, `A !>> B`, and a `select(...)` pipe over them) into a narrow top-N search phase then a wide hydrate restricted to those traces, bounding the wide span projection that OOMs on a dense descendant side. **On by default**; `false` falls back to the traditional single wide query.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## Circuit breaker
 
@@ -211,12 +237,12 @@ as breaker-neutral and never advance the failure count. Set
 [`operations.md`](operations.md#clickhouse-circuit-breaker) for the full state
 machine.
 
-| Variable                            | Type     | Default | Description                                                                                                               |
-| ----------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_BREAKER_ENABLED`       | bool     | `true`  | Master switch. `false` makes the breaker a no-op (always-allow, never trips); a dead CH then surfaces as ordinary errors. |
-| `CERBERUS_CH_BREAKER_THRESHOLD`     | int      | `5`     | Consecutive CH-health failures within the window that trip the breaker CLOSED -> OPEN. Must be >= 1.                      |
-| `CERBERUS_CH_BREAKER_WINDOW`        | duration | `10s`   | Rolling window over which the threshold failures must occur. Must be > 0.                                                 |
-| `CERBERUS_CH_BREAKER_OPEN_INTERVAL` | duration | `5s`    | OPEN-state backoff before the breaker admits a single HALF-OPEN probe. Must be > 0.                                       |
+| Variable                            | Config file | Type     | Default | Description                                                                                                               |
+| ----------------------------------- | ----------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_BREAKER_ENABLED`       | —           | bool     | `true`  | Master switch. `false` makes the breaker a no-op (always-allow, never trips); a dead CH then surfaces as ordinary errors. |
+| `CERBERUS_CH_BREAKER_THRESHOLD`     | —           | int      | `5`     | Consecutive CH-health failures within the window that trip the breaker CLOSED -> OPEN. Must be >= 1.                      |
+| `CERBERUS_CH_BREAKER_WINDOW`        | —           | duration | `10s`   | Rolling window over which the threshold failures must occur. Must be > 0.                                                 |
+| `CERBERUS_CH_BREAKER_OPEN_INTERVAL` | —           | duration | `5s`    | OPEN-state backoff before the breaker admits a single HALF-OPEN probe. Must be > 0.                                       |
 
 ## Admission control
 
@@ -233,21 +259,21 @@ integer pins an exact cap. A negative or unparseable value is rejected at
 startup. `CERBERUS_ADMIT_DISABLED` is a separate master switch that turns every
 head off at once.
 
-| Variable                  | Type        | Default | Description                                                                                       |
-| ------------------------- | ----------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `CERBERUS_ADMIT_DISABLED` | bool        | `false` | Disable admission control entirely on every head (handy for local development).                   |
-| `CERBERUS_ADMIT_PROM`     | int \| bool | `64`    | Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
-| `CERBERUS_ADMIT_LOKI`     | int \| bool | `64`    | Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
-| `CERBERUS_ADMIT_TEMPO`    | int \| bool | `32`    | Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited. |
+| Variable                  | Config file      | Type        | Default | Description                                                                                       |
+| ------------------------- | ---------------- | ----------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `CERBERUS_ADMIT_DISABLED` | `admit.disabled` | bool        | `false` | Disable admission control entirely on every head (handy for local development).                   |
+| `CERBERUS_ADMIT_PROM`     | `admit.prom`     | int \| bool | `64`    | Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
+| `CERBERUS_ADMIT_LOKI`     | `admit.loki`     | int \| bool | `64`    | Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
+| `CERBERUS_ADMIT_TEMPO`    | `admit.tempo`    | int \| bool | `32`    | Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited. |
 
 ## Logging
 
 Cerberus's own structured logging (stdlib `log/slog`). The same records that print to stderr also bridge to OTLP when self-telemetry is enabled (see below).
 
-| Variable              | Type   | Default | Description                                                         |
-| --------------------- | ------ | ------- | ------------------------------------------------------------------- |
-| `CERBERUS_LOG_FORMAT` | string | `text`  | slog handler kind: `text` (human-readable) or `json` (aggregators). |
-| `CERBERUS_LOG_LEVEL`  | string | `info`  | Minimum slog level: `debug`, `info`, `warn`, or `error`.            |
+| Variable              | Config file | Type   | Default | Description                                                         |
+| --------------------- | ----------- | ------ | ------- | ------------------------------------------------------------------- |
+| `CERBERUS_LOG_FORMAT` | `logFormat` | string | `text`  | slog handler kind: `text` (human-readable) or `json` (aggregators). |
+| `CERBERUS_LOG_LEVEL`  | `logLevel`  | string | `info`  | Minimum slog level: `debug`, `info`, `warn`, or `error`.            |
 
 ## Self-telemetry (OTLP export)
 
@@ -257,13 +283,13 @@ zero-collector-dependency binary. Standard `OTEL_EXPORTER_OTLP_*` env vars are
 also honored by the OTel Go SDK and merge with these. See
 [`observability.md`](observability.md) for the full self-observability contract.
 
-| Variable                        | Type     | Default | Description                                                                                                                                                               |
-| ------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_OTLP_ENDPOINT`        | string   | (empty) | gRPC OTLP target for self-telemetry (e.g. `otel-collector.observability.svc:4317`). Empty disables the exporters.                                                         |
-| `CERBERUS_OTLP_INSECURE`        | bool     | `false` | Dial the OTLP endpoint without TLS (handy for local dev / k3d).                                                                                                           |
-| `CERBERUS_OTLP_HEADERS`         | string   | (empty) | Comma-separated `key=value` gRPC metadata sent on every OTLP request (typically auth bearer tokens).                                                                      |
-| `CERBERUS_OTLP_TIMEOUT`         | duration | `10s`   | Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters).                                                                                      |
-| `CERBERUS_OTLP_EXPORT_INTERVAL` | duration | `10s`   | Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. |
+| Variable                        | Config file           | Type     | Default | Description                                                                                                                                                               |
+| ------------------------------- | --------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_OTLP_ENDPOINT`        | `otlp.endpoint`       | string   | (empty) | gRPC OTLP target for self-telemetry (e.g. `otel-collector.observability.svc:4317`). Empty disables the exporters.                                                         |
+| `CERBERUS_OTLP_INSECURE`        | `otlp.insecure`       | bool     | `false` | Dial the OTLP endpoint without TLS (handy for local dev / k3d).                                                                                                           |
+| `CERBERUS_OTLP_HEADERS`         | `otlp.headers`        | string   | (empty) | Comma-separated `key=value` gRPC metadata sent on every OTLP request (typically auth bearer tokens).                                                                      |
+| `CERBERUS_OTLP_TIMEOUT`         | `otlp.timeout`        | duration | `10s`   | Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters).                                                                                      |
+| `CERBERUS_OTLP_EXPORT_INTERVAL` | `otlp.exportInterval` | duration | `10s`   | Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. |
 
 ## Schema provisioning
 
@@ -272,28 +298,30 @@ at startup before HTTP serving begins. Every knob below shapes that DDL and is
 a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA=true`. `CERBERUS_REQUIREMENTS_CHECK`
 gates the boot-time version + schema-shape preflight that runs after the
 auto-create step. The schema-shape table-name overrides
-(`CERBERUS_SCHEMA_*_TABLE`) and the Prometheus resource-label allowlist
-(`CERBERUS_PROM_RESOURCE_LABELS`) are resolved by `internal/schema` rather than
-this loader and are documented in
+(`CERBERUS_SCHEMA_*_TABLE`, config file `schema.metrics.*Table` /
+`schema.logs.table` / `schema.traces.table`) and the Prometheus resource-label
+allowlist (`CERBERUS_PROM_RESOURCE_LABELS`, config file
+`prom.resourceLabels`) take their defaults from `internal/schema` rather than
+from this loader, and are documented in
 [`observability.md`](observability.md#schema-shape-overrides).
 
-| Variable                                      | Type     | Default                          | Description                                                                                                                                                                                                                                                                              |
-| --------------------------------------------- | -------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_AUTO_CREATE_SCHEMA`                 | bool     | `false`                          | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL - all are no-ops unless this is `true`.                                                                                                                       |
-| `CERBERUS_AUTO_CREATE_DATABASE`               | bool     | = `CERBERUS_AUTO_CREATE_SCHEMA`  | Whether the hook also creates the database (`CREATE DATABASE IF NOT EXISTS`) over a bootstrap connection to the always-present `default` db. Defaults to the value of `CERBERUS_AUTO_CREATE_SCHEMA`. Set `false` to create only the tables when the database is provisioned externally.  |
-| `CERBERUS_SCHEMA_CLUSTER`                     | string   | (empty)                          | Render an `ON CLUSTER <name>` clause into the auto-create DDL (classic distributed-DDL clusters). Mutually exclusive with `CERBERUS_SCHEMA_DATABASE_REPLICATED`.                                                                                                                         |
-| `CERBERUS_SCHEMA_TABLE_ENGINE`                | string   | (empty)                          | Override the table engine. Empty renders `MergeTree()` - or, when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`, the bare `ReplicatedMergeTree` (no args). Set this only to pin some other non-default engine.                                                                              |
-| `CERBERUS_SCHEMA_TTL`                         | duration | `0s`                             | Global default retention for every signal's tables (no TTL clause when `0`). Accepts the Prometheus/Grafana duration syntax (`90d`, `2w`, `1y`, or the Go `2160h` form). Per-signal overrides below take precedence.                                                                     |
-| `CERBERUS_SCHEMA_TTL_METRICS`                 | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the five metrics tables. A non-zero value overrides the global default for metrics; `0` inherits `CERBERUS_SCHEMA_TTL`.                                                                                                                                                    |
-| `CERBERUS_SCHEMA_TTL_LOGS`                    | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the logs table; `0` inherits `CERBERUS_SCHEMA_TTL`.                                                                                                                                                                                                                        |
-| `CERBERUS_SCHEMA_TTL_TRACES`                  | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TTL`.                                                                                                                                                                                                      |
-| `CERBERUS_SCHEMA_DATABASE_REPLICATED`         | bool     | `false`                          | Create the database with `ENGINE = Replicated(...)` so DDL auto-replicates across replicas (no `ON CLUSTER` needed). Emits a bare `ReplicatedMergeTree` table engine to replicate the data.                                                                                              |
-| `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH`    | string   | (empty)                          | ZooKeeper/Keeper path the Replicated engine coordinates on (e.g. `/clickhouse/databases/otel`). **Required** when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`.                                                                                                                            |
-| `CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD`   | string   | (empty)                          | Shard name for the Replicated engine - defaults to the ClickHouse server `{shard}` macro.                                                                                                                                                                                                |
-| `CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA` | string   | (empty)                          | Replica name for the Replicated engine - defaults to the ClickHouse server `{replica}` macro.                                                                                                                                                                                            |
-| `CERBERUS_SCHEMA_STORAGE_POLICY`              | string   | (empty)                          | Typed shorthand for the MergeTree `storage_policy` setting on every auto-created table (the S3 / tiered-storage knob). Appended FIRST to the SETTINGS tail. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `CERBERUS_SCHEMA_SETTINGS` (set it in exactly one). |
-| `CERBERUS_SCHEMA_SETTINGS`                    | string   | (empty)                          | Generic MergeTree-SETTINGS escape hatch: an ordered `k=v,k2=v2` list appended to every auto-created table's SETTINGS tail (e.g. `min_bytes_for_wide_part=0`). Numeric / boolean values render bare, others single-quoted. Empty appends nothing (byte-identical default DDL).            |
-| `CERBERUS_REQUIREMENTS_CHECK`                 | bool     | `true`                           | Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes.                                                                         |
+| Variable                                      | Config file                       | Type     | Default                          | Description                                                                                                                                                                                                                                                                              |
+| --------------------------------------------- | --------------------------------- | -------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_AUTO_CREATE_SCHEMA`                 | `autoCreate.schema`               | bool     | `false`                          | When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL - all are no-ops unless this is `true`.                                                                                                                       |
+| `CERBERUS_AUTO_CREATE_DATABASE`               | `autoCreate.database`             | bool     | = `CERBERUS_AUTO_CREATE_SCHEMA`  | Whether the hook also creates the database (`CREATE DATABASE IF NOT EXISTS`) over a bootstrap connection to the always-present `default` db. Defaults to the value of `CERBERUS_AUTO_CREATE_SCHEMA`. Set `false` to create only the tables when the database is provisioned externally.  |
+| `CERBERUS_SCHEMA_CLUSTER`                     | `schema.cluster`                  | string   | (empty)                          | Render an `ON CLUSTER <name>` clause into the auto-create DDL (classic distributed-DDL clusters). Mutually exclusive with `CERBERUS_SCHEMA_DATABASE_REPLICATED`.                                                                                                                         |
+| `CERBERUS_SCHEMA_TABLE_ENGINE`                | `schema.tableEngine`              | string   | (empty)                          | Override the table engine. Empty renders `MergeTree()` - or, when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`, the bare `ReplicatedMergeTree` (no args). Set this only to pin some other non-default engine.                                                                              |
+| `CERBERUS_SCHEMA_TTL`                         | `schema.ttl`                      | duration | `0s`                             | Global default retention for every signal's tables (no TTL clause when `0`). Accepts the Prometheus/Grafana duration syntax (`90d`, `2w`, `1y`, or the Go `2160h` form). Per-signal overrides below take precedence.                                                                     |
+| `CERBERUS_SCHEMA_TTL_METRICS`                 | `schema.ttlMetrics`               | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the five metrics tables. A non-zero value overrides the global default for metrics; `0` inherits `CERBERUS_SCHEMA_TTL`.                                                                                                                                                    |
+| `CERBERUS_SCHEMA_TTL_LOGS`                    | `schema.ttlLogs`                  | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the logs table; `0` inherits `CERBERUS_SCHEMA_TTL`.                                                                                                                                                                                                                        |
+| `CERBERUS_SCHEMA_TTL_TRACES`                  | `schema.ttlTraces`                | duration | (inherits `CERBERUS_SCHEMA_TTL`) | Retention for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TTL`.                                                                                                                                                                                                      |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED`         | `schema.replicated.enabled`       | bool     | `false`                          | Create the database with `ENGINE = Replicated(...)` so DDL auto-replicates across replicas (no `ON CLUSTER` needed). Emits a bare `ReplicatedMergeTree` table engine to replicate the data.                                                                                              |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH`    | `schema.replicated.zookeeperPath` | string   | (empty)                          | ZooKeeper/Keeper path the Replicated engine coordinates on (e.g. `/clickhouse/databases/otel`). **Required** when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`.                                                                                                                            |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD`   | `schema.replicated.shard`         | string   | (empty)                          | Shard name for the Replicated engine - defaults to the ClickHouse server `{shard}` macro.                                                                                                                                                                                                |
+| `CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA` | `schema.replicated.replica`       | string   | (empty)                          | Replica name for the Replicated engine - defaults to the ClickHouse server `{replica}` macro.                                                                                                                                                                                            |
+| `CERBERUS_SCHEMA_STORAGE_POLICY`              | `schema.storagePolicy`            | string   | (empty)                          | Typed shorthand for the MergeTree `storage_policy` setting on every auto-created table (the S3 / tiered-storage knob). Appended FIRST to the SETTINGS tail. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `CERBERUS_SCHEMA_SETTINGS` (set it in exactly one). |
+| `CERBERUS_SCHEMA_SETTINGS`                    | `schema.settings`                 | string   | (empty)                          | Generic MergeTree-SETTINGS escape hatch: an ordered `k=v,k2=v2` list appended to every auto-created table's SETTINGS tail (e.g. `min_bytes_for_wide_part=0`). Numeric / boolean values render bare, others single-quoted. Empty appends nothing (byte-identical default DDL).            |
+| `CERBERUS_REQUIREMENTS_CHECK`                 | `requirementsCheck`               | bool     | `true`                           | Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes.                                                                         |
 
 ## ClickHouse optimizations
 
@@ -310,16 +338,16 @@ the env-var reference. Individual optimizations (e.g. `aggregation_in_order`,
 `condition_cache`, `columnar_result_decode`) have no standalone env var - they
 are reached only through the `CERBERUS_CH_OPTIMIZATIONS` list.
 
-| Variable                           | Type     | Default     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------------------- | -------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CERBERUS_CH_OPTIMIZATIONS`        | string   | `auto`      | `auto` (enable every **auto-eligible** feature the probed server supports — including the experimental-maturity native `timeSeries*ToGrid` aggregates; `columnar_result_decode` is the lone opt-in-only feature `auto` skips), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add the opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined. |
-| `CERBERUS_CH_OPTIMIZATIONS_MODE`   | string   | `enforcing` | `enforcing` (an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`.                                                                                                                                                                                                                                                                                                              |
-| `CERBERUS_LOG_COMMENT_SHAPE`       | bool     | `false`     | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`.                                                                                                                                                                                                                                                                                                          |
-| `CERBERUS_CH_OPT_CORPUS_ENABLED`   | bool     | `false`     | Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none).                                                                                                                                                                                                                                                                                                                                          |
-| `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | duration | `1m0s`      | How often the reconciler joins recently-dispatched query_ids back to `system.query_log`.                                                                                                                                                                                                                                                                                                                                                                                       |
-| `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | string   | (empty)     | JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink.                                                                                                                                                                                                                                                                                                                                                                                      |
-| `CERBERUS_CH_OPT_CORPUS_RING`      | int      | `4096`      | Ring capacity for tracked query_ids; caps memory + the per-interval `IN(...)`.                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `CERBERUS_CH_OPT_CORPUS_SINK_MODE` | string   | `jsonl`     | Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis).                                                                                                                                                                                                                                                                                                                    |
+| Variable                           | Config file       | Type     | Default     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | ----------------- | -------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CERBERUS_CH_OPTIMIZATIONS`        | `chOptimizations` | string   | `auto`      | `auto` (enable every **auto-eligible** feature the probed server supports — including the experimental-maturity native `timeSeries*ToGrid` aggregates; `columnar_result_decode` is the lone opt-in-only feature `auto` skips), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add the opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined. |
+| `CERBERUS_CH_OPTIMIZATIONS_MODE`   | —                 | string   | `enforcing` | `enforcing` (an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`.                                                                                                                                                                                                                                                                                                              |
+| `CERBERUS_LOG_COMMENT_SHAPE`       | —                 | bool     | `false`     | Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`.                                                                                                                                                                                                                                                                                                          |
+| `CERBERUS_CH_OPT_CORPUS_ENABLED`   | —                 | bool     | `false`     | Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none).                                                                                                                                                                                                                                                                                                                                          |
+| `CERBERUS_CH_OPT_CORPUS_INTERVAL`  | —                 | duration | `1m0s`      | How often the reconciler joins recently-dispatched query_ids back to `system.query_log`.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `CERBERUS_CH_OPT_CORPUS_SINK_PATH` | —                 | string   | (empty)     | JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `CERBERUS_CH_OPT_CORPUS_RING`      | —                 | int      | `4096`      | Ring capacity for tracked query_ids; caps memory + the per-interval `IN(...)`.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `CERBERUS_CH_OPT_CORPUS_SINK_MODE` | —                 | string   | `jsonl`     | Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis).                                                                                                                                                                                                                                                                                                                    |
 
 ## Experimental flags
 
@@ -331,21 +359,23 @@ explicit `false` force-disables it, unset has no effect. It **requires
 ClickHouse >= 25.9** (the left-open window fix, PR #86588). See
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md#legacy-alias-cerberus_experimental_ts_grid_range).
 
-| Variable                              | Type | Default | Description                                                                                                                                                                                                                                 |
-| ------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` | bool | `false` | Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.9. |
+| Variable                              | Config file | Type | Default | Description                                                                                                                                                                                                                                 |
+| ------------------------------------- | ----------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` | —           | bool | `false` | Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.9. |
 
 ## Loki streaming
 
-| Variable                           | Type     | Default | Description                                                                                            |
-| ---------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------ |
-| `CERBERUS_LOKI_TAIL_WRITE_TIMEOUT` | duration | `10s`   | Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`. |
+| Variable                           | Config file | Type     | Default | Description                                                                                            |
+| ---------------------------------- | ----------- | -------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `CERBERUS_LOKI_TAIL_WRITE_TIMEOUT` | —           | duration | `10s`   | Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`. |
 
 ## Schema overrides and Prometheus resource labels
 
-Two further env-var families shape ClickHouse interaction but are resolved by
-`internal/schema` (not the loader documented above), so they carry no built-in
-viper default and are documented in
+Two further setting families shape ClickHouse interaction but are resolved by
+`internal/schema` rather than by the loader documented above - it owns their
+defaults, so they carry none of their own. They read from a config file exactly
+as everything else does (`schema.metrics.gaugeTable`, `schema.logs.table`,
+`schema.traces.table`, `prom.resourceLabels`), and are documented in
 [`observability.md`](observability.md#schema-shape-overrides):
 
 - **Schema-shape table-name overrides** - `CERBERUS_SCHEMA_METRICS_*_TABLE`,

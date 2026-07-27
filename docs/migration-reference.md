@@ -14,7 +14,7 @@ subcommands.
 
 | Command                      | What it does                                                                   | Key flags                                                                                                                                 | Network                                 |
 | ---------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `cerberus migrate schema`    | Print the `CREATE` statements cerberus expects, from `CERBERUS_*` env          | *(no flags; reads `CERBERUS_*`)*                                                                                                          | offline                                 |
+| `cerberus migrate schema`    | Print the `CREATE` statements cerberus expects, from the server config         | *(no flags; reads `cerberus.yaml` / `CERBERUS_*`)*                                                                                        | offline                                 |
 | `cerberus migrate harvest`   | Build a machine-readable PromQL + LogQL + TraceQL corpus from your files       | `--rules`, `--loki-rules`, `--dashboards`, `--out`                                                                                        | offline                                 |
 | `cerberus migrate explain`   | Dry-run each corpus query through the read pipeline, print the SQL             | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--out`                                                                          | offline                                 |
 | `cerberus migrate classify`  | Bucket each query as supported / unsupported / risky                           | `--corpus` (or `--rules`/`--loki-rules`/`--dashboards`), `--json`, `--out`                                                                | offline                                 |
@@ -33,11 +33,11 @@ the preview runs under the **same per-query sample budget** the production
 server enforces — a query that would trip a runtime guard is not previewed as
 clean.
 
-`verify` and `inventory` also read `CERBERUS_VERIFY_*` / `CERBERUS_INVENTORY_*`
-fallbacks for their connection, window, credential and (for `verify`)
-`--report` flags — `--report` has a `CERBERUS_VERIFY_REPORT` fallback too — but
-**not** the stdout output flags (`--json` / `--out`, and for inventory not
-`--top`).
+`verify` and `inventory` also read `migrate.verify.*` / `migrate.inventory.*`
+fallbacks (`CERBERUS_VERIFY_*` / `CERBERUS_INVENTORY_*` in the environment) for
+their connection, window, credential and (for `verify`) `--report` flags —
+`--report` has a `migrate.verify.report` fallback too — but **not** the stdout
+output flags (`--json` / `--out`, and for inventory not `--top`).
 
 Those fallbacks resolve exactly like every other cerberus setting: environment
 variable first, then a `cerberus.yaml` in the working directory or

@@ -44,12 +44,19 @@ const (
 // table is overridden.
 const traceIDTsSuffix = "_trace_id_ts"
 
-// envBool reports whether key is set to a truthy value ("1", "true",
+// Getenv resolves a setting name to its value, returning "" when unset. It
+// exists so these factories can read the same two sources as every other
+// cerberus setting — the environment first, then cerberus.yaml — without this
+// package having to know what a config file is. os.Getenv is the
+// environment-only resolver, and is what the FromEnv factories pass.
+type Getenv func(key string) string
+
+// envBool reports whether key resolves to a truthy value ("1", "true",
 // "yes", "on"; case-insensitive). Unset, empty, or any other value is
 // false — the opt-in gate stays off unless the operator affirmatively
 // enables it.
-func envBool(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+func envBool(get Getenv, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(get(key))) {
 	case "1", "true", "yes", "on":
 		return true
 	default:
@@ -57,13 +64,13 @@ func envBool(key string) bool {
 	}
 }
 
-// envOverride returns the trimmed value of key when set to a non-empty
-// string, else def. An env var set to whitespace-only is treated as
-// unset — operators paste values with stray newlines often enough that
+// envOverride returns the trimmed value of key when it resolves to a
+// non-empty string, else def. A value that is whitespace-only is treated
+// as unset — operators paste values with stray newlines often enough that
 // silently honouring them would produce table names like
 // "otel_metrics_sum\n" that fail at query time with cryptic CH errors.
-func envOverride(key, def string) string {
-	v := strings.TrimSpace(os.Getenv(key))
+func envOverride(get Getenv, key, def string) string {
+	v := strings.TrimSpace(get(key))
 	if v == "" {
 		return def
 	}
@@ -76,14 +83,19 @@ func envOverride(key, def string) string {
 // Non-table fields (column names, rollups, suffixes) are not exposed
 // as overrides — extend the surface here if a deployment demonstrates
 // the need.
-func DefaultOTelMetricsFromEnv() Metrics {
+func DefaultOTelMetricsFromEnv() Metrics { return DefaultOTelMetricsFrom(os.Getenv) }
+
+// DefaultOTelMetricsFrom is DefaultOTelMetricsFromEnv over an arbitrary
+// resolver, so a caller that also reads cerberus.yaml applies the same
+// overrides from either source.
+func DefaultOTelMetricsFrom(get Getenv) Metrics {
 	m := DefaultOTelMetrics()
-	m.GaugeTable = envOverride(EnvMetricsGaugeTable, m.GaugeTable)
-	m.SumTable = envOverride(EnvMetricsSumTable, m.SumTable)
-	m.HistogramTable = envOverride(EnvMetricsHistogramTable, m.HistogramTable)
-	m.ExpHistogramTable = envOverride(EnvMetricsExpHistogramTable, m.ExpHistogramTable)
-	m.SummaryTable = envOverride(EnvMetricsSummaryTable, m.SummaryTable)
-	m.PromResourceLabels = envCSVList(EnvPromResourceLabels)
+	m.GaugeTable = envOverride(get, EnvMetricsGaugeTable, m.GaugeTable)
+	m.SumTable = envOverride(get, EnvMetricsSumTable, m.SumTable)
+	m.HistogramTable = envOverride(get, EnvMetricsHistogramTable, m.HistogramTable)
+	m.ExpHistogramTable = envOverride(get, EnvMetricsExpHistogramTable, m.ExpHistogramTable)
+	m.SummaryTable = envOverride(get, EnvMetricsSummaryTable, m.SummaryTable)
+	m.PromResourceLabels = envCSVList(get, EnvPromResourceLabels)
 	return m
 }
 
@@ -91,8 +103,8 @@ func DefaultOTelMetricsFromEnv() Metrics {
 // empty-dropped slice. Unset / whitespace-only returns nil so callers
 // can treat nil as the documented "all" / "none" sentinel. Mirrors
 // envOverride's trim-and-skip-empty discipline for the list shape.
-func envCSVList(key string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
+func envCSVList(get Getenv, key string) []string {
+	raw := strings.TrimSpace(get(key))
 	if raw == "" {
 		return nil
 	}
@@ -174,21 +186,27 @@ func inferKVValue(v string) any {
 
 // DefaultOTelLogsFromEnv returns DefaultOTelLogs() with the
 // CERBERUS_SCHEMA_LOGS_TABLE override applied (if set).
-func DefaultOTelLogsFromEnv() Logs {
+func DefaultOTelLogsFromEnv() Logs { return DefaultOTelLogsFrom(os.Getenv) }
+
+// DefaultOTelLogsFrom is DefaultOTelLogsFromEnv over an arbitrary resolver.
+func DefaultOTelLogsFrom(get Getenv) Logs {
 	l := DefaultOTelLogs()
-	l.LogsTable = envOverride(EnvLogsTable, l.LogsTable)
+	l.LogsTable = envOverride(get, EnvLogsTable, l.LogsTable)
 	return l
 }
 
 // DefaultOTelTracesFromEnv returns DefaultOTelTraces() with the
 // CERBERUS_SCHEMA_TRACES_TABLE override applied (if set).
-func DefaultOTelTracesFromEnv() Traces {
+func DefaultOTelTracesFromEnv() Traces { return DefaultOTelTracesFrom(os.Getenv) }
+
+// DefaultOTelTracesFrom is DefaultOTelTracesFromEnv over an arbitrary resolver.
+func DefaultOTelTracesFrom(get Getenv) Traces {
 	t := DefaultOTelTraces()
-	t.SpansTable = envOverride(EnvTracesTable, t.SpansTable)
+	t.SpansTable = envOverride(get, EnvTracesTable, t.SpansTable)
 	// The lookup table name tracks the spans table: the OTel-CH DDL
 	// template hard-codes the `_trace_id_ts` suffix, so when the operator
 	// overrides the spans table the lookup table is `<spans>_trace_id_ts`.
 	t.TraceIDTsTable = t.SpansTable + traceIDTsSuffix
-	t.TraceIDTsEnabled = envBool(EnvTracesTsLookup)
+	t.TraceIDTsEnabled = envBool(get, EnvTracesTsLookup)
 	return t
 }

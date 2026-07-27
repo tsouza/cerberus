@@ -155,9 +155,11 @@ var envDocGroups = []envDocGroup{
 			"a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA=true`. `CERBERUS_REQUIREMENTS_CHECK`\n" +
 			"gates the boot-time version + schema-shape preflight that runs after the\n" +
 			"auto-create step. The schema-shape table-name overrides\n" +
-			"(`CERBERUS_SCHEMA_*_TABLE`) and the Prometheus resource-label allowlist\n" +
-			"(`CERBERUS_PROM_RESOURCE_LABELS`) are resolved by `internal/schema` rather than\n" +
-			"this loader and are documented in\n" +
+			"(`CERBERUS_SCHEMA_*_TABLE`, config file `schema.metrics.*Table` /\n" +
+			"`schema.logs.table` / `schema.traces.table`) and the Prometheus resource-label\n" +
+			"allowlist (`CERBERUS_PROM_RESOURCE_LABELS`, config file\n" +
+			"`prom.resourceLabels`) take their defaults from `internal/schema` rather than\n" +
+			"from this loader, and are documented in\n" +
 			"[`observability.md`](observability.md#schema-shape-overrides).",
 	},
 	{
@@ -378,7 +380,7 @@ func DocDefaults() map[string]string {
 		}
 	}()
 
-	v := newLoader()
+	v := newDefaults()
 	out := make(map[string]string, len(allEnvKeys))
 	for _, key := range allEnvKeys {
 		out[key] = renderDefault(key, v.Get(key))

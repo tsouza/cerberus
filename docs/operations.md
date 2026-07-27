@@ -10,11 +10,12 @@ model, signals, and scaling.
 > Every `CERBERUS_*` variable, its type, default, and per-area grouping lives
 > there. This page covers how the key knobs interact with the running service.
 
-Every runtime knob is an environment variable read at startup by
-`internal/config/config.go` (the solver knobs by `internal/solver`). An optional
-`cerberus.yaml` may supply file-level defaults, but the `CERBERUS_*` environment
-contract always wins (precedence: env > file > built-in default) — see the
-[configuration-file section in `configuration.md`](configuration.md#configuration-file-optional).
+Every runtime knob is read at startup by `internal/config/config.go` (the solver
+knobs by `internal/solver`), from a `cerberus.yaml` or from the matching
+`CERBERUS_*` environment variable — a file is exactly equivalent to exporting
+the variables it names, and the environment wins where both speak (precedence:
+env > file > built-in default). See the
+[configuration-file section in `configuration.md`](configuration.md#configuration-file).
 The most operationally significant knobs:
 
 - **`CERBERUS_CH_ADDR` / `_DATABASE` / `_USERNAME` / `_PASSWORD`** point cerberus

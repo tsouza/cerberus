@@ -1,8 +1,11 @@
 # Default values for cerberus.
 # This is a YAML-formatted file. Every key is annotated for helm-docs (`# --`).
 #
-# cerberus is configured 100% via environment variables (there is no config
-# file). The chart lowers three layers of values into env:
+# In Kubernetes, cerberus is configured entirely through this chart's values:
+# the container reads CERBERUS_* environment variables, and the chart is what
+# produces them. (Outside Kubernetes the same settings go in a cerberus.yaml
+# written in this same shape — see docs/configuration.md.) The chart lowers
+# three layers of values into env:
 #   1. Typed blocks (clickhouse / query / otlp / autoCreate / admit / schema /
 #      http / debug / prom) -> canonical CERBERUS_* env in a ConfigMap
 #      (password -> Secret).

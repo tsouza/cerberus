@@ -13,6 +13,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/migrate"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // withUserinfo returns rawURL with basic-auth userinfo injected, so a test can
@@ -92,10 +93,16 @@ func TestRunVerify_RedactsCredentials(t *testing.T) {
 }
 
 // cfgWithBudget builds a config.Config carrying the default-on per-query sample
-// budget, without touching the process environment.
+// budget AND the default schema shape, without touching the process
+// environment. Both matter: the explainer takes the table names from the config
+// the server built, so a Config carrying only the budget would preview against
+// nameless tables and fail to emit at all.
 func cfgWithBudget() config.Config {
 	var cfg config.Config
 	cfg.ClickHouse.MaxQuerySamples = 5_000_000
+	cfg.Schema = schema.DefaultOTelMetrics()
+	cfg.Logs = schema.DefaultOTelLogs()
+	cfg.Traces = schema.DefaultOTelTraces()
 	return cfg
 }
 

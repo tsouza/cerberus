@@ -4,6 +4,14 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+### Added
+
+- **config:** `cerberus.yaml` accepts the Helm chart's nested shape — `clickhouse.addr`, `query.maxSamples`, `migrate.verify.ref` and the rest — so one file mirrors `values.yaml` instead of restating the `CERBERUS_*` table in YAML syntax. A nested file is exactly equivalent to exporting the corresponding variables, precedence unchanged (flag > env > file > default), and the flat `CERBERUS_*` key still works as the long-tail escape hatch. `docs/configuration.md` now lists the config-file path beside every variable.
+
+### Changed
+
+- **config:** a `cerberus.yaml` that exists but does not parse, or that carries a key cerberus does not recognise, is now a startup error naming the nearest key that does. Previously such a file was tolerated and its unrecognised settings silently ignored.
+
 ## [v1.12.0] — 2026-07-27
 
 ### Added

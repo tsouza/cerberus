@@ -25,8 +25,11 @@ helm install my-cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus \
 
 ## Configuration strategy
 
-cerberus is configured **100% via environment variables** — there is no config
-file. This chart lowers three layers into env:
+The cerberus container reads `CERBERUS_*` environment variables, and this chart
+is what produces them; outside Kubernetes the same settings go in a
+`cerberus.yaml` written in this same shape (see
+[docs/configuration.md](https://github.com/tsouza/cerberus/blob/main/docs/configuration.md)).
+This chart lowers three layers into env:
 
 1. **Typed blocks** (`clickhouse` / `query` / `otlp` / `autoCreate` / `admit` /
    `schema` / `http` / `debug` / `prom`) → canonical `CERBERUS_*` env in a
