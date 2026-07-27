@@ -51,7 +51,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 - **ci:** pass migration-e2e's enumerator output to migration-tier0 as an artifact (#1278)
 - **promql:** resolve label catalog answers at the scan, not above a per-series rebuild (#1270)
 - **solver:** read the eval grid through a carrier interface, not a kind list (#1272)
-- **prom:** resolve unpinned **name** matchers against the synthetic name set (#1271)
+- **prom:** resolve unpinned `__name__` matchers against the synthetic name set (#1271)
 - **crawl:** reconcile the init-race 400 on both transports + its console twin (#1264)
 - **e2e:** move the k3d ClickHouse substrate off the defective 26.5 line (#1263)
 - **perf:** delegate traceql_compare scaling to the cardinality axis (#1261)
