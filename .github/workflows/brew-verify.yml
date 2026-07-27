@@ -1,0 +1,85 @@
+name: brew-verify
+
+# ON-DEMAND + weekly re-verification that `brew install tsouza/tap/cerberus`
+# still works for an ALREADY-PUBLISHED release.
+#
+# Why this exists, separately from release.yml's `brew-smoke`:
+#   * `brew-smoke` fires exactly once, inside the release run, and only when
+#     that run publishes a new version. When it goes red there is no way to
+#     re-verify a fix: `rerun-failed-jobs` replays the workflow as it existed
+#     at the release commit, so a correction to the job (a different runner, a
+#     different tap path) can never be exercised against the release that
+#     needed it. v1.12.0 hit exactly that wall.
+#   * The tap is a separate repository. A formula can rot after publish —
+#     someone edits the tap, an asset is deleted, a checksum stops matching —
+#     and nothing in this repo would notice until the NEXT release ran its
+#     smoke.
+#
+# It reuses `brew-smoke.mjs` unchanged, so there is one implementation of what
+# "the published formula is healthy" means; this lane only differs in when it
+# runs and which version it targets.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          BARE app version to verify, e.g. `1.12.0` (no leading `v`). Defaults
+          to the repository's latest published non-prerelease release.
+        required: false
+        type: string
+  schedule:
+    # Mondays 07:00 UTC, an hour after link-check-external so the two weekly
+    # rot detectors do not contend for runners.
+    - cron: '0 7 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brew-verify-${{ inputs.version || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  brew-verify:
+    name: brew-verify
+    # Homebrew is preinstalled here and absent from the Ubuntu 24.04 image.
+    # Same reasoning as release.yml's brew-smoke — see the comment there.
+    runs-on: macos-latest
+    steps:
+      # Resolve the target version BEFORE checkout, because the checkout has to
+      # land on that version's tag: the `config-docs -check` payload compares
+      # the installed binary's config registry against the working tree's
+      # docs/configuration.md, so checking out `main` would compare a released
+      # binary against unreleased docs and red on drift that is not a defect.
+      - name: Resolve target version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            version="${REQUESTED#v}"
+          else
+            version=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+              --limit 1 --json tagName --jq '.[0].tagName' | sed 's/^v//')
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::brew-verify: could not resolve a version to verify."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::brew-verify: verifying $version"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ steps.resolve.outputs.version }}
+
+      - name: brew-smoke self-test
+        run: node --test .github/scripts/brew-smoke.test.mjs
+
+      - name: install from the tap and smoke the published binary
+        env:
+          RELEASE_VERSION: ${{ steps.resolve.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: node .github/scripts/brew-smoke.mjs
