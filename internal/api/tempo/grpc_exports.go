@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -152,19 +153,21 @@ type ExecMetricsRangeResult struct {
 // /api/metrics/query_range performs and returns the post-processed
 // series list. Pipeline (mirrors handleMetricsQueryRange):
 //
-//  1. Parse the TraceQL metrics-pipeline expression — errors wrap
+//  1. Align the window to the step grid (alignMetricsWindow) and reject
+//     windows past the shared format.MaxResolutionPoints ceiling.
+//  2. Parse the TraceQL metrics-pipeline expression — errors wrap
 //     ErrParseStage so the gRPC layer maps to codes.InvalidArgument.
-//  2. Lower to chplan — errors wrap ErrLowerStage (also
+//  3. Lower to chplan — errors wrap ErrLowerStage (also
 //     codes.InvalidArgument).
-//  3. Unwrap the MetricsAggregate; reject non-metrics queries so the
+//  4. Unwrap the MetricsAggregate; reject non-metrics queries so the
 //     gRPC layer surfaces InvalidArgument rather than a malformed plan.
-//  4. Wrap with chplan.RangeWindow + sample projection so the inner
+//  5. Wrap with chplan.RangeWindow + sample projection so the inner
 //     SQL emits the matrix-shape (group, anchor, value) tuples.
-//  5. Run engine.QueryPlan — emit + execute against ClickHouse.
-//  6. Post-process quantile buckets (no-op for non-quantile ops).
-//  7. Pivot row stream → MetricsSeries (matrix-grid zero-fill happens
+//  6. Run engine.QueryPlan — emit + execute against ClickHouse.
+//  7. Post-process quantile buckets (no-op for non-quantile ops).
+//  8. Pivot row stream → MetricsSeries (matrix-grid zero-fill happens
 //     SQL-side via the chsql countIf / conditional-bucket emit).
-//  8. Best-effort exemplar enrichment — failure here keeps the
+//  9. Best-effort exemplar enrichment — failure here keeps the
 //     series envelope but emits a Logger.Warn (same policy as HTTP).
 //
 // Returns the engine error verbatim so the gRPC caller can errors.Is
@@ -178,6 +181,16 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	}
 	if step <= 0 {
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: 'step' must be > 0", errParseStage)
+	}
+	// Same grid alignment + resolution ceiling handleMetricsQueryRange
+	// applies. Without them this surface returns samples off Tempo's step
+	// grid and accepts an unbounded matrix fan-out (compute-DoS).
+	start, end = alignMetricsWindow(start, end, step)
+	if end.Sub(start)/step > format.MaxResolutionPoints {
+		// Pre-parse cap rejection: no CH query runs, so query_log can never
+		// reflect it. Record a decision-only "rejected" corpus row.
+		h.Engine.ObserveCapRejection("traceql")
+		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %s", errParseStage, format.ResolutionCapMessage)
 	}
 
 	parseT := telemetry.ObserveStage(telemetry.StageParse, telemetry.QLTraceQL)

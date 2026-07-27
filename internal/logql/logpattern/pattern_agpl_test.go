@@ -25,15 +25,15 @@ var patternCorpus = []string{
 	"<foo>",
 	"<_>",
 	"GET <path> <status>",
-	"<a><b>",          // consecutive captures (invalid for New + line filter)
-	"<a> <a>",         // duplicate names (invalid for New)
+	"<a><b>",           // consecutive captures (invalid for New + line filter)
+	"<a> <a>",          // duplicate names (invalid for New)
 	"no captures here", // no capture
 	"",
 	"literal <_> tail",
 	"<ip>:<port>",
 	"prefix<_>suffix",
-	"<1bad>",  // digit-leading name -> '<' is literal
-	"<a-b>",   // dash -> '<' is literal
+	"<1bad>", // digit-leading name -> '<' is literal
+	"<a-b>",  // dash -> '<' is literal
 	"<unterminated",
 	"plain text",
 	"a<_>b<_>c",

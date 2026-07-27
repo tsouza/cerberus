@@ -107,7 +107,7 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 		sb := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(s.ResourceAttributesColumn, keys[0]), "v")).
 			From(chsql.Col(s.LogsTable))
-		if err := applyLabelValuesPredicates(sb, s, matchers, start, end); err != nil {
+		if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 			return "", nil, err
 		}
 		sb.Where(nonEmptyMapAtFrag(s.ResourceAttributesColumn, keys[0]))
@@ -123,7 +123,7 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 		arm := chsql.NewQuery().
 			Select(chsql.As(chsql.Col(topCol), "v")).
 			From(chsql.Col(s.LogsTable))
-		if err := applyLabelValuesPredicates(arm, s, matchers, start, end); err != nil {
+		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
 			return "", nil, err
 		}
 		arm.Where(chsql.Neq(chsql.Col(topCol), chsql.Lit("")))
@@ -133,7 +133,7 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 		arm := chsql.NewQuery().
 			Select(chsql.As(mapAtFrag(s.ResourceAttributesColumn, k), "v")).
 			From(chsql.Col(s.LogsTable))
-		if err := applyLabelValuesPredicates(arm, s, matchers, start, end); err != nil {
+		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
 			return "", nil, err
 		}
 		arm.Where(nonEmptyMapAtFrag(s.ResourceAttributesColumn, k))
@@ -148,10 +148,11 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 	return sqlStr, args, nil
 }
 
-// applyLabelValuesPredicates threads the matcher + time-range filters
-// onto sb. Extracted so each UNION arm wires up the same WHERE shape
-// without duplicating the matcher-lowering call.
-func applyLabelValuesPredicates(sb *chsql.QueryBuilder, s schema.Logs, matchers []*labels.Matcher, start, end time.Time) error {
+// applySelectorAndWindow places the LogQL selector predicate and the
+// [start,end] request window on sb — the WHERE shape every Loki
+// metadata/peek builder shares. A zero start/end means "unbounded on
+// that side".
+func applySelectorAndWindow(sb *chsql.QueryBuilder, s schema.Logs, matchers []*labels.Matcher, start, end time.Time) error {
 	pred := logql.SelectorPredicate(matchers, s)
 	if pred != nil {
 		whereFrag, err := exprFrag(pred)

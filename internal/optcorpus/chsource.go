@@ -57,6 +57,11 @@ type CHQueryLogSource struct {
 // hardcoded `INTERVAL 1 HOUR` and is also the floor QueryLogWindow enforces.
 const defaultQueryLogWindow = time.Hour
 
+// defaultQueryLogSourceTimeout is the fallback wall-clock bound on one corpus
+// SELECT when a non-positive timeout is supplied, so the reconciler goroutine
+// can never block indefinitely on a single scan.
+const defaultQueryLogSourceTimeout = 15 * time.Second
+
 // NewCHQueryLogSource builds a CHQueryLogSource over conn (typically
 // chclient.Client.Conn()). timeout bounds each corpus SELECT in wall-clock via
 // a derived context (in addition to the server-side max_execution_time cap); a
@@ -67,7 +72,7 @@ const defaultQueryLogWindow = time.Hour
 // non-positive window falls back to the 1h default.
 func NewCHQueryLogSource(conn CHConn, timeout, window time.Duration) *CHQueryLogSource {
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		timeout = defaultQueryLogSourceTimeout
 	}
 	if window <= 0 {
 		window = defaultQueryLogWindow

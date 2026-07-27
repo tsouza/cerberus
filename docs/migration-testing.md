@@ -3,7 +3,7 @@
 This is the design for the scheduled end-to-end lane that turns every one of
 the 26 migration user-stories into an executable scenario, `MIG-01 … MIG-26`.
 It sits above [Layer 13](test-strategy.md#layer-13--live-stack-chaos-real-faults)
-in the [13-layer test map](test-strategy.md) as the most-realistic, slowest
+in the [14-layer test map](test-strategy.md) as the most-realistic, slowest
 layer — it asserts an **operator-workflow** contract (the journey a team takes
 to move onto cerberus) rather than a code contract.
 

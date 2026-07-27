@@ -389,7 +389,8 @@ func histogramModelSeries(name string, lbls map[string]string, si int) []propert
 		countPts = append(countPts, property.Point{TimestampMs: stepTsMs(step), Value: float64(count)})
 		sumPts = append(sumPts, property.Point{TimestampMs: stepTsMs(step), Value: histogramSum(deltas)})
 	}
-	out = append(out,
+	out = append(
+		out,
 		property.SeriesData{MetricName: name + "_count", Labels: copyLabels(lbls), Points: countPts},
 		property.SeriesData{MetricName: name + "_sum", Labels: copyLabels(lbls), Points: sumPts},
 	)

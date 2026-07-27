@@ -1366,7 +1366,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 // TimestampedLine is one (Timestamp, Body) tuple from the peek-window
 // SQL backing /loki/api/v1/patterns. The timestamp is the row's
 // DateTime64 value verbatim; the body is the raw log line. The drain
-// template miner consumes the pair via [drain.Drain.Train], which takes
+// template miner consumes the pair via [drain.Miner.Train], which takes
 // the timestamp as unix nanoseconds.
 type TimestampedLine struct {
 	Timestamp time.Time

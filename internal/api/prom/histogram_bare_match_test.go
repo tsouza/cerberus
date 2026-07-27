@@ -15,9 +15,10 @@ import (
 // and any matcher that already carries one of those suffixes (or is
 // not a single VectorSelector) passes through unchanged.
 //
-// Companion: TestConformance_LabelsHistogramBareName in
-// conformance_test.go exercises the full HTTP surface; this unit test
-// pins the rewriter's per-case behaviour without the handler scaffold.
+// Companion: TestLabels_HistogramBareName_FansOutCompanions in
+// handler_labels_histogram_test.go exercises the full HTTP surface;
+// this unit test pins the rewriter's per-case behaviour without the
+// handler scaffold.
 func TestExpandBareHistogramMatcher(t *testing.T) {
 	t.Parallel()
 

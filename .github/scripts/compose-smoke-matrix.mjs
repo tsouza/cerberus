@@ -49,9 +49,8 @@
 // node: builtins only (via lib/gh.mjs) — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { error, notice, log, lsFiles, setOutput, appendStepSummary } from './lib/gh.mjs';
-
-const PW_DIR = process.env.PLAYWRIGHT_DIR || 'test/e2e/playwright';
+import { error, notice, log, setOutput, appendStepSummary } from './lib/gh.mjs';
+import { SHARD_NAME_RE, collectShardCoverageViolations, discoverSpecs } from './lib/shard-coverage.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-shard wall-clock ceilings (timeout-minutes on the compose-smoke-shard
@@ -168,92 +167,20 @@ const EXCLUDED = [
   'tempo_ux.spec.ts', //                 *_ux lane; dashboard-lane only
 ];
 
-// Shard names render straight into the matrix `name` -> child check context
-// `compose-smoke-shard (shard-x)` + the per-shard artifact name. Keep them
-// filename-safe and branch-protection-stable.
-const SHARD_NAME_RE = /^[a-z0-9-]+$/;
-
-const stripDir = (p) => p.replace(new RegExp(`^${PW_DIR}/`), '');
-
-// discover() — the tracked compose-smoke spec universe. Two explicit globs
-// (the dir root + the crawl/ subdir) rather than `**` so a future deeper
-// subdir is itself a reviewable event, not silently vacuumed into scope.
-export function discover() {
-  const paths = lsFiles([`${PW_DIR}/*.spec.ts`, `${PW_DIR}/crawl/*.spec.ts`]);
-  return paths.map(stripDir);
-}
+// discover() — the tracked compose-smoke spec universe (lib/shard-coverage.mjs).
+export const discover = discoverSpecs;
 
 // collectViolations() — returns a string[] of human-readable violations
-// (empty == clean). Collect-then-fail (not fail-fast) so a maintainer
-// reworking the partition sees every problem in one run.
+// (empty == clean). The partition rules are shared with the dashboard lane so
+// a new rule guards both; this lane adds none of its own.
 export function collectViolations(discovered) {
-  const v = [];
-  const dset = new Set(discovered);
-  if (dset.size !== discovered.length) {
-    v.push('discovery returned duplicate paths');
-  }
-
-  // Shard hygiene + build the spec -> [owning shard…] map.
-  const owners = new Map();
-  const names = new Set();
-  for (const s of SHARDS) {
-    if (!SHARD_NAME_RE.test(s.name)) {
-      v.push(`bad shard name "${s.name}" (must match ${SHARD_NAME_RE})`);
-    }
-    if (names.has(s.name)) {
-      v.push(`duplicate shard name: ${s.name}`);
-    }
-    names.add(s.name);
-    if (!s.specs || s.specs.length === 0) {
-      v.push(`empty shard (would boot a compose stack to run nothing): ${s.name}`);
-      continue;
-    }
-    for (const spec of s.specs) {
-      owners.set(spec, [...(owners.get(spec) || []), s.name]);
-    }
-  }
-
-  const assigned = new Set(owners.keys());
-  const excluded = new Set(EXCLUDED);
-
-  if (excluded.size !== EXCLUDED.length) {
-    v.push('EXCLUDED contains duplicate entries');
-  }
-
-  // double-assignment (wasted work + double-gating).
-  for (const [spec, who] of owners) {
-    if (who.length > 1) {
-      v.push(`double-assigned spec ${spec} -> shards [${who.join(', ')}]`);
-    }
-  }
-  // assigned AND excluded — a contradiction.
-  for (const spec of assigned) {
-    if (excluded.has(spec)) {
-      v.push(`spec is both assigned and excluded: ${spec}`);
-    }
-  }
-  // stale exclude: names a spec that no longer exists (rename/delete) — it
-  // could be masking a coverage hole, so it's a hard error not a warning.
-  for (const spec of excluded) {
-    if (!dset.has(spec)) {
-      v.push(`excluded spec not found on disk (stale exclude / rename?): ${spec}`);
-    }
-  }
-  // phantom assignment: a shard lists a spec that isn't on disk.
-  for (const spec of assigned) {
-    if (!dset.has(spec)) {
-      v.push(`phantom spec (assigned but not on disk): ${spec} [shard ${owners.get(spec).join(', ')}]`);
-    }
-  }
-  // THE coverage gap: discovered, neither assigned nor excluded.
-  for (const spec of discovered) {
-    if (!assigned.has(spec) && !excluded.has(spec)) {
-      v.push(
-        `UNASSIGNED spec (silent coverage gap): ${spec} — assign it to a shard in SHARDS or add it to EXCLUDED with a reason`,
-      );
-    }
-  }
-  return v;
+  const { violations } = collectShardCoverageViolations({
+    discovered,
+    shards: SHARDS,
+    excluded: EXCLUDED,
+    emptySubstrate: 'a compose stack',
+  });
+  return violations;
 }
 
 function assertCoverageOrExit(discovered) {

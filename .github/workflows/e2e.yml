@@ -34,10 +34,11 @@ name: e2e
 #     .github/scripts/dashboard-matrix.mjs; dashboard-shard runs each
 #     shard's specs against its own k3d cluster; the aggregator job
 #     literally named `dashboard` needs the matrix and rolls it up).
-#     Runs on push-to-main + nightly + manual dispatch only.
-#     Informational on merges, not a PR gate (never runs on
-#     pull_request, so NOT a branch-protection check); regressions are
-#     caught at merge-to-main time and reverted from main if they break.
+#     Runs on pull_request (skipping docs-only PRs) + push-to-main +
+#     nightly + manual dispatch; the aggregator is a branch-protection
+#     REQUIRED check, so a k3d regression blocks the PR that introduces
+#     it. PRs get a smoke-only matrix — the ~50min crawl shard is
+#     dispatched on schedule + dispatch + release/* PRs only.
 #     On schedule + dispatch the DEDICATED crawl shard runs the Grafana
 #     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
@@ -219,11 +220,11 @@ jobs:
       - name: compose-smoke shard coverage (unit guard)
         run: node --test .github/scripts/compose-smoke-matrix.test.mjs
 
-      # dashboard (k3d) shard partition coverage guard. The dashboard lane
-      # never runs on pull_request, so without this a PR that adds a spec but
-      # forgets to shard it for the k3d lane would only fail later on a
-      # push/nightly run. Running the unit guard here catches it on the cheap
-      # PR gate, same as the compose-smoke guard above.
+      # dashboard (k3d) shard partition coverage guard. The dashboard lane runs
+      # on pull_request too, but only after a 3-5min k3d boot — and it is
+      # skipped entirely on a docs-only PR. Running the unit guard here catches
+      # a spec that was added but never sharded in ~50ms, on the cheapest lane
+      # and on every PR, same as the compose-smoke guard above.
       - name: dashboard shard coverage (unit guard)
         run: node --test .github/scripts/dashboard-matrix.test.mjs
 
@@ -755,17 +756,17 @@ jobs:
   #                       old unfiltered smoke step; the crawl shard with
   #                       CRAWL_STACK=k3d SWEEP_DEPTH=full = the crawl trio).
   #   dashboard         — the AGGREGATOR; a single clean pass/fail over every
-  #                       shard. NOT a branch-protection check (the lane never
-  #                       runs on pull_request), but a clean roll-up + the
-  #                       coverage-discipline guard mirror compose-smoke.
+  #                       shard, and a branch-protection REQUIRED check. The
+  #                       clean roll-up + the coverage-discipline guard mirror
+  #                       compose-smoke.
   dashboard-setup:
     name: dashboard-setup
     needs: changes
     # Runs on pull_request (skipping docs-only PRs) so the parallel smoke shards
     # are exercised per-change, plus push + nightly + manual dispatch. The crawl
     # shard is the ~50min long pole and is dispatched only on schedule + manual
-    # (INCLUDE_CRAWL below) — so PR/push get a fast smoke-only matrix with no
-    # all-skipped crawl leg. Informational on merges, not a required PR gate.
+    # dispatch + release/* PRs (INCLUDE_CRAWL below) — so every other PR/push
+    # gets a fast smoke-only matrix with no all-skipped crawl leg.
     if: |
       always() &&
       (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
@@ -1161,13 +1162,13 @@ jobs:
         run: just e2e-down
 
   # The AGGREGATOR — a single clean pass/fail over every dashboard shard. The
-  # dashboard lane never runs on pull_request, so this is NOT a
-  # branch-protection required check (unlike compose-smoke's aggregator); it
-  # exists so a merge/nightly/dispatch run has one rolled-up dashboard verdict
-  # instead of N per-shard contexts, and so the coverage-discipline guard
-  # (dashboard-setup) gates the fan-out. always() so it still reports when the
-  # setup/shards were skipped (e.g. a pull_request event, where the whole lane
-  # is off).
+  # lane DOES run on pull_request (a smoke-only matrix; see dashboard-setup),
+  # and `dashboard` is a branch-protection REQUIRED check, exactly like
+  # compose-smoke's aggregator: a PR/merge/nightly/dispatch run gets one
+  # rolled-up dashboard verdict instead of N per-shard contexts, and the
+  # coverage-discipline guard (dashboard-setup) gates the fan-out. always() so
+  # it still reports when the setup/shards were skipped (e.g. a docs-only PR,
+  # where dashboard-setup does not run).
   dashboard:
     name: dashboard
     needs: [dashboard-setup, dashboard-shard]

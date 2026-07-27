@@ -489,15 +489,6 @@ const solverGateReserve = 2
 // teardown after a shutdown signal before the process exits regardless.
 const gracefulShutdownTimeout = 10 * time.Second
 
-// buildSolver constructs the sharded-pushdown solver from the CERBERUS_*
-// environment and wires its data-plane hooks. The Config is validated
-// fail-fast (an invalid CERBERUS_EVAL_ROUTE / threshold aborts startup). The
-// GLOBAL gate is sized from the chclient pool (MaxOpenConns − reserve) and
-// shared across heads via the single returned *solver.Solver. Under the
-// phase-2 default (Mode=auto) eligible, above-threshold plans route B through
-// the Executor; everything else fails toward route A. Operators pin
-// CERBERUS_EVAL_ROUTE=single to keep the Executor dormant (the Planner still
-// classifies for the shadow header, but never routes).
 // newPromHandler builds the prom head's handler with its engine (per-head
 // Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
 func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
@@ -875,6 +866,11 @@ func probeTSGridCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Conf
 	return bootClient.ProbeTSGridCapability(ctx)
 }
 
+// maxOptCorpusSourceTimeout caps the per-scan wall-clock bound derived from
+// the reconcile interval, so a long interval cannot hand one corpus SELECT
+// minutes of runway.
+const maxOptCorpusSourceTimeout = 30 * time.Second
+
 // startOptCorpus starts the async system.query_log performance-corpus
 // reconciler when CERBERUS_CH_OPT_CORPUS_ENABLED is set. It is production-only
 // (system.query_log access) and returns a no-op Observe sink plus a nil
@@ -895,8 +891,8 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	// reconciler goroutine; the server-side max_execution_time is the primary
 	// cap, this is the belt-and-braces client deadline.
 	srcTimeout := cfg.CHOptCorpus.Interval / 2
-	if srcTimeout <= 0 || srcTimeout > 30*time.Second {
-		srcTimeout = 30 * time.Second
+	if srcTimeout <= 0 || srcTimeout > maxOptCorpusSourceTimeout {
+		srcTimeout = maxOptCorpusSourceTimeout
 	}
 	// Derive the query_log lookback from the reconcile interval so a longer
 	// interval still covers more than one scan worth of dispatched queries
@@ -970,6 +966,15 @@ func attachQueryObserver(corpus *optcorpus.Reconciler, engines ...*engine.Engine
 	}
 }
 
+// buildSolver constructs the sharded-pushdown solver from the CERBERUS_*
+// environment and wires its data-plane hooks. The Config is validated
+// fail-fast (an invalid CERBERUS_EVAL_ROUTE / threshold aborts startup). The
+// GLOBAL gate is sized from the chclient pool (MaxOpenConns − reserve) and
+// shared across heads via the single returned *solver.Solver. Under the
+// phase-2 default (Mode=auto) eligible, above-threshold plans route B through
+// the Executor; everything else fails toward route A. Operators pin
+// CERBERUS_EVAL_ROUTE=single to keep the Executor dormant (the Planner still
+// classifies for the shadow header, but never routes).
 func buildSolver(
 	logger *slog.Logger,
 	chCfg chclient.Config,

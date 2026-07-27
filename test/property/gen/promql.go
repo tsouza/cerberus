@@ -33,10 +33,9 @@ import (
 // eval-ts boundary the way Prom does. The from-scratch oracle (PR 2)
 // implements both rules correctly — so widening the generator surfaces
 // those production-side divergences as property-test failures (as
-// intended). The property test is currently t.Skip'd in the test
-// file with a pointer to the tracked follow-up production fixes; the
-// generator is wired up the way a green production path will exercise
-// once those fixes land.
+// intended). The generator is wired up the way the production path
+// exercises it; TestPromQL_Property_FromScratch runs unconditionally in
+// the chdb lane.
 //
 // EvalTs is anchored to the dataset's window so every query has at
 // least one matching sample within Prometheus's 5-minute LookbackDelta.

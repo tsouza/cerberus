@@ -36,8 +36,6 @@
 //     projection rewrite, decode cell). Replicated from
 //     test/spec/runner_chdb.go; kept in-package so test/property has
 //     no dependency on test/spec internals.
-//   - chdb_stub.go — non-chdb stub that emits t.Skip so the default
-//     CGO-free `just test` lane stays green.
 //   - gen/metrics.go — random Dataset generator (DDL + in-memory
 //     mirror; gauge-only for the MVP).
 //   - gen/promql.go — random PromQL query generator targeted at the

@@ -29,10 +29,11 @@ func (p *Planner) CurrentThresholds() (minFanout, minAnchorPairs int) {
 // plan routes B. The Decision is always non-nil: even a non-route carries the
 // Reason for the shadow header.
 //
-// Routing follows docs §Routing: a single pass walks both the node tree and
-// every expression tree (including ScalarSubquery.Input, which chplan.Walk
-// does NOT recurse into) gathering the eligibility signals, then the cost
-// thresholds and the K clamp decide. Mode shapes the final gate:
+// Routing follows docs/solver.md §"Eligibility signals": a single pass walks
+// both the node tree and every expression tree (including
+// ScalarSubquery.Input, which chplan.Walk does NOT recurse into) gathering the
+// eligibility signals, then the cost thresholds and the K clamp decide. Mode
+// shapes the final gate:
 //
 //   - "single": classify but NEVER route — always returns (decision, false).
 //   - "sharded": thresholds drop to the floor (K_min = 2) so every ELIGIBLE

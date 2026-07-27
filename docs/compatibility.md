@@ -25,8 +25,8 @@ numerical confidence is honestly lower (see
 > drop below baseline is a merge gate: noise within the baseline is
 > tolerated, a real regression is not. The
 > `compatibility/prometheus-forced-route` lane additionally hard-fails on
-> *any* numeric parity diff (`FAIL_ON_DIFF=1`) but is informational, not a
-> required check. See [CI integration](#ci-integration).
+> *any* numeric parity diff (`FAIL_ON_DIFF=1`) and is itself a required
+> check. See [CI integration](#ci-integration).
 
 | Harness | Location                    | Reference backend                  | Corpus source                                                                                |
 | ------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -286,9 +286,8 @@ within the baseline, which is what #503 was protecting against.
 The `compatibility/prometheus-forced-route` lane additionally
 **hard-fails on any parity diff** (`FAIL_ON_DIFF=1` in
 `run-compatibility.sh`) as the corpus-wide proof that the sharded solver
-route is byte-identical to reference Prometheus; it is intentionally an
-*informational* job, not a required check, so it doesn't gate every
-unrelated PR on the full forced-route corpus run.
+route is byte-identical to reference Prometheus; it is a required check, so
+every non-docs-only PR is gated on the full forced-route corpus run.
 
 ### Parity-regression ratchet (the gate)
 

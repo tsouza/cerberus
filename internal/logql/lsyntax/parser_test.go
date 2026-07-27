@@ -15,9 +15,9 @@ import (
 // / phase4-logql-lsyntax, see .github/workflows/mutation.yml) surfaced
 // this: 51.2%/65.4% efficacy, far below the 95% bar every other phase
 // clears. These tests close the gap by exercising parser.go directly
-// through the public ParseExpr/ParseSampleExpr/ParseLogSelector API,
-// plus a few white-box tests against parser-internal bounds-checking
-// helpers that aren't reachable any other way.
+// through the public ParseExpr API, plus a few white-box tests against
+// parser-internal bounds-checking helpers that aren't reachable any
+// other way.
 
 // --- ParseExprWithoutValidation input-size guard (parser.go) --------------
 

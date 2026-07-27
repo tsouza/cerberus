@@ -741,8 +741,9 @@ func lowerCompanionUnion(
 // Non-MetricName matchers (attribute / service / regex matchers the
 // user wrote alongside `__name__`) flow through unchanged so the arm's
 // scan-side Filter still narrows on every other matcher. The bare
-// `__name__` rewrite is local to this arm — the sum arm
-// (`buildSumCompanionArm`) sees the suffixed name in matcher form.
+// `__name__` rewrite is local to this arm — the literal-name arms
+// (`buildLiteralNameCompanionArm`) see the suffixed name in matcher
+// form.
 func buildHistogramCompanionArm(
 	s schema.Metrics, matchers []*labels.Matcher,
 	bareName, suffixedName, sourceColumn string,

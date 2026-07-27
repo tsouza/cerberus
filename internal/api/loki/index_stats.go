@@ -93,7 +93,6 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 // no SQL string concatenation happens at this level (the CLAUDE.md
 // "no raw SQL" rule for new code).
 func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
-	pred := logql.SelectorPredicate(matchers, s)
 	sb := chsql.NewQuery().
 		Select(
 			aggFrag("uniqExact", s.ResourceAttributesColumn),
@@ -102,18 +101,8 @@ func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end ti
 		).
 		From(chsql.Col(s.LogsTable))
 
-	if pred != nil {
-		whereFrag, err := exprFrag(pred)
-		if err != nil {
-			return "", nil, err
-		}
-		sb.Where(whereFrag)
-	}
-	if !start.IsZero() {
-		sb.Where(timeBoundFrag(s.TimestampColumn, ">=", start))
-	}
-	if !end.IsZero() {
-		sb.Where(timeBoundFrag(s.TimestampColumn, "<=", end))
+	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
+		return "", nil, err
 	}
 
 	sqlStr, args := sb.Build()

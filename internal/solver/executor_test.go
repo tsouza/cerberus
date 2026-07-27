@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
@@ -350,12 +351,12 @@ func (r *recordingQuerier) QueryCursor(ctx context.Context, sql string, args ...
 	return cur, nil
 }
 
-// TestExecute_BreakerDedup_CountsOnce is the regression pin for the docs
-// §"Parallel execution" #6 contract — "the Executor records at MOST ONE
-// breaker failure per logical request". It drives a routed Execute where ALL
-// P_eff shard opens fail CONCURRENTLY with a real (non-Canceled, non-241) CH
-// error and asserts the breaker failure counter advanced by EXACTLY 1, not by
-// P. Run under GOMAXPROCS 1 and 4.
+// TestExecute_BreakerDedup_CountsOnce is the regression pin for the
+// docs/solver.md §"Failure and cancellation contract" rule — "the Executor
+// records at MOST ONE breaker failure per logical request". It drives a
+// routed Execute where ALL P_eff shard opens fail CONCURRENTLY with a real
+// (non-Canceled, non-241) CH error and asserts the breaker failure counter
+// advanced by EXACTLY 1, not by P. Run under GOMAXPROCS 1 and 4.
 func TestExecute_BreakerDedup_CountsOnce(t *testing.T) {
 	shardErr := errors.New("dial tcp 127.0.0.1:9000: connection refused")
 	for _, gomax := range []int{1, 4} {
@@ -602,7 +603,7 @@ func TestExecute_CrossShardSeriesIDBijective(t *testing.T) {
 	idToKey := map[uint32]string{}
 	for cur.Next() {
 		s := cur.Sample()
-		key := canonicalLabelKey(s.Labels)
+		key := format.CanonicalKey(s.Labels)
 		if s.SeriesID == 0 {
 			t.Fatalf("composed cursor handed out SeriesID 0 for labels %v", s.Labels)
 		}

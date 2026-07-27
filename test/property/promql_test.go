@@ -25,7 +25,7 @@
 // rapid's shrinker minimises the failing dataset + query before this
 // test reports — the failure log shows the smallest reproducer.
 //
-// # CI lanes (when not t.Skip'd)
+// # CI lanes
 //
 // The test runs in two CI lanes:
 //
@@ -61,27 +61,31 @@
 //     `projectValueOverInner` rename-workaround in
 //     `internal/promql/instant_fns.go` is removed in the same change.
 //
-// # Current skip rationale
+// # Divergence outside the generated eval-ts window
 //
-// Force-running the test with `CERBERUS_PROPERTY_FORCE=1` after the
-// fixes above surfaces a SEPARATE pre-existing divergence:
-// `sum(metric{...}[r])` over an evalTs that lies outside the data
-// range causes cerberus to emit a spurious `{} = 0` row, while
-// PromQL specifies an empty result. Root cause: `chplan.Aggregate`
-// with empty GroupBy emits `SELECT sum(Value) FROM (...)` without a
-// HAVING/COUNT guard, so CH's "1 row per aggregate-only query"
-// semantics produce a 0 even on empty input.
+// One divergence sits outside the shape this generator draws:
+// `sum(metric{...}[r])` over an evalTs that lies outside the data range
+// makes cerberus emit a spurious `{} = 0` row, while PromQL specifies an
+// empty result. Root cause: `chplan.Aggregate` with empty GroupBy emits
+// `SELECT sum(Value) FROM (...)` without a HAVING/COUNT guard, so CH's
+// "1 row per aggregate-only query" semantics produce a 0 even on empty
+// input.
 //
-// Tracked as a follow-up: the fix is one of:
-//   a) Wrap with a `count()` subquery + outer `WHERE _cnt > 0`.
-//   b) Add a `chsql.SelectBuilder.Having` slot + an `Aggregate`-level
-//      `HAVING count() > 0` for the GroupBy=[] case.
-//   c) Lower `Aggregate(GroupBy=[], …)` into
-//      `Filter(_cnt > 0, Aggregate(…, count AS _cnt))` at the PromQL
-//      lowering layer + a downstream `Project` to drop `_cnt`.
+// `gen.PromQLQuery` anchors EvalTs after every dataset sample but inside
+// Prometheus's 5-minute LookbackDelta, so the property test never draws
+// that shape and runs unconditionally in the chdb lane. Widening the
+// generator's EvalTs range is gated on the aggregate fix, which is one
+// of:
 //
-// Until the chosen path lands, force-runs reproduce with
-// `CERBERUS_PROPERTY_FORCE=1` (seed 11512813954976776230, rapid v0.4.8).
+//	a) Wrap with a `count()` subquery + outer `WHERE _cnt > 0`.
+//	b) Add a `chsql.SelectBuilder.Having` slot + an `Aggregate`-level
+//	   `HAVING count() > 0` for the GroupBy=[] case.
+//	c) Lower `Aggregate(GroupBy=[], …)` into
+//	   `Filter(_cnt > 0, Aggregate(…, count AS _cnt))` at the PromQL
+//	   lowering layer + a downstream `Project` to drop `_cnt`.
+//
+// The shape reproduces off-grid at rapid seed 11512813954976776230
+// (rapid v0.4.8).
 package property_test
 
 import (

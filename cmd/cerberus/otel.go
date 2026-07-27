@@ -47,7 +47,8 @@ func installOTel(tp trace.TracerProvider) {
 // `service` becomes the otelhttp operation name — kept stable across all
 // routes; per-route disambiguation lives in the formatter.
 func wrapWithOTel(next http.Handler, service string) http.Handler {
-	return otelhttp.NewHandler(next, service,
+	return otelhttp.NewHandler(
+		next, service,
 		otelhttp.WithSpanNameFormatter(spanNameFromPattern),
 	)
 }

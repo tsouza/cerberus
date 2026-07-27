@@ -175,7 +175,7 @@ func DrainByteBudgetFromContext(ctx context.Context) *DrainByteBudget {
 
 // labelMapBytes returns the on-heap byte width the cursor RETAINS for one unique
 // interned attribute map. That is NOT just the key/value content: internLabels
-// also retains a canonicalLabelKey string of the same content per unique series,
+// also retains a format.CanonicalKey string of the same content per unique series,
 // and each entry carries Go map-header + string-header overhead. So the charge
 // is ~2× the content (map + canonical-key duplicate) plus per-entry overhead —
 // a deliberately conservative estimate of the true retained heap.

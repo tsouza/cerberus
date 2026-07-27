@@ -316,6 +316,14 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		// metric queries. Default to 1 minute when absent.
 		step = time.Minute
 	}
+	if step <= 0 {
+		// An explicitly non-positive step would divide by zero in the
+		// resolution cap below. Upstream Loki rejects the same shape
+		// (loghttp.ParseRangeQuery's errZeroOrNegativeStep), as does the
+		// Prom head's `step <= 0` guard.
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
+		return
+	}
 	if !end.After(start) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
 		return
@@ -432,7 +440,7 @@ func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (con
 				fmt.Errorf("invalid parameter 'timeout': %w", err))
 			return ctx, func() {}, false
 		}
-		budget = minPositiveDuration(budget, reqTimeout)
+		budget = format.MinPositiveDuration(budget, reqTimeout)
 	}
 	if budget <= 0 {
 		return ctx, func() {}, true
@@ -440,23 +448,6 @@ func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (con
 	ctx = chclient.WithQueryTimeout(ctx, budget)
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	return ctx, cancel, true
-}
-
-// minPositiveDuration returns the smaller of a and b, treating a
-// non-positive value as "unbounded" so it never wins the min; when both
-// are non-positive the result is 0 (no cap). Mirrors the effective-
-// timeout rule shared with the Prom head.
-func minPositiveDuration(a, b time.Duration) time.Duration {
-	switch {
-	case a <= 0:
-		return b
-	case b <= 0:
-		return a
-	case a < b:
-		return a
-	default:
-		return b
-	}
 }
 
 func classifyEngineErr(err error) error {
@@ -491,14 +482,6 @@ func classifyEngineErr(err error) error {
 			Status: http.StatusBadRequest,
 		}
 	}
-	// ClickHouse memory-limit abort (code 241, MEMORY_LIMIT_EXCEEDED):
-	// the server-side sibling of the sample budget above — the
-	// per-query `max_memory_usage` cap (CERBERUS_CH_QUERY_MAX_MEMORY)
-	// or a CH server-side limit rejected the query. Same Loki-style
-	// limit rejection: HTTP 400 bad_data with a "maximum ... reached
-	// for a single query" message — NOT a 5xx, ClickHouse is healthy
-	// when it enforces a cap (the chclient breaker treats code 241 as
-	// a success for the same reason).
 	// Line-peek byte budget: a /detected_fields or /patterns drain buffered
 	// more raw log bytes than maxLogPeekBytes (a handful of pathologically
 	// large lines that slipped under the row-count budget). Same Loki-style
@@ -515,6 +498,14 @@ func classifyEngineErr(err error) error {
 			Status: http.StatusBadRequest,
 		}
 	}
+	// ClickHouse memory-limit abort (code 241, MEMORY_LIMIT_EXCEEDED):
+	// the server-side sibling of the sample budget above — the
+	// per-query `max_memory_usage` cap (CERBERUS_CH_QUERY_MAX_MEMORY)
+	// or a CH server-side limit rejected the query. Same Loki-style
+	// limit rejection: HTTP 400 bad_data with a "maximum ... reached
+	// for a single query" message — NOT a 5xx, ClickHouse is healthy
+	// when it enforces a cap (the chclient breaker treats code 241 as
+	// a success for the same reason).
 	var memLimit *chclient.MemoryLimitError
 	if errors.As(err, &memLimit) {
 		msg := "maximum memory usage reached for a single query; consider reducing the query range or resolution"

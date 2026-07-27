@@ -6,8 +6,8 @@ import "strings"
 // LogQL stream selectors to the underscore form so the LogQL grammar
 // — which restricts label keys to `[a-zA-Z_][a-zA-Z0-9_]*` — accepts
 // them. Every caller that hands an operator-authored LogQL string to
-// ParseExpr / ParseExprWithoutValidation / ParseLogSelector runs it
-// through here first: the logql head's Lang.Parse, the Loki handlers
+// ParseExpr / ParseExprWithoutValidation runs it through here first:
+// the logql head's Lang.Parse, the Loki handlers
 // (index-stats selectors, the tail stream parser), and the migration
 // parity gate's offline query classifier. It lives beside the parser
 // so classification and serving can never disagree about which

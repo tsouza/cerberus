@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/tsouza/cerberus/internal/api/format"
 )
 
 // ErrTooManySamples is the sentinel matched (via errors.Is) when a
@@ -337,7 +338,7 @@ func (c *rowsCursor) internLabels(labels map[string]string) (map[string]string, 
 	if labels == nil {
 		return nil, 0
 	}
-	key := canonicalLabelKey(labels)
+	key := format.CanonicalKey(labels)
 	if cached, ok := c.interned[key]; ok {
 		return cached.labels, cached.id
 	}
@@ -347,31 +348,6 @@ func (c *rowsCursor) internLabels(labels map[string]string) (map[string]string, 
 	c.internSeq++
 	c.interned[key] = internedSeries{labels: labels, id: c.internSeq}
 	return labels, c.internSeq
-}
-
-// canonicalLabelKey is a deterministic string form of a label set:
-// keys sorted ASCII-ascending, pairs joined as "k=v\x00" so two
-// distinct label sets cannot alias. Mirrors the canonical-key shape
-// the API layer uses for series grouping (internal/api/format
-// .CanonicalKey) — duplicated locally because chclient must not
-// import api packages.
-func canonicalLabelKey(labels map[string]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b []byte
-	for _, k := range keys {
-		b = append(b, k...)
-		b = append(b, '=')
-		b = append(b, labels[k]...)
-		b = append(b, 0)
-	}
-	return string(b)
 }
 
 // Sample returns the row that the most recent Next() call landed on.
@@ -403,6 +379,12 @@ func (c *rowsCursor) Inspected() int64 { return c.seen }
 // The first call also flushes the progress recorder so the per-query
 // rows/bytes histograms see the totals exactly once. Subsequent calls
 // are no-ops.
+//
+// The flush runs after rows.Close(): closing the driver rows is the
+// happens-before join with the driver goroutine that delivers progress
+// callbacks, so the recorder's counters are read only once that
+// goroutine has stopped writing them. An early close (budget trip,
+// cancellation) leaves that goroutine live, so the order matters.
 func (c *rowsCursor) Close() error {
 	c.closeOnce.Do(func() {
 		if c.span != nil {
@@ -412,17 +394,16 @@ func (c *rowsCursor) Close() error {
 			c.span.End()
 			c.span = nil
 		}
+		if c.rows != nil {
+			err := c.rows.Close()
+			c.rows = nil
+			if err != nil {
+				c.closeErr = fmt.Errorf("chclient: rows.Close: %w", err)
+			}
+		}
 		if c.rec != nil {
 			c.rec.flush()
 			c.rec = nil
-		}
-		if c.rows == nil {
-			return
-		}
-		err := c.rows.Close()
-		c.rows = nil
-		if err != nil {
-			c.closeErr = fmt.Errorf("chclient: rows.Close: %w", err)
 		}
 	})
 	return c.closeErr

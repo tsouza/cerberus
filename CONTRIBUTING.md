@@ -13,7 +13,7 @@ git push -u origin <branch>
 gh pr create
 ```
 
-The required checks on `main` are `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `forbid-skip`, `compatibility/{prometheus,loki,tempo}`, `probe`, `roundtrip (promql|logql|traceql)`, and `compose-smoke` — see the Testing layers below for what each covers. Branch protection is strict — your branch must be up-to-date with `main` before merging. Squash is the only merge style.
+The required checks on `main` are `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `forbid-skip`, `chart-validate`, `compatibility/{prometheus,loki,tempo}`, `compatibility/prometheus-forced-route`, `probe`, `roundtrip (promql|logql|traceql)`, `compose-smoke`, `dashboard`, `coverage`, `mutation`, `profile`, and `property (PromQL + LogQL + TraceQL, rapid N=500)` — 18 contexts in all; see the Testing layers below for what each covers. Branch protection is strict — your branch must be up-to-date with `main` before merging. Squash is the only merge style.
 
 ## House rules
 
@@ -94,10 +94,12 @@ map. Headline:
   per-head scores are published to the `compat-scores` branch.
 - **Compose smoke** — `compose-smoke` (the repo-root `docker compose up`
   quickstart stack) is a required PR check.
-- **E2E (k3d + Grafana Playwright)** — the `dashboard` job is
-  informational: it runs on push-to-main + nightly + manual dispatch,
-  not as a PR gate.
-- **Mutation** — Gremlins nightly; per-phase 95% efficacy threshold.
+- **E2E (k3d + Grafana Playwright)** — the `dashboard` job runs on every PR
+  as well as push-to-main + nightly + manual dispatch, and is a required
+  check.
+- **Mutation** — Gremlins runs on push-to-main + nightly + dispatch and on
+  release PRs (the matrix is skipped on ordinary PRs); per-phase 95%
+  efficacy threshold. The `mutation` roll-up is a required check.
 
 ## Project memory and AI assistants
 

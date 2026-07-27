@@ -286,8 +286,9 @@ func (m Metrics) RollupsFor(base string) []Rollup {
 //   - `otel_metrics_sum_1h` — one-hour sum buckets. Suits long-range
 //     queries (24h, 7d) where five-minute resolution is overkill.
 //
-// Longest window first so `firstApplicable` prefers the coarsest
-// rollup that still satisfies the query's step.
+// Longest window first so a rollup-substitution rule walking the slice
+// in order (see RollupsFor) prefers the coarsest rollup that still
+// satisfies the query's step.
 func defaultOTelRollups() []Rollup {
 	return []Rollup{
 		{

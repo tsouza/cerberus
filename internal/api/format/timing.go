@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// msEpochFloor / nsEpochFloor split an integer Unix timestamp by scale:
+// seconds stay below 1e12 (year 33658+), milliseconds below 1e15, and
+// nanoseconds at or above it.
+const (
+	msEpochFloor = 1_000_000_000_000
+	nsEpochFloor = 1_000_000_000_000_000
+)
+
 // ParseDuration parses a Prom / Loki style step / range duration.
 // Accepts plain floats (interpreted as seconds) or Go-style durations
 // like "30s", "5m", "1h". Empty input is an error so callers can
@@ -18,6 +26,26 @@ func ParseDuration(raw string) (time.Duration, error) {
 		return time.Duration(f * float64(time.Second)), nil
 	}
 	return time.ParseDuration(raw)
+}
+
+// MinPositiveDuration returns the smaller of a and b, treating a
+// non-positive value as "unbounded" (so it never wins the min). When
+// both are non-positive the result is 0 (no cap). This is the
+// effective-timeout rule the Prom and Loki heads share, and mirrors
+// Prometheus's own: the engine uses the smaller of the configured query
+// timeout and the per-request ?timeout=, and a disabled (zero) cap on
+// either side does not clamp the other.
+func MinPositiveDuration(a, b time.Duration) time.Duration {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
 }
 
 // ParseTimeProm parses a Prometheus-API time parameter — Unix-seconds
@@ -37,7 +65,7 @@ func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 	if raw == "" {
 		return def, nil
 	}
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n >= 1_000_000_000_000 {
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n >= msEpochFloor {
 		// >= 1e12 ⇒ milliseconds. A seconds value this large would be
 		// year ~33658, which no real client sends deliberately.
 		return time.UnixMilli(n).UTC(), nil
@@ -77,10 +105,10 @@ func ParseTimeLoki(raw string, def time.Time) (time.Time, error) {
 	}
 	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
 		switch {
-		case n >= 1_000_000_000_000_000:
+		case n >= nsEpochFloor:
 			// >= 1e15 ⇒ nanoseconds (logcli convention).
 			return time.Unix(0, n).UTC(), nil
-		case n >= 1_000_000_000_000:
+		case n >= msEpochFloor:
 			// 1e12..1e15 ⇒ milliseconds (Grafana resources proxy).
 			return time.UnixMilli(n).UTC(), nil
 		}

@@ -27,13 +27,13 @@ func TestMain(m *testing.M) {
 	)
 }
 
-// TestDeadlockHammer is the required deadlock-hammer stress lane (docs
-// §Parallel #3 / #10): 64 concurrent routed Execute calls against a fake
-// CursorQuerier + a Gate sized 32, PLUS 64 concurrent route-A gate
-// acquisitions contending for the same gate. Asserts zero deadlock (the
-// whole run completes within a generous bound) and that the gate/2 progress
-// guarantee holds — routed requests cap at gate/2 slots each so the pool
-// never wedges.
+// TestDeadlockHammer is the required deadlock-hammer stress lane
+// (docs/solver.md §"Execution and cursor model"): 64 concurrent routed
+// Execute calls against a fake CursorQuerier + a Gate sized 32, PLUS 64
+// concurrent route-A gate acquisitions contending for the same gate.
+// Asserts zero deadlock (the whole run completes within a generous bound)
+// and that the gate/2 progress guarantee holds — routed requests cap at
+// gate/2 slots each so the pool never wedges.
 func TestDeadlockHammer(t *testing.T) {
 	const gateCap = 32
 	gate := semaphore.NewWeighted(gateCap)
@@ -116,7 +116,7 @@ func TestDeadlockHammer(t *testing.T) {
 	}
 }
 
-// TestMixedLoadStress is the required mixed-load pin (docs §Parallel #10):
+// TestMixedLoadStress is the required mixed-load pin (docs/solver.md):
 // a smaller gate (8) with routed + route-A contention, plus a slice of
 // requests whose admit top-up is denied (degrade path) and a slice whose
 // breaker is open (fail-fast). Asserts every request terminates with a

@@ -144,7 +144,8 @@ func waitReady(ctx context.Context, conn driver.Conn, logger *slog.Logger) error
 // the target database, so unqualified table names suffice.
 func insertFixture(ctx context.Context, conn driver.Conn) error {
 	for _, s := range fixtureInserts {
-		if err := conn.Exec(ctx, s.sql,
+		if err := conn.Exec(
+			ctx, s.sql,
 			clickhouse.Named("anchor", anchor),
 			clickhouse.Named("steps", uint64(fixtureSteps)),
 		); err != nil {

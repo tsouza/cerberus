@@ -118,19 +118,20 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 	return n, false
 }
 
-// foldExprSemantic recursively reduces pure-literal Binary subtrees
-// (both sides LitInt or both LitFloat) — the semantic flavour. It does
-// NOT apply boolean identity rules; those are the heuristic's job.
-func foldExprSemantic(e chplan.Expr) (chplan.Expr, bool) {
+// foldExprWith recursively rewrites e, applying foldBinary at every
+// Binary node after that node's children have been folded. The two
+// flavours (semantic literal arithmetic, heuristic boolean identities)
+// differ only in that per-Binary function.
+func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, bool)) (chplan.Expr, bool) {
 	switch v := e.(type) {
 	case *chplan.Binary:
-		left, lc := foldExprSemantic(v.Left)
-		right, rc := foldExprSemantic(v.Right)
+		left, lc := foldExprWith(v.Left, foldBinary)
+		right, rc := foldExprWith(v.Right, foldBinary)
 		current := v
 		if lc || rc {
 			current = &chplan.Binary{Op: v.Op, Left: left, Right: right}
 		}
-		folded, fc := foldBinaryLiterals(current)
+		folded, fc := foldBinary(current)
 		if fc {
 			return folded, true
 		}
@@ -139,8 +140,8 @@ func foldExprSemantic(e chplan.Expr) (chplan.Expr, bool) {
 		}
 		return v, false
 	case *chplan.MapAccess:
-		nm, mc := foldExprSemantic(v.Map)
-		nk, kc := foldExprSemantic(v.Key)
+		nm, mc := foldExprWith(v.Map, foldBinary)
+		nk, kc := foldExprWith(v.Key, foldBinary)
 		if !mc && !kc {
 			return v, false
 		}
@@ -149,7 +150,7 @@ func foldExprSemantic(e chplan.Expr) (chplan.Expr, bool) {
 		newArgs := make([]chplan.Expr, len(v.Args))
 		anyChange := false
 		for i, a := range v.Args {
-			na, ch := foldExprSemantic(a)
+			na, ch := foldExprWith(a, foldBinary)
 			newArgs[i] = na
 			if ch {
 				anyChange = true
@@ -163,50 +164,19 @@ func foldExprSemantic(e chplan.Expr) (chplan.Expr, bool) {
 	return e, false
 }
 
+// foldExprSemantic recursively reduces pure-literal Binary subtrees
+// (both sides LitInt or both LitFloat) — the semantic flavour. It does
+// NOT apply boolean identity rules; those are the heuristic's job.
+func foldExprSemantic(e chplan.Expr) (chplan.Expr, bool) {
+	return foldExprWith(e, foldBinaryLiterals)
+}
+
 // foldExprHeuristic recursively applies boolean algebraic identities
 // at every Binary — the heuristic flavour. It does NOT touch
 // pure-literal arithmetic; the semantic pass has already canonicalised
 // those.
 func foldExprHeuristic(e chplan.Expr) (chplan.Expr, bool) {
-	switch v := e.(type) {
-	case *chplan.Binary:
-		left, lc := foldExprHeuristic(v.Left)
-		right, rc := foldExprHeuristic(v.Right)
-		current := v
-		if lc || rc {
-			current = &chplan.Binary{Op: v.Op, Left: left, Right: right}
-		}
-		folded, fc := foldBinaryBoolIdentity(current)
-		if fc {
-			return folded, true
-		}
-		if lc || rc {
-			return current, true
-		}
-		return v, false
-	case *chplan.MapAccess:
-		nm, mc := foldExprHeuristic(v.Map)
-		nk, kc := foldExprHeuristic(v.Key)
-		if !mc && !kc {
-			return v, false
-		}
-		return &chplan.MapAccess{Map: nm, Key: nk}, true
-	case *chplan.FuncCall:
-		newArgs := make([]chplan.Expr, len(v.Args))
-		anyChange := false
-		for i, a := range v.Args {
-			na, ch := foldExprHeuristic(a)
-			newArgs[i] = na
-			if ch {
-				anyChange = true
-			}
-		}
-		if !anyChange {
-			return v, false
-		}
-		return &chplan.FuncCall{Name: v.Name, Args: newArgs}, true
-	}
-	return e, false
+	return foldExprWith(e, foldBinaryBoolIdentity)
 }
 
 // foldBinaryLiterals attempts a pure-literal numeric / comparison fold
