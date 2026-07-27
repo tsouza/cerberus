@@ -157,7 +157,7 @@ gh attestation verify cerberus_*_linux_amd64.tar.gz --owner tsouza --repo cerber
 
 The same binary is a Homebrew formula (macOS and Linuxbrew), which is the
 quickest way to get the `cerberus migrate` CLI onto the machine holding your
-rules and dashboards — see [migrating to cerberus](docs/migration.md#install-the-binary):
+rules and dashboards — see [migrating to cerberus](docs/migration.md#step-1-install-the-binary):
 
 ```sh
 brew install tsouza/tap/cerberus

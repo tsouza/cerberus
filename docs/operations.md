@@ -1126,7 +1126,7 @@ brew install tsouza/tap/cerberus
 That is also the shortest way to get the `cerberus migrate` CLI onto the
 machine that holds an operator's rules and dashboards, so the migration
 playbook points at it as the default install path — see
-[getting the `cerberus` binary](migration.md#install-the-binary).
+[getting the `cerberus` binary](migration.md#step-1-install-the-binary).
 
 This is wired via the goreleaser `brews:` block (a Homebrew *formula*, not a
 cask, so it installs on Linuxbrew as well as macOS). `skip_upload: auto` means
