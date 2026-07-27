@@ -18,8 +18,8 @@ cerberus --version
 
 Put it on the machine that holds your rule YAML and exported dashboard JSON —
 a laptop or a jump host, not the cluster. The tool reads those files off local
-disk and writes its artifacts back beside them, and everything except `verify`,
-`inventory` and `rulegraph` runs fully offline.
+disk and writes its artifacts back beside them, and everything except `verify`
+and `inventory` runs fully offline.
 
 Only stable releases publish a formula, so `brew` never hands you a prerelease.
 If you would rather not use Homebrew, the same binary ships as a
@@ -62,6 +62,112 @@ panels — rather than around `prometheus.yml`. A config file cannot tell you
 whether a query translates cleanly or falls over on cardinality. Only the
 queries and the live data can.
 
+## Configure it
+
+There is **one** configuration surface, and it is the same one the cerberus
+server reads: `CERBERUS_*` environment variables. No migration-specific config
+file, no `--config` flag. Whatever the environment leaves unset falls back to an
+optional `cerberus.yaml` (working directory first, then `/etc/cerberus/`), then
+to a built-in default. `cerberus config-docs` prints the whole surface from the
+binary itself; [`docs/configuration.md`](configuration.md) is the same list in
+prose.
+
+### None of it points the tool at ClickHouse
+
+That surprises people, so it is worth being blunt: **no `migrate` subcommand
+ever connects to ClickHouse.** `schema` renders DDL to stdout for *you* to
+apply, everything else works off local files, and the two commands that do open
+a socket talk to your existing Prometheus / Loki / Tempo — never to the
+database.
+
+| Command     | Opens a connection to                            | Reads from your environment                                |
+| ----------- | ------------------------------------------------ | ---------------------------------------------------------- |
+| `harvest`   | nothing                                          | nothing                                                    |
+| `classify`  | nothing                                          | the query budget, so previews run under production rules   |
+| `explain`   | nothing                                          | the query budget, plus `CERBERUS_SCHEMA_*` table names     |
+| `rulegraph` | nothing                                          | nothing                                                    |
+| `schema`    | nothing — it prints DDL, you pipe it             | `CERBERUS_CH_DATABASE` and `CERBERUS_SCHEMA_*`             |
+| `inventory` | your live Prometheus (and Loki / Tempo if asked) | `CERBERUS_INVENTORY_*`                                     |
+| `verify`    | both backends, one pair per head                 | `CERBERUS_VERIFY_*`                                        |
+| `gate`      | nothing                                          | nothing                                                    |
+
+So the whole assess stage — `harvest`, `classify`, `rulegraph` — needs **no
+configuration at all**. Run it on a laptop with the wifi off. The three stages
+that do need something are below, in the order you will hit them.
+
+### `schema` — the shape of your tables
+
+`migrate schema` renders exactly the DDL your cerberus server would apply at
+startup, from the same environment. Give it the same values you intend to give
+the server, or the tables you create will not be the tables it looks for:
+
+```sh
+export CERBERUS_CH_DATABASE=otel           # server default is "default"
+export CERBERUS_SCHEMA_CLUSTER=my_cluster  # only if you run ON CLUSTER DDL
+cerberus migrate schema
+```
+
+It loads and validates the entire config surface, so a typo anywhere in your
+`CERBERUS_*` set aborts it with the same error it would abort the server with —
+which makes this a cheap way to sanity-check that set before you deploy. The
+connection knobs (`CERBERUS_CH_ADDR`, username, password) play no part: nothing
+connects, and *where* the DDL lands is decided entirely by the
+`clickhouse-client` invocation you pipe into.
+
+### `inventory` — your live Prometheus
+
+A read against `/api/v1/status/tsdb` on the Prometheus you are migrating away
+from. Point it there:
+
+```sh
+export CERBERUS_INVENTORY_SOURCE=http://prometheus.internal:9090
+export CERBERUS_INVENTORY_WINDOW=24h
+# only if you also harvested Loki or Tempo queries
+export CERBERUS_INVENTORY_LOKI_SOURCE=http://loki.internal:3100
+export CERBERUS_INVENTORY_LOKI_SELECTORS='{job="app"}'
+export CERBERUS_INVENTORY_TEMPO_SOURCE=http://tempo.internal:3200
+```
+
+### `verify` — two URLs per head
+
+The only stage with real setup, and the reason for the [prerequisites
+above](#what-you-need-in-place). For **each head your corpus contains**, `verify`
+needs a pair: the reference backend, and the cerberus meant to replace it.
+
+| Head    | Reference backend           | Cerberus                         |
+| ------- | --------------------------- | -------------------------------- |
+| `prom`  | `CERBERUS_VERIFY_REF`       | `CERBERUS_VERIFY_CERBERUS`       |
+| `loki`  | `CERBERUS_VERIFY_REF_LOKI`  | `CERBERUS_VERIFY_CERBERUS_LOKI`  |
+| `tempo` | `CERBERUS_VERIFY_REF_TEMPO` | `CERBERUS_VERIFY_CERBERUS_TEMPO` |
+
+The three cerberus URLs are normally the *same* address — one process serves all
+three APIs. Configure only the heads you harvested; half a pair is a usage
+error, never a silently skipped head. Bearer tokens and multi-tenant
+`X-Scope-OrgID` values have their own variables — see the
+[reference](migration-reference.md#verify-backends).
+
+By this point cerberus itself has to be deployed, configured against ClickHouse
+and serving. That is a *server* configuration job, and it is
+[`docs/operations.md`](operations.md)'s subject, not this tool's.
+
+### Flags or env, your choice
+
+Every variable above has an equivalent flag, and the flag wins. Use env when you
+are scripting the run, flags when you are exploring — the transcript below uses
+flags so each command reads on its own. The exception is the output flags
+(`--json`, `--out`, `--top`): those have no env fallback and stay on the command
+line.
+
+### What has to be standing, and when
+
+| Before you run | This must already exist                                                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| assess         | your rule YAML and exported dashboard JSON, on local disk                                                                               |
+| `inventory`    | the Prometheus you are migrating away from — still running                                                                              |
+| `schema`       | a ClickHouse you can reach with `clickhouse-client`                                                                                     |
+| `verify`       | ClickHouse filling via the OTel Collector, **and** cerberus deployed against it, **and** dual-write open long enough to cover `--start` |
+| `gate`         | the JSON files the stages above wrote                                                                                                   |
+
 ## The whole journey, as one script
 
 ```text
@@ -72,6 +178,8 @@ Here it is end to end. The rest of this guide is one section per block.
 
 ```bash
 # ── ASSESS ── what have you got, and how much of it lands cleanly? ─────
+# needs: your files on disk. No config, no network — except `inventory`,
+# which reads the Prometheus you are leaving.
 cerberus migrate harvest \
   --rules './prometheus/rules/*.yml' \
   --loki-rules './loki/rules/*.yml' \
@@ -91,9 +199,13 @@ cerberus migrate inventory \
   --top 50 --json --out inventory.json
 
 # ── VALIDATE ── create the tables cerberus expects ────────────────────
+# needs: CERBERUS_CH_DATABASE / CERBERUS_SCHEMA_* set to whatever you will
+# give the server, and a ClickHouse you can reach with clickhouse-client.
 cerberus migrate schema | clickhouse-client -h clickhouse.internal --multiquery
 
 # ── VERIFY ── replay every query against both backends and diff ───────
+# needs: cerberus deployed against ClickHouse and serving, both backends
+# reachable, and dual-write open across the whole --start..--end window.
 cerberus migrate verify \
   --corpus corpus.json \
   --ref http://prometheus.internal:9090 \
@@ -107,6 +219,7 @@ cerberus migrate verify \
   --report verify-diagnostics.json
 
 # ── DECIDE ── fold it all into one go/no-go. Exit 0 = cleared ─────────
+# needs: the four JSON files above. Offline again.
 cerberus migrate gate \
   --verify verify.json \
   --classify classify.json \
@@ -114,9 +227,11 @@ cerberus migrate gate \
   --inventory inventory.json
 ```
 
-The first two blocks run today, before cerberus is even provisioned. `verify`
-and `gate` need the dual-write window live. The last two stages are operator
-actions, not commands — the tool stops at the go/no-go and hands you the flip.
+The first two blocks run today, before cerberus is even provisioned — one needs
+nothing but your files, the other a reachable ClickHouse. `verify` is the step
+that needs the full stack standing. `gate` is offline again, and only reads what
+the others wrote. The last two stages are operator actions, not commands — the
+tool stops at the go/no-go and hands you the flip.
 
 For every flag, every exit code and the exact rules each gate applies, see the
 [migration reference](migration-reference.md).
@@ -173,7 +288,8 @@ Over the dual-write window, `verify` replays every corpus query against the
 reference backend **for its own head** — PromQL against Prometheus, LogQL
 against Loki, TraceQL against Tempo — and against cerberus over the same
 window, then diffs the two results. You configure one backend pair per head
-your corpus actually contains; supplying half a pair is a usage error, never a
+your corpus actually contains (see [Configure it](#configure-it) for the flags
+and their env equivalents); supplying half a pair is a usage error, never a
 silently skipped head.
 
 Each query lands as `match`, `diverge`, `undecidable`, `unsupported` or
