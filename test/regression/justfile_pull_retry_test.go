@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The v1.13.0 release run died on this line, mid-publish:
@@ -205,6 +208,102 @@ func TestIntegrationImagePinsMatchTheJustfile(t *testing.T) {
 				"integration lane an image download it never uses.", img)
 		}
 	}
+}
+
+// TestComposePrePullSkipsBuildableImages pins that the compose pre-pull decides
+// what is pullable from the compose model, not from what the daemon happens to
+// hold.
+//
+// The first cut of `_compose-pull-retry` pulled every image `config --images`
+// listed that `docker image inspect` could not find locally. Tier-2's
+// `dead-end-receiver` is built by compose during `up`, so at pre-pull time it is
+// legitimately absent — and `cerberus-migration-tier2:dead-end-receiver` exists
+// in no registry, so the pull failed five times and took the lane with it (run
+// 30281594098). Absence from the daemon means "not built yet" just as often as
+// it means "not fetched yet"; only the `build:` sections distinguish them, which
+// is what compose's own `--ignore-buildable` reads.
+func TestComposePrePullSkipsBuildableImages(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+
+	const prePullRecipe = "_compose-pull-retry"
+	body, ok := justRecipes(t, string(buf))[prePullRecipe]
+	if !ok {
+		t.Fatalf("no %q recipe in the Justfile — the guard is scanning for a shape that no longer exists", prePullRecipe)
+	}
+
+	buildable := buildableComposeImages(t, "../../test/e2e/migration")
+	if len(buildable) == 0 {
+		t.Fatalf("no compose service under test/e2e/migration is built rather than fetched — " +
+			"the guard is scanning for a shape that no longer exists")
+	}
+
+	if !strings.Contains(body, "--ignore-buildable") {
+		t.Errorf("%s pulls without `--ignore-buildable`, but these compose services are built rather than fetched: %s.\n"+
+			"Their images exist in no registry, so pulling them fails the lane. Let compose read its own `build:` "+
+			"sections instead of inferring pullability from `docker image inspect`.", prePullRecipe, strings.Join(buildable, ", "))
+	}
+	if strings.Contains(body, "docker image inspect") {
+		t.Errorf("%s gates the pull on `docker image inspect`. Absence from the local daemon means \"not built yet\" "+
+			"as often as \"not fetched yet\" — %s are built during `up` and would be pulled from a registry that "+
+			"does not serve them.", prePullRecipe, strings.Join(buildable, ", "))
+	}
+}
+
+// buildableComposeImages returns `<file>: <service>` for every compose service
+// under root that compose builds rather than fetches.
+func buildableComposeImages(t *testing.T, root string) []string {
+	t.Helper()
+
+	type service struct {
+		Build      yaml.Node `yaml:"build"`
+		PullPolicy string    `yaml:"pull_policy"`
+	}
+	var found []string
+	files := 0
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		base := filepath.Base(path)
+		if d.IsDir() || !strings.HasPrefix(base, "docker-compose") {
+			return nil
+		}
+		if ext := filepath.Ext(base); ext != ".yml" && ext != ".yaml" {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var doc struct {
+			Services map[string]service `yaml:"services"`
+		}
+		if err := yaml.Unmarshal(src, &doc); err != nil {
+			return err
+		}
+		files++
+		for name, svc := range doc.Services {
+			if !svc.Build.IsZero() || svc.PullPolicy == "build" || svc.PullPolicy == "never" {
+				found = append(found, base+":"+name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	if files == 0 {
+		t.Fatalf("no compose file under %s — the guard is scanning for a shape that no longer exists", root)
+	}
+
+	sort.Strings(found)
+	return found
 }
 
 // TestJustfileNoUnretriedDockerPull pins that `docker pull` appears only inside
