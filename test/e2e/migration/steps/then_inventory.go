@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 
 	"github.com/cucumber/godog"
@@ -115,7 +116,10 @@ func (w *World) givenNotFoundSource() error {
 }
 
 // whenInventoryReferencePrometheus drives the real CLI against the live
-// reference Prometheus and decodes its JSON inventory.
+// reference Prometheus and decodes its JSON inventory. The source reaches the
+// command through a cerberus.yaml, the way an operator following
+// docs/migration.md supplies it; --top and the output flags stay on the
+// command line because they are per-run choices with no setting behind them.
 func (w *World) whenInventoryReferencePrometheus() error {
 	if !w.liveSet {
 		return fmt.Errorf("migration harness: the tier-1 stack has not been established; the scenario must establish it first")
@@ -124,12 +128,14 @@ func (w *World) whenInventoryReferencePrometheus() error {
 	if err != nil {
 		return err
 	}
-	out, err := w.workPath(archetype, inventoryReportName)
+	dir, err := w.workDir(archetype)
 	if err != nil {
 		return err
 	}
-	res, err := w.runLive(nil, "migrate", "inventory",
-		"--source", w.live.PromURL, "--top", strconv.Itoa(inventoryTopN), "--json", "--out", out)
+	out := filepath.Join(dir, inventoryReportName)
+	res, err := w.runLiveConfigFile(dir,
+		[]lib.Setting{{Key: "CERBERUS_INVENTORY_SOURCE", Value: w.live.PromURL}},
+		"migrate", "inventory", "--top", strconv.Itoa(inventoryTopN), "--json", "--out", out)
 	if err != nil {
 		return err
 	}
@@ -154,6 +160,12 @@ func (w *World) whenInventoryReferencePrometheus() error {
 // server the Given established, then tears the probe server down — the
 // request has already completed by the time this returns, so nothing later
 // in the scenario needs it alive.
+//
+// This one passes --source on the command line, and is the harness's live
+// coverage of that surface: the probe server's URL is minted per run on an
+// ephemeral port, which is exactly the case a flag exists for, so the split is
+// the operator's own — a stable backend belongs in the config file, a one-off
+// override does not.
 func (w *World) whenInventoryNotFoundSource() error {
 	if w.inventory.notFound == nil {
 		return fmt.Errorf("migration harness: no not-found source established for this scenario")

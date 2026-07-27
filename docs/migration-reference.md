@@ -26,7 +26,7 @@ subcommands.
 The legacy `migrate --schema` root flag is now the `schema` subcommand, and the
 legacy `migrate --rules` root shorthand folded into `explain --rules`.
 
-### Environment fallbacks
+### Setting fallbacks
 
 The offline preview commands (`explain`, `classify`) load `config.FromEnv()`, so
 the preview runs under the **same per-query sample budget** the production
@@ -37,7 +37,15 @@ clean.
 fallbacks for their connection, window, credential and (for `verify`)
 `--report` flags — `--report` has a `CERBERUS_VERIFY_REPORT` fallback too — but
 **not** the stdout output flags (`--json` / `--out`, and for inventory not
-`--top`). The same run can therefore be driven from flags or from env.
+`--top`).
+
+Those fallbacks resolve exactly like every other cerberus setting: environment
+variable first, then a `cerberus.yaml` in the working directory or
+`/etc/cerberus/`, with an explicit flag outranking both. One file therefore
+configures both the migration and the gateway it migrates to. The repeatable
+`--loki-selector` takes a YAML sequence, one whole selector per entry — or, from
+the environment, one selector per line; neither form comma-splits, because a
+stream selector contains commas of its own.
 
 ## `verify` backends
 

@@ -190,6 +190,75 @@ func TestFromEnv_ViperEnvBeatsConfigFile(t *testing.T) {
 	}
 }
 
+// TestFromEnv_ViperConfigFileNativeTypes asserts a cerberus.yaml written
+// the way YAML invites — an unquoted false, a bare integer, a duration
+// that can only be a string — resolves to the same typed value a quoted
+// one does. An operator hand-writing the file has no reason to quote a
+// boolean, and the env path never exercises this: every environment
+// variable arrives as a string, so a decoder that only handled strings
+// would pass every other test here and then silently mis-read the one
+// file most deployments configure the gateway from.
+func TestFromEnv_ViperConfigFileNativeTypes(t *testing.T) {
+	clearAllEnv(t)
+	dir := t.TempDir()
+	yaml := "" +
+		"CERBERUS_AUTO_CREATE_SCHEMA: false\n" +
+		"CERBERUS_CH_MAX_OPEN_CONNS: 42\n" +
+		"CERBERUS_QUERY_MAX_SAMPLES: 5000000\n" +
+		"CERBERUS_CH_DIAL_TIMEOUT: 10s\n" +
+		"CERBERUS_CH_KEEPALIVE_ENABLED: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "cerberus.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write cerberus.yaml: %v", err)
+	}
+	chdir(t, dir)
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.AutoCreateSchema {
+		t.Errorf("AutoCreateSchema = true; want false (unquoted YAML bool honoured)")
+	}
+	if !cfg.ClickHouse.KeepAliveEnabled {
+		t.Errorf("KeepAliveEnabled = false; want true (unquoted YAML bool honoured)")
+	}
+	if cfg.ClickHouse.MaxOpenConns != 42 {
+		t.Errorf("MaxOpenConns = %d; want 42 (bare YAML integer honoured)", cfg.ClickHouse.MaxOpenConns)
+	}
+	if cfg.ClickHouse.MaxQuerySamples != 5_000_000 {
+		t.Errorf("MaxQuerySamples = %d; want 5000000 (bare YAML integer honoured)", cfg.ClickHouse.MaxQuerySamples)
+	}
+	if cfg.ClickHouse.DialTimeout != 10*time.Second {
+		t.Errorf("DialTimeout = %v; want 10s (duration string from the file honoured)", cfg.ClickHouse.DialTimeout)
+	}
+}
+
+// TestFromEnv_ViperConfigFileFalseBeatsTrueDefault is the case an
+// unquoted-bool bug hides behind: a file setting that agrees with the
+// built-in default proves nothing, so this one turns a default-true
+// setting off from the file. If the decoder dropped the value, the
+// default would sail through and the assertion would still read "true".
+func TestFromEnv_ViperConfigFileFalseBeatsTrueDefault(t *testing.T) {
+	clearAllEnv(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "cerberus.yaml"),
+		[]byte("CERBERUS_CH_KEEPALIVE_ENABLED: false\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write cerberus.yaml: %v", err)
+	}
+	chdir(t, dir)
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ClickHouse.KeepAliveEnabled {
+		t.Errorf("KeepAliveEnabled = true; want false (the file must be able to turn a default-on setting off)")
+	}
+}
+
 // clearAllEnv unsets every CERBERUS_* var the loader reads so a test
 // observes pristine defaults regardless of the ambient environment.
 func clearAllEnv(t *testing.T) {

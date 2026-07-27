@@ -781,6 +781,37 @@ because the assertions read the emitted artifacts as *typed structs* —
 `internal/migrateverify.Report` — rather than re-declaring those schemas in a
 second language where they would drift.
 
+Every command a scenario drives is a real child process whose environment is
+replaced wholesale (`lib.OfflineEnv` / `lib.LiveEnv`), so a result cannot depend
+on a `CERBERUS_*` variable the developer happens to have exported. Where a
+setting exists for a value — the `verify` corpus, backends and window, the
+`inventory` source — the harness writes it into a `cerberus.yaml` in the
+scenario's workspace and runs the command from there, because that is the shape
+[`migration.md`](migration.md) puts in front of an operator. Only per-run output
+choices (`--json`, `--out`, `--top`) stay on the command line, alongside the
+one-off `--source` MIG-02's fault case aims at a probe server minted on an
+ephemeral port. `lib.RequireSettingsFromFile` reads the flag-to-setting mapping
+back off the binary's own `--help` and rejects a command line carrying a value
+the file should have supplied, so the covered path cannot quietly revert to the
+one almost nobody takes.
+
+The gateway those scenarios query is configured the same way. Tier-1's
+`cerberus` service mounts
+[`tiers/tier1-dual/cerberus.yaml`](../test/e2e/migration/tiers/tier1-dual/cerberus.yaml)
+read-only at `/etc/cerberus/cerberus.yaml` — one of the two paths cerberus
+discovers a config file on — and its compose `environment:` carries exactly one
+entry, `CERBERUS_CH_PASSWORD`. The credential stays out of a checked-in file,
+and keeping it there also proves the two sources compose rather than one
+shadowing the other: the gateway only reaches ClickHouse if it read the address
+from the file and the password from the environment. This is also the only
+place in the tree where a real cerberus process boots from a file, so the
+unquoted `false` and bare integer that file carries exercise typed YAML
+decoding end to end rather than only in unit tests.
+[`migration_tier1_test.go`](../test/regression/migration_tier1_test.go) pins the
+mount, runs the file through the gateway's own loader and asserts every value
+lands where the stack expects; without that, dropping the mount would leave
+cerberus on built-in defaults while every pin that reads the file still passed.
+
 The feature files ARE the manifest: there is no separate scenario registry to
 keep in step with them. Metadata rides on tags — `@MIG-16` binds the story,
 `@tier0`/`@tier1`/`@tier2` the tier(s), `@archetype:<name>` the archetypes. A

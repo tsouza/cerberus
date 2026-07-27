@@ -179,38 +179,22 @@ services:
     build:
       context: ../../../../..
       dockerfile: Dockerfile.local
+    volumes:
+      # Every non-credential setting lives in this file, mounted where cerberus
+      # discovers it, because a config file is what a real deployment hands the
+      # gateway — docs/migration.md hands the reader one. Driving the service
+      # from `environment:` instead would leave the path most operators take
+      # untested by the only lane that runs a real gateway. The file carries its
+      # own rationale for each value; migration_tier1_test.go pins this mount so
+      # it cannot be dropped and leave the settings silently on defaults.
+      - ./cerberus.yaml:/etc/cerberus/cerberus.yaml:ro
     environment:
-      CERBERUS_HTTP_ADDR: ":27080"
-      CERBERUS_CH_ADDR: "clickhouse:9000"
-      CERBERUS_CH_DATABASE: "otel"
-      CERBERUS_CH_USERNAME: "cerberus"
+      # The one setting that stays in the environment. A credential does not
+      # belong in a file checked into a repository, and keeping it here also
+      # proves the two sources compose rather than one shadowing the other: the
+      # gateway only reaches ClickHouse if it read the mounted file for the
+      # address and this variable for the password.
       CERBERUS_CH_PASSWORD: "cerberus"
-      CERBERUS_CH_DIAL_TIMEOUT: "10s"
-      # The collector's clickhouseexporter is the sole schema authority here.
-      # cerberus creating its own tables would mint cerberus-named tables and
-      # mask a real drift between the exporter's names and cerberus's read-side
-      # defaults; with auto-create off, /readyz stays 503 until the exporter
-      # has provisioned the schema cerberus expects.
-      CERBERUS_AUTO_CREATE_SCHEMA: "false"
-      # No CERBERUS_QUERY_TIMEOUT here, deliberately: cerberus keeps its
-      # two-minute default for every scenario on this shared service. MIG-08
-      # needs a much shorter per-query cap to prove a paused ClickHouse is
-      # bounded by the GATEWAY rather than by its own HTTP client, and it gets
-      # one by sending the standard Prometheus `?timeout=` parameter on its
-      # own four requests (faultGatewayQueryTimeout in
-      # steps/then_fault_injection.go), which cerberus min's against this
-      # default. Setting the cap here instead would put every @tier1 query
-      # under it, so one slow query on a cold runner would surface as a 503 in
-      # an unrelated scenario — and it would duplicate the number, leaving a
-      # copy that can drift.
-
-      # The per-query sample budget, pinned to the product default rather than
-      # left implicit. Under MIG-15's tenancy model — one cerberus per tenant,
-      # each bound to its own CH database — this IS the per-tenant read budget
-      # the story asserts is enforced, and that scenario derives its
-      # over-budget subquery grid from this exact number.
-      # test/regression/migration_tier1_test.go holds the two equal.
-      CERBERUS_QUERY_MAX_SAMPLES: "5000000"
     depends_on:
       clickhouse:
         condition: service_healthy

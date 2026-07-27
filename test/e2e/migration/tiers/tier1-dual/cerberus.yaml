@@ -1,0 +1,54 @@
+# The gateway's configuration for the Tier-1 dual stack, in the file an
+# operator actually writes.
+#
+# docs/migration.md hands a reader a cerberus.yaml and tells them to drop it
+# beside the binary or in /etc/cerberus; the compose service mounts this one at
+# /etc/cerberus/cerberus.yaml, so the stack every @tier1 scenario queries is
+# configured through the same path a deployment is. Configuring it by exporting
+# a dozen variables into the service definition would have proven a path almost
+# nobody takes, and would have left the file's own decoding — an unquoted
+# boolean, a bare integer — covered only by unit tests.
+#
+# One setting is deliberately NOT here: CERBERUS_CH_PASSWORD stays in the
+# compose service's `environment:`, both because a credential belongs in the
+# process environment rather than in a file checked into a repository, and
+# because keeping it there proves the two sources compose — the gateway reads
+# this file AND its environment, rather than one shadowing the other.
+#
+# test/regression/migration_tier1_test.go pins the mount and the two values
+# below that other tests depend on, so this file cannot go inert.
+
+CERBERUS_HTTP_ADDR: ":27080"
+CERBERUS_CH_ADDR: "clickhouse:9000"
+CERBERUS_CH_DATABASE: "otel"
+CERBERUS_CH_USERNAME: "cerberus"
+CERBERUS_CH_DIAL_TIMEOUT: "10s"
+
+# The collector's clickhouseexporter is the sole schema authority here.
+# cerberus creating its own tables would mint cerberus-named tables and mask a
+# real drift between the exporter's names and cerberus's read-side defaults;
+# with auto-create off, /readyz stays 503 until the exporter has provisioned the
+# schema cerberus expects.
+#
+# Written as an unquoted YAML boolean, the way a hand-written file has it: the
+# environment path can only ever deliver the string "false", so this is the one
+# place the stack exercises a real typed value reaching the loader.
+CERBERUS_AUTO_CREATE_SCHEMA: false
+
+# No CERBERUS_QUERY_TIMEOUT here, deliberately: cerberus keeps its two-minute
+# default for every scenario on this shared service. MIG-08 needs a much shorter
+# per-query cap to prove a paused ClickHouse is bounded by the GATEWAY rather
+# than by its own HTTP client, and it gets one by sending the standard
+# Prometheus `?timeout=` parameter on its own four requests
+# (faultGatewayQueryTimeout in steps/then_fault_injection.go), which cerberus
+# min's against this default. Setting the cap here instead would put every
+# @tier1 query under it, so one slow query on a cold runner would surface as a
+# 503 in an unrelated scenario — and it would duplicate the number, leaving a
+# copy that can drift.
+
+# The per-query sample budget, pinned to the product default rather than left
+# implicit. Under MIG-15's tenancy model — one cerberus per tenant, each bound
+# to its own CH database — this IS the per-tenant read budget the story asserts
+# is enforced, and that scenario derives its over-budget subquery grid from this
+# exact number. test/regression/migration_tier1_test.go holds the two equal.
+CERBERUS_QUERY_MAX_SAMPLES: 5000000

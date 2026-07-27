@@ -15,6 +15,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/tsouza/cerberus/internal/config"
+
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 	"github.com/tsouza/cerberus/test/e2e/migration/steps"
@@ -35,6 +37,160 @@ const (
 	tier1ComposeProject  = "cerberus-migration-tier1"
 	tier1CerberusService = "cerberus"
 )
+
+// The gateway under test is configured from a file, not from the compose
+// service's environment, because that is how a real deployment configures it —
+// and because the only lane that runs a real gateway is the only place the
+// file's own decoding is exercised end to end. The mount is pinned alongside
+// the values: drop it and the settings below stop applying while every
+// assertion that reads this file still passes.
+const (
+	tier1CerberusConfigPath  = tier1Dir + "/cerberus.yaml"
+	tier1CerberusConfigMount = "./cerberus.yaml:/etc/cerberus/cerberus.yaml:ro"
+)
+
+// readTier1CerberusConfig parses the mounted cerberus.yaml into the shape the
+// gateway's loader sees: values keep their YAML types, so an unquoted `false`
+// reads back as a bool rather than as the string the environment path would
+// have delivered.
+func readTier1CerberusConfig(t *testing.T) map[string]any {
+	t.Helper()
+	buf, err := os.ReadFile(tier1CerberusConfigPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", tier1CerberusConfigPath, err)
+	}
+	var out map[string]any
+	if err := yaml.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("parse %s: %v", tier1CerberusConfigPath, err)
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s is empty; the gateway would fall back to built-in defaults and this stack would "+
+			"prove nothing about the config-file path", tier1CerberusConfigPath)
+	}
+	return out
+}
+
+// TestMigrationTier1CerberusConfigFileLoads runs the mounted file through the
+// gateway's own loader and asserts every value arrives where the stack expects
+// it. The compose file can only say the bytes are mounted; a key the loader
+// does not recognise, or a YAML scalar it decodes differently than intended,
+// costs nothing at boot — cerberus starts happily on defaults — and surfaces
+// hours later as a tier-1 scenario querying the wrong database. It also pins
+// the composition the service depends on: the password comes from the
+// environment while everything else comes from the file, and neither source
+// erases the other.
+//
+// Not parallel: it changes the process's working directory and environment,
+// which is what "the gateway discovers the file the way the container does"
+// means here.
+func TestMigrationTier1CerberusConfigFileLoads(t *testing.T) {
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "CERBERUS_") {
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatalf("unset %s: %v", key, err)
+			}
+		}
+	}
+
+	src, err := os.ReadFile(tier1CerberusConfigPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", tier1CerberusConfigPath, err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cerberus.yaml"), src, 0o600); err != nil {
+		t.Fatalf("stage the config file: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	// The compose service's one environment setting, supplied the same way.
+	const password = "cerberus"
+	t.Setenv("CERBERUS_CH_PASSWORD", password)
+
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatalf("the gateway cannot load %s: %v", tier1CerberusConfigPath, err)
+	}
+	for _, tc := range []struct {
+		what      string
+		got, want any
+	}{
+		{"HTTP listen address", cfg.HTTPAddr, ":27080"},
+		{"ClickHouse address", cfg.ClickHouse.Addr, "clickhouse:9000"},
+		{"ClickHouse database", cfg.ClickHouse.Database, "otel"},
+		{"ClickHouse username", cfg.ClickHouse.Username, "cerberus"},
+		{"ClickHouse dial timeout", cfg.ClickHouse.DialTimeout, 10 * time.Second},
+		{"auto-create-schema", cfg.AutoCreateSchema, false},
+		{"per-query sample budget", int64(cfg.ClickHouse.MaxQuerySamples), int64(steps.Tier1QuerySampleBudget)},
+		{"ClickHouse password (from the environment)", cfg.ClickHouse.Password, password},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %#v, want %#v. The tier-1 gateway is configured from %s; a value the loader "+
+				"does not pick up leaves it on a default and no scenario says so.",
+				tc.what, tc.got, tc.want, tier1CerberusConfigPath)
+		}
+	}
+}
+
+// TestMigrationTier1CerberusReadsItsConfigFile pins the mount that makes every
+// other setting in cerberus.yaml take effect. Without it the gateway boots on
+// built-in defaults — a wrong ClickHouse address, auto-create back on — and
+// nothing about that failure is loud: the tests that read the file still find
+// the values they expect, in a file no container ever opened.
+func TestMigrationTier1CerberusReadsItsConfigFile(t *testing.T) {
+	t.Parallel()
+
+	cf := readCompose(t, tier1ComposePath)
+	cerb, ok := cf.Services[tier1CerberusService]
+	if !ok {
+		t.Fatalf("%s has no %q service", tier1ComposePath, tier1CerberusService)
+	}
+	var mounted bool
+	for _, v := range cerb.Volumes {
+		if v == tier1CerberusConfigMount {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("service %s does not mount %q. That mount is what makes %s take effect; without it the "+
+			"gateway runs on built-in defaults while every pin that reads the file still passes.",
+			tier1CerberusService, tier1CerberusConfigMount, tier1CerberusConfigPath)
+	}
+	if _, err := os.Stat(tier1CerberusConfigPath); err != nil {
+		t.Fatalf("the mounted %s does not resolve: %v. Docker would create an empty directory in its "+
+			"place and the gateway would boot unconfigured.", tier1CerberusConfigPath, err)
+	}
+
+	// The credential is the one setting that stays in the environment, and it
+	// has to stay there: it also proves the two sources compose rather than one
+	// shadowing the other, since the gateway only reaches ClickHouse if it read
+	// the address from the file and the password from here.
+	if got := cerb.Environment["CERBERUS_CH_PASSWORD"]; got == "" {
+		t.Fatalf("service %s no longer passes CERBERUS_CH_PASSWORD in its environment. Keeping the one "+
+			"credential there is what proves file and environment compose; moving it into %s would also "+
+			"put a password in a checked-in file.", tier1CerberusService, tier1CerberusConfigPath)
+	}
+	for key := range cerb.Environment {
+		if key == "CERBERUS_CH_PASSWORD" {
+			continue
+		}
+		t.Fatalf("service %s sets %s in its environment. Every non-credential setting belongs in %s, "+
+			"because a config file is the path a real deployment takes and this lane is the only one "+
+			"that proves it works.", tier1CerberusService, key, tier1CerberusConfigPath)
+	}
+}
 
 // The published-port band tier-1 owns. Every other compose stack in the tree
 // sits outside it; reusing one of their ports would silently cross-wire a
@@ -188,14 +344,15 @@ func TestMigrationTier1SchemaAuthority(t *testing.T) {
 		t.Fatalf("compose project name = %q, want %q (the Justfile recipes and any leftover-container "+
 			"cleanup key on it)", cf.Name, tier1ComposeProject)
 	}
-	cerb, ok := cf.Services[tier1CerberusService]
-	if !ok {
+	if _, ok := cf.Services[tier1CerberusService]; !ok {
 		t.Fatalf("%s has no %q service", tier1ComposePath, tier1CerberusService)
 	}
-	if got := cerb.Environment["CERBERUS_AUTO_CREATE_SCHEMA"]; got != "false" {
-		t.Fatalf("cerberus CERBERUS_AUTO_CREATE_SCHEMA = %q, want %q. The collector is the sole schema "+
-			"authority in this stack; cerberus creating its own tables would mask exporter/read-side "+
-			"name drift instead of holding /readyz at 503.", got, "false")
+	// Written as an unquoted YAML boolean, so this reads it back as one: the
+	// string "false" here would mean the file had drifted into env semantics.
+	if got := readTier1CerberusConfig(t)["CERBERUS_AUTO_CREATE_SCHEMA"]; got != false {
+		t.Fatalf("cerberus CERBERUS_AUTO_CREATE_SCHEMA = %#v in %s, want the boolean false. The collector "+
+			"is the sole schema authority in this stack; cerberus creating its own tables would mask "+
+			"exporter/read-side name drift instead of holding /readyz at 503.", got, tier1CerberusConfigPath)
 	}
 
 	collector, err := os.ReadFile(tier1CollectorPath)
@@ -1008,31 +1165,28 @@ func tier1JustVarLine(t *testing.T, justfile, name string) string {
 func TestMigrationTier1SampleBudgetIsPinned(t *testing.T) {
 	t.Parallel()
 
-	cf := readCompose(t, tier1ComposePath)
-	cerb, ok := cf.Services[tier1CerberusService]
+	raw, ok := readTier1CerberusConfig(t)[tier1SampleBudgetSetting]
 	if !ok {
-		t.Fatalf("%s has no %q service", tier1ComposePath, tier1CerberusService)
-	}
-	raw, ok := cerb.Environment[tier1SampleBudgetEnv]
-	if !ok {
-		t.Fatalf("%s's %s service does not pin %s. MIG-15 derives its over-budget subquery grid "+
+		t.Fatalf("%s does not pin %s. MIG-15 derives its over-budget subquery grid "+
 			"from steps.Tier1QuerySampleBudget; an implicit budget makes that derivation a guess.",
-			tier1ComposePath, tier1CerberusService, tier1SampleBudgetEnv)
+			tier1CerberusConfigPath, tier1SampleBudgetSetting)
 	}
-	got, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		t.Fatalf("%s's %s = %q, which is not an integer: %v", tier1ComposePath, tier1SampleBudgetEnv, raw, err)
+	// A bare YAML integer, the way a hand-written file has it — so this reads
+	// back as an int rather than as the string the environment path delivered.
+	got, ok := raw.(int)
+	if !ok {
+		t.Fatalf("%s's %s = %#v, which is not a YAML integer", tier1CerberusConfigPath, tier1SampleBudgetSetting, raw)
 	}
-	if got != steps.Tier1QuerySampleBudget {
+	if int64(got) != steps.Tier1QuerySampleBudget {
 		t.Fatalf("the tier-1 stack runs cerberus with %s=%d, but MIG-15 derives its over-budget grid "+
 			"from steps.Tier1QuerySampleBudget=%d. Move both together.",
-			tier1SampleBudgetEnv, got, steps.Tier1QuerySampleBudget)
+			tier1SampleBudgetSetting, got, steps.Tier1QuerySampleBudget)
 	}
 }
 
-// tier1SampleBudgetEnv is the per-query sample budget the tier-1 cerberus runs
-// under — MIG-15's per-tenant read budget, in that scenario's tenancy model.
-const tier1SampleBudgetEnv = "CERBERUS_QUERY_MAX_SAMPLES"
+// tier1SampleBudgetSetting is the per-query sample budget the tier-1 cerberus
+// runs under — MIG-15's per-tenant read budget, in that scenario's tenancy model.
+const tier1SampleBudgetSetting = "CERBERUS_QUERY_MAX_SAMPLES"
 
 // The build-once seam (Layer 14, D2): the migration lane runs the SAME three
 // tier jobs twice against a release commit — once proving the source tree, once
