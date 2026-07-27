@@ -299,3 +299,29 @@ func TestMigrationLaneIsCallableAndCoversTheReleaseBranches(t *testing.T) {
 			"quietly acquiring a second meaning", migrationWorkflowPath)
 	}
 }
+
+// The `release/*.x` ruleset ("release maintenance lines") denies `deletion` to
+// everyone but the admin RepositoryRole. `eol-retire` is fail-open by design —
+// a retirement hiccup must never fail a shipped release — so if its token loses
+// the admin bypass the job logs an ::error:: and still exits 0, the release
+// publishes green, and the EOL branch quietly survives. Nothing else in CI can
+// observe that: the job only ever runs on a real minor open, on main.
+//
+// RELEASE_PAT is the only token that carries the bypass (an admin-owned PAT
+// inherits the role; github-actions[bot] holds write and never admin). Pinning
+// the reference keeps the fallback from silently becoming the only path.
+func TestEOLRetireUsesTheTokenThatBypassesTheReleaseRuleset(t *testing.T) {
+	body := readFileString(t, releaseWorkflowPath)
+
+	const retireStep = "release-preflight.mjs eol-retire-line"
+	if !strings.Contains(body, retireStep) {
+		t.Fatalf("%s no longer invokes %q; the active-EOL half of the support window is gone",
+			releaseWorkflowPath, retireStep)
+	}
+	if !strings.Contains(body, "secrets.RELEASE_PAT") {
+		t.Fatalf("%s no longer passes secrets.RELEASE_PAT to %q. The default GITHUB_TOKEN acts as "+
+			"github-actions[bot], which the release/*.x ruleset refuses, and the job is fail-open — "+
+			"the branch would survive with the release still green",
+			releaseWorkflowPath, retireStep)
+	}
+}
