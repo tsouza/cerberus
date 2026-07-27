@@ -157,7 +157,7 @@ gh attestation verify cerberus_*_linux_amd64.tar.gz --owner tsouza --repo cerber
 
 The same binary is a Homebrew formula (macOS and Linuxbrew), which is the
 quickest way to get the `cerberus migrate` CLI onto the machine holding your
-rules and dashboards — see [migrating to cerberus](docs/migration.md#getting-the-cerberus-binary):
+rules and dashboards — see [migrating to cerberus](docs/migration.md#install-the-binary):
 
 ```sh
 brew install tsouza/tap/cerberus
@@ -317,6 +317,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | [`docs/engine.md`](docs/engine.md)                                       | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                  |
 | [`docs/migration.md`](docs/migration.md)                                 | The operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.    |
+| [`docs/migration-reference.md`](docs/migration-reference.md)             | The contract behind that playbook: every `migrate` flag, what each comparator calls equal, and what each gate blocks on.      |
 | [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                  |
 | [`docs/configuration.md`](docs/configuration.md)                         | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults.                               |
 | [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                           |
