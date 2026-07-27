@@ -127,10 +127,13 @@
 // exact pass/fail boundary. The support-window check is a pure helper
 // (`supportWindowProblem`) folded into the same problems list.
 //
-// `allSuitesSettled(suites, ownSuiteId)` is the pure decision behind the wait
-// loop: a check-suite is settled when `status === "completed"`; the release run's
-// own suite (`ownSuiteId`) is ignored. Returns { done, pending } — side-effect
-// free so the self-test pins it; the polling / sleep wrapper lives in main().
+// `allSuitesSettled(suites, ownSuiteId, workflowNames)` is the pure decision
+// behind the wait loop: a check-suite is settled when `status === "completed"`;
+// the release run's own suite (`ownSuiteId`) is ignored. `workflowNames` maps
+// suite id -> workflow run name so `pending` names the workflow being waited on
+// rather than the app that produced it (which is `github-actions` for all of
+// them). Returns { done, pending } — side-effect free so the self-test pins it;
+// the polling / sleep wrapper lives in main().
 //
 // `requiredChecksPending(checkRuns, required)` is its companion: the required
 // names that have posted NO check-run (`missing`) and those whose latest run is
@@ -198,6 +201,9 @@ const APP_VERSION_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 const releaseWaitMinutes = 150;
 const maxWaitMs = releaseWaitMinutes * 60 * 1000;
 const pollIntervalMs = 30 * 1000; // 30 s between polls
+// Polls to skip before re-stating an unchanged wait state, so a long quiet
+// stretch still proves the job is alive without burying the log in repeats.
+const quietHeartbeatPolls = 10;
 
 // ---------------------------------------------------------------------------
 // pure core (exported for the self-test — no network, no process.exit)
@@ -208,8 +214,18 @@ const pollIntervalMs = 30 * 1000; // 30 s between polls
 // in-progress and must be ignored — waiting on it deadlocks), return
 // { done, pending } where `done` is true iff every other suite has
 // `status === "completed"`, and `pending` lists the names of the suites still
-// running. The suite name is best-effort (`app.slug` / `app.name` / id) — only
-// used for the abort/notice message, never for the gate decision.
+// running. The name is only ever used for the abort/notice message, never for
+// the gate decision.
+//
+// `workflowNames` (suite id -> workflow run name) is what makes that message
+// legible. `app.slug` is NOT a usable name here: every suite produced by an
+// Actions workflow reports the same slug, `github-actions`, so a message built
+// from it renders as "12 check-suite(s) still running (github-actions,
+// github-actions, ...)" — it names the app, and the app is always the same one.
+// The workflow name is the thing a maintainer is actually waiting on ("e2e",
+// "mutation"), so prefer it and fall back to the app slug only for suites no
+// workflow run claims (third-party apps like GitGuardian, where the slug IS the
+// distinguishing name).
 //
 // A suite with NO check-runs (`latest_check_runs_count === 0`) is ignored: an
 // app can register a check-suite yet never post a run (e.g. GitGuardian leaves a
@@ -217,13 +233,13 @@ const pollIntervalMs = 30 * 1000; // 30 s between polls
 // never reaches `completed`, so waiting on it would hang the preflight until
 // timeout — and it contributes zero check-runs to the green-gate (`evaluate`),
 // so it is irrelevant to settledness. Treat empty suites as already settled.
-export function allSuitesSettled(suites, ownSuiteId) {
+export function allSuitesSettled(suites, ownSuiteId, workflowNames) {
   const pending = [];
   for (const s of suites ?? []) {
     if (ownSuiteId != null && s.id === ownSuiteId) continue;
     if ((s.latest_check_runs_count ?? 0) === 0) continue;
     if (s.status !== 'completed') {
-      pending.push(s.app?.slug ?? s.app?.name ?? `suite#${s.id}`);
+      pending.push(workflowNames?.get(s.id) ?? s.app?.slug ?? s.app?.name ?? `suite#${s.id}`);
     }
   }
   return { done: pending.length === 0, pending };
@@ -525,45 +541,79 @@ function selfTest() {
   // (ownId) is ignored — it is necessarily in-progress while preflight polls.
   // runs defaults to 1 (a real suite that posts check-runs); pass 0 for an
   // empty suite an app registered but never populated (the GitGuardian case).
-  const suite = (id, status, slug, runs = 1) => ({ id, status, app: { slug }, latest_check_runs_count: runs });
+  //
+  // Every suite an Actions workflow produces reports the SAME `app.slug`,
+  // `github-actions` — so the fixtures below give them that slug rather than one
+  // slug per workflow. Fake per-workflow slugs would let a pending-suite message
+  // look informative in the tests while rendering as a row of identical
+  // `github-actions` tokens in a real release log, which is what it did.
+  const actionsSuite = (id, status, runs = 1) => ({
+    id,
+    status,
+    app: { slug: 'github-actions' },
+    latest_check_runs_count: runs,
+  });
+  const appSuite = (id, status, slug, runs = 1) => ({ id, status, app: { slug }, latest_check_runs_count: runs });
   const ownId = 99;
+  const wfNames = new Map([
+    [1, 'ci'],
+    [2, 'e2e'],
+    [3, 'mutation'],
+    [ownId, 'release'],
+  ]);
 
   // All non-own suites completed (own suite still in_progress) -> done.
   let s = allSuitesSettled(
-    [suite(1, 'completed', 'ci'), suite(2, 'completed', 'compatibility'), suite(ownId, 'in_progress', 'release')],
+    [actionsSuite(1, 'completed'), actionsSuite(2, 'completed'), actionsSuite(ownId, 'in_progress')],
     ownId,
+    wfNames,
   );
   assert(s.done === true && s.pending.length === 0, 'all non-own suites completed -> done, no pending');
 
   // A queued non-own suite -> not done, named in pending; own suite ignored.
   s = allSuitesSettled(
-    [suite(1, 'completed', 'ci'), suite(2, 'queued', 'e2e'), suite(ownId, 'in_progress', 'release')],
+    [actionsSuite(1, 'completed'), actionsSuite(2, 'queued'), actionsSuite(ownId, 'in_progress')],
     ownId,
+    wfNames,
   );
   assert(s.done === false, 'a queued non-own suite -> not done');
   assert(s.pending.length === 1 && s.pending[0] === 'e2e', 'pending names the queued suite, ignores own');
 
   // An in_progress non-own suite -> not done.
-  s = allSuitesSettled([suite(1, 'in_progress', 'chdb'), suite(ownId, 'in_progress', 'release')], ownId);
-  assert(s.done === false && s.pending[0] === 'chdb', 'an in_progress non-own suite -> not done, named');
+  s = allSuitesSettled([actionsSuite(3, 'in_progress'), actionsSuite(ownId, 'in_progress')], ownId, wfNames);
+  assert(s.done === false && s.pending[0] === 'mutation', 'an in_progress non-own suite -> not done, named');
 
   // The own suite being in_progress alone -> done (it is the only suite and is ignored).
-  s = allSuitesSettled([suite(ownId, 'in_progress', 'release')], ownId);
+  s = allSuitesSettled([actionsSuite(ownId, 'in_progress')], ownId, wfNames);
   assert(s.done === true && s.pending.length === 0, 'own suite alone is ignored -> done');
 
-  // Multiple pending suites are all named.
-  s = allSuitesSettled([suite(1, 'queued', 'ci'), suite(2, 'in_progress', 'e2e')], ownId);
+  // Multiple pending suites are named DISTINCTLY. Without the workflow-name map
+  // they all collapse to `github-actions` and the message names nothing — the
+  // regression this pins.
+  s = allSuitesSettled([actionsSuite(1, 'queued'), actionsSuite(2, 'in_progress')], ownId, wfNames);
   assert(s.done === false && s.pending.length === 2, 'multiple pending suites -> all named');
+  assert(new Set(s.pending).size === 2, 'pending suites are distinguishable, not a row of app slugs');
+  assert(s.pending.includes('ci') && s.pending.includes('e2e'), 'pending names the workflows, not the app');
+
+  // A suite no workflow run claims falls back to the app slug, which for a
+  // third-party app IS the distinguishing name.
+  s = allSuitesSettled([appSuite(7, 'in_progress', 'gitguardian')], ownId, wfNames);
+  assert(s.pending[0] === 'gitguardian', 'unclaimed suite falls back to the app slug');
+
+  // No name map at all (resolution failed) -> still gates correctly, just less
+  // legibly. Diagnostics must never be able to change the decision.
+  s = allSuitesSettled([actionsSuite(1, 'in_progress')], ownId, undefined);
+  assert(s.done === false && s.pending[0] === 'github-actions', 'missing name map degrades the label, not the gate');
 
   // An empty suite (0 check-runs) that never completes is ignored -> done.
   // (GitGuardian's perpetually-queued empty suite hung the maintenance preflight.)
-  s = allSuitesSettled([suite(1, 'completed', 'ci', 1), suite(2, 'queued', 'gitguardian', 0)], ownId);
+  s = allSuitesSettled([actionsSuite(1, 'completed', 1), appSuite(2, 'queued', 'gitguardian', 0)], ownId, wfNames);
   assert(s.done === true && s.pending.length === 0, 'empty (0-run) non-completing suite is ignored -> done');
 
   // No own suite id (e.g. off-runner) -> every non-completed suite counts.
-  s = allSuitesSettled([suite(1, 'completed', 'ci')], null);
+  s = allSuitesSettled([actionsSuite(1, 'completed')], null, wfNames);
   assert(s.done === true, 'null ownId: a completed suite is still settled');
-  s = allSuitesSettled([suite(1, 'in_progress', 'ci')], null);
+  s = allSuitesSettled([actionsSuite(1, 'in_progress')], null, wfNames);
   assert(s.done === false && s.pending[0] === 'ci', 'null ownId: an in_progress suite is pending');
 
   // All-green tip -> pass. 5 non-self check-runs + 1 status.
@@ -985,6 +1035,27 @@ async function main() {
     return out;
   }
 
+  // suite id -> workflow run name, for the wait loop's progress message. Every
+  // Actions check-suite carries the same `app.slug`, so the run name is the only
+  // thing that tells "e2e" apart from "mutation". Diagnostics only: a failure to
+  // resolve a name degrades the message to the app slug, never the gate.
+  async function workflowNamesBySuite() {
+    const names = new Map();
+    let page = 1;
+    for (;;) {
+      const data = await getJSON(
+        `${apiBase}/repos/${repo}/actions/runs?head_sha=${pushedSha}&per_page=100&page=${page}`,
+      );
+      const runs = data.workflow_runs ?? [];
+      for (const r of runs) {
+        if (r.check_suite_id != null && r.name) names.set(r.check_suite_id, r.name);
+      }
+      if (runs.length < 100) break;
+      page += 1;
+    }
+    return names;
+  }
+
   // Resolve THIS release run's own check-suite id via the run -> check_suite_id
   // link, so the wait loop can skip it (it is necessarily in-progress while we
   // poll — waiting on it deadlocks). null when GITHUB_RUN_ID is absent (e.g. a
@@ -1009,9 +1080,11 @@ async function main() {
   // never publish on an unknown state).
   const ownId = await ownSuiteId();
   const waitDeadline = Date.now() + maxWaitMs;
+  let lastProgress = null;
+  let pollsSinceNotice = 0;
   for (;;) {
     const suites = await allCheckSuites();
-    const { done, pending } = allSuitesSettled(suites, ownId);
+    const { done, pending } = allSuitesSettled(suites, ownId, await workflowNamesBySuite());
     const { missing, running } = requiredChecksPending(await allCheckRuns(), required);
     if (done && missing.length === 0 && running.length === 0) {
       ghNotice(
@@ -1037,11 +1110,20 @@ async function main() {
       );
       process.exit(1);
     }
-    ghNotice(
-      `${label}: ${pending.length} check-suite(s) still running (${pending.join(', ') || 'none'}); ` +
-        `required missing: ${missing.join(', ') || 'none'}; required running: ${running.join(', ') || 'none'}; ` +
-        `re-polling in ${Math.round(pollIntervalMs / 1000)}s.`,
-    );
+    // Log on state change, plus a heartbeat so a long quiet stretch still shows
+    // the job is alive. Emitting every poll unconditionally buried the one line
+    // that mattered under dozens of byte-identical repeats — a 33-min wait on a
+    // single slow lane produced 66 notices, 31 of them the same sentence.
+    const progress =
+      `${pending.length} check-suite(s) still running (${pending.join(', ') || 'none'}); ` +
+      `required missing: ${missing.join(', ') || 'none'}; required running: ${running.join(', ') || 'none'}`;
+    if (progress !== lastProgress || pollsSinceNotice >= quietHeartbeatPolls) {
+      ghNotice(`${label}: ${progress}; re-polling in ${Math.round(pollIntervalMs / 1000)}s.`);
+      lastProgress = progress;
+      pollsSinceNotice = 0;
+    } else {
+      pollsSinceNotice += 1;
+    }
     await sleep(pollIntervalMs);
   }
 
