@@ -1238,6 +1238,10 @@ const (
 	// when the image is already present, which is exactly how a released
 	// artifact gets replaced by a recompile of whatever tree the runner holds.
 	buildFlag = "--build"
+	// pullRetryRecipe is how a released image is fetched. A bare `docker pull`
+	// is single-attempt, and one Docker Hub timeout on it failed the v1.13.0
+	// release's Tier-1 leg; see TestJustfileNoUnretriedDockerPull.
+	pullRetryRecipe = "_pull-retry"
 )
 
 // composeImageDefaultRe splits a `${VAR:-default}` compose interpolation.
@@ -1318,12 +1322,13 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	}
 
 	// The acquisition recipe itself must be able to do BOTH halves: build the
-	// local tag from Dockerfile.local, and pull anything else.
+	// local tag from Dockerfile.local, and pull anything else — the pull going
+	// through the retry helper rather than a single-attempt `docker pull`.
 	acquire := justRecipeBody(t, body, migrationImageRecipe)
-	for _, want := range []string{"docker build", "Dockerfile.local", "docker pull", lib.ImageEnv} {
+	for _, want := range []string{"docker build", "Dockerfile.local", pullRetryRecipe, lib.ImageEnv} {
 		if !strings.Contains(acquire, want) {
 			t.Fatalf("Justfile recipe %s does not reference %q; it must build the local tag from "+
-				"Dockerfile.local and pull a released one, decided by %s alone. Body:\n%s",
+				"Dockerfile.local and pull a released one (with retry), decided by %s alone. Body:\n%s",
 				migrationImageRecipe, want, lib.ImageEnv, acquire)
 		}
 	}
