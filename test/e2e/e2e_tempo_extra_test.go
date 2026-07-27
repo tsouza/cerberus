@@ -34,13 +34,25 @@ func TestTempoSearch_EmptyQ(t *testing.T) {
 // trace summaries for the seeded spans whose Duration exceeds 50ms
 // (the seed includes a 600ms POST /checkout, 450ms POST /api/order,
 // 300ms orders.insert, 150ms GET /home, 80ms GET /api/users, 90ms
-// cron.refresh — six spans match).
+// cron.refresh — six spans match; the 40ms cache.refresh does not).
+//
+// The service-name arm scopes the search to the seed corpus, exactly
+// as every other tempo search test in this file does. `otel_traces`
+// is NOT seed-only: the k3d shard also carries live spans from the
+// `sample-app` telemetrygen deployment and from cerberus's own OTLP
+// self-export, whose durations are whatever the cluster happened to
+// do. An unscoped query therefore matches real spans of, say,
+// 50.4ms — and since `durationMs` is whole milliseconds
+// (`ns / 1e6`, truncating, matching Tempo's wire spec and pinned
+// exactly by the tempo compatibility differ) such a trace reports
+// `durationMs=50` while genuinely satisfying `duration > 50ms`. The
+// assertion below is strict, so the corpus has to be the closed one.
 func TestTempoSearch_DurationFilter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	v := url.Values{}
-	v.Set("q", `{ duration > 50ms }`)
+	v.Set("q", `{ resource.service.name =~ "frontend|api|db" && duration > 50ms }`)
 	resp := getJSON(ctx, t, "/api/search?"+v.Encode())
 	var parsed struct {
 		Traces []struct {
