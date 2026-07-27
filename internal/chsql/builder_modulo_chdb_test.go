@@ -92,13 +92,13 @@ func TestEmitGoModulo_BitExactVsGo(t *testing.T) {
 		// Special-value matrix.
 		{0, 1.0},
 		{0, -1.0},
-		{1.0, 0},                // NaN per math.Mod
-		{math.Inf(+1), 1.0},     // NaN per math.Mod
-		{math.Inf(-1), 1.0},     // NaN per math.Mod
-		{1.0, math.Inf(+1)},     // = x
-		{1.0, math.Inf(-1)},     // = x
-		{math.NaN(), 1.0},       // NaN
-		{1.0, math.NaN()},       // NaN
+		{1.0, 0},                 // NaN per math.Mod
+		{math.Inf(+1), 1.0},      // NaN per math.Mod
+		{math.Inf(-1), 1.0},      // NaN per math.Mod
+		{1.0, math.Inf(+1)},      // = x
+		{1.0, math.Inf(-1)},      // = x
+		{math.NaN(), 1.0},        // NaN
+		{1.0, math.NaN()},        // NaN
 		{math.NaN(), math.NaN()}, // NaN
 
 		// Small / common shapes.

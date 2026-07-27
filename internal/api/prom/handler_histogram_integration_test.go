@@ -233,12 +233,12 @@ VALUES
 	for _, want := range []string{
 		"test_hist_metric_bucket", "test_hist_metric_count", "test_hist_metric_sum",
 	} {
-		if !contains(names, want) {
+		if !containsName(names, want) {
 			t.Errorf("__name__ values missing %q: got %v", want, names)
 		}
 	}
 	for _, absent := range []string{"test_hist_metric", "latency_exp_hist"} {
-		if contains(names, absent) {
+		if containsName(names, absent) {
 			t.Errorf("__name__ values should not advertise %q: got %v", absent, names)
 		}
 	}
@@ -351,7 +351,7 @@ func getNameValues(t *testing.T, base string) []string {
 	return env.Data
 }
 
-func contains(hay []string, needle string) bool {
+func containsName(hay []string, needle string) bool {
 	for _, h := range hay {
 		if h == needle {
 			return true

@@ -22,6 +22,12 @@ Each module:
 wrappers around `node:child_process`, a `lsFiles` `git ls-files -z`
 wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
 
+`lib/shard-coverage.mjs` holds the Playwright spec-partition rules the two
+e2e shard-matrix modules share — `discoverSpecs()` (the tracked spec
+universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
+(unassigned / double-assigned / phantom / stale-exclude / bad-shard-name).
+One implementation means a new rule guards BOTH lanes at once.
+
 ## Modules
 
 - **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
@@ -608,11 +614,14 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   `timeoutMinutes`: the crawl shard gets a hard 30-min cap
   (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the k3d concurrency slot), the
   smoke shards keep their 75-min cluster-lifetime bound (`SMOKE_SHARD_TIMEOUT_MIN`).
-  The whole `dashboard` lane is informational (never a PR gate), so the crawl
-  shard never gates a release PR's merge-when-green either.
+  The `dashboard` aggregator is a branch-protection required check; the crawl
+  shard runs only on schedule, dispatch, and release/* PRs, so it never gates
+  an ordinary PR's merge-when-green.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
     `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `INCLUDE_CRAWL` (emit:
-    `"true"` adds the crawl shard — schedule/dispatch only), `GITHUB_OUTPUT`
+    `"true"` adds the crawl shard — schedule, dispatch, and release/* PRs),
+    `INCLUDE_SPLIT` (emit: `"true"` fans the smoke shards over monolith AND
+    split mode — same event set as `INCLUDE_CRAWL`), `GITHUB_OUTPUT`
     (emit: the runner file the
     `{include:[{name,specs,crawlStack,runGoE2E,timeoutMinutes}]}` matrix JSON is
     written to).

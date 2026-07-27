@@ -31,13 +31,14 @@ type ExecInfo struct {
 	Parallelism int
 }
 
-// Executor is the bounded-parallel shard dispatcher (docs §"Parallel
-// execution"). It emits all K shard SQLs, performs two-stage weighted
-// admission, atomically acquires the global connection gate, opens one
-// cursor per shard under a cause-carrying errgroup, and concatenates the
-// streams behind a shardCursor. It owns no per-request state itself — every
-// routed request gets a fresh shardCursor that holds the gate / admit
-// releases and dies with the request (the no-caching invariant).
+// Executor is the bounded-parallel shard dispatcher (docs/solver.md
+// §"Execution and cursor model"). It emits all K shard SQLs, performs
+// two-stage weighted admission, atomically acquires the global connection
+// gate, opens one cursor per shard under a cause-carrying errgroup, and
+// concatenates the streams behind a shardCursor. It owns no per-request
+// state itself — every routed request gets a fresh shardCursor that holds
+// the gate / admit releases and dies with the request (the no-caching
+// invariant).
 type Executor struct {
 	// Client opens the per-shard cursors. *chclient.Client in production.
 	Client CursorQuerier
@@ -255,9 +256,10 @@ func (x *Executor) Execute(
 	// would advance the shared breaker counter, tripping the threshold-5
 	// breaker by up to gate/2 in ONE logical request and 503-ing all three
 	// heads. The latch makes the first real failure count and treats siblings
-	// as breaker-neutral, enforcing the docs §"Parallel execution" #6 contract
-	// (at most one breaker failure per logical request). The latch is
-	// request-scoped (born/dies with causeCtx, no cross-request state).
+	// as breaker-neutral, enforcing the docs/solver.md §"Failure and
+	// cancellation contract" rule that the Executor records at most one
+	// breaker failure per logical request. The latch is request-scoped
+	// (born/dies with causeCtx, no cross-request state).
 	causeCtx = chclient.WithBreakerDedup(causeCtx)
 
 	// 7. PER-SHARD EXECUTION. errgroup under the cause-carrying ctx;
@@ -301,10 +303,11 @@ func (x *Executor) Execute(
 	return sc, info, nil
 }
 
-// shardChanCap bounds each per-shard producer→composer channel (docs
-// §Parallel #7). The producer blocks when the composer falls behind, so the
-// gateway never buffers more than P*cap samples beyond what the composer
-// has drained — the new, fixed solver-overhead term in the memory model.
+// shardChanCap bounds each per-shard producer→composer channel
+// (docs/solver.md §"Execution and cursor model"). The producer blocks when
+// the composer falls behind, so the gateway never buffers more than P*cap
+// samples beyond what the composer has drained — the fixed
+// solver-overhead term in the memory model.
 const shardChanCap = 4096
 
 // runShard is one producer goroutine. It derives its own progress ctx (one

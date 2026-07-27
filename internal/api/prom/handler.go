@@ -628,7 +628,7 @@ func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (con
 				fmt.Errorf("invalid parameter 'timeout': %w", err))
 			return ctx, func() {}, false
 		}
-		budget = minPositiveDuration(budget, reqTimeout)
+		budget = format.MinPositiveDuration(budget, reqTimeout)
 	}
 	if budget <= 0 {
 		return ctx, func() {}, true
@@ -636,25 +636,6 @@ func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (con
 	ctx = chclient.WithQueryTimeout(ctx, budget)
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	return ctx, cancel, true
-}
-
-// minPositiveDuration returns the smaller of a and b, treating a
-// non-positive value as "unbounded" (so it never wins the min). When
-// both are non-positive the result is 0 (no cap). This mirrors
-// Prometheus's effective-timeout rule: the engine uses the smaller of
-// the global query.timeout and the per-request ?timeout=, and a disabled
-// (zero) cap on either side does not clamp the other.
-func minPositiveDuration(a, b time.Duration) time.Duration {
-	switch {
-	case a <= 0:
-		return b
-	case b <= 0:
-		return a
-	case a < b:
-		return a
-	default:
-		return b
-	}
 }
 
 // parseExpr wraps the prom parser in a `parse` pipeline-stage span. The

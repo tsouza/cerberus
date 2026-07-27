@@ -57,38 +57,6 @@ func ParseExprWithoutValidation(input string) (expr Expr, err error) {
 	return e, nil
 }
 
-// ParseSampleExpr parses a query and requires it to be a sample (metric)
-// expression.
-func ParseSampleExpr(input string) (SampleExpr, error) {
-	expr, err := ParseExpr(input)
-	if err != nil {
-		return nil, err
-	}
-	se, ok := expr.(SampleExpr)
-	if !ok {
-		return nil, fmt.Errorf("only sample expression supported")
-	}
-	return se, nil
-}
-
-// ParseLogSelector parses a query and requires it to be a log selector.
-func ParseLogSelector(input string, validate bool) (LogSelectorExpr, error) {
-	expr, err := ParseExprWithoutValidation(input)
-	if err != nil {
-		return nil, err
-	}
-	ls, ok := expr.(LogSelectorExpr)
-	if !ok {
-		return nil, fmt.Errorf("only log selector is supported")
-	}
-	if validate {
-		if err := validateExpr(expr); err != nil {
-			return nil, err
-		}
-	}
-	return ls, nil
-}
-
 // ------------------------------------------------------------------
 // validation
 // ------------------------------------------------------------------

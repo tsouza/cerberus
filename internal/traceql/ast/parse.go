@@ -67,12 +67,3 @@ func ParseIdentifier(s string) (Attribute, error) {
 	}
 	return attr, nil
 }
-
-// MustParseIdentifier is the panicking form of ParseIdentifier.
-func MustParseIdentifier(s string) Attribute {
-	a, err := ParseIdentifier(s)
-	if err != nil {
-		panic(err)
-	}
-	return a
-}

@@ -305,8 +305,8 @@ func TestDefaultOTelMetricsRollups(t *testing.T) {
 		t.Fatalf("DefaultOTelMetrics: expected at least the two canonical sum rollups; got none")
 	}
 
-	// The 1h rollup must come before 5m so firstApplicable cost-model
-	// prefers the coarsest applicable window.
+	// The 1h rollup must come before 5m so a rollup-substitution rule
+	// walking the slice in order prefers the coarsest applicable window.
 	got1h := rollups[0]
 	if got1h.RollupTable != "otel_metrics_sum_1h" {
 		t.Errorf("first rollup: got RollupTable=%q, want otel_metrics_sum_1h (coarsest-first ordering broken)", got1h.RollupTable)

@@ -64,7 +64,7 @@ func (d *svgDoc) title(s string) {
 		padL, textCol, escapeXML(s))
 }
 
-func (d *svgDoc) text(x, y int, size int, fill, anchor, s string) {
+func (d *svgDoc) text(x, y, size int, fill, anchor, s string) {
 	fmt.Fprintf(&d.b, `<text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="%s">%s</text>`,
 		x, y, size, fill, anchor, escapeXML(s))
 }

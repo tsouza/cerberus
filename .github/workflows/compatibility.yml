@@ -5,9 +5,9 @@ name: compatibility
 # Each head has its own job; the job-level `name:` is `compatibility/<head>`
 # so the per-job status check shows up in PR status / branch protection as
 # that string. The harness directories live under `compatibility/<head>/`
-# (parallel to `internal/`), and each job's path filter is scoped to the
-# inputs that can plausibly shift parity for that head — a refactor inside
-# `internal/promql/` does not need to rerun the LogQL or TraceQL stacks.
+# (parallel to `internal/`). All three heads run on every triggering event:
+# the only short-circuit is the docs-only `changes` filter on pull_request
+# (see the `changes` job), so a code change can never skip a parity head.
 #
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
@@ -41,25 +41,20 @@ on:
     branches: [main]
   push:
     # `release/*.x` so the three compatibility head checks also run on a
-    # maintenance-line hotfix push that touches a query path below — giving
-    # release.yml's maintenance preflight green check-runs to verify. The
-    # `paths:` filter applies equally to main and maintenance pushes: a hotfix
-    # that touches none of these paths legitimately produces no compat check-run
-    # (the preflight gates on the checks that ran, never on a check that didn't
-    # trigger), exactly as a path-skipped push to main does.
+    # maintenance-line hotfix push — giving release.yml's maintenance preflight
+    # green check-runs to verify.
+    #
+    # NO `paths:` filter, deliberately — same posture as ci.yml / chdb.yml /
+    # e2e.yml / migration-e2e.yml. release.yml's preflight carries an EXPECTED
+    # set (RELEASE_REQUIRED_CHECKS) naming compatibility/prometheus,
+    # compatibility/loki and compatibility/tempo, and a required lane that posts
+    # NO check-run on the released commit is a BLOCKING problem, not a pass
+    # (.github/scripts/release-preflight.mjs). A release-PR merge only touches
+    # Chart.yaml / deploy/helm/cerberus/README.md / CHANGELOG.md, so a
+    # path-filtered push trigger would never fire on the very commit being
+    # published and every release would wait out the preflight window and then
+    # abort.
     branches: [main, 'release/*.x']
-    paths:
-      - 'internal/promql/**'
-      - 'internal/logql/**'
-      - 'internal/traceql/**'
-      - 'internal/api/prom/**'
-      - 'internal/api/loki/**'
-      - 'internal/api/tempo/**'
-      - 'internal/chsql/**'
-      - 'internal/optimizer/**'
-      - 'internal/chplan/**'
-      - 'compatibility/**'
-      - '.github/workflows/compatibility.yml'
   schedule:
     # Nightly cron entries are offset to spread runner load across the
     # three heads + the e2e dashboard run on the ubuntu-latest pool:

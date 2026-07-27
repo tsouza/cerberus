@@ -193,4 +193,3 @@ func TestChDBProbe(t *testing.T) {
 		t.Logf("toJSONString shim: supported. Map scan path is unblocked via this route.")
 	})
 }
-

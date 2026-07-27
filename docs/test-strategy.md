@@ -1,6 +1,6 @@
 # Test strategy
 
-Cerberus is tested in 13 layers, ordered roughly cheapest-and-fastest
+Cerberus is tested in 14 layers, ordered roughly cheapest-and-fastest
 to slowest-and-most-realistic. Each layer pins a different class of
 contract: AST shape, plan-IR invariants, optimizer behaviour, emitted
 SQL bytes, semantic equivalence under chDB execution, function-surface
@@ -39,10 +39,13 @@ inside each layer.
 
 ## CI gates
 
-The eleven **required** status checks on `main` are `check`, `lint`,
-`forbid-skip`, `probe`, `roundtrip (promql)`, `roundtrip (logql)`,
-`roundtrip (traceql)`, `compatibility/prometheus`, `compatibility/loki`,
-`compatibility/tempo`, and `compose-smoke`. Every other job below is
+The eighteen **required** status checks on `main` are `check`, `lint`,
+`forbid-skip`, `chart-validate`, `probe`, `roundtrip (promql)`,
+`roundtrip (logql)`, `roundtrip (traceql)`, `compatibility/prometheus`,
+`compatibility/loki`, `compatibility/tempo`,
+`compatibility/prometheus-forced-route`, `compose-smoke`, `dashboard`,
+`coverage`, `mutation`, `profile`, and
+`property (PromQL + LogQL + TraceQL, rapid N=500)`. Every other job below is
 informational — it runs (push-to-main, nightly, or dispatch) and reports,
 but a red result does not block a merge. Informational does **not** mean
 tolerated: a red informational lane is a real failure to fix, it is just
@@ -54,11 +57,13 @@ but the *check* fails only on infrastructure breakage — per-case **numeric
 parity drift is report-only** (rendered into the badge score, not the exit
 code; see [`compatibility.md`](compatibility.md#ci-integration) and
 [#503](https://github.com/tsouza/cerberus/pull/503)). The only lane that
-hard-fails on a numeric parity diff is the *informational*
+hard-fails on a numeric parity diff is the *required*
 `compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`). So the
 required differential checks gate *that the harness runs clean*, while the
 parity number itself is a continuously-measured score rather than a merge
-gate. Promoting a fail-on-parity gate to required is a tracked improvement.
+gate. A fail-on-parity gate is already required on the forced-route lane;
+extending it to the three `compatibility/<head>` heads is a tracked
+improvement.
 
 | Gate                                    | Workflow (job)                                       | Trigger                             | Required? | Scope                                                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------------------- | ---------------------------------------------------- | ----------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -71,24 +76,25 @@ gate. Promoting a fail-on-parity gate to required is a tracked improvement.
 | `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus                                                                                                                                                                                                                                                                                                       |
 | `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus)                                                                                                                                                                                                                                                                                                               |
 | `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | PR + push + nightly                 | Required  | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                        |
-| `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Info      | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                            |
+| `chart-validate`                        | `chart-ci.yml` (`chart-validate`)                    | PR + push + dispatch                | Required  | Helm chart lint + `helm-docs` README drift gate + `kubeconform` render + render assertions (split PDBs / derived `GOMEMLIMIT`) + `ct lint` over `deploy/helm/cerberus`; short-circuits to a green no-op when no chart file changed, so it reports on every PR                                                                                                                       |
+| `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Required  | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                            |
 | `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`) | PR + push + nightly + dispatch      | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half)                                                                                                                                                            |
 | `perf-guards`                           | `chdb.yml` (`perf-guards`)                           | PR + push + nightly                 | Info      | `just perf-chdb` (`go test -tags chdb ./test/perf/...`): the cardinality / scale-wall ratchets, per-construct scaling harness, and cycle-guards (Layer 12 chdb lanes)                                                                                                                                                                                                               |
-| `perf-profile`                          | `perf-profile.yml` (`profile`)                       | push + nightly + dispatch           | Info      | Corpus-wide compute-fan-out profiler over every executable TXTAR fixture (EXPLAIN + per-subquery `count()` fan-factor); top-40 to step summary (Layer 12, Component B)                                                                                                                                                                                                              |
+| `perf-profile`                          | `perf-profile.yml` (`profile`)                       | PR + push + nightly + dispatch      | Required  | Corpus-wide compute-fan-out profiler over every executable TXTAR fixture (EXPLAIN + per-subquery `count()` fan-factor); top-40 to step summary (Layer 12, Component B)                                                                                                                                                                                                              |
 | `perf-benchmark`                        | `perf-benchmark.yml` (`benchstat diff`)              | PR (path-match) + weekly + dispatch | Info      | benchstat wall-clock regression vs baseline (Layer 11)                                                                                                                                                                                                                                                                                                                              |
-| `dashboard`                             | `e2e.yml` (`dashboard`)                              | push + nightly + dispatch           | Info      | k3d + cerberus + Grafana + Playwright full smoke + `k3d` crawl (Layer 9)                                                                                                                                                                                                                                                                                                            |
+| `dashboard`                             | `e2e.yml` (`dashboard`)                              | PR + push + nightly + dispatch      | Required  | k3d + cerberus + Grafana + Playwright full smoke + `k3d` crawl (Layer 9)                                                                                                                                                                                                                                                                                                            |
 | `chaos`                                 | `e2e.yml` (`chaos`)                                  | push + nightly + dispatch           | Info      | k3d live-stack fault injection — resilience contracts under real faults (Layer 13). Phase-1 on push; full set on nightly/dispatch                                                                                                                                                                                                                                                   |
 | `startup-bench`                         | `e2e.yml` (`startup-bench`)                          | push + nightly + dispatch           | Info      | cerberus reaches `/healthz` under 2 s against an inline ClickHouse                                                                                                                                                                                                                                                                                                                  |
 | `strict-scan`                           | `strict-scan.yml` (`strict-scan`)                    | PR + push + nightly + dispatch      | Info      | Strict-scan differential (Layer 6e): executes the matrix golden SQL corpus against a real ClickHouse (testcontainers) through the production strict scan, then runs the router-corpus WRITE + READ seams; fails on any coercion error chDB hides                                                                                                                                    |
-| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | push + nightly + dispatch           | Info      | gremlins per package (`chplan` / `chsql` / `optimizer` / `promql` / `logql` x4 / `traceql` / `qlcommon`) at the phase efficacy floor                                                                                                                                                                                                                                                |
-| `property`                              | `property.yml`                                       | push + nightly + dispatch           | Info      | rapid-driven oracle property tests, PromQL / LogQL / TraceQL (Layer 4 + 6 cross-check)                                                                                                                                                                                                                                                                                              |
-| `coverage`                              | `coverage.yml`                                       | push + nightly + dispatch           | Info      | merged default-tag + chdb-tagged cover profile, per-package summary                                                                                                                                                                                                                                                                                                                 |
+| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | PR + push + nightly + dispatch      | Required  | gremlins per package (`chplan` / `chsql` / `optimizer` / `promql` / `logql` x4 / `traceql` / `qlcommon`) at the phase efficacy floor                                                                                                                                                                                                                                                |
+| `property`                              | `property.yml`                                       | PR + push + nightly + dispatch      | Required  | rapid-driven oracle property tests, PromQL / LogQL / TraceQL (Layer 4 + 6 cross-check)                                                                                                                                                                                                                                                                                              |
+| `coverage`                              | `coverage.yml`                                       | PR + push + nightly + dispatch      | Required  | merged default-tag + chdb-tagged cover profile, per-package summary                                                                                                                                                                                                                                                                                                                 |
 | `migration-tier1`                       | `migration-e2e.yml` (`migration-tier1`)              | push + nightly + dispatch           | Info      | Layer 14 Tier-1 substrate: pinned reference Prometheus / Loki / Tempo + ClickHouse + collector + cerberus, one all-signal fixture seeded into both sides, `migration_tier1`-tagged parity assertions plus the `@tier1` Gherkin scenarios, one compose lifecycle per run                                                                                                             |
 | `migration-tier2`                       | `migration-e2e.yml` (`migration-tier2`)              | push + nightly + dispatch           | Info      | Layer 14 Tier-2 substrate: the Tier-1 stack plus the query-only external ruler (Grafana-managed alerting against cerberus), its recording-rule write-back bridge and the dead-end notification receiver, running the `@tier2` Gherkin scenarios and the `migration_tier2`-tagged substrate self-check. `needs: migration-tier1` — firing parity is not provable before query parity |
 | `migration-e2e`                         | `migration-e2e.yml` (`migration-e2e`)                | push + nightly + dispatch           | Info      | Layer-14 migration-scenario lane: the Tier-0 godog suite over committed archetype fixtures (offline, no Docker). Its coverage ratchet + detector guard run on the required `lint` job                                                                                                                                                                                               |
 
-The `compatibility/promql-surface`, `compatibility/prometheus-forced-route`,
-and `perf-guards` lanes ride the same `compatibility.yml` / `chdb.yml`
+The `compatibility/promql-surface` and `perf-guards` lanes ride the same
+`compatibility.yml` / `chdb.yml`
 workflows as their required siblings and run on every PR, but are not yet
 promoted to branch-protection gates — they stay informational until each has
 held a green soak streak (the same flip discipline the three
@@ -415,6 +421,69 @@ lags the fault by seconds, so during-fault timing keys on immediate HTTP
 status + `/readyz` body + kubectl state. The lane is **informational**:
 push-to-main + nightly + manual only, never a PR gate, never a
 branch-protection required check (k3d is heavy and chaos flakes).
+
+### Layer 14 — Migration-scenario e2e
+
+The only layer whose unit of work is an **operator journey**, not a code
+path. Layers 1–13 ask "does this query lower, emit, execute and render
+correctly?"; Layer 14 asks "can a team actually move off Prometheus /
+Loki / Tempo onto cerberus without losing data, alerts or sleep?" It
+encodes the 26 migration user-stories (ASSESS → TEST → VALIDATE → VERIFY
+→ CUTOVER → DECOMMISSION) as Gherkin scenarios and runs them across
+three infrastructure tiers. `docs/migration-testing.md` is the canonical
+reference — story map, tier definitions, honesty contract and phased
+build order all live there; this section is the index entry.
+
+Lives in `test/e2e/migration/`: `features/` (the Gherkin corpus),
+`steps/` + `lib/` (the godog bindings), `seed/` (the deterministic
+all-signal fixture), `archetypes/` (the eight seeded operator
+topologies), `tiers/` (per-tier compose stacks) and the tagged Go
+entrypoints `tier1_stack_test.go`, `tier1_parity_test.go`,
+`tier2_ruler_test.go`. Driven by `.github/workflows/migration-e2e.yml`.
+
+The tiers escalate substrate, not scope:
+
+- **Tier 0 — offline.** No containers. Exercises the `cerberus migrate`
+  CLI surface (harvest / explain / classify / rulegraph / gate) against
+  recorded inputs. Cheap enough to run on every push.
+- **Tier 1 — parity.** Pinned reference Prometheus / Loki / Tempo beside
+  ClickHouse + an OTel collector + cerberus, both sides fed from one
+  deterministic all-signal fixture, then read back over a
+  seeder-published closed window. `cerberus migrate verify` must report
+  a zero diverge-count across metric matrices, log entries and trace
+  identities. A **negative control** deliberately perturbs one side and
+  asserts the harness reports the disagreement — without it a silently
+  broken comparator would read as perfect parity.
+- **Tier 2 — firing parity.** Tier 1 plus a query-only external ruler
+  (Grafana-managed alerting pointed at cerberus), a recording-rule
+  write-back bridge and a dead-end notification receiver, so alert
+  *firing* — not just query results — is compared. `needs:
+  migration-tier1`, because firing parity is meaningless before query
+  parity holds.
+
+**Catches:** the failure modes that only appear when a real operator
+workflow crosses the whole stack — ingest-bridge type reconstruction
+(what the collector writes vs. what the reference backend stored),
+schema / label / histogram fidelity across the write seam, rule-graph
+classification errors that would silently drop an alert at cutover,
+`migrate verify` comparator bugs (via the negative control), and
+alert-firing divergence that query-level parity can't see.
+
+**Misses:** everything Layers 1–13 own. Layer 14 is a *workflow* lane,
+not a code lane — a lowering or emitter bug only surfaces here if the
+archetype corpus happens to name that shape, and it surfaces as an
+opaque parity diff rather than a located defect, so fix it at the layer
+that pinpoints it. Customer topologies beyond the eight seeded
+archetypes are out of scope by construction, as are the declared scope
+limits recorded in `docs/migration-testing.md` §6.4.
+
+The lane is **informational**: push-to-main + nightly + manual dispatch
+only, with no `pull_request:` trigger and no branch-protection entry.
+The compose lifecycles are far too heavy for a PR gate, and the honesty
+guardrails in `docs/migration-testing.md` §6.3 — the pinned PASS-assertion
+set in `pass-assertions.pin.json` and the coverage baseline in
+`coverage-baseline.json` — are what keep an informational lane from
+quietly decaying into a green no-op.
 
 ## Property tests
 

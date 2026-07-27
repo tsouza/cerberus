@@ -4,7 +4,7 @@
 // Runs on the CHEAP gate lane (`node --test .github/scripts/*.test.mjs`) — no
 // setup-node, no deps, no k3d cluster — so a dropped/double-assigned spec
 // fails on a much cheaper check than the heavy dashboard lane itself, and on
-// every PR (the dashboard lane itself never runs on pull_request).
+// every PR (including the docs-only PRs that short-circuit the dashboard lane).
 //
 // Guards four things:
 //   1. the live tree is a clean cover (the real invariant);

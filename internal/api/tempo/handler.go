@@ -936,6 +936,15 @@ func (h *Handler) traceIDTsWindow(id string) chplan.Expr {
 	return &chplan.Binary{Op: chplan.OpAnd, Left: lower, Right: upper}
 }
 
+// Canonical OTel ID widths on the Tempo wire: a TraceId is a fixed-width
+// 16-byte value (32 lowercase-hex chars), a SpanId 8 bytes (16 hex chars).
+const (
+	traceIDHexLen  = 32
+	spanIDHexLen   = 16
+	traceIDByteLen = traceIDHexLen / 2
+	spanIDByteLen  = spanIDHexLen / 2
+)
+
 // normaliseTraceID returns the canonical 32-char lowercase-hex form of
 // the trace-id Tempo's wire format uses on storage (see OTel-CH
 // exporter's `hex.EncodeToString`). Tempo's response shaper strips
@@ -950,10 +959,10 @@ func (h *Handler) traceIDTsWindow(id string) chplan.Expr {
 // rather than getting silently rewritten here. Lowercases the input so
 // callers that uppercased their hex still resolve.
 func normaliseTraceID(s string) string {
-	if len(s) >= 32 {
+	if len(s) >= traceIDHexLen {
 		return strings.ToLower(s)
 	}
-	return strings.Repeat("0", 32-len(s)) + strings.ToLower(s)
+	return strings.Repeat("0", traceIDHexLen-len(s)) + strings.ToLower(s)
 }
 
 // stripLeadingHexZeros historically emitted `replaceRegexpOne(col,
@@ -2247,7 +2256,7 @@ func writeTraceByIDV2(w http.ResponseWriter, status int, resp *tempopb.TraceByID
 // the engine lookup, matching upstream behaviour.
 func isValidTraceID(id string) bool {
 	switch len(id) {
-	case 16, 32:
+	case spanIDHexLen, traceIDHexLen:
 	default:
 		return false
 	}

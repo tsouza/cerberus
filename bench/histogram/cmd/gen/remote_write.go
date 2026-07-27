@@ -53,7 +53,7 @@ func appendVarint(b []byte, v uint64) []byte {
 }
 
 // appendTag writes a protobuf field tag (field number + wire type).
-func appendTag(b []byte, field int, wire int) []byte {
+func appendTag(b []byte, field, wire int) []byte {
 	return appendVarint(b, uint64(field)<<3|uint64(wire))
 }
 

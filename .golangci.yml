@@ -27,11 +27,8 @@
 # - nestif (max nested-if depth). Currently max 5; threshold 6 leaves a
 #   one-step buffer.
 #
-# - dupl (token-stream duplication). Threshold 220 tokens. The 200 floor
-#   would fire on a near-identical pair of constant-fold helpers in
-#   `internal/optimizer/constant_fold.go` (lines 124-164 ↔ 170-210, ~210
-#   tokens) — duplication acknowledged in the fold-by-type design.
-#   TODO: deduplicate the per-type fold helpers and tighten back to 200.
+# - dupl (token-stream duplication). Threshold 220 tokens; no production
+#   clone currently reaches it.
 #
 # - maintidx (composite Maintainability Index). Halstead-based score;
 #   warns when a fn's MI < 20. Production minimum currently 47 (no fires).

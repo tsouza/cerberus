@@ -75,14 +75,15 @@ type breakerPeeker interface {
 	PeekBreakerState() string
 }
 
-// admitTopUp is the two-stage weighted-admission hook (docs §Parallel #2).
-// admit.Middleware already charged weight 1 at handler entry, before the
-// route was known; at routing time the Executor asks for (P-1) ADDITIONAL
-// units. TryAcquireTopUp is non-blocking: it returns the number of units
-// actually obtained (0..want) plus a release closure. On a partial / zero
-// grant the Executor clamps effective parallelism to 1+granted and runs —
-// it NEVER 503s and NEVER proceeds at full P. The release closure is
-// idempotent and runs exactly once at shardCursor.Close.
+// admitTopUp is the two-stage weighted-admission hook (docs/solver.md
+// §"Execution and cursor model"). admit.Middleware already charged
+// weight 1 at handler entry, before the route was known; at routing time
+// the Executor asks for (P-1) ADDITIONAL units. TryAcquireTopUp is
+// non-blocking: it returns the number of units actually obtained (0..want)
+// plus a release closure. On a partial / zero grant the Executor clamps
+// effective parallelism to 1+granted and runs — it NEVER 503s and NEVER
+// proceeds at full P. The release closure is idempotent and runs exactly
+// once at shardCursor.Close.
 //
 // *admit.Limiter satisfies it. A nil admitTopUp (admission disabled) grants
 // the full request — the Executor treats it as "no cap".

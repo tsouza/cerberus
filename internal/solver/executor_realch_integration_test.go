@@ -270,8 +270,8 @@ func TestExecutor_PerShardMaxMemoryUsage_RealClickHouse(t *testing.T) {
 		}
 
 		// Both shards run the identical full-table aggregation and their
-		// outputs concatenate (docs §"Result composition"): every GROUP BY
-		// bucket, once per shard.
+		// outputs concatenate (docs/solver.md §"Execution and cursor model"):
+		// every GROUP BY bucket, once per shard.
 		wantRows := memProbeGroupCardinality * memProbeShardCount
 		if n != wantRows {
 			t.Fatalf("drained %d rows, want %d (%d GROUP BY buckets x %d shards) — "+

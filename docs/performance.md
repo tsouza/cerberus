@@ -167,11 +167,12 @@ every PR) to *broad* (corpus-wide, nightly).
    and asserts wall-time stays **sub-linear** in it *and* peak intermediate
    cardinality stays **bounded**. This is the compute-fan-out axis the original
    read-side harness was blind to.
-3. **Corpus-wide fan-out profiler** — `test/perf/profile`, nightly +
-   push-to-main, informational. Profiles all ~636 fixtures via in-process chDB
-   `EXPLAIN` + per-subquery `count()`, ranks them by fan factor, and surfaces
-   the worst as a job step-summary. The wide net for a fan-out in a construct
-   nobody thought to write a guard for.
+3. **Corpus-wide fan-out profiler** — `test/perf/profile`, the required
+   `profile` job: it reports on every PR, and does the real profiling on
+   push-to-main / nightly / dispatch / release PRs. Profiles all 734 executable
+   fixtures via in-process chDB `EXPLAIN` + per-subquery `count()`, ranks them
+   by fan factor, and surfaces the worst as a job step-summary. The wide net
+   for a fan-out in a construct nobody thought to write a guard for.
 4. **Cardinality ratchet** — `test/perf/cardinality_ratchet_test.go`, in the
    `perf-guards` chDB job (runs on every PR; informational). Pins every
    fixture's fan factor + structural flags + recursion depth in
@@ -197,8 +198,8 @@ lives in the weekly informational `perf-benchmark` lane
 deterministic allocation pin -- `TestSliceAllocs_ChDB` in the `perf-guards` chDB
 job. It asserts `slice()`'s allocs/op stays under a pinned ceiling at K=4 and
 K=16, so a revert of the COW sharing back to a per-shard `CloneNode` re-inflates
-the allocation count past the bound and fails a required check rather than
-silently regressing.
+the allocation count past the bound and turns the `perf-guards` lane red rather
+than silently regressing.
 
 ### Set-op chains: N-ary linearisation
 

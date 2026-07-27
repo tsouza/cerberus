@@ -206,29 +206,6 @@ func (s AttributeScope) String() string {
 	}
 }
 
-// AttributeScopeFromString is the inverse of AttributeScope.String for the
-// scopes that have surface syntax.
-func AttributeScopeFromString(s string) AttributeScope {
-	switch s {
-	case "trace":
-		return AttributeScopeTrace
-	case "span":
-		return AttributeScopeSpan
-	case "resource":
-		return AttributeScopeResource
-	case "event":
-		return AttributeScopeEvent
-	case "link":
-		return AttributeScopeLink
-	case "instrumentation":
-		return AttributeScopeInstrumentation
-	case "", "none":
-		return AttributeScopeNone
-	default:
-		return AttributeScopeUnknown
-	}
-}
-
 // Intrinsic identifies a built-in span/trace property that is addressable
 // without a scope prefix (duration, name, status, kind, …) as well as the
 // scoped intrinsics (span:duration, trace:rootName, …) and the structural

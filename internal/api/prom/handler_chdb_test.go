@@ -478,7 +478,8 @@ INSERT INTO otel_metrics_gauge VALUES
 	srv, _ := newChDBServer(t, seed)
 	resp, err := http.Get(fmt.Sprintf(
 		"%s/api/v1/query?query=count(demo_memory_usage_bytes)&time=%d",
-		srv.URL, seedTime.Unix()))
+		srv.URL, seedTime.Unix(),
+	))
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -528,7 +529,8 @@ INSERT INTO otel_metrics_gauge VALUES
 	srv, _ := newChDBServer(t, seed)
 	resp, err := http.Get(fmt.Sprintf(
 		"%s/api/v1/query?query=count%%20by%%20(job)(demo_memory_usage_bytes)&time=%d",
-		srv.URL, seedTime.Unix()))
+		srv.URL, seedTime.Unix(),
+	))
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

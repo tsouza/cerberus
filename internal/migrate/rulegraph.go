@@ -320,16 +320,13 @@ func sortedUnique(in []string) []string {
 	return out
 }
 
-// HarvestRuleFiles reads the recording/alerting rule files matched by rulePaths
-// and splits them into what the graph needs: the recording-rule OUTPUT series
-// (RecordedSeries), and every rule expr — both alerting exprs AND recording-rule
-// exprs — as consumer queries. Feeding recording-rule exprs as consumers links
-// rule-to-rule chains (a recorded series consumed by another recording rule),
-// keeping the over-link-never-under-link invariant honest. Any input it cannot
-// use — a bad glob, an unreadable file, a YAML parse failure, a rule that is
-// neither a record nor an alert, a rule with an empty expr — is returned as a
-// counted skip rather than dropped.
-func HarvestRuleFiles(rulePaths []string) (recorded []RecordedSeries, consumers []HarvestedQuery, skipped []SkippedEntry) {
+// eachRuleFile expands every pattern in rulePaths, reads and YAML-parses each
+// matched file, and hands the parsed groups to visit. Anything it cannot use —
+// a bad glob, a glob matching nothing, an unreadable file, a parse failure — is
+// returned as a SkippedEntry rather than dropped, interleaved in encounter
+// order with the skips visit itself reports.
+func eachRuleFile(rulePaths []string, visit func(file string, rg promrules.RuleGroups) []SkippedEntry) []SkippedEntry {
+	var skipped []SkippedEntry
 	for _, pattern := range rulePaths {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
@@ -351,12 +348,28 @@ func HarvestRuleFiles(rulePaths []string) (recorded []RecordedSeries, consumers 
 				skipped = append(skipped, SkippedEntry{Source: file, Reason: fmt.Sprintf("parse: %v", err)})
 				continue
 			}
-			rec, cons, sk := splitRuleGroups(file, rg)
-			recorded = append(recorded, rec...)
-			consumers = append(consumers, cons...)
-			skipped = append(skipped, sk...)
+			skipped = append(skipped, visit(file, rg)...)
 		}
 	}
+	return skipped
+}
+
+// HarvestRuleFiles reads the recording/alerting rule files matched by rulePaths
+// and splits them into what the graph needs: the recording-rule OUTPUT series
+// (RecordedSeries), and every rule expr — both alerting exprs AND recording-rule
+// exprs — as consumer queries. Feeding recording-rule exprs as consumers links
+// rule-to-rule chains (a recorded series consumed by another recording rule),
+// keeping the over-link-never-under-link invariant honest. Any input it cannot
+// use — a bad glob, an unreadable file, a YAML parse failure, a rule that is
+// neither a record nor an alert, a rule with an empty expr — is returned as a
+// counted skip rather than dropped.
+func HarvestRuleFiles(rulePaths []string) (recorded []RecordedSeries, consumers []HarvestedQuery, skipped []SkippedEntry) {
+	skipped = eachRuleFile(rulePaths, func(file string, rg promrules.RuleGroups) []SkippedEntry {
+		rec, cons, sk := splitRuleGroups(file, rg)
+		recorded = append(recorded, rec...)
+		consumers = append(consumers, cons...)
+		return sk
+	})
 	return recorded, consumers, skipped
 }
 
@@ -423,32 +436,11 @@ const lokiRuleSourcePrefix = "loki-rule:"
 // gate exactly like an equivalent --rules miss does today, so "nothing
 // configured" is never read as "no rules, all clear."
 func HarvestLokiRuleFiles(rulePaths []string) (recorded []RecordedSeries, skipped []SkippedEntry) {
-	for _, pattern := range rulePaths {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			skipped = append(skipped, SkippedEntry{Source: pattern, Reason: fmt.Sprintf("bad path pattern: %v", err)})
-			continue
-		}
-		if len(matches) == 0 {
-			skipped = append(skipped, SkippedEntry{Source: pattern, Reason: "no files matched"})
-			continue
-		}
-		for _, file := range matches {
-			data, err := os.ReadFile(file) //nolint:gosec // operator-supplied rule-file path; offline CLI.
-			if err != nil {
-				skipped = append(skipped, SkippedEntry{Source: file, Reason: fmt.Sprintf("read: %v", err)})
-				continue
-			}
-			rg, err := promrules.Parse(data)
-			if err != nil {
-				skipped = append(skipped, SkippedEntry{Source: file, Reason: fmt.Sprintf("parse: %v", err)})
-				continue
-			}
-			rec, sk := splitLokiRuleGroups(file, rg)
-			recorded = append(recorded, rec...)
-			skipped = append(skipped, sk...)
-		}
-	}
+	skipped = eachRuleFile(rulePaths, func(file string, rg promrules.RuleGroups) []SkippedEntry {
+		rec, sk := splitLokiRuleGroups(file, rg)
+		recorded = append(recorded, rec...)
+		return sk
+	})
 	return recorded, skipped
 }
 

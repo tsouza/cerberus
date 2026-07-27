@@ -3,22 +3,22 @@ package solver
 import (
 	"context"
 	"errors"
-	"sort"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
 // shardCursor concatenates the K per-shard sample streams behind the
-// chclient.Cursor interface (docs §"Result composition"). Composition is
-// CONCATENATION, not evaluation: anchors are disjoint across slices by
-// construction, so cerberus computes nothing — zero arithmetic, zero
-// merge-by-key. The composer drains channel 0 (oldest slice) to exhaustion,
-// then channel 1, ..., keeping per-series timestamps nearly ascending so
-// the handler's insertion sort stays ~O(n).
+// chclient.Cursor interface (docs/solver.md §"Execution and cursor model").
+// Composition is CONCATENATION, not evaluation: anchors are disjoint across
+// slices by construction, so cerberus computes nothing — zero arithmetic,
+// zero merge-by-key. The composer drains channel 0 (oldest slice) to
+// exhaustion, then channel 1, ..., keeping per-series timestamps nearly
+// ascending so the handler's insertion sort stays ~O(n).
 //
 // All per-request state — child cursors, interned labels, the errgroup, the
 // gate / admit releases — is born with the request and dies at Close. There
@@ -198,7 +198,7 @@ func (sc *shardCursor) reintern(labels map[string]string) (map[string]string, ui
 	if labels == nil {
 		return nil, 0
 	}
-	key := canonicalLabelKey(labels)
+	key := format.CanonicalKey(labels)
 	if cached, ok := sc.interned[key]; ok {
 		return cached.labels, cached.id
 	}
@@ -234,10 +234,11 @@ func (sc *shardCursor) Err() error {
 	return nil
 }
 
-// Close tears the routed request down exactly once (docs §"Lifecycle"):
-// cancel gctx → wait all producers → close every child cursor → release the
-// gate slots + admit top-up → return the first non-nil child close error.
-// Safe to call from multiple goroutines; the teardown runs under sync.Once.
+// Close tears the routed request down exactly once (docs/solver.md §"Failure
+// and cancellation contract", "Lifecycle"): cancel gctx → wait all
+// producers → close every child cursor → release the gate slots + admit
+// top-up → return the first non-nil child close error. Safe to call from
+// multiple goroutines; the teardown runs under sync.Once.
 func (sc *shardCursor) Close() error {
 	sc.closeOnce.Do(func() {
 		// Cancel with a benign cause so any still-running producer unblocks
@@ -278,28 +279,4 @@ func (sc *shardCursor) Close() error {
 		}
 	})
 	return sc.closeErr
-}
-
-// canonicalLabelKey is the cross-shard intern key: keys sorted
-// ASCII-ascending, pairs joined "k=v\x00" so two distinct label sets cannot
-// alias. Mirrors internal/api/format.CanonicalKey and chclient's per-cursor
-// key — duplicated locally because internal/solver must not import the api
-// packages (and re-implementing avoids an import-cycle surface).
-func canonicalLabelKey(labels map[string]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b []byte
-	for _, k := range keys {
-		b = append(b, k...)
-		b = append(b, '=')
-		b = append(b, labels[k]...)
-		b = append(b, 0)
-	}
-	return string(b)
 }

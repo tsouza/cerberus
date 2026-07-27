@@ -64,6 +64,10 @@
 // Env:
 //   MODE            `emit` | `verify` (also argv[2]); default `verify`.
 //   PLAYWRIGHT_DIR  glob root; default `test/e2e/playwright`.
+//   INCLUDE_CRAWL   (emit) "true" adds the ~50min crawl shard — set on
+//                   schedule, workflow_dispatch, and release/* PRs.
+//   INCLUDE_SPLIT   (emit) "true" fans the smoke shards over monolith AND
+//                   split mode — same event set as INCLUDE_CRAWL.
 //   GITHUB_OUTPUT   (emit) runner file the matrix JSON is appended to.
 //
 // Exit: 0 clean / matrix emitted; 1 on any coverage violation or bad MODE.
@@ -71,9 +75,8 @@
 // node: builtins only (via lib/gh.mjs) — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { error, notice, log, lsFiles, setOutput, appendStepSummary } from './lib/gh.mjs';
-
-const PW_DIR = process.env.PLAYWRIGHT_DIR || 'test/e2e/playwright';
+import { error, notice, log, setOutput, appendStepSummary } from './lib/gh.mjs';
+import { SHARD_NAME_RE, collectShardCoverageViolations, discoverSpecs } from './lib/shard-coverage.mjs';
 
 // CRAWL_STACK value that selects the k3d crawl-suite config (crawl/stacks.ts).
 // A smoke shard leaves it EMPTY so playwright.config.ts ignores crawl/**
@@ -105,12 +108,11 @@ const SPLIT_ONLY_SPECS = new Set(['split_isolation.spec.ts']);
 // interpolated as `matrix.timeoutMinutes`).
 //
 // The CRAWL shard gets a HARD 30-min cap. The k3d crawl is a slow BFS COVERAGE
-// lane (not a correctness gate — the whole `dashboard` lane is informational,
-// never a PR gate); on a hang it rode the job to its long timeout holding the
-// `cancel-in-progress: false` k3d concurrency slot. A 30-min cap makes it FAIL
-// FAST and release the slot. The smoke shards keep their prior effective 75-min
-// job ceiling (k3d bring-up ~3-5min + the non-crawl smoke specs fit comfortably);
-// the value is preserved verbatim from the old single per-job `timeout-minutes`.
+// lane, not a correctness gate, and it is dispatched only on schedule + manual
+// dispatch + release/* PRs; on a hang it rides the job to its long timeout
+// holding the `cancel-in-progress: false` k3d concurrency slot. A 30-min cap
+// makes it FAIL FAST and release the slot. The smoke shards keep a 75-min job
+// ceiling (k3d bring-up ~3-5min + the non-crawl smoke specs fit comfortably).
 const CRAWL_SHARD_TIMEOUT_MIN = 30;
 const SMOKE_SHARD_TIMEOUT_MIN = 75;
 
@@ -217,100 +219,29 @@ const EXCLUDED = [
   'tempo_two_phase_compare.spec.ts', //  opt-in structural two-phase A/B; needs `docker compose --profile twophase up` (cerberus-nosplit + telemetrygen-traces) and CERBERUS_NOSPLIT_URL — skips otherwise, so never runs in the k3d dashboard lane
 ];
 
-// Shard names render straight into the matrix `name` -> child check context
-// `dashboard-shard (shard-x)` + the per-shard artifact name. Keep them
-// filename-safe.
-const SHARD_NAME_RE = /^[a-z0-9-]+$/;
-
-const stripDir = (p) => p.replace(new RegExp(`^${PW_DIR}/`), '');
-
-// discover() — the tracked dashboard-lane spec universe. Two explicit globs
-// (the dir root + the crawl/ subdir) rather than `**` so a future deeper
-// subdir is itself a reviewable event, not silently vacuumed into scope.
-export function discover() {
-  const paths = lsFiles([`${PW_DIR}/*.spec.ts`, `${PW_DIR}/crawl/*.spec.ts`]);
-  return paths.map(stripDir);
-}
+// discover() — the tracked dashboard-lane spec universe (lib/shard-coverage.mjs).
+export const discover = discoverSpecs;
 
 // collectViolations() — returns a string[] of human-readable violations
-// (empty == clean). Collect-then-fail (not fail-fast) so a maintainer
-// reworking the partition sees every problem in one run.
+// (empty == clean). The partition rules are shared with the compose-smoke lane
+// so a new rule guards both; this lane adds one rule of its own.
 export function collectViolations(discovered) {
-  const v = [];
-  const dset = new Set(discovered);
-  if (dset.size !== discovered.length) {
-    v.push('discovery returned duplicate paths');
-  }
-
-  // Shard hygiene + build the spec -> [owning shard…] map.
-  const owners = new Map();
-  const names = new Set();
-  let goE2ECount = 0;
-  for (const s of SHARDS) {
-    if (!SHARD_NAME_RE.test(s.name)) {
-      v.push(`bad shard name "${s.name}" (must match ${SHARD_NAME_RE})`);
-    }
-    if (names.has(s.name)) {
-      v.push(`duplicate shard name: ${s.name}`);
-    }
-    names.add(s.name);
-    if (s.runGoE2E) goE2ECount += 1;
-    if (!s.specs || s.specs.length === 0) {
-      v.push(`empty shard (would boot a k3d cluster to run nothing): ${s.name}`);
-      continue;
-    }
-    for (const spec of s.specs) {
-      owners.set(spec, [...(owners.get(spec) || []), s.name]);
-    }
-  }
+  const { violations } = collectShardCoverageViolations({
+    discovered,
+    shards: SHARDS,
+    excluded: EXCLUDED,
+    emptySubstrate: 'a k3d cluster',
+  });
 
   // Exactly one shard runs the Go e2e suite — zero would drop Go e2e coverage
   // from the lane silently; two would redundantly re-run it on two clusters.
+  const goE2ECount = SHARDS.filter((s) => s.runGoE2E).length;
   if (goE2ECount !== 1) {
-    v.push(`exactly one shard must set runGoE2E:true (the Go e2e suite runs once across the matrix); found ${goE2ECount}`);
+    violations.push(
+      `exactly one shard must set runGoE2E:true (the Go e2e suite runs once across the matrix); found ${goE2ECount}`,
+    );
   }
-
-  const assigned = new Set(owners.keys());
-  const excluded = new Set(EXCLUDED);
-
-  if (excluded.size !== EXCLUDED.length) {
-    v.push('EXCLUDED contains duplicate entries');
-  }
-
-  // double-assignment (wasted work + a spec running on two clusters).
-  for (const [spec, who] of owners) {
-    if (who.length > 1) {
-      v.push(`double-assigned spec ${spec} -> shards [${who.join(', ')}]`);
-    }
-  }
-  // assigned AND excluded — a contradiction.
-  for (const spec of assigned) {
-    if (excluded.has(spec)) {
-      v.push(`spec is both assigned and excluded: ${spec}`);
-    }
-  }
-  // stale exclude: names a spec that no longer exists (rename/delete) — it
-  // could be masking a coverage hole, so it's a hard error not a warning.
-  for (const spec of excluded) {
-    if (!dset.has(spec)) {
-      v.push(`excluded spec not found on disk (stale exclude / rename?): ${spec}`);
-    }
-  }
-  // phantom assignment: a shard lists a spec that isn't on disk.
-  for (const spec of assigned) {
-    if (!dset.has(spec)) {
-      v.push(`phantom spec (assigned but not on disk): ${spec} [shard ${owners.get(spec).join(', ')}]`);
-    }
-  }
-  // THE coverage gap: discovered, neither assigned nor excluded.
-  for (const spec of discovered) {
-    if (!assigned.has(spec) && !excluded.has(spec)) {
-      v.push(
-        `UNASSIGNED spec (silent coverage gap): ${spec} — assign it to a shard in SHARDS or add it to EXCLUDED with a reason`,
-      );
-    }
-  }
-  return v;
+  return violations;
 }
 
 // shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. The crawl
@@ -407,11 +338,12 @@ function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
   // The crawl shard (CRAWL_STACK=k3d) is the ~50min full-depth long pole, so it
-  // is dispatched only on schedule + manual dispatch (INCLUDE_CRAWL=true). On
-  // pull_request + push the matrix is smoke-only: the parallel smoke shards run
-  // (fast, testable per-change) with no all-skipped crawl leg. Coverage is
-  // unaffected — every spec is still ASSIGNED to a shard (asserted above); the
-  // crawl shard is simply not dispatched on those events.
+  // is dispatched only on schedule + manual dispatch + release/* PRs
+  // (INCLUDE_CRAWL=true). On every other pull_request + push the matrix is
+  // smoke-only: the parallel smoke shards run (fast, testable per-change) with
+  // no all-skipped crawl leg. Coverage is unaffected — every spec is still
+  // ASSIGNED to a shard (asserted above); the crawl shard is simply not
+  // dispatched on those events.
   const includeCrawl = process.env.INCLUDE_CRAWL === 'true';
   const includeSplit = process.env.INCLUDE_SPLIT === 'true';
   const include = buildMatrix(includeCrawl, includeSplit);

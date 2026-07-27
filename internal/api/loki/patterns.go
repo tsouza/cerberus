@@ -11,7 +11,6 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/drain"
-	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -122,19 +121,8 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 		).
 		From(chsql.Col(s.LogsTable))
 
-	pred := logql.SelectorPredicate(matchers, s)
-	if pred != nil {
-		whereFrag, err := exprFrag(pred)
-		if err != nil {
-			return "", nil, err
-		}
-		sb.Where(whereFrag)
-	}
-	if !start.IsZero() {
-		sb.Where(timeBoundFrag(s.TimestampColumn, ">=", start))
-	}
-	if !end.IsZero() {
-		sb.Where(timeBoundFrag(s.TimestampColumn, "<=", end))
+	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
+		return "", nil, err
 	}
 	sb.OrderBy(chsql.Col(s.TimestampColumn), true).
 		Limit(int64(lineLimit))

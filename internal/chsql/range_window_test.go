@@ -14,9 +14,9 @@ import (
 // expression for the four compatibility-lane gaps closed in the
 // original five-function batch that this test was carved out of.
 // `absent_over_time` graduated to a dedicated chplan.AbsentOverTime
-// node (see TestAbsentOverTimeEmit) because the per-series RangeWindow
-// shape can't synthesise the matcher-derived label set Prom's
-// funcAbsentOverTime emits.
+// node (see test/spec/promql/absent_over_time_*.txtar) because the
+// per-series RangeWindow shape can't synthesise the matcher-derived
+// label set Prom's funcAbsentOverTime emits.
 //
 //   - stdvar_over_time → two-pass Σ(x-μ)²/N (Welford-equivalent precision)
 //   - deriv            → tupleElement(arrayReduce('simpleLinearRegression', xs, ys), 1)

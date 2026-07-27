@@ -19,8 +19,8 @@
 //
 //   2. test-layer count — the canonical number of test layers is the count of
 //      DISTINCT integer layer numbers across the `### Layer N` subsection
-//      headings in docs/test-strategy.md (1..13 today, ignoring the a/b/c/d
-//      sub-letters = 13). The gate asserts every "N-layer test map" claim in
+//      headings in docs/test-strategy.md (1..14 today, ignoring the a/b/c/d
+//      sub-letters = 14). The gate asserts every "N-layer test map" claim in
 //      CLAUDE.md (and any prose layer-count claim in test-strategy.md /
 //      README.md) matches that live heading count.
 //
@@ -72,7 +72,7 @@ export function countForbidSkipChecks(src) {
 // countTestLayers — the live number of test layers is the count of DISTINCT
 // integer layer numbers across the `### Layer N[sub] — title` headings in
 // test-strategy.md. Sub-lettered headings (2a, 2b, 6d, 7b) collapse to their
-// integer, so 1,2a,2b,3..13 -> {1..13} -> 13.
+// integer, so 1,2a,2b,3..14 -> {1..14} -> 14.
 export function countTestLayers(src) {
   const ints = new Set();
   const re = /^###\s+Layer\s+(\d+)[a-z]?\b/gm;
@@ -256,23 +256,31 @@ function selfTest() {
   check('layer deriver collapses 1,2a,2b,3 to 3 distinct integers', fakeLayers === 3);
   check('layer deriver yields the integers [1,2,3]', ints.join(',') === '1,2,3');
 
-  // The REAL test-strategy.md must derive exactly 13.
+  // The REAL test-strategy.md must derive exactly this many layers. Pinning it
+  // is the tripwire that catches countTestLayers silently breaking (returning 0,
+  // or double-counting the a/b/c sub-letters). Adding a test layer is therefore
+  // a deliberate one-line bump here, not an accident.
+  const realLayers = 14;
+  const staleLayers = realLayers - 1;
   const realStrategy = readFileSync(TEST_STRATEGY_DOC, 'utf8');
-  check('real test-strategy.md derives 13 layers', countTestLayers(realStrategy).count === 13);
+  check(`real test-strategy.md derives ${realLayers} layers`, countTestLayers(realStrategy).count === realLayers);
 
   // 4. A doc claiming the WRONG layer count must be REJECTED.
-  const staleClaude = 'See the canonical 12-layer test map for details.';
-  const layerClaims12 = extractClaims(staleClaude, TEST_LAYER_CLAIM_PATTERNS);
-  check('layer claim extractor finds the "12-layer test map" claim', layerClaims12.some((c) => c.value === 12));
+  const staleClaude = `See the canonical ${staleLayers}-layer test map for details.`;
+  const staleLayerClaims = extractClaims(staleClaude, TEST_LAYER_CLAIM_PATTERNS);
   check(
-    'layer gate would REJECT a doc claiming 12 against source 13',
-    layerClaims12.some((c) => c.value !== 13),
+    `layer claim extractor finds the "${staleLayers}-layer test map" claim`,
+    staleLayerClaims.some((c) => c.value === staleLayers),
   );
-  const fixedClaude = 'See the canonical 13-layer test map for details.';
-  const layerClaims13 = extractClaims(fixedClaude, TEST_LAYER_CLAIM_PATTERNS);
   check(
-    'layer gate would ACCEPT a doc claiming the real 13',
-    layerClaims13.length > 0 && layerClaims13.every((c) => c.value === 13),
+    `layer gate would REJECT a doc claiming ${staleLayers} against source ${realLayers}`,
+    staleLayerClaims.some((c) => c.value !== realLayers),
+  );
+  const fixedClaude = `See the canonical ${realLayers}-layer test map for details.`;
+  const realLayerClaims = extractClaims(fixedClaude, TEST_LAYER_CLAIM_PATTERNS);
+  check(
+    `layer gate would ACCEPT a doc claiming the real ${realLayers}`,
+    realLayerClaims.length > 0 && realLayerClaims.every((c) => c.value === realLayers),
   );
 
   if (failures === 0) {

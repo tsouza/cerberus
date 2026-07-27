@@ -8,8 +8,8 @@ import (
 )
 
 // slice decomposes the eval grid into k disjoint, on-grid anchor sub-grids
-// and re-anchors a share-immutable-off-spine view of plan onto each (docs
-// §Decomposition "Primary dimension"). It is the geometry half of the
+// and re-anchors a share-immutable-off-spine view of plan onto each
+// (docs/solver.md §"Slicing geometry"). It is the geometry half of the
 // Planner: pure arithmetic over the anchor grid plus a ReanchorRange per
 // slice. ReanchorRange clones only the O(spine-depth) re-gridded spine nodes
 // and shares the immutable off-spine subtrees, so the input plan is never

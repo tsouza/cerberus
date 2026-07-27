@@ -430,8 +430,9 @@ func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
 //
 // quantile_over_time is excluded here on purpose — Tempo routes it
 // through HistogramAggregator rather than UngroupedAggregator, so the
-// ungrouped wire shape is `{p="<phi>"}`. See
-// TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel for that
+// ungrouped wire shape is `{p="<phi>"}`, synthesised by the
+// post-processor rather than projected in SQL. See
+// TestWrapMetricsForSample_UngroupedQuantileSurfacesBucket for that
 // branch.
 func TestWrapMetricsForSample_UngroupedAttachesMetricName(t *testing.T) {
 	t.Parallel()

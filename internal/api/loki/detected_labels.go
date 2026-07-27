@@ -9,7 +9,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
-	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -91,25 +90,15 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 // distinct values it carries across the matched stream set.
 //
 // All identifiers + time bounds flow through QueryBuilder slots; the
-// selector predicate composes typed Frags via logql.SelectorPredicate.
+// selector predicate and the request window are placed by
+// applySelectorAndWindow, which composes typed Frags throughout.
 func buildDetectedLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(chsql.As(chsql.Col(s.ResourceAttributesColumn), "labels")).
 		From(chsql.Col(s.LogsTable))
 
-	pred := logql.SelectorPredicate(matchers, s)
-	if pred != nil {
-		whereFrag, err := exprFrag(pred)
-		if err != nil {
-			return "", nil, err
-		}
-		sb.Where(whereFrag)
-	}
-	if !start.IsZero() {
-		sb.Where(timeBoundFrag(s.TimestampColumn, ">=", start))
-	}
-	if !end.IsZero() {
-		sb.Where(timeBoundFrag(s.TimestampColumn, "<=", end))
+	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
+		return "", nil, err
 	}
 	sb.GroupBy(chsql.Col("labels"))
 

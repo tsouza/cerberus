@@ -78,8 +78,8 @@ type Decision struct {
 const StrategyShardedTimeslice = "sharded-timeslice"
 
 // Reason vocabulary — the values that appear on the shadow header
-// X-Cerberus-Route-Decision (docs §"The solver framework"). Every non-route
-// path sets exactly one; a true route sets ReasonRouted.
+// X-Cerberus-Route-Decision (docs/solver.md §"Eligibility signals"). Every
+// non-route path sets exactly one; a true route sets ReasonRouted.
 const (
 	// ReasonRouted: eligible AND cost thresholds cleared AND K >= 2 — the
 	// plan routes B.

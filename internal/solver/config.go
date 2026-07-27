@@ -52,9 +52,10 @@ const (
 // ConfigFromEnv (config_env.go) — kept in this package rather than
 // internal/config to avoid an import cycle; this package owns the defaults and
 // the invariants. The defaults are deliberately conservative against the
-// over-routing attack (docs §Routing): Grafana's auto-step makes the dominant
-// production shape rate[5m] @ 15s hit F=20, N>=241, which must NOT route at
-// these thresholds unless the total expansion is spike-class.
+// over-routing attack (docs/solver.md §"Eligibility signals"): Grafana's
+// auto-step makes the dominant production shape rate[5m] @ 15s hit F=20,
+// N>=241, which must NOT route at these thresholds unless the total expansion
+// is spike-class.
 type Config struct {
 	// Mode is "auto" | "single" | "sharded" (CERBERUS_EVAL_ROUTE).
 	Mode string
@@ -126,7 +127,7 @@ type Config struct {
 	RouteMemoReValidationFraction int
 }
 
-// Default tuning constants (docs §Routing / §"The solver framework").
+// Default tuning constants (docs/solver.md).
 const (
 	defaultMinFanout          = 16
 	defaultMinAnchorPairs     = 4000
@@ -155,9 +156,10 @@ func DefaultConfig() Config {
 }
 
 // Validate fail-fast checks the solver-internal invariants. The pool / gate /
-// P arithmetic (docs §Parallel #9) lives in chclient + internal/config, which
-// this PR does not wire, so it is intentionally NOT validated here — only the
-// constraints the Planner and Slicer in this package depend on.
+// P arithmetic (docs/solver.md §"Execution and cursor model") lives in
+// chclient + internal/config, outside this package, so it is intentionally
+// NOT validated here — only the constraints the Planner and Slicer in this
+// package depend on.
 //
 // The Mode check applies in every mode (an unknown route knob is a
 // misconfiguration regardless). The numeric invariants apply unconditionally

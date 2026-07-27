@@ -120,9 +120,9 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 				scopeKeys = append(scopeKeys, key)
 			}
 			ss.Spans = append(ss.Spans, &tracev1.Span{
-				TraceId:           hexToBytesPadded(row.meta[traceByIDKeyTraceID], 16),
-				SpanId:            hexToBytesPadded(row.meta[traceByIDKeySpanID], 8),
-				ParentSpanId:      hexToBytesPadded(row.meta[traceByIDKeyParentSpanID], 8),
+				TraceId:           hexToBytesPadded(row.meta[traceByIDKeyTraceID], traceIDByteLen),
+				SpanId:            hexToBytesPadded(row.meta[traceByIDKeySpanID], spanIDByteLen),
+				ParentSpanId:      hexToBytesPadded(row.meta[traceByIDKeyParentSpanID], spanIDByteLen),
 				Name:              row.sample.MetricName,
 				Kind:              spanKindFromCH(row.meta[traceByIDKeySpanKind]),
 				StartTimeUnixNano: uint64(row.sample.Timestamp.UnixNano()),

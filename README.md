@@ -212,7 +212,7 @@ was written in.
 
 **ClickHouse.** 24.8 is the lowest version cerberus's emitted SQL is
 correct on; a query that runs on 24.8 runs on every newer server too. The
-differential compatibility harnesses execute on ClickHouse 25.8, so the
+differential compatibility harnesses execute on ClickHouse 26.5, so the
 validated SQL is exercised forward of the floor as well. On modern
 ClickHouse, the optimization auto-picker
 (`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes the server version
@@ -279,9 +279,10 @@ it is recorded in `report.json` and rendered into the live `compat-score.json`
 badge, but does not turn the required check red. The one lane that
 _hard-fails on any parity diff_ is `compatibility/prometheus-forced-route`
 (`FAIL_ON_DIFF=1`, proving the sharded solver route is byte-identical to
-reference Prometheus over the whole corpus) — that lane is informational,
-not a required check. The honest reading: the badges are a continuously
-re-measured conformance score, not a merge gate on numeric correctness.
+reference Prometheus over the whole corpus) — and that lane _is_ a
+required check. The honest reading: the three head badges are a
+continuously re-measured conformance score, not a merge gate on numeric
+correctness.
 
 **No allow-lists** — every diff against the reference is a real bug to
 fix at the source, not an exception to suppress. The full playbook
@@ -291,7 +292,7 @@ fix at the source, not an exception to suppress. The full playbook
 
 ## Testing
 
-Cerberus is tested at 13 layers, from parser and plan checks through
+Cerberus is tested at 14 layers, from parser and plan checks through
 emitted-SQL goldens and query roundtrips on real ClickHouse, the
 differential harnesses above, end-to-end Grafana flows, chaos and
 leak detectors, performance guards, and an oracle-based property
@@ -317,7 +318,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | [`docs/native-clickhouse.md`](docs/native-clickhouse.md)                 | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates (the upstream positioning).       |
 | [`docs/benchmarks.md`](docs/benchmarks.md)                               | Benchmark methodology and the recorded numbers (regenerable).                                                                 |
 | [`docs/compatibility.md`](docs/compatibility.md)                         | The differential-harness playbook for all three heads.                                                                        |
-| [`docs/test-strategy.md`](docs/test-strategy.md)                         | The 13-layer test map and CI-gate inventory.                                                                                  |
+| [`docs/test-strategy.md`](docs/test-strategy.md)                         | The 14-layer test map and CI-gate inventory.                                                                                  |
 | [`docs/observability.md`](docs/observability.md)                         | Self-observability across logs / metrics / traces (OTLP export).                                                              |
 | [`docs/health.md`](docs/health.md)                                       | `/readyz` / `/healthz` probe semantics.                                                                                       |
 | [`docs/upstream-forks.md`](docs/upstream-forks.md)                       | The `tsouza/*` parser-fork + Dependabot-watch flow.                                                                           |

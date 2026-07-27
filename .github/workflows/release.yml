@@ -401,6 +401,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Load-bearing, not boilerplate: `gh release edit` resolves the repository
+      # from the checkout's git remote (this workflow sets no GH_REPO), and the
+      # Docker Hub overview sync reads ./README.md from the working tree.
+      - uses: actions/checkout@v7
+
       # goreleaser created the release as a DRAFT (see .goreleaser.yml
       # release.draft) so it could attach assets while the release is still
       # mutable. Flip it published NOW, AFTER the assets + provenance are in

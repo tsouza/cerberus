@@ -378,8 +378,8 @@ func mustFindDetectedLevelBinary(t *testing.T, expr syntax.Expr, s schema.Logs) 
 	return nil
 }
 
-// walkChplanExpr is a minimal sibling of the cross-package
-// chplan.WalkExpr used by collectColumnRefs. Visits every Expr node
+// walkChplanExpr is a minimal sibling of the local expr walker in
+// internal/chsql's collectColumnRefs. Visits every Expr node
 // inside a chplan.Node (recurses through Binary / FuncCall / MapAccess
 // arms; other Expr kinds carry leaves).
 func walkChplanExpr(n chplan.Node, fn func(chplan.Expr)) {
