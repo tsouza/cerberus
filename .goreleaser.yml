@@ -134,123 +134,60 @@ snapshot:
 changelog:
   use: github-native
 
-dockers:
-  # Per-arch versioned image. Always pushed regardless of prerelease
-  # status. Tagged both `{{ .Version }}` (e.g. `1.0.0-RC1`, the
-  # goreleaser convention) and `v{{ .Version }}` (e.g. `v1.0.0-RC1`,
-  # the SemVer-with-`v` convention many ops tools default to).
-  - id: cerberus-amd64
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-amd64"
-    use: buildx
-    goos: linux
-    goarch: amd64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.description=Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+# Registry operations retry rather than failing the release on one slow
+# response. Stated rather than inherited -- these ARE goreleaser's defaults, but
+# "a transient registry timeout stopped the release one step short of shipping"
+# is a failure mode this repo has already been bitten by, so the retry belongs
+# where someone reading the publish config will see it.
+retry:
+  attempts: 10
+  delay: 10s
+  max_delay: 5m
 
-  - id: cerberus-arm64
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
-      - "docker.io/tsouza/cerberus:{{ .Version }}-arm64"
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-arm64"
-    use: buildx
-    goos: linux
-    goarch: arm64
+# One entry replaces the four `dockers` blocks and six `docker_manifests`
+# blocks this used to be. `dockers_v2` drives `docker buildx` directly, so the
+# multi-arch manifest is a product of listing `platforms` rather than a second
+# section that has to be kept in sync with the per-arch image names by hand.
+#
+# The per-arch `:{{ .Version }}-amd64` / `-arm64` tags the old shape published
+# are gone. They existed only as manifest inputs — nothing in this repo, the
+# chart, or the docs ever pulled one.
+#
+# Tagged both `{{ .Version }}` (e.g. `1.0.0-RC1`, the goreleaser convention)
+# and `v{{ .Version }}` (e.g. `v1.0.0-RC1`, the SemVer-with-`v` convention many
+# ops tools default to). Both registries get the identical tag set.
+dockers_v2:
+  - id: cerberus
+    ids:
+      - cerberus
     dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.description=Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-  # `latest-*` tags published ONLY for the HIGHEST stable release
-  # (RELEASE_IS_LATEST, computed in release.yml: tag == highest stable
-  # semver). A prerelease never advances `:latest`, AND a stable BACKPORT
-  # (e.g. v1.2.1 cut after v1.3.0) must not drag `:latest` backwards either.
-  - id: cerberus-amd64-latest
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:latest-amd64"
-      - "docker.io/tsouza/cerberus:latest-amd64"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    use: buildx
-    goos: linux
-    goarch: amd64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-  - id: cerberus-arm64-latest
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:latest-arm64"
-      - "docker.io/tsouza/cerberus:latest-arm64"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    use: buildx
-    goos: linux
-    goarch: arm64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-docker_manifests:
-  # Versioned multi-arch manifests — always published.
-  - name_template: "ghcr.io/tsouza/cerberus:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/tsouza/cerberus:v{{ .Version }}"
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
-  # `:latest` manifest — only the HIGHEST stable release (RELEASE_IS_LATEST):
-  # neither a prerelease nor a stable backport advances the rolling `:latest`.
-  - name_template: "ghcr.io/tsouza/cerberus:latest"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:latest-amd64"
-      - "ghcr.io/tsouza/cerberus:latest-arm64"
-  # Docker Hub mirrors of the same manifests (same per-arch images, pushed to
-  # both registries in one build) — identical tag set and `:latest` gating.
-  - name_template: "docker.io/tsouza/cerberus:{{ .Version }}"
-    image_templates:
-      - "docker.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:{{ .Version }}-arm64"
-  - name_template: "docker.io/tsouza/cerberus:v{{ .Version }}"
-    image_templates:
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-arm64"
-  - name_template: "docker.io/tsouza/cerberus:latest"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    image_templates:
-      - "docker.io/tsouza/cerberus:latest-amd64"
-      - "docker.io/tsouza/cerberus:latest-arm64"
+    images:
+      - ghcr.io/tsouza/cerberus
+      - docker.io/tsouza/cerberus
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{ .Version }}"
+      - "v{{ .Version }}"
+      # `:latest` moves ONLY for the HIGHEST stable release (RELEASE_IS_LATEST,
+      # computed in release.yml: tag == highest stable semver). A prerelease
+      # never advances it, AND a stable BACKPORT (e.g. v1.2.1 cut after v1.3.0)
+      # must not drag it backwards either. An empty tag is dropped, which is how
+      # dockers_v2 spells the conditional push the old `skip_push` did.
+      - '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}latest{{ end }}'
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+      org.opencontainers.image.url: "https://github.com/tsouza/cerberus"
+      org.opencontainers.image.source: "https://github.com/tsouza/cerberus"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: "Apache-2.0"
+    # buildx attaches an SBOM attestation to the index. New with this shape --
+    # the old `dockers` blocks published none -- and it costs nothing: no extra
+    # secret, no extra tool, and it pairs with the binaries' SLSA provenance.
+    sbom: true
 
 release:
   # draft:true so goreleaser creates the GitHub release as a DRAFT (mutable)
