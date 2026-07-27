@@ -628,18 +628,24 @@ _pull-retry +IMAGES:
 # transient `prom/prometheus` fetch. `_pull-retry` already solved this for the
 # k3d lanes; the compose lanes just weren't going through it.
 #
-# Images already in the local daemon are skipped rather than re-pulled: the
-# cerberus image is acquired beforehand by its own recipe and may be a local
-# build (`pull_policy: never`) that no registry can serve.
+# Buildable services are skipped via compose's own `--ignore-buildable`, which
+# reads the `build:` sections in the model rather than guessing from what the
+# daemon happens to hold. Guessing is what broke Tier-2 on run 30281594098:
+# `dead-end-receiver` is built by compose during `up`, so it is absent from the
+# daemon at pre-pull time and a presence check classified it as "needs pulling"
+# — `cerberus-migration-tier2:dead-end-receiver` exists in no registry, so the
+# pull failed five times and took the lane with it. Whether an image is
+# *pullable* is a property of the compose model, not of daemon state.
 _compose-pull-retry +FILES:
     @args=""; for f in {{FILES}}; do args="$args -f $f"; done; \
-    missing=$(docker compose $args config --images | sort -u | while read -r img; do \
-        docker image inspect "$img" >/dev/null 2>&1 || echo "$img"; \
-    done); \
-    if [ -n "$missing" ]; then \
-        echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
-        just _pull-retry $missing; \
-    fi
+    echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
+    ok=0; \
+    for attempt in 1 2 3 4 5; do \
+        echo "    docker compose pull (attempt $attempt)"; \
+        docker compose $args pull --ignore-buildable --policy missing && { ok=1; break; }; \
+        sleep $((attempt * 3)); \
+    done; \
+    [ "$ok" = 1 ] || { echo "ERROR: docker compose pull failed after 5 attempts" >&2; exit 1; }
 
 e2e-up: e2e-down
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
