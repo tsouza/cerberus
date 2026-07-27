@@ -70,6 +70,25 @@ func readTier1CerberusConfig(t *testing.T) map[string]any {
 	return out
 }
 
+// tier1CerberusSetting walks a dotted path through the nested file — the shape
+// the chart's values.yaml uses and the docs hand out — and returns the leaf as
+// the YAML types the loader sees. A missing path returns ok=false rather than a
+// zero value, so a pin can tell "set to something else" from "no longer set".
+func tier1CerberusSetting(t *testing.T, path string) (any, bool) {
+	t.Helper()
+	var node any = readTier1CerberusConfig(t)
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := node.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if node, ok = m[seg]; !ok {
+			return nil, false
+		}
+	}
+	return node, true
+}
+
 // TestMigrationTier1CerberusConfigFileLoads runs the mounted file through the
 // gateway's own loader and asserts every value arrives where the stack expects
 // it. The compose file can only say the bytes are mounted; a key the loader
@@ -349,10 +368,11 @@ func TestMigrationTier1SchemaAuthority(t *testing.T) {
 	}
 	// Written as an unquoted YAML boolean, so this reads it back as one: the
 	// string "false" here would mean the file had drifted into env semantics.
-	if got := readTier1CerberusConfig(t)["CERBERUS_AUTO_CREATE_SCHEMA"]; got != false {
-		t.Fatalf("cerberus CERBERUS_AUTO_CREATE_SCHEMA = %#v in %s, want the boolean false. The collector "+
+	if got, _ := tier1CerberusSetting(t, tier1AutoCreateSchemaPath); got != false {
+		t.Fatalf("cerberus %s = %#v in %s, want the boolean false. The collector "+
 			"is the sole schema authority in this stack; cerberus creating its own tables would mask "+
-			"exporter/read-side name drift instead of holding /readyz at 503.", got, tier1CerberusConfigPath)
+			"exporter/read-side name drift instead of holding /readyz at 503.",
+			tier1AutoCreateSchemaPath, got, tier1CerberusConfigPath)
 	}
 
 	collector, err := os.ReadFile(tier1CollectorPath)
@@ -1165,28 +1185,33 @@ func tier1JustVarLine(t *testing.T, justfile, name string) string {
 func TestMigrationTier1SampleBudgetIsPinned(t *testing.T) {
 	t.Parallel()
 
-	raw, ok := readTier1CerberusConfig(t)[tier1SampleBudgetSetting]
+	raw, ok := tier1CerberusSetting(t, tier1SampleBudgetPath)
 	if !ok {
 		t.Fatalf("%s does not pin %s. MIG-15 derives its over-budget subquery grid "+
 			"from steps.Tier1QuerySampleBudget; an implicit budget makes that derivation a guess.",
-			tier1CerberusConfigPath, tier1SampleBudgetSetting)
+			tier1CerberusConfigPath, tier1SampleBudgetPath)
 	}
 	// A bare YAML integer, the way a hand-written file has it — so this reads
 	// back as an int rather than as the string the environment path delivered.
 	got, ok := raw.(int)
 	if !ok {
-		t.Fatalf("%s's %s = %#v, which is not a YAML integer", tier1CerberusConfigPath, tier1SampleBudgetSetting, raw)
+		t.Fatalf("%s's %s = %#v, which is not a YAML integer", tier1CerberusConfigPath, tier1SampleBudgetPath, raw)
 	}
 	if int64(got) != steps.Tier1QuerySampleBudget {
 		t.Fatalf("the tier-1 stack runs cerberus with %s=%d, but MIG-15 derives its over-budget grid "+
 			"from steps.Tier1QuerySampleBudget=%d. Move both together.",
-			tier1SampleBudgetSetting, got, steps.Tier1QuerySampleBudget)
+			tier1SampleBudgetPath, got, steps.Tier1QuerySampleBudget)
 	}
 }
 
-// tier1SampleBudgetSetting is the per-query sample budget the tier-1 cerberus
-// runs under — MIG-15's per-tenant read budget, in that scenario's tenancy model.
-const tier1SampleBudgetSetting = "CERBERUS_QUERY_MAX_SAMPLES"
+// The two settings other pins depend on, addressed by the nested path the file
+// is written in: the per-query sample budget MIG-15 derives its over-budget
+// grid from, and the auto-create toggle that keeps the collector the stack's
+// sole schema authority.
+const (
+	tier1SampleBudgetPath     = "query.maxSamples"
+	tier1AutoCreateSchemaPath = "autoCreate.schema"
+)
 
 // The build-once seam (Layer 14, D2): the migration lane runs the SAME three
 // tier jobs twice against a release commit — once proving the source tree, once

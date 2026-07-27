@@ -37,14 +37,18 @@ for structured logging. Records fan out to **two sinks simultaneously**:
    Records land in `otel_logs` with full structured attributes
    preserved (no text-format round-trip).
 
-The OTLP sink is enabled whenever `CERBERUS_OTLP_ENDPOINT` is set;
-unset means no-op bridge (stderr-only fallback). Two env vars steer the
+The OTLP sink is enabled whenever `CERBERUS_OTLP_ENDPOINT` (`otlp.endpoint`) is
+set; unset means no-op bridge (stderr-only fallback). Two settings steer the
 stderr-side handler:
 
-| Env var               | Default | Allowed values                                       | Effect                                |
-| --------------------- | ------- | ---------------------------------------------------- | ------------------------------------- |
-| `CERBERUS_LOG_FORMAT` | `text`  | `text`, `json` (case-insensitive)                    | slog handler kind                     |
-| `CERBERUS_LOG_LEVEL`  | `info`  | `debug`, `info`, `warn`, `error` (+ `warning` alias) | Minimum level retained by the handler |
+| Variable              | Config file  | Default | Allowed values                                       | Effect                                |
+| --------------------- | ------------ | ------- | ---------------------------------------------------- | ------------------------------------- |
+| `CERBERUS_LOG_FORMAT` | `logFormat`  | `text`  | `text`, `json` (case-insensitive)                    | slog handler kind                     |
+| `CERBERUS_LOG_LEVEL`  | `logLevel`   | `info`  | `debug`, `info`, `warn`, `error` (+ `warning` alias) | Minimum level retained by the handler |
+
+Every setting below names its environment variable; each one has an equivalent
+`cerberus.yaml` path, listed alongside it in
+[`docs/configuration.md`](configuration.md).
 
 Invalid values surface as a startup error rather than silently downgrading
 observability — a typo never ships to prod undetected.

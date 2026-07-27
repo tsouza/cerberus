@@ -30,24 +30,61 @@ func readConfigFile(t *testing.T, settings []Setting) (string, map[string]any) {
 	return string(raw), doc
 }
 
-// TestWriteConfigFileRoundTrips asserts a scalar setting survives as itself —
-// including a value carrying the quotes and braces a LogQL selector is made of,
-// which a naive `key: value` renderer would emit unquoted and corrupt.
-func TestWriteConfigFileRoundTrips(t *testing.T) {
+// at walks a dotted path through the parsed document, so an assertion names the
+// nested path an operator would have written rather than reaching through three
+// type assertions to get to it.
+func at(t *testing.T, doc map[string]any, path string) any {
+	t.Helper()
+	var node any = doc
+	for i, seg := range strings.Split(path, ".") {
+		m, ok := node.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: %s is not a block", path, strings.Join(strings.Split(path, ".")[:i], "."))
+		}
+		if node, ok = m[seg]; !ok {
+			t.Fatalf("%s is absent from the written file: %#v", path, doc)
+		}
+	}
+	return node
+}
+
+// TestWriteConfigFileWritesTheNestedShape asserts a setting lands at the nested
+// path the docs hand out, not under its CERBERUS_* key: the scenarios exist to
+// prove the file an operator actually writes works, and a flat file would prove
+// a different one. Values survive as themselves — including one carrying the
+// quotes and braces a LogQL selector is made of, which a naive `key: value`
+// renderer would emit unquoted and corrupt.
+func TestWriteConfigFileWritesTheNestedShape(t *testing.T) {
 	const selector = `{app="checkout", env="prod"}`
 	_, doc := readConfigFile(t, []Setting{
 		{Key: "CERBERUS_VERIFY_REF", Value: "http://prometheus.internal:9090"},
 		{Key: "CERBERUS_VERIFY_START", Value: "-6h"},
 		{Key: "CERBERUS_INVENTORY_LOKI_SELECTORS", Value: selector},
 	})
-	for key, want := range map[string]string{
-		"CERBERUS_VERIFY_REF":               "http://prometheus.internal:9090",
-		"CERBERUS_VERIFY_START":             "-6h",
-		"CERBERUS_INVENTORY_LOKI_SELECTORS": selector,
+	for path, want := range map[string]string{
+		"migrate.verify.ref":               "http://prometheus.internal:9090",
+		"migrate.verify.start":             "-6h",
+		"migrate.inventory.loki.selectors": selector,
 	} {
-		if got := doc[key]; got != want {
-			t.Errorf("%s = %#v; want %q", key, got, want)
+		if got := at(t, doc, path); got != want {
+			t.Errorf("%s = %#v; want %q", path, got, want)
 		}
+	}
+	// The flat spelling must be gone, not merely accompanied: a file carrying
+	// both would pass every assertion above while the nested half did nothing.
+	if _, ok := doc["CERBERUS_VERIFY_REF"]; ok {
+		t.Errorf("the flat CERBERUS_VERIFY_REF key is still written: %#v", doc)
+	}
+}
+
+// TestWriteConfigFileFallsBackToTheFlatKey asserts a setting with no nested
+// name is still written — by its flat CERBERUS_* key, the escape hatch the
+// loader accepts in the same document — rather than silently dropped.
+func TestWriteConfigFileFallsBackToTheFlatKey(t *testing.T) {
+	const key = "CERBERUS_CH_BREAKER_THRESHOLD"
+	_, doc := readConfigFile(t, []Setting{{Key: key, Value: "9"}})
+	if got := doc[key]; got != "9" {
+		t.Errorf("%s = %#v; want the flat key to carry %q", key, got, "9")
 	}
 }
 
@@ -58,9 +95,10 @@ func TestWriteConfigFileRendersASequence(t *testing.T) {
 	want := []string{`{app="checkout", env="prod"}`, `{app="cart"}`}
 	_, doc := readConfigFile(t, []Setting{{Key: "CERBERUS_INVENTORY_LOKI_SELECTORS", List: want}})
 
-	seq, ok := doc["CERBERUS_INVENTORY_LOKI_SELECTORS"].([]any)
+	const path = "migrate.inventory.loki.selectors"
+	seq, ok := at(t, doc, path).([]any)
 	if !ok {
-		t.Fatalf("CERBERUS_INVENTORY_LOKI_SELECTORS = %#v; want a YAML sequence", doc["CERBERUS_INVENTORY_LOKI_SELECTORS"])
+		t.Fatalf("%s = %#v; want a YAML sequence", path, at(t, doc, path))
 	}
 	got := make([]string, 0, len(seq))
 	for _, item := range seq {
@@ -71,7 +109,7 @@ func TestWriteConfigFileRendersASequence(t *testing.T) {
 	}
 }
 
-// TestWriteConfigFileKeepsDeclarationOrder asserts the document reads in the
+// TestWriteConfigFileKeepsDeclarationOrder asserts sibling keys read in the
 // order the caller declared, so a failing scenario's artifact is a file an
 // operator can read top to bottom rather than a reshuffled map.
 func TestWriteConfigFileKeepsDeclarationOrder(t *testing.T) {
@@ -85,16 +123,22 @@ func TestWriteConfigFileKeepsDeclarationOrder(t *testing.T) {
 	}
 	raw, _ := readConfigFile(t, settings)
 
-	at := -1
-	for _, k := range keys {
-		i := strings.Index(raw, k)
-		if i < 0 {
-			t.Fatalf("%s is missing from the written file:\n%s", k, raw)
+	// The leaf names, in the same order: they all share one `migrate.verify`
+	// block, which the writer must create once and then reuse.
+	leaves := []string{"corpus:", "ref:", "cerberus:", "start:", "end:", "step:"}
+	prev := -1
+	for i, leaf := range leaves {
+		idx := strings.Index(raw, leaf)
+		if idx < 0 {
+			t.Fatalf("%s (%s) is missing from the written file:\n%s", keys[i], leaf, raw)
 		}
-		if i < at {
-			t.Fatalf("%s appears out of declaration order:\n%s", k, raw)
+		if idx < prev {
+			t.Fatalf("%s (%s) appears out of declaration order:\n%s", keys[i], leaf, raw)
 		}
-		at = i
+		prev = idx
+	}
+	if n := strings.Count(raw, "verify:"); n != 1 {
+		t.Errorf("the shared migrate.verify block is written %d times, want once:\n%s", n, raw)
 	}
 }
 

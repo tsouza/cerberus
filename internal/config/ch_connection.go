@@ -71,6 +71,42 @@ type keepAliveInputs struct {
 	probes   int
 }
 
+// keepAliveFromEnv parses and cross-validates the four TCP-keepalive knobs.
+// The timing knobs are gated only when keepalive is enabled — a degenerate
+// idle/interval/probe count would arm a useless or never-firing probe
+// schedule, but when disabled the values are inert, so they are not gated
+// (mirrors how the breaker knobs are inert when the breaker is off).
+func keepAliveFromEnv(v *viper.Viper) (keepAliveInputs, error) {
+	enabled, err := getBool(v, envCHKeepAliveEnabled)
+	if err != nil {
+		return keepAliveInputs{}, err
+	}
+	idle, err := getDuration(v, envCHKeepAliveIdle)
+	if err != nil {
+		return keepAliveInputs{}, err
+	}
+	interval, err := getDuration(v, envCHKeepAliveInterval)
+	if err != nil {
+		return keepAliveInputs{}, err
+	}
+	probes, err := getInt(v, envCHKeepAliveCount)
+	if err != nil {
+		return keepAliveInputs{}, err
+	}
+	if enabled {
+		if idle <= 0 {
+			return keepAliveInputs{}, fmt.Errorf("%s: must be > 0, got %s", envCHKeepAliveIdle, idle)
+		}
+		if interval <= 0 {
+			return keepAliveInputs{}, fmt.Errorf("%s: must be > 0, got %s", envCHKeepAliveInterval, interval)
+		}
+		if probes <= 0 {
+			return keepAliveInputs{}, fmt.Errorf("%s: must be > 0, got %d", envCHKeepAliveCount, probes)
+		}
+	}
+	return keepAliveInputs{enabled: enabled, idle: idle, interval: interval, probes: probes}, nil
+}
+
 // chConfigInputs carries every already-parsed, already-validated scalar
 // FromEnv resolved for the ClickHouse client, so assembling the
 // chclient.Config is a single helper call rather than a long inline literal

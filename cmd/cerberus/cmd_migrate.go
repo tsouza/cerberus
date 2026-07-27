@@ -24,7 +24,6 @@ import (
 	"github.com/tsouza/cerberus/internal/migrateinventory"
 	"github.com/tsouza/cerberus/internal/migrateverify"
 	"github.com/tsouza/cerberus/internal/optimizer"
-	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 )
@@ -509,6 +508,13 @@ func newMigrateVerifyCmd(set *config.Lookup) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// A cerberus.yaml that exists but could not be read is fatal here
+			// rather than ignored: the flag defaults below were built from it,
+			// so proceeding would replay a corpus against whichever backends
+			// the operator did NOT configure.
+			if err := set.Err(); err != nil {
+				return err
+			}
 			// The tolerance env is resolved even when --tolerance is set so a
 			// fat-fingered CERBERUS_VERIFY_TOLERANCE surfaces as a hard error rather
 			// than silently tightening the gate; an explicit flag still wins.
@@ -828,6 +834,13 @@ func newMigrateInventoryCmd(set *config.Lookup) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// A cerberus.yaml that exists but could not be read is fatal here
+			// rather than ignored: the flag defaults below were built from it,
+			// so proceeding would probe whichever source the operator did NOT
+			// configure — or none at all, reported as a missing flag.
+			if err := set.Err(); err != nil {
+				return err
+			}
 			if source == "" {
 				return errors.New("missing --source (or CERBERUS_INVENTORY_SOURCE): the source Prometheus base URL to probe")
 			}
@@ -1113,9 +1126,11 @@ func newExplainEngine(cfg config.Config) *engine.Engine {
 // metrics-pipeline query are distinguished by the query shape, not by rule-vs-
 // panel kind, so its Parse routes internally.
 func newDryRunExplainer(cfg config.Config) dryRunExplainer {
-	metrics := schema.DefaultOTelMetricsFromEnv()
-	logs := schema.DefaultOTelLogsFromEnv()
-	traces := schema.DefaultOTelTracesFromEnv()
+	// Taken from the loaded config rather than re-read from the environment:
+	// cfg already resolved these through the same env-then-cerberus.yaml path
+	// the server uses, and a second read here would answer differently for an
+	// operator who configured the schema shape in a file.
+	metrics, logs, traces := cfg.Schema, cfg.Logs, cfg.Traces
 	evalTime := time.Unix(explainEvalUnix, 0).UTC()
 	rangeStart := evalTime.Add(-explainRangeWindow)
 	return dryRunExplainer{

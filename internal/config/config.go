@@ -743,7 +743,10 @@ const configFileBaseName = "cerberus"
 //	                                           to surface; sanitized dot->underscore on
 //	                                           the wire
 func FromEnv() (Config, error) {
-	v := newLoader()
+	v, file, err := newLoader()
+	if err != nil {
+		return Config{}, err
+	}
 
 	dial, err := getDuration(v, envCHDialTimeout)
 	if err != nil {
@@ -772,36 +775,9 @@ func FromEnv() (Config, error) {
 	if connMaxLifetime <= 0 {
 		return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHConnMaxLifetime, connMaxLifetime)
 	}
-	keepAliveEnabled, err := getBool(v, envCHKeepAliveEnabled)
+	keepAlive, err := keepAliveFromEnv(v)
 	if err != nil {
 		return Config{}, err
-	}
-	keepAliveIdle, err := getDuration(v, envCHKeepAliveIdle)
-	if err != nil {
-		return Config{}, err
-	}
-	keepAliveInterval, err := getDuration(v, envCHKeepAliveInterval)
-	if err != nil {
-		return Config{}, err
-	}
-	keepAliveCount, err := getInt(v, envCHKeepAliveCount)
-	if err != nil {
-		return Config{}, err
-	}
-	// Validate the keepalive timing knobs only when keepalive is enabled —
-	// a degenerate idle/interval/count would arm a useless or never-firing
-	// probe schedule. When disabled the values are inert, so they are not
-	// gated (mirrors how the breaker knobs are inert when the breaker is off).
-	if keepAliveEnabled {
-		if keepAliveIdle <= 0 {
-			return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHKeepAliveIdle, keepAliveIdle)
-		}
-		if keepAliveInterval <= 0 {
-			return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHKeepAliveInterval, keepAliveInterval)
-		}
-		if keepAliveCount <= 0 {
-			return Config{}, fmt.Errorf("%s: must be > 0, got %d", envCHKeepAliveCount, keepAliveCount)
-		}
 	}
 	maxSamples, err := getInt64(v, envQueryMaxSamples)
 	if err != nil {
@@ -874,26 +850,25 @@ func FromEnv() (Config, error) {
 		maxOpen:         maxOpenConns,
 		maxIdle:         maxIdleConns,
 		connMaxLifetime: connMaxLifetime,
-		keepAlive: keepAliveInputs{
-			enabled:  keepAliveEnabled,
-			idle:     keepAliveIdle,
-			interval: keepAliveInterval,
-			probes:   keepAliveCount,
-		},
-		maxSamples:   maxSamples,
-		maxMemory:    maxMemory,
-		queryTimeout: queryTimeout,
-		breaker:      breaker,
-		extra:        surface.ch,
+		keepAlive:       keepAlive,
+		maxSamples:      maxSamples,
+		maxMemory:       maxMemory,
+		queryTimeout:    queryTimeout,
+		breaker:         breaker,
+		extra:           surface.ch,
 	})
 	return Config{
-		HTTPAddr:                getString(v, envHTTPAddr),
-		HTTPServer:              surface.httpServer,
-		LokiTailWriteTimeout:    surface.lokiTailWriteTimeout,
-		ClickHouse:              chCfg,
-		Schema:                  schema.DefaultOTelMetricsFromEnv(),
-		Logs:                    schema.DefaultOTelLogsFromEnv(),
-		Traces:                  schema.DefaultOTelTracesFromEnv(),
+		HTTPAddr:             getString(v, envHTTPAddr),
+		HTTPServer:           surface.httpServer,
+		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
+		ClickHouse:           chCfg,
+		// Resolved through the file-aware lookup rather than os.Getenv so the
+		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
+		// the surface does — internal/schema owns these defaults, so they never
+		// enter the viper registry above.
+		Schema:                  schema.DefaultOTelMetricsFrom(file.String),
+		Logs:                    schema.DefaultOTelLogsFrom(file.String),
+		Traces:                  schema.DefaultOTelTracesFrom(file.String),
 		AutoCreateSchema:        flags.AutoCreate,
 		AutoCreateDatabase:      flags.AutoCreateDatabase,
 		SchemaProvisioning:      schemaProvisioning,
@@ -1011,10 +986,50 @@ var allEnvKeys = []string{
 // the full CERBERUS_<NAME> strings, and AutomaticEnv would re-apply the
 // prefix and look up CERBERUS_CERBERUS_<NAME>, breaking the contract.
 // An optional `cerberus.yaml` config file is merged in beneath env vars;
-// its absence is silently tolerated. Precedence is viper's native
+// its absence is silently tolerated, while a file that cannot be parsed or
+// carries an unknown key is a hard error. Precedence is viper's native
 // ordering — env var > config file > default — so a CERBERUS_* env var
 // always wins over a file value.
-func newLoader() *viper.Viper {
+//
+// The returned Lookup serves the same two sources to the settings this
+// registry does not own: the `cerberus migrate` verbs, and the read-side
+// schema shape that `internal/schema` resolves for itself.
+func newLoader() (*viper.Viper, *Lookup, error) {
+	v := newDefaults()
+
+	// Optional config file: cerberus.yaml in the working directory or
+	// /etc/cerberus, translated from the chart's nested shape into the flat
+	// settings this registry knows. Env vars always win (viper precedence:
+	// explicit Set > env > config file > default), so the file supplies
+	// defaults and never overrides an operator's environment.
+	//
+	// A missing file is not an error — the environment configures cerberus
+	// completely on its own. A file that exists and cannot be understood IS
+	// one: it was written to configure something, and starting with it
+	// silently ignored is how a gateway ends up serving on defaults nobody
+	// chose.
+	file, path, err := loadConfigFile()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(file) > 0 {
+		merged := make(map[string]any, len(file))
+		for k, val := range file {
+			merged[k] = val
+		}
+		if err := v.MergeConfigMap(merged); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return v, &Lookup{settings: file}, nil
+}
+
+// newDefaults builds the loader's env-bound registry seeded with the built-in
+// defaults and nothing else. It is separate from newLoader because the
+// generated docs must report what cerberus ships with: reading them through a
+// loader that had merged a cerberus.yaml would document whichever directory the
+// generator happened to run in.
+func newDefaults() *viper.Viper {
 	v := viper.New()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	for _, key := range allEnvKeys {
@@ -1105,23 +1120,6 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envAdmitLoki, DefaultAdmitLoki)
 	v.SetDefault(envAdmitTempo, DefaultAdmitTempo)
 	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
-
-	// Optional config file: cerberus.yaml in the working directory or
-	// /etc/cerberus. Env vars always win (viper precedence: explicit
-	// Set > env > config file > default), so the file is purely additive
-	// and never overrides an operator's environment. A missing file is
-	// not an error; a malformed file is tolerated here and surfaces later
-	// only if a value fails the same fail-fast validation env values get.
-	v.SetConfigName(configFileBaseName)
-	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	v.AddConfigPath("/etc/cerberus")
-	// Every ReadInConfig error is tolerated, not just file-not-found: the
-	// CERBERUS_* env contract is the source of truth, and a missing OR
-	// malformed cerberus.yaml must never take cerberus down. Values still
-	// resolve from env vars and built-in defaults, and each one is run
-	// through the same fail-fast typed validation regardless of source.
-	_ = v.ReadInConfig()
 	return v
 }
 
