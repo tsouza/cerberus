@@ -4,13 +4,25 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.13.0] — 2026-07-27
+
 ### Added
 
-- **config:** `cerberus.yaml` accepts the Helm chart's nested shape — `clickhouse.addr`, `query.maxSamples`, `migrate.verify.ref` and the rest — so one file mirrors `values.yaml` instead of restating the `CERBERUS_*` table in YAML syntax. A nested file is exactly equivalent to exporting the corresponding variables, precedence unchanged (flag > env > file > default), and the flat `CERBERUS_*` key still works as the long-tail escape hatch. `docs/configuration.md` now lists the config-file path beside every variable.
+- **config:** accept the chart's nested shape in cerberus.yaml (#1316)
+- **migrate:** read verify/inventory settings from cerberus.yaml (#1314)
 
-### Changed
+### Fixed
 
-- **config:** a `cerberus.yaml` that exists but does not parse, or that carries a key cerberus does not recognise, is now a startup error naming the nearest key that does. Previously such a file was tolerated and its unrecognised settings silently ignored.
+- **release:** make the Homebrew publish path actually work (Formula/ dir + a runner with brew) (#1306)
+- **test/e2e:** scope the tempo duration-filter search to the seed corpus (#1305)
+
+### Documentation
+
+- **migration:** cut the configuration section down to what needs configuring (#1313)
+- **migration:** restructure the guide as numbered steps with pre/post-conditions (#1312)
+- **migration:** add the configuration step the guide jumped over (#1311)
+- **migration:** rewrite as a readable guide, split the contract into a reference (#1310)
+- document the Homebrew installer as the migration entry point (#1307)
 
 ## [v1.12.0] — 2026-07-27
 
