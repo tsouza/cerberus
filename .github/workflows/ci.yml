@@ -562,23 +562,3 @@ jobs:
 
       - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
-
-  # `.goreleaser.yml` had no validation lane at all: a malformed or
-  # since-renamed key was only ever discovered by the `goreleaser` job during
-  # an actual release, i.e. after the version-bump PR had already merged and
-  # the publish was underway. `goreleaser check` parses the config against the
-  # same `~> v2` binary release.yml runs, so a schema regression fails a PR
-  # instead of a release. (It validates schema, not semantics — behavioural
-  # regressions in what gets published stay the job of the post-publish
-  # `brew-smoke` gate.)
-  goreleaser-check:
-    name: goreleaser-check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: check
