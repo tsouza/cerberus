@@ -163,7 +163,7 @@ jobs:
           cache: true
 
       - name: download migration scenarios enumeration
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: migration-scenarios
           path: build
@@ -297,7 +297,7 @@ jobs:
       # the enumerator output from migration-setup must travel as an
       # artifact — same reason migration-tier0 downloads it too.
       - name: download migration scenarios enumeration
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: migration-scenarios
           path: build
@@ -449,7 +449,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: download migration scenarios enumeration
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: migration-scenarios
           path: build
@@ -547,14 +547,14 @@ jobs:
       # message, so nothing is waved through.
       - name: download migration scenarios enumeration
         if: needs.migration-setup.result == 'success'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: migration-scenarios
           path: build
 
       - name: download the tier run reports
         if: needs.migration-setup.result == 'success'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: migration-report-*
           merge-multiple: true
