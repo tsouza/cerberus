@@ -298,9 +298,11 @@ at startup before HTTP serving begins. Every knob below shapes that DDL and is
 a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA=true`. `CERBERUS_REQUIREMENTS_CHECK`
 gates the boot-time version + schema-shape preflight that runs after the
 auto-create step. The schema-shape table-name overrides
-(`CERBERUS_SCHEMA_*_TABLE`) and the Prometheus resource-label allowlist
-(`CERBERUS_PROM_RESOURCE_LABELS`) are resolved by `internal/schema` rather than
-this loader and are documented in
+(`CERBERUS_SCHEMA_*_TABLE`, config file `schema.metrics.*Table` /
+`schema.logs.table` / `schema.traces.table`) and the Prometheus resource-label
+allowlist (`CERBERUS_PROM_RESOURCE_LABELS`, config file
+`prom.resourceLabels`) take their defaults from `internal/schema` rather than
+from this loader, and are documented in
 [`observability.md`](observability.md#schema-shape-overrides).
 
 | Variable                                      | Config file                       | Type     | Default                          | Description                                                                                                                                                                                                                                                                              |
