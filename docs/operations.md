@@ -1210,12 +1210,31 @@ source of truth):
   exists (idempotent — an already-absent branch is a clean no-op), with a
   `supportWindowProblem` cross-check before the destructive call; and it is
   **fail-open** — the release has already published, so any deletion failure
-  (token, future protection, network) logs loudly and the step still succeeds,
+  (token, protection, network) logs loudly and the step still succeeds,
   leaving a one-line manual `git push origin --delete release/X.W.x` as the
-  fallback. The job uses `RELEASE_PAT` (fine-grained, `contents:write`) when
-  present and falls back to the default `GITHUB_TOKEN`; both can delete the
-  `release/*.x` branches, which carry no branch protection or ruleset (only
-  `main` is protected).
+  fallback. The job needs `RELEASE_PAT` — see the ruleset note below for why
+  `contents:write` alone is not enough.
+
+The maintenance branches are **not** unprotected. The repository ruleset
+*"release maintenance lines"* targets `refs/heads/release/*.x` and is `active`:
+
+- `deletion` — the branch cannot be deleted.
+- `non_fast_forward` — no force-push; history is append-only.
+- `required_status_checks` — 12 contexts must pass before a backport merges:
+  `check`, `lint`, `forbid-skip`, `probe`, `roundtrip (promql)`,
+  `roundtrip (logql)`, `roundtrip (traceql)`, `chart-validate`, `coverage`,
+  `mutation`, `profile`, and
+  `property (PromQL + LogQL + TraceQL, rapid N=500)`.
+
+There is no `creation` rule, so cutting a **new** line (`git push origin
+v1.11.1^{}:refs/heads/release/1.11.x`) needs no bypass. The single bypass actor
+is the `admin` RepositoryRole in `always` mode, which is why `eol-retire` needs
+`RELEASE_PAT`: an admin-owned PAT inherits the admin role and bypasses the
+`deletion` rule (GitHub records this as `Bypassed rule violations`), whereas the
+default `GITHUB_TOKEN` acts as `github-actions[bot]` — write, never admin — and
+is refused. The required-check set is deliberately lighter than `main`'s: the
+heavy substrate lanes (`compatibility/*`, `compose-smoke`, `dashboard`) are not
+gated on maintenance lines, because a backport must stay cheap enough to ship.
 
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —
