@@ -781,6 +781,20 @@ because the assertions read the emitted artifacts as *typed structs* —
 `internal/migrateverify.Report` — rather than re-declaring those schemas in a
 second language where they would drift.
 
+Every command a scenario drives is a real child process whose environment is
+replaced wholesale (`lib.OfflineEnv` / `lib.LiveEnv`), so a result cannot depend
+on a `CERBERUS_*` variable the developer happens to have exported. Where a
+setting exists for a value — the `verify` corpus, backends and window, the
+`inventory` source — the harness writes it into a `cerberus.yaml` in the
+scenario's workspace and runs the command from there, because that is the shape
+[`migration.md`](migration.md) puts in front of an operator. Only per-run output
+choices (`--json`, `--out`, `--top`) stay on the command line, alongside the
+one-off `--source` MIG-02's fault case aims at a probe server minted on an
+ephemeral port. `lib.RequireSettingsFromFile` reads the flag-to-setting mapping
+back off the binary's own `--help` and rejects a command line carrying a value
+the file should have supplied, so the covered path cannot quietly revert to the
+one almost nobody takes.
+
 The feature files ARE the manifest: there is no separate scenario registry to
 keep in step with them. Metadata rides on tags — `@MIG-16` binds the story,
 `@tier0`/`@tier1`/`@tier2` the tier(s), `@archetype:<name>` the archetypes. A

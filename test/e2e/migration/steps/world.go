@@ -382,6 +382,35 @@ func (w *World) runLive(extraEnv []string, args ...string) (lib.Result, error) {
 	})
 }
 
+// runLiveConfigFile is runLive driven the way docs/migration.md tells an
+// operator to drive it: the settings go into a cerberus.yaml in dir, the
+// command line carries only the per-run output choices, and the child runs
+// from dir so it discovers that file. Configuring a migration by exporting two
+// dozen variables is the path almost nobody takes, so it is not the path these
+// scenarios prove works.
+//
+// Nothing separate asserts the file was read: every setting it carries is
+// mandatory, so a command that failed to find it exits non-zero naming the
+// value it is missing, and RequireSettingsFromFile rejects a command line that
+// smuggled one past the file.
+func (w *World) runLiveConfigFile(dir string, settings []lib.Setting, args ...string) (lib.Result, error) {
+	if w.bin == "" {
+		return lib.Result{}, fmt.Errorf("migration harness: no cerberus binary bound to the scenario world")
+	}
+	if err := lib.WriteConfigFile(dir, settings); err != nil {
+		return lib.Result{}, err
+	}
+	if err := lib.RequireSettingsFromFile(w.bin, args); err != nil {
+		return lib.Result{}, err
+	}
+	return lib.Run(lib.RunSpec{
+		Bin:  w.bin,
+		Args: args,
+		Dir:  dir,
+		Env:  lib.LiveEnv(),
+	})
+}
+
 // gateRun is one `migrate gate` invocation: the decision it emitted and the
 // exit code it left with. The exit code is asserted on directly — the gate's
 // documented no-go status is part of its contract with the operator's cutover

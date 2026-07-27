@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -148,9 +149,12 @@ func (w *World) verifyCorpusPath(archetype string) string {
 // archetype, over the manifest's exact [VerifyStart, VerifyEnd] window — the
 // seeder's published fixture window, never a live `[-1h, now]`, because the
 // fixture stopped moving the moment `migration-tier1-seed` returned and a
-// window that keeps sliding cannot be compared. It captures the exit code as
-// data (never treats a non-zero parity-gate exit as a harness error) and
-// decodes the `--json` artifact into a typed Report every Then step reads.
+// window that keeps sliding cannot be compared. Corpus, backends and window
+// reach the command through a cerberus.yaml rather than through flags: that is
+// the shape docs/migration.md hands an operator, so it is the shape this
+// scenario proves. It captures the exit code as data (never treats a non-zero
+// parity-gate exit as a harness error) and decodes the `--json` artifact into a
+// typed Report every Then step reads.
 func (w *World) whenVerifyCorpus() error {
 	if !w.liveSet {
 		return fmt.Errorf("the tier-1 stack has not been established; the scenario must establish it first")
@@ -167,21 +171,19 @@ func (w *World) whenVerifyCorpus() error {
 			return err
 		}
 		w.manifest[a] = manifest
-		out, err := w.workPath(a, verifyReportName)
+		dir, err := w.workDir(a)
 		if err != nil {
 			return err
 		}
-		res, err := w.runLive(
-			nil,
-			"migrate", "verify",
-			"--corpus", w.verifyCorpusPath(a),
-			"--ref", w.live.PromURL,
-			"--cerberus", w.live.CerberusURL,
-			"--start", manifest.VerifyStart.UTC().Format(time.RFC3339Nano),
-			"--end", manifest.VerifyEnd.UTC().Format(time.RFC3339Nano),
-			"--step", manifest.Step,
-			"--json", "--out", out,
-		)
+		out := filepath.Join(dir, verifyReportName)
+		res, err := w.runLiveConfigFile(dir, []lib.Setting{
+			{Key: "CERBERUS_VERIFY_CORPUS", Value: w.verifyCorpusPath(a)},
+			{Key: "CERBERUS_VERIFY_REF", Value: w.live.PromURL},
+			{Key: "CERBERUS_VERIFY_CERBERUS", Value: w.live.CerberusURL},
+			{Key: "CERBERUS_VERIFY_START", Value: manifest.VerifyStart.UTC().Format(time.RFC3339Nano)},
+			{Key: "CERBERUS_VERIFY_END", Value: manifest.VerifyEnd.UTC().Format(time.RFC3339Nano)},
+			{Key: "CERBERUS_VERIFY_STEP", Value: manifest.Step},
+		}, "migrate", "verify", "--json", "--out", out)
 		if err != nil {
 			return err
 		}

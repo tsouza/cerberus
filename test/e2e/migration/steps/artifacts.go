@@ -59,16 +59,27 @@ func (w *World) goldenPath(archetype, name string) string {
 	return harnessPath(w.root, archetypeDir, archetype, expectedDir, name)
 }
 
-// workPath resolves a path for an artifact this scenario is about to write. The
-// suffix distinguishes a re-run of the same command, so a determinism check
-// compares two files rather than a file with itself.
-func (w *World) workPath(archetype, name string) (string, error) {
+// workDir resolves — creating it on first use — this scenario's workspace
+// directory for one archetype: where its artifacts land, and where the
+// cerberus.yaml a config-file-driven command reads is written.
+func (w *World) workDir(archetype string) (string, error) {
 	if w.work == "" {
 		return "", fmt.Errorf("migration harness: no scenario workspace; the Before hook did not run")
 	}
 	dir := filepath.Join(w.work, archetype)
 	if err := os.MkdirAll(dir, workspaceDirMode); err != nil {
 		return "", fmt.Errorf("migration harness: create the workspace for %s: %w", archetype, err)
+	}
+	return dir, nil
+}
+
+// workPath resolves a path for an artifact this scenario is about to write. The
+// suffix distinguishes a re-run of the same command, so a determinism check
+// compares two files rather than a file with itself.
+func (w *World) workPath(archetype, name string) (string, error) {
+	dir, err := w.workDir(archetype)
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(dir, name), nil
 }
