@@ -316,6 +316,14 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		// metric queries. Default to 1 minute when absent.
 		step = time.Minute
 	}
+	if step <= 0 {
+		// An explicitly non-positive step would divide by zero in the
+		// resolution cap below. Upstream Loki rejects the same shape
+		// (loghttp.ParseRangeQuery's errZeroOrNegativeStep), as does the
+		// Prom head's `step <= 0` guard.
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
+		return
+	}
 	if !end.After(start) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
 		return

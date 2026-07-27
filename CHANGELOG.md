@@ -2,6 +2,13 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
+## [v1.11.2] — 2026-07-27
+
+### Fixed
+
+- **loki:** reject a non-positive `?step=` on `/loki/api/v1/query_range` — `step=0` parses cleanly, so it reached the resolution-cap division and panicked with "integer divide by zero" (backport of #1298, tests #1300)
+- **tempo:** align the request window to the step grid and enforce the resolution ceiling on the gRPC `MetricsQueryRange` export — it returned samples off Tempo's grid and accepted an unbounded matrix fan-out (backport of #1298, tests #1300)
+
 ## [Unreleased]
 
 ## [v1.11.1] — 2026-07-17
