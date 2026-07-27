@@ -601,6 +601,26 @@ _pull-retry +IMAGES:
         [ "$ok" = 1 ] || { echo "ERROR: docker pull $img failed after 5 attempts" >&2; exit 1; }; \
     done
 
+# Acquire every image a compose stack needs, with retry, BEFORE `up` reaches for
+# them. `docker compose up` pulls what it is missing but has no retry of its own,
+# so one Docker Hub timeout ("context deadline exceeded" on a manifest HEAD)
+# fails the whole lane — which is how the v1.13.0 release's Tier-1 leg died on a
+# transient `prom/prometheus` fetch. `_pull-retry` already solved this for the
+# k3d lanes; the compose lanes just weren't going through it.
+#
+# Images already in the local daemon are skipped rather than re-pulled: the
+# cerberus image is acquired beforehand by its own recipe and may be a local
+# build (`pull_policy: never`) that no registry can serve.
+_compose-pull-retry +FILES:
+    @args=""; for f in {{FILES}}; do args="$args -f $f"; done; \
+    missing=$(docker compose $args config --images | sort -u | while read -r img; do \
+        docker image inspect "$img" >/dev/null 2>&1 || echo "$img"; \
+    done); \
+    if [ -n "$missing" ]; then \
+        echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
+        just _pull-retry $missing; \
+    fi
+
 e2e-up: e2e-down
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
@@ -1282,7 +1302,7 @@ migration-cerberus-image:
         docker build -f Dockerfile.local -t "$img" .; \
     else \
         echo "==> migration cerberus image: pull $img"; \
-        docker pull "$img"; \
+        just _pull-retry "$img"; \
     fi
 
 # Bring the Tier-1 stack up and wait for every healthcheck to pass. The cerberus
@@ -1301,6 +1321,7 @@ migration-cerberus-image:
 migration-tier1-up:
     @just migration-tier1-down
     @just migration-cerberus-image
+    @just _compose-pull-retry test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
     @echo "==> migration tier-1 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         up --wait --wait-timeout 300
@@ -1438,6 +1459,8 @@ migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run mig
 migration-tier2-up:
     @just migration-tier2-down
     @just migration-cerberus-image
+    @just _compose-pull-retry test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml
     @echo "==> migration tier-2 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
