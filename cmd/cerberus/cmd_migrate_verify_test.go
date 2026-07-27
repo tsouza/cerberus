@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/migrateverify"
 )
 
@@ -349,22 +350,23 @@ func TestRunVerify_BadToleranceEnv(t *testing.T) {
 	}
 }
 
-// TestEnvFloat covers the unset / valid / unparseable branches directly.
-func TestEnvFloat(t *testing.T) {
+// TestSettingFloat covers the unset / valid / unparseable branches directly.
+func TestSettingFloat(t *testing.T) {
 	const key = "CERBERUS_VERIFY_TOLERANCE_TESTKEY"
+	set := config.NewLookup()
 
 	t.Setenv(key, "")
-	if got, err := envFloat(key, 1e-9); err != nil || got != 1e-9 {
+	if got, err := settingFloat(set, key, 1e-9); err != nil || got != 1e-9 {
 		t.Errorf("unset: got %v, %v; want 1e-9, nil", got, err)
 	}
 
 	t.Setenv(key, "0.25")
-	if got, err := envFloat(key, 1e-9); err != nil || got != 0.25 {
+	if got, err := settingFloat(set, key, 1e-9); err != nil || got != 0.25 {
 		t.Errorf("valid: got %v, %v; want 0.25, nil", got, err)
 	}
 
 	t.Setenv(key, "banana")
-	if _, err := envFloat(key, 1e-9); err == nil {
-		t.Error("unparseable: envFloat should error, not fall back to the default")
+	if _, err := settingFloat(set, key, 1e-9); err == nil {
+		t.Error("unparseable: settingFloat should error, not fall back to the default")
 	}
 }

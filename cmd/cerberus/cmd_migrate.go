@@ -486,9 +486,11 @@ type verifyInputs struct {
 // newMigrateVerifyCmd is the online cutover parity gate: it replays every corpus
 // query against its head's reference backend AND cerberus over one query_range
 // window and diffs the results series-by-series, exiting non-zero on any
-// divergence or error. Every flag falls back to CERBERUS_VERIFY_*.
+// divergence or error. Every flag falls back to CERBERUS_VERIFY_*, from the
+// environment or from the same cerberus.yaml the gateway reads.
 func newMigrateVerifyCmd() *cobra.Command {
 	var in verifyInputs
+	set := config.NewLookup()
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Replay the corpus against each head's reference backend + cerberus (parity gate)",
@@ -507,7 +509,7 @@ func newMigrateVerifyCmd() *cobra.Command {
 			// The tolerance env is resolved even when --tolerance is set so a
 			// fat-fingered CERBERUS_VERIFY_TOLERANCE surfaces as a hard error rather
 			// than silently tightening the gate; an explicit flag still wins.
-			envTol, err := envFloat("CERBERUS_VERIFY_TOLERANCE", defaultVerifyTolerance)
+			envTol, err := settingFloat(set, "CERBERUS_VERIFY_TOLERANCE", defaultVerifyTolerance)
 			if err != nil {
 				return err
 			}
@@ -518,47 +520,47 @@ func newMigrateVerifyCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&in.corpus, "corpus", envOr("CERBERUS_VERIFY_CORPUS", ""),
-		"corpus.json produced by `cerberus migrate harvest` (env: CERBERUS_VERIFY_CORPUS)")
-	f.StringVar(&in.prom.ref, "ref", envOr("CERBERUS_VERIFY_REF", ""),
-		"reference Prometheus base URL (env: CERBERUS_VERIFY_REF)")
-	f.StringVar(&in.prom.cerberus, "cerberus", envOr("CERBERUS_VERIFY_CERBERUS", ""),
-		"cerberus base URL for the prom head (env: CERBERUS_VERIFY_CERBERUS)")
-	f.StringVar(&in.prom.refToken, "ref-token", envOr("CERBERUS_VERIFY_REF_TOKEN", ""),
-		"bearer token for the reference Prometheus, sent as an Authorization header (env: CERBERUS_VERIFY_REF_TOKEN)")
-	f.StringVar(&in.prom.cerberusToken, "cerberus-token", envOr("CERBERUS_VERIFY_CERBERUS_TOKEN", ""),
-		"bearer token for cerberus, sent as an Authorization header (env: CERBERUS_VERIFY_CERBERUS_TOKEN)")
-	f.StringVar(&in.loki.ref, "ref-loki", envOr("CERBERUS_VERIFY_REF_LOKI", ""),
-		"reference Loki base URL; enables the LogQL metric lane (env: CERBERUS_VERIFY_REF_LOKI)")
-	f.StringVar(&in.loki.cerberus, "cerberus-loki", envOr("CERBERUS_VERIFY_CERBERUS_LOKI", ""),
-		"cerberus base URL for the loki head (env: CERBERUS_VERIFY_CERBERUS_LOKI)")
-	f.StringVar(&in.loki.refToken, "ref-loki-token", envOr("CERBERUS_VERIFY_REF_LOKI_TOKEN", ""),
-		"bearer token for the reference Loki (env: CERBERUS_VERIFY_REF_LOKI_TOKEN)")
-	f.StringVar(&in.loki.cerberusToken, "cerberus-loki-token", envOr("CERBERUS_VERIFY_CERBERUS_LOKI_TOKEN", ""),
-		"bearer token for cerberus on the loki head (env: CERBERUS_VERIFY_CERBERUS_LOKI_TOKEN)")
-	f.StringVar(&in.loki.refOrgID, "ref-loki-org-id", envOr("CERBERUS_VERIFY_REF_LOKI_ORG_ID", ""),
-		"X-Scope-OrgID for a multi-tenant reference Loki; cerberus reads no tenant header, so this is reference-side only (env: CERBERUS_VERIFY_REF_LOKI_ORG_ID)")
-	f.StringVar(&in.tempo.ref, "ref-tempo", envOr("CERBERUS_VERIFY_REF_TEMPO", ""),
-		"reference Tempo base URL; enables the TraceQL metrics lane (env: CERBERUS_VERIFY_REF_TEMPO)")
-	f.StringVar(&in.tempo.cerberus, "cerberus-tempo", envOr("CERBERUS_VERIFY_CERBERUS_TEMPO", ""),
-		"cerberus base URL for the tempo head (env: CERBERUS_VERIFY_CERBERUS_TEMPO)")
-	f.StringVar(&in.tempo.refToken, "ref-tempo-token", envOr("CERBERUS_VERIFY_REF_TEMPO_TOKEN", ""),
-		"bearer token for the reference Tempo (env: CERBERUS_VERIFY_REF_TEMPO_TOKEN)")
-	f.StringVar(&in.tempo.cerberusToken, "cerberus-tempo-token", envOr("CERBERUS_VERIFY_CERBERUS_TEMPO_TOKEN", ""),
-		"bearer token for cerberus on the tempo head (env: CERBERUS_VERIFY_CERBERUS_TEMPO_TOKEN)")
-	f.StringVar(&in.tempo.refOrgID, "ref-tempo-org-id", envOr("CERBERUS_VERIFY_REF_TEMPO_ORG_ID", ""),
-		"X-Scope-OrgID for a multi-tenant reference Tempo; cerberus reads no tenant header, so this is reference-side only (env: CERBERUS_VERIFY_REF_TEMPO_ORG_ID)")
-	f.StringVar(&in.start, "start", envOr("CERBERUS_VERIFY_START", "-1h"),
-		"range start (RFC3339, Unix seconds, or relative like -1h/now) (env: CERBERUS_VERIFY_START)")
-	f.StringVar(&in.end, "end", envOr("CERBERUS_VERIFY_END", "now"),
-		"range end (RFC3339, Unix seconds, or relative like -1h/now) (env: CERBERUS_VERIFY_END)")
-	f.StringVar(&in.step, "step", envOr("CERBERUS_VERIFY_STEP", "60s"),
-		"range step, e.g. 60s (env: CERBERUS_VERIFY_STEP)")
+	f.StringVar(&in.corpus, "corpus", settingOr(set, "CERBERUS_VERIFY_CORPUS", ""),
+		"corpus.json produced by `cerberus migrate harvest` (setting: CERBERUS_VERIFY_CORPUS)")
+	f.StringVar(&in.prom.ref, "ref", settingOr(set, "CERBERUS_VERIFY_REF", ""),
+		"reference Prometheus base URL (setting: CERBERUS_VERIFY_REF)")
+	f.StringVar(&in.prom.cerberus, "cerberus", settingOr(set, "CERBERUS_VERIFY_CERBERUS", ""),
+		"cerberus base URL for the prom head (setting: CERBERUS_VERIFY_CERBERUS)")
+	f.StringVar(&in.prom.refToken, "ref-token", settingOr(set, "CERBERUS_VERIFY_REF_TOKEN", ""),
+		"bearer token for the reference Prometheus, sent as an Authorization header (setting: CERBERUS_VERIFY_REF_TOKEN)")
+	f.StringVar(&in.prom.cerberusToken, "cerberus-token", settingOr(set, "CERBERUS_VERIFY_CERBERUS_TOKEN", ""),
+		"bearer token for cerberus, sent as an Authorization header (setting: CERBERUS_VERIFY_CERBERUS_TOKEN)")
+	f.StringVar(&in.loki.ref, "ref-loki", settingOr(set, "CERBERUS_VERIFY_REF_LOKI", ""),
+		"reference Loki base URL; enables the LogQL metric lane (setting: CERBERUS_VERIFY_REF_LOKI)")
+	f.StringVar(&in.loki.cerberus, "cerberus-loki", settingOr(set, "CERBERUS_VERIFY_CERBERUS_LOKI", ""),
+		"cerberus base URL for the loki head (setting: CERBERUS_VERIFY_CERBERUS_LOKI)")
+	f.StringVar(&in.loki.refToken, "ref-loki-token", settingOr(set, "CERBERUS_VERIFY_REF_LOKI_TOKEN", ""),
+		"bearer token for the reference Loki (setting: CERBERUS_VERIFY_REF_LOKI_TOKEN)")
+	f.StringVar(&in.loki.cerberusToken, "cerberus-loki-token", settingOr(set, "CERBERUS_VERIFY_CERBERUS_LOKI_TOKEN", ""),
+		"bearer token for cerberus on the loki head (setting: CERBERUS_VERIFY_CERBERUS_LOKI_TOKEN)")
+	f.StringVar(&in.loki.refOrgID, "ref-loki-org-id", settingOr(set, "CERBERUS_VERIFY_REF_LOKI_ORG_ID", ""),
+		"X-Scope-OrgID for a multi-tenant reference Loki; cerberus reads no tenant header, so this is reference-side only (setting: CERBERUS_VERIFY_REF_LOKI_ORG_ID)")
+	f.StringVar(&in.tempo.ref, "ref-tempo", settingOr(set, "CERBERUS_VERIFY_REF_TEMPO", ""),
+		"reference Tempo base URL; enables the TraceQL metrics lane (setting: CERBERUS_VERIFY_REF_TEMPO)")
+	f.StringVar(&in.tempo.cerberus, "cerberus-tempo", settingOr(set, "CERBERUS_VERIFY_CERBERUS_TEMPO", ""),
+		"cerberus base URL for the tempo head (setting: CERBERUS_VERIFY_CERBERUS_TEMPO)")
+	f.StringVar(&in.tempo.refToken, "ref-tempo-token", settingOr(set, "CERBERUS_VERIFY_REF_TEMPO_TOKEN", ""),
+		"bearer token for the reference Tempo (setting: CERBERUS_VERIFY_REF_TEMPO_TOKEN)")
+	f.StringVar(&in.tempo.cerberusToken, "cerberus-tempo-token", settingOr(set, "CERBERUS_VERIFY_CERBERUS_TEMPO_TOKEN", ""),
+		"bearer token for cerberus on the tempo head (setting: CERBERUS_VERIFY_CERBERUS_TEMPO_TOKEN)")
+	f.StringVar(&in.tempo.refOrgID, "ref-tempo-org-id", settingOr(set, "CERBERUS_VERIFY_REF_TEMPO_ORG_ID", ""),
+		"X-Scope-OrgID for a multi-tenant reference Tempo; cerberus reads no tenant header, so this is reference-side only (setting: CERBERUS_VERIFY_REF_TEMPO_ORG_ID)")
+	f.StringVar(&in.start, "start", settingOr(set, "CERBERUS_VERIFY_START", "-1h"),
+		"range start (RFC3339, Unix seconds, or relative like -1h/now) (setting: CERBERUS_VERIFY_START)")
+	f.StringVar(&in.end, "end", settingOr(set, "CERBERUS_VERIFY_END", "now"),
+		"range end (RFC3339, Unix seconds, or relative like -1h/now) (setting: CERBERUS_VERIFY_END)")
+	f.StringVar(&in.step, "step", settingOr(set, "CERBERUS_VERIFY_STEP", "60s"),
+		"range step, e.g. 60s (setting: CERBERUS_VERIFY_STEP)")
 	f.Float64Var(&in.tolerance, "tolerance", defaultVerifyTolerance,
-		"absolute value tolerance for a match (env: CERBERUS_VERIFY_TOLERANCE)")
+		"absolute value tolerance for a match (setting: CERBERUS_VERIFY_TOLERANCE)")
 	f.BoolVar(&in.asJSON, "json", false, "emit the machine-readable JSON report instead of the text report")
-	f.StringVar(&in.report, "report", envOr("CERBERUS_VERIFY_REPORT", ""),
-		"write the full JSON diagnostics to this file; additive, the text report still prints (env: CERBERUS_VERIFY_REPORT)")
+	f.StringVar(&in.report, "report", settingOr(set, "CERBERUS_VERIFY_REPORT", ""),
+		"write the full JSON diagnostics to this file; additive, the text report still prints (setting: CERBERUS_VERIFY_REPORT)")
 	f.StringVar(&in.out, "out", "",
 		"write the report here (default: stdout); same content (text or --json) as stdout")
 	return cmd
@@ -803,6 +805,7 @@ func newMigrateInventoryCmd() *cobra.Command {
 		lokiSelectors []string
 		tempoSource   string
 	)
+	set := config.NewLookup()
 	cmd := &cobra.Command{
 		Use:   "inventory",
 		Short: "Probe live migration sources for cardinality / OOM-risk facts",
@@ -860,23 +863,23 @@ func newMigrateInventoryCmd() *cobra.Command {
 			return writeInventory(cmd.OutOrStdout(), out, inv, asJSON)
 		},
 	}
-	cmd.Flags().StringVar(&source, "source", envOr("CERBERUS_INVENTORY_SOURCE", ""),
-		"source Prometheus base URL to probe for live cardinality (env: CERBERUS_INVENTORY_SOURCE)")
+	cmd.Flags().StringVar(&source, "source", settingOr(set, "CERBERUS_INVENTORY_SOURCE", ""),
+		"source Prometheus base URL to probe for live cardinality (setting: CERBERUS_INVENTORY_SOURCE)")
 	cmd.Flags().IntVar(&top, "top", migrateinventory.DefaultTop, "rank the top N metrics/labels/selectors by cardinality")
-	cmd.Flags().StringVar(&window, "window", envOr("CERBERUS_INVENTORY_WINDOW", ""),
+	cmd.Flags().StringVar(&window, "window", settingOr(set, "CERBERUS_INVENTORY_WINDOW", ""),
 		"optional observation window (duration like 1h); recorded as report context for Prometheus, "+
-			"and applied as the real query range for Loki's index/stats (env: CERBERUS_INVENTORY_WINDOW)")
+			"and applied as the real query range for Loki's index/stats (setting: CERBERUS_INVENTORY_WINDOW)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the machine-readable JSON report instead of text")
 	cmd.Flags().StringVar(&out, "out", "", "write the inventory here (default: stdout)")
-	cmd.Flags().StringVar(&lokiSource, "loki-source", envOr("CERBERUS_INVENTORY_LOKI_SOURCE", ""),
+	cmd.Flags().StringVar(&lokiSource, "loki-source", settingOr(set, "CERBERUS_INVENTORY_LOKI_SOURCE", ""),
 		"optional Loki base URL to probe per-selector stream cardinality/volume (requires --loki-selector; "+
-			"env: CERBERUS_INVENTORY_LOKI_SOURCE)")
-	cmd.Flags().StringArrayVar(&lokiSelectors, "loki-selector", envOrLokiSelectors("CERBERUS_INVENTORY_LOKI_SELECTORS"),
+			"setting: CERBERUS_INVENTORY_LOKI_SOURCE)")
+	cmd.Flags().StringArrayVar(&lokiSelectors, "loki-selector", settingLines(set, "CERBERUS_INVENTORY_LOKI_SELECTORS"),
 		"Loki stream selector to rank via /loki/api/v1/index/stats (repeatable; required with --loki-source; "+
-			"env: CERBERUS_INVENTORY_LOKI_SELECTORS, one selector per line — a selector may itself contain a comma)")
-	cmd.Flags().StringVar(&tempoSource, "tempo-source", envOr("CERBERUS_INVENTORY_TEMPO_SOURCE", ""),
+			"setting: CERBERUS_INVENTORY_LOKI_SELECTORS, one selector per line — a selector may itself contain a comma)")
+	cmd.Flags().StringVar(&tempoSource, "tempo-source", settingOr(set, "CERBERUS_INVENTORY_TEMPO_SOURCE", ""),
 		"optional Tempo base URL; presence alone records a fixed out-of-scope inventory entry, no probe is made "+
-			"(env: CERBERUS_INVENTORY_TEMPO_SOURCE)")
+			"(setting: CERBERUS_INVENTORY_TEMPO_SOURCE)")
 	return cmd
 }
 
@@ -1368,37 +1371,39 @@ func (e gateFailedError) Error() string {
 	return fmt.Sprintf("cutover gate failed: overall %s (a blocking stage said no-go)", e.overall)
 }
 
-// envOr returns the environment value for key, or def when unset/empty.
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
+// settingOr returns key's configured value — environment variable first, then
+// cerberus.yaml — or def when neither supplies one.
+func settingOr(set *config.Lookup, key, def string) string {
+	if v := set.String(key); v != "" {
 		return v
 	}
 	return def
 }
 
-// envOrLokiSelectors parses the environment fallback for the repeatable
-// --loki-selector flag. It deliberately does NOT comma-split the way a
-// generic repeatable-flag env fallback would: a LogQL stream selector
-// routinely contains a comma itself (e.g. the ordinary multi-label selector
-// `{app="checkout", env="prod"}`), and comma-splitting would corrupt it into
-// two malformed fragments. Each selector is instead one line, matching
-// --loki-selector's StringArrayVar CLI semantics where every occurrence of
-// the flag is one whole, unsplit selector. It returns nil (not an empty
-// non-nil slice) when the variable is unset, so cobra's flag default stays
+// settingLines resolves the configured fallback for the repeatable
+// --loki-selector flag. A cerberus.yaml sequence maps to the list directly;
+// the environment variable, which cannot express a sequence, is one selector
+// per line. Neither form comma-splits the way a generic repeatable-flag
+// fallback would: a LogQL stream selector routinely contains a comma itself
+// (e.g. the ordinary multi-label selector `{app="checkout", env="prod"}`), and
+// comma-splitting would corrupt it into two malformed fragments — matching
+// --loki-selector's StringArrayVar CLI semantics where every occurrence of the
+// flag is one whole, unsplit selector. It returns nil (not an empty non-nil
+// slice) when nothing is configured, so cobra's flag default stays
 // indistinguishable from "never set."
-func envOrLokiSelectors(key string) []string {
-	v := os.Getenv(key)
-	if v == "" {
+func settingLines(set *config.Lookup, key string) []string {
+	lines := normalizeList(set.Lines(key))
+	if len(lines) == 0 {
 		return nil
 	}
-	return normalizeList(strings.Split(v, "\n"))
+	return lines
 }
 
-// envFloat returns the float parsed from the environment value for key, or def
-// when the variable is unset. A set-but-unparseable value is an error, not a
+// settingFloat returns the float parsed from key's configured value, or def
+// when nothing is configured. A set-but-unparseable value is an error, not a
 // silent fallback to def.
-func envFloat(key string, def float64) (float64, error) {
-	v := os.Getenv(key)
+func settingFloat(set *config.Lookup, key string, def float64) (float64, error) {
+	v := set.String(key)
 	if v == "" {
 		return def, nil
 	}
