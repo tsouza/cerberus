@@ -97,6 +97,7 @@ test:
 # the `integration` build tag so regular `just test` doesn't pull in
 # Docker.
 schema-ddl-test:
+    @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}}
     go test -race -tags=integration ./internal/schema/ddl/...
 
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion
@@ -160,6 +161,7 @@ perf-profile OUT="perf-profile.json" TOP="40":
 # ClickHouse container. Requires Docker. Gated behind the `integration`
 # build tag so regular `just test` doesn't pull in Docker.
 chclient-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -race -tags=integration ./internal/chclient/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
@@ -171,6 +173,7 @@ chclient-integration:
 # `integration` build tag. See test/spec/strictscan_integration_test.go and
 # .github/workflows/strict-scan.yml.
 strict-scan-test:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
 
 # Run the router-corpus real-CH integration tests: the offline corpus WRITE
@@ -183,6 +186,7 @@ strict-scan-test:
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/routerrules/realch_integration_test.go and strict-scan.yml.
 router-corpus-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
 
 # Run the TraceQL spans-scan resource-bound real-CH guard (PR #1154): lowers +
@@ -195,6 +199,7 @@ router-corpus-integration:
 # behind the `integration` build tag. See
 # test/spec/traces_scan_resource_bound_integration_test.go and strict-scan.yml.
 traces-scan-bound-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
 
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
@@ -207,6 +212,7 @@ traces-scan-bound-integration:
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/solver/executor_realch_integration_test.go and strict-scan.yml.
 solver-memory-apportion-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
@@ -559,6 +565,20 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.5-alpine ghcr.io/open-te
 # e2e values), so the exact bundled-CH tag MUST be imported here.
 E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
 
+# ClickHouse images the `-tags=integration` Go tests start through
+# testcontainers. testcontainers does the pull itself, single-attempt, so a slow
+# Docker Hub fails those lanes the same way it failed the compose lanes — the
+# `schema-ddl` job died on a `clickhouse-server:25.8-alpine` manifest HEAD during
+# the v1.13.0 release window. Acquiring the images up front makes that pull
+# retryable: testcontainers reuses an image already in the daemon.
+#
+# CH_TEST_IMAGE_PRIOR is the older server the replicated-DDL test pins to prove
+# the DDL still applies on the previous supported line, so only that lane needs
+# it. TestIntegrationImagePinsMatchTheJustfile holds both against the literals in
+# the test sources.
+CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.8-alpine"
+CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
+
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to
 # `k3d cluster create --image` — k3d then boots from the host-cached copy
@@ -600,6 +620,26 @@ _pull-retry +IMAGES:
         done; \
         [ "$ok" = 1 ] || { echo "ERROR: docker pull $img failed after 5 attempts" >&2; exit 1; }; \
     done
+
+# Acquire every image a compose stack needs, with retry, BEFORE `up` reaches for
+# them. `docker compose up` pulls what it is missing but has no retry of its own,
+# so one Docker Hub timeout ("context deadline exceeded" on a manifest HEAD)
+# fails the whole lane — which is how the v1.13.0 release's Tier-1 leg died on a
+# transient `prom/prometheus` fetch. `_pull-retry` already solved this for the
+# k3d lanes; the compose lanes just weren't going through it.
+#
+# Images already in the local daemon are skipped rather than re-pulled: the
+# cerberus image is acquired beforehand by its own recipe and may be a local
+# build (`pull_policy: never`) that no registry can serve.
+_compose-pull-retry +FILES:
+    @args=""; for f in {{FILES}}; do args="$args -f $f"; done; \
+    missing=$(docker compose $args config --images | sort -u | while read -r img; do \
+        docker image inspect "$img" >/dev/null 2>&1 || echo "$img"; \
+    done); \
+    if [ -n "$missing" ]; then \
+        echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
+        just _pull-retry $missing; \
+    fi
 
 e2e-up: e2e-down
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
@@ -1282,7 +1322,7 @@ migration-cerberus-image:
         docker build -f Dockerfile.local -t "$img" .; \
     else \
         echo "==> migration cerberus image: pull $img"; \
-        docker pull "$img"; \
+        just _pull-retry "$img"; \
     fi
 
 # Bring the Tier-1 stack up and wait for every healthcheck to pass. The cerberus
@@ -1301,6 +1341,7 @@ migration-cerberus-image:
 migration-tier1-up:
     @just migration-tier1-down
     @just migration-cerberus-image
+    @just _compose-pull-retry test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
     @echo "==> migration tier-1 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         up --wait --wait-timeout 300
@@ -1438,6 +1479,8 @@ migration-tier1: migration-tier1-up migration-tier1-seed migration-tier1-run mig
 migration-tier2-up:
     @just migration-tier2-down
     @just migration-cerberus-image
+    @just _compose-pull-retry test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+        test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml
     @echo "==> migration tier-2 stack up"
     docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
