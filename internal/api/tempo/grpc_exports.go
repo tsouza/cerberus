@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -178,6 +179,16 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	}
 	if step <= 0 {
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: 'step' must be > 0", errParseStage)
+	}
+	// The same grid alignment + resolution ceiling handleMetricsQueryRange
+	// applies. Without them this surface returns samples off Tempo's step
+	// grid and accepts an unbounded matrix fan-out (compute-DoS).
+	start, end = alignMetricsWindow(start, end, step)
+	if end.Sub(start)/step > format.MaxResolutionPoints {
+		// Pre-parse cap rejection: no CH query runs, so query_log can never
+		// reflect it. Record a decision-only "rejected" corpus row.
+		h.Engine.ObserveCapRejection("traceql")
+		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %s", errParseStage, format.ResolutionCapMessage)
 	}
 
 	parseT := telemetry.ObserveStage(telemetry.StageParse)
