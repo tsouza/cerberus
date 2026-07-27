@@ -8,8 +8,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Added
 
-- **config:** accept the chart's nested shape in cerberus.yaml (#1316)
+- **config:** accept the chart's nested shape in cerberus.yaml (#1316) — `clickhouse.addr`, `query.maxSamples`, `migrate.verify.ref` and the rest, so one file mirrors the chart's `values.yaml` instead of restating the `CERBERUS_*` table in YAML syntax. A nested file is exactly equivalent to exporting the corresponding variables, precedence unchanged (flag > env > file > default), and the flat `CERBERUS_*` key still works as the long-tail escape hatch. `docs/configuration.md` lists the config-file path beside every variable.
 - **migrate:** read verify/inventory settings from cerberus.yaml (#1314)
+
+### Changed
+
+- **config:** a `cerberus.yaml` that exists but does not parse, or that carries a key cerberus does not recognise, is now a startup error naming the nearest key that does (#1316). Previously such a file was tolerated and its unrecognised settings silently ignored. **Upgrading:** a file with a typo, or one pointed at chart-only keys, will now stop the process at startup instead of running with defaults.
 
 ### Fixed
 
