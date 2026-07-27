@@ -806,6 +806,11 @@ func TestQueryRange_BadInput(t *testing.T) {
 		{"missing end", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&step=60`},
 		{"end before start", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717999200&end=1717995600&step=60`},
 		{"invalid limit", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=60&limit=-5`},
+		// step=0 parses cleanly (format.ParseDuration accepts a bare float),
+		// so without the guard it reaches the (end-start)/step resolution cap
+		// and divides by zero. Upstream Loki rejects both shapes too.
+		{"zero step", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=0`},
+		{"negative step", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=-60`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
