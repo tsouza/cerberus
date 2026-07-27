@@ -132,6 +132,53 @@ CERBERUS_CH_BREAKER_THRESHOLD: 9
 	}
 }
 
+// A cerberus.yaml written before the nested shape existed is entirely flat.
+// Those files are in operators' hands already, so every one of their keys must
+// keep resolving unchanged — including a schema-shape key, which travels the
+// internal/schema path rather than the typed registry.
+func TestFromEnv_LegacyFlatConfigFileStillLoads(t *testing.T) {
+	clearAllEnv(t)
+	writeConfigFile(t, `
+CERBERUS_CH_ADDR: legacy.internal:9000
+CERBERUS_CH_DATABASE: legacydb
+CERBERUS_QUERY_MAX_SAMPLES: 1234567
+CERBERUS_SCHEMA_LOGS_TABLE: legacy_logs
+`)
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ClickHouse.Addr != "legacy.internal:9000" {
+		t.Errorf("CERBERUS_CH_ADDR = %q, want legacy.internal:9000", cfg.ClickHouse.Addr)
+	}
+	if cfg.ClickHouse.Database != "legacydb" {
+		t.Errorf("CERBERUS_CH_DATABASE = %q, want legacydb", cfg.ClickHouse.Database)
+	}
+	if cfg.ClickHouse.MaxQuerySamples != 1234567 {
+		t.Errorf("CERBERUS_QUERY_MAX_SAMPLES = %d, want 1234567", cfg.ClickHouse.MaxQuerySamples)
+	}
+	if cfg.Logs.LogsTable != "legacy_logs" {
+		t.Errorf("CERBERUS_SCHEMA_LOGS_TABLE = %q, want legacy_logs", cfg.Logs.LogsTable)
+	}
+}
+
+// The environment outranks the file in both shapes; the flat form must not have
+// quietly become the stronger one.
+func TestFromEnv_LegacyFlatConfigFileLosesToEnv(t *testing.T) {
+	clearAllEnv(t)
+	writeConfigFile(t, "CERBERUS_CH_DATABASE: fromfile\n")
+	t.Setenv(envCHDatabase, "fromenv")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ClickHouse.Database != "fromenv" {
+		t.Errorf("clickhouse.database = %q, want the environment's fromenv", cfg.ClickHouse.Database)
+	}
+}
+
 // The read-side schema shape is resolved by internal/schema rather than the
 // typed registry, so it needs its own proof that a file reaches it — otherwise
 // the key is accepted and does nothing.
