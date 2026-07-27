@@ -56,6 +56,13 @@ brews:
       owner: tsouza
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Homebrew resolves a tap's formulae from `Formula/`, `HomebrewFormula/`,
+    # or the tap root, in that order — but goreleaser's `directory` defaults to
+    # EMPTY, i.e. the tap root, so v1.12.0 shipped `cerberus.rb` to the root.
+    # `Formula/` is the conventional layout, it is what `brew-smoke.mjs` pins
+    # (`TAP_FORMULA_PATH`), and it is the only one of the three that is not at
+    # risk from Homebrew's ongoing push to standardise tap layout. Pin it.
+    directory: Formula
     homepage: "https://github.com/tsouza/cerberus"
     description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
     license: "Apache-2.0"
