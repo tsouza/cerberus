@@ -4,10 +4,9 @@ Move a Prometheus-backed setup onto cerberus (ClickHouse) **without rebuilding
 dashboards or rewriting alerts** — and prove what changes *before* real traffic
 depends on it.
 
-Thirteen steps. Each one declares its **pre-conditions**, what you do, and its
-**post-conditions** — so you always know whether you are ready to run it and
-whether it worked. Do them in order. Steps 3–6 are the only ones that can be
-reordered among themselves.
+Thirteen steps, in order (3–6 can go in any order). Each declares its
+**pre-conditions**, what you do, and its **post-conditions** — so you always
+know whether you are ready, and whether it worked.
 
 ```text
 1–2  install + gather   ──▶  3–6  assess   ──▶  7–9  stand it up
@@ -15,9 +14,9 @@ reordered among themselves.
                         12–13  cut over  ◀── 10–11  verify + gate
 ```
 
-The work is driven by `cerberus migrate`, a command group in the release binary.
-It is read-only: it never writes to Prometheus, Grafana or ClickHouse. Steps 7,
-8, 9, 12 and 13 — the ones that change anything — are ones **you** run by hand.
+`cerberus migrate` is read-only — it never writes to Prometheus, Grafana or
+ClickHouse. Steps 7, 8, 9, 12 and 13 are the ones that change anything, and you
+run all five by hand.
 
 ## Two things cerberus does not do
 
@@ -29,40 +28,31 @@ It **does not ingest**. Your OpenTelemetry Collector keeps writing into
 ClickHouse; you point no writer at cerberus.
 
 Get either wrong and you cut over to blank panels. It is also why this migration
-is organised around your **real queries** — the PromQL in rules and panels —
-rather than around `prometheus.yml`. A config file cannot tell you whether a
-query translates cleanly or falls over on cardinality. Only the queries and the
-live data can.
+works from your **real queries** rather than from `prometheus.yml` — a config
+file cannot tell you whether a query translates cleanly or falls over on
+cardinality.
 
-## How the tool is configured
+## Configuration
 
-There is **one** configuration surface, and it is the same one the cerberus
-server reads: `CERBERUS_*` environment variables. No migration-specific config
-file, no `--config` flag. Whatever the environment leaves unset falls back to an
-optional `cerberus.yaml` (working directory first, then `/etc/cerberus/`), then
-to a built-in default. `cerberus config-docs` prints the whole surface from the
-binary itself; [`docs/configuration.md`](configuration.md) is the same list in
-prose. Every variable also has an equivalent flag, and the flag wins — except
-the output flags (`--json`, `--out`, `--top`), which have no env fallback.
+Everything is `CERBERUS_*` environment variables — the same ones the server
+reads. Four steps need them:
 
-**No `migrate` subcommand ever connects to ClickHouse.** `schema` renders DDL to
-stdout for *you* to apply, everything else works off local files, and the two
-commands that do open a socket talk to your existing Prometheus / Loki / Tempo —
-never to the database.
+| Step                  | Set                                         | So that                                    |
+| --------------------- | ------------------------------------------- | ------------------------------------------ |
+| 4 · classify, explain | `CERBERUS_QUERY_*`                          | previews run under your real sample budget |
+| 6 · inventory         | `CERBERUS_INVENTORY_*`                      | it reads the right Prometheus              |
+| 7 · schema            | `CERBERUS_CH_DATABASE`, `CERBERUS_SCHEMA_*` | the DDL matches what the server expects    |
+| 10 · verify           | `CERBERUS_VERIFY_*`                         | it reaches both backends, per head         |
 
-| Command     | Opens a connection to                            | Reads from your environment                              |
-| ----------- | ------------------------------------------------ | -------------------------------------------------------- |
-| `harvest`   | nothing                                          | nothing                                                  |
-| `classify`  | nothing                                          | the query budget, so previews run under production rules |
-| `explain`   | nothing                                          | the query budget, plus `CERBERUS_SCHEMA_*` table names   |
-| `rulegraph` | nothing                                          | nothing                                                  |
-| `schema`    | nothing — it prints DDL, you pipe it             | `CERBERUS_CH_DATABASE` and `CERBERUS_SCHEMA_*`           |
-| `inventory` | your live Prometheus (and Loki / Tempo if asked) | `CERBERUS_INVENTORY_*`                                   |
-| `verify`    | both backends, one pair per head                 | `CERBERUS_VERIFY_*`                                      |
-| `gate`      | nothing                                          | nothing                                                  |
+The other steps need none. Each step below gives the exact `export` lines; every
+variable also has a flag, and the flag wins.
 
-Each step below repeats the configuration it needs in its own pre-conditions, so
-you can work straight down the page.
+Nothing here ever connects to ClickHouse. `schema` prints DDL for you to pipe,
+and only `inventory` and `verify` open a socket — to your existing Prometheus,
+Loki or Tempo.
+
+The full surface: `cerberus config-docs`, or
+[`docs/configuration.md`](configuration.md).
 
 ## Step 1: Install the binary
 
