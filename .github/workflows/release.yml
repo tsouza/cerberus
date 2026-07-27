@@ -492,10 +492,17 @@ jobs:
   #     `continue-on-error: true` is belt-and-braces on top of the in-script
   #     fail-open.
   #
-  # Token: RELEASE_PAT (fine-grained, contents:write) when present, else the
-  # default GITHUB_TOKEN — both can delete an UNPROTECTED `release/*.x` branch
-  # (no ruleset / classic branch protection covers `release/*`; only `main` is
-  # protected). See docs/operations.md "Release support window / EOL policy".
+  # Token: RELEASE_PAT is REQUIRED here, not an optimisation. The repository
+  # ruleset "release maintenance lines" targets `refs/heads/release/*.x` with a
+  # `deletion` rule, and its only bypass actor is the `admin` RepositoryRole.
+  # `contents:write` is therefore NOT sufficient on its own: the default
+  # GITHUB_TOKEN acts as github-actions[bot], which holds write and never the
+  # admin role, so the ruleset rejects its delete. A PAT owned by an admin
+  # inherits that role and bypasses (the delete is accepted and logged by GitHub
+  # as `Bypassed rule violations`). The `|| secrets.GITHUB_TOKEN` fallback below
+  # is a best-effort attempt for a repo without the secret, not a supported
+  # path — expect it to be refused here.
+  # See docs/operations.md "Release support window / EOL policy".
   eol-retire:
     name: eol-retire
     needs: [gate, publish]
@@ -516,8 +523,9 @@ jobs:
       needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      # Deleting a branch ref needs contents:write. (The job uses RELEASE_PAT
-      # when present; this scope covers the github.token fallback.)
+      # Deleting a branch ref needs contents:write. This scope only covers the
+      # github.token fallback; the `release/*.x` ruleset additionally requires
+      # the admin role, which only RELEASE_PAT carries. See the job comment.
       contents: write
     steps:
       - uses: actions/checkout@v7
@@ -528,10 +536,9 @@ jobs:
       - name: Retire the out-of-window release line (active EOL)
         continue-on-error: true
         env:
-          # RELEASE_PAT (fine-grained contents:write) deletes the branch even if
-          # a future ruleset protects `release/*` and grants the PAT bypass;
-          # falls back to github.token, which suffices for today's unprotected
-          # `release/*.x` branches.
+          # RELEASE_PAT is the supported token: the live `release/*.x` ruleset
+          # denies deletion to everything but the admin role, which an
+          # admin-owned PAT inherits and github-actions[bot] does not.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           RELEASE_APP_VERSION: ${{ needs.gate.outputs.app_version }}
         run: node .github/scripts/release-preflight.mjs eol-retire-line
