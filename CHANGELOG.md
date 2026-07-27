@@ -4,9 +4,78 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.12.0] — 2026-07-27
+
 ### Added
 
-- **solver:** failure-driven route memo (`internal/routememo`) — when a route-A dispatch fails on ClickHouse resource exhaustion, retry it once on the sharded route and remember the outcome against a literal-free cost-shape fingerprint, so future cost-equivalent traffic routes directly instead of paying the same failure again; bounded by two-failure corroboration, a cluster-wide pressure damper, a single process-wide dispatch-token budget, and TTL-with-midpoint-revalidation. Off by default (`CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`)
+- **release:** gate publish on migration-e2e and smoke the released artifact (#1296)
+- **migration:** make Layer-14 coverage mean executed, and pin the PASS assertions (#1286)
+- **migration:** stand up Tier-2 ruler substrate (Layer 14, phase 3a) (#1284)
+- **migration:** drive cerberus migrate verify through Gherkin against the live tier-1 stack (#1283)
+- **migrate:** extend inventory + rulegraph to Loki, fold into gate (#1276)
+- **solver:** failure-driven route memo (`internal/routememo`) — when a route-A dispatch fails on ClickHouse resource exhaustion, retry it once on the sharded route and remember the outcome against a literal-free cost-shape fingerprint, so future cost-equivalent traffic routes directly instead of paying the same failure again; bounded by two-failure corroboration, a cluster-wide pressure damper, a single process-wide dispatch-token budget, and TTL-with-midpoint-revalidation. Off by default (`CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`) (#1275)
+- **migrate:** judge log-stream, trace-search and trace-by-id parity in verify (#1269)
+- **telemetry:** classify query failures, extend latency tails, attribute stages by language (#1274)
+- **migration:** pinned reference stack + deterministic all-signal seeder (#1267)
+- **migrate:** verify the Loki + Tempo metric lanes for migration parity (#1266)
+- **chopt:** native deriv/predict_linear via timeSeries*ToGrid (25.9) (#1259)
+- **migrate:** explain + classify TraceQL queries (#1258)
+- **migrate:** explain + classify LogQL corpus queries (#1257)
+- **migrate:** harvest all three heads (LogQL + TraceQL) into one corpus (#1256)
+- **migrate:** verify — failure verdict, --report json, bug-report repro, experimental-CH attribution (#1244)
+- **migrate:** gate — fold migration artifacts into a go/no-go decision (#1243)
+- **migrate:** rulegraph — recording-rule output → consumer dependency graph (#1242)
+- **migrate:** classify — bucket each corpus query as PromQL-pure / rewritable / no-equivalent (#1241)
+- **migrate:** inventory — cardinality + churn from the source Prometheus (#1240)
+- **migrate:** verify — replay the corpus against Prometheus and cerberus and diff (parity gate) (#1239)
+- **migrate:** harvest — build a query corpus from rule files + Grafana dashboards (#1238)
+- **migrate:** explain — preview the ClickHouse SQL for your PromQL (#1236)
+- **migrate:** offline schema preview (ddl.RenderAll + cmd/migrate --schema) (#1231)
+- **engine:** add DryRunSQL to emit query SQL without executing (#1233)
+
+### Fixed
+
+- **ci:** retry the lychee download so link-check can't die before checking a link (#1303)
+- **release:** eol-retire needs RELEASE_PAT — release/*.x is ruleset-protected (#1299)
+- **solver:** count chDB shard opens atomically so the cap contract can't lose increments (#1297)
+- **mutation:** cap per-mutant test timeout so runaway mutants can't OOM the runner (#1294)
+- **ci:** let tier-2 write the run report its scenarios are attested from (#1293)
+- **ci:** run the tier a job was given, not the closure of what it needs (#1292)
+- **ci:** make migration-tier0 a plain job and teach every seed the ServiceName column (#1291)
+- **promql:** project service_name on every selector + unstick the migration-e2e lane (#1289)
+- **migration:** make the Tier-1 scenarios assert their stories (#1288)
+- **migration:** make MIG-18 and MIG-19 pass against the live Tier-2 ruler (#1287)
+- **migration:** keep tier-1 archetypes apart by identity, not by window (#1285)
+- **ci:** log in to Docker Hub before k3d pulls in dashboard/chaos/bwc-minio (#1282)
+- **mutation:** scope internal/logql/lsyntax out of the four logql legs (#1280)
+- **ci:** pass migration-e2e's enumerator output to migration-tier0 as an artifact (#1278)
+- **promql:** resolve label catalog answers at the scan, not above a per-series rebuild (#1270)
+- **solver:** read the eval grid through a carrier interface, not a kind list (#1272)
+- **prom:** resolve unpinned `__name__` matchers against the synthetic name set (#1271)
+- **crawl:** reconcile the init-race 400 on both transports + its console twin (#1264)
+- **e2e:** move the k3d ClickHouse substrate off the defective 26.5 line (#1263)
+- **perf:** delegate traceql_compare scaling to the cardinality axis (#1261)
+- **chsql:** whole-second axis for native deriv/predict_linear; bump CI CH substrate to 26.5 (#1260)
+- **cli:** use cerberus migrate form in verify repro, classify hint, and migration docs (#1253)
+- **migrate:** final audit batch — gate soundness, creds leak, preview fidelity, polish (#1249)
+- **migrate:** gate + rulegraph honesty, CLI UX, inventory tests (#1247)
+- **migrate:** verify — fix false-PASS honesty defects + correctness/security hardening (#1245)
+
+### Changed
+
+- **solver:** retire the route-threshold autotune loop for static config (#1273)
+- **cli:** consolidate all CLIs into one cobra-based cerberus binary (#1250)
+
+### Documentation
+
+- **migration-testing:** pin Gherkin/godog as the Layer-14 scenario language (#1265)
+- **cli:** finish CLI-consolidation sweep in migration-testing + router-rules (#1254)
+- **migration-testing:** pin the verify-tier comparator as internal/migrateverify (#1251)
+- **migration:** reconcile the migration playbook to the shipped CLI + promote in README (#1248)
+- **migration:** scheduled end-to-end scenario plan for all migration user-stories (#1246)
+- **migration:** add pre-cutover migration playbook (#1235)
+- **readme:** center architecture diagram as a convergent hub (#1228)
+- **readme:** redraw architecture diagram as a hub around ClickHouse (#1227)
 
 ## [v1.11.1] — 2026-07-17
 
