@@ -1,7 +1,9 @@
 package regression
 
 import (
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -102,6 +104,106 @@ func TestJustfileComposeUpPrePullsWithRetry(t *testing.T) {
 
 	if found == 0 {
 		t.Fatal("no `docker compose ... up` recipe found — the guard is scanning for a shape that no longer exists")
+	}
+}
+
+// TestJustfileIntegrationLanesPrePullTestImages pins that every `-tags=integration`
+// recipe acquires its container images through `_pull-retry` first. Those tests
+// start ClickHouse via testcontainers, which does the pull itself with no retry
+// — the `schema-ddl` job failed exactly that way during the v1.13.0 release
+// window. testcontainers reuses an image already in the daemon, so pre-pulling
+// is what makes the pull retryable.
+func TestJustfileIntegrationLanesPrePullTestImages(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+
+	const integrationTag = "-tags=integration"
+
+	found := 0
+	for name, body := range justRecipes(t, string(buf)) {
+		if !strings.Contains(body, integrationTag) {
+			continue
+		}
+		found++
+		if !strings.Contains(body, "_pull-retry") {
+			t.Errorf("Justfile recipe %q runs %s tests without pre-pulling their images via `_pull-retry`. "+
+				"testcontainers pulls single-attempt, so one Docker Hub timeout fails the lane.", name, integrationTag)
+		}
+	}
+
+	if found == 0 {
+		t.Fatal("no `-tags=integration` recipe found — the guard is scanning for a shape that no longer exists")
+	}
+}
+
+// TestIntegrationImagePinsMatchTheJustfile holds the Justfile's pre-pull list
+// equal to the container images the integration tests actually name. A test that
+// introduces a new image without adding it here would go back to an unretried
+// testcontainers pull, and nothing else would notice.
+func TestIntegrationImagePinsMatchTheJustfile(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+	justfile := string(buf)
+
+	pinned := map[string]bool{}
+	for _, v := range []string{"CH_TEST_IMAGE", "CH_TEST_IMAGE_PRIOR"} {
+		for _, img := range justVariableList(t, justfile, v) {
+			pinned[img] = true
+		}
+	}
+
+	// `clickhouse/clickhouse-server:<tag>` as a Go string literal. Scoped to that
+	// repository because it is the only image the integration tests start; a new
+	// one lands as a failure here rather than silently widening the pattern.
+	imageRE := regexp.MustCompile(`"(clickhouse/clickhouse-server:[A-Za-z0-9._-]+)"`)
+
+	referenced := map[string][]string{}
+	for _, root := range []string{"../../internal", "../../test"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, m := range imageRE.FindAllStringSubmatch(string(src), -1) {
+				referenced[m[1]] = append(referenced[m[1]], path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+
+	if len(referenced) == 0 {
+		t.Fatal("no integration test names a ClickHouse image — the guard is scanning for a shape that no longer exists")
+	}
+
+	for img, files := range referenced {
+		if !pinned[img] {
+			t.Errorf("%s is started by %s but is not in the Justfile's pre-pull list; testcontainers would "+
+				"pull it single-attempt. Add it to CH_TEST_IMAGE / CH_TEST_IMAGE_PRIOR and to the lane that needs it.",
+				img, files[0])
+		}
+	}
+	for img := range pinned {
+		if _, ok := referenced[img]; !ok {
+			t.Errorf("the Justfile pre-pulls %s but no integration test starts it — a stale pin costs every "+
+				"integration lane an image download it never uses.", img)
+		}
 	}
 }
 

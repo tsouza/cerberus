@@ -97,6 +97,7 @@ test:
 # the `integration` build tag so regular `just test` doesn't pull in
 # Docker.
 schema-ddl-test:
+    @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}}
     go test -race -tags=integration ./internal/schema/ddl/...
 
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion
@@ -160,6 +161,7 @@ perf-profile OUT="perf-profile.json" TOP="40":
 # ClickHouse container. Requires Docker. Gated behind the `integration`
 # build tag so regular `just test` doesn't pull in Docker.
 chclient-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -race -tags=integration ./internal/chclient/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
@@ -171,6 +173,7 @@ chclient-integration:
 # `integration` build tag. See test/spec/strictscan_integration_test.go and
 # .github/workflows/strict-scan.yml.
 strict-scan-test:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
 
 # Run the router-corpus real-CH integration tests: the offline corpus WRITE
@@ -183,6 +186,7 @@ strict-scan-test:
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/routerrules/realch_integration_test.go and strict-scan.yml.
 router-corpus-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
 
 # Run the TraceQL spans-scan resource-bound real-CH guard (PR #1154): lowers +
@@ -195,6 +199,7 @@ router-corpus-integration:
 # behind the `integration` build tag. See
 # test/spec/traces_scan_resource_bound_integration_test.go and strict-scan.yml.
 traces-scan-bound-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
 
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
@@ -207,6 +212,7 @@ traces-scan-bound-integration:
 # Requires Docker; gated behind the `integration` build tag. See
 # internal/solver/executor_realch_integration_test.go and strict-scan.yml.
 solver-memory-apportion-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
@@ -558,6 +564,20 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.5-alpine ghcr.io/open-te
 # maps the CH container's pullPolicy to .Values.image.pullPolicy (Never in the
 # e2e values), so the exact bundled-CH tag MUST be imported here.
 E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
+
+# ClickHouse images the `-tags=integration` Go tests start through
+# testcontainers. testcontainers does the pull itself, single-attempt, so a slow
+# Docker Hub fails those lanes the same way it failed the compose lanes — the
+# `schema-ddl` job died on a `clickhouse-server:25.8-alpine` manifest HEAD during
+# the v1.13.0 release window. Acquiring the images up front makes that pull
+# retryable: testcontainers reuses an image already in the daemon.
+#
+# CH_TEST_IMAGE_PRIOR is the older server the replicated-DDL test pins to prove
+# the DDL still applies on the previous supported line, so only that lane needs
+# it. TestIntegrationImagePinsMatchTheJustfile holds both against the literals in
+# the test sources.
+CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.8-alpine"
+CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to
