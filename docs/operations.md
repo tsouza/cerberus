@@ -1123,9 +1123,18 @@ can install the single `cerberus` binary with:
 brew install tsouza/tap/cerberus
 ```
 
+That is also the shortest way to get the `cerberus migrate` CLI onto the
+machine that holds an operator's rules and dashboards, so the migration
+playbook points at it as the default install path — see
+[getting the `cerberus` binary](migration.md#getting-the-cerberus-binary).
+
 This is wired via the goreleaser `brews:` block (a Homebrew *formula*, not a
 cask, so it installs on Linuxbrew as well as macOS). `skip_upload: auto` means
-`rc.*` prereleases never write a formula — only stable releases publish.
+`rc.*` prereleases never write a formula — only stable releases publish. The
+block pins `directory: Formula`: Homebrew resolves a tap's formulae from
+`Formula/`, `HomebrewFormula/` or the tap root, but goreleaser's `directory`
+defaults to **empty** — the tap root — and `Formula/` is both the conventional
+layout and the path the smoke reads.
 
 Two prerequisites make the push work, and both are one-time:
 
@@ -1147,7 +1156,22 @@ prerelease is **not** skipped — it takes the opposite assertion: `skip_upload:
 auto` means an `rc.*` must have written no formula, so a formula declaring the
 prerelease version is a reported regression. The job runs after `publish` because
 `brew install` downloads the release tarball, which 404s while the release is
-still a draft.
+still a draft, and it runs on `macos-latest` because the Ubuntu runner image
+ships no Homebrew at all. That the formula (rather than a cask) also installs
+under Linuxbrew is a property of the artifact, not something CI exercises.
+
+`brew-smoke` fires exactly once, inside the release run, which leaves one thing
+uncovered: it cannot re-check an *already-published* release. `rerun-failed-jobs`
+replays the workflow as it existed at the release commit, so a correction to the
+job — a different runner, a different tap path — can never be exercised against
+the release that needed it, and nothing here would notice a formula rotting
+after publish (someone edits the tap, an asset is deleted, a checksum stops
+matching). The `brew-verify` workflow covers that: same `brew-smoke.mjs`, same
+assertions, but `workflow_dispatch` (with an optional bare `version`, defaulting
+to the latest published non-prerelease) plus a weekly cron. It checks out the
+*tag* it is verifying, because `config-docs -check` compares the installed
+binary's config registry against the working tree's `docs/configuration.md` —
+against `main` it would red on unreleased doc drift that is not a defect.
 
 #### Maintenance lines (hotfix backports)
 
