@@ -449,7 +449,15 @@ jobs:
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
       needs.publish.result == 'success'
-    runs-on: ubuntu-latest
+    # macOS, NOT ubuntu-latest: the Ubuntu 24.04 runner image ships no
+    # Homebrew, so `brew` is a bare ENOENT there and the smoke can only ever
+    # fail. (It was ubuntu-latest until v1.12.0 — the first release to reach
+    # this job — proved it.) The macOS image has Homebrew preinstalled, needs
+    # no install step, and is the platform the overwhelming majority of
+    # `brew install` traffic comes from. Everything the smoke runs afterwards
+    # (`--version`, `migrate schema`, `config-docs -check`) is pure Go and
+    # platform-independent, so the darwin build exercises the same payloads.
+    runs-on: macos-latest
     permissions:
       contents: read
     steps:
