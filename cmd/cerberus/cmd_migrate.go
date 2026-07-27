@@ -86,6 +86,10 @@ var errNoMigrateSubcommand = errors.New("nothing to do: pass a migrate subcomman
 // (verify); the rest run without a ClickHouse connection so an operator can
 // review exactly what cerberus will do before provisioning anything.
 func newMigrateCmd() *cobra.Command {
+	// One probe of cerberus.yaml for the whole migrate tree: cobra builds every
+	// subcommand on every invocation, so a per-constructor Lookup would read the
+	// same file twice and could, mid-run, read two different files.
+	set := config.NewLookup()
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Offline pre-cutover migration preview toolkit",
@@ -112,8 +116,8 @@ func newMigrateCmd() *cobra.Command {
 		newMigrateExplainCmd(),
 		newMigrateClassifyCmd(),
 		newMigrateRuleGraphCmd(),
-		newMigrateVerifyCmd(),
-		newMigrateInventoryCmd(),
+		newMigrateVerifyCmd(set),
+		newMigrateInventoryCmd(set),
 		newMigrateGateCmd(),
 	)
 	return cmd
@@ -152,7 +156,7 @@ func runMigrate(args []string, stdout, stderr io.Writer) error {
 // standalone. They exist so tests (and the parity/cutover exit-code contract)
 // exercise exactly one verb's flag parsing + logic without the parent tree.
 func runVerify(args []string, stdout, stderr io.Writer) error {
-	return execCmd(newMigrateVerifyCmd(), args, stdout, stderr)
+	return execCmd(newMigrateVerifyCmd(config.NewLookup()), args, stdout, stderr)
 }
 
 func runGate(args []string, stdout, stderr io.Writer) error {
@@ -160,7 +164,7 @@ func runGate(args []string, stdout, stderr io.Writer) error {
 }
 
 func runInventory(args []string, stdout, stderr io.Writer) error {
-	return execCmd(newMigrateInventoryCmd(), args, stdout, stderr)
+	return execCmd(newMigrateInventoryCmd(config.NewLookup()), args, stdout, stderr)
 }
 
 // normalizeList reproduces the legacy stringList semantics on top of cobra's
@@ -488,9 +492,8 @@ type verifyInputs struct {
 // window and diffs the results series-by-series, exiting non-zero on any
 // divergence or error. Every flag falls back to CERBERUS_VERIFY_*, from the
 // environment or from the same cerberus.yaml the gateway reads.
-func newMigrateVerifyCmd() *cobra.Command {
+func newMigrateVerifyCmd(set *config.Lookup) *cobra.Command {
 	var in verifyInputs
-	set := config.NewLookup()
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Replay the corpus against each head's reference backend + cerberus (parity gate)",
@@ -794,7 +797,7 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 // --tempo-source, records a fixed out-of-scope entry rather than a fabricated
 // cardinality number, since Tempo's span/block storage exposes nothing
 // analogous. Flags fall back to CERBERUS_INVENTORY_*.
-func newMigrateInventoryCmd() *cobra.Command {
+func newMigrateInventoryCmd(set *config.Lookup) *cobra.Command {
 	var (
 		source        string
 		top           int
@@ -805,7 +808,6 @@ func newMigrateInventoryCmd() *cobra.Command {
 		lokiSelectors []string
 		tempoSource   string
 	)
-	set := config.NewLookup()
 	cmd := &cobra.Command{
 		Use:   "inventory",
 		Short: "Probe live migration sources for cardinality / OOM-risk facts",

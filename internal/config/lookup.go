@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -42,9 +43,6 @@ func (l *Lookup) String(key string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
-	if l == nil || l.v == nil {
-		return ""
-	}
 	return l.v.GetString(key)
 }
 
@@ -56,31 +54,22 @@ func (l *Lookup) String(key string) string {
 //
 // Entries are returned exactly as written; trimming and empty-entry pruning
 // belong to the caller, which applies the same normalisation to flag values.
+// A non-string sequence entry is rendered rather than dropped, so a
+// mistyped selector fails loudly downstream instead of vanishing.
 func (l *Lookup) Lines(key string) []string {
 	if v := os.Getenv(key); v != "" {
 		return strings.Split(v, "\n")
 	}
-	if l == nil || l.v == nil {
-		return nil
-	}
-	switch raw := l.v.Get(key).(type) {
-	case nil:
-		return nil
-	case []any:
-		out := make([]string, 0, len(raw))
-		for _, item := range raw {
-			s, ok := item.(string)
-			if !ok {
-				continue
-			}
-			out = append(out, s)
+	if seq, ok := l.v.Get(key).([]any); ok {
+		out := make([]string, 0, len(seq))
+		for _, item := range seq {
+			out = append(out, fmt.Sprint(item))
 		}
 		return out
-	default:
-		s := l.v.GetString(key)
-		if s == "" {
-			return nil
-		}
-		return strings.Split(s, "\n")
 	}
+	s := l.v.GetString(key)
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }
