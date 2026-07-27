@@ -511,23 +511,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Fetching the checker is this lane's only network dependency, and it is
+      # retried - see the action for why that matters.
+      - uses: ./.github/actions/setup-lychee
+
       # OFFLINE link + fragment check. `--root-dir` anchors absolute-style
       # `/foo` links at the repo root; `--include-fragments` turns on the
-      # in-document `#anchor` existence check. `fail: true` makes a broken
-      # link/anchor fail the job. No `GITHUB_TOKEN` and no network: this lane
-      # is deterministic by construction.
+      # in-document `#anchor` existence check. lychee exits non-zero on a
+      # broken link/anchor, which fails the step. No `GITHUB_TOKEN` and no
+      # network: the check itself is deterministic by construction.
       - name: lychee (offline internal links + anchors)
-        uses: lycheeverse/lychee-action@v2
-        with:
-          fail: true
-          args: >-
-            --offline
-            --include-fragments
-            --root-dir "$GITHUB_WORKSPACE"
-            --exclude-path compatibility/prometheus/upstream
-            --exclude-path compatibility/tempo/upstream
-            --exclude-path compatibility/loki/upstream
-            --exclude-path node_modules
+        run: |
+          lychee \
+            --offline \
+            --include-fragments \
+            --root-dir "$GITHUB_WORKSPACE" \
+            --exclude-path compatibility/prometheus/upstream \
+            --exclude-path compatibility/tempo/upstream \
+            --exclude-path compatibility/loki/upstream \
+            --exclude-path node_modules \
             "**/*.md"
 
   # `agpl-clean` is the provably-clean-build licence gate. Cerberus ships

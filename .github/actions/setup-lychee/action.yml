@@ -1,0 +1,41 @@
+name: Setup lychee
+description: >
+  Install a pinned lychee binary onto PATH, downloading it with a retrying
+  curl so a transient TLS/CDN blip on the GitHub release host cannot fail a
+  link-check lane before a single link has been checked.
+
+# Why a composite action: both link-check lanes need the same binary, and both
+# previously got it from `lycheeverse/lychee-action`, whose install step is a
+# bare `curl -sfLO`. One TLS reset there fails the job with curl exit 35 -
+# which is exactly wrong for these two lanes:
+#   * ci.yml `link-check` advertises itself as offline and deterministic. Its
+#     download was the one non-deterministic thing about it.
+#   * link-check-external.yml runs `fail: false` precisely so third-party
+#     flakiness can never red a lane - but an install failure red it anyway,
+#     bypassing that intent entirely.
+# Owning the download lets both lanes retry it and keeps the pinned version in
+# one place.
+
+inputs:
+  version:
+    description: lychee release tag to install, e.g. `v0.24.2`.
+    required: false
+    default: v0.24.2
+
+runs:
+  using: composite
+  steps:
+    - name: Install lychee
+      shell: bash
+      env:
+        LYCHEE_VERSION: ${{ inputs.version }}
+      run: |
+        # The archive nests the binary under a target-triple directory, so
+        # extract just that one path and strip the leading component.
+        tarball=lychee-x86_64-unknown-linux-gnu.tar.gz
+        curl -sSfL --retry 5 --retry-all-errors --retry-delay 3 -o "$tarball" \
+          "https://github.com/lycheeverse/lychee/releases/download/lychee-${LYCHEE_VERSION}/${tarball}"
+        tar -xzf "$tarball" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+        sudo install -m 0755 lychee /usr/local/bin/lychee
+        rm -f "$tarball" lychee
+        lychee --version
