@@ -12,7 +12,12 @@ LABEL org.opencontainers.image.url="https://github.com/tsouza/cerberus"
 LABEL org.opencontainers.image.source="https://github.com/tsouza/cerberus"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
-COPY cerberus /usr/local/bin/cerberus
+# goreleaser's `dockers_v2` builds one multi-arch image and lays the context
+# out per platform (`linux/amd64/cerberus`, `linux/arm64/cerberus`), so the
+# right binary is selected by buildx's TARGETPLATFORM rather than by a separate
+# single-arch build per architecture.
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/cerberus /usr/local/bin/cerberus
 
 EXPOSE 8080
 

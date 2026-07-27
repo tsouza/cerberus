@@ -126,6 +126,22 @@ jobs:
         run: go test ./...
         working-directory: test/oracle
 
+      # goreleaser's `before` hook runs `go mod tidy` on every release, so a
+      # go.mod that isn't tidy means the release mutates the tree it is cutting
+      # from. That is how `spf13/pflag` sat marked `// indirect` while
+      # cmd/cerberus imported it directly. Both modules, since the nested
+      # oracle module drifts the same way and `just test` never reaches it.
+      - name: go.mod is tidy
+        run: |
+          for mod in . test/oracle; do
+            (cd "$mod" && go mod tidy)
+          done
+          if ! git diff --quiet -- '**/go.mod' '**/go.sum' go.mod go.sum; then
+            echo "::error::go mod tidy changed go.mod/go.sum — commit the result:"
+            git --no-pager diff -- '**/go.mod' '**/go.sum' go.mod go.sum
+            exit 1
+          fi
+
   # `lint` consolidates ALL linting in one job:
   #   - Go (golangci-lint v2 = formatters + linters from .golangci.yml)
   #   - Commit messages (commitlint, PR-only)
