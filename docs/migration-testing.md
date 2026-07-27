@@ -795,6 +795,23 @@ back off the binary's own `--help` and rejects a command line carrying a value
 the file should have supplied, so the covered path cannot quietly revert to the
 one almost nobody takes.
 
+The gateway those scenarios query is configured the same way. Tier-1's
+`cerberus` service mounts
+[`tiers/tier1-dual/cerberus.yaml`](../test/e2e/migration/tiers/tier1-dual/cerberus.yaml)
+read-only at `/etc/cerberus/cerberus.yaml` — one of the two paths cerberus
+discovers a config file on — and its compose `environment:` carries exactly one
+entry, `CERBERUS_CH_PASSWORD`. The credential stays out of a checked-in file,
+and keeping it there also proves the two sources compose rather than one
+shadowing the other: the gateway only reaches ClickHouse if it read the address
+from the file and the password from the environment. This is also the only
+place in the tree where a real cerberus process boots from a file, so the
+unquoted `false` and bare integer that file carries exercise typed YAML
+decoding end to end rather than only in unit tests.
+[`migration_tier1_test.go`](../test/regression/migration_tier1_test.go) pins the
+mount, runs the file through the gateway's own loader and asserts every value
+lands where the stack expects; without that, dropping the mount would leave
+cerberus on built-in defaults while every pin that reads the file still passed.
+
 The feature files ARE the manifest: there is no separate scenario registry to
 keep in step with them. Metadata rides on tags — `@MIG-16` binds the story,
 `@tier0`/`@tier1`/`@tier2` the tier(s), `@archetype:<name>` the archetypes. A
