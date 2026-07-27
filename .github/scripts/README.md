@@ -317,7 +317,12 @@ One implementation means a new rule guards BOTH lanes at once.
   - Exit (`eol-retire-line`): `0` always (fail-open — a retirement failure must
     never fail an already-published release); `1` only on a gross wiring error
     (missing repo/token) before any publish-affecting work.
-- **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`).
+- **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`),
+  and `brew-verify.yml`, which re-runs the identical assertions on demand or
+  weekly against an ALREADY-published version (the release-run job cannot be
+  replayed with a fix, since `rerun-failed-jobs` restores the workflow as it
+  was at the release commit). Both jobs run on `macos-latest` — the Ubuntu
+  runner image ships no Homebrew, so `brew` is a bare ENOENT there.
   Proves the Homebrew tap actually serves the version that just shipped. Reads
   `Formula/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
   is the anti-vacuous check, because a deleted `brews:` block or an expired

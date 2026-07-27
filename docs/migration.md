@@ -48,6 +48,49 @@ You need three things in place:
    from a live Grafana API is **not** a shipped capability today; export the
    dashboards to JSON first.)
 
+### Getting the `cerberus` binary
+
+Every step below is a `cerberus migrate …` invocation, so one more thing you
+need is the binary itself — on the machine that holds your rule YAML and your
+exported dashboard JSON. That is normally a laptop or a jump host rather than
+the cluster: the tool reads those files from local disk and writes its
+artifacts back beside them, and every subcommand except `verify`, `inventory`
+and `rulegraph` is fully offline.
+
+Homebrew is the shortest path, on macOS and on Linuxbrew alike:
+
+```sh
+brew install tsouza/tap/cerberus
+cerberus --version
+```
+
+The formula lives in the [`tsouza/homebrew-tap`](https://github.com/tsouza/homebrew-tap)
+tap and is published by the release pipeline itself. Only **stable** releases
+publish one — `rc.*` prereleases deliberately write no formula — so
+`brew install` always lands you on a GA build, and `brew upgrade` moves you
+between GA builds only. Every published formula is installed and smoked by the
+release run that publishes it, and again weekly thereafter; one of the verbs
+that smoke runs is `cerberus migrate schema`, the
+[Validate](#validate-render-the-schema) step of this very lifecycle. The
+release-engineering side of the tap — how the formula is pushed, and what the
+smoke asserts — is in
+[Homebrew tap](operations.md#homebrew-tap).
+
+If you would rather not use Homebrew, the same binary ships as a release
+archive (linux / darwin × amd64 / arm64, each with a
+[SLSA](https://slsa.dev) provenance attestation) on the
+[release page](https://github.com/tsouza/cerberus/releases), and inside the
+container image, whose entrypoint is `cerberus` itself:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/tsouza/cerberus:<tag> \
+  migrate harvest --rules rules/ --out corpus.json
+```
+
+The container form works, but every path you hand it has to be visible from
+inside the container and every artifact it writes lands under the mount — which
+is why the rest of this guide assumes a local binary.
+
 ## The `migrate` tool
 
 `migrate` is a command group of the single `cerberus` binary, with eight
@@ -434,6 +477,10 @@ back over — that runway is your rollback. Only then retire the old storage.
 The commands pipe together into one assess → verify → gate flow:
 
 ```bash
+# ── INSTALL ───────────────────────────────────────────────────────────
+# One binary, on the machine holding the rules and dashboards.
+brew install tsouza/tap/cerberus
+
 # ── ASSESS ────────────────────────────────────────────────────────────
 # Harvest every real query (PromQL + LogQL + TraceQL) into one deterministic corpus.
 cerberus migrate harvest \
