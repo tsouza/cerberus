@@ -194,6 +194,35 @@ each one so a rename cannot ship silently.
 | `cerberus_clickhouse_bytes_read`           | histogram | `cerberus_ql`                                                                               |
 | `cerberus_query_inflight`                  | gauge     | `cerberus_ql`                                                                               |
 
+#### ClickHouse connection lifecycle
+
+A second instrument set lives in `internal/chclient`, under the
+`github.com/tsouza/cerberus/internal/chclient` meter scope. It describes
+the connection pool rather than the query pipeline.
+
+| Metric                              | Type    | Attributes | Meaning                                                                    |
+| ----------------------------------- | ------- | ---------- | -------------------------------------------------------------------------- |
+| `cerberus_ch_conn_dials_total`      | counter | —          | TCP connections opened to ClickHouse.                                      |
+| `cerberus_ch_cursor_teardown_total` | counter | `outcome`  | Cursor teardowns, split `drained` / `abandoned`.                           |
+| `cerberus_ch_conn_open`             | gauge   | —          | Pooled connections open (busy + idle), read live from the driver.          |
+| `cerberus_ch_conn_idle`             | gauge   | —          | Pooled connections idle and reusable.                                      |
+
+A dial happens only when the pool has no warm connection to hand back, so
+`rate(cerberus_ch_conn_dials_total[5m])` is the bottom-line cost of
+connection churn — but it does not say WHO paid it. Three destroyers
+share the bill: a query cancelled mid-flight (the driver tears the socket
+down rather than leave undrained bytes on the wire), a cursor teardown
+that outran its drain budget, and the driver's own age eviction at
+`CERBERUS_CH_CONN_MAX_LIFETIME`. The teardown counter names cerberus's
+own share directly — `outcome="abandoned"` is a teardown cerberus
+cancelled, `outcome="drained"` is one the driver finished cleanly — so
+the residual between dials and abandoned teardowns is attributable to the
+other two. Without that split, churn is a single number with no
+remediation attached to it.
+
+Both counters are zero-initialised at startup, so a replica that has
+never churned a connection exports a flat `0` rather than "No data".
+
 #### Failure classification
 
 `result` alone answers "did the query fail", never "whose fault was

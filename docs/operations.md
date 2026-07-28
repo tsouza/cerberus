@@ -106,6 +106,39 @@ backend. The per-head state + trip telemetry
 (`cerberus_ch_breaker_state{head=…}` / `cerberus_ch_breaker_trips_total{head=…}`)
 shows exactly which head tripped.
 
+### Connection teardown contract
+
+A pooled ClickHouse connection survives a query only when that query reaches
+its terminal state with its context still live. clickhouse-go has exactly two
+terminal branches: drain to end-of-stream and the connection is released back
+to the idle pool; cancel and the driver writes `ClientCancel` and destroys the
+socket, because a cancelled query leaves undrained bytes on the wire. There is
+no third branch — a clean release requires reading the remainder.
+
+So every cursor cerberus opens is torn down **close first, cancel second**, and
+that ordering is structural rather than a property of some caller's defer
+order: `chclient.CloseCursor` owns both halves. It closes the cursor on its own
+goroutine while the query context is still live, races that drain against a
+fixed budget, and on expiry cancels — which unblocks the driver — and joins the
+drain before returning. Each cursor's ClickHouse query therefore runs on its
+OWN cancellable child of the request context, so teardown can cancel that query
+without touching anything else the request still needs.
+
+The budget is the deliberate trade. A caller that walked away must not be able
+to pin a pooled connection for the length of a result set nobody will read, so
+past the budget cerberus takes the destroyed socket and frees the pool slot
+immediately. `cerberus_ch_cursor_teardown_total{outcome="abandoned"}` counts
+exactly those, and a sustained non-zero rate is the signal that queries are
+returning far more rows than their callers consume — a query-shape problem, not
+a pool-sizing one. See [`observability.md`](observability.md) for how that
+counter decomposes overall connection churn.
+
+The routed (multi-shard) path applies the same contract one level up: the
+composed cursor signals its producers to STOP STREAMING, each producer tears
+down its own cursor on its own live query context, and cancelling the shared
+group context is the abort signal and bounded fallback — never the routine
+teardown path. See [`solver.md`](solver.md).
+
 These resilience contracts — the breaker trip + recovery (and the
 per-head isolation + dedicated-probe-breaker `/readyz` contract above), the
 breaker-neutrality of query timeouts / admit + pool rejections, the

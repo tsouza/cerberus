@@ -208,9 +208,11 @@ returned to the handler:
    composition order stays oldest-first because the channels buffer). Each
    producer derives its own progress recorder (one per ctx key — sharing would
    corrupt the rows/bytes histograms), carries the shared per-request sample
-   budget, opens its cursor, and drains it into a bounded channel
-   (cap 4096 samples). Producers select on the group ctx while sending, so they
-   terminate promptly on cancellation.
+   budget, opens its cursor **on its own cancellable child of the group ctx**,
+   and drains it into a bounded channel (cap 4096 samples). Each producer owns
+   its cursor end to end: it opens it, drains it, and tears it down. While
+   sending it selects on both the stop signal and the group ctx, so it
+   terminates promptly on either.
 
 **Composition is concatenation, not evaluation.** Each anchor belongs to
 exactly one slice and every shard emits final per-`(series, anchor)` values in
@@ -265,12 +267,31 @@ routed request advances the shared breaker counter by at most one. The gate
 acquire timeout and the solver timeout are likewise breaker-neutral: they
 signal local pool sizing or a gateway-chosen deadline, not CH health.
 
-**Lifecycle.** `Close` is idempotent (runs once): it cancels the group ctx so
-every producer unblocks and exits, waits for all producers, stops the deadline
-timer, closes every child cursor (releasing its connection and flushing its
-progress recorder), and releases the gate slots and the admission top-up
-exactly once each. A late-registered child cursor that races teardown is closed
-immediately so no connection leaks. A client disconnect propagates through the
+**Two teardown signals.** Stopping the stream and aborting the queries are
+distinct signals, and conflating them costs connections. clickhouse-go hands a
+pooled connection back only when its query ends on a live context; cancel first
+and the socket is destroyed instead (see
+[`operations.md`](operations.md#connection-teardown-contract)). So the composed
+cursor carries a **stop** channel alongside the group ctx:
+
+- **stop** — stop streaming. A producer blocked on a send unblocks here and
+  tears its own cursor down while its query ctx is still LIVE, so `K`
+  connections go back to the pool. This is the routine path, and it is what the
+  per-request output cap trips: the cap is a decision about how many rows to
+  hand OUT, never a reason to abort the ClickHouse queries dirtily.
+- **cancel** — abort. It belongs to a real failure (a sibling's error, the
+  wall-clock timeout, the client walking away) and is also the bounded fallback
+  for the one shape stop cannot reach: a producer parked inside `cur.Next()` on
+  a stalled shard, which observes stop only at its next send.
+
+**Lifecycle.** `Close` is idempotent (runs once): it closes the stop channel,
+waits up to a teardown budget for every producer to drain and release its
+connection, cancels the group ctx (unconditionally, so nothing derived from it
+outlives the request, and past the budget so a parked producer still
+terminates), stops the deadline timer, and releases the gate slots and the
+admission top-up exactly once each. Because each producer owns its own cursor,
+there is no registry of children to race against teardown. `Close` returns the
+first non-nil child teardown error. A client disconnect propagates through the
 request ctx to the group ctx to every shard. Every handler entrypoint is
 goleak-gated with routed queries.
 
