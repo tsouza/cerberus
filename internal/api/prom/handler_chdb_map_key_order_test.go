@@ -66,6 +66,20 @@ INSERT INTO otel_metrics_gauge VALUES
 		aAttrs, ts, aVal, bAttrs, ts, bVal)
 }
 
+// mapKeyOrderDupArmSeed writes ONE logical `mko_a` label set twice —
+// once under each physical Map key order — plus a single `mko_b` row.
+// Both `mko_a` rows carry the same value so the assertion stays
+// deterministic whichever row a representative-picking argMax selects.
+func mapKeyOrderDupArmSeed(aAttrs1, aAttrs2, bAttrs string, aVal, bVal float64) string {
+	ts := mapKeyOrderSeedTime.Format("2006-01-02 15:04:05.000000000")
+	return gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('mko_a', %s, toDateTime64('%s', 9), %g),
+    ('mko_a', %s, toDateTime64('%s', 9), %g),
+    ('mko_b', %s, toDateTime64('%s', 9), %g);`,
+		aAttrs1, ts, aVal, aAttrs2, ts, aVal, bAttrs, ts, bVal)
+}
+
 // runMapKeyOrderInstant drives the real `/api/v1/query` handler and
 // decodes the vector result.
 func runMapKeyOrderInstant(t *testing.T, baseURL, query string) []prom.VectorSample {
@@ -164,6 +178,35 @@ func TestVectorMatch_DivergentMapKeyOrder_ChDB(t *testing.T) {
 			bVal:       4,
 			wantValue:  "12",
 			wantLabels: twoLabels,
+		},
+		{
+			name:  "arithmetic_on_labels",
+			query: "mko_a * on(job, dc) mko_b",
+			// `on(...)` routes both sides through roleOne, whose
+			// per-side GROUP BY is the match key itself — the branch
+			// the default-matching case above never reaches.
+			aAttrs:     twoDesc,
+			bAttrs:     twoAsc,
+			aVal:       3,
+			bVal:       4,
+			wantValue:  "12",
+			wantLabels: twoLabels,
+		},
+		{
+			name:  "arithmetic_ignoring_group_left",
+			query: "mko_a * ignoring(env) group_left() mko_b",
+			// group_left splits the roles: the left arm is roleMany
+			// (series-identity GROUP BY) and the right is roleOne
+			// (match-key GROUP BY), so one query exercises both
+			// per-side shapes at once. Output labels are the left
+			// arm's full set — `env` survives, `__name__` does not
+			// (arithmetic V-V drops it).
+			aAttrs:     threeDesc,
+			bAttrs:     threeAsc,
+			aVal:       3,
+			bVal:       4,
+			wantValue:  "12",
+			wantLabels: map[string]string{"dc": "eu", "env": "y", "job": "api"},
 		},
 		{
 			name:       "setop_and_default_matching",
@@ -384,6 +427,136 @@ INSERT INTO otel_metrics_sum VALUES
 				t.Errorf("value: got %v, want %q (a larger value means the arm "+
 					"emitted one row per physical key order)", got, tc.want)
 			}
+		})
+	}
+}
+
+// TestVectorJoin_DuplicateLabelSetInOneArm_ChDB pins the join's
+// one-to-one cardinality contract when one arm carries the same logical
+// label set under both physical key orders, sourced from a SINGLE table.
+//
+// TestVectorJoinArmDivergentMapKeyOrder_ChDB above reaches the same
+// shape through a two-table `merge()` selector and covers default and
+// `on(...) group_left` matching. This one closes the remaining
+// per-side GROUP BY branches. Default matching routes both sides
+// through roleMany, whose group key is series identity; `on(...)` /
+// `ignoring(...)` route through roleOne, whose group key is the match
+// key. Both must be the SAME expression the ON clause compares — a
+// canonicalised ON over a raw GROUP BY leaves both physical orders
+// alive as separate groups that both satisfy the ON predicate, and a
+// join declared one-to-one silently cross-products. roleMany carries no
+// throwIf guard at all, and roleOne's fires on distinct Attributes
+// WITHIN a group, so neither catches it.
+//
+// The `on(...)` branch is the reason a single-table duplicate is worth
+// its own case: its ON clause is per-label subscripts, which are
+// order-insensitive on their own, so ONLY a duplicate within one arm
+// can distinguish a canonical group key from a raw one there.
+//
+// The duplication is invisible in the bare `mko_a * mko_b` response —
+// the handler's series map collapses two identical output label sets
+// into one JSON series. It surfaces only once an aggregation sits on
+// top, exactly the alerting / recording-rule shape, so the assertions
+// are `count()` and `sum()` over the join.
+func TestVectorJoin_DuplicateLabelSetInOneArm_ChDB(t *testing.T) {
+	// Two physical key orders of one two-label set, and of one
+	// three-label set whose extra `env` label the ignoring() case
+	// strips. `mko_b` always lands in ascending order.
+	const (
+		twoAsc     = `map('dc', 'eu', 'job', 'api')`
+		twoDesc    = `map('job', 'api', 'dc', 'eu')`
+		threeAsc   = `map('dc', 'eu', 'env', 'x', 'job', 'api')`
+		threeDesc  = `map('job', 'api', 'dc', 'eu', 'env', 'x')`
+		threeOther = `map('dc', 'eu', 'env', 'q', 'job', 'api')`
+	)
+
+	cases := []struct {
+		name  string
+		query string
+		// aAttrs1 / aAttrs2 are the two physical orders `mko_a` is
+		// written under; bAttrs is the single `mko_b` row.
+		aAttrs1, aAttrs2, bAttrs string
+		want                     string
+	}{
+		// Default matching → roleMany on both sides: the series-identity
+		// GROUP BY is the expression under test. One matched pair, not
+		// two — the duplicate key order is one series.
+		{
+			name:    "default_matching_count",
+			query:   "count(mko_a * mko_b)",
+			aAttrs1: twoAsc, aAttrs2: twoDesc, bAttrs: twoAsc,
+			want: "1",
+		},
+		// 3 * 4 once. A cross-product reads 24.
+		{
+			name:    "default_matching_sum",
+			query:   "sum(mko_a * mko_b)",
+			aAttrs1: twoAsc, aAttrs2: twoDesc, bAttrs: twoAsc,
+			want: "12",
+		},
+		// on(...) → roleOne on both sides: the match-key GROUP BY is the
+		// expression under test.
+		{
+			name:    "on_labels_count",
+			query:   "count(mko_a * on(job, dc) mko_b)",
+			aAttrs1: twoAsc, aAttrs2: twoDesc, bAttrs: twoAsc,
+			want: "1",
+		},
+		{
+			name:    "on_labels_sum",
+			query:   "sum(mko_a * on(job, dc) mko_b)",
+			aAttrs1: twoAsc, aAttrs2: twoDesc, bAttrs: twoAsc,
+			want: "12",
+		},
+		// ignoring(...) → roleOne on both sides, with a mapFilter match
+		// key on both the GROUP BY and the ON clause. `mko_b` carries a
+		// different `env` value, which the filter strips.
+		{
+			name:    "ignoring_count",
+			query:   "count(mko_a * ignoring(env) mko_b)",
+			aAttrs1: threeAsc, aAttrs2: threeDesc, bAttrs: threeOther,
+			want: "1",
+		},
+		{
+			name:    "ignoring_sum",
+			query:   "sum(mko_a * ignoring(env) mko_b)",
+			aAttrs1: threeAsc, aAttrs2: threeDesc, bAttrs: threeOther,
+			want: "12",
+		},
+	}
+
+	for _, tc := range cases {
+		seed := mapKeyOrderDupArmSeed(tc.aAttrs1, tc.aAttrs2, tc.bAttrs, 3, 4)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("instant", func(t *testing.T) {
+				srv, _ := newChDBServer(t, seed)
+				vec := runMapKeyOrderInstant(t, srv.URL, tc.query)
+				if len(vec) != 1 {
+					t.Fatalf("series count: got %d, want 1: %+v", len(vec), vec)
+				}
+				if got := vec[0].Value[1]; got != tc.want {
+					t.Errorf("value: got %v, want %q", got, tc.want)
+				}
+			})
+
+			t.Run("range", func(t *testing.T) {
+				srv, _ := newChDBServer(t, seed)
+				matrix := runRangeModeQueryRange(t, srv.URL, tc.query,
+					mapKeyOrderSeedTime, mapKeyOrderSeedTime.Add(mapKeyOrderRangeSpan),
+					mapKeyOrderRangeStep)
+				if len(matrix) != 1 {
+					t.Fatalf("series count: got %d, want 1: %+v", len(matrix), matrix)
+				}
+				if len(matrix[0].Values) != mapKeyOrderRangeAnchors {
+					t.Fatalf("sample count: got %d, want %d: %+v",
+						len(matrix[0].Values), mapKeyOrderRangeAnchors, matrix[0].Values)
+				}
+				for i, v := range matrix[0].Values {
+					if got := v[1]; got != tc.want {
+						t.Errorf("step %d: value: got %v, want %q", i, got, tc.want)
+					}
+				}
+			})
 		})
 	}
 }
