@@ -13,7 +13,8 @@ name: compatibility
 # Action — no `curl | sh` installs. Actions used here:
 #   * actions/checkout@v7           — stdlib.
 #   * actions/setup-go@v7           — `go run ./cmd/seed` + driver builds.
-#   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
+#   * ./.github/actions/setup-buildx — buildkit-backed compose build, with
+#     the BuildKit bootstrap image acquired through a retry.
 #   * docker/login-action@v4        — authed Docker Hub pulls (rate limits).
 #   * taiki-e/install-action@v2     — installs `just`.
 #   * actions/upload-artifact@v7    — per-head report upload.
@@ -602,14 +603,10 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      # Buildx gives the Compose build cache, multi-arch support, and a
-      # consistent build backend. The harness uses local build contexts
-      # (cerberus + driver), so no remote registry login is needed.
-      - uses: docker/setup-buildx-action@v4
-
       # See the prometheus job: authed Docker Hub pulls dodge the
       # anonymous rate limit shared across runner IPs; skips silently
-      # on forks without the secrets.
+      # on forks without the secrets. Ahead of the builder setup so the
+      # BuildKit bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -618,6 +615,11 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Buildx gives the Compose build cache, multi-arch support, and a
+      # consistent build backend. The harness uses local build contexts
+      # (cerberus + driver), so the builder itself pushes nowhere.
+      - uses: ./.github/actions/setup-buildx
 
       - name: Run tempo-compatibility harness
         id: harness
@@ -735,13 +737,10 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # Buildx gives the Compose build cache + a consistent backend
-      # for the local cerberus image context.
-      - uses: docker/setup-buildx-action@v4
-
       # See the prometheus job: authed Docker Hub pulls dodge the
       # anonymous rate limit shared across runner IPs; skips silently
-      # on forks without the secrets.
+      # on forks without the secrets. Ahead of the builder setup so the
+      # BuildKit bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -750,6 +749,10 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Buildx gives the Compose build cache + a consistent backend
+      # for the local cerberus image context.
+      - uses: ./.github/actions/setup-buildx
 
       - name: Run loki-compatibility harness
         id: harness
