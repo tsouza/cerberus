@@ -489,8 +489,32 @@ type verifyInputs struct {
 // newMigrateVerifyCmd is the online cutover parity gate: it replays every corpus
 // query against its head's reference backend AND cerberus over one query_range
 // window and diffs the results series-by-series, exiting non-zero on any
-// divergence or error. Every flag falls back to CERBERUS_VERIFY_*, from the
-// environment or from the same cerberus.yaml the gateway reads.
+// divergence or error.
+//
+// Every flag that describes the CUTOVER falls back to its CERBERUS_VERIFY_*
+// setting, read from the environment or from the same cerberus.yaml the gateway
+// reads, so a cutover runs from the operator's own config rather than a re-typed
+// command line. That is: what to talk to and as whom (the per-head URLs, tokens
+// and reference org-id), what to replay (--corpus), over what window
+// (--start/--end/--step), judged how strictly (--tolerance), and where the
+// standing JSON diagnostics artifact lands (--report). --tolerance resolves its
+// setting inside RunE rather than as a flag default, so a malformed
+// CERBERUS_VERIFY_TOLERANCE is fatal even when the flag overrides it.
+//
+// --json and --out have NO setting. They choose how THIS invocation's single
+// primary report renders and where that one report goes, so a setting for
+// either would silently change what a bare `cerberus migrate verify` prints on
+// the operator's terminal. --report is not the counter-example it looks like:
+// it is ADDITIVE rather than a redirect — the text report still prints — so
+// pinning it in config adds an artifact every run drops in the same place
+// instead of moving this run's output somewhere the operator did not ask for.
+//
+// `migrate inventory` is the only other subcommand that reads settings at all,
+// and it draws the same line for the same reason: --source, --window,
+// --loki-source/--loki-selector and --tempo-source have settings; --json and
+// --out do not. Its --top has no setting either, though it is a probe-depth
+// knob rather than a rendering choice. schema, harvest, explain, classify,
+// rulegraph and gate take no config.Lookup and have no settings to split.
 func newMigrateVerifyCmd(set *config.Lookup) *cobra.Command {
 	var in verifyInputs
 	cmd := &cobra.Command{
@@ -802,7 +826,8 @@ func runVerifyCommand(cmd *cobra.Command, in verifyInputs) error {
 // whole-tenant top-N call to rank without one); a Tempo source, supplied via
 // --tempo-source, records a fixed out-of-scope entry rather than a fabricated
 // cardinality number, since Tempo's span/block storage exposes nothing
-// analogous. Flags fall back to CERBERUS_INVENTORY_*.
+// analogous. The source and window flags fall back to CERBERUS_INVENTORY_*;
+// --top, --json and --out have no setting.
 func newMigrateInventoryCmd(set *config.Lookup) *cobra.Command {
 	var (
 		source        string
