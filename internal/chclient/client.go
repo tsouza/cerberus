@@ -205,6 +205,14 @@ type Config struct {
 	// DialTimeout caps the initial connection dial. Zero falls back to 5s.
 	DialTimeout time.Duration
 
+	// PoolName names this client's connection pool in the pool-census gauges
+	// (cerberus_ch_conn_open / _idle). The gauges are process-wide while pools
+	// are not — cmd/cerberus keeps bootstrap pools open alongside the serving
+	// one — so each concurrently-live pool needs its own name or their samples
+	// collapse onto one series and one silently wins. Empty means
+	// DefaultPoolName.
+	PoolName string
+
 	// MaxOpenConns caps the total number of pooled connections (busy +
 	// idle) the driver will hold open to ClickHouse. clickhouse-go's
 	// implicit default is MaxIdleConns+5 (≈10); cerberus makes it
@@ -598,7 +606,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("chclient: open: %w", err)
 	}
-	return assembleClientFromConn(cfg, conn), nil
+	return assembleClientFromConn(cfg, conn, connTelemetry()), nil
 }
 
 // buildOptions translates a Config into the clickhouse.Options that New
@@ -730,7 +738,12 @@ func buildOptions(cfg Config) *clickhouse.Options {
 // already-opened driver conn and returns the production *Client. It is the
 // shared tail of New, factored out so option-building (buildOptions) and
 // breaker/Client assembly read as two distinct concerns.
-func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
+//
+// m is the connection-lifecycle instrument set the assembled Client reports
+// its pool census through — connTelemetry() in production, a reader-backed set
+// in the test that asserts the census is actually wired to a real Client and
+// actually dropped on Close.
+func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Client {
 	// Per-head breaker registry sharing one telemetry set (tuning +
 	// disable config flows to every head). Zero tuning fields resolve to
 	// the GA defaults inside each breaker (resolveThreshold / resolveWindow /
@@ -775,7 +788,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 	// exposes them via Stats(); the callback reads them live on every
 	// collection interval so the exported level tracks the real pool rather
 	// than a snapshot taken at construction.
-	c.unregisterPoolGauges = connTelemetry().registerPoolGauges(conn.Stats)
+	c.unregisterPoolGauges = m.registerPoolGauges(resolvePoolName(cfg), conn.Stats)
 	// Start the active background breaker-recovery loop on the ROOT Client
 	// (ForHead views are shallow copies that share — never restart — it).
 	// The tick cadence is the breaker's own resolved OPEN-state backoff, so
@@ -1207,12 +1220,21 @@ func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 // /api/v1/query_range) should use QueryCursor directly to keep memory
 // bounded.
 func (c *Client) Query(ctx context.Context, sql string, args ...any) ([]Sample, error) {
-	cursor, err := c.QueryCursor(ctx, sql, args...)
+	// The eager drain stops early whenever the cursor trips a budget (the
+	// per-query sample budget, the wide-projection byte budget), leaving the
+	// remainder of the result set on the wire. That teardown is exactly the
+	// hazard CloseCursor exists for — close on a live context so the driver can
+	// release the connection, bounded so an unread remainder cannot pin a pool
+	// slot — so the query runs on its OWN cancellable child of ctx and the
+	// teardown owns that cancel.
+	queryCtx, queryCancel := context.WithCancel(ctx)
+	defer queryCancel()
+	cursor, err := c.QueryCursor(queryCtx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		_ = cursor.Close()
+		_ = CloseCursor(queryCtx, cursor, queryCancel)
 	}()
 
 	var out []Sample

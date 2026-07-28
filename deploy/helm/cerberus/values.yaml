@@ -161,7 +161,7 @@ clickhouse:
     # -- Max idle connections (CERBERUS_CH_MAX_IDLE_CONNS). Binary default: 5.
     maxIdleConns: null
     # -- Max connection lifetime (CERBERUS_CH_CONN_MAX_LIFETIME). Binary
-    # default: 5m, or 30s when TCP keepalive is disabled.
+    # default: 30s.
     connMaxLifetime: ""
   # -- Inline password. Renders a chart-managed Secret. PREFER `existingSecret`
   # in production so the password never lands in values / release history.

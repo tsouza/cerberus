@@ -377,7 +377,7 @@ func (sc *shardCursor) runShard(
 	// ABORT (a sibling's error, the wall-clock timeout, the client walking
 	// away, or Close's bounded fallback) reaches here with qctx already dead,
 	// which is the destruction class clickhouse-go owns outright.
-	defer func() { sc.latchCloseErr(chclient.CloseCursor(cur, qcancel)) }()
+	defer func() { sc.latchCloseErr(chclient.CloseCursor(qctx, cur, qcancel)) }()
 
 	for cur.Next() {
 		s := cur.Sample()

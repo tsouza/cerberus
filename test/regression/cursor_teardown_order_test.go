@@ -16,7 +16,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// Layer 11 — cursor-teardown ordering at the HTTP seam.
+// Layer 10 — cursor-teardown ordering and bounding at the HTTP seam.
 //
 // clickhouse-go releases a pooled connection only when a query reaches its
 // terminal state with the query context STILL LIVE. Close on an already-
@@ -162,6 +162,179 @@ func TestPromRangeCursorClosedBeforeContextCancel(t *testing.T) {
 			t.Fatalf("cursor %d: ctx.Err() at Close entry = %v; want nil. clickhouse-go returns a "+
 				"connection to the pool only when the query ends on a live context — closing after "+
 				"the cancel destroys the socket instead", i, ctxErr)
+		}
+	}
+}
+
+// blockedTeardownCursor models the half of the driver contract a cursor that
+// closes instantly cannot exercise: a Close that does NOT return promptly.
+// clickhouse-go's rows.Close() drains the stream to EndOfStream, so on a result
+// set the caller walked away from it runs for as long as the remainder takes —
+// unbounded, holding the pooled connection the whole time. It unblocks only when
+// the query context dies (the driver's ClientCancel path).
+type blockedTeardownCursor struct {
+	ctx     context.Context
+	samples []chclient.Sample
+	idx     int
+	cur     chclient.Sample
+
+	// release is the test's own escape hatch so a handler that never bounds
+	// the teardown cannot wedge the suite; the deadline assertion has already
+	// fired by the time it closes.
+	release chan struct{}
+
+	entered  chan struct{}
+	returned chan struct{}
+	enterMu  sync.Mutex
+	enterErr error
+	closed   bool
+}
+
+func (c *blockedTeardownCursor) Next() bool {
+	if c.idx >= len(c.samples) {
+		return false
+	}
+	c.cur = c.samples[c.idx]
+	c.idx++
+	return true
+}
+
+func (c *blockedTeardownCursor) Sample() chclient.Sample { return c.cur }
+func (c *blockedTeardownCursor) Err() error              { return nil }
+func (c *blockedTeardownCursor) Inspected() int64        { return int64(c.idx) }
+
+func (c *blockedTeardownCursor) Close() error {
+	c.enterMu.Lock()
+	if c.closed {
+		c.enterMu.Unlock()
+		return nil
+	}
+	c.closed = true
+	c.enterErr = c.ctx.Err()
+	c.enterMu.Unlock()
+
+	close(c.entered)
+	select {
+	case <-c.ctx.Done():
+	case <-c.release:
+	}
+	close(c.returned)
+	return nil
+}
+
+func (c *blockedTeardownCursor) enteredWith() error {
+	c.enterMu.Lock()
+	defer c.enterMu.Unlock()
+	return c.enterErr
+}
+
+// blockedTeardownQuerier hands out one blockedTeardownCursor per query.
+type blockedTeardownQuerier struct {
+	teardownOrderQuerier
+
+	release chan struct{}
+
+	mu       sync.Mutex
+	blocking []*blockedTeardownCursor
+}
+
+func (q *blockedTeardownQuerier) QueryCursor(ctx context.Context, _ string, _ ...any) (chclient.Cursor, error) {
+	cur := &blockedTeardownCursor{
+		ctx:      ctx,
+		samples:  q.samples,
+		release:  q.release,
+		entered:  make(chan struct{}),
+		returned: make(chan struct{}),
+	}
+	q.mu.Lock()
+	q.blocking = append(q.blocking, cur)
+	q.mu.Unlock()
+	return cur, nil
+}
+
+func (q *blockedTeardownQuerier) openedBlocking() []*blockedTeardownCursor {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]*blockedTeardownCursor(nil), q.blocking...)
+}
+
+// blockedTeardownDeadline is how long the test waits for a teardown to return
+// before calling it unbounded. It is an order of magnitude over
+// chclient.CursorDrainBudget so a loaded CI runner cannot manufacture a
+// failure, while an unbounded teardown — which never returns at all — still
+// fails deterministically.
+const blockedTeardownDeadline = 20 * chclient.CursorDrainBudget
+
+// TestPromRangeCursorTeardownIsBounded is the other half of the teardown
+// contract, and the half TestPromRangeCursorClosedBeforeContextCancel cannot
+// see: ordering alone is satisfied by an inline `defer cursor.Close()`, which
+// closes on a live context and passes that test while holding the pooled
+// connection for the entire unread remainder of the result set. A gateway
+// serving Grafana walks away from result sets constantly, so an unbounded
+// teardown pins pool slots for as long as ClickHouse takes to finish streaming.
+//
+// The handler must therefore own a CancelFunc for the cursor's query and route
+// the teardown through chclient.CloseCursor, which drains on the live context
+// and cancels once the drain budget expires. This test drives a real
+// /api/v1/query_range with a cursor whose Close does not return until its query
+// context dies, and requires the teardown to complete anyway.
+func TestPromRangeCursorTeardownIsBounded(t *testing.T) {
+	start := time.Unix(1717995600, 0).UTC()
+	end := start.Add(2 * time.Minute)
+	q := &blockedTeardownQuerier{
+		teardownOrderQuerier: teardownOrderQuerier{samples: []chclient.Sample{
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start, Value: 1},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: end, Value: 2},
+		}},
+		release: make(chan struct{}),
+	}
+
+	h := prom.New(q, schema.DefaultOTelMetrics(), slog.Default())
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// Registered after the server's cleanup so it runs FIRST (t.Cleanup is
+	// LIFO): a wedged teardown must not leave srv.Close waiting forever.
+	t.Cleanup(func() { close(q.release) })
+
+	url := fmt.Sprintf("%s/api/v1/query_range?query=up&start=%d&end=%d&step=60",
+		srv.URL, start.Unix(), end.Unix())
+	// The teardown runs on the handler goroutine before it returns, so an
+	// unbounded one holds the response open too. The client deadline is what
+	// turns that wedge into a verdict.
+	client := &http.Client{Timeout: blockedTeardownDeadline}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET did not complete within %s: %v. The handler holds no cancel for its cursor's "+
+			"query, so the teardown is unbounded — a pooled connection stays occupied for the whole "+
+			"unread remainder of the result set, and the request cannot finish until the drain does",
+			blockedTeardownDeadline, err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("query_range status = %d; want 200 — the streaming cursor path must actually run", resp.StatusCode)
+	}
+
+	cursors := q.openedBlocking()
+	if len(cursors) == 0 {
+		t.Fatal("no cursor was opened; the range query did not take the streaming path")
+	}
+	for i, cur := range cursors {
+		select {
+		case <-cur.entered:
+		case <-time.After(blockedTeardownDeadline):
+			t.Fatalf("cursor %d: Close was never entered; the handler must release every cursor it opens", i)
+		}
+		if ctxErr := cur.enteredWith(); ctxErr != nil {
+			t.Fatalf("cursor %d: ctx.Err() at Close entry = %v; want nil — the drain must start on a live context", i, ctxErr)
+		}
+		select {
+		case <-cur.returned:
+		case <-time.After(blockedTeardownDeadline):
+			t.Fatalf("cursor %d: Close has not returned after %s; the drain budget must cancel and join it",
+				i, blockedTeardownDeadline)
 		}
 	}
 }

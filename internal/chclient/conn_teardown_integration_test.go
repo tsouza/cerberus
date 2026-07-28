@@ -60,7 +60,7 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 			qcancel()
 			t.Fatalf("cursor yielded no rows: %v", cur.Err())
 		}
-		if err := chclient.CloseCursor(cur, qcancel); err != nil {
+		if err := chclient.CloseCursor(qctx, cur, qcancel); err != nil {
 			t.Fatalf("CloseCursor: %v", err)
 		}
 

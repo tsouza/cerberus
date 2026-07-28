@@ -130,14 +130,24 @@ past the budget cerberus takes the destroyed socket and frees the pool slot
 immediately. `cerberus_ch_cursor_teardown_total{outcome="abandoned"}` counts
 exactly those, and a sustained non-zero rate is the signal that queries are
 returning far more rows than their callers consume — a query-shape problem, not
-a pool-sizing one. See [`observability.md`](observability.md) for how that
-counter decomposes overall connection churn.
+a pool-sizing one. A teardown that begins on an ALREADY-dead context is a
+different event and is counted separately as `outcome="cancelled"`: the socket
+was destroyed by the client hanging up or the request deadline expiring, and no
+budget cerberus could choose would have saved it. See
+[`observability.md`](observability.md) for how the three outcomes decompose
+overall connection churn.
 
 The routed (multi-shard) path applies the same contract one level up: the
 composed cursor signals its producers to STOP STREAMING, each producer tears
 down its own cursor on its own live query context, and cancelling the shared
 group context is the abort signal and bounded fallback — never the routine
-teardown path. See [`solver.md`](solver.md).
+teardown path. Because the cancel `CloseCursor` holds there is an ANCESTOR of
+every per-shard query context, a composed cursor reports its own longer budget
+through `chclient.ComposedCursor`: nesting its teardown inside a single
+connection's drain budget would fire the ancestor cancel at exactly the moment
+the K shard sockets were being released cleanly, destroying all of them. It is
+also why the composed teardown itself is not counted — its children each count
+their own. See [`solver.md`](solver.md).
 
 These resilience contracts — the breaker trip + recovery (and the
 per-head isolation + dedicated-probe-breaker `/readyz` contract above), the

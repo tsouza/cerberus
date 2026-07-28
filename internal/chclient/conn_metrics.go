@@ -17,22 +17,41 @@ import (
 // cancelled, and the residual is the driver's own age-eviction.
 const attrTeardownOutcome = attribute.Key("outcome")
 
+// DefaultPoolName labels the census of a Client whose Config named no pool —
+// the serving pool cmd/cerberus opens for the data plane, and the pool every
+// test-built Client describes.
+const DefaultPoolName = "serving"
+
 // Cursor-teardown outcomes.
 //
 // clickhouse-go releases a connection back to the idle pool only when the
 // query reaches EndOfStream with its context still live; a cancelled query
 // has its socket torn down by connect.cancel(), unconditionally and by
-// design. The two outcomes name exactly that fork:
+// design. The three outcomes name that fork plus WHO drove it:
 //
-//	drained   — Close() returned within cursorDrainBudget without cerberus
-//	            forcing a cancel, so the driver reached its own terminal
-//	            state and ran release(conn, nil).
+//	drained   — Close() returned within the drain budget on a live context,
+//	            so the driver reached its own terminal state and ran
+//	            release(conn, nil). The only outcome that pools a connection.
 //	abandoned — the drain budget expired and cerberus cancelled to unblock,
 //	            so the driver destroyed the socket instead.
+//	cancelled — the query context was already dead when teardown began (a
+//	            client disconnect, a wall-clock timeout, a sibling shard's
+//	            error). The socket was destroyed by the same driver branch as
+//	            abandoned, but nothing cerberus can tune would have changed
+//	            it — folding the two together would make an unremediable
+//	            churn source look like a drain-budget problem.
 const (
 	teardownDrained   = "drained"
 	teardownAbandoned = "abandoned"
+	teardownCancelled = "cancelled"
 )
+
+// attrPoolName distinguishes the connection pool a census sample describes.
+// The gauges are process-wide while pools are not — cmd/cerberus keeps
+// short-lived bootstrap pools open alongside the serving one — so without it
+// two concurrently-live pools would write the same (empty) attribute set and
+// one would silently win.
+const attrPoolName = attribute.Key("pool")
 
 // connMetrics holds the OTel instruments describing the ClickHouse connection
 // pool's lifecycle. A nil *connMetrics is the "no telemetry" sentinel and every
@@ -67,6 +86,14 @@ type connMetrics struct {
 // export nothing at all until their first Add, so a rate() panel over a replica
 // that never churned a connection would read "No data" instead of the
 // reassuring zero that actually describes it.
+//
+// The seed is only as good as mp: OTel's global MeterProvider DELEGATES, and a
+// synchronous Add recorded before delegation is dropped on the floor with no
+// buffering (observable-gauge callbacks re-register and do survive, which is
+// why the pool census would mask the loss). cmd/cerberus therefore installs the
+// real MeterProvider before it builds anything that mints instruments — see the
+// telemetry block at the top of run(), pinned by
+// test/regression/telemetry_provider_ordering_test.go.
 func newConnMetrics(mp metric.MeterProvider) *connMetrics {
 	meter := mp.Meter(breakerMeterName)
 	dials, err := meter.Int64Counter(
@@ -92,7 +119,10 @@ func newConnMetrics(mp metric.MeterProvider) *connMetrics {
 				"outcome=drained: the cursor reached its terminal state within "+
 				"the drain budget, so the driver returned the connection to "+
 				"the idle pool. outcome=abandoned: the drain budget expired and "+
-				"cerberus cancelled, so the driver destroyed the socket.",
+				"cerberus cancelled, so the driver destroyed the socket. "+
+				"outcome=cancelled: the query context was already dead when "+
+				"teardown began, so the socket was destroyed by that "+
+				"cancellation rather than by cerberus's budget.",
 		),
 		metric.WithUnit("{teardown}"),
 	)
@@ -117,12 +147,21 @@ func newConnMetrics(mp metric.MeterProvider) *connMetrics {
 	}
 	m := &connMetrics{meter: meter, dials: dials, teardowns: teardowns, open: open, idle: idle}
 	m.dials.Add(context.Background(), 0)
-	for _, outcome := range []string{teardownDrained, teardownAbandoned} {
+	for _, outcome := range []string{teardownDrained, teardownAbandoned, teardownCancelled} {
 		m.teardowns.Add(context.Background(), 0, metric.WithAttributes(
 			attrTeardownOutcome.String(outcome),
 		))
 	}
 	return m
+}
+
+// resolvePoolName is the pool-census label for cfg: the operator-facing name
+// when one was set, DefaultPoolName otherwise.
+func resolvePoolName(cfg Config) string {
+	if cfg.PoolName != "" {
+		return cfg.PoolName
+	}
+	return DefaultPoolName
 }
 
 // recordDial counts one freshly-minted ClickHouse connection.
@@ -148,22 +187,27 @@ func (m *connMetrics) recordTeardown(outcome string) {
 // callback — never snapshotted — so the exported level always reflects the real
 // pool and can never linger at a value the pool has moved past.
 //
+// Every sample carries the pool's name, because the gauges are process-wide
+// while pools are not: cmd/cerberus opens bootstrap clients that are live
+// CONCURRENTLY with the serving one (the schema-apply connection overlaps it
+// outright), and same-named samples would land on one attribute set with one of
+// the two silently winning — precisely during startup, when a pool-sizing
+// problem first shows.
+//
 // It returns the callback's teardown, which the owning Client MUST run when it
-// closes. The gauges are process-wide while pools are not: cmd/cerberus opens
-// short-lived bootstrap clients alongside the serving one, and a callback that
-// outlived its pool would keep reporting a dead conn's census under the same
-// (empty) attribute set as the live one — one of the two would silently win.
-// The returned func is safe to call repeatedly, so a ForHead view that shares
-// it cannot double-unregister.
-func (m *connMetrics) registerPoolGauges(stats func() driver.Stats) func() {
+// closes, so a callback cannot outlive the pool it reads. The returned func is
+// safe to call repeatedly, so a ForHead view that shares it cannot
+// double-unregister.
+func (m *connMetrics) registerPoolGauges(pool string, stats func() driver.Stats) func() {
 	if m == nil || stats == nil {
 		return func() {}
 	}
+	attrs := metric.WithAttributes(attrPoolName.String(pool))
 	reg, err := m.meter.RegisterCallback(
 		func(_ context.Context, observer metric.Observer) error {
 			s := stats()
-			observer.ObserveInt64(m.open, int64(s.Open))
-			observer.ObserveInt64(m.idle, int64(s.Idle))
+			observer.ObserveInt64(m.open, int64(s.Open), attrs)
+			observer.ObserveInt64(m.idle, int64(s.Idle), attrs)
 			return nil
 		},
 		m.open, m.idle,
@@ -182,8 +226,12 @@ func (m *connMetrics) registerPoolGauges(stats func() driver.Stats) func() {
 // than per-Client because CloseCursor — the teardown contract every cursor
 // consumer routes through — is a package-level function with no Client in hand,
 // and because the pool it describes is the one pool cmd/cerberus opens.
-// Construction is deferred to first use so cmd/cerberus's telemetry provider is
-// installed by the time the instruments are minted.
+//
+// Construction is deferred to first use, but that alone does NOT make the
+// instruments land on the right provider: the first use is Client construction,
+// which happens at startup. cmd/cerberus installs its MeterProvider before it
+// builds any Client — see newConnMetrics for why a synchronous counter minted
+// on the un-delegated global loses its zero seed.
 var connTelemetry = sync.OnceValue(func() *connMetrics {
 	return newConnMetrics(otel.GetMeterProvider())
 })

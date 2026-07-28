@@ -105,8 +105,7 @@ var envDocGroups = []envDocGroup{
 			"with a broken-conn error that is retried and evicted instead of blocking on a\n" +
 			"half-open socket. Probes fire only on idle connections, so long streaming\n" +
 			"queries are never interrupted. `CERBERUS_CH_CONN_MAX_LIFETIME` is the\n" +
-			"age-eviction backstop, and its default follows keepalive: relaxed while the\n" +
-			"kernel is detecting dead peers, aggressive when nothing else is.",
+			"age-eviction backstop if keepalive is disabled.",
 	},
 	{
 		Name:  "Query limits and memory",
@@ -245,7 +244,7 @@ var envDocs = []EnvDoc{
 	// --- Connection pool ---
 	{envCHMaxOpenConns, "int", "Connection pool", "Total pooled ClickHouse connections (busy + idle). Must be > 0."},
 	{envCHMaxIdleConns, "int", "Connection pool", "Idle ClickHouse connections kept warm for reuse. Must be > 0."},
-	{envCHConnMaxLifetime, "duration", "Connection pool", "Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend; the default follows `CERBERUS_CH_KEEPALIVE_ENABLED`, since keepalive is the primary dead-peer detector and age eviction stands in for it when disabled. Must be > 0."},
+	{envCHConnMaxLifetime, "duration", "Connection pool", "Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend (keepalive is the primary mechanism). Must be > 0."},
 	{envCHKeepAliveEnabled, "bool", "Connection pool", "Enable TCP keepalive on ClickHouse connection sockets so the kernel detects a dead peer after a restart."},
 	{envCHKeepAliveIdle, "duration", "Connection pool", "Idle time before the first keepalive probe. Must be > 0 when keepalive is enabled."},
 	{envCHKeepAliveInterval, "duration", "Connection pool", "Gap between successive keepalive probes. Must be > 0 when keepalive is enabled."},
@@ -399,11 +398,6 @@ func renderDefault(key string, raw any) string {
 	case envCHReadTimeout:
 		// Derived from CERBERUS_QUERY_TIMEOUT when unset; the loader stores "".
 		return "(derived)"
-	case envCHConnMaxLifetime:
-		// No SetDefault: resolved at load time against
-		// CERBERUS_CH_KEEPALIVE_ENABLED, so both arms are documented.
-		return "`" + defaultCHConnMaxLifetime.String() + "` (`" +
-			defaultCHConnMaxLifetimeNoKeepAlive.String() + "` without keepalive)"
 	case envAutoCreateDatabase:
 		// No SetDefault: resolves to CERBERUS_AUTO_CREATE_SCHEMA at boot.
 		return "= `CERBERUS_AUTO_CREATE_SCHEMA`"

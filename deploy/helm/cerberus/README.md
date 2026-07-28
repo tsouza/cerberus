@@ -287,7 +287,7 @@ Kubernetes: `>=1.23.0-0`
 | clickhouse.password | string | `""` | Inline password. Renders a chart-managed Secret. PREFER `existingSecret` in production so the password never lands in values / release history. |
 | clickhouse.passwordKey | string | `"password"` | Key within the Secret (chart-managed or existing) holding the password. |
 | clickhouse.pool | object | `{"connMaxLifetime":"","maxIdleConns":null,"maxOpenConns":null}` | ClickHouse connection-pool tuning. Each key is emitted to env only when set; leave a key null/unset to keep the binary's own default. |
-| clickhouse.pool.connMaxLifetime | string | `""` | Max connection lifetime (CERBERUS_CH_CONN_MAX_LIFETIME). Binary default: 5m, or 30s when TCP keepalive is disabled. |
+| clickhouse.pool.connMaxLifetime | string | `""` | Max connection lifetime (CERBERUS_CH_CONN_MAX_LIFETIME). Binary default: 30s. |
 | clickhouse.pool.maxIdleConns | string | `nil` | Max idle connections (CERBERUS_CH_MAX_IDLE_CONNS). Binary default: 5. |
 | clickhouse.pool.maxOpenConns | string | `nil` | Max open connections (CERBERUS_CH_MAX_OPEN_CONNS). Binary default: 10. |
 | clickhouse.protocol | string | `"native"` | Wire protocol: `native` or `http` (CERBERUS_CH_PROTOCOL). |

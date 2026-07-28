@@ -65,7 +65,7 @@ func TestCloseCursor_DrainsBeforeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cur := &recordingCursor{ctx: ctx}
 
-	if err := closeCursorWith(cur, cancel, m); err != nil {
+	if err := closeCursorWith(ctx, cur, cancel, m); err != nil {
 		t.Fatalf("CloseCursor: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestCloseCursor_BudgetExpiry_CancelsAndJoins(t *testing.T) {
 	cur := &recordingCursor{ctx: ctx, blockUntilCancelled: true}
 
 	start := time.Now()
-	if err := closeCursorWith(cur, instrumented, m); err != nil {
+	if err := closeCursorWith(ctx, cur, instrumented, m); err != nil {
 		t.Fatalf("CloseCursor: %v", err)
 	}
 	elapsed := time.Since(start)
@@ -148,6 +148,143 @@ func TestCloseCursor_BudgetExpiry_CancelsAndJoins(t *testing.T) {
 // budget before a bounded teardown counts as unbounded.
 const closeCursorBudgetCeiling = 20 * CursorDrainBudget
 
+// TestCloseCursor_AlreadyCancelledCountsCancelled pins the third outcome. A
+// teardown that BEGINS on a dead context — a Grafana client that walked away, a
+// wall-clock timeout, a sibling shard that failed — had its socket destroyed by
+// the driver before Close was ever entered, so however fast Close returns it
+// was never a pool release. Counting it as "drained" would put cerberus's own
+// cancellations into the residual an operator attributes to age eviction, and
+// make an unremediable churn source look like a drain-budget problem.
+func TestCloseCursor_AlreadyCancelledCountsCancelled(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	m, reader := newTestConnMetrics(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cur := &recordingCursor{ctx: ctx}
+
+	if err := closeCursorWith(ctx, cur, cancel, m); err != nil {
+		t.Fatalf("CloseCursor: %v", err)
+	}
+
+	cancelled, exported, _ := counterSum(t, reader, "cerberus_ch_cursor_teardown_total",
+		map[string]string{"outcome": teardownCancelled})
+	if !exported {
+		t.Fatal("cerberus_ch_cursor_teardown_total was not exported")
+	}
+	if cancelled != 1 {
+		t.Fatalf("teardown_total{outcome=cancelled} = %d; want 1", cancelled)
+	}
+	drained, _, _ := counterSum(t, reader, "cerberus_ch_cursor_teardown_total",
+		map[string]string{"outcome": teardownDrained})
+	if drained != 0 {
+		t.Fatalf("teardown_total{outcome=drained} = %d; a close on a dead context cannot have pooled a connection", drained)
+	}
+}
+
+// TestCloseCursor_CancelledDuringDrainCountsCancelled covers the same
+// destroyed-socket class arriving a moment later: the context dies WHILE the
+// drain is in flight. The driver takes the identical branch, so the outcome must
+// be identical too — sampling the context only on entry would score this as a
+// clean drain.
+func TestCloseCursor_CancelledDuringDrainCountsCancelled(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	m, reader := newTestConnMetrics(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cur := &recordingCursor{ctx: ctx, blockUntilCancelled: true}
+
+	// The caller disappears mid-drain — well inside the drain budget, so the
+	// budget arm is not what ends this teardown.
+	go func() {
+		time.Sleep(CursorDrainBudget / 5)
+		cancel()
+	}()
+
+	if err := closeCursorWith(ctx, cur, cancel, m); err != nil {
+		t.Fatalf("CloseCursor: %v", err)
+	}
+
+	cancelled, _, _ := counterSum(t, reader, "cerberus_ch_cursor_teardown_total",
+		map[string]string{"outcome": teardownCancelled})
+	if cancelled != 1 {
+		t.Fatalf("teardown_total{outcome=cancelled} = %d; want 1", cancelled)
+	}
+	drained, _, _ := counterSum(t, reader, "cerberus_ch_cursor_teardown_total",
+		map[string]string{"outcome": teardownDrained})
+	if drained != 0 {
+		t.Fatalf("teardown_total{outcome=drained} = %d; the context died mid-drain, so the socket was destroyed", drained)
+	}
+}
+
+// composedCursor is a cursor that owns child cursors rather than a connection:
+// it bounds its own teardown at TeardownBudget and its children have already
+// counted themselves.
+type composedCursor struct {
+	recordingCursor
+
+	budget     time.Duration
+	closeDelay time.Duration
+
+	ctxErrAtReturn atomic.Value // errBox
+}
+
+func (c *composedCursor) TeardownBudget() time.Duration { return c.budget }
+
+func (c *composedCursor) Close() error {
+	c.ctxErrAtClose.Store(errBox{err: c.ctx.Err()})
+	time.Sleep(c.closeDelay)
+	c.ctxErrAtReturn.Store(errBox{err: c.ctx.Err()})
+	return c.closeErr
+}
+
+// TestCloseCursor_ComposedCursorKeepsItsOwnBudget is the nesting gate. The
+// solver's sharded cursor tears K child cursors down concurrently, each running
+// its own bounded CloseCursor — and the cancel this outer CloseCursor holds is
+// an ANCESTOR of every one of those child query contexts. Racing the composed
+// teardown against a SINGLE connection's drain budget therefore destroys
+// exactly the K sockets the inner budgets exist to release cleanly: the outer
+// cancel fires first and every child's close lands on a dead context.
+func TestCloseCursor_ComposedCursorKeepsItsOwnBudget(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	m, reader := newTestConnMetrics(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cur := &composedCursor{
+		recordingCursor: recordingCursor{ctx: ctx},
+		budget:          4 * CursorDrainBudget,
+		closeDelay:      2 * CursorDrainBudget,
+	}
+
+	if err := closeCursorWith(ctx, cur, cancel, m); err != nil {
+		t.Fatalf("CloseCursor: %v", err)
+	}
+
+	boxed := cur.ctxErrAtReturn.Load()
+	if boxed == nil {
+		t.Fatal("the composed Close never returned; the teardown must join it")
+	}
+	if err := boxed.(errBox).err; err != nil {
+		t.Fatalf("ctx.Err() when the composed Close returned = %v; want nil. The outer cancel is an "+
+			"ancestor of every child query context, so firing it at the per-connection budget destroys "+
+			"the sockets the children's own budgets exist to release", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("ctx was still live after CloseCursor returned; the cancel must fire after the drain")
+	}
+
+	// A composed teardown is not a connection teardown: the children already
+	// counted themselves, and double-counting would break the churn
+	// decomposition the outcome label exists for.
+	for _, outcome := range []string{teardownDrained, teardownAbandoned, teardownCancelled} {
+		sum, _, _ := counterSum(t, reader, "cerberus_ch_cursor_teardown_total",
+			map[string]string{"outcome": outcome})
+		if sum != 0 {
+			t.Errorf("teardown_total{outcome=%s} = %d; a composed cursor owns no connection to count", outcome, sum)
+		}
+	}
+}
+
 // TestCloseCursor_PropagatesCloseError confirms the cursor's own diagnostics
 // survive the teardown wrapper — a caller must still see why a close failed.
 func TestCloseCursor_PropagatesCloseError(t *testing.T) {
@@ -158,7 +295,7 @@ func TestCloseCursor_PropagatesCloseError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cur := &recordingCursor{ctx: ctx, closeErr: sentinel}
 
-	if err := closeCursorWith(cur, cancel, m); !errors.Is(err, sentinel) {
+	if err := closeCursorWith(ctx, cur, cancel, m); !errors.Is(err, sentinel) {
 		t.Fatalf("CloseCursor err = %v; want the cursor's own %v", err, sentinel)
 	}
 }
@@ -171,7 +308,7 @@ func TestCloseCursor_NilCursorStillCancels(t *testing.T) {
 	m, reader := newTestConnMetrics(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	if err := closeCursorWith(nil, cancel, m); err != nil {
+	if err := closeCursorWith(ctx, nil, cancel, m); err != nil {
 		t.Fatalf("CloseCursor(nil): %v", err)
 	}
 	if ctx.Err() == nil {

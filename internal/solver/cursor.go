@@ -301,6 +301,19 @@ func (sc *shardCursor) Close() error {
 // scheduling skew, not K serial drains.
 const cursorTeardownBudget = 4 * chclient.CursorDrainBudget
 
+// TeardownBudget implements chclient.ComposedCursor: the ceiling Close itself
+// observes. It is the clean-teardown window plus the one per-connection drain
+// budget a producer still gets AFTER the fallback cancellation — a producer
+// parked in cur.Next() only starts its own bounded teardown once gctx dies.
+//
+// Reporting it is what keeps chclient.CloseCursor from racing this cursor
+// against a single connection's budget: the cancel CloseCursor holds is an
+// ANCESTOR of every child query context, so firing it at 250ms would destroy
+// exactly the K sockets the two-signal teardown exists to release cleanly.
+func (sc *shardCursor) TeardownBudget() time.Duration {
+	return cursorTeardownBudget + chclient.CursorDrainBudget
+}
+
 // waitProducers waits up to budget for every producer to return, reporting
 // whether they all did. The waiter goroutine is joined by the caller's
 // fallback g.Wait(), so no goroutine outlives Close.

@@ -527,7 +527,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// retry) runs first is the only one that actually closes the cursor —
 	// release-before-acquire, never a double Close.
 	closeOriginal := sync.OnceFunc(func() {
-		if cerr := chclient.CloseCursor(result.Cursor, queryCancel); cerr != nil {
+		if cerr := chclient.CloseCursor(queryCtx, result.Cursor, queryCancel); cerr != nil {
 			h.Logger.Warn("cerberus prom: cursor close failed", "err", cerr)
 		}
 	})
@@ -563,7 +563,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		retryCtx, retryCancel := context.WithCancel(ctx)
 		defer retryCancel()
 		if retryResult, retried := result.Retry(retryCtx, drainErr); retried {
-			h.respondRangeRetry(w, retryResult, retryCancel, start, end, step)
+			h.respondRangeRetry(w, retryCtx, retryResult, retryCancel, start, end, step)
 			return
 		}
 	}
@@ -604,18 +604,20 @@ func (h *Handler) respondRangeMatrix(w http.ResponseWriter, hdr map[string]strin
 // structural cap — the retry's own drain error is what surfaces instead,
 // exactly as if Retry were nil.
 //
-// cancel is the CancelFunc of the context the retry cursor's ClickHouse query
-// runs on; chclient.CloseCursor drains before firing it so the connection is
-// released to the pool rather than destroyed.
+// queryCtx is the context the retry cursor's ClickHouse query runs on and
+// cancel is its CancelFunc; chclient.CloseCursor drains before firing the
+// cancel so the connection is released to the pool rather than destroyed, and
+// reads the context to classify the teardown it could not have released.
 func (h *Handler) respondRangeRetry(
 	w http.ResponseWriter,
+	queryCtx context.Context,
 	retryResult engine.CursorResult,
 	cancel context.CancelFunc,
 	start, end time.Time,
 	step time.Duration,
 ) {
 	closeRetry := sync.OnceFunc(func() {
-		if cerr := chclient.CloseCursor(retryResult.Cursor, cancel); cerr != nil {
+		if cerr := chclient.CloseCursor(queryCtx, retryResult.Cursor, cancel); cerr != nil {
 			h.Logger.Warn("cerberus prom: retry cursor close failed", "err", cerr)
 		}
 	})

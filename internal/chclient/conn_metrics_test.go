@@ -61,8 +61,11 @@ func counterSum(t *testing.T, reader *sdkmetric.ManualReader, name string, want 
 	return sum, exported, points
 }
 
-// gaugeValue returns the named observable gauge's single data point value.
-func gaugeValue(t *testing.T, reader *sdkmetric.ManualReader, name string) (int64, bool) {
+// gaugeValue returns the named observable gauge's value for the given pool. A
+// gauge is keyed by attribute set, so the pool label is part of the lookup: two
+// concurrently-registered pools are two distinct series, and asking for one
+// must never silently read the other's level.
+func gaugeValue(t *testing.T, reader *sdkmetric.ManualReader, name, pool string) (int64, bool) {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
@@ -77,10 +80,16 @@ func gaugeValue(t *testing.T, reader *sdkmetric.ManualReader, name string) (int6
 			if !ok {
 				t.Fatalf("%s data: want Gauge[int64], got %T", name, m.Data)
 			}
-			if len(g.DataPoints) != 1 {
-				t.Fatalf("%s: want exactly 1 data point, got %d", name, len(g.DataPoints))
+			for _, dp := range g.DataPoints {
+				got, has := dp.Attributes.Value(attrPoolName)
+				if !has {
+					t.Fatalf("%s: data point carries no %q attribute; two live pools would collide on one series",
+						name, attrPoolName)
+				}
+				if got.AsString() == pool {
+					return dp.Value, true
+				}
 			}
-			return g.DataPoints[0].Value, true
 		}
 	}
 	return 0, false
@@ -175,16 +184,16 @@ func TestConnMetrics_PoolGauges(t *testing.T) {
 	m, reader := newTestConnMetrics(t)
 
 	stats := stubStatsConn{open: 7, idle: 3}
-	m.registerPoolGauges(func() driver.Stats { return stats.Stats() })
+	m.registerPoolGauges(DefaultPoolName, func() driver.Stats { return stats.Stats() })
 
-	open, ok := gaugeValue(t, reader, "cerberus_ch_conn_open")
+	open, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", DefaultPoolName)
 	if !ok {
 		t.Fatal("cerberus_ch_conn_open was not exported")
 	}
 	if open != 7 {
 		t.Errorf("conn_open = %d; want 7", open)
 	}
-	idle, ok := gaugeValue(t, reader, "cerberus_ch_conn_idle")
+	idle, ok := gaugeValue(t, reader, "cerberus_ch_conn_idle", DefaultPoolName)
 	if !ok {
 		t.Fatal("cerberus_ch_conn_idle was not exported")
 	}
@@ -193,7 +202,7 @@ func TestConnMetrics_PoolGauges(t *testing.T) {
 	}
 
 	stats.open, stats.idle = 2, 2
-	open, _ = gaugeValue(t, reader, "cerberus_ch_conn_open")
+	open, _ = gaugeValue(t, reader, "cerberus_ch_conn_open", DefaultPoolName)
 	if open != 2 {
 		t.Errorf("conn_open after the pool moved = %d; want 2 — the callback must re-read Stats, not snapshot it", open)
 	}
@@ -209,20 +218,116 @@ func TestConnMetrics_PoolGauges(t *testing.T) {
 func TestConnMetrics_PoolGauges_UnregisterStopsObserving(t *testing.T) {
 	m, reader := newTestConnMetrics(t)
 
-	unregister := m.registerPoolGauges(func() driver.Stats {
+	unregister := m.registerPoolGauges(DefaultPoolName, func() driver.Stats {
 		return driver.Stats{Open: 4, Idle: 1}
 	})
-	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_open"); !ok {
+	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", DefaultPoolName); !ok {
 		t.Fatal("cerberus_ch_conn_open was not exported while the callback was registered")
 	}
 
 	unregister()
 	unregister() // idempotent: a ForHead view shares the same func by pointer.
 
-	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_open"); ok {
+	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", DefaultPoolName); ok {
 		t.Error("cerberus_ch_conn_open is still observed after unregister; a closed client's dead pool would keep overwriting the live one's census")
 	}
-	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_idle"); ok {
+	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_idle", DefaultPoolName); ok {
 		t.Error("cerberus_ch_conn_idle is still observed after unregister")
+	}
+}
+
+// censusConn is a driver.Conn whose pool census is settable, so a Client built
+// the production way can be observed reporting a level only its own conn knows.
+type censusConn struct {
+	chaosConn
+	stats driver.Stats
+}
+
+func (c *censusConn) Stats() driver.Stats { return c.stats }
+
+// TestClient_RegistersPoolCensus is the WIRING gate. Every other gauge test
+// calls registerPoolGauges directly, which proves the callback works but proves
+// nothing about the production assembly path — delete the census line from
+// assembleClientFromConn and they all still pass while cerberus exports no pool
+// census at all. This test goes through the same assembly New uses, so the
+// series exists only if a real Client registered it, and stops only if
+// Client.Close dropped it.
+func TestClient_RegistersPoolCensus(t *testing.T) {
+	m, reader := newTestConnMetrics(t)
+
+	const poolName = "serving-test"
+	conn := &censusConn{stats: driver.Stats{Open: 6, Idle: 2}}
+	c := assembleClientFromConn(Config{Addr: "127.0.0.1:9000", PoolName: poolName}, conn, m)
+
+	open, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", poolName)
+	if !ok {
+		t.Fatalf("no conn_open series for pool %q; the assembled Client never registered its pool census", poolName)
+	}
+	if open != 6 {
+		t.Errorf("conn_open{pool=%q} = %d; want 6 — the census must read this Client's own conn", poolName, open)
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", poolName); ok {
+		t.Errorf("conn_open{pool=%q} is still observed after Close; the callback outlived the pool it reads", poolName)
+	}
+}
+
+// TestClient_PoolCensusDefaultsToServing pins the unnamed-pool label. A Config
+// that names no pool is the serving one, and it must still carry an attribute —
+// an empty label would put it back on the colliding series the label exists to
+// separate.
+func TestClient_PoolCensusDefaultsToServing(t *testing.T) {
+	m, reader := newTestConnMetrics(t)
+
+	conn := &censusConn{stats: driver.Stats{Open: 3, Idle: 1}}
+	c := assembleClientFromConn(Config{Addr: "127.0.0.1:9000"}, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	open, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", DefaultPoolName)
+	if !ok {
+		t.Fatalf("no conn_open series for pool %q; an unnamed Config must label its census %[1]q", DefaultPoolName)
+	}
+	if open != 3 {
+		t.Errorf("conn_open{pool=%q} = %d; want 3", DefaultPoolName, open)
+	}
+}
+
+// TestConnMetrics_PoolGauges_ConcurrentPoolsDoNotCollide is the gate on the
+// pool label. cmd/cerberus keeps bootstrap pools open ALONGSIDE the serving one
+// — the schema-apply connection overlaps it outright — and the gauges are
+// process-wide. Without a distinguishing attribute both callbacks write the
+// same (empty) attribute set, the SDK keeps one data point, and whichever
+// callback ran last silently wins: the operator reads one pool's census
+// believing it describes the other, precisely during startup, when a
+// pool-sizing problem first shows.
+func TestConnMetrics_PoolGauges_ConcurrentPoolsDoNotCollide(t *testing.T) {
+	m, reader := newTestConnMetrics(t)
+
+	const bootstrapPool = "schema-apply"
+	unregisterServing := m.registerPoolGauges(DefaultPoolName, func() driver.Stats {
+		return driver.Stats{Open: 9, Idle: 4}
+	})
+	t.Cleanup(unregisterServing)
+	unregisterBootstrap := m.registerPoolGauges(bootstrapPool, func() driver.Stats {
+		return driver.Stats{Open: 1, Idle: 0}
+	})
+	t.Cleanup(unregisterBootstrap)
+
+	serving, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", DefaultPoolName)
+	if !ok {
+		t.Fatalf("no conn_open series for pool %q while both pools are live", DefaultPoolName)
+	}
+	if serving != 9 {
+		t.Errorf("conn_open{pool=%q} = %d; want 9", DefaultPoolName, serving)
+	}
+	bootstrap, ok := gaugeValue(t, reader, "cerberus_ch_conn_open", bootstrapPool)
+	if !ok {
+		t.Fatalf("no conn_open series for pool %q while both pools are live", bootstrapPool)
+	}
+	if bootstrap != 1 {
+		t.Errorf("conn_open{pool=%q} = %d; want 1", bootstrapPool, bootstrap)
 	}
 }
