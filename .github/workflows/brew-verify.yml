@@ -10,13 +10,13 @@ name: brew-verify
 #     at the release commit, so a correction to the job (a different runner, a
 #     different tap path) can never be exercised against the release that
 #     needed it. v1.12.0 hit exactly that wall.
-#   * The tap is a separate repository. A formula can rot after publish —
+#   * The tap is a separate repository. A cask can rot after publish —
 #     someone edits the tap, an asset is deleted, a checksum stops matching —
 #     and nothing in this repo would notice until the NEXT release ran its
 #     smoke.
 #
 # It reuses `brew-smoke.mjs` unchanged, so there is one implementation of what
-# "the published formula is healthy" means; this lane only differs in when it
+# "the published cask is healthy" means; this lane only differs in when it
 # runs and which version it targets.
 on:
   workflow_dispatch:
@@ -60,7 +60,7 @@ jobs:
           # The HIGHEST stable release, not the most recently PUBLISHED one. A
           # maintenance backport publishes after the line above it, so
           # `--limit 1` returned v1.11.3 while v1.13.0 was the newest cerberus.
-          # The tap holds one formula and the highest tag owns it, so that is
+          # The tap holds one cask and the highest tag owns it, so that is
           # both the right default target and the signal brew-smoke.mjs needs to
           # pick its assertion branch.
           highest=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \

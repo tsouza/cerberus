@@ -141,7 +141,7 @@ brew install tsouza/tap/cerberus
 cerberus --version
 ```
 
-Only stable releases publish a formula, so `brew` never hands you a prerelease.
+Only stable releases publish a cask, so `brew` never hands you a prerelease.
 If you would rather not use Homebrew, the same binary ships as a
 [release archive](https://github.com/tsouza/cerberus/releases) (linux / darwin ×
 amd64 / arm64, each with a [SLSA](https://slsa.dev) provenance attestation). Or
