@@ -52,9 +52,12 @@ func remoteWriteFixture(ctx context.Context, conn driver.Conn, promURL string, l
 		if err != nil {
 			return fmt.Errorf("read %s: %w", src.metricName, err)
 		}
+		// An empty batch would leave the metric absent from the
+		// reference Prometheus while ClickHouse still has it (or vice
+		// versa), so every query over it would compare empty against
+		// empty and report parity it never established.
 		if len(batch) == 0 {
-			logger.Warn("no rows for fixture", "metric", src.metricName)
-			continue
+			return fmt.Errorf("read %s: fixture produced no rows", src.metricName)
 		}
 		if err := postRemoteWrite(ctx, promURL, batch); err != nil {
 			return fmt.Errorf("post %s: %w", src.metricName, err)
@@ -76,6 +79,7 @@ type fixtureSource struct {
 var fixtureSources = []fixtureSource{
 	{"demo_cpu_usage_seconds_total", "otel_metrics_sum"},
 	{"demo_memory_usage_bytes", "otel_metrics_gauge"},
+	{"demo_sparse_memory_bytes", "otel_metrics_gauge"},
 	{"demo_http_requests_total", "otel_metrics_sum"},
 	{"demo_disk_usage_bytes", "otel_metrics_gauge"},
 	{"demo_disk_total_bytes", "otel_metrics_gauge"},
