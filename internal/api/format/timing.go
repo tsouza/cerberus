@@ -32,7 +32,8 @@ func ParseDuration(raw string) (time.Duration, error) {
 // values >= 1e12 to the ms branch. Plain seconds (~1.78e9 today) and
 // fractional seconds stay on the float branch.
 //
-// Loki accepts integer-nanoseconds as well — handled by ParseTimeLoki.
+// Loki and Tempo accept integer-nanoseconds as well — handled by
+// ParseTimeUnixScaled.
 func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 	if raw == "" {
 		return def, nil
@@ -52,26 +53,29 @@ func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 	return t.UTC(), nil
 }
 
-// ParseTimeLoki parses a Loki-API time parameter. Loki accepts four
-// integer shapes plus float-seconds and RFC3339:
+// ParseTimeUnixScaled parses a time parameter in the widest wire shape
+// cerberus accepts — the Loki and Tempo APIs both use it. Four integer
+// shapes plus float-seconds and RFC3339:
 //
 //   - `< 1e12`      → Unix seconds (10-digit, current epoch).
 //   - `1e12 .. 1e15` → Unix milliseconds (13–15 digits). Grafana 11.x
 //     sends ms over `/api/datasources/uid/<ds>/resources/...` for the
-//     Loki datasource just as it does for Prom — the JS frontend never
-//     converts to seconds on that path. Treating ms as ns was the
-//     failure mode of #194: a 13-digit value like `1737000000000`
-//     decoded as ns yields year ~58353 → `toDateTime64('58353-...', 9)`
-//     overflows → ClickHouse returns 500 → Grafana sees empty results.
-//   - `>= 1e15`     → Unix nanoseconds (16+ digits, the `logcli`
-//     convention). 2026 in ns is ~1.74e18 (19 digits); 2001-09 in ns
-//     is ~1.0e18 — so 1e15 is a safe split well below every realistic
-//     ns timestamp and well above every realistic ms timestamp (year
-//     33658+ in ms).
+//     Loki and Tempo datasources just as it does for Prom — the JS
+//     frontend never converts to seconds on that path. Treating ms as
+//     ns was the failure mode of #194: a 13-digit value like
+//     `1737000000000` decoded as ns yields year ~58353 →
+//     `toDateTime64('58353-...', 9)` overflows → ClickHouse returns 500
+//     → Grafana sees empty results.
+//   - `>= 1e15`     → Unix nanoseconds (16+ digits — the `logcli`
+//     convention, and what Tempo's own `tempo-vulture` emits). 2026 in
+//     ns is ~1.74e18 (19 digits); 2001-09 in ns is ~1.0e18 — so 1e15 is
+//     a safe split well below every realistic ns timestamp and well
+//     above every realistic ms timestamp (year 33658+ in ms).
 //
 // Float and RFC3339 inputs fall through the int branch.
-// Empty input falls back to def.
-func ParseTimeLoki(raw string, def time.Time) (time.Time, error) {
+// Empty input falls back to def — pass the zero time where an absent
+// parameter means "predicate omitted" rather than "use this default".
+func ParseTimeUnixScaled(raw string, def time.Time) (time.Time, error) {
 	if raw == "" {
 		return def, nil
 	}

@@ -213,11 +213,11 @@ func parseStartEnd(r *http.Request) (time.Time, time.Time, error) {
 	startStr := r.FormValue("start")
 	endStr := r.FormValue("end")
 
-	start, err := format.ParseTimeLoki(startStr, now.Add(-time.Hour))
+	start, err := format.ParseTimeUnixScaled(startStr, now.Add(-time.Hour))
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
-	end, err := format.ParseTimeLoki(endStr, now)
+	end, err := format.ParseTimeUnixScaled(endStr, now)
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
