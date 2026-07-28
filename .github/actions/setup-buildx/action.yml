@@ -1,0 +1,40 @@
+name: Setup Docker Buildx (retried bootstrap)
+description: >
+  Set up a Buildx builder whose BuildKit bootstrap image is acquired through a
+  retry first, so a transient Docker Hub failure while `buildx inspect
+  --bootstrap` boots the builder cannot fail a job before a single image has
+  been built.
+
+# Why a composite action: every job that builds a container image needs the
+# same builder, and `docker/setup-buildx-action` pulls `moby/buildkit:<tag>`
+# single-attempt inside its own bootstrap - a step no `run:`-level retry can
+# reach. Owning the setup lets the image be acquired (with retry) BEFORE the
+# action runs, and keeps the pinned image in one place: the ref the pre-pull
+# warms and the ref the builder boots from are the same input, so they cannot
+# drift into a pre-pull that protects nothing.
+#
+# The pin also decouples the bootstrap image from whichever default the
+# installed buildx build happens to carry, matching the repo rule that CI
+# dependencies are named explicitly rather than tracking a moving default.
+
+inputs:
+  buildkit-image:
+    description: BuildKit image the docker-container driver boots the builder from.
+    required: false
+    default: moby/buildkit:buildx-stable-1
+
+runs:
+  using: composite
+  steps:
+    # Runs before the builder exists, so it uses the docker CLI directly.
+    # Docker Hub credentials, when a job has them, are established by an
+    # earlier login step and apply to this pull too.
+    - name: Acquire the BuildKit bootstrap image (retry)
+      shell: bash
+      env:
+        BUILDKIT_IMAGE: ${{ inputs.buildkit-image }}
+      run: node "$GITHUB_WORKSPACE/.github/scripts/pull-buildkit-image.mjs"
+
+    - uses: docker/setup-buildx-action@v4
+      with:
+        driver-opts: image=${{ inputs.buildkit-image }}
