@@ -264,8 +264,10 @@ jobs:
       # Whether THIS tag is the highest stable release (so we move the rolling
       # `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is
       # NOT highest -> `:latest` stays on v1.3.0. goreleaser reads this via
-      # `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push templates. Needs
-      # fetch-depth: 0 so all tags (including the one just pushed) are present.
+      # `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push templates, and the
+      # publish step below passes the same answer to `--latest` so the release
+      # pointer and the rolling images can never disagree. Needs fetch-depth: 0
+      # so all tags (including the one just pushed) are present.
       - name: Compute RELEASE_IS_LATEST
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
@@ -305,11 +307,18 @@ jobs:
       # WITH its assets. Publishing up-front (e.g. `gh release create`) would
       # lock it before goreleaser could upload — the 422 that broke v1.0.1.
       # Idempotent: a no-op if already published.
+      #
+      # `--latest` is passed EXPLICITLY: the GitHub release-update endpoint
+      # defaults `make_latest` to true, so a bare `--draft=false` hands
+      # /releases/latest to whichever release published most recently — which is
+      # how v1.11.3, a maintenance backport, took the pointer from v1.13.0.
+      # RELEASE_IS_LATEST already answers "is this the highest stable tag?" for
+      # the rolling `:latest` images; the same answer decides the pointer.
       - name: Publish release (flip draft -> published)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: gh release edit "${TAG}" --draft=false
+        run: gh release edit "${TAG}" --draft=false --latest="${RELEASE_IS_LATEST}"
 
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
