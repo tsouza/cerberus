@@ -194,6 +194,45 @@ func TestAlterTableAddProjection(t *testing.T) {
 	}
 }
 
+// TestAlterTableModifyColumn pins the MODIFY COLUMN statement: the optional
+// <db>. qualifier, the idempotent IF EXISTS guard, the quoted column name, the
+// caller's type fragment, and the optional ON CLUSTER clause. The statement
+// carries no positional args, so RenderDDL accepts it.
+func TestAlterTableModifyColumn(t *testing.T) {
+	enum := TypeEnum8(EnumPair{Name: "ok", Value: 0}, EnumPair{Name: "error", Value: 1})
+	cases := []struct {
+		name string
+		stmt *ModifyColumnBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableModifyColumn("", "cerberus_router_corpus", "exit_status", enum),
+			"ALTER TABLE cerberus_router_corpus MODIFY COLUMN IF EXISTS `exit_status` " +
+				"Enum8('ok' = 0, 'error' = 1)",
+		},
+		{
+			"qualified_table",
+			AlterTableModifyColumn("otel", "cerberus_router_corpus", "exit_status", enum),
+			"ALTER TABLE otel.cerberus_router_corpus MODIFY COLUMN IF EXISTS `exit_status` " +
+				"Enum8('ok' = 0, 'error' = 1)",
+		},
+		{
+			"on_cluster",
+			AlterTableModifyColumn("otel", "cerberus_router_corpus", "exit_status", enum).OnCluster("prod"),
+			"ALTER TABLE otel.cerberus_router_corpus ON CLUSTER `prod` MODIFY COLUMN IF EXISTS `exit_status` " +
+				"Enum8('ok' = 0, 'error' = 1)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestQueryBuilderHaving pins the HAVING clause render: it follows GROUP BY,
 // precedes ORDER BY, and AND-joins multiple conditions. HAVING (not WHERE) is
 // what lets the metric-name enumeration route to the aggregating projection.

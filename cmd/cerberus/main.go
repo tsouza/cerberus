@@ -899,7 +899,7 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	if !cfg.CHOptCorpus.Enabled {
 		return
 	}
-	sink, sinkDesc, ok := buildCorpusSink(ctx, logger, client, cfg)
+	sink, sinkDesc, ok := buildCorpusSink(ctx, logger, client.Conn(), cfg)
 	if !ok {
 		return
 	}
@@ -939,13 +939,19 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 const corpusSinkModeCHTable = "chtable"
 
 // buildCorpusSink selects the durable corpus sink from CHOptCorpus.SinkMode:
-// the CH-table MergeTree (which it creates IF NOT EXISTS) or the JSONL file.
-// It returns the Sink, a short description for the startup log, and ok=false
-// (already logged) when the configured sink cannot be built — in which case the
-// reconciler stays disabled rather than degrading the data plane.
-func buildCorpusSink(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg config.Config) (optcorpus.Sink, string, bool) {
+// the CH-table MergeTree (which it creates IF NOT EXISTS and reconciles) or the
+// JSONL file. It returns the Sink, a short description for the startup log, and
+// ok=false (already logged) when the CONFIGURED sink cannot be built.
+//
+// The configured mode is honoured or nothing is: a chtable failure does NOT
+// silently degrade to the JSONL file. An operator who asked for the CH table
+// and got a local file instead would be told the corpus is healthy while
+// nothing reads it — a worse outcome than a reconciler that is off and says so.
+// Failure-open here means the DATA PLANE is untouched: no query path depends on
+// the corpus sink, so a sink outage costs calibration data and nothing else.
+func buildCorpusSink(ctx context.Context, logger *slog.Logger, conn optcorpus.CHTableConn, cfg config.Config) (optcorpus.Sink, string, bool) {
 	if cfg.CHOptCorpus.SinkMode == corpusSinkModeCHTable {
-		sink, err := optcorpus.NewCHTableSink(ctx, client.Conn())
+		sink, err := optcorpus.NewCHTableSink(ctx, conn)
 		if err != nil {
 			logger.Warn("ch_opt corpus CH-table sink unavailable; reconciler disabled", "err", err)
 			return nil, "", false

@@ -556,8 +556,21 @@ To answer it the engine closes the loop the optimization corpus
 - **Join to observed cost.** At the dispatch seam the engine hands the corpus
   reconciler the decision read-out next to the CH `query_id`. The reconciler
   joins `query_id` → `system.query_log` (the cost columns plus a derived
-  `exit_status` of `ok` / `oom` / `timeout` from the row type + exception code)
-  and writes one corpus row per dispatch. All optcorpus invariants hold: it is
+  `exit_status` of `ok` / `oom` / `timeout` / `aborted` / `error` from the row
+  type + exception code) and writes one corpus row per dispatch. Terminal rows
+  are selected by naming the `type` Enum8 members through
+  `CAST(<name>, toTypeName(type))`: a bare string in the `IN`-list would make
+  ClickHouse coerce the comparison to `String`, so a member name that does not
+  exist would match nothing *silently*, whereas the CAST form raises
+  `UNKNOWN_ELEMENT_OF_ENUM`. A distributed query logs one row per participating
+  node under the same `query_id`, so the group's terminal state is reduced as
+  `max(type != QueryFinish)` — a comparison against the enum, never against the
+  member names, whose lexical order would rank a clean finish above an
+  exception. `ExceptionBeforeStart` rows are excluded: the query never ran, so
+  their zero cost would deflate every watermark learnt from the corpus.
+  An exception whose code cerberus does not recognise is `error` — the honest
+  floor, never folded back into the healthy `ok` population. All optcorpus
+  invariants hold: it is
   flag-gated, production-only, failure-open, and the observe call is a
   non-blocking channel send — the hot path is byte-unchanged when the corpus is
   off.
@@ -582,10 +595,37 @@ To answer it the engine closes the loop the optimization corpus
     classification ran). These outcomes carry the same invariants — flag-gated,
     failure-open, non-blocking, drop-under-burst — and the in-process capture
     works even where the query_log reconcile (production-only) does not.
+- **ClickHouse-side abort vs error.** A query that ended in a ClickHouse
+  exception is `aborted` when the code says the query was abandoned rather than
+  faulted — a client cancellation or a connection that went away mid-flight —
+  and `error` otherwise. The split matters because the two classes mean
+  opposite things for calibration: an abort measures how long a client was
+  willing to wait, so its truncated cost is not evidence about the route,
+  whereas an error is a fault whose cost is real.
 - **Sink.** With `CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable` the corpus lands in
   the `cerberus_router_corpus` MergeTree (DDL built with the typed `chsql` DDL
   builder, 30-day TTL); the default `jsonl` mode appends the same rows to the
-  sink-path file (load them into the same table shape for analysis).
+  sink-path file (load them into the same table shape for analysis). Sink
+  construction reconciles the deployed table with the schema the running binary
+  writes — `CREATE TABLE IF NOT EXISTS`, then an `ALTER TABLE … MODIFY COLUMN`
+  that widens `exit_status` to the member set this binary can emit, then a read
+  of `system.columns` that fails construction if a member is still missing.
+  `CREATE … IF NOT EXISTS` alone cannot do this: it is a no-op against an
+  existing table however its columns are declared, so a binary that learnt a new
+  member would write a value the deployed column cannot hold and every batch
+  would be rejected on every reconcile interval. The widening is **best-effort**
+  — a CH user with `INSERT` + `CREATE` but no `ALTER` grant, or an
+  operator-owned table that needs `ON CLUSTER`, still gets a working sink
+  whenever the deployed column already holds every member. The `system.columns`
+  read is the authority: it is the server's own answer, so the sink is never
+  built over a column that cannot hold what the binary writes.
+- **A sink that cannot be built disables the reconciler**, logged at startup
+  with the underlying error; it does not silently switch modes. There is no
+  fallback from `chtable` to `jsonl` — an operator who asked for the CH table
+  and got a local file instead would be told the corpus is healthy while nothing
+  reads it. The corpus is failure-open with respect to the **data plane**, which
+  is the invariant that matters: no query path depends on the sink, so a sink
+  outage costs calibration data and nothing else.
 
 This is a pure additive read-out: it records values the classifier already
 computed and **changes no routing behavior**. The captured features suffice to
