@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"go.uber.org/goleak"
 )
 
@@ -320,5 +321,73 @@ func TestCloseCursor_NilCursorStillCancels(t *testing.T) {
 		map[string]string{"outcome": teardownAbandoned})
 	if drained != 0 || abandoned != 0 {
 		t.Fatalf("teardown_total drained=%d abandoned=%d; a nil cursor is not a teardown", drained, abandoned)
+	}
+}
+
+// queryTeardownDeadline is the wall-clock ceiling Client.Query's own teardown
+// must respect. Generous against CursorDrainBudget so the assertion answers
+// "bounded or not", never "how loaded is the runner".
+const queryTeardownDeadline = 20 * CursorDrainBudget
+
+// blockingCloseRows drains normally and then PARKS in Close until either its
+// query context dies or the test releases it — the shape clickhouse-go takes
+// when the server has stopped answering mid-teardown, where the cancel is the
+// only thing that unblocks the driver.
+type blockingCloseRows struct {
+	genRows
+	ctx     context.Context
+	release chan struct{}
+}
+
+func (r *blockingCloseRows) Close() error {
+	select {
+	case <-r.ctx.Done():
+	case <-r.release:
+	}
+	return nil
+}
+
+type blockingCloseConn struct {
+	chaosConn
+	rows *blockingCloseRows
+}
+
+func (c *blockingCloseConn) Query(ctx context.Context, _ string, _ ...any) (driver.Rows, error) {
+	c.rows.ctx = ctx
+	return c.rows, nil
+}
+
+// TestClientQuery_TeardownIsBounded pins that Client.Query's eager drain tears
+// its cursor down through CloseCursor rather than a bare deferred Close.
+//
+// The drain stops early whenever a budget trips (the per-query sample budget,
+// the wide-projection byte budget), so the remainder is still on the wire and
+// the teardown is exactly the hazard CloseCursor exists for. A bare
+// `defer cursor.Close()` hands the caller's request an UNBOUNDED wait on a
+// server that has stopped answering, and pins the pool slot for that whole
+// time — the drain budget plus the cancel is what bounds both.
+func TestClientQuery_TeardownIsBounded(t *testing.T) {
+	t.Parallel()
+
+	rows := &blockingCloseRows{
+		genRows: genRows{remaining: 1},
+		release: make(chan struct{}),
+	}
+	t.Cleanup(func() { close(rows.release) })
+	client := newWithConn(&blockingCloseConn{rows: rows})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = client.Query(context.Background(), "SELECT bounded")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(queryTeardownDeadline):
+		t.Fatalf("Client.Query did not return within %s while the driver's Close was parked "+
+			"waiting for a cancel that never came. The teardown must run through CloseCursor: "+
+			"the drain budget bounds the wait and the cancel is what unblocks the driver",
+			queryTeardownDeadline)
 	}
 }
