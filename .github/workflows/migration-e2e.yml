@@ -481,6 +481,7 @@ jobs:
           MODE: run
           SCENARIOS_JSON: build/migration-scenarios.json
           TIER: tier2
+          STORY: ${{ inputs.story }}
 
       # Same evidence contract as migration-tier0's and migration-tier1's
       # uploads: the report the Gherkin step's MODE=run wrote is what
