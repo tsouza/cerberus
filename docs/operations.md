@@ -1102,7 +1102,10 @@ Each edge is a gate, not a sequence:
   the *artifact* — a bad ldflag or Dockerfile drift lives only in the latter.
 - **`publish`** performs the draft→published flip. It is a separate job precisely
   so everything that validates the built artifact sits before the point of no
-  return.
+  return. The flip states `--latest` explicitly: GitHub defaults `make_latest`
+  to true, so leaving it implicit hands the repo's `Latest` pointer to whichever
+  release published most recently — which is how backporting v1.11.3 after
+  v1.13.0 pointed `/releases/latest` at the oldest supported line.
 - **`brew-smoke`** installs from the tap and smokes the published binary (see
   below); **`eol-retire`** retires the line that just fell out of the support
   window.
@@ -1110,9 +1113,14 @@ Each edge is a gate, not a sequence:
 The two version lines are independent: a chart-only fix (template change, new
 toggle) ships by bumping `version:` alone, and an app-only release bumps
 `appVersion:` (plus a patch to `version:` for the new default image). The
-publish gates handle either or both. The `:latest` image tag advances only for
-the highest stable `v*` release (a prerelease or a stable backport never drags
-it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
+publish gates handle either or both.
+
+`RELEASE_IS_LATEST` — computed in `release.yml` right after the tag is pushed,
+by comparing it against the highest stable `v*` tag — is the single answer to
+"is this the newest release line?", and every resource that only one line can
+hold at a time is gated on it: the rolling `:latest` image tags, the tap's
+single Homebrew formula, and the GitHub `Latest` release pointer. A prerelease
+or a stable backport never drags any of the three backwards.
 
 #### De-gated lanes on the publish path
 
@@ -1152,9 +1160,13 @@ playbook points at it as the default install path — see
 [getting the `cerberus` binary](migration.md#step-1-install-the-binary).
 
 This is wired via the goreleaser `brews:` block (a Homebrew *formula*, not a
-cask, so it installs on Linuxbrew as well as macOS). `skip_upload: auto` means
-`rc.*` prereleases never write a formula — only stable releases publish. The
-block pins `directory: Formula`: Homebrew resolves a tap's formulae from
+cask, so it installs on Linuxbrew as well as macOS). The tap holds a SINGLE
+`cerberus` formula, so `skip_upload` is templated on `RELEASE_IS_LATEST` — the
+highest-stable-tag signal `release.yml` computes after pushing the tag — and
+only a stable release on the newest line ever writes it. Neither an `rc.*` nor a
+maintenance backport touches the tap: a backport is not a prerelease, so the bare
+`skip_upload: auto` that predated this let v1.12.1 overwrite v1.13.0's formula
+and downgrade every `brew install`. The block pins `directory: Formula`: Homebrew resolves a tap's formulae from
 `Formula/`, `HomebrewFormula/` or the tap root, but goreleaser's `directory`
 defaults to **empty** — the tap root — and `Formula/` is both the conventional
 layout and the path the smoke reads.
@@ -1174,10 +1186,13 @@ deleted `brews:` block or an expired `HOMEBREW_TAP_GITHUB_TOKEN` leaves a stale
 formula that an install would happily consume. A stable release must find the
 formula declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
-(`migrate schema`, `config-docs -check`) work from the installed binary. A
-prerelease is **not** skipped — it takes the opposite assertion: `skip_upload:
-auto` means an `rc.*` must have written no formula, so a formula declaring the
-prerelease version is a reported regression. The job runs after `publish` because
+(`migrate schema`, `config-docs -check`) work from the installed binary. The two
+shapes that write no formula are **not** skipped — each takes the opposite
+assertion. An `rc.*` must have written none, so a formula declaring the
+prerelease version is a reported regression; a release that is not the highest
+stable tag must have left a strictly NEWER formula in place, so a tap that has
+fallen back to the backport's own version is one too. The job runs after
+`publish` because
 `brew install` downloads the release tarball, which 404s while the release is
 still a draft, and it runs on `macos-latest` because the Ubuntu runner image
 ships no Homebrew at all. That the formula (rather than a cask) also installs
@@ -1191,7 +1206,8 @@ the release that needed it, and nothing here would notice a formula rotting
 after publish (someone edits the tap, an asset is deleted, a checksum stops
 matching). The `brew-verify` workflow covers that: same `brew-smoke.mjs`, same
 assertions, but `workflow_dispatch` (with an optional bare `version`, defaulting
-to the latest published non-prerelease) plus a weekly cron. It checks out the
+to the HIGHEST stable release rather than the most recently published one — a
+backport publishes after the line above it) plus a weekly cron. It checks out the
 *tag* it is verifying, because `config-docs -check` compares the installed
 binary's config registry against the working tree's `docs/configuration.md` —
 against `main` it would red on unreleased doc drift that is not a defect.

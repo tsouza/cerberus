@@ -358,31 +358,40 @@ One implementation means a new rule guards BOTH lanes at once.
   is the anti-vacuous check, because a deleted `brews:` block or an expired
   `HOMEBREW_TAP_GITHUB_TOKEN` leaves a STALE formula that a warm `brew install`
   would install happily. Then it branches EXPLICITLY on the release kind rather
-  than skipping: a stable `X.Y.Z` requires the formula to declare exactly that
-  version, then installs it and asserts the binary lands under `brew --prefix`,
+  than skipping: a stable `X.Y.Z` on the newest release line requires the
+  formula to declare exactly that version, then installs it and asserts the
+  binary lands under `brew --prefix`,
   that `cerberus --version` EQUALS the bare release version (string equality, so
   an off-by-`v` or a stale ldflag cannot pass a substring test), and that two
   OFFLINE payload verbs work — `migrate schema` (emits `CREATE` DDL) and
-  `config-docs -check` against `REPO_ROOT`'s `docs/configuration.md`. A
-  prerelease takes the negative branch: `.goreleaser.yml` sets
-  `skip_upload: auto`, so an `rc.*` must NOT have written a formula, and a
-  formula declaring the prerelease version is a reported regression. `migrate
-  gate` / `migrate verify` are deliberately unused — they exit non-zero on a
-  legitimate no-go, so they cannot distinguish a broken binary from a correct
-  verdict. Pure exports `isStableRelease(version)`, `formulaVersion(rbSource)`
-  (declaration, then archive-name fallback, then THROWS — an unparseable formula
-  never degrades into a pass) and `verdict({version, formulaSource})`, covered
-  by `brew-smoke.test.mjs` on the required `lint` lane and as the job's own
-  first step.
+  `config-docs -check` against `REPO_ROOT`'s `docs/configuration.md`. The other
+  two release shapes take negative branches, because `.goreleaser.yml`'s
+  `skip_upload` template keeps both out of the tap: an `rc.*` must NOT have
+  written a formula, and a release that is not the highest stable tag (a
+  maintenance backport) must have left a STRICTLY NEWER formula in place — the
+  regression that let v1.12.1, cut after v1.13.0, downgrade every
+  `brew install`. `migrate gate` / `migrate verify` are deliberately unused —
+  they exit non-zero on a legitimate no-go, so they cannot distinguish a broken
+  binary from a correct verdict. Pure exports `isStableRelease(version)`,
+  `formulaVersion(rbSource)` (declaration, then archive-name fallback, then
+  THROWS — an unparseable formula never degrades into a pass),
+  `compareVersions(a, b)` and `verdict({version, formulaSource, isLatest})`,
+  covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
+  own first step.
   - Env: `RELEASE_VERSION` (the BARE `X.Y.Z[-rc.N]`, i.e.
     `needs.gate.outputs.app_version`, never the `v`-prefixed tag),
-    `GITHUB_TOKEN` (contents:read on the tap), `GITHUB_API_URL` (default
-    `https://api.github.com`), `REPO_ROOT` (checkout root, for the
-    `config-docs -check` payload).
-  - Exit: `0` when the formula state matches the release kind and (stable only)
-    the installed binary passes every assertion; `1` on a stale / missing /
-    unparseable formula, a prerelease formula that should not exist, a failed
-    install, a version mismatch, or a failing payload verb.
+    `RELEASE_IS_LATEST` (`"true"`/`"false"` — whether this is the highest stable
+    tag, i.e. the line that owns the tap's single formula; required, and
+    rejected unless it is exactly one of those two words, since it selects the
+    assertion branch), `GITHUB_TOKEN` (contents:read on the tap),
+    `GITHUB_API_URL` (default `https://api.github.com`), `REPO_ROOT`
+    (checkout root, for the `config-docs -check` payload).
+  - Exit: `0` when the formula state matches the release kind and (newest stable
+    line only) the installed binary passes every assertion; `1` on a stale /
+    missing / unparseable formula, a prerelease formula that should not exist, a
+    tap formula that a backport overwrote, a missing or unrecognised
+    `RELEASE_IS_LATEST`, a failed install, a version mismatch, or a failing
+    payload verb.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
