@@ -4610,6 +4610,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/setop_or_native_ts_grid_range",
+    "fan_factor": 1,
+    "scan_rows": 10,
+    "peak_intermediate": 10,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/setop_or_range_gap",
     "fan_factor": 1,
     "scan_rows": 8,

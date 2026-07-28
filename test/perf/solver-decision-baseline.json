@@ -1884,6 +1884,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "setop_or_native_ts_grid_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "setop_or_range_gap",
     "routed": false,
     "k": 0,

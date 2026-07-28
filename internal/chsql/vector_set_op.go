@@ -343,6 +343,12 @@ func vectorSetOpSynthesizedAnchorFrag() Frag {
 // column. Mirrors `isMatrixRangeWindow` in
 // internal/api/prom/handler.go.
 //
+// The ClickHouse-native timeSeriesRateToGrid path is always matrix
+// shape: it explodes the grid into one row per anchor and surfaces the
+// per-row `anchor_ts` column, exactly like the fan-out matrix
+// RangeWindow. The TimeUnix source is therefore that column, not the
+// now64() instant synthesis.
+//
 // Nested VectorSetOp arms are NOT matrix shape per se — but they emit
 // their own canonical 4-column SELECT (this very function's caller),
 // so the outer references TimeUnix by name regardless. They're
@@ -352,6 +358,8 @@ func vectorSetOpArmIsMatrixRangeWindow(n chplan.Node) bool {
 	switch v := n.(type) {
 	case *chplan.RangeWindow:
 		return v.OuterRange > 0
+	case *chplan.RangeWindowNative:
+		return true
 	case *chplan.Project:
 		return vectorSetOpArmIsMatrixRangeWindow(v.Input)
 	case *chplan.Filter:
@@ -365,9 +373,13 @@ func vectorSetOpArmIsMatrixRangeWindow(n chplan.Node) bool {
 // `internal/api/prom/handler.go::isDerivedShape` but lives in the
 // chsql package so the emitter can decide per-arm without taking a
 // dependency on the HTTP-layer helper. The two functions must stay in
-// sync; both treat RangeWindow / Aggregate / MetricsAggregate /
-// MetricsHistogramOverTime — and a Project that does NOT expose all
-// four canonical columns above one of those — as derived.
+// sync; both treat RangeWindow / RangeWindowNative / Aggregate /
+// MetricsAggregate / MetricsHistogramOverTime — and a Project that does
+// NOT expose all four canonical columns above one of those — as
+// derived. Their output schema is `(group keys…, timestamp, value)`:
+// MetricName never exists in that scope, so it must be synthesised as
+// the empty string rather than referenced (ClickHouse rejects the
+// reference with `Unknown expression identifier MetricName`).
 //
 // Nested VectorSetOp arms are canonical: the recursive emit wraps each
 // inner VectorSetOp in its own canonical-column SELECT, so a parent
@@ -375,6 +387,7 @@ func vectorSetOpArmIsMatrixRangeWindow(n chplan.Node) bool {
 func vectorSetOpArmIsDerivedShape(n chplan.Node, s *chplan.VectorSetOp) bool {
 	switch v := n.(type) {
 	case *chplan.RangeWindow,
+		*chplan.RangeWindowNative,
 		*chplan.Aggregate,
 		*chplan.MetricsAggregate,
 		*chplan.MetricsHistogramOverTime:
