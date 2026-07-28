@@ -1,0 +1,87 @@
+# `or` in range mode (Step > 0), where the two arms cover DIFFERENT
+# subsets of the step grid.
+#
+# PromQL evaluates a set operator once per evaluation timestamp: at each
+# step the right arm contributes only the series the left arm did not
+# produce AT THAT STEP. The arms cover overlapping but different anchor
+# spans, because the 5m lookback window is half-open — a sample is in
+# scope at anchor `t` when `t - 5m < sample <= t`:
+#
+#   left  (sparse, sample at 00:03) covers 00:03 00:04 00:05
+#   right (dense,  sample at 00:00) covers 00:00 00:01 00:02 00:03 00:04
+#
+# The result therefore alternates arms mid-series: the right arm owns
+# 00:00-00:02 and the left arm owns 00:03-00:05, six points in all.
+#
+# Matching on the label signature alone would let the left arm's
+# presence ANYWHERE in the range suppress the right arm EVERYWHERE,
+# collapsing the result to the left arm's three points. The match key is
+# (signature, timestamp) in range mode precisely so this fixture keeps
+# all six.
+#
+# Both metrics carry the same `job` label and the default set-op
+# signature excludes the metric name, so the two arms share one match
+# key while the surviving rows keep their own arm's metric name.
+
+-- query.promql --
+demo_sparse_bytes or demo_dense_bytes
+-- range_step --
+1m
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('demo_dense_bytes',  map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+    ('demo_sparse_bytes', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 10.0);
+-- expected_rows --
+[
+  ["demo_sparse_bytes", {"job": "api"}, "2026-01-01T00:03:00Z", 10],
+  ["demo_sparse_bytes", {"job": "api"}, "2026-01-01T00:04:00Z", 10],
+  ["demo_sparse_bytes", {"job": "api"}, "2026-01-01T00:05:00Z", 10],
+  ["demo_dense_bytes", {"job": "api"}, "2026-01-01T00:00:00Z", 100],
+  ["demo_dense_bytes", {"job": "api"}, "2026-01-01T00:01:00Z", 100],
+  ["demo_dense_bytes", {"job": "api"}, "2026-01-01T00:02:00Z", 100]
+]
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = ""
+[5] string = "service_name"
+[6] string = "demo_sparse_bytes"
+[7] string = "demo.sparse.bytes"
+[8] string = "demo.sparse/bytes"
+[9] string = "demo.sparse_bytes"
+[10] string = "demo/sparse/bytes"
+[11] string = "demo/sparse_bytes"
+[12] string = "demo_sparse.bytes"
+[13] string = "service.name"
+[14] string = "service_name"
+[15] string = "service.name"
+[16] string = "service_name"
+[17] string = ""
+[18] string = "service_name"
+[19] string = "demo_dense_bytes"
+[20] string = "demo.dense.bytes"
+[21] string = "demo.dense/bytes"
+[22] string = "demo.dense_bytes"
+[23] string = "demo/dense/bytes"
+[24] string = "demo/dense_bytes"
+[25] string = "demo_dense.bytes"
+-- chplan --
+VectorSetOp op=or match=default stepAligned
+  RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Project [MetricName AS MetricName, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName)))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("demo_sparse_bytes", "demo.sparse.bytes", "demo.sparse/bytes", "demo.sparse_bytes", "demo/sparse/bytes", "demo/sparse_bytes", "demo_sparse.bytes"))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+  RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Project [MetricName AS MetricName, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName)))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("demo_dense_bytes", "demo.dense.bytes", "demo.dense/bytes", "demo.dense_bytes", "demo/dense/bytes", "demo/dense_bytes", "demo_dense.bytes"))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY `Attributes`, `TimeUnix`) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0
