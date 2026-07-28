@@ -295,6 +295,12 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    outputs:
+      # Whether this tag is the highest stable release. Downstream jobs decide
+      # what the newest line alone may own (the GitHub `Latest` pointer, the
+      # Homebrew formula) off this, so it has to leave the job, not just the
+      # step.
+      is_latest: ${{ steps.is_latest.outputs.is_latest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -352,23 +358,34 @@ jobs:
             echo "created + pushed ${TAG} at ${GITHUB_SHA}"
           fi
 
-      # Whether THIS tag is the highest stable release (so we move the rolling
-      # `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is
-      # NOT highest -> `:latest` stays on v1.3.0. goreleaser reads this via
-      # `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push templates. Needs
-      # fetch-depth: 0 so all tags (including the one just pushed) are present.
+      # Whether THIS tag is the highest stable release — the single "is this the
+      # newest line?" signal every downstream owner-of-a-shared-resource decision
+      # reads. A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is NOT highest,
+      # and must not take:
+      #   - the rolling `:latest` images (goreleaser's `latest-*` skip_push
+      #     templates read `.Env.RELEASE_IS_LATEST`);
+      #   - the Homebrew formula (`brews[].skip_upload`, same env var) — `auto`
+      #     alone only filters prereleases, so v1.12.1 downgraded the tap from
+      #     v1.13.0;
+      #   - the GitHub `Latest` release pointer (the `publish` job's flip), which
+      #     otherwise follows publish ORDER and left /releases/latest on v1.11.3.
+      # Needs fetch-depth: 0 so all tags (including the one just pushed) are
+      # present.
       - name: Compute RELEASE_IS_LATEST
+        id: is_latest
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
         run: |
           tag="${TAG#v}"
           highest=$(git tag -l 'v*.*.*' | awk '!/-/' | sed 's/^v//' | sort -V | tail -1)
           if [ "$tag" = "$highest" ]; then
-            echo "RELEASE_IS_LATEST=true" >> "$GITHUB_ENV"
+            is_latest=true
           else
-            echo "RELEASE_IS_LATEST=false" >> "$GITHUB_ENV"
+            is_latest=false
           fi
-          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST set accordingly"
+          echo "RELEASE_IS_LATEST=${is_latest}" >> "$GITHUB_ENV"
+          echo "is_latest=${is_latest}" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST=${is_latest}"
 
       - id: goreleaser
         uses: goreleaser/goreleaser-action@v7
@@ -461,11 +478,18 @@ jobs:
       # Publishing up-front (e.g. `gh release create`) would lock it before
       # goreleaser could upload — the 422 that broke v1.0.1.
       # Idempotent: a no-op if already published.
+      #
+      # `--latest` is explicit, not decoration: GitHub's update endpoint defaults
+      # `make_latest` to true, so the flip hands /releases/latest to whichever
+      # release published MOST RECENTLY. Cutting v1.11.3 after v1.13.0 therefore
+      # pointed the repo's Latest badge — and `gh release download` with no tag —
+      # at the oldest supported line. Only the highest stable tag takes it.
       - name: Publish release (flip draft -> published)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: gh release edit "${TAG}" --draft=false
+          IS_LATEST: ${{ needs.goreleaser.outputs.is_latest }}
+        run: gh release edit "${TAG}" --draft=false --latest="${IS_LATEST}"
 
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
@@ -486,12 +510,14 @@ jobs:
   # fixes for that 404 — a retry loop, `continue-on-error` — would ship the
   # release unverified and green, so the fix is to run after the flip.
   #
-  # Prereleases are NOT skipped. `skip_upload: auto` means an `rc.*` writes no
-  # formula, so brew-smoke.mjs takes the NEGATIVE branch instead: the formula
-  # must exist and must NOT declare this version.
+  # Neither prereleases nor maintenance backports are skipped — each just gets a
+  # different assertion, because `skip_upload` keeps both out of the tap:
+  #   - prerelease: the formula must exist and must NOT declare this version;
+  #   - not the highest stable tag: the formula must declare a STRICTLY NEWER
+  #     version, proving this publish did not overwrite the newest line's.
   brew-smoke:
     name: brew-smoke
-    needs: [gate, publish]
+    needs: [gate, goreleaser, publish]
     if: |
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
@@ -521,6 +547,9 @@ jobs:
           # The BARE version. Comparing `cerberus --version` to `app_tag` would
           # be a guaranteed off-by-`v` mismatch.
           RELEASE_VERSION: ${{ needs.gate.outputs.app_version }}
+          # The same signal that decided whether goreleaser wrote the formula at
+          # all, so the smoke asserts the branch the tap actually took.
+          RELEASE_IS_LATEST: ${{ needs.goreleaser.outputs.is_latest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_ROOT: ${{ github.workspace }}
         run: node .github/scripts/brew-smoke.mjs

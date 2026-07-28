@@ -44,9 +44,17 @@ const (
 	publishJob           = "publish"
 	brewSmokeJob         = "brew-smoke"
 	preflightJob         = "preflight"
+	goreleaserJobName    = "goreleaser"
 
 	// The single point of no return in the pipeline.
 	publishFlipToken = "--draft=false"
+
+	// "Is this tag the highest stable release?" — the one signal that decides
+	// which release line may take a resource only one line can hold: the rolling
+	// `:latest` images, the Homebrew formula, and the GitHub `Latest` pointer.
+	releaseIsLatestEnv = "RELEASE_IS_LATEST"
+	isLatestOutput     = "is_latest"
+	latestFlipToken    = "--latest="
 )
 
 func readFileString(t *testing.T, path string) string {
@@ -238,13 +246,93 @@ func TestBrewSmokeIsBlockingAndOrderedAfterPublish(t *testing.T) {
 			"a broken tap would report green. Body:\n%s", releaseWorkflowPath, brewSmokeJob, job)
 	}
 
-	// The prerelease branch of brew-smoke.mjs asserts that an rc.* did NOT write
-	// a formula. That assertion is only meaningful while goreleaser is still
-	// configured to leave prerelease taps alone.
-	goreleaser := readFileString(t, goreleaserPath)
-	if !strings.Contains(goreleaser, "skip_upload: auto") {
-		t.Fatalf("%s no longer sets `skip_upload: auto` on the brews block; brew-smoke's prerelease "+
-			"branch asserts the opposite invariant and would start failing every rc", goreleaserPath)
+	// The two no-formula branches of brew-smoke.mjs assert that a prerelease and
+	// a maintenance backport did NOT write a formula. Those assertions are only
+	// meaningful while goreleaser is still configured to leave both taps alone,
+	// which is one template covering both conditions.
+	//
+	// Matched on the `skip_upload:` LINE, not on the file: RELEASE_IS_LATEST also
+	// appears in the dockers_v2 `latest-*` skip_push templates, so a whole-file
+	// substring check would still pass after a revert to a bare `skip_upload:
+	// auto` — a pin that cannot fail for the thing it is pinning.
+	skipUpload := valueOfYAMLKey(t, readFileString(t, goreleaserPath), "skip_upload")
+	for _, want := range []string{releaseIsLatestEnv, "auto"} {
+		if !strings.Contains(skipUpload, want) {
+			t.Fatalf("%s has `skip_upload: %s`, which does not gate on %q. brew-smoke's prerelease and "+
+				"maintenance branches assert that neither wrote a formula, and would start failing every "+
+				"rc and every backport", goreleaserPath, skipUpload, want)
+		}
+	}
+}
+
+// valueOfYAMLKey returns the inline value of the single `<key>:` line in body,
+// failing when the key is absent or appears more than once. Scoping an assertion
+// to one line is what keeps it from passing on an unrelated occurrence of the
+// same token elsewhere in the file.
+func valueOfYAMLKey(t *testing.T, body, key string) string {
+	t.Helper()
+
+	var found []string
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(trimmed, key+":"); ok {
+			found = append(found, strings.TrimSpace(after))
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly 1 `%s:` line, found %d (%q) — the assertion below is scoped to a single "+
+			"line and cannot be trusted otherwise", key, len(found), found)
+	}
+	return found[0]
+}
+
+// TestOnlyTheNewestLineOwnsTheSharedReleaseResources pins the fix for v1.12.1 —
+// a backport cut after v1.13.0 — taking two resources that only one release line
+// can hold at a time: the Homebrew formula (it overwrote v1.13.0's, downgrading
+// every `brew install`) and the GitHub `Latest` pointer (v1.11.3, published last,
+// claimed it). Both defaults are silently wrong for a maintenance line:
+// `skip_upload: auto` filters only prereleases, and GitHub's release-update
+// endpoint defaults `make_latest` to true. Neither failure reds a release, so
+// nothing but this pin keeps the explicit gate in place.
+func TestOnlyTheNewestLineOwnsTheSharedReleaseResources(t *testing.T) {
+	t.Parallel()
+
+	workflow := readFileString(t, releaseWorkflowPath)
+
+	// The signal has to leave the goreleaser job: it can only be computed after
+	// the tag is pushed, and the two consumers below are separate jobs.
+	goreleaserJob := workflowJobBody(t, workflow, goreleaserJobName)
+	for _, want := range []string{"outputs:", isLatestOutput + ":", releaseIsLatestEnv} {
+		if !strings.Contains(goreleaserJob, want) {
+			t.Fatalf("%s job %q is missing %q, so the highest-stable-tag signal never leaves the job "+
+				"and the downstream owners fall back to their wrong-for-a-backport defaults. Body:\n%s",
+				releaseWorkflowPath, goreleaserJobName, want, goreleaserJob)
+		}
+	}
+
+	// Consumer 1: the draft->published flip must state the Latest pointer rather
+	// than inherit `make_latest: true`.
+	publish := workflowJobBody(t, workflow, publishJob)
+	if !strings.Contains(publish, latestFlipToken) {
+		t.Fatalf("%s job %q publishes without %q. GitHub defaults `make_latest` to true, so the flip "+
+			"hands /releases/latest to whichever release published most recently — a backport would "+
+			"take it from the newest line. Body:\n%s",
+			releaseWorkflowPath, publishJob, latestFlipToken, publish)
+	}
+	if !strings.Contains(publish, isLatestOutput) {
+		t.Fatalf("%s job %q sets %q from something other than the %q output, so the pointer no longer "+
+			"tracks the highest stable tag. Body:\n%s",
+			releaseWorkflowPath, publishJob, latestFlipToken, isLatestOutput, publish)
+	}
+
+	// Consumer 2: brew-smoke must be told which branch the tap actually took.
+	// Without it the smoke has no safe default and fails closed, but pinning it
+	// here keeps the maintenance assertion from being quietly dropped instead.
+	brew := workflowJobBody(t, workflow, brewSmokeJob)
+	if !strings.Contains(brew, releaseIsLatestEnv) {
+		t.Fatalf("%s job %q does not pass %s, so the smoke cannot assert that a backport left the "+
+			"newest line's formula in place. Body:\n%s",
+			releaseWorkflowPath, brewSmokeJob, releaseIsLatestEnv, brew)
 	}
 }
 
