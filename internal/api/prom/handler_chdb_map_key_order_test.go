@@ -332,3 +332,58 @@ func TestVectorSetOpOr_DivergentMapKeyOrder_ChDB(t *testing.T) {
 		}
 	})
 }
+
+// mapKeyOrderSumDDL declares the second metrics table. A selector spans
+// both via `merge(otel_metrics_gauge|otel_metrics_sum)`, which is the
+// natural producer of ONE join arm carrying two physical key orders for
+// a single logical series.
+const mapKeyOrderSumDDL = `CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
+
+// TestVectorJoinArmDivergentMapKeyOrder_ChDB pins the arm-side half of
+// the match-key class. The join's ON is canonicalised, but each arm also
+// collapses its own rows onto a Map-valued series-identity key first. If
+// THAT key stays raw, an arm holding both key orders of one logical
+// series emits two rows and the canonical ON pairs both of them with the
+// other side — a silently duplicated cross-product.
+//
+// The duplication is invisible in the bare binop (both output rows carry
+// the same label set, so the wire assembly collapses them); only an
+// enclosing aggregation exposes it, so the sum is the load-bearing
+// assertion here.
+func TestVectorJoinArmDivergentMapKeyOrder_ChDB(t *testing.T) {
+	ts := mapKeyOrderSeedTime.Format("2006-01-02 15:04:05.000000000")
+	// `vja_a` is written once per table under OPPOSITE key orders — one
+	// logical series, two physical rows. `vja_b` is the other arm.
+	seed := gaugeDDL + "\n" + mapKeyOrderSumDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('vja_a', map('job', 'api', 'dc', 'eu'), toDateTime64('%s', 9), 3),
+    ('vja_b', map('job', 'api', 'dc', 'eu'), toDateTime64('%s', 9), 5);
+INSERT INTO otel_metrics_sum VALUES
+    ('vja_a', map('dc', 'eu', 'job', 'api'), toDateTime64('%s', 9), 3);`, ts, ts, ts)
+
+	// Both shapes route through the vector-join emitter, whose arms this
+	// covers. One matched series at 3*5, so a duplicated pairing shows
+	// up as a multiple of 15.
+	cases := []struct{ query, want string }{
+		{"sum(vja_a * vja_b)", "15"},
+		{"sum(vja_a * on(job) group_left vja_b)", "15"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			srv, _ := newChDBServer(t, seed)
+			vec := runMapKeyOrderInstant(t, srv.URL, tc.query)
+			if len(vec) != 1 {
+				t.Fatalf("series count: got %d, want 1: %+v", len(vec), vec)
+			}
+			if got := vec[0].Value[1]; got != tc.want {
+				t.Errorf("value: got %v, want %q (a larger value means the arm "+
+					"emitted one row per physical key order)", got, tc.want)
+			}
+		})
+	}
+}

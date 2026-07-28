@@ -203,34 +203,43 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 		// TimeUnix off the GROUP BY and uses max(TimeUnix) to pick
 		// the latest LWR sample — byte-stable for the existing
 		// fixtures.
+		// The arm's series-identity key is Map-valued, so it is
+		// canonicalised for the same reason the match key is: an arm
+		// whose row stream carries two physical key orders for one
+		// logical label set (a merge() scan spanning two tables, a
+		// mapUpdate/mapConcat rewrite upstream) would otherwise emit two
+		// rows, and the canonicalised ON below then pairs BOTH of them
+		// with the other side — a silently duplicated cross-product.
+		armKey := canonicalMatchKeyFrag(Col(j.AttributesColumn))
+		armAttrs := As(armKey, joinAlias(j.AttributesColumn))
 		switch {
 		case j.StepAligned:
 			inner.Select(
 				joinMetricNameFrag(j),
-				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				armAttrs,
 				As(Col(j.TimestampColumn), joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.AttributesColumn),
+				armKey,
 				Col(j.TimestampColumn),
 			)
 		case derived:
 			inner.Select(
 				joinMetricNameFrag(j),
-				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				armAttrs,
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.AttributesColumn),
+				armKey,
 			)
 		default:
 			inner.Select(
 				joinMetricNameFrag(j),
-				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				armAttrs,
 				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.AttributesColumn),
+				armKey,
 			)
 		}
 	} else {
@@ -257,7 +266,7 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 			// timestamp is synthesized (see the roleMany note above).
 			inner.Select(
 				joinMetricNameFrag(j),
-				aggAnyAs(j.AttributesColumn, joinAlias(j.AttributesColumn)),
+				As(Call("any", canonicalMatchKeyFrag(Col(j.AttributesColumn))), joinAlias(j.AttributesColumn)),
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
 				matchCheckFrag(j.AttributesColumn),
@@ -265,7 +274,7 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 		} else {
 			inner.Select(
 				joinMetricNameFrag(j),
-				argMaxAs(j.AttributesColumn, j.TimestampColumn, joinAlias(j.AttributesColumn)),
+				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
 				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 				matchCheckFrag(j.AttributesColumn),
@@ -422,7 +431,7 @@ func argMaxAs(valCol, byCol, alias string) Frag {
 func matchCheckFrag(attrsCol string) Frag {
 	check := Call(
 		"throwIf",
-		Gt(Call("uniqExact", Col(attrsCol)), InlineLit(1)),
+		Gt(Call("uniqExact", canonicalMatchKeyFrag(Col(attrsCol))), InlineLit(1)),
 		Lit("many-to-many matching not allowed: matching labels must be unique on one side"),
 	)
 	// `_cerberus_match_check` is an emitter-pinned bare alias (no
