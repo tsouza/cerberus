@@ -840,6 +840,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_count_exp_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_count_exp_latest_sample",
     "routed": false,
     "k": 0,
@@ -888,6 +894,24 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_classic_agg_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_agg_offset_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_bare_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_classic_edge_p0",
     "routed": false,
     "k": 0,
@@ -901,6 +925,12 @@
   },
   {
     "query": "histogram_quantile_classic_empty",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_latest_sample",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
@@ -942,6 +972,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_native_agg_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_native_agg_groupby",
     "routed": false,
     "k": 0,
@@ -960,7 +996,25 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_native_bare_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_native_bare_offset_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_native_empty",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_native_latest_sample",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"

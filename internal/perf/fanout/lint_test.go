@@ -79,6 +79,68 @@ func TestRule1_BroadcastCrossJoin_OK(t *testing.T) {
 	}
 }
 
+// TestRule1_HistogramQuantileBroadcast_OK proves the `@`-pinned histogram
+// broadcast is not flagged: the pinned lowering evaluates the quantile
+// ONCE (an Aggregate collapse) and cross-joins the single row-per-series
+// result against the step grid. HistogramQuantile / HistogramQuantileNative
+// sit between the CrossJoin and that Aggregate and emit exactly one row per
+// input row, so the peel must see through them.
+func TestRule1_HistogramQuantileBroadcast_OK(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		value func(chplan.Node) chplan.Node
+	}{
+		{"classic", func(in chplan.Node) chplan.Node {
+			return &chplan.HistogramQuantile{Input: in, Phi: 0.95}
+		}},
+		{"native", func(in chplan.Node) chplan.Node {
+			return &chplan.HistogramQuantileNative{Input: in, Phi: 0.95}
+		}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			right := &chplan.Project{
+				Input:       tc.value(collapsed(rawScan())),
+				Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"}},
+			}
+			plan := &chplan.CrossJoin{Left: stepGrid(), Right: right}
+			if vs := fanout.Lint(plan, ""); hasRule(vs, fanout.RuleUnboundedCrossJoin) {
+				t.Fatalf("pinned-histogram broadcast must NOT be flagged, got %v", vs)
+			}
+		})
+	}
+}
+
+// TestRule1_HistogramQuantileOverRawScan_Trips is the other half of the
+// peel: seeing through HistogramQuantile must not blanket-clear the side.
+// A quantile computed directly over an UN-collapsed scan still multiplies
+// raw rows by anchors, so the violation must survive the peel.
+func TestRule1_HistogramQuantileOverRawScan_Trips(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		value func(chplan.Node) chplan.Node
+	}{
+		{"classic", func(in chplan.Node) chplan.Node {
+			return &chplan.HistogramQuantile{Input: in, Phi: 0.95}
+		}},
+		{"native", func(in chplan.Node) chplan.Node {
+			return &chplan.HistogramQuantileNative{Input: in, Phi: 0.95}
+		}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan := &chplan.CrossJoin{Left: stepGrid(), Right: tc.value(rawScan())}
+			if vs := fanout.Lint(plan, ""); !hasRule(vs, fanout.RuleUnboundedCrossJoin) {
+				t.Fatalf("quantile over a raw scan must still be flagged, got %v", vs)
+			}
+		})
+	}
+}
+
 // TestRule2_FanoutFeedingJoin_Trips proves a raw StepGrid feeding a JOIN
 // side without an intervening collapse is flagged.
 func TestRule2_FanoutFeedingJoin_Trips(t *testing.T) {

@@ -2980,6 +2980,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_count_exp_at_pinned_range",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_count_exp_latest_sample",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -3050,6 +3060,36 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_classic_agg_at_pinned_range",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_classic_agg_offset_range",
+    "fan_factor": 1.25,
+    "scan_rows": 4,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_classic_bare_at_pinned_range",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_classic_edge_p0",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -3074,6 +3114,16 @@
     "fan_factor": 0,
     "scan_rows": 0,
     "peak_intermediate": 0,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_classic_latest_sample",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3140,6 +3190,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_native_agg_at_pinned_range",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_native_agg_groupby",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -3170,10 +3230,40 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_native_bare_at_pinned_range",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_native_bare_offset_range",
+    "fan_factor": 1.6666666666666667,
+    "scan_rows": 3,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_native_empty",
     "fan_factor": 0,
     "scan_rows": 0,
     "peak_intermediate": 0,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_native_latest_sample",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
