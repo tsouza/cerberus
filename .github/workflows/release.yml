@@ -315,8 +315,6 @@ jobs:
 
       - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v4
-
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -327,11 +325,18 @@ jobs:
       # Docker Hub mirror — goreleaser pushes the same per-arch images +
       # manifests to docker.io/tsouza/cerberus in the same build. A login
       # failure aborts the whole release (atomic dual-registry push).
+      # Both logins sit ahead of the builder setup so the BuildKit
+      # bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # `dockers_v2` builds linux/amd64 + linux/arm64 through buildx, which
+      # needs the docker-container driver (the built-in `docker` driver is
+      # single-platform).
+      - uses: ./.github/actions/setup-buildx
 
       # Create + push the `v<appVersion>` annotated tag at the merge commit.
       # goreleaser reads the version from this tag. The push does NOT recurse:

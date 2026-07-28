@@ -734,6 +734,21 @@ One implementation means a new rule guards BOTH lanes at once.
     `GIT_USER_EMAIL` (default `github-actions[bot]` identity).
   - Exit: `0` nothing to do or fixup pushed; `1` on a `go mod tidy` or git
     failure.
+- **`pull-buildkit-image.mjs`** — `.github/actions/setup-buildx` (the composite
+  every image-building job goes through). Acquires the BuildKit bootstrap image
+  into the local docker daemon, with retry, before
+  `docker/setup-buildx-action` boots a builder from it. The
+  `docker-container` driver pulls `moby/buildkit:<tag>` single-attempt inside
+  its own bootstrap — a step no `run:`-level retry can reach — so one reset
+  connection to Docker Hub fails the job before a single image is built. buildx
+  falls back to a locally present copy when its pull fails, which is what makes
+  pre-acquiring it sufficient; the module therefore asserts presence in the
+  daemon rather than a successful pull. The composite passes the same image ref
+  to `driver-opts: image=…`, so the warmed ref and the booted ref cannot drift.
+  - Env: `BUILDKIT_IMAGE` (required — image ref to acquire),
+    `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
+    step, attempt N sleeps N × this).
+  - Exit: `0` when the image is in the local daemon, `1` when it is not.
 
 ## Notes
 
