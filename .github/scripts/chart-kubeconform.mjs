@@ -17,7 +17,7 @@
 // probe, `docker` (anonymous manifest inspect works for public images).
 //
 // Exit 1 on any kubeconform failure, any missing image, and any image whose
-// existence the probe could not establish.
+// existence the probe could not establish after its bounded retries.
 
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -84,7 +84,7 @@ const PROBE_SPAWN_OPTS = { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8'
 // a command whose failure it controls.
 const DOCKER_MANIFEST_INSPECT = (ref) => ['docker', ['manifest', 'inspect', ref]]
 
-export function imageExists(ref, probeCmd = DOCKER_MANIFEST_INSPECT) {
+function probeOnce(ref, probeCmd) {
   const [file, args] = probeCmd(ref)
   try {
     execFileSync(file, args, PROBE_SPAWN_OPTS)
@@ -92,6 +92,38 @@ export function imageExists(ref, probeCmd = DOCKER_MANIFEST_INSPECT) {
   } catch (e) {
     return classifyProbeFailure(e)
   }
+}
+
+// Attempts and backoff mirror the Justfile's `_pull-retry`, which exists for
+// this same registry and this same failure: the chart renders a Docker Hub
+// ref (clickhouse-server), and Docker Hub answers a concurrency burst from CI
+// with `toomanyrequests` even on an authenticated runner. Since 'unknown'
+// FAILS the required `chart-validate` check, one refusal would otherwise fail
+// every open PR at once. Retrying is not tolerance — tolerance would be
+// accepting a non-verdict as a pass; this is giving the probe enough chances
+// to reach a verdict at all.
+const PROBE_ATTEMPTS = 5
+const PROBE_BACKOFF_STEP_MS = 3_000
+
+// Synchronous sleep: the whole script is synchronous, and the retry policy is
+// injectable so the self-test drives the loop without sleeping through it.
+const sleepSync = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+const PROBE_RETRY = { attempts: PROBE_ATTEMPTS, sleep: sleepSync }
+
+// imageExists returns the probe's verdict, retrying ONLY while it has none.
+// 'present' and 'missing' are verdicts and return immediately — re-probing a
+// definitive not-found would add PROBE_ATTEMPTS worth of backoff to every
+// release PR, whose staged appVersion is legitimately absent.
+export function imageExists(ref, probeCmd = DOCKER_MANIFEST_INSPECT, retry = PROBE_RETRY) {
+  let state = 'unknown'
+  for (let attempt = 1; attempt <= retry.attempts; attempt++) {
+    state = probeOnce(ref, probeCmd)
+    if (state !== 'unknown') return state
+    if (attempt < retry.attempts) retry.sleep(attempt * PROBE_BACKOFF_STEP_MS)
+  }
+  return state
 }
 
 // probeVerdict maps a probe state onto the check's verdict. An image counts as
@@ -174,6 +206,26 @@ const failingProbe = (phrase) => () => [
 ]
 const succeedingProbe = () => [process.execPath, ['-e', '']]
 
+// One command per probe state, so a test can script what each attempt sees.
+const probeFor = (state) =>
+  state === 'present' ? succeedingProbe() : failingProbe(state === 'missing' ? NOT_FOUND_STDERR : NO_VERDICT_STDERR)()
+
+// scriptedProbe hands out one command per attempt from `states` (the last
+// entry repeats) and counts the attempts, so a test can assert not just the
+// outcome but how many times the registry was actually asked.
+const scriptedProbe = (states) => {
+  const calls = { count: 0 }
+  return {
+    calls,
+    cmd: () => probeFor(states[Math.min(calls.count++, states.length - 1)]),
+  }
+}
+
+// The real attempt count with the sleeping replaced by a recorder: the retry
+// loop runs exactly as it does in CI, without the self-test waiting out the
+// backoff.
+const recordedRetry = (slept) => ({ attempts: PROBE_ATTEMPTS, sleep: (ms) => slept.push(ms) })
+
 function selfTest() {
   const fails = []
   let passes = 0
@@ -186,14 +238,53 @@ function selfTest() {
   // reaches the classifier if the call site pipes stderr, so a call site that
   // closes it turns this from 'missing' into 'unknown'.
   check(
-    imageExists('probe-self-test', failingProbe(NOT_FOUND_STDERR)) === 'missing',
+    imageExists('probe-self-test', failingProbe(NOT_FOUND_STDERR), recordedRetry([])) === 'missing',
     'the probe call site pipes stderr — a registry not-found reaches the classifier',
   )
   check(
-    imageExists('probe-self-test', failingProbe(NO_VERDICT_STDERR)) === 'unknown',
+    imageExists('probe-self-test', failingProbe(NO_VERDICT_STDERR), recordedRetry([])) === 'unknown',
     'a refusal that is not a not-found reaches the classifier as unknown',
   )
-  check(imageExists('probe-self-test', succeedingProbe) === 'present', 'a probe that exits 0 reports the image present')
+  check(
+    imageExists('probe-self-test', succeedingProbe, recordedRetry([])) === 'present',
+    'a probe that exits 0 reports the image present',
+  )
+
+  // Retry: the point is to REACH a verdict, so a probe that has none yet gets
+  // another go, and one that has a verdict is asked exactly once.
+  const recovered = scriptedProbe(['unknown', 'present'])
+  check(
+    probeVerdict(imageExists('probe-self-test', recovered.cmd, recordedRetry([])), false) === 'ok',
+    'a rate-limited probe that then answers ends verified — the retry is what reaches the verdict',
+  )
+  check(recovered.calls.count === 2, 'retrying stops the moment the probe reaches a verdict')
+
+  const slept = []
+  const neverAnswers = scriptedProbe(['unknown'])
+  check(
+    probeVerdict(imageExists('probe-self-test', neverAnswers.cmd, recordedRetry(slept)), false) === 'fail',
+    'a probe that reaches no verdict in any attempt still fails the check — retry is not tolerance',
+  )
+  check(neverAnswers.calls.count === PROBE_ATTEMPTS, 'every attempt is spent before the check gives up')
+  const expectedBackoff = Array.from({ length: PROBE_ATTEMPTS - 1 }, (_, i) => (i + 1) * PROBE_BACKOFF_STEP_MS)
+  check(
+    slept.join() === expectedBackoff.join(),
+    'backoff grows linearly between attempts, and nothing waits after the last one',
+  )
+
+  const unpublished = scriptedProbe(['missing'])
+  check(
+    imageExists('probe-self-test', unpublished.cmd, recordedRetry([])) === 'missing',
+    'a not-found probe reports missing',
+  )
+  check(
+    unpublished.calls.count === 1,
+    'a definitive not-found is a verdict and is never retried — a staged appVersion must not pay the backoff',
+  )
+
+  const published = scriptedProbe(['present'])
+  check(imageExists('probe-self-test', published.cmd, recordedRetry([])) === 'present', 'a published image reports present')
+  check(published.calls.count === 1, 'a confirmed image is asked for once')
 
   // The fixture itself: its command line must carry no phrase the classifier
   // recognises, or the two assertions above would pass on `message` alone.
@@ -325,8 +416,10 @@ if (!SKIP_IMAGE_CHECK) {
         ghError(
           state === 'missing'
             ? `rendered image does not exist in the registry: ${ref} — the chart's appVersion/image.tag points at an unpublished tag`
-            : `could not verify image ${ref} — the registry probe reached no verdict, so the image-existence guard did not run. ` +
-                `Fix the registry access (or set SKIP_IMAGE_CHECK=1 for an air-gapped run); an unverified image is not a verified one.`,
+            : `could not verify image ${ref} — the registry probe was retried ${PROBE_ATTEMPTS} times with backoff and still ` +
+                `reached no verdict, so the image-existence guard did not run. That is a registry that is down, refusing, or ` +
+                `rate-limiting, not a single flaky call. Fix the registry access (or set SKIP_IMAGE_CHECK=1 for an air-gapped ` +
+                `run); an unverified image is not a verified one.`,
         )
         ok = false
     }

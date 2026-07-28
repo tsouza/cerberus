@@ -366,10 +366,16 @@ One implementation means a new rule guards BOTH lanes at once.
   an `appVersion` pointing at an unpublished tag. An image passes only when the
   probe positively confirms it: a definitive not-found fails, and so does any
   probe that reaches no verdict (auth refusal, rate limit, DNS/TLS), because a
-  guard that could not run has verified nothing. The one exemption is the
-  appVersion the change itself stages, and it covers a definitive not-found
-  only. The `--self-test` drives the real probe against a controlled failing
-  command, so the spawn options are pinned at the call site.
+  guard that could not run has verified nothing. Because the chart renders a
+  Docker Hub ref and Docker Hub rate-limits CI bursts, a probe with no verdict
+  is retried — five attempts with linear backoff, mirroring the Justfile's
+  `_pull-retry` — so a transient refusal does not become a permanent
+  non-verdict; a verdict (`present` or a definitive not-found) is never
+  retried. Exhausted retries still fail. The one exemption is the appVersion
+  the change itself stages, and it covers a definitive not-found only. The
+  `--self-test` drives the real probe against a controlled failing command, so
+  the spawn options are pinned at the call site and the retry loop runs for
+  real with its sleep injected.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `KUBE_VERSION` (default
     `1.28.0`), `SKIP_IMAGE_CHECK` (set `1` to skip the registry probe entirely
     — the only waiver, for air-gapped runs).
