@@ -462,10 +462,11 @@ jobs:
     # reference Prometheus, so a green result is the corpus-wide proof that
     # route B == reference — far stronger than the 3 chDB-lane fixtures.
     #
-    # This is intentionally a NORMAL CI job, not a branch-protection-required
-    # check: its green status on the flip PR is the proof, and keeping it
-    # off the required-checks list avoids gating every unrelated PR on the
-    # full forced-route corpus run.
+    # It is a branch-protection REQUIRED check, and one of the release
+    # preflight's required lanes: route B is a correctness-equivalent
+    # rewriting of the same query, so a diff here is a wrong answer served to
+    # a user, not a performance regression. The proof has to hold on every
+    # commit that ships, not only on the flip PR.
     name: compatibility/prometheus-forced-route
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'

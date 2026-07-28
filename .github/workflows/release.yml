@@ -192,22 +192,62 @@ jobs:
           # posts children as "<job> / <child>"; release-preflight.mjs matches
           # that prefix too, so release-artifact-migration's tier jobs are
           # excluded without being named individually.
-          RELEASE_SELF_JOBS: gate,preflight,goreleaser,release-artifact-migration,publish,brew-smoke,chart-release
+          # All three lists are NEWLINE-separated, one name per line: check-run
+          # names are job display names and may contain commas (see `property
+          # (…, rapid N=500)` below), so a comma cannot be the separator.
+          RELEASE_SELF_JOBS: |
+            gate
+            preflight
+            goreleaser
+            release-artifact-migration
+            publish
+            brew-smoke
+            chart-release
           # The EXPECTED set — exact check-run names that MUST have posted a run
-          # on this commit. It is the branch-protection required set (see
-          # CLAUDE.md) PLUS `migration-e2e`, which can never BE a
-          # branch-protection check because migration-e2e.yml has no
-          # `pull_request:` trigger. Deleting a name from here silently shrinks
-          # the gate, so release_gate_test.go asserts `migration-e2e` is present
-          # on every PR.
-          RELEASE_REQUIRED_CHECKS: "check,lint,forbid-skip,compatibility/prometheus,compatibility/loki,compatibility/tempo,probe,roundtrip (promql),roundtrip (logql),roundtrip (traceql),compose-smoke,migration-e2e"
+          # on this commit. The invariant is TOTALITY: every branch-protection
+          # required context is accounted for here, either by being named below
+          # or by being named in RELEASE_INFORMATIONAL_CHECKS with a reason. A
+          # context in neither list is certified by absence, which is exactly
+          # what this gate exists to prevent — and it matters most on the
+          # MAINTENANCE path, where there is no PR and therefore no branch
+          # protection, leaving this preflight as the only gate. Plus
+          # `migration-e2e`, which can never BE a branch-protection check
+          # because migration-e2e.yml has no `pull_request:` trigger.
+          # release_required_checks_test.go asserts the totality invariant, and
+          # that every name here is owned by a workflow that actually triggers
+          # on `release/*.x` — a name with no lane behind it stalls the gate.
+          RELEASE_REQUIRED_CHECKS: |
+            check
+            lint
+            forbid-skip
+            chart-validate
+            compatibility/prometheus
+            compatibility/loki
+            compatibility/tempo
+            compatibility/prometheus-forced-route
+            probe
+            roundtrip (promql)
+            roundtrip (logql)
+            roundtrip (traceql)
+            compose-smoke
+            coverage
+            profile
+            property (PromQL + LogQL + TraceQL, rapid N=500)
+            migration-e2e
           # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
           # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate
           # does NOT `needs:` the crawl info shard, and `dashboard` is informational
-          # on merges — a flake in either must not block a release. A prefix here
-          # that swallows a RELEASE_REQUIRED_CHECKS name fails the preflight as a
-          # wiring error rather than quietly de-gating it.
-          RELEASE_INFORMATIONAL_CHECKS: compose-smoke-shard-info,dashboard
+          # on merges — a flake in either must not block a release. `mutation` is
+          # a test-QUALITY ratchet rather than a correctness gate on the artifact
+          # being shipped; it already ran green under branch protection on the
+          # release PR, and requiring it here would put its ~11-leg matrix on the
+          # critical path of every publish, including maintenance hotfixes. A
+          # prefix here that swallows a RELEASE_REQUIRED_CHECKS name fails the
+          # preflight as a wiring error rather than quietly de-gating it.
+          RELEASE_INFORMATIONAL_CHECKS: |
+            compose-smoke-shard-info
+            dashboard
+            mutation
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release

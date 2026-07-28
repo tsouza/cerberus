@@ -64,25 +64,41 @@ func readFileString(t *testing.T, path string) string {
 // appears somewhere else in the workflow does not satisfy it.
 func requiredChecksFromPreflight(t *testing.T, job string) []string {
 	t.Helper()
-	const key = "RELEASE_REQUIRED_CHECKS:"
-	for _, line := range strings.Split(job, "\n") {
+	out := checkListFromPreflight(job, "RELEASE_REQUIRED_CHECKS:")
+	if out == nil {
+		t.Fatalf("%s job %q declares no RELEASE_REQUIRED_CHECKS — the release gate has degraded to the "+
+			"observational deny-list, where a lane that never ran contributes zero problems. Body:\n%s",
+			releaseWorkflowPath, preflightJob, job)
+	}
+	return out
+}
+
+// checkListFromPreflight reads one of the newline-separated check lists out of
+// the preflight step's `env:` block, the same way release-preflight.mjs's
+// parseCheckList reads it at runtime. The separator is a newline rather than a
+// comma because `property (PromQL + LogQL + TraceQL, rapid N=500)` — a
+// branch-protection required context — contains one. Returns nil when the key
+// is absent, which callers distinguish from an empty list.
+func checkListFromPreflight(job, key string) []string {
+	lines := strings.Split(job, "\n")
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, key) {
 			continue
 		}
-		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, key))
-		raw = strings.Trim(raw, `"'`)
-		var out []string
-		for _, name := range strings.Split(raw, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				out = append(out, name)
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		out := []string{}
+		for _, body := range lines[i+1:] {
+			if strings.TrimSpace(body) == "" {
+				continue
 			}
+			if len(body)-len(strings.TrimLeft(body, " ")) <= indent {
+				break
+			}
+			out = append(out, strings.TrimSpace(body))
 		}
 		return out
 	}
-	t.Fatalf("%s job %q declares no %s — the release gate has degraded to the "+
-		"observational deny-list, where a lane that never ran contributes zero problems. Body:\n%s",
-		releaseWorkflowPath, preflightJob, key, job)
 	return nil
 }
 
@@ -161,22 +177,7 @@ func TestReleasePreflightRequiresTheMigrationLane(t *testing.T) {
 // preflight does, so the disjointness assertion above compares like with like.
 func informationalChecksFromPreflight(t *testing.T, job string) []string {
 	t.Helper()
-	const key = "RELEASE_INFORMATIONAL_CHECKS:"
-	for _, line := range strings.Split(job, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, key) {
-			continue
-		}
-		raw := strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, key)), `"'`)
-		var out []string
-		for _, name := range strings.Split(raw, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				out = append(out, name)
-			}
-		}
-		return out
-	}
-	return nil
+	return checkListFromPreflight(job, "RELEASE_INFORMATIONAL_CHECKS:")
 }
 
 func TestReleasePublishesOnlyAfterTheBuiltArtifactIsDriven(t *testing.T) {
