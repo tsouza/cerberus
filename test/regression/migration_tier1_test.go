@@ -644,7 +644,7 @@ func TestMigrationTier1LaneIsWiredIntoCI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Justfile: %v", err)
 	}
-	testRecipe := justRecipeBody(t, string(justfile), "test")
+	testRecipe := justRecipeBodyWithDeps(t, string(justfile), "test")
 	for _, want := range []string{"-tags=migration_tier1", "./test/e2e/migration/"} {
 		if !strings.Contains(testRecipe, want) {
 			t.Fatalf("the `test` recipe does not type-check the migration_tier1 lane (missing %q); "+
@@ -764,6 +764,46 @@ func justRecipeBody(t *testing.T, justfile, recipe string) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// justRecipeBodyWithDeps returns a recipe's own body followed by the bodies of
+// every recipe it depends on, transitively. `just` runs a recipe's dependencies
+// before its own lines, so what running `just <recipe>` actually DOES is the
+// union — and a pin that reads only the literal body silently stops covering
+// anything the moment that recipe is refactored into a composition of smaller
+// ones. `test` is exactly that shape: `test: test-unit vet-tagged`, so CI can
+// run the two halves as concurrent jobs while `just test` stays one command
+// locally.
+func justRecipeBodyWithDeps(t *testing.T, justfile, recipe string) string {
+	t.Helper()
+	seen := map[string]bool{}
+	var walk func(string) []string
+	walk = func(name string) []string {
+		if seen[name] {
+			return nil
+		}
+		seen[name] = true
+		body := justRecipeBody(t, justfile, name)
+		out := []string{body}
+		for _, dep := range justRecipeDeps(body) {
+			out = append(out, walk(dep)...)
+		}
+		return out
+	}
+	return strings.Join(walk(recipe), "\n")
+}
+
+// justRecipeDeps returns the dependency names declared on a recipe's header
+// line — the whitespace-separated tokens after the colon that closes the
+// header. The split is on the LAST colon rather than the first, because a
+// parameter default may legitimately contain one (`recipe p="a:b": dep`).
+func justRecipeDeps(body string) []string {
+	header, _, _ := strings.Cut(body, "\n")
+	i := strings.LastIndex(header, ":")
+	if i < 0 {
+		return nil
+	}
+	return strings.Fields(header[i+1:])
 }
 
 // The seeder half of the Tier-1 substrate. These pins are pure file reads over

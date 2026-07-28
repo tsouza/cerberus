@@ -1,6 +1,17 @@
 name: e2e
 
-# End-to-end test umbrella. Hosts both:
+# End-to-end test umbrella. Both lanes are RELEASE gates, not PR gates:
+# neither is a branch-protection required context, and neither runs on an
+# ordinary pull request. They boot real substrate — a compose stack per shard,
+# a k3d cluster per shard — and were by a wide margin the two longest PR lanes,
+# so a PR sat waiting on them long after every correctness lane had gone green.
+# They run on the merge commit instead, and release.yml's preflight names both
+# `compose-smoke` and `dashboard` in RELEASE_REQUIRED_CHECKS: nothing publishes
+# until both posted a green check-run on the commit being shipped. The gate
+# moved off the PR and onto the release; it did not disappear. A `release/*`
+# head branch still gets the full lane ON the PR (see the `on:` block).
+#
+# Hosts both:
 #   - `compose-smoke` — repo-root quickstart compose stack smoke
 #     (`docker compose up --wait`) + Grafana Playwright catch-net,
 #     SHARDED across a balanced matrix of isolated-compose-stack jobs
@@ -34,11 +45,11 @@ name: e2e
 #     .github/scripts/dashboard-matrix.mjs; dashboard-shard runs each
 #     shard's specs against its own k3d cluster; the aggregator job
 #     literally named `dashboard` needs the matrix and rolls it up).
-#     Runs on pull_request (skipping docs-only PRs) + push-to-main +
-#     nightly + manual dispatch; the aggregator is a branch-protection
-#     REQUIRED check, so a k3d regression blocks the PR that introduces
-#     it. PRs get a smoke-only matrix — the ~50min crawl shard is
-#     dispatched on schedule + dispatch + release/* PRs only.
+#     Runs on push-to-main + nightly + manual dispatch, and on a
+#     `release/*` PR; the aggregator is named in release.yml's
+#     RELEASE_REQUIRED_CHECKS, so a k3d regression blocks the release
+#     that would ship it. Release PRs get a smoke-only matrix — the
+#     ~50min crawl shard is dispatched on schedule + dispatch only.
 #     On schedule + dispatch the DEDICATED crawl shard runs the Grafana
 #     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
@@ -68,12 +79,24 @@ name: e2e
 #   4. Teardown with `docker compose down -v`.
 
 on:
+  # `pull_request` is still declared, but every lane job below short-circuits
+  # unless the head branch is `release/*` — see `releaseOnlyOnPR` in the job
+  # `if:` blocks. Both lanes boot real substrate (a compose stack per shard, a
+  # k3d cluster per shard) and were by a wide margin the two longest PR gates,
+  # so an ordinary PR sat waiting on them long after every correctness lane had
+  # gone green. They are RELEASE gates now: they run on the merge commit, and
+  # release.yml's preflight refuses to publish until both posted a green
+  # check-run on it. Keeping the trigger (rather than deleting it) is what
+  # preserves the release-PR run — crawl + split coverage is selected off
+  # `github.head_ref`, which only exists on a pull_request event, and a release
+  # must never ship a mode the gate did not exercise (see the v1.4.0 split
+  # regression noted on `dashboard-setup`).
   pull_request:
     branches: [main]
   push:
-    # `release/*.x` so the required `compose-smoke` aggregate also runs on a
-    # maintenance-line hotfix push — release.yml's maintenance preflight reads
-    # this check-run before publishing a `release/*.x` commit.
+    # `release/*.x` so the required `compose-smoke` / `dashboard` aggregates also
+    # run on a maintenance-line hotfix push — release.yml's maintenance preflight
+    # reads these check-runs before publishing a `release/*.x` commit.
     branches: [main, 'release/*.x']
   schedule:
     # nightly at 03:17 UTC
@@ -101,133 +124,6 @@ permissions:
 # Docker volumes). Per-job `concurrency:` blocks encode each policy.
 
 jobs:
-  # See `.github/workflows/ci.yml` for the rationale + filter convention.
-  # Docs-only PRs short-circuit the compose-smoke job (Docker compose
-  # build + Grafana Playwright catch-net are pointless when no code
-  # changed). Runs on pull_request only — push and schedule bypass the
-  # docs-only gate and go straight to the smoke job (a nightly run has
-  # no diff to filter on).
-  changes:
-    name: changes
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    outputs:
-      docs_only: ${{ steps.compute.outputs.docs_only }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - id: filter
-        uses: dorny/paths-filter@v4
-        with:
-          # See ci.yml for why `every` is required (the `**` baseline
-          # plus negation patterns would otherwise always be true).
-          predicate-quantifier: 'every'
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!**/*.markdown'
-              - '!docs/**'
-              - '!LICENSE*'
-              - '!CHANGELOG.md'
-              - '!.markdownlint*'
-              - '!CLAUDE.md'
-              - '!AGENTS.md'
-              - '!README*'
-
-      - id: compute
-        run: |
-          if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  # `gate` is the cheap-first tripwire for the `compose-smoke` required
-  # check. compose-smoke is the single most expensive PR lane (~14-45 min
-  # full Docker compose stack + Grafana Playwright catch-net), so we
-  # DON'T want to burn that runner time when a trivial discipline-grep or
-  # a compile break would have failed the PR anyway. `gate` runs the same
-  # fast checks ci.yml's `forbid-skip` job runs (pure `git grep`, seconds)
-  # plus a `go build ./...` compile sanity check (~1-2 min with the module
-  # cache); compose-smoke `needs: gate` and refuses to start on a PR until
-  # gate is green.
-  #
-  # PR-ONLY by design (mirrors `changes`): on push / schedule / dispatch
-  # the gate is skipped and compose-smoke's `if:` short-circuits the gate
-  # clause to true, so the nightly + push lanes keep running unconditionally
-  # (a nightly run has no diff to gate on, and push-to-main already merged).
-  #
-  # SAFETY: when gate FAILS on a PR, compose-smoke is SKIPPED — which
-  # branch protection treats as satisfied — but that is NOT a merge hole,
-  # because ci.yml's own `forbid-skip` / `check` go RED on the same
-  # breakage and block the merge. The gate only saves runner minutes.
-  gate:
-    name: gate
-    needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # The discipline scans diff against origin/main, so we need
-          # both refs reachable (mirrors ci.yml's forbid-skip checkout).
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      # The six discipline scans (pure `git grep` / `perl`, no Go
-      # toolchain) — byte-identical to ci.yml's `forbid-skip` job.
-      - name: Reject t.Skip in test files
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: t-skip
-      - name: Reject "not implemented" in production code
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: not-implemented
-      - name: Reject soft-assertion / silent-recover patterns
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: soft-assert
-      - name: Reject should_skip overlay entries
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: should-skip
-      - name: Reject test escape-hatch patterns
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: escape-hatch
-      - name: Reject scenario-suppressing tags and godog skip routes
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: feature-discipline
-
-      # Compile sanity check. Far cheaper than the full compose stack;
-      # catches a non-building tree before Docker buildx + k3d spin up.
-      - name: go build (compile sanity)
-        run: go build ./...
-
-      # compose-smoke shard partition coverage guard. The setup job's
-      # `verify` step is the load-bearing gate, but running the unit test
-      # here too catches a dropped / double-assigned spec on the cheapest
-      # tripwire — before any compose stack boots. ubuntu-latest ships node;
-      # the test imports only node: builtins + the matrix module's pure fns.
-      - name: compose-smoke shard coverage (unit guard)
-        run: node --test .github/scripts/compose-smoke-matrix.test.mjs
-
-      # dashboard (k3d) shard partition coverage guard. The dashboard lane runs
-      # on pull_request too, but only after a 3-5min k3d boot — and it is
-      # skipped entirely on a docs-only PR. Running the unit guard here catches
-      # a spec that was added but never sharded in ~50ms, on the cheapest lane
-      # and on every PR, same as the compose-smoke guard above.
-      - name: dashboard shard coverage (unit guard)
-        run: node --test .github/scripts/dashboard-matrix.test.mjs
-
   # compose-smoke is sharded into a balanced matrix of isolated-compose-stack
   # jobs. The three heaviest specs are each a SINGLE async test() that loops
   # internally over every dashboard/panel/surface — indivisible by Playwright's
@@ -255,15 +151,13 @@ jobs:
   # That latency win on the slowest required PR gate is the whole point.
   compose-smoke-setup:
     name: compose-smoke-setup
-    needs: [changes, gate]
-    # Same trigger guard as the old monolith: PR (non-docs-only, gate green) /
-    # push / schedule. needs.changes only runs on pull_request, so tolerate it
-    # being absent on push/schedule (always() unwraps the skip).
-    if: |
-      always() &&
-      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
-      (github.event_name != 'pull_request' || needs.gate.result == 'success')
+    # push + schedule always; pull_request ONLY when the head branch is
+    # `release/*`. An ordinary PR skips the whole lane in seconds — compose-smoke
+    # is a release gate now, not a PR gate (see the `on:` block). Dispatch is the
+    # dashboard lane's crawl-regen entry point and boots no compose stack.
+    if: >-
+      github.event_name == 'push' || github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -302,15 +196,10 @@ jobs:
 
   compose-smoke-shard:
     name: compose-smoke-shard
-    needs: [changes, gate, compose-smoke-setup]
-    # Re-applies the same trigger guard AND requires setup to have cleanly
-    # emitted the matrix (a failed/skipped setup must not fan out shards).
-    if: |
-      always() &&
-      needs.compose-smoke-setup.result == 'success' &&
-      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
-      (github.event_name != 'pull_request' || needs.gate.result == 'success')
+    # A plain `needs:` (no `always()`) already carries the trigger guard: setup
+    # skips on an ordinary PR, so the shards skip with it, and a failed setup
+    # must not fan out shards either.
+    needs: compose-smoke-setup
     runs-on: ubuntu-latest
     strategy:
       # MANDATORY: one shard's failure must NOT cancel its siblings. The
@@ -328,11 +217,13 @@ jobs:
     # can't drift from the shard it applies to.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
-      # Per-shard-keyed: sibling shards in the SAME run must not cancel each
-      # other (a shared group + cancel-in-progress would do exactly that), but
-      # a new push/PR-sync still cancels the prior run's matching shard.
+      # Per-shard-keyed so sibling shards in the SAME run queue independently
+      # (a shared group would serialise them). Never cancel-in-progress: the
+      # lane runs on merge commits and release PRs only, where every run is a
+      # gate someone is waiting on, and a half-killed `docker compose` teardown
+      # leaks volumes onto the runner.
       group: compose-smoke-${{ github.ref }}-${{ matrix.name }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
 
@@ -534,16 +425,11 @@ jobs:
   # 30-min per-shard cap (matrix.timeoutMinutes) makes a hang fail fast.
   compose-smoke-shard-info:
     name: compose-smoke-shard-info
-    needs: [changes, gate, compose-smoke-setup]
-    # Same trigger guard as compose-smoke-shard, plus: only fan out when setup
-    # actually emitted an informational matrix (has_informational == true).
-    if: |
-      always() &&
-      needs.compose-smoke-setup.result == 'success' &&
-      needs.compose-smoke-setup.outputs.has_informational == 'true' &&
-      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true') &&
-      (github.event_name != 'pull_request' || needs.gate.result == 'success')
+    needs: compose-smoke-setup
+    # `needs:` carries the trigger guard (setup skips ⇒ these skip). The one
+    # extra condition: only fan out when setup actually emitted an
+    # informational matrix.
+    if: needs.compose-smoke-setup.outputs.has_informational == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -553,7 +439,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
       group: compose-smoke-info-${{ github.ref }}-${{ matrix.name }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
 
@@ -679,10 +565,12 @@ jobs:
   # (shard-crawl)` check but does NOT roll into this required gate.
   compose-smoke:
     name: compose-smoke
-    needs: [changes, gate, compose-smoke-setup, compose-smoke-shard]
-    # always() so it still runs (and reports) when setup/shards skipped — e.g.
-    # a docs-only PR, where the required context must still report green
-    # without doing work, exactly as the old monolith did.
+    needs: [compose-smoke-setup, compose-smoke-shard]
+    # always() so it still runs (and reports) when setup/shards skipped — on an
+    # ordinary PR the whole lane short-circuits, and this aggregate reports green
+    # in seconds rather than going missing. It is no longer a branch-protection
+    # context, but release.yml's preflight reads it by name on the merge commit,
+    # so it must always exist and always be honest about what ran.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -756,21 +644,20 @@ jobs:
   #                       old unfiltered smoke step; the crawl shard with
   #                       CRAWL_STACK=k3d SWEEP_DEPTH=full = the crawl trio).
   #   dashboard         — the AGGREGATOR; a single clean pass/fail over every
-  #                       shard, and a branch-protection REQUIRED check. The
-  #                       clean roll-up + the coverage-discipline guard mirror
-  #                       compose-smoke.
+  #                       shard, and a RELEASE-required check (release.yml's
+  #                       preflight reads it by name). The clean roll-up + the
+  #                       coverage-discipline guard mirror compose-smoke.
   dashboard-setup:
     name: dashboard-setup
-    needs: changes
-    # Runs on pull_request (skipping docs-only PRs) so the parallel smoke shards
-    # are exercised per-change, plus push + nightly + manual dispatch. The crawl
-    # shard is the ~50min long pole and is dispatched only on schedule + manual
-    # dispatch + release/* PRs (INCLUDE_CRAWL below) — so every other PR/push
-    # gets a fast smoke-only matrix with no all-skipped crawl leg.
-    if: |
-      always() &&
-      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
+    # push + nightly + manual dispatch always; pull_request ONLY when the head
+    # branch is `release/*`. An ordinary PR skips the whole lane in seconds —
+    # k3d was the single longest PR gate, and it is a release gate now (see the
+    # `on:` block). The crawl shard is the ~50min long pole and is dispatched
+    # only on schedule + manual dispatch + release/* PRs (INCLUDE_CRAWL below),
+    # so a merge-commit run still gets the fast smoke-only matrix.
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -814,15 +701,10 @@ jobs:
 
   dashboard-shard:
     name: dashboard-shard
-    needs: [dashboard-setup]
-    # always() is REQUIRED: without a status function GitHub prepends an
-    # implicit success(), which is false whenever a transitive need is skipped
-    # — and dashboard-setup's `changes` need is skipped on push/schedule, so
-    # the matrix never expanded there (green on PRs, skipped on push). Mirror
-    # compose-smoke-shard: run regardless, then require setup to have emitted.
-    if: |
-      always() &&
-      needs.dashboard-setup.result == 'success'
+    # A plain `needs:` (no `always()`) carries the trigger guard: setup skips on
+    # an ordinary PR, so the shards skip with it, and a failed setup must not
+    # fan out shards against a matrix it never emitted.
+    needs: dashboard-setup
     runs-on: ubuntu-latest
     strategy:
       # MANDATORY: one shard's failure must NOT cancel its siblings — each

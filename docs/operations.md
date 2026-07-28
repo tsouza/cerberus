@@ -1117,19 +1117,23 @@ it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
 #### De-gated lanes on the publish path
 
 The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
-branch-protection context except the three below, which are listed in
-`RELEASE_INFORMATIONAL_CHECKS` instead: they gate the pull request, they do not
-gate the publish. Each one is a deliberate trade, so each one carries its
-reason here — `TestReleasePreflightCoversEveryBranchProtectionContext` and
-`TestDeGatedLanesAreDocumentedWithAReason` (both in
+branch-protection context except the two below, which are listed in
+`RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
+verdict does not hold a publish. Each one is a deliberate trade, so each one
+carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`
+and `TestDeGatedLanesAreDocumentedWithAReason` (both in
 `test/regression/release_required_checks_test.go`) assert that this table and
 `RELEASE_INFORMATIONAL_CHECKS` name exactly the same lanes, so a lane cannot be
 de-gated without the reason landing here.
 
+Note the direction of travel: de-gating here is the exception. The substrate
+lanes `compose-smoke`, `dashboard` and `profile` went the OTHER way — they
+stopped gating pull requests and became release-required, so this preflight is
+now the only thing standing between them and a publish.
+
 | Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                     |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                 |
-| `dashboard`                | The k3d + Grafana + Playwright full-stack smoke. It is required on the release PR, where it runs against the exact merged tree. On the publish path it is informational: its failure surface is the browser and cluster layer, which says nothing about the artifact being shipped.                                                                                                |
 | `mutation`                 | A test-QUALITY ratchet, not a property of the artifact. It ran green under branch protection on the release PR, and requiring it here would put its ~11-leg matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly. |
 
 #### Homebrew tap
@@ -1276,8 +1280,10 @@ is the `admin` RepositoryRole in `always` mode, which is why `eol-retire` needs
 `deletion` rule (GitHub records this as `Bypassed rule violations`), whereas the
 default `GITHUB_TOKEN` acts as `github-actions[bot]` — write, never admin — and
 is refused. The required-check set is deliberately lighter than `main`'s: the
-heavy substrate lanes (`compatibility/*`, `compose-smoke`, `dashboard`) are not
-gated on maintenance lines, because a backport must stay cheap enough to ship.
+`compatibility/*` lanes are not gated on maintenance lines, because a backport
+must stay cheap enough to ship. The substrate lanes (`compose-smoke`,
+`dashboard`) gate no pull request anywhere — they are release gates, enforced
+by release.yml's preflight on the commit being published.
 
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —
