@@ -1114,6 +1114,28 @@ publish gates handle either or both. The `:latest` image tag advances only for
 the highest stable `v*` release (a prerelease or a stable backport never drags
 it backwards) — `RELEASE_IS_LATEST` is computed in `release.yml`.
 
+#### De-gated lanes on the publish path
+
+The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
+branch-protection context except the two below, which are listed in
+`RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
+verdict does not hold a publish. Each one is a deliberate trade, so each one
+carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`
+and `TestDeGatedLanesAreDocumentedWithAReason` (both in
+`test/regression/release_required_checks_test.go`) assert that this table and
+`RELEASE_INFORMATIONAL_CHECKS` name exactly the same lanes, so a lane cannot be
+de-gated without the reason landing here.
+
+Note the direction of travel: de-gating here is the exception. The substrate
+lanes `compose-smoke`, `dashboard` and `profile` went the OTHER way — they
+stopped gating pull requests and became release-required, so this preflight is
+now the only thing standing between them and a publish.
+
+| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                 |
+| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact. It ran green under branch protection on the release PR, and requiring it here would put its ~11-leg matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly. |
+
 #### Homebrew tap
 
 Stable releases publish a Homebrew formula to the

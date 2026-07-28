@@ -298,11 +298,17 @@ One implementation means a new rule guards BOTH lanes at once.
     statuses:read + contents:read), `GITHUB_REPOSITORY`, `GITHUB_SHA` (pushed
     commit), `GITHUB_REF_NAME` (`main` -> `mainline` mode,
     `release/<major>.<minor>.x` -> `maintenance` mode), `GITHUB_API_URL`
-    (default `https://api.github.com`), `RELEASE_SELF_JOBS` (comma-separated
-    self-job names to exclude), `RELEASE_REQUIRED_CHECKS` (comma-separated
+    (default `https://api.github.com`), `RELEASE_SELF_JOBS` (newline-separated
+    self-job names to exclude), `RELEASE_REQUIRED_CHECKS` (newline-separated
     EXPECTED set — every name must have posted a green check-run; empty is a
-    hard failure), `RELEASE_INFORMATIONAL_CHECKS` (comma-separated name
-    PREFIXES to observe but not gate on).
+    hard failure), `RELEASE_INFORMATIONAL_CHECKS` (newline-separated name
+    PREFIXES to observe but not gate on). All three are split on the NEWLINE
+    and only the newline: check-run names are job display names that may
+    contain commas — `property (PromQL + LogQL + TraceQL, rapid N=500)` is a
+    branch-protection required context — so a comma-separated value yields
+    names no lane can ever post, and the preflight waits out its whole window
+    and aborts the release. `release.yml` declares all three as YAML block
+    scalars, one name per line.
   - Env (`eol-retire-line` command): `GITHUB_TOKEN` (contents:write — the
     workflow passes `RELEASE_PAT || github.token`), `GITHUB_REPOSITORY`,
     `RELEASE_APP_VERSION` (the just-published `X.Y.Z`), `GITHUB_API_URL`.
@@ -356,13 +362,27 @@ One implementation means a new rule guards BOTH lanes at once.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
-  probes the rendered container image tag against the registry (fails only on a
-  DEFINITIVE not-found — the guard for an `appVersion` pointing at an
-  unpublished tag).
+  probes the rendered container image tag against the registry — the guard for
+  an `appVersion` pointing at an unpublished tag. An image passes only when the
+  probe positively confirms it: a definitive not-found fails, and so does any
+  probe that reaches no verdict (auth refusal, rate limit, DNS/TLS), because a
+  guard that could not run has verified nothing. Because the chart renders a
+  Docker Hub ref and Docker Hub rate-limits CI bursts, a probe with no verdict
+  is retried — five attempts with linear backoff, mirroring the Justfile's
+  `_pull-retry` — so a transient refusal does not become a permanent
+  non-verdict; a verdict (`present` or a definitive not-found) is never
+  retried. Exhausted retries still fail. The one exemption is the appVersion
+  the change itself stages, and it covers a definitive not-found only. The
+  `--self-test` drives the real probe against a controlled failing command, so
+  the spawn options are pinned at the call site and the retry loop runs for
+  real with its sleep injected.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `KUBE_VERSION` (default
-    `1.28.0`), `SKIP_IMAGE_CHECK` (set `1` to skip the registry probe).
-  - Exit: `0` when all fixtures validate + images present; `1` on any
-    kubeconform failure or a missing image.
+    `1.28.0`), `SKIP_IMAGE_CHECK` (set `1` to skip the registry probe entirely
+    — the only waiver, for air-gapped runs).
+  - Args: argv `--self-test` runs the assertion suite; no args runs the gate.
+  - Exit: `0` when all fixtures validate and every image is confirmed present
+    (or exempt); `1` on any kubeconform failure, a missing image, or an image
+    the probe could not verify.
 - **`chart-render-assert.mjs`** — `chart-ci.yml`, the `Render assertions`
   step. Behavioural render checks kubeconform's schema validation cannot make:
   split mode renders one PodDisruptionBudget per enabled head (each with its

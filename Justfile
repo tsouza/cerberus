@@ -1633,10 +1633,13 @@ release-prep-backport version chart_bump="patch":
     git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
     echo "Pushed v{{version}} to $(git rev-parse --abbrev-ref HEAD) — that push IS the trigger; release.yml builds, publishes, and tags. Do not tag by hand."
 
-# There is deliberately no `release-tag` recipe. release.yml's raw-tag trigger
-# was retired in favour of publish-on-merge, and `release-version-gate.mjs`
-# decides whether to publish by asking whether `v<appVersion>` already exists.
+# There is deliberately no `release-tag` recipe. release.yml publishes on
+# merge — it has no raw-tag trigger — and `release-version-gate.mjs` decides
+# whether to publish by asking whether `v<appVersion>` already exists.
 # So pre-creating the tag by hand does not start a release — it PERMANENTLY
 # cancels one: the gate sees the tag, sets publish=false, and goreleaser,
 # publish and chart-release all skip. No job fails, and nothing ships.
-# `test/regression/release_gate_test.go` keeps the recipe from coming back.
+# `TestNoJustfileRecipePushesAReleaseTag` in
+# `test/regression/release_required_checks_test.go` keeps it from coming back:
+# it rejects a recipe named `release-tag*` and any recipe line that cuts a tag
+# (`git tag`, `git push --tags`, `gh release create`).
