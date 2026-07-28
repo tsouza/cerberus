@@ -1230,7 +1230,27 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "logql/setop_and_range_unaggregated_arms",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "logql/setop_or_range_per_step",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_or_range_unaggregated_arms",
     "fan_factor": 1,
     "scan_rows": 4,
     "peak_intermediate": 4,
@@ -1244,6 +1264,16 @@
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_unless_range_unaggregated_arms",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": false,
