@@ -2074,3 +2074,180 @@ INSERT INTO otel_metrics_histogram VALUES
 			len(matrix[0].Values), matrix[0].Values)
 	}
 }
+
+// setOpGapWindow is the query window the per-timestamp set-op case
+// spans. It exceeds Prometheus's 5m lookback by enough steps that the
+// short arm goes genuinely stale part-way through the range, so the two
+// arms have ASYMMETRIC per-step coverage — the condition under which a
+// whole-range match key and a per-timestamp match key disagree.
+const setOpGapWindow = 20 * time.Minute
+
+// Sample shape for the per-timestamp set-op case: `demo_a` carries
+// samples over the first five minutes only, `demo_b` covers every
+// minute of the window, and the two value ranges are disjoint so a
+// misattributed row is visible in the value comparison alone.
+const (
+	setOpShortArmSamples = 5
+	setOpShortArmBase    = 10
+	setOpLongArmBase     = 100
+)
+
+// setOpLastOverlapStep is the final step at which the short arm is still
+// live: its last sample sits at start+4m and Prometheus's 5m lookback
+// keeps a sample visible until `t <= refTime - lookbackDelta`, so
+// start+9m is the first step that sees only the long arm.
+const setOpLastOverlapStep = 8
+
+// TestQueryRange_RangeMode_SetOpPerTimestamp_ChDB pins PromQL's
+// per-evaluation-timestamp semantics for the three vector set
+// operators over `/api/v1/query_range`.
+//
+// PromQL's rangeEval rebuilds the LHS and RHS Vectors at every
+// evaluation timestamp and runs VectorOr / VectorAnd / VectorUnless
+// over that step's samples alone, so the match key is
+// (label signature, timestamp). A key spanning the whole range answers
+// a different question — "did this signature appear ANYWHERE in the
+// range" — and diverges from Prometheus the moment the two arms stop
+// covering the same steps.
+//
+// Seed: two gauges sharing an IDENTICAL Attributes map but different
+// metric names. Default matching keys on the Attributes map alone —
+// `__name__` lives in the separate MetricName column — so the two
+// metrics DO share a signature, which is what makes the arms
+// comparable at all.
+//
+// Each operator fails in its own direction if the key is not
+// per-timestamp, so no partial fix satisfies all three:
+//
+//   - `or` loses `demo_b`'s twelve post-staleness samples (the shared
+//     signature is owned by `demo_a` for the whole range).
+//   - `and` invents twelve `demo_b` samples at steps where `demo_a`
+//     contributes nothing.
+//   - `unless` returns empty (the signature appears somewhere in
+//     `demo_a`, so every `demo_b` row is anti-matched away).
+func TestQueryRange_RangeMode_SetOpPerTimestamp_ChDB(t *testing.T) {
+	end := time.Now().UTC().Truncate(time.Minute)
+	start := end.Add(-setOpGapWindow)
+	step := time.Minute
+	longArmSamples := int(setOpGapWindow/time.Minute) + 1
+
+	seedRows := make([]string, 0, setOpShortArmSamples+longArmSamples)
+	appendRow := func(name string, offsetMin, value int) {
+		ts := start.Add(time.Duration(offsetMin) * time.Minute).
+			Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('%s', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			name, ts, value,
+		))
+	}
+	for i := 0; i < setOpShortArmSamples; i++ {
+		appendRow("demo_a", i, setOpShortArmBase+i)
+	}
+	for i := 0; i < longArmSamples; i++ {
+		appendRow("demo_b", i, setOpLongArmBase+i)
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	// Expected per-step shapes, derived from Prometheus's own
+	// evaluation. The short arm is live at steps +0m..+8m, repeating its
+	// last observed value once its own samples run out; the long arm is
+	// live at every step.
+	var shortArmSteps, longArmOverlapSteps, longArmTailSteps []setOpStep
+	for i := 0; i <= setOpLastOverlapStep; i++ {
+		v := setOpShortArmBase + i
+		if i >= setOpShortArmSamples {
+			v = setOpShortArmBase + setOpShortArmSamples - 1
+		}
+		shortArmSteps = append(shortArmSteps, setOpStep{offsetMin: i, value: float64(v)})
+		longArmOverlapSteps = append(longArmOverlapSteps,
+			setOpStep{offsetMin: i, value: float64(setOpLongArmBase + i)})
+	}
+	for i := setOpLastOverlapStep + 1; i < longArmSamples; i++ {
+		longArmTailSteps = append(longArmTailSteps,
+			setOpStep{offsetMin: i, value: float64(setOpLongArmBase + i)})
+	}
+
+	t.Run("or", func(t *testing.T) {
+		matrix := runRangeModeQueryRange(t, srv.URL, "demo_a or demo_b", start, end, step)
+		// `or` keeps the LHS at every step it covers and fills the rest
+		// from the RHS, so both metric names survive with disjoint step
+		// coverage.
+		assertSetOpSeries(t, matrix, start, map[string][]setOpStep{
+			"demo_a": shortArmSteps,
+			"demo_b": longArmTailSteps,
+		})
+	})
+
+	t.Run("and", func(t *testing.T) {
+		matrix := runRangeModeQueryRange(t, srv.URL, "demo_b and demo_a", start, end, step)
+		// `and` keeps LHS (`demo_b`) values only at the steps where the
+		// RHS also has a sample for the shared signature.
+		assertSetOpSeries(t, matrix, start, map[string][]setOpStep{
+			"demo_b": longArmOverlapSteps,
+		})
+	})
+
+	t.Run("unless", func(t *testing.T) {
+		matrix := runRangeModeQueryRange(t, srv.URL, "demo_b unless demo_a", start, end, step)
+		// `unless` is the exact complement of `and`: the RHS-free tail.
+		assertSetOpSeries(t, matrix, start, map[string][]setOpStep{
+			"demo_b": longArmTailSteps,
+		})
+	})
+}
+
+// setOpStep is one expected matrix cell for the set-op case: the step's
+// offset in whole minutes from the query start, and the value PromQL
+// evaluates there.
+type setOpStep struct {
+	offsetMin int
+	value     float64
+}
+
+// assertSetOpSeries checks a query_range matrix against the exact
+// expected per-series step grid: the series set keyed by `__name__`,
+// every step's timestamp, and every step's value. Asserting all three
+// is what makes the set-op cases un-hollow — an `or` regression drops
+// rows, an `and` regression adds rows, an `unless` regression empties
+// the result, and only a full per-step comparison catches all three.
+func assertSetOpSeries(t *testing.T, matrix []prom.MatrixSample, start time.Time, want map[string][]setOpStep) {
+	t.Helper()
+	if len(matrix) != len(want) {
+		t.Fatalf("series count: got %d, want %d (matrix=%+v)", len(matrix), len(want), matrix)
+	}
+	seen := make(map[string]bool, len(want))
+	for _, series := range matrix {
+		name := series.Metric["__name__"]
+		steps, ok := want[name]
+		if !ok {
+			t.Fatalf("unexpected series %q (metric=%+v); want %v", name, series.Metric, want)
+		}
+		if seen[name] {
+			t.Fatalf("series %q appears more than once in the matrix", name)
+		}
+		seen[name] = true
+		if got := len(series.Values); got != len(steps) {
+			t.Fatalf("series %q: sample count got %d, want %d (values=%+v)",
+				name, got, len(steps), series.Values)
+		}
+		for i, step := range steps {
+			wantTS := float64(start.Add(time.Duration(step.offsetMin) * time.Minute).Unix())
+			gotTS, ok := series.Values[i][0].(float64)
+			if !ok {
+				t.Fatalf("series %q step %d: timestamp %v is not numeric", name, i, series.Values[i][0])
+			}
+			if gotTS != wantTS {
+				t.Errorf("series %q step %d: timestamp got %v, want %v", name, i, gotTS, wantTS)
+			}
+			gotVal, ok := series.Values[i][1].(string)
+			if !ok {
+				t.Fatalf("series %q step %d: value %v is not a string", name, i, series.Values[i][1])
+			}
+			if wantVal := strconv.FormatFloat(step.value, 'f', -1, 64); gotVal != wantVal {
+				t.Errorf("series %q step %d: value got %q, want %q", name, i, gotVal, wantVal)
+			}
+		}
+	}
+}
