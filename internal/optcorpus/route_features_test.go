@@ -135,40 +135,67 @@ func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 	}
 }
 
-// TestExitStatusFor_DerivesFromTypeAndCode pins the query_log type+exception
-// mapping the reconciler keys the cost-distribution analysis on.
-func TestExitStatusFor_DerivesFromTypeAndCode(t *testing.T) {
+// unmappedExceptionCode is a ClickHouse error code the classifier does not
+// name. It stands for the whole open tail of server error codes: whatever it
+// is, the query FAILED, so the honest classification is ExitError — never the
+// healthy population, and never a fabricated cause such as oom.
+const unmappedExceptionCode int32 = 999
+
+// TestExitStatusFor_DerivesFromFailureAndCode pins the terminal-outcome
+// classification the reconciler keys the cost-distribution analysis on. Every
+// named ClickHouse code is covered, plus the unmapped tail.
+func TestExitStatusFor_DerivesFromFailureAndCode(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name string
-		typ  string
-		code int32
-		want ExitStatus
+		name   string
+		failed bool
+		code   int32
+		want   ExitStatus
 	}{
-		{"clean finish", "QueryFinish", 0, ExitOK},
-		{"finish ignores stray code", "QueryFinish", chErrMemoryLimitExceeded, ExitOK},
-		{"oom", "QueryExceptionWhileProcessing", chErrMemoryLimitExceeded, ExitOOM},
-		{"timeout", "QueryExceptionWhileProcessing", chErrTimeoutExceeded, ExitTimeout},
-		{"too-slow folds to timeout", "QueryExceptionWhileProcessing", chErrTooSlow, ExitTimeout},
-		{"other exception -> ok (never fake oom)", "QueryExceptionWhileProcessing", 999, ExitOK},
+		{"clean finish", false, 0, ExitOK},
+		{"finish ignores stray code", false, chErrMemoryLimitExceeded, ExitOK},
+		{"oom", true, chErrMemoryLimitExceeded, ExitOOM},
+		{"timeout", true, chErrTimeoutExceeded, ExitTimeout},
+		{"too-slow folds to timeout", true, chErrTooSlow, ExitTimeout},
+		{"read-after-eof is an abort", true, chErrAttemptToReadAfterEOF, ExitAborted},
+		{"unknown client packet is an abort", true, chErrUnknownPacketFromClient, ExitAborted},
+		{"network error is an abort", true, chErrNetworkError, ExitAborted},
+		{"cancelled is an abort", true, chErrQueryWasCancelled, ExitAborted},
+		{"cancelled by client is an abort", true, chErrQueryWasCancelledByClient, ExitAborted},
+		{"unmapped exception is an error, never ok", true, unmappedExceptionCode, ExitError},
+		{"missing exception code is still a failure", true, 0, ExitError},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := exitStatusFor(tc.typ, tc.code); got != tc.want {
-				t.Errorf("exitStatusFor(%q, %d) = %v, want %v", tc.typ, tc.code, got, tc.want)
+			if got := exitStatusFor(tc.failed, tc.code); got != tc.want {
+				t.Errorf("exitStatusFor(%v, %d) = %v, want %v", tc.failed, tc.code, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestExitStatus_String pins the enum token rendering used by both sinks.
+// TestExitStatus_String pins the enum token rendering used by both sinks, for
+// every member of the iota — the tokens are the DDL and JSONL wire contract.
 func TestExitStatus_String(t *testing.T) {
 	t.Parallel()
-	for s, want := range map[ExitStatus]string{ExitOK: "ok", ExitOOM: "oom", ExitTimeout: "timeout"} {
-		if got := s.String(); got != want {
-			t.Errorf("%d.String() = %q, want %q", s, got, want)
+	want := map[ExitStatus]string{
+		ExitOK:           "ok",
+		ExitOOM:          "oom",
+		ExitTimeout:      "timeout",
+		ExitSampleBudget: "sample_budget",
+		ExitBreaker:      "breaker",
+		ExitRejected:     "rejected",
+		ExitAborted:      "aborted",
+		ExitError:        "error",
+	}
+	if len(want) != len(exitStatuses) {
+		t.Fatalf("this test pins %d tokens; exitStatuses has %d", len(want), len(exitStatuses))
+	}
+	for _, s := range exitStatuses {
+		if got := s.String(); got != want[s] {
+			t.Errorf("%d.String() = %q, want %q", s, got, want[s])
 		}
 	}
 }

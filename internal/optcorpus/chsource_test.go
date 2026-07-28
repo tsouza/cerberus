@@ -62,6 +62,48 @@ func TestCHQueryLogSource_PassesWindowSecondsThenIDs(t *testing.T) {
 	}
 }
 
+// TestQueryLogQuery_Shape pins the reconciler's system.query_log SELECT.
+//
+// Two properties in it are load-bearing and invisible to any behavioural test
+// that runs without a server:
+//
+//   - Every enum member is named through CAST(<name>, toTypeName(type)) rather
+//     than as a bare string. A bare string in an IN-list makes ClickHouse
+//     coerce the comparison to String, so a member name that does not exist
+//     matches nothing SILENTLY; the CAST form raises UNKNOWN_ELEMENT_OF_ENUM
+//     instead. Naming a member is therefore fail-loud by construction.
+//   - The terminal reduction is max(type != QueryFinish), not a reduction over
+//     the member NAMES. A distributed query emits one row per node for the same
+//     query_id, and 'QueryFinish' sorts after 'ExceptionWhileProcessing', so a
+//     name-ordered reduction would reclassify a failed query as a clean one.
+func TestQueryLogQuery_Shape(t *testing.T) {
+	t.Parallel()
+
+	sql, args := queryLogQuery(5400, []string{"a", "b"})
+	want := "SELECT query_id, " +
+		"any(normalized_query_hash) AS `normalized_query_hash`, " +
+		"max(read_rows) AS `read_rows`, " +
+		"max(read_bytes) AS `read_bytes`, " +
+		"max(query_duration_ms) AS `query_duration_ms`, " +
+		"max(memory_usage) AS `memory_usage`, " +
+		"sum(ProfileEvents['QueryConditionCacheHits']) AS `condition_cache_hits`, " +
+		"sum(ProfileEvents['RowsReadByPrewhereReaders']) AS `prewhere_rows`, " +
+		"toUInt8(max(type != CAST('QueryFinish', toTypeName(type)))) AS `terminal_failed`, " +
+		"max(exception_code) AS `exception_code` " +
+		"FROM `system`.`query_log` " +
+		"WHERE type IN (CAST('QueryFinish', toTypeName(type)), " +
+		"CAST('ExceptionWhileProcessing', toTypeName(type))) " +
+		"AND event_time > now() - toIntervalSecond(?) " +
+		"AND query_id IN (?) " +
+		"GROUP BY query_id"
+	if sql != want {
+		t.Errorf("queryLogQuery SQL =\n%s\nwant\n%s", sql, want)
+	}
+	if len(args) != 2 {
+		t.Fatalf("queryLogQuery args = %d; want 2 (window seconds, ids)", len(args))
+	}
+}
+
 func TestNewCHQueryLogSource_WindowFallback(t *testing.T) {
 	src := NewCHQueryLogSource(&capturingConn{}, time.Second, 0)
 	if src.window != defaultQueryLogWindow {

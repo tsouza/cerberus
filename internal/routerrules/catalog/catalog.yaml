@@ -60,6 +60,17 @@ params:
     scale_by: memory_hard_cap                     # the configured absolute cap
 
   # ---- corpus-derived params: learned from THIS deployment's own data.
+  #
+  # A percentile's scope.exit_status follows its COLUMN, and the load-time
+  # validator enforces it (validateHealthScope). A percentile over a runtime-cost
+  # column — read_rows, read_bytes, query_duration_ms, memory_usage — answers
+  # "what does a normal query cost here?", so it declares exit_status: ok; a
+  # failed row's counters are truncated at whatever ClickHouse had accumulated
+  # when it gave up and describe the failure, not the query. A percentile over a
+  # geometry column — fanout, cumulative_d, n_anchors, k_shards — carries no such
+  # bias (the solver derives it from the query shape before dispatch), so it
+  # declares no exit_status scope: the filter would only shrink the population,
+  # and on a deployment whose heavy shapes are the ones that fail it empties it.
   - name: memory_high_watermark
     kind: corpus_percentile
     column: memory_usage
@@ -85,6 +96,8 @@ params:
       ref: watermark_pctile
     partition_by: [language]                      # one slow-watermark per language
                                                   # (a group_by column of every rule that uses it)
+    scope:
+      exit_status: ok                             # learn from the HEALTHY population only
 
 
   # ---- new corpus-derived params (catalogVersion 2) -----------------------
@@ -127,6 +140,14 @@ params:
   # is one value per enum column (the count-ratio conds are AND-ed), so the
   # numerator names the explicit-rejection status; the finding text spells out
   # that breaker / sample_budget are tracked by the same rule's group_by.
+  #
+  # The denominator is deliberately NOT scoped to exit_status: ok, and
+  # validateHealthScope covers corpus_percentile params only for exactly that
+  # reason. This is a PREVALENCE count, not a cost percentile: the question is
+  # "what share of the routable population was rejected?", so the denominator
+  # has to contain the numerator's own rows.
+  # Restricting it to clean finishes would divide rejections by a population that
+  # excludes every rejection and report a ratio above the true prevalence.
   - name: cerberus_reject_ratio
     kind: corpus_count_ratio
     numerator_scope:

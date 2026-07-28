@@ -7,6 +7,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // CHConn is the narrow ClickHouse read surface the production QueryLogSource
@@ -108,53 +110,143 @@ func corpusSettings() clickhouse.Settings {
 	}
 }
 
-// ClickHouse server error codes the corpus maps to a non-OK exit_status. They
-// are the two terminal-cost outcomes route B (time-slice sharding) exists to
-// avoid, so the go/no-go analysis reads exit_status directly. Sourced from
-// ClickHouse's ErrorCodes.cpp; named here so the mapping carries its own
-// explanation (no magic numbers in the derive switch).
+// ClickHouse server error codes the corpus maps to a non-OK exit_status,
+// sourced from ClickHouse's ErrorCodes.cpp and named here so the classifier
+// carries its own explanation.
+//
+// They fall in three families: the terminal-cost outcomes route B (time-slice
+// sharding) exists to avoid (memory limit, deadline), and the client-side
+// abandonment codes a query picks up when the caller walks away mid-flight.
+// The abandonment family matters because those queries are NOT part of the
+// healthy cost population the calibration watermarks are learnt from: the cost
+// they report is the cost accrued up to the abort, not the cost of the query.
 const (
-	// chErrMemoryLimitExceeded is MEMORY_LIMIT_EXCEEDED — the OOM signal.
-	chErrMemoryLimitExceeded = 241
+	// chErrAttemptToReadAfterEOF is ATTEMPT_TO_READ_AFTER_EOF — the client
+	// socket ended mid-packet.
+	chErrAttemptToReadAfterEOF = 32
+	// chErrUnknownPacketFromClient is UNKNOWN_PACKET_FROM_CLIENT — the client
+	// connection was destroyed rather than closed in protocol.
+	chErrUnknownPacketFromClient = 99
 	// chErrTimeoutExceeded is TIMEOUT_EXCEEDED.
 	chErrTimeoutExceeded = 159
 	// chErrTooSlow is TOO_SLOW — max_execution_time / result-row caps tripped;
 	// the corpus folds it into the timeout class (a deadline-style abort).
 	chErrTooSlow = 160
+	// chErrNetworkError is NETWORK_ERROR — a broken pipe to the client.
+	chErrNetworkError = 210
+	// chErrMemoryLimitExceeded is MEMORY_LIMIT_EXCEEDED — the OOM signal.
+	chErrMemoryLimitExceeded = 241
+	// chErrQueryWasCancelled is QUERY_WAS_CANCELLED — the query was killed,
+	// the clean counterpart of a destroyed socket.
+	chErrQueryWasCancelled = 394
+	// chErrQueryWasCancelledByClient is QUERY_WAS_CANCELLED_BY_CLIENT — the
+	// client sent a Cancel packet over the live connection.
+	chErrQueryWasCancelledByClient = 735
 )
 
-// queryLogSQL selects the TERMINAL rows for a set of query_ids — clean finishes
-// (QueryFinish) and exception exits (QueryExceptionWhileProcessing) — reading
-// the cost columns, the normalized_query_hash, the two ProfileEvents of
-// interest (QueryConditionCacheHits, RowsReadByPrewhereReaders) projected out
-// of the ProfileEvents map by name, plus the terminal type and exception_code
-// so the reconciler can derive exit_status (ok / oom / timeout). The query is
-// bounded to a recent window so a large query_log does not get scanned in full
-// each interval, and grouped to one row per query_id (a distributed query_log
-// can carry initial + remote rows). On the grouped row the exception code is
-// taken with max() so a non-zero code on any constituent row wins over the 0 a
-// QueryFinish carries; type is likewise reduced with max() (the exception
-// string sorts after 'QueryFinish', so an exception exit dominates). The
-// lookback window is bound at call time (derived from the reconcile interval via
-// QueryLogWindow) rather than hardcoded, so a longer interval still covers more
-// than one scan worth of dispatched queries.
-const queryLogSQL = `
-SELECT
-  query_id,
-  any(normalized_query_hash)                         AS normalized_query_hash,
-  max(read_rows)                                     AS read_rows,
-  max(read_bytes)                                    AS read_bytes,
-  max(query_duration_ms)                             AS query_duration_ms,
-  max(memory_usage)                                  AS memory_usage,
-  sum(ProfileEvents['QueryConditionCacheHits'])      AS condition_cache_hits,
-  sum(ProfileEvents['RowsReadByPrewhereReaders'])    AS prewhere_rows,
-  max(toString(type))                                AS terminal_type,
-  max(exception_code)                                AS exception_code
-FROM system.query_log
-WHERE type IN ('QueryFinish', 'QueryExceptionWhileProcessing')
-  AND event_time > now() - INTERVAL ? SECOND
-  AND query_id IN (?)
-GROUP BY query_id`
+// The system.query_log.type column and the Enum8 members the corpus reads.
+// The names are ClickHouse's, spelled exactly; queryLogTypeMember resolves
+// them against the column's own declared type so a wrong spelling is a server
+// error rather than a predicate that matches nothing.
+const (
+	queryLogTypeColumn      = "type"
+	queryLogFinishMember    = "QueryFinish"
+	queryLogExceptionMember = "ExceptionWhileProcessing"
+)
+
+// queryLogTypeMember renders one system.query_log.type Enum8 member, resolved
+// against the column's OWN declared type.
+//
+// This is the difference between a predicate that fails loudly and one that
+// lies. Comparing the Enum8 column against a bare string literal that is not a
+// member coerces the comparison to String, matches zero rows, and reports no
+// error — a whole terminal class silently invisible. CAST against
+// toTypeName(type) resolves the name in the column's enum, so an unknown
+// member is ClickHouse error 691 (UNKNOWN_ELEMENT_OF_ENUM) naming the members
+// it did find.
+func queryLogTypeMember(name string) chsql.Frag {
+	return chsql.Call(
+		"CAST",
+		chsql.InlineLit(name),
+		chsql.Call("toTypeName", chsql.BareIdent(queryLogTypeColumn)),
+	)
+}
+
+// terminalFailedFrag reduces a query_id's grouped terminal rows to whether the
+// query FAILED. A distributed query_log carries one row per participating node
+// for the same query_id, so any single row being an exception makes the query
+// a failure.
+//
+// Comparing each constituent row against QueryFinish and taking max() makes an
+// exception row dominate regardless of how the enum orders its members —
+// reducing the type itself (by name or by value) instead would let the member
+// ordering decide, and reclassify a failed query whose remote shard finished
+// as a clean exit. toUInt8 pins the aggregate's width, because clickhouse-go's
+// strict Scan refuses a widened aggregate type into the Go destination.
+func terminalFailedFrag() chsql.Frag {
+	return chsql.Call(
+		"toUInt8",
+		chsql.Call(
+			"max",
+			chsql.Neq(chsql.BareIdent(queryLogTypeColumn),
+				queryLogTypeMember(queryLogFinishMember)),
+		),
+	)
+}
+
+// queryLogQuery builds the TERMINAL-row SELECT for a set of query_ids — clean
+// finishes and exception exits — reading the cost columns, the
+// normalized_query_hash, the two ProfileEvents of interest
+// (QueryConditionCacheHits, RowsReadByPrewhereReaders) projected out of the
+// ProfileEvents map by name, plus the terminal-failed flag and exception_code
+// the reconciler derives exit_status from. The exception code is taken with
+// max() so a non-zero code on any constituent row wins over the 0 a clean
+// finish carries.
+//
+// ExceptionBeforeStart is deliberately outside the predicate. Those rows carry
+// no cost — the query never started, so read_rows / memory_usage are 0 by
+// construction — and the corpus exists to hold a COST distribution, so
+// ingesting them would deflate every watermark learnt from it. The
+// cerberus-side pre-dispatch rejections that matter (breaker 503, cap 400) are
+// recorded at the engine seam instead.
+//
+// The query is bounded to a recent window so a large query_log is not scanned
+// in full each interval, and grouped to one row per query_id. The window is
+// bound at call time (derived from the reconcile interval via QueryLogWindow)
+// so a longer interval still covers more than one scan worth of dispatches;
+// args emit window-first, then the id list.
+func queryLogQuery(windowSeconds int64, ids []string) (string, []any) {
+	profileEvent := func(name string) chsql.Frag {
+		return chsql.Call("sum",
+			chsql.Subscript(chsql.BareIdent("ProfileEvents"), chsql.InlineLit(name)))
+	}
+	maxCol := func(name string) chsql.Frag {
+		return chsql.Call("max", chsql.BareIdent(name))
+	}
+	return chsql.NewQuery().
+		From(chsql.Qual("system", "query_log")).
+		Select(chsql.BareIdent("query_id")).
+		SelectAs(chsql.Call("any", chsql.BareIdent("normalized_query_hash")), "normalized_query_hash").
+		SelectAs(maxCol("read_rows"), "read_rows").
+		SelectAs(maxCol("read_bytes"), "read_bytes").
+		SelectAs(maxCol("query_duration_ms"), "query_duration_ms").
+		SelectAs(maxCol("memory_usage"), "memory_usage").
+		SelectAs(profileEvent("QueryConditionCacheHits"), "condition_cache_hits").
+		SelectAs(profileEvent("RowsReadByPrewhereReaders"), "prewhere_rows").
+		SelectAs(terminalFailedFrag(), "terminal_failed").
+		SelectAs(maxCol("exception_code"), "exception_code").
+		Where(
+			chsql.In(chsql.BareIdent(queryLogTypeColumn),
+				queryLogTypeMember(queryLogFinishMember),
+				queryLogTypeMember(queryLogExceptionMember)),
+			chsql.Gt(chsql.BareIdent("event_time"),
+				chsql.Sub(chsql.Call("now"),
+					chsql.Call("toIntervalSecond", chsql.Lit(windowSeconds)))),
+			chsql.In(chsql.BareIdent("query_id"), chsql.Lit(ids)),
+		).
+		GroupBy(chsql.BareIdent("query_id")).
+		Build()
+}
 
 // FinishedByQueryID runs the bounded system.query_log SELECT for ids and
 // decodes each row into a SourceRow. The two named ProfileEvents are folded
@@ -170,7 +262,8 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(corpusSettings()))
 
 	windowSeconds := int64(s.window / time.Second)
-	rows, err := s.conn.Query(ctx, queryLogSQL, windowSeconds, ids)
+	sql, args := queryLogQuery(windowSeconds, ids)
+	rows, err := s.conn.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("optcorpus: query system.query_log: %w", err)
 	}
@@ -187,7 +280,7 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 			memoryUsage        uint64
 			conditionCacheHits uint64
 			prewhereRows       uint64
-			terminalType       string
+			terminalFailed     uint8
 			exceptionCode      int32
 		)
 		if err := rows.Scan(
@@ -199,7 +292,7 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 			&memoryUsage,
 			&conditionCacheHits,
 			&prewhereRows,
-			&terminalType,
+			&terminalFailed,
 			&exceptionCode,
 		); err != nil {
 			return nil, fmt.Errorf("optcorpus: scan query_log row: %w", err)
@@ -215,7 +308,7 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 				"QueryConditionCacheHits":   int64(conditionCacheHits),
 				"RowsReadByPrewhereReaders": int64(prewhereRows),
 			},
-			ExitStatus: exitStatusFor(terminalType, exceptionCode),
+			ExitStatus: exitStatusFor(terminalFailed != 0, exceptionCode),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -224,14 +317,23 @@ func (s *CHQueryLogSource) FinishedByQueryID(ctx context.Context, ids []string) 
 	return out, nil
 }
 
-// exitStatusFor maps a terminal query_log (type, exception_code) pair to the
-// corpus ExitStatus. A QueryFinish is ExitOK regardless of code; an exception
-// exit is classified by its ClickHouse error code (memory-limit → oom,
-// timeout / too-slow → timeout) and falls back to ExitOK for any other code so
-// an unrecognised exception never masquerades as the OOM signal the go/no-go
-// analysis keys on.
-func exitStatusFor(terminalType string, exceptionCode int32) ExitStatus {
-	if terminalType == "QueryFinish" {
+// exitStatusFor maps a terminal query_log row to the corpus ExitStatus: a
+// clean finish is ExitOK regardless of the code it carries; a failure is
+// classified by its ClickHouse error code (memory limit → oom, deadline →
+// timeout, client abandonment → aborted).
+//
+// The classifier takes the terminal class as a BOOLEAN, never as a type
+// string. Handing it a spelling would let a test and the code agree on a name
+// neither the server nor the enum recognises — the exact shape of a predicate
+// that silently matches nothing. The only source of the boolean is
+// terminalFailedFrag, evaluated by ClickHouse against the real column.
+//
+// An unmapped code is ExitError, never ExitOK: the row failed by definition,
+// and ExitError states exactly what is known without inventing a cause or
+// laundering a failure into the healthy cost population the calibration
+// watermarks are learnt from.
+func exitStatusFor(failed bool, exceptionCode int32) ExitStatus {
+	if !failed {
 		return ExitOK
 	}
 	switch exceptionCode {
@@ -239,7 +341,10 @@ func exitStatusFor(terminalType string, exceptionCode int32) ExitStatus {
 		return ExitOOM
 	case chErrTimeoutExceeded, chErrTooSlow:
 		return ExitTimeout
+	case chErrAttemptToReadAfterEOF, chErrUnknownPacketFromClient, chErrNetworkError,
+		chErrQueryWasCancelled, chErrQueryWasCancelledByClient:
+		return ExitAborted
 	default:
-		return ExitOK
+		return ExitError
 	}
 }
