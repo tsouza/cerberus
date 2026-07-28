@@ -592,8 +592,19 @@ To answer it the engine closes the loop the optimization corpus
   `CREATE … IF NOT EXISTS` alone cannot do this: it is a no-op against an
   existing table however its columns are declared, so a binary that learnt a new
   member would write a value the deployed column cannot hold and every batch
-  would be rejected on every reconcile interval. A failure at any of the three
-  steps falls back to the JSONL sink, keeping the corpus failure-open.
+  would be rejected on every reconcile interval. The widening is **best-effort**
+  — a CH user with `INSERT` + `CREATE` but no `ALTER` grant, or an
+  operator-owned table that needs `ON CLUSTER`, still gets a working sink
+  whenever the deployed column already holds every member. The `system.columns`
+  read is the authority: it is the server's own answer, so the sink is never
+  built over a column that cannot hold what the binary writes.
+- **A sink that cannot be built disables the reconciler**, logged at startup
+  with the underlying error; it does not silently switch modes. There is no
+  fallback from `chtable` to `jsonl` — an operator who asked for the CH table
+  and got a local file instead would be told the corpus is healthy while nothing
+  reads it. The corpus is failure-open with respect to the **data plane**, which
+  is the invariant that matters: no query path depends on the sink, so a sink
+  outage costs calibration data and nothing else.
 
 This is a pure additive read-out: it records values the classifier already
 computed and **changes no routing behavior**. The captured features suffice to

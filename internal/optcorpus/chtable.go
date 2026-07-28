@@ -94,11 +94,23 @@ func exitStatusEnumType() chsql.Frag {
 //	verify                     — reads the deployed exit_status type back and
 //	                             fails construction if a member is missing.
 //
-// The verify step is what makes the reconciliation honest rather than hopeful:
-// a MODIFY COLUMN the server accepted without producing the member set this
-// binary writes would otherwise surface much later as a batch the column
-// rejects, on every reconcile interval, forever. Any failure here is returned
-// so the caller falls back to the JSONL sink rather than dropping the corpus.
+// Only the CREATE and the verify can fail construction. The widening is
+// BEST-EFFORT by design: a deployment whose CH user holds INSERT and CREATE but
+// not ALTER, or whose corpus table is operator-owned and needs ON CLUSTER, is a
+// legitimate configuration, and on such a deployment the widening is a no-op in
+// every case that matters — the column is either already wide enough (nothing
+// to do) or it is not, which the verify catches on the server's own answer
+// rather than on whether the ALTER was permitted. That keeps the ALTER from
+// turning a working sink into a disabled one while leaving the guarantee
+// intact: the sink is never built over a column that cannot hold what this
+// binary writes.
+//
+// Verifying against the server — rather than trusting the ALTER did what it
+// was asked — is what makes the reconciliation honest rather than hopeful: a
+// column narrower than the member set this binary writes would otherwise
+// surface much later as a batch the column rejects, on every reconcile
+// interval, forever. A construction failure disables the reconciler (see
+// buildCorpusSink); the data plane is untouched either way.
 func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("optcorpus: nil CH connection for table sink")
@@ -106,10 +118,8 @@ func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error)
 	if err := conn.Exec(ctx, corpusCreateTableSQL()); err != nil {
 		return nil, fmt.Errorf("optcorpus: create %s: %w", CorpusTableName, err)
 	}
-	if err := conn.Exec(ctx, corpusAlterExitStatusSQL()); err != nil {
-		return nil, fmt.Errorf("optcorpus: widen %s.%s: %w", CorpusTableName, exitStatusColumn, err)
-	}
-	if err := verifyExitStatusColumn(ctx, conn); err != nil {
+	widenErr := conn.Exec(ctx, corpusAlterExitStatusSQL())
+	if err := verifyExitStatusColumn(ctx, conn, widenErr); err != nil {
 		return nil, err
 	}
 	return &CHTableSink{conn: conn, table: CorpusTableName}, nil
@@ -129,7 +139,12 @@ func corpusAlterExitStatusSQL() string {
 // naming the missing ones. Reading the server's own answer — rather than
 // trusting that the ALTER did what it was asked — is the only check that
 // distinguishes a widened column from one the server left alone.
-func verifyExitStatusColumn(ctx context.Context, conn CHConn) error {
+//
+// widenErr is whatever the best-effort widening returned. It is carried here
+// rather than acted on at the callsite because it only becomes evidence when
+// the column turns out to be too narrow: then, and only then, the failed ALTER
+// is the reason and belongs in the message an operator reads.
+func verifyExitStatusColumn(ctx context.Context, conn CHConn, widenErr error) error {
 	sql, args := corpusExitStatusTypeQuery()
 	rows, err := conn.Query(ctx, sql, args...)
 	if err != nil {
@@ -159,6 +174,10 @@ func verifyExitStatusColumn(ctx context.Context, conn CHConn) error {
 		}
 	}
 	if len(missing) > 0 {
+		if widenErr != nil {
+			return fmt.Errorf("optcorpus: deployed %s.%s type %q missing member(s) %s; widening it failed: %w",
+				CorpusTableName, exitStatusColumn, deployed, strings.Join(missing, ", "), widenErr)
+		}
 		return fmt.Errorf("optcorpus: deployed %s.%s type %q missing member(s) %s",
 			CorpusTableName, exitStatusColumn, deployed, strings.Join(missing, ", "))
 	}
@@ -220,7 +239,7 @@ func enum8Members(chType string) map[string]struct{} {
 //	  outer_range UInt32, step UInt32, route Enum8('A'=0,'B'=1),
 //	  k_shards UInt8, decision_reason LowCardinality(String),
 //	  read_rows UInt64, read_bytes UInt64, query_duration_ms UInt64,
-//	  memory_usage UInt64, exit_status Enum8('ok'=0,'oom'=1,'timeout'=2)
+//	  memory_usage UInt64, exit_status <exitStatusEnumType()>
 //	) ENGINE = MergeTree ORDER BY (shape_id, n_anchors, fanout)
 //	  TTL toDateTime(event_time) + toIntervalDay(30)
 func corpusCreateTableSQL() string {

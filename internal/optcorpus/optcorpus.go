@@ -86,10 +86,10 @@ type ExitStatus int8
 const (
 	// ExitOK is a clean QueryFinish.
 	ExitOK ExitStatus = iota
-	// ExitOOM is a QueryExceptionWhileProcessing whose exception is a
-	// ClickHouse memory-limit / OOM code. CH-side, derived from query_log.
+	// ExitOOM is an ExceptionWhileProcessing whose exception is a ClickHouse
+	// memory-limit / OOM code. CH-side, derived from query_log.
 	ExitOOM
-	// ExitTimeout is a QueryExceptionWhileProcessing whose exception is a
+	// ExitTimeout is an ExceptionWhileProcessing whose exception is a
 	// ClickHouse timeout / exceeded-execution-time code. CH-side, derived from
 	// query_log.
 	ExitTimeout
@@ -313,8 +313,11 @@ type Row struct {
 	Route          string `json:"route"`
 	KShards        uint8  `json:"k_shards"`
 	DecisionReason string `json:"decision_reason"`
-	// ExitStatus is "ok" | "oom" | "timeout", derived by the reconciler from
-	// the system.query_log row type + exception.
+	// ExitStatus is one of the tokens ExitStatusTokens() enumerates — the
+	// query_log-derived terminal classes the reconciler assigns plus the
+	// cerberus-side ones the engine seam records directly. It is spelled as a
+	// string here because it is the JSONL wire form; the CH-table sink maps it
+	// back to the column's Enum8 value through exitEnumValue.
 	ExitStatus string `json:"exit_status"`
 }
 
@@ -334,17 +337,23 @@ type Sink interface {
 type QueryLogSource interface {
 	// FinishedByQueryID returns the terminal query_log rows for the supplied
 	// query_ids: clean finishes (type='QueryFinish') AND exception exits
-	// (type='QueryExceptionWhileProcessing'), so the corpus can record how a
-	// query terminated. Each returned SourceRow carries the query_id it belongs
-	// to so the reconciler can join it back to the observed Record. ids is
-	// never empty when called.
+	// (type='ExceptionWhileProcessing'), so the corpus can record how a query
+	// terminated. Both names are Enum8 members of system.query_log.type and
+	// must be resolved against the column's own type, never compared as bare
+	// strings — a non-member bare string coerces the comparison to String and
+	// matches nothing, silently. Each returned SourceRow carries the query_id
+	// it belongs to so the reconciler can join it back to the observed Record.
+	// ids is never empty when called.
 	FinishedByQueryID(ctx context.Context, ids []string) ([]SourceRow, error)
 }
 
 // SourceRow is one terminal system.query_log row as returned by a
 // QueryLogSource, before the reconciler joins the shape metadata onto it. It
 // carries the query_id (the join key), the raw cost columns, and the derived
-// exit status (clean / oom / timeout).
+// exit status — the five terminal classes a query_log row can express:
+// ExitOK, ExitOOM, ExitTimeout, ExitAborted, ExitError. The cerberus-side
+// classes (ExitSampleBudget, ExitBreaker, ExitRejected) never originate here;
+// the engine seam records them directly.
 type SourceRow struct {
 	QueryID             string
 	NormalizedQueryHash uint64
@@ -683,7 +692,7 @@ func (r *Reconciler) ObserveRejection(
 // resource cap the engine recognises in-process at the error site — currently
 // the per-query memory cap (max_memory_usage, CH code 241 MEMORY_LIMIT_EXCEEDED,
 // statusToken "oom"). The abort runs ON ClickHouse, so a system.query_log row
-// MAY land (type QueryExceptionWhileProcessing), but the corpus must not depend
+// MAY land (type ExceptionWhileProcessing), but the corpus must not depend
 // on the join landing: the row is recorded TERMINALLY here with the dispatch's
 // known route features and ZERO cost (read_rows / bytes / duration / memory are
 // unknowable at the engine error site — kept honestly unset, never fabricated).

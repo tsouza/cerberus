@@ -55,9 +55,14 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 // answers the deployed-column read with deployedExitType (defaulting to the
 // type this binary writes, so construction succeeds unless a test says
 // otherwise).
+// failStatement / failErr make ONE statement fail while the rest succeed, which
+// is how a least-privilege deployment presents (a CH user may hold CREATE but
+// not ALTER); execErr fails every statement.
 type fakeExecer struct {
 	execSQL          []string
 	execErr          error
+	failStatement    string
+	failErr          error
 	batchErr         error
 	batch            *fakeBatch
 	deployedExitType string
@@ -66,6 +71,9 @@ type fakeExecer struct {
 
 func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
 	f.execSQL = append(f.execSQL, query)
+	if f.failStatement != "" && strings.Contains(query, f.failStatement) {
+		return f.failErr
+	}
 	return f.execErr
 }
 
@@ -280,5 +288,79 @@ func TestNewCHTableSink_RejectsNarrowDeployedColumn(t *testing.T) {
 		if !strings.Contains(err.Error(), member) {
 			t.Errorf("error %q does not name the missing member %q", err, member)
 		}
+	}
+}
+
+// alterExitStatusMarker is the fragment that identifies the exit_status
+// widening among the statements construction runs.
+const alterExitStatusMarker = "MODIFY COLUMN IF EXISTS `exit_status`"
+
+// TestNewCHTableSink_WideningIsBestEffort pins that a REFUSED widening does not
+// by itself disable the sink.
+//
+// A CH user holding INSERT and CREATE but not ALTER is a routine least-
+// privilege grant, and so is an operator-owned table that would need ON
+// CLUSTER. On such a deployment the widening is refused on every start while
+// the deployed column already holds every member — nothing is wrong, and
+// failing construction there would turn the whole corpus off for a statement
+// whose work was already done.
+func TestNewCHTableSink_WideningIsBestEffort(t *testing.T) {
+	t.Parallel()
+
+	fe := &fakeExecer{
+		failStatement: alterExitStatusMarker,
+		failErr:       errors.New("not enough privileges"),
+	}
+	sink, err := NewCHTableSink(context.Background(), fe)
+	if err != nil {
+		t.Fatalf("NewCHTableSink over an already-wide column with no ALTER grant: %v", err)
+	}
+	if sink == nil {
+		t.Fatal("NewCHTableSink returned no sink and no error")
+	}
+	if !fe.executed(alterExitStatusMarker) {
+		t.Errorf("construction never attempted the widening; got %q", fe.execSQL)
+	}
+}
+
+// TestNewCHTableSink_NarrowColumnReportsWideningFailure pins the other half:
+// when the column IS too narrow AND the widening was refused, the refusal is
+// the operator's actionable cause and must appear in the error. The verify is
+// still the authority on whether construction fails.
+func TestNewCHTableSink_NarrowColumnReportsWideningFailure(t *testing.T) {
+	t.Parallel()
+
+	const grantErr = "not enough privileges"
+	fe := &fakeExecer{
+		deployedExitType: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
+			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)",
+		failStatement: alterExitStatusMarker,
+		failErr:       errors.New(grantErr),
+	}
+	_, err := NewCHTableSink(context.Background(), fe)
+	if err == nil {
+		t.Fatal("NewCHTableSink over a narrow exit_status column: want an error, got nil")
+	}
+	if !strings.Contains(err.Error(), grantErr) {
+		t.Errorf("error %q does not carry the widening failure %q", err, grantErr)
+	}
+	for _, member := range []string{ExitAborted.String(), ExitError.String()} {
+		if !strings.Contains(err.Error(), member) {
+			t.Errorf("error %q does not name the missing member %q", err, member)
+		}
+	}
+}
+
+// TestNewCHTableSink_CreateFailureIsFatal pins that the CREATE remains a hard
+// failure: without a table there is nothing to verify and nowhere to write.
+func TestNewCHTableSink_CreateFailureIsFatal(t *testing.T) {
+	t.Parallel()
+
+	fe := &fakeExecer{
+		failStatement: "CREATE TABLE IF NOT EXISTS " + CorpusTableName,
+		failErr:       errors.New("not enough privileges"),
+	}
+	if _, err := NewCHTableSink(context.Background(), fe); err == nil {
+		t.Fatal("NewCHTableSink with a refused CREATE: want an error, got nil")
 	}
 }
