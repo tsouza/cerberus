@@ -233,6 +233,20 @@ const quietHeartbeatPolls = 10;
 // never reaches `completed`, so waiting on it would hang the preflight until
 // timeout — and it contributes zero check-runs to the green-gate (`evaluate`),
 // so it is irrelevant to settledness. Treat empty suites as already settled.
+// parseCheckList reads one of the RELEASE_*_CHECKS / RELEASE_SELF_JOBS env
+// vars. The separator is the NEWLINE, not a comma: check-run names are job
+// display names and may legitimately contain commas — `property (PromQL +
+// LogQL + TraceQL, rapid N=500)` is a branch-protection required context and
+// splitting it on `,` yields two names that no lane will ever post, so the
+// preflight would wait out its window and abort every release. release.yml
+// therefore declares these as YAML block scalars, one name per line.
+export function parseCheckList(raw) {
+  return (raw ?? '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function allSuitesSettled(suites, ownSuiteId, workflowNames) {
   const pending = [];
   for (const s of suites ?? []) {
@@ -930,26 +944,15 @@ async function main() {
   const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
   const token = process.env.GITHUB_TOKEN;
   const runId = process.env.GITHUB_RUN_ID;
-  const selfJobs = new Set(
-    (process.env.RELEASE_SELF_JOBS ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+  const selfJobs = new Set(parseCheckList(process.env.RELEASE_SELF_JOBS));
   // Name-prefix list of explicitly de-gated INFORMATIONAL lanes (e.g. the
   // compose-smoke-shard-info crawl shard, the dashboard smoke). A flake in one
   // of these must not block a maintenance release; everything else still gates.
-  const informational = (process.env.RELEASE_INFORMATIONAL_CHECKS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const informational = parseCheckList(process.env.RELEASE_INFORMATIONAL_CHECKS);
   // The EXPECTED set — exact check-run names that MUST have posted a run on the
   // commit. Parsed the same way as the informational list, but consumed as EXACT
   // names, not prefixes: a required lane is a specific job, not a family.
-  const required = (process.env.RELEASE_REQUIRED_CHECKS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const required = parseCheckList(process.env.RELEASE_REQUIRED_CHECKS);
 
   // Mode is derived from the branch, not passed in: a `release/*.x` push is the
   // maintenance path (tip + support-window rules apply), anything else is the
