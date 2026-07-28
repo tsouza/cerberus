@@ -507,7 +507,17 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.executeRangeStreaming(ctx, q, start, end, step)
+	// The streaming cursor's ClickHouse query runs on its OWN cancellable child
+	// of the request context, so cursor teardown owns that cancel:
+	// chclient.CloseCursor drains the cursor while the query context is still
+	// live — the only state in which clickhouse-go hands the pooled connection
+	// back instead of destroying the socket — and cancels afterwards. Scoping
+	// the cancel to the cursor is also what keeps the route-B retry below
+	// running on a live context after the original cursor is released.
+	queryCtx, queryCancel := context.WithCancel(ctx)
+	defer queryCancel()
+
+	result, err := h.executeRangeStreaming(queryCtx, q, start, end, step)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -517,7 +527,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// retry) runs first is the only one that actually closes the cursor —
 	// release-before-acquire, never a double Close.
 	closeOriginal := sync.OnceFunc(func() {
-		if cerr := result.Cursor.Close(); cerr != nil {
+		if cerr := chclient.CloseCursor(result.Cursor, queryCancel); cerr != nil {
 			h.Logger.Warn("cerberus prom: cursor close failed", "err", cerr)
 		}
 	})
@@ -547,8 +557,13 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	closeOriginal()
 
 	if result.Retry != nil {
-		if retryResult, retried := result.Retry(ctx, drainErr); retried {
-			h.respondRangeRetry(w, retryResult, start, end, step)
+		// The retry cursor gets its own query context for the same reason the
+		// original does: its teardown must cancel AFTER the drain, and nothing
+		// else in the request may be cancelled by it.
+		retryCtx, retryCancel := context.WithCancel(ctx)
+		defer retryCancel()
+		if retryResult, retried := result.Retry(retryCtx, drainErr); retried {
+			h.respondRangeRetry(w, retryResult, retryCancel, start, end, step)
 			return
 		}
 	}
@@ -588,9 +603,19 @@ func (h *Handler) respondRangeMatrix(w http.ResponseWriter, hdr map[string]strin
 // a non-nil value is never chained — a second retry would violate that
 // structural cap — the retry's own drain error is what surfaces instead,
 // exactly as if Retry were nil.
-func (h *Handler) respondRangeRetry(w http.ResponseWriter, retryResult engine.CursorResult, start, end time.Time, step time.Duration) {
+//
+// cancel is the CancelFunc of the context the retry cursor's ClickHouse query
+// runs on; chclient.CloseCursor drains before firing it so the connection is
+// released to the pool rather than destroyed.
+func (h *Handler) respondRangeRetry(
+	w http.ResponseWriter,
+	retryResult engine.CursorResult,
+	cancel context.CancelFunc,
+	start, end time.Time,
+	step time.Duration,
+) {
 	closeRetry := sync.OnceFunc(func() {
-		if cerr := retryResult.Cursor.Close(); cerr != nil {
+		if cerr := chclient.CloseCursor(retryResult.Cursor, cancel); cerr != nil {
 			h.Logger.Warn("cerberus prom: retry cursor close failed", "err", cerr)
 		}
 	})

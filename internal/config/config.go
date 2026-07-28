@@ -642,7 +642,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
 //	CERBERUS_CH_MAX_OPEN_CONNS     default 10 (total pooled conns, busy + idle)
 //	CERBERUS_CH_MAX_IDLE_CONNS     default 5  (idle conns kept warm for reuse)
-//	CERBERUS_CH_CONN_MAX_LIFETIME  default "30s" (max age before a pooled conn is recycled)
+//	CERBERUS_CH_CONN_MAX_LIFETIME  default "5m" ("30s" when keepalive is off; max age before a pooled conn is recycled)
 //	CERBERUS_CH_KEEPALIVE_ENABLED  default "true" (TCP keepalive on CH sockets; bounds dead-peer detection after a restart)
 //	CERBERUS_CH_KEEPALIVE_IDLE     default "10s"  (idle before the first keepalive probe)
 //	CERBERUS_CH_KEEPALIVE_INTERVAL default "5s"   (gap between keepalive probes)
@@ -785,16 +785,20 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	connMaxLifetime, err := getDuration(v, envCHConnMaxLifetime)
+	// Keepalive is resolved FIRST because the age-eviction default depends on
+	// it: ConnMaxLifetime is a dead-peer backstop, and keepalive is the primary
+	// dead-peer detector, so the default the operator inherits follows whether
+	// that detector is armed (see resolveCHConnMaxLifetime).
+	keepAlive, err := keepAliveFromEnv(v)
+	if err != nil {
+		return Config{}, err
+	}
+	connMaxLifetime, err := getDurationOrDefault(v, envCHConnMaxLifetime, resolveCHConnMaxLifetime(keepAlive.enabled))
 	if err != nil {
 		return Config{}, err
 	}
 	if connMaxLifetime <= 0 {
 		return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHConnMaxLifetime, connMaxLifetime)
-	}
-	keepAlive, err := keepAliveFromEnv(v)
-	if err != nil {
-		return Config{}, err
 	}
 	maxSamples, err := getInt64(v, envQueryMaxSamples)
 	if err != nil {
@@ -1070,7 +1074,10 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envCHDialTimeout, defaultCHDialTimeout.String())
 	v.SetDefault(envCHMaxOpenConns, defaultCHMaxOpenConns)
 	v.SetDefault(envCHMaxIdleConns, defaultCHMaxIdleConns)
-	v.SetDefault(envCHConnMaxLifetime, defaultCHConnMaxLifetime.String())
+	// No SetDefault for envCHConnMaxLifetime: its default is resolved in
+	// FromEnv against CERBERUS_CH_KEEPALIVE_ENABLED, so a static viper default
+	// would shadow the keepalive-off value (mirrors envAutoCreateDatabase,
+	// whose default is likewise derived at load time).
 	v.SetDefault(envCHKeepAliveEnabled, defaultCHKeepAliveEnabled)
 	v.SetDefault(envCHKeepAliveIdle, defaultCHKeepAliveIdle.String())
 	v.SetDefault(envCHKeepAliveInterval, defaultCHKeepAliveInterval.String())
@@ -1424,15 +1431,45 @@ const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 // circuit breaker treats neutrally (local pool-sizing signal, not CH-health
 // failure).
 //
-// ConnMaxLifetime departs from the driver's 1h default to 30s: it is the
-// age-eviction backstop that bounds recovery after a ClickHouse restart even
-// if TCP keepalive (see below) is disabled. CH native conns are stateless and
-// cheap to redial, so recycling the idle pool every 30s is negligible churn.
+// ConnMaxLifetime departs from the driver's 1h default because it is the
+// age-eviction backstop that bounds recovery after a ClickHouse restart. It
+// resolves against the mechanism it stands in for — see
+// resolveCHConnMaxLifetime.
 const (
-	defaultCHMaxOpenConns                  = 10
-	defaultCHMaxIdleConns                  = 5
-	defaultCHConnMaxLifetime time.Duration = 30 * time.Second
+	defaultCHMaxOpenConns = 10
+	defaultCHMaxIdleConns = 5
 )
+
+// Age-eviction backstop defaults. ConnMaxLifetime exists to bound how long a
+// connection to a peer that is no longer there can linger in the pool, so its
+// default follows whether a FASTER dead-peer detector is armed.
+//
+// With TCP keepalive on, the kernel declares a dead peer within
+// defaultCHKeepAliveIdle + defaultCHKeepAliveInterval*defaultCHKeepAliveCount
+// (~25s), and the breaker's recovery probe re-tests the backend independently.
+// Age eviction then bounds only long-lived drift, so it runs at
+// defaultCHConnMaxLifetime — recycling the whole idle pool every few seconds
+// would force a redial on every low-QPS query for no recovery benefit, since
+// the driver's own pool ticker retires idle connections on the same schedule
+// whether or not any traffic is flowing.
+//
+// With keepalive off, age eviction is the ONLY dead-peer detector cerberus
+// has, so it runs at defaultCHConnMaxLifetimeNoKeepAlive — aggressive enough to
+// keep restart recovery inside the same window keepalive would have provided.
+const (
+	defaultCHConnMaxLifetime            time.Duration = 5 * time.Minute
+	defaultCHConnMaxLifetimeNoKeepAlive time.Duration = 30 * time.Second
+)
+
+// resolveCHConnMaxLifetime picks the age-eviction backstop that matches the
+// dead-peer detection actually configured. An explicit
+// CERBERUS_CH_CONN_MAX_LIFETIME always wins over both.
+func resolveCHConnMaxLifetime(keepAliveEnabled bool) time.Duration {
+	if keepAliveEnabled {
+		return defaultCHConnMaxLifetime
+	}
+	return defaultCHConnMaxLifetimeNoKeepAlive
+}
 
 // TCP keepalive defaults — the ROOT-CAUSE fix for slow breaker recovery after
 // a ClickHouse restart. clickhouse-go v2.46.0 exposes NO idle-health knob, and
@@ -1833,6 +1870,18 @@ func getDuration(v *viper.Viper, key string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return d, nil
+}
+
+// getDurationOrDefault resolves key as a duration, falling back to fallback
+// when the operator supplied no value. It is the loader shape for a knob whose
+// default depends on ANOTHER knob and therefore cannot be a static viper
+// SetDefault: the caller computes the fallback from the already-resolved
+// dependency, and an explicit value still wins.
+func getDurationOrDefault(v *viper.Viper, key string, fallback time.Duration) (time.Duration, error) {
+	if getString(v, key) == "" {
+		return fallback, nil
+	}
+	return getDuration(v, key)
 }
 
 // getRetentionDuration resolves key as a retention duration using the

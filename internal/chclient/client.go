@@ -439,6 +439,13 @@ type Client struct {
 	// so the views share one ch-go connection).
 	cursorDecoder cursorDecoder
 
+	// unregisterPoolGauges tears down this Client's pool-census callback. The
+	// gauges are process-wide but a pool is not, so the callback must die with
+	// the conn it reads — otherwise a closed bootstrap client keeps reporting a
+	// dead pool under the same attribute set as the serving one. Idempotent and
+	// shared by ForHead views (it is a sync.OnceFunc, copied by pointer).
+	unregisterPoolGauges func()
+
 	// recovery owns the background breaker-recovery goroutine (see
 	// recoveryLoop). It is non-nil ONLY on the root Client that New created
 	// and started the loop on; the lightweight ForHead views are shallow
@@ -543,7 +550,12 @@ func (c *Client) ForHead(h Head) *Client {
 // uniform — keepalive is simply not armed. The network is forced to
 // "tcp" because the CH native protocol is always TCP; the driver passes
 // the configured host:port as addr.
-func dialContext(dial time.Duration, cfg Config) func(context.Context, string) (net.Conn, error) {
+// A successful dial is also the one observable moment of connection churn:
+// the pool mints a connection only when it has none warm to hand back, so
+// counting dials here (m.recordDial) measures the cost of every connection
+// destroyer at once — cancelled queries, abandoned cursor teardowns, and the
+// driver's own age eviction — none of which cerberus can observe directly.
+func dialContext(dial time.Duration, cfg Config, m *connMetrics) func(context.Context, string) (net.Conn, error) {
 	d := &net.Dialer{
 		Timeout: dial,
 		KeepAliveConfig: net.KeepAliveConfig{
@@ -554,7 +566,14 @@ func dialContext(dial time.Duration, cfg Config) func(context.Context, string) (
 		},
 	}
 	return func(ctx context.Context, addr string) (net.Conn, error) {
-		return d.DialContext(ctx, "tcp", addr)
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			// A failed dial mints no connection, so it is not churn — it is a
+			// connectivity failure the breaker already owns.
+			return nil, err
+		}
+		m.recordDial()
+		return conn, nil
 	}
 }
 
@@ -612,7 +631,7 @@ func buildOptions(cfg Config) *clickhouse.Options {
 		// query is never interrupted. When keepalive is disabled we still
 		// dial through the same net.Dialer (Enable:false) so DialContext
 		// behaviour is uniform — only the keepalive policy changes.
-		DialContext: dialContext(dial, cfg),
+		DialContext: dialContext(dial, cfg, connTelemetry()),
 	}
 	// TLS / compression / buffer / HTTP knobs are left at the driver's
 	// zero-value default unless an operator set them — every unset knob keeps
@@ -752,6 +771,11 @@ func assembleClientFromConn(cfg Config, conn driver.Conn) *Client {
 	// serves. The construction-time branch remains the path the parity test
 	// exercises (it builds a Client with the field set directly).
 	c.cursorDecoder = newCursorDecoder(cfg)
+	// Pool census. The driver keeps the authoritative open/idle counts and
+	// exposes them via Stats(); the callback reads them live on every
+	// collection interval so the exported level tracks the real pool rather
+	// than a snapshot taken at construction.
+	c.unregisterPoolGauges = connTelemetry().registerPoolGauges(conn.Stats)
 	// Start the active background breaker-recovery loop on the ROOT Client
 	// (ForHead views are shallow copies that share — never restart — it).
 	// The tick cadence is the breaker's own resolved OPEN-state backoff, so
@@ -1038,6 +1062,13 @@ func (c *Client) Close() error {
 	// and closing it twice, or from a ForHead view that shares the value, is a
 	// no-op after the first (the pool's own mutex + nil-out guards it).
 	c.cursorDecoder.close()
+	// Drop the pool-census callback before the conn goes away. The gauges are
+	// process-wide while the pool is not, so a callback that outlived its conn
+	// would keep observing a dead pool under the same attribute set as the live
+	// one. Nil on a bare struct literal (test seams) that never registered.
+	if c.unregisterPoolGauges != nil {
+		c.unregisterPoolGauges()
+	}
 	if c.conn == nil {
 		return nil
 	}
