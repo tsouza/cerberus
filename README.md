@@ -330,7 +330,7 @@ map, the CI-gate inventory, and the gremlins rollout.
 | [`docs/migration.md`](docs/migration.md)                                 | The operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.    |
 | [`docs/migration-reference.md`](docs/migration-reference.md)             | The contract behind that playbook: every `migrate` flag, what each comparator calls equal, and what each gate blocks on.      |
 | [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                  |
-| [`docs/configuration.md`](docs/configuration.md)                         | The full `CERBERUS_*` environment-variable reference, grouped by area, with types and defaults.                               |
+| [`docs/configuration.md`](docs/configuration.md)                         | Every setting, grouped by area, with types and defaults — as a `CERBERUS_*` variable or the equivalent `cerberus.yaml` key.   |
 | [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                           |
 | [`docs/performance.md`](docs/performance.md)                             | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression.                               |
 | [`docs/optimization-rules.md`](docs/optimization-rules.md)               | The standing optimizer-design rules (feature-registry single-source-of-truth, clone-less-not-faster).                         |
