@@ -37,7 +37,7 @@ internal/
   chsql/                     plan → ClickHouse SQL emitter
   chclient/                  CH driver wrapper (clickhouse-go/v2)
   schema/                    OTel-CH default + override config
-  config/                    runtime config (env-driven)
+  config/                    runtime config (`cerberus.yaml` + `CERBERUS_*` env, env wins)
 cmd/cerberus/                main entrypoint
 test/spec/                   TXTAR golden tests (input QL → SQL/plan + `-- chplan --` IR snapshots + optional `-- seed --` / `-- expected_rows --` chDB roundtrip). `test/spec/chplan_print.go` is the deterministic IR pretty-printer used by Layer 2a snapshots.
 test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution); `gen/` random data + query generators; `oracle/` from-scratch evaluator.

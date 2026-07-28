@@ -23,9 +23,12 @@ known baseline instead of re-deriving from CI failure tickers.
 The gate **runs** in two places:
 
 1. `.github/workflows/ci.yml` job `forbid-skip` — required status check
-   on `main`. The job holds no regexes of its own: every step is
-   `run: node .github/scripts/forbid-skip.mjs` with a `CHECK:` naming
-   the arm to dispatch.
+   on `main`. The job holds no regexes of its own: every discipline scan
+   is a `run: node .github/scripts/forbid-skip.mjs` step with a `CHECK:`
+   naming the arm to dispatch. The job also carries the regex self-test
+   (`scripts/test-forbid-skip.sh`) and two unrelated assert-from-source
+   gates that ride the same lane — `clickhouse-version-sync.mjs`
+   (`--self-test` + gate) and `doc-counts.mjs` (`--self-test` + gate).
 2. `lefthook.yml` `pre-push` hook — local mirror of the same gate so a
    push that would have failed CI fails locally first.
 
@@ -45,12 +48,25 @@ lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
 Rows 1–5 of the summary table below are carried by all three copies.
-Row 6 is enforced by the CI `forbid-skip` job step
-"Reject should_skip overlay entries", which rejects every non-empty
-`should_skip:` block in `compatibility/**/*.{yml,yaml}` outright. Row 7
-is enforced by the CI step "Reject test escape-hatch patterns". Rows 8
-and 9 are enforced by the CI step "Reject scenario-suppressing tags and
-godog skip routes".
+Rows 6–9 are carried by CI **and** lefthook; only the self-test's
+coverage differs:
+
+| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command   | `scripts/test-forbid-skip.sh` |
+| ------ | ----------------------------------------------------------------------------- | ----------------------------- | ----------------------------- |
+| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`          | yes                           |
+| 2      | Reject "not implemented" in production code (`not-implemented`)               | `forbid-not-implemented-prod` | yes                           |
+| 3–5    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`          | yes                           |
+| 6      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`         | no                            |
+| 7      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`         | no                            |
+| 8–9    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline`   | yes                           |
+
+Row 6 rejects every non-empty `should_skip:` block in
+`compatibility/**/*.{yml,yaml}` outright. lefthook's
+`forbid-escape-hatch` command carries rows 6 and 7 together: the row-7
+ERE over `*.{ts,tsx,go}` plus the row-6 `perl -0777` slurp over the
+compatibility YAML, which the CI job splits across two `CHECK` arms.
+Rows 6 and 7 have no `scripts/test-forbid-skip.sh` case, so their
+regexes are pinned by the CI and lefthook copies alone.
 
 ## Patterns vs CHECK categories — the count that the gate pins
 

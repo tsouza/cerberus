@@ -106,17 +106,24 @@
 //   GITHUB_RUN_ID      this release run's id — resolved to its check_suite_id so
 //                      the wait phase can skip our own (in-progress) suite.
 //                      Auto-present in the Actions runtime; absent off-runner.
-//   RELEASE_SELF_JOBS  comma-separated check-run names belonging to THIS release
-//                      workflow, excluded from the gate.
+//   RELEASE_SELF_JOBS  newline-separated check-run names belonging to THIS
+//                      release workflow, excluded from the gate.
 //   RELEASE_REQUIRED_CHECKS
-//                      comma-separated EXACT check-run names that MUST have
+//                      newline-separated EXACT check-run names that MUST have
 //                      posted a run on the commit. The expected set — not
 //                      derived from the API response, which is the whole point.
 //                      Empty/unset is a blocking problem.
 //   RELEASE_INFORMATIONAL_CHECKS
-//                      comma-separated name PREFIXES of explicitly de-gated
+//                      newline-separated name PREFIXES of explicitly de-gated
 //                      informational lanes. An entry that swallows a
 //                      RELEASE_REQUIRED_CHECKS name is a wiring error.
+//
+//                      All three are split on the NEWLINE and only the newline
+//                      (see parseCheckList): a check-run name is a job display
+//                      name and may contain a comma — `property (PromQL +
+//                      LogQL + TraceQL, rapid N=500)` is a branch-protection
+//                      required context — so release.yml declares each of them
+//                      as a YAML block scalar, one name per line.
 //
 // `evaluate(...)` takes the branch HEAD sha, the pushed sha, the raw check-runs,
 // the legacy statuses, the self-job name set, the REQUIRED name set, the mode,
