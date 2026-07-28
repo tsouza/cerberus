@@ -99,6 +99,25 @@ type Handler struct {
 	// chclient.WithQueryTimeout). Tests leave it zero.
 	QueryTimeout time.Duration
 
+	// MetadataLookback is how far back a WINDOWLESS metadata-discovery
+	// request (/api/v1/labels, /api/v1/label/<l>/values, /api/v1/series
+	// with no start/end — the Grafana variable-refresh shape) scans.
+	// cmd/cerberus wires CERBERUS_PROM_METADATA_LOOKBACK here verbatim;
+	// 0 falls back to defaultMetadataLookback, whose doc explains why a
+	// fallback is a scan bound rather than a completeness guarantee.
+	// Requests that supply either bound are honored verbatim and never
+	// consult this. Tests leave it zero.
+	//
+	// The two directions cost different things, and neither is free.
+	// RAISING it widens the scan — the now-anchored arms read further
+	// back through the proj_series projection, and the ResourceAttributes
+	// arm (unionResourceLabelNamesSQL) has no now-anchored form at all,
+	// so it takes the widened window as a literal WHERE against the fact
+	// table. LOWERING it below the deployment's real retention silently
+	// omits metrics that went quiet inside retention. Set it to the real
+	// retention, not to a number picked for scan cost.
+	MetadataLookback time.Duration
+
 	// parser is the single PromQL parser instance the handler uses for
 	// every parse path. The handler-side classification parse
 	// (parseExpr — scalar fold / string literal / expression type
