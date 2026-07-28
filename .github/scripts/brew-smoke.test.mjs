@@ -6,35 +6,35 @@
 // to the smoke would be unverified until a release is cut. The cases below pin
 // the four ways the smoke could go hollow:
 //
-//   1. a stale/never-pushed formula reported as fine (the goreleaser `brews:`
-//      regression the whole job exists to catch);
-//   2. a no-formula branch that bails out instead of asserting — `t.Skip` in
+//   1. a stale/never-pushed cask reported as fine (the goreleaser
+//      `homebrew_casks:` regression the whole job exists to catch);
+//   2. a no-cask branch that bails out instead of asserting — `t.Skip` in
 //      workflow clothing, which would wave through a `skip_upload` regression;
-//   3. an unparseable formula degrading into "couldn't tell, so pass";
-//   4. a maintenance backport silently overwriting the newest line's formula,
+//   3. an unparseable cask degrading into "couldn't tell, so pass";
+//   4. a maintenance backport silently overwriting the newest line's cask,
 //      which is what v1.12.1 did to v1.13.0's.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isStableRelease, formulaVersion, verdict, compareVersions } from './brew-smoke.mjs';
+import { isStableRelease, caskVersion, verdict, compareVersions } from './brew-smoke.mjs';
 
 // A minimal stand-in for what goreleaser writes into the tap.
-function formula(version) {
+function cask(version) {
   return [
-    'class Cerberus < Formula',
+    'cask "cerberus" do',
+    `  version "${version}"`,
+    '',
+    '  url "https://github.com/tsouza/cerberus/releases/download/v' +
+      version +
+      '/cerberus_' +
+      version +
+      '_darwin_arm64.tar.gz"',
+    '  name "cerberus"',
     '  desc "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"',
     '  homepage "https://github.com/tsouza/cerberus"',
-    `  version "${version}"`,
-    '  license "Apache-2.0"',
     '',
-    '  on_macos do',
-    `    url "https://github.com/tsouza/cerberus/releases/download/v${version}/cerberus_${version}_darwin_arm64.tar.gz"`,
-    '  end',
-    '',
-    '  def install',
-    '    bin.install "cerberus"',
-    '  end',
+    '  binary "cerberus"',
     'end',
   ].join('\n');
 }
@@ -49,22 +49,22 @@ test('isStableRelease separates stable releases from prereleases', () => {
   assert.equal(isStableRelease(undefined), false);
 });
 
-test('formulaVersion reads the declaration, falls back to the archive name', () => {
-  assert.equal(formulaVersion(formula('1.11.2')), '1.11.2');
+test('caskVersion reads the declaration, falls back to the archive name', () => {
+  assert.equal(caskVersion(cask('1.11.2')), '1.11.2');
 
   // No `version "…"` line: the archive filename still carries it.
   const archiveOnly = [
-    'class Cerberus < Formula',
+    'cask "cerberus" do',
     '  url "https://github.com/tsouza/cerberus/releases/download/v1.11.2/cerberus_1.11.2_linux_amd64.tar.gz"',
     'end',
   ].join('\n');
-  assert.equal(formulaVersion(archiveOnly), '1.11.2');
+  assert.equal(caskVersion(archiveOnly), '1.11.2');
 });
 
-test('an unparseable formula THROWS rather than passing', () => {
-  assert.throws(() => formulaVersion('class Cerberus < Formula\nend\n'), /could not determine the version/);
-  assert.throws(() => formulaVersion(''), /could not determine the version/);
-  assert.throws(() => formulaVersion(undefined), /could not determine the version/);
+test('an unparseable cask THROWS rather than passing', () => {
+  assert.throws(() => caskVersion('cask "cerberus" do\nend\n'), /could not determine the version/);
+  assert.throws(() => caskVersion(''), /could not determine the version/);
+  assert.throws(() => caskVersion(undefined), /could not determine the version/);
 });
 
 // The release-shape vocabulary the whole table is written in. `verdict` only
@@ -100,12 +100,12 @@ const VERDICT_CASES = [
     tap: OLDER,
     release: RELEASED,
     isLatest: 'true',
-    mustInstall: true, // a stale formula does not excuse skipping the install branch
+    mustInstall: true, // a stale cask does not excuse skipping the install branch
     problem: `declares version "${OLDER}" but this release is "${RELEASED}"`,
   },
   {
     name: 'prerelease + a tap on the last stable — healthy, asserted rather than skipped',
-    // `skip_upload` wrote no formula, so the tap legitimately still declares an
+    // `skip_upload` wrote no cask, so the tap legitimately still declares an
     // older version.
     tap: OLDER,
     release: RC,
@@ -146,7 +146,7 @@ const VERDICT_CASES = [
   {
     name: 'maintenance backport that OVERWROTE the tap — the v1.12.1-over-v1.13.0 regression',
     // `skip_upload: auto` alone does not filter a stable backport, so goreleaser
-    // wrote the older line's formula over the newer one and every `brew install`
+    // wrote the older line's cask over the newer one and every `brew install`
     // started downgrading.
     tap: SAME,
     release: RELEASED,
@@ -166,7 +166,7 @@ const VERDICT_CASES = [
 
 for (const c of VERDICT_CASES) {
   test(`verdict: ${c.name}`, () => {
-    const v = verdict({ version: c.release, formulaSource: formula(c.tap), isLatest: c.isLatest });
+    const v = verdict({ version: c.release, caskSource: cask(c.tap), isLatest: c.isLatest });
     if (c.problem === null) {
       assert.deepEqual(v.problems, [], 'expected the healthy state');
     } else {
@@ -182,14 +182,14 @@ test('verdict is comparing the BARE version, so a `v`-prefixed input cannot pass
   // (bare), never `app_tag`. If it ever passed the tag, the stable branch's
   // equality check fails loudly here rather than being papered over by a
   // substring match.
-  const v = verdict({ version: `v${RELEASED}`, formulaSource: formula(SAME), isLatest: 'true' });
+  const v = verdict({ version: `v${RELEASED}`, caskSource: cask(SAME), isLatest: 'true' });
   assert.equal(v.mustInstall, false, 'a `v`-prefixed string is not a stable app version');
-  assert.deepEqual(v.problems, [], 'and it does not collide with the formula version either');
+  assert.deepEqual(v.problems, [], 'and it does not collide with the cask version either');
 });
 
-test('an unparseable formula propagates out of verdict on both branches', () => {
-  assert.throws(() => verdict({ version: RELEASED, formulaSource: 'garbage', isLatest: 'true' }), /could not determine the version/);
-  assert.throws(() => verdict({ version: RC, formulaSource: 'garbage', isLatest: 'false' }), /could not determine the version/);
+test('an unparseable cask propagates out of verdict on both branches', () => {
+  assert.throws(() => verdict({ version: RELEASED, caskSource: 'garbage', isLatest: 'true' }), /could not determine the version/);
+  assert.throws(() => verdict({ version: RC, caskSource: 'garbage', isLatest: 'false' }), /could not determine the version/);
 });
 
 test('compareVersions orders the two shapes goreleaser produces', () => {
@@ -210,12 +210,12 @@ test('compareVersions orders the two shapes goreleaser produces', () => {
   assert.equal(compareVersions(undefined, '0.0.0'), 0);
 });
 
-test('isLatest is read strictly: only the exact string "true" owns the formula', () => {
+test('isLatest is read strictly: only the exact string "true" owns the cask', () => {
   // The driver rejects anything that is not "true"/"false" before reaching here,
   // but verdict must not treat a truthy-looking value as the newest line either
   // — that would restore the equality assertion for a backport and demand a
-  // formula it deliberately never wrote.
-  const backport = { version: RELEASED, formulaSource: formula(NEWER) };
+  // cask it deliberately never wrote.
+  const backport = { version: RELEASED, caskSource: cask(NEWER) };
   assert.equal(verdict({ ...backport, isLatest: true }).problems.length, 1, 'boolean true is the newest line');
   assert.deepEqual(verdict({ ...backport, isLatest: 'false' }).problems, []);
   assert.deepEqual(verdict({ ...backport, isLatest: '' }).problems, [], 'not "true" means not the newest line');

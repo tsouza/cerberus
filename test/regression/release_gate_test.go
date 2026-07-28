@@ -25,7 +25,7 @@ import (
 //     public before anything drove the built image;
 //   - `continue-on-error` on brew-smoke: the job becomes decoration;
 //   - `skip_upload: auto` removed from .goreleaser.yml: prereleases start
-//     overwriting the tap formula, which is the thing brew-smoke's prerelease
+//     overwriting the tap cask, which is the thing brew-smoke's prerelease
 //     branch asserts against.
 const (
 	releaseWorkflowPath   = "../../.github/workflows/release.yml"
@@ -51,7 +51,7 @@ const (
 
 	// "Is this tag the highest stable release?" — the one signal that decides
 	// which release line may take a resource only one line can hold: the rolling
-	// `:latest` images, the Homebrew formula, and the GitHub `Latest` pointer.
+	// `:latest` images, the Homebrew cask, and the GitHub `Latest` pointer.
 	releaseIsLatestEnv = "RELEASE_IS_LATEST"
 	isLatestOutput     = "is_latest"
 	latestFlipToken    = "--latest="
@@ -245,8 +245,8 @@ func TestBrewSmokeIsBlockingAndOrderedAfterPublish(t *testing.T) {
 			"a broken tap would report green. Body:\n%s", releaseWorkflowPath, brewSmokeJob, job)
 	}
 
-	// The two no-formula branches of brew-smoke.mjs assert that a prerelease and
-	// a maintenance backport did NOT write a formula. Those assertions are only
+	// The two no-cask branches of brew-smoke.mjs assert that a prerelease and
+	// a maintenance backport did NOT write a cask. Those assertions are only
 	// meaningful while goreleaser is still configured to leave both taps alone,
 	// which is one template covering both conditions.
 	//
@@ -258,7 +258,7 @@ func TestBrewSmokeIsBlockingAndOrderedAfterPublish(t *testing.T) {
 	for _, want := range []string{releaseIsLatestEnv, "auto"} {
 		if !strings.Contains(skipUpload, want) {
 			t.Fatalf("%s has `skip_upload: %s`, which does not gate on %q. brew-smoke's prerelease and "+
-				"maintenance branches assert that neither wrote a formula, and would start failing every "+
+				"maintenance branches assert that neither wrote a cask, and would start failing every "+
 				"rc and every backport", goreleaserPath, skipUpload, want)
 		}
 	}
@@ -287,7 +287,7 @@ func valueOfYAMLKey(t *testing.T, body, key string) string {
 
 // TestOnlyTheNewestLineOwnsTheSharedReleaseResources pins the fix for v1.12.1 —
 // a backport cut after v1.13.0 — taking two resources that only one release line
-// can hold at a time: the Homebrew formula (it overwrote v1.13.0's, downgrading
+// can hold at a time: the Homebrew cask (it overwrote v1.13.0's, downgrading
 // every `brew install`) and the GitHub `Latest` pointer (v1.11.3, published last,
 // claimed it). Both defaults are silently wrong for a maintenance line:
 // `skip_upload: auto` filters only prereleases, and GitHub's release-update
@@ -330,7 +330,7 @@ func TestOnlyTheNewestLineOwnsTheSharedReleaseResources(t *testing.T) {
 	brew := workflowJobBody(t, workflow, brewSmokeJob)
 	if !strings.Contains(brew, releaseIsLatestEnv) {
 		t.Fatalf("%s job %q does not pass %s, so the smoke cannot assert that a backport left the "+
-			"newest line's formula in place. Body:\n%s",
+			"newest line's cask in place. Body:\n%s",
 			releaseWorkflowPath, brewSmokeJob, releaseIsLatestEnv, brew)
 	}
 }

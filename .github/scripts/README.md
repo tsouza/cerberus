@@ -343,12 +343,12 @@ One implementation means a new rule guards BOTH lanes at once.
     (missing repo/token) before any publish-affecting work.
 - **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`).
   Proves the Homebrew tap actually serves the version that just shipped. Reads
-  `Formula/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
-  is the anti-vacuous check, because a deleted `brews:` block or an expired
-  `HOMEBREW_TAP_GITHUB_TOKEN` leaves a STALE formula that a warm `brew install`
+  `Casks/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
+  is the anti-vacuous check, because a deleted `homebrew_casks:` block or an expired
+  `HOMEBREW_TAP_GITHUB_TOKEN` leaves a STALE cask that a warm `brew install`
   would install happily. Then it branches EXPLICITLY on the release kind rather
   than skipping: a stable `X.Y.Z` on the newest release line requires the
-  formula to declare exactly that version, then installs it and asserts the
+  cask to declare exactly that version, then installs it and asserts the
   binary lands under `brew --prefix`,
   that `cerberus --version` EQUALS the bare release version (string equality, so
   an off-by-`v` or a stale ldflag cannot pass a substring test), and that two
@@ -356,31 +356,51 @@ One implementation means a new rule guards BOTH lanes at once.
   `config-docs -check` against `REPO_ROOT`'s `docs/configuration.md`. The other
   two release shapes take negative branches, because `.goreleaser.yml`'s
   `skip_upload` template keeps both out of the tap: an `rc.*` must NOT have
-  written a formula, and a release that is not the highest stable tag (a
-  maintenance backport) must have left a STRICTLY NEWER formula in place — the
+  written a cask, and a release that is not the highest stable tag (a
+  maintenance backport) must have left a STRICTLY NEWER cask in place — the
   regression that let v1.12.1, cut after v1.13.0, downgrade every
   `brew install`. `migrate gate` / `migrate verify` are deliberately unused —
   they exit non-zero on a legitimate no-go, so they cannot distinguish a broken
   binary from a correct verdict. Pure exports `isStableRelease(version)`,
-  `formulaVersion(rbSource)` (declaration, then archive-name fallback, then
-  THROWS — an unparseable formula never degrades into a pass),
-  `compareVersions(a, b)` and `verdict({version, formulaSource, isLatest})`,
+  `caskVersion(rbSource)` (declaration, then archive-name fallback, then
+  THROWS — an unparseable cask never degrades into a pass),
+  `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.
   - Env: `RELEASE_VERSION` (the BARE `X.Y.Z[-rc.N]`, i.e.
     `needs.gate.outputs.app_version`, never the `v`-prefixed tag),
     `RELEASE_IS_LATEST` (`"true"`/`"false"` — whether this is the highest stable
-    tag, i.e. the line that owns the tap's single formula; required, and
+    tag, i.e. the line that owns the tap's single cask; required, and
     rejected unless it is exactly one of those two words, since it selects the
     assertion branch), `GITHUB_TOKEN` (contents:read on the tap),
     `GITHUB_API_URL` (default `https://api.github.com`), `REPO_ROOT`
     (checkout root, for the `config-docs -check` payload).
-  - Exit: `0` when the formula state matches the release kind and (newest stable
+  - Exit: `0` when the cask state matches the release kind and (newest stable
     line only) the installed binary passes every assertion; `1` on a stale /
-    missing / unparseable formula, a prerelease formula that should not exist, a
-    tap formula that a backport overwrote, a missing or unrecognised
+    missing / unparseable cask, a prerelease cask that should not exist, a
+    tap cask that a backport overwrote, a missing or unrecognised
     `RELEASE_IS_LATEST`, a failed install, a version mismatch, or a failing
     payload verb.
+- **`goreleaser-deprecations.mjs`** — `ci.yml`, the `lint` job. Fails the build
+  when `.goreleaser.yml` uses any goreleaser feature upstream has deprecated.
+  `goreleaser check` prints a deprecation as an advisory line and still exits
+  `0`, and release.yml (which has no `pull_request:` trigger) is the only other
+  place goreleaser runs — so a deprecation notice first becomes visible in the
+  scroll-back of a release that already published, which is how `brews:` stayed
+  in the config for several releases after `homebrew_casks:` replaced it. The
+  gate reads the real tool's output rather than scanning the YAML for a
+  hardcoded list of dead keys, so a deprecation announced upstream tomorrow is
+  caught without this module knowing about it in advance. The CI step installs
+  the same `distribution` / `version` release.yml pins, so the gate reports
+  exactly what the next release run will warn about. Pure export
+  `deprecationsIn(output)` returns the DEDUPLICATED notices in a transcript
+  (goreleaser repeats one line per offending block, and reporting the same
+  migration N times obscures how many distinct ones are outstanding), covered by
+  `goreleaser-deprecations.test.mjs` on the same lane.
+  - Env: `GORELEASER_CONFIG` (default `.goreleaser.yml`), `GORELEASER_BIN`
+    (default `goreleaser`).
+  - Exit: `0` when the config validates with no deprecation notices; `1` on any
+    notice, or when `goreleaser check` itself fails or cannot run.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and

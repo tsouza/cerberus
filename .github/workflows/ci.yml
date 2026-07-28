@@ -327,8 +327,28 @@ jobs:
       - name: release-gate-drift self-test (gate rot detector)
         run: node .github/scripts/release-gate-drift.mjs --self-test
 
-      - name: brew-smoke self-test (formula-freshness guard)
+      - name: brew-smoke self-test (cask-freshness guard)
         run: node --test .github/scripts/brew-smoke.test.mjs
+
+      # goreleaser deprecation gate. `goreleaser check` reports a deprecated
+      # config section as an advisory line and still exits 0, and release.yml is
+      # the only other place goreleaser runs — so a deprecation first becomes
+      # visible in the scroll-back of a release that already published. That is
+      # how `brews:` outlived its replacement by several releases. The action is
+      # pinned to the same distribution/version release.yml uses, so this gate
+      # reports exactly what the next release run would warn about.
+      - name: goreleaser-deprecations self-test (detector guard)
+        run: node --test .github/scripts/goreleaser-deprecations.test.mjs
+
+      - name: install goreleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+
+      - name: goreleaser config has no deprecated sections
+        run: node .github/scripts/goreleaser-deprecations.mjs
 
       # The migration lane's artifact resolver, here for the same reason:
       # migration-e2e.yml has no `pull_request:` trigger either, so this is the

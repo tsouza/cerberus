@@ -251,7 +251,7 @@ jobs:
     outputs:
       # Whether this tag is the highest stable release. Downstream jobs decide
       # what the newest line alone may own (the GitHub `Latest` pointer, the
-      # Homebrew formula) off this, so it has to leave the job, not just the
+      # Homebrew cask) off this, so it has to leave the job, not just the
       # step.
       is_latest: ${{ steps.is_latest.outputs.is_latest }}
     steps:
@@ -317,7 +317,7 @@ jobs:
       # and must not take:
       #   - the rolling `:latest` images (goreleaser's `latest-*` skip_push
       #     templates read `.Env.RELEASE_IS_LATEST`);
-      #   - the Homebrew formula (`brews[].skip_upload`, same env var) — `auto`
+      #   - the Homebrew cask (`homebrew_casks[].skip_upload`, same env var) — `auto`
       #     alone only filters prereleases, so v1.12.1 downgraded the tap from
       #     v1.13.0;
       #   - the GitHub `Latest` release pointer (the `publish` job's flip), which
@@ -349,7 +349,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_IS_LATEST: ${{ env.RELEASE_IS_LATEST }}
-          # Cross-repo push to tsouza/homebrew-tap for the brews block. The
+          # Cross-repo push to tsouza/homebrew-tap for the homebrew_casks block. The
           # default GITHUB_TOKEN cannot push to another repo; this PAT can.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
@@ -465,8 +465,8 @@ jobs:
   #
   # Neither prereleases nor maintenance backports are skipped — each just gets a
   # different assertion, because `skip_upload` keeps both out of the tap:
-  #   - prerelease: the formula must exist and must NOT declare this version;
-  #   - not the highest stable tag: the formula must declare a STRICTLY NEWER
+  #   - prerelease: the cask must exist and must NOT declare this version;
+  #   - not the highest stable tag: the cask must declare a STRICTLY NEWER
   #     version, proving this publish did not overwrite the newest line's.
   brew-smoke:
     name: brew-smoke
@@ -492,7 +492,7 @@ jobs:
           # The BARE version. Comparing `cerberus --version` to `app_tag` would
           # be a guaranteed off-by-`v` mismatch.
           RELEASE_VERSION: ${{ needs.gate.outputs.app_version }}
-          # The same signal that decided whether goreleaser wrote the formula at
+          # The same signal that decided whether goreleaser wrote the cask at
           # all, so the smoke asserts the branch the tap actually took.
           RELEASE_IS_LATEST: ${{ needs.goreleaser.outputs.is_latest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

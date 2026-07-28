@@ -1,11 +1,12 @@
 // brew-smoke.mjs — post-publish Homebrew install smoke for `release.yml`'s
 // `brew-smoke` job.
 //
-// What it is for: goreleaser's `brews:` block pushes a formula to a DIFFERENT
-// repository (tsouza/homebrew-tap) with a PAT. Nothing in this repo observes
-// that push. If the block is deleted, if HOMEBREW_TAP_GITHUB_TOKEN expires, or
-// if the cross-repo write silently fails, the release still goes green here and
-// `brew install tsouza/tap/cerberus` is discovered broken by a user.
+// What it is for: goreleaser's `homebrew_casks:` block pushes a cask to a
+// DIFFERENT repository (tsouza/homebrew-tap) with a PAT. Nothing in this repo
+// observes that push. If the block is deleted, if HOMEBREW_TAP_GITHUB_TOKEN
+// expires, or if the cross-repo write silently fails, the release still goes
+// green here and `brew install tsouza/tap/cerberus` is discovered broken by a
+// user.
 //
 // Ordering: it MUST run after the draft -> published flip. `brew install`
 // downloads the release tarball, and a draft release's assets 404 for anyone
@@ -18,16 +19,16 @@
 // for those the honest assertion is the NEGATIVE one. Bailing out on a "not
 // applicable" flag would be `t.Skip` in workflow clothing, and would wave
 // through the very `skip_upload` regressions this job exists to catch:
-//   - newest line + stable — the formula must declare EXACTLY this version;
-//   - prerelease (`rc.*`)  — the formula must exist and must NOT declare it;
-//   - not the highest stable tag (a maintenance backport) — the formula must
+//   - newest line + stable — the cask must declare EXACTLY this version;
+//   - prerelease (`rc.*`)  — the cask must exist and must NOT declare it;
+//   - not the highest stable tag (a maintenance backport) — the cask must
 //     declare a STRICTLY NEWER version, proving this publish did not overwrite
 //     the newest line's. v1.12.1, cut after v1.13.0, did exactly that.
 //
-// ANTI-VACUOUS: the formula's declared version is compared to the release
+// ANTI-VACUOUS: the cask's declared version is compared to the release
 // version BEFORE `brew install` runs. That reads the tap's git state through
 // the API, so a warm brew cache, a mirror, or a previously-installed cerberus
-// cannot make a stale/never-pushed formula look healthy. The installed
+// cannot make a stale/never-pushed cask look healthy. The installed
 // binary's `--version` is then compared with string EQUALITY against the
 // de-`v`'d release version — `grep -q "$TAG"` can never match (the tag carries
 // the `v`), and `grep -q "${TAG#v}"` passes on any superstring.
@@ -49,15 +50,15 @@
 //                     form the binary itself reports.
 //   RELEASE_IS_LATEST "true"/"false" — whether this tag is the highest stable
 //                     release, i.e. the line that owns the single shared tap
-//                     formula. Selects the assertion branch, so it is required
+//                     cask. Selects the assertion branch, so it is required
 //                     and has no default.
-//   GITHUB_TOKEN      token used to read the tap's formula via the contents API.
+//   GITHUB_TOKEN      token used to read the tap's cask via the contents API.
 //   GITHUB_API_URL    API base (default https://api.github.com).
 //   REPO_ROOT         checkout of the release commit — the working directory for
 //                     the `config-docs -check` payload run.
 //
 // Exit: 0 when every assertion for the branch taken holds; 1 on any missing or
-// unrecognised env var, an unreadable/unparseable formula, a formula-version
+// unrecognised env var, an unreadable/unparseable cask, a cask-version
 // mismatch (newest + stable), match (prerelease) or not-newer-than-us
 // (maintenance), a failed install, a binary resolved outside the brew prefix, a
 // `--version` mismatch, or a failing payload verb.
@@ -67,25 +68,26 @@
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 
-// The tap goreleaser's `brews:` block writes to, and the formula path inside it.
+// The tap goreleaser's `homebrew_casks:` block writes to, and the cask path
+// inside it. Must stay in step with .goreleaser.yml's `directory: Casks`.
 const TAP_REPO = 'tsouza/homebrew-tap';
-const TAP_FORMULA_PATH = 'Formula/cerberus.rb';
+const TAP_CASK_PATH = 'Casks/cerberus.rb';
 
-// How an operator names the formula: `brew install tsouza/tap/cerberus`.
-const FORMULA_REF = 'tsouza/tap/cerberus';
+// How an operator names the cask: `brew install tsouza/tap/cerberus`.
+const CASK_REF = 'tsouza/tap/cerberus';
 
 // A STABLE release is exactly `<major>.<minor>.<patch>`. Anything with a
 // prerelease suffix (`-rc.1`, `-RC1`) is a prerelease, which `skip_upload: auto`
 // keeps out of the tap.
 const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
 
-// goreleaser's formula template declares `version "1.11.2"`.
-const FORMULA_VERSION_RE = /^\s*version\s+"([^"]+)"/m;
+// goreleaser's cask template declares `version "1.11.2"`.
+const CASK_VERSION_RE = /^\s*version\s+"([^"]+)"/m;
 
-// Fallback when the template stops emitting a bare `version` line: the archive
+// Fallback if the template stops emitting a bare `version` line: the archive
 // name goreleaser builds, `cerberus_<version>_<os>_<arch>.tar.gz` (the
 // `name_template` in .goreleaser.yml `archives:`).
-const FORMULA_ARCHIVE_RE = /cerberus_([^_]+)_(?:linux|darwin)_(?:amd64|arm64)\.tar\.gz/;
+const CASK_ARCHIVE_RE = /cerberus_([^_]+)_(?:linux|darwin)_(?:amd64|arm64)\.tar\.gz/;
 
 // The install command's timeout. A brew install that hangs must fail the job
 // rather than burn the whole runner allowance.
@@ -102,21 +104,21 @@ export function isStableRelease(version) {
   return STABLE_VERSION_RE.test(String(version ?? '').trim());
 }
 
-// formulaVersion — the version the tap formula declares. Tries the explicit
+// caskVersion — the version the tap cask declares. Tries the explicit
 // `version "..."` line, falls back to the archive filename, and THROWS when
-// neither parses. An unparseable formula is a failure, never a pass: silently
+// neither parses. An unparseable cask is a failure, never a pass: silently
 // returning null would let the stable branch's equality check degrade into
 // "well, we couldn't tell".
-export function formulaVersion(rbSource) {
+export function caskVersion(rbSource) {
   const src = String(rbSource ?? '');
-  const declared = FORMULA_VERSION_RE.exec(src);
+  const declared = CASK_VERSION_RE.exec(src);
   if (declared) return declared[1];
-  const archive = FORMULA_ARCHIVE_RE.exec(src);
+  const archive = CASK_ARCHIVE_RE.exec(src);
   if (archive) return archive[1];
   throw new Error(
-    `could not determine the version of ${TAP_REPO}:${TAP_FORMULA_PATH} — neither a \`version "…"\` ` +
+    `could not determine the version of ${TAP_REPO}:${TAP_CASK_PATH} — neither a \`version "…"\` ` +
       `declaration nor a cerberus_<version>_<os>_<arch>.tar.gz archive name is present. ` +
-      `An unreadable formula is a release failure, not a pass.`,
+      `An unreadable cask is a release failure, not a pass.`,
   );
 }
 
@@ -145,17 +147,17 @@ export function compareVersions(a, b) {
 
 // verdict — the pure decision every branch shares. Takes `isLatest`: whether the
 // release being smoked is the highest stable tag in the repo, i.e. whether it is
-// the line that OWNS the single shared tap formula. Returns:
+// the line that OWNS the single shared tap cask. Returns:
 //   mustInstall — true only when the tap is expected to declare exactly this
 //                 version (newest line + stable), so `brew install` must work.
 //                 False on the two branches where goreleaser deliberately wrote
-//                 no formula — each of which still gets its own assertion below,
+//                 no cask — each of which still gets its own assertion below,
 //                 never a bail-out.
 //   problems    — blocking problem strings; empty == the tap is in the state
 //                 this release requires.
-export function verdict({ version, formulaSource, isLatest }) {
+export function verdict({ version, caskSource, isLatest }) {
   const v = String(version ?? '').trim();
-  const declared = formulaVersion(formulaSource);
+  const declared = caskVersion(caskSource);
   const stable = isStableRelease(v);
   const newest = isLatest === true || String(isLatest).trim() === 'true';
   const problems = [];
@@ -167,8 +169,8 @@ export function verdict({ version, formulaSource, isLatest }) {
   if (!stable) {
     if (declared === v) {
       problems.push(
-        `${TAP_REPO}:${TAP_FORMULA_PATH} declares prerelease version "${v}". ` +
-          `.goreleaser.yml sets \`skip_upload: auto\`, so a prerelease must write NO formula — ` +
+        `${TAP_REPO}:${TAP_CASK_PATH} declares prerelease version "${v}". ` +
+          `.goreleaser.yml sets \`skip_upload: auto\`, so a prerelease must write NO cask — ` +
           `the stable tap is now pointing operators at a prerelease.`,
       );
     }
@@ -176,22 +178,22 @@ export function verdict({ version, formulaSource, isLatest }) {
     // MAINTENANCE branch. `skip_upload` resolves to "true" off RELEASE_IS_LATEST,
     // so this publish must have left the tap alone — and the tap must still be
     // ahead of it. `declared === v` is the exact regression that shipped v1.12.1
-    // over a v1.13.0 formula and downgraded every `brew install`.
+    // over a v1.13.0 cask and downgraded every `brew install`.
     if (compareVersions(declared, v) <= 0) {
       problems.push(
-        `${TAP_REPO}:${TAP_FORMULA_PATH} declares version "${declared}", which is not newer than this ` +
+        `${TAP_REPO}:${TAP_CASK_PATH} declares version "${declared}", which is not newer than this ` +
           `maintenance release "${v}". This release is not the highest stable tag, so .goreleaser.yml's ` +
-          `\`skip_upload\` template must have kept it out of the tap and left the newest line's formula ` +
-          `in place. \`brew install ${FORMULA_REF}\` now installs an older cerberus than the newest ` +
+          `\`skip_upload\` template must have kept it out of the tap and left the newest line's cask ` +
+          `in place. \`brew install ${CASK_REF}\` now installs an older cerberus than the newest ` +
           `released line.`,
       );
     }
   } else if (declared !== v) {
     problems.push(
-      `${TAP_REPO}:${TAP_FORMULA_PATH} declares version "${declared}" but this release is "${v}". ` +
-        `The formula was never pushed, or the push landed stale — goreleaser's brews block, ` +
+      `${TAP_REPO}:${TAP_CASK_PATH} declares version "${declared}" but this release is "${v}". ` +
+        `The cask was never pushed, or the push landed stale — goreleaser's homebrew_casks block, ` +
         `HOMEBREW_TAP_GITHUB_TOKEN, or the cross-repo write is broken. ` +
-        `\`brew install ${FORMULA_REF}\` would install the wrong version.`,
+        `\`brew install ${CASK_REF}\` would install the wrong version.`,
     );
   }
 
@@ -248,20 +250,20 @@ async function main() {
   // Required, and required to be one of exactly two words. Defaulting a missing
   // value either way would silently pick an assertion branch: absent-means-false
   // would stop asserting the tap was written on every mainline release, and
-  // absent-means-true would demand a formula a backport never wrote.
+  // absent-means-true would demand a cask a backport never wrote.
   if (isLatestRaw !== 'true' && isLatestRaw !== 'false') {
     fail(
       `RELEASE_IS_LATEST must be exactly "true" or "false" (got "${isLatestRaw}") — it selects which ` +
         `state the tap is asserted to be in, so it has no safe default.`,
     );
   }
-  if (!token) fail('GITHUB_TOKEN is required to read the tap formula');
+  if (!token) fail('GITHUB_TOKEN is required to read the tap cask');
   if (!repoRoot) fail('REPO_ROOT is required — the `config-docs -check` payload runs against this commit\'s docs');
 
-  // --- read the tap's formula through the API --------------------------------
+  // --- read the tap's cask through the API ------------------------------------
   // Both branches need it, and a 404 is a hard failure on both: a tap that has
-  // no cerberus formula at all is broken regardless of what we just published.
-  const url = `${apiBase}/repos/${TAP_REPO}/contents/${TAP_FORMULA_PATH}`;
+  // no cerberus cask at all is broken regardless of what we just published.
+  const url = `${apiBase}/repos/${TAP_REPO}/contents/${TAP_CASK_PATH}`;
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -271,15 +273,15 @@ async function main() {
   });
   if (!res.ok) {
     fail(
-      `GET ${url} -> ${res.status} ${res.statusText}. ${TAP_REPO} has no readable ${TAP_FORMULA_PATH}: ` +
-        `\`brew install ${FORMULA_REF}\` is broken for every operator, whatever this release published.`,
+      `GET ${url} -> ${res.status} ${res.statusText}. ${TAP_REPO} has no readable ${TAP_CASK_PATH}: ` +
+        `\`brew install ${CASK_REF}\` is broken for every operator, whatever this release published.`,
     );
   }
-  const formulaSource = await res.text();
+  const caskSource = await res.text();
 
   let decision;
   try {
-    decision = verdict({ version, formulaSource, isLatest: isLatestRaw });
+    decision = verdict({ version, caskSource, isLatest: isLatestRaw });
   } catch (e) {
     fail(e.message);
   }
@@ -288,7 +290,7 @@ async function main() {
   if (decision.problems.length > 0) process.exit(1);
 
   if (!decision.mustInstall) {
-    // NO-FORMULA branches — asserted above, not skipped. `verdict` has already
+    // NO-CASK branches — asserted above, not skipped. `verdict` has already
     // proved the tap is in the state this release requires: for a prerelease,
     // that it does NOT declare this version; for a maintenance backport, that it
     // still declares a strictly newer one. Installing here would smoke the
@@ -296,7 +298,7 @@ async function main() {
     // not installing.
     ghNotice(
       `brew-smoke: ${version} did not write the tap (${isLatestRaw === 'true' ? 'prerelease' : 'not the highest stable tag'}); ` +
-        `the tap correctly still declares "${formulaVersion(formulaSource)}".`,
+        `the tap correctly still declares "${caskVersion(caskSource)}".`,
     );
     process.exit(0);
   }
@@ -310,9 +312,12 @@ async function main() {
   }
   const brewPrefix = prefixRes.stdout.trim();
 
-  const install = sh('brew', ['install', '--formula', FORMULA_REF], { timeout: INSTALL_TIMEOUT_MS });
+  // `--cask` rather than a bare name: the disambiguator makes the smoke fail
+  // loudly if the tap ever serves a same-named FORMULA again, instead of
+  // quietly installing that one and reporting the cask healthy.
+  const install = sh('brew', ['install', '--cask', CASK_REF], { timeout: INSTALL_TIMEOUT_MS });
   if (install.status !== 0) {
-    fail(`\`brew install --formula ${FORMULA_REF}\` failed. ${describe(install)}`);
+    fail(`\`brew install --cask ${CASK_REF}\` failed. ${describe(install)}`);
   }
 
   // The binary under test must be the one brew just installed — a cerberus
@@ -320,13 +325,13 @@ async function main() {
   // assertion below without the tap being involved at all.
   const which = sh('command -v cerberus', [], { shell: true });
   if (which.status !== 0) {
-    fail(`cerberus is not on PATH after \`brew install ${FORMULA_REF}\`. ${describe(which)}`);
+    fail(`cerberus is not on PATH after \`brew install ${CASK_REF}\`. ${describe(which)}`);
   }
   const resolved = which.stdout.trim();
   if (!resolved.startsWith(brewPrefix)) {
     fail(
       `cerberus resolved to ${resolved}, which is OUTSIDE the brew prefix ${brewPrefix} — ` +
-        `the smoke would be testing some other binary, not the published formula.`,
+        `the smoke would be testing some other binary, not the published cask.`,
     );
   }
 
@@ -367,8 +372,8 @@ async function main() {
   }
 
   ghNotice(
-    `brew-smoke: ${FORMULA_REF} installed ${reported} at ${resolved} (tap formula declares ` +
-      `"${formulaVersion(formulaSource)}"); \`migrate schema\` rendered ${schema.stdout.length} bytes of DDL and ` +
+    `brew-smoke: ${CASK_REF} installed ${reported} at ${resolved} (tap cask declares ` +
+      `"${caskVersion(caskSource)}"); \`migrate schema\` rendered ${schema.stdout.length} bytes of DDL and ` +
       `\`config-docs -check\` matches this commit's docs/configuration.md.`,
   );
   process.exit(0);

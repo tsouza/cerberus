@@ -39,45 +39,59 @@ archives:
       - README.md
       - CHANGELOG.md
 
-# Homebrew formula published to the tsouza/homebrew-tap tap, so operators can
-# `brew install tsouza/tap/cerberus`. The tap holds ONE cerberus formula, so
-# only stable releases on the newest line write it — see skip_upload below. The
+# Homebrew cask published to the tsouza/homebrew-tap tap, so operators can
+# `brew install tsouza/tap/cerberus`. The tap holds ONE cerberus cask, so only
+# stable releases on the newest line write it — see skip_upload below. The
 # cross-repo push needs a PAT (the default GITHUB_TOKEN cannot push to another
 # repo); it is supplied by the HOMEBREW_TAP_GITHUB_TOKEN secret in release.yml.
 #
-# We use `brews:` (a Homebrew FORMULA), not `homebrew_casks:`, on purpose:
-# goreleaser is nudging toward casks, but casks are macOS-only, and cerberus is
-# a Linux-first server binary — a formula installs on both Linuxbrew and macOS.
-brews:
+# A CASK, not a `brews:` formula: a formula describes something Homebrew builds
+# from source, while a cask installs a pre-built artifact — which is exactly
+# what a release archive is. It is not a macOS-only choice: `supports_linux?`
+# holds for any cask that declares no `depends_on macos`, and Homebrew's cask
+# installer gates on the CASK's declared OS rather than on the host being a
+# Mac, so one cask installs under Linuxbrew and macOS alike.
+homebrew_casks:
   - name: cerberus
     ids:
+      - cerberus
+    # Defaults to the cask name, which is already `cerberus`. Stated because
+    # brew-smoke.mjs asserts the installed binary resolves inside the brew
+    # prefix — the two have to agree on what gets linked into `bin`.
+    binaries:
       - cerberus
     repository:
       owner: tsouza
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    # Homebrew resolves a tap's formulae from `Formula/`, `HomebrewFormula/`,
-    # or the tap root, in that order — but goreleaser's `directory` defaults to
-    # EMPTY, i.e. the tap root, so v1.12.0 shipped `cerberus.rb` to the root.
-    # `Formula/` is the conventional layout, it is what `brew-smoke.mjs` pins
-    # (`TAP_FORMULA_PATH`), and it is the only one of the three that is not at
-    # risk from Homebrew's ongoing push to standardise tap layout. Pin it.
-    directory: Formula
+    # `Casks/` is both goreleaser's default and where Homebrew resolves a tap's
+    # casks from. Stated rather than inherited because brew-smoke.mjs pins the
+    # same path (`TAP_CASK_PATH`) and a silent drift between the two would make
+    # the smoke read a file no release writes.
+    directory: Casks
     homepage: "https://github.com/tsouza/cerberus"
     description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
-    license: "Apache-2.0"
     # `auto` on its own only keeps PRERELEASES out of the tap. A stable
     # BACKPORT is not a prerelease, so `auto` alone let v1.12.1 — cut after
     # v1.13.0 — write the tap formula and DOWNGRADE every `brew install` to the
     # older line. Gate on RELEASE_IS_LATEST too (release.yml computes it from
     # the highest stable tag, the same signal the rolling `:latest` images use),
-    # so only the newest release line ever owns the formula. `skip_upload` is
+    # so only the newest release line ever owns the cask. `skip_upload` is
     # templated in goreleaser's run phase and read back at publish time.
     skip_upload: '{{ if eq .Env.RELEASE_IS_LATEST "true" }}auto{{ else }}true{{ end }}'
-    install: |
-      bin.install "cerberus"
-    test: |
-      system "#{bin}/cerberus", "--version"
+    hooks:
+      post:
+        # The release binaries are not Apple-signed or notarised, so macOS
+        # quarantines them on download and the first run dies with "cerberus is
+        # damaged and can't be opened" — a broken install that the tap looks
+        # perfectly healthy for. Stripping the quarantine xattr is Homebrew's
+        # and goreleaser's documented workaround. Guarded on OS.mac? because
+        # there is no such attribute on Linux and `xattr` is not there to run.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/cerberus"]
+          end
 
 checksum:
   name_template: "checksums.txt"
