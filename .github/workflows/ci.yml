@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   # `changes` computes whether the PR is docs-only. Docs-only PRs short-
-  # circuit the heavy `check` (test + build) job — `lint` and
+  # circuit the heavy `check-test` / `check-build` jobs — `lint` and
   # `forbid-skip` still run unconditionally because they are the gates
   # that catch broken markdown / discipline regressions in the docs
   # themselves. See `.github/workflows/compatibility.yml`,
@@ -89,11 +89,22 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # `check` is the test + build job. Linting moved to the `lint` job
-  # below so lint failures and test failures are surfaced independently
-  # and can run in parallel.
-  check:
-    name: check
+  # `check` is the test + build gate, split across two CONCURRENT jobs plus an
+  # aggregator that carries the branch-protection name. Linting is separate
+  # again (the `lint` job below) so lint and test failures surface independently.
+  #
+  # The split is drawn where the measured cost is, not where the tasks feel
+  # different. `go test -race ./...` is the long pole, and inside it ONE package
+  # — internal/api/prom — accounts for ~58% of all package test time, ten times
+  # the next largest (149s against 110s for the other 58 packages COMBINED).
+  # Sharding the test set by package therefore buys nothing: every split still
+  # has to wait for that package, and inside it a single test is the longest
+  # thing running, so splitting further by test name hits the same floor. What
+  # the suite does NOT need to wait for is the build / type-check / oracle /
+  # tidy work — pure serial tail hanging off the same runner. That moved to
+  # `check-build`, and the two halves now overlap instead of queueing.
+  check-test:
+    name: check-test
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
@@ -109,19 +120,38 @@ jobs:
         with:
           tool: just
 
-      - name: test + build
+      - name: test
+        run: just test-unit
+
+  check-build:
+    name: check-build
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: build + type-check the tagged lanes
         run: |
-          just test
           just build
+          just vet-tagged
 
       # The test/oracle nested module quarantines cerberus's test-only
       # consumers of the AGPLv3 grafana/loki / grafana/tempo parsers out
       # of the root module graph (so they never reach the Apache-2.0
       # `cmd/cerberus` binary — see the agpl-clean job below). Its tests
-      # still have to RUN, so exercise the module here from the check job
-      # rather than silently dropping coverage. `just test` / root
-      # `go test ./...` stop at the nested go.mod, so this is a separate
-      # invocation.
+      # still have to RUN, so exercise the module here rather than silently
+      # dropping coverage. `just test-unit` / root `go test ./...` stop at the
+      # nested go.mod, so this is a separate invocation.
       - name: test oracle module
         run: go test ./...
         working-directory: test/oracle
@@ -130,7 +160,7 @@ jobs:
       # go.mod that isn't tidy means the release mutates the tree it is cutting
       # from. That is how `spf13/pflag` sat marked `// indirect` while
       # cmd/cerberus imported it directly. Both modules, since the nested
-      # oracle module drifts the same way and `just test` never reaches it.
+      # oracle module drifts the same way and the root suite never reaches it.
       - name: go.mod is tidy
         run: |
           for mod in . test/oracle; do
@@ -141,6 +171,42 @@ jobs:
             git --no-pager diff -- '**/go.mod' '**/go.sum' go.mod go.sum
             exit 1
           fi
+
+  # The AGGREGATOR, and the only branch-protection context of the three: one
+  # rolled-up verdict over both halves, so the required check name survives the
+  # split unchanged. `always()` is load-bearing — with a plain `needs:` this job
+  # would be SKIPPED when a half fails, and a skipped required check is green to
+  # branch protection. So it always runs and reads the results explicitly.
+  check:
+    name: check
+    needs: [changes, check-test, check-build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: gate on both halves
+        run: |
+          echo "check-test  = ${{ needs.check-test.result }}"
+          echo "check-build = ${{ needs.check-build.result }}"
+          # A docs-only change compiles and tests nothing, so both halves are
+          # skipped by design and the gate reports green without work — the
+          # behaviour the single `check` job had via its own `if:`.
+          if [ "${{ needs.changes.outputs.docs_only }}" = "true" ]; then
+            echo "docs-only change — no Go code to build or test."
+            exit 0
+          fi
+          # Otherwise the strict `!= 'success'` form catches failure AND
+          # cancelled AND skipped: anything that is not a clean pass fails the
+          # gate rather than being read as an absent problem.
+          if [ "${{ needs.check-test.result }}" != "success" ]; then
+            echo "::error::check-test did not succeed (${{ needs.check-test.result }})."
+            exit 1
+          fi
+          if [ "${{ needs.check-build.result }}" != "success" ]; then
+            echo "::error::check-build did not succeed (${{ needs.check-build.result }})."
+            exit 1
+          fi
+          echo "both halves green."
 
   # `lint` consolidates ALL linting in one job:
   #   - Go (golangci-lint v2 = formatters + linters from .golangci.yml)
@@ -501,6 +567,17 @@ jobs:
         run: |
           node .github/scripts/doc-counts.mjs --self-test
           node .github/scripts/doc-counts.mjs
+
+      # Coverage-discipline pins for the two e2e shard planners. e2e.yml is a
+      # RELEASE lane — it does not run on an ordinary PR at all — so a spec file
+      # that no shard claims would go unnoticed until a release stalled on it.
+      # These are pure in-process unit tests over the planner modules (no
+      # substrate, ~50ms both), which is exactly why they belong on the PR path
+      # even though the lane they plan does not.
+      - name: Assert every e2e spec is claimed by a shard
+        run: |
+          node --test .github/scripts/compose-smoke-matrix.test.mjs
+          node --test .github/scripts/dashboard-matrix.test.mjs
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no

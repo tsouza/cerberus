@@ -135,10 +135,61 @@ const nonSpansMetrics = "SELECT `MetricName`, sum(`Value`) AS `Value` " +
 	"WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000) " +
 	"GROUP BY `MetricName`"
 
-func TestUnwindowedSpansScans(t *testing.T) {
+// otherTableRecursiveUnwindowed is the exact shape of a POSITIVE fixture —
+// windowed statement, `WITH RECURSIVE`, a windowless physical scan in the step
+// arm — except the table scanned is not the spans table. It must not flag, and
+// it is what proves the substring prefilter in UnwindowedSpansScans is keyed on
+// the table rather than on the danger markers that surround it.
+const otherTableRecursiveUnwindowed = "WITH RECURSIVE _closure AS (" +
+	"SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth " +
+	"FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000))) AS _seed " +
+	"UNION ALL " +
+	"SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 " +
+	"FROM `otel_logs` AS t INNER JOIN _closure AS c ON t.`TraceId` = c.`TraceId` " +
+	"WHERE c._depth < 128" +
+	") SELECT DISTINCT `TraceId` FROM _closure WHERE _depth > 0"
+
+// TestUnwindowedSpansScansPrefilterCannotSuppressAFinding pins the necessary
+// condition the fast path relies on: every finding is anchored on a
+// `FROM <spans table>` regexp match, so a statement that does not contain the
+// table name as a substring cannot produce one. The fast path answers those
+// without touching the regexp engine — worth ~37% of request CPU on a broad
+// metadata probe, where the emit chokepoint scans large metrics statements that
+// never name the spans table.
+//
+// Asserting the property over the POSITIVE corpus (rather than trusting the
+// reasoning) is what keeps the two in step: a future fixture that flags without
+// naming the table would mean the prefilter silently suppresses a real finding,
+// and that is the one way this optimisation could ever go wrong.
+func TestUnwindowedSpansScansPrefilterCannotSuppressAFinding(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
+	for _, tc := range positiveFixtures() {
+		if !strings.Contains(tc.sql, spansTable) {
+			t.Errorf("positive fixture %q flags a finding but never names %q, so the "+
+				"substring prefilter in UnwindowedSpansScans would return nil before "+
+				"the matcher ran — the fast path must be widened or this fixture is "+
+				"reaching the matcher by a route the prefilter does not model.\nSQL:\n%s",
+				tc.name, spansTable, tc.sql)
+		}
+	}
+
+	if got := len(spansscan.UnwindowedSpansScans(otherTableRecursiveUnwindowed, spansTable)); got != 0 {
+		t.Errorf("a windowless recursive scan of a NON-spans table produced %d finding(s), "+
+			"want 0 — the matcher is keying on the recursive/window markers rather than "+
+			"on the spans table itself", got)
+	}
+}
+
+// positiveFixtures is the flagging half of the corpus, shared by
+// TestUnwindowedSpansScans and the prefilter pin above so neither can drift
+// away from the other.
+func positiveFixtures() []struct {
+	name string
+	sql  string
+	want int
+} {
+	return []struct {
 		name string
 		sql  string
 		want int
@@ -151,14 +202,25 @@ func TestUnwindowedSpansScans(t *testing.T) {
 		// POSITIVE regression (F3): a windowed sibling arm must not mask a
 		// windowless one across a UNION ALL.
 		{"recursive_arm_masked_by_sibling", recursiveArmMaskedBySibling, 1},
+	}
+}
 
+func TestUnwindowedSpansScans(t *testing.T) {
+	t.Parallel()
+
+	cases := append(positiveFixtures(), []struct {
+		name string
+		sql  string
+		want int
+	}{
 		// NEGATIVE — confirmed-FINE shapes; a flag here is a false reject.
 		{"recursive_arm_windowed", recursiveArmWindowed, 0},
 		{"group_by_root_lookup_windowed", groupByRootLookupWindowed, 0},
 		{"matrix_family_wrapper", matrixFamilyWrapper, 0},
 		{"plain_windowed_scan", plainWindowedScan, 0},
 		{"non_spans_metrics", nonSpansMetrics, 0},
-	}
+		{"other_table_recursive_unwindowed", otherTableRecursiveUnwindowed, 0},
+	}...)
 
 	for _, tc := range cases {
 		tc := tc

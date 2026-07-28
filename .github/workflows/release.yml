@@ -210,9 +210,17 @@ jobs:
           # context in neither list is certified by absence, which is exactly
           # what this gate exists to prevent — and it matters most on the
           # MAINTENANCE path, where there is no PR and therefore no branch
-          # protection, leaving this preflight as the only gate. Plus
-          # `migration-e2e`, which can never BE a branch-protection check
-          # because migration-e2e.yml has no `pull_request:` trigger.
+          # protection, leaving this preflight as the only gate.
+          #
+          # Totality is a SUPERSET relation, not equality: several names below
+          # are release-ONLY gates that are deliberately not branch-protection
+          # contexts. `migration-e2e` can never be one (migration-e2e.yml has no
+          # `pull_request:` trigger at all), and `compose-smoke` / `dashboard` /
+          # `profile` boot real substrate — compose stacks, k3d clusters, a chDB
+          # corpus walk — so they short-circuit to a green no-op on an ordinary
+          # PR and do their real work on the merge commit. That is precisely why
+          # they must be REQUIRED here: this preflight is the only place left
+          # that gates on them, so de-gating one would de-gate it everywhere.
           # release_required_checks_test.go asserts the totality invariant, and
           # that every name here is owned by a workflow that actually triggers
           # on `release/*.x` — a name with no lane behind it stalls the gate.
@@ -230,23 +238,22 @@ jobs:
             roundtrip (logql)
             roundtrip (traceql)
             compose-smoke
+            dashboard
             coverage
             profile
             property (PromQL + LogQL + TraceQL, rapid N=500)
             migration-e2e
           # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
           # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate
-          # does NOT `needs:` the crawl info shard, and `dashboard` is informational
-          # on merges — a flake in either must not block a release. `mutation` is
-          # a test-QUALITY ratchet rather than a correctness gate on the artifact
-          # being shipped; it already ran green under branch protection on the
-          # release PR, and requiring it here would put its ~11-leg matrix on the
-          # critical path of every publish, including maintenance hotfixes. A
-          # prefix here that swallows a RELEASE_REQUIRED_CHECKS name fails the
-          # preflight as a wiring error rather than quietly de-gating it.
+          # does NOT `needs:` the crawl info shard, so a crawl flake must not
+          # block a release. `mutation` is a test-QUALITY ratchet rather than a
+          # correctness gate on the artifact being shipped; requiring it here
+          # would put its ~11-leg matrix on the critical path of every publish,
+          # including maintenance hotfixes. A prefix here that swallows a
+          # RELEASE_REQUIRED_CHECKS name fails the preflight as a wiring error
+          # rather than quietly de-gating it.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
-            dashboard
             mutation
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
