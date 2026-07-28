@@ -233,6 +233,30 @@ One implementation means a new rule guards BOTH lanes at once.
     `1` on a parse failure / `helm push` / `oras push` error, or when the
     version-gate cannot definitively determine existence (fails closed, with one
     `::error::`).
+- **`release-gate-drift.mjs`** — `release-gate-drift.yml`, the weekly `drift`
+  job. Rot detector for the EXPECTED set `release-preflight.mjs` gates on. Reads
+  `RELEASE_REQUIRED_CHECKS` + `RELEASE_INFORMATIONAL_CHECKS` out of release.yml
+  itself (one copy of the data, one parser; an empty parse throws rather than
+  comparing against nothing) and checks two directions the preflight structurally
+  cannot see from the inside. PROTECTION DRIFT: a live branch-protection required
+  context in neither list is a lane every PR must pass and the release does not
+  wait for — the dangerous direction, and invisible to an allow-list of names to
+  wait for. LANE DRIFT: a required name that posted no check-run anywhere in the
+  scanned commit window no longer matches a lane, so the next release waits out
+  its full window and aborts mid-publish. The window spans many commits because a
+  single commit's check-runs are a subset of the lane inventory (a docs-only push
+  skips `check`); absent from every commit means dead, not skipped. Pure exported
+  `parseBlockScalar` / `parseCheckLists` / `protectionDrift` / `laneDrift` plus a
+  `--self-test` the job runs first.
+  - Env: `GITHUB_TOKEN` (must be repo-ADMIN — branch protection is unreadable
+    with the default workflow token at any `permissions:` level, so the workflow
+    passes `RELEASE_PAT`), `GITHUB_REPOSITORY`, `GITHUB_API_URL` (default
+    `https://api.github.com`), `DRIFT_BRANCH` (default `main`), `DRIFT_HISTORY`
+    (default 20 commits), `RELEASE_WORKFLOW` (default
+    `.github/workflows/release.yml`).
+  - Exit: `0` when both directions are clean; `1` on any drift, an API read
+    failure, an unparseable release.yml, or protection reporting zero contexts
+    (fails closed — unreadable protection is not a clean bill of health).
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
   green-check guard for BOTH release paths, gated on the publish decision rather
   than on the branch: it runs whenever `app_publish` or `chart_publish` is true,
