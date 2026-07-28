@@ -2,6 +2,14 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
+## [Unreleased]
+
+## [v1.12.2] — 2026-07-28
+
+### Fixed
+
+- **release:** only the newest release line takes the Homebrew formula and the GitHub `Latest` pointer (backport of #1335)
+
 ## [v1.12.1] — 2026-07-28
 
 ### Fixed
@@ -9,8 +17,6 @@ All notable changes to cerberus will be documented in this file. The format roug
 - **promql:** keep the `@` pin in range mode on every range-vector lowering (backport of #1325)
 - **prom:** bound windowless metadata discovery by real retention (backport of #1327)
 - **optimizer:** keep AggFunc.Params through a constant fold (backport of #1326)
-
-## [Unreleased]
 
 ## [v1.12.0] — 2026-07-27
 
