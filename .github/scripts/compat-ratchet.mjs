@@ -14,7 +14,10 @@
 // relative epsilon tolerance (1e-9) over canonical-key-sorted result
 // sets against a deterministic seed, so passed/total are stable run to
 // run (verified: three consecutive green main runs produced byte-
-// identical 574/574, 116/116, 48/48). The ratchet compares integers, not
+// identical scores). The committed floors are prometheus 737/737, loki
+// 116/116, tempo 48/48 — doc-counts.mjs asserts those three numbers
+// against compatibility/parity-baseline.json, so a bump cannot leave
+// this comment behind. The ratchet compares integers, not
 // floats — there is no float/timing/ordering surface left to jitter. It
 // is NOT an allow-list: it never names individual cases or excuses a real
 // failure; it only pins the aggregate floor and rejects any drop below
