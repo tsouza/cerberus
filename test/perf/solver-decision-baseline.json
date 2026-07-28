@@ -846,6 +846,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_count_exp_bare_stale",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_count_exp_latest_sample",
     "routed": false,
     "k": 0,
@@ -901,6 +907,12 @@
   },
   {
     "query": "histogram_quantile_classic_agg_offset_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_bare_at_pin_stale",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"

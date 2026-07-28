@@ -6,8 +6,9 @@
 # value discarded) and substitutes the spec constant on the way out; the
 # pin means that substitution has to happen inside the broadcast
 # projection rather than through `projectValueOverInner`, whose generic
-# branch forwards a `MetricName` column the broadcast shape does not
-# carry. The pinned window still decides WHICH series exist — only its
+# branch projects the inner's own TimeUnix and drops the `anchor_ts` the
+# broadcast exists to carry. The pinned window still decides WHICH series
+# exist — only its
 # computed value is thrown away — so the output is one +Inf row per step
 # for the single seeded series.
 

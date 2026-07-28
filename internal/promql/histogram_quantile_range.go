@@ -157,10 +157,12 @@ func latestArgMax(col string, s schema.Metrics) chplan.AggFunc {
 // see the identical 4-column shape the fan-out path emits.
 //
 // `anchor_ts` comes from the grid and `Attributes` / `Value` from inner,
-// so the bare names resolve unambiguously; inner's own TimeUnix (the
-// pinned anchor, or now64(9) when the pin is `@ end()` of an instant
-// query) is simply not projected. Derived histogram samples drop
-// `__name__`, so MetricName is the empty literal on both paths.
+// so the bare names resolve unambiguously. inner's own TimeUnix is the
+// evaluation stamp every instant-mode histogram lowering emits — a plain
+// `now64(9)`, never the pinned anchor — so the grid's `anchor_ts` has to
+// replace it rather than merge with it, and it is simply not projected.
+// Derived histogram samples drop `__name__`, so MetricName is the empty
+// literal on both paths.
 func broadcastHistogramAtPin(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 	return &chplan.Project{

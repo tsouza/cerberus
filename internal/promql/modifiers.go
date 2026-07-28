@@ -229,10 +229,11 @@ func rangeGridShapeFor(vs *parser.VectorSelector, ctx lowerCtx) rangeGridShape {
 	return gridFanout
 }
 
-// applyStepGridFanout re-anchors rw onto the request's step grid: the
-// emitter pivots between the single-anchor (Step == 0) and per-anchor
-// fan-out shapes on Step, and reads Start / OuterRange for the grid
-// bounds. Only valid for [gridFanout] — it overwrites rw.End, which is
+// applyStepGridFanout re-anchors rw onto the request's step grid. The
+// emitter selects the per-anchor fan-out shape on OuterRange > 0 and then
+// sub-pivots on Step, so both fields have to be set together — which is
+// why this is one function rather than four assignments at each call
+// site. Only valid for [gridFanout]: it overwrites rw.End, which is
 // precisely what must NOT happen under an `@` pin.
 func applyStepGridFanout(rw *chplan.RangeWindow, ctx lowerCtx) {
 	rw.Start = ctx.start.UTC()
@@ -266,6 +267,28 @@ func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
 		Left:  &chplan.ColumnRef{Name: col},
 		Right: bound,
 	}
+}
+
+// andInstantWindow ANDs the instant staleness window
+// `(anchor - instantLookback, anchor]` onto pred, resolving the anchor
+// from vs under ctx.
+//
+// It is the histogram-table counterpart of the predicate
+// [wrapInstantLatestPerSeries] builds for plain selectors, and carries the
+// same rule: a bare selector resolves to the newest sample per series
+// WITHIN the staleness lookback, so the window needs BOTH edges. The upper
+// bound alone lets a sample from arbitrarily far in the past satisfy a
+// query whose series has long gone stale — reference PromQL returns no
+// result there, cerberus would return a quantile over an hour-old
+// histogram. The histogram lowerings reach the window through this one
+// helper so the two edges cannot drift apart per call site.
+func andInstantWindow(pred chplan.Expr, vs *parser.VectorSelector, col string, ctx lowerCtx) (chplan.Expr, error) {
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	pred = andExpr(pred, timeBoundExpr(col, anchor))
+	return andExpr(pred, stalenessLowerBoundExpr(col, anchor, instantLookback)), nil
 }
 
 // anchorBaseExpr returns the SQL expression for an `evalAnchor`'s

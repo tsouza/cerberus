@@ -2322,8 +2322,10 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 // s.ValueColumn}`; `quantile_over_time` with an out-of-range literal phi
 // passes the PromQL-spec ±Inf / NaN constant instead, folding the
 // substitution that projectValueOverInner does on the non-pinned paths
-// into this projection (the broadcast shape has no MetricName column for
-// projectValueOverInner's generic branch to forward).
+// into this projection. Reusing projectValueOverInner here would restamp
+// every broadcast row: its generic branch projects the inner's own
+// TimeUnix and drops `anchor_ts`, which is precisely the column the
+// broadcast exists to carry.
 func wrapRangeWindowAtBroadcast(
 	rw *chplan.RangeWindow, ctx lowerCtx, s schema.Metrics, fn, name string, value chplan.Expr,
 ) chplan.Node {

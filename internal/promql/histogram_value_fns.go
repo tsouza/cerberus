@@ -143,13 +143,9 @@ func lowerHistogramValueFnInstant(
 	// every historical sample per series.
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	if hasModifier(vs) {
-		anchor, err := anchorFromSelector(vs, ctx)
-		if err != nil {
-			return nil, err
-		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
-		pred = andExpr(pred, timeBound)
+	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
+	if err != nil {
+		return nil, err
 	}
 	var input chplan.Node = scan
 	if pred != nil {

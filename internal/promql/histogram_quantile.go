@@ -262,17 +262,9 @@ func lowerHistogramQuantileClassicBare(
 	// `rate(<X>_bucket[5m])` filters against `MetricName='<X>'`.
 	scan := &chplan.Scan{Table: s.HistogramTable}
 	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
-	if hasModifier(vs) {
-		anchor, err := anchorFromSelector(vs, ctx)
-		if err != nil {
-			return nil, err
-		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
-		if pred == nil {
-			pred = timeBound
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
-		}
+	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
+	if err != nil {
+		return nil, err
 	}
 	var input chplan.Node = scan
 	if pred != nil {
@@ -744,17 +736,9 @@ func andExpr(a, b chplan.Expr) chplan.Expr {
 func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	if hasModifier(vs) {
-		anchor, err := anchorFromSelector(vs, ctx)
-		if err != nil {
-			return nil, err
-		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
-		if pred == nil {
-			pred = timeBound
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
-		}
+	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
+	if err != nil {
+		return nil, err
 	}
 	var input chplan.Node = scan
 	if pred != nil {
