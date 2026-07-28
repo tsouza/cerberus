@@ -1878,6 +1878,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "setop_and_subquery_arm_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "setop_or_instant_shared_signature",
     "routed": false,
     "k": 0,
@@ -1897,6 +1903,12 @@
   },
   {
     "query": "setop_or_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_or_subquery_arm_range",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
