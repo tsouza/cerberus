@@ -120,6 +120,19 @@ func UnwindowedSpansScans(sql, spansTable string) []Finding {
 	if spansTable == "" || strings.TrimSpace(sql) == "" {
 		return nil
 	}
+	// Every finding this matcher can return is anchored on a `FROM <spans
+	// table>` match, so a statement that never names the spans table has no
+	// finding to give — provably, not heuristically. Answering that with one
+	// substring scan BEFORE any regexp runs is what keeps the emit chokepoint
+	// (which sees EVERY statement, metrics and logs included) off the regexp
+	// engine on the overwhelming majority of queries: only traces queries name
+	// the spans table. Without it, `reTimestampCmp` below backtracked across
+	// the full text of every metrics statement — on a broad metadata probe
+	// that renders ~110KB statements it cost more CPU than generating the SQL
+	// did (37% of request time against chsql.Emit's own 13%).
+	if !strings.Contains(sql, spansTable) {
+		return nil
+	}
 	// No request window anywhere in the statement → nothing to push down; the
 	// unbounded-query concern belongs to the resource-bound gate, not this
 	// partition-pruning matcher. A request window is ANY `Timestamp` range

@@ -25,15 +25,20 @@ name: perf-profile
 # It emits one JSON record per fixture, uploads the array as an artifact,
 # and renders the highest-fan_factor fixtures into the job step summary.
 #
-# Informational on push/nightly, but ALSO a parity lane on the
-# publish-on-merge release flow: it runs on EVERY pull_request so it can be a
-# required status check, short-circuiting to a green no-op on a non-release PR
-# and profiling the corpus only on a `release/*` PR (so a release PR's green
-# status includes the fan-out profile). The deterministic per-construct
-# ASSERTION pins (the `perf-guards` job in chdb.yml) stay the always-on gating
-# lane; this one stays breadth-coverage. Mirrors chart-ci.yml's no-op pattern.
+# This is a RELEASE gate, not a PR gate. Walking the whole executable corpus
+# through chDB costs minutes, and nothing a PR author can act on arrives faster
+# than the merge commit delivers it, so `profile` is not a branch-protection
+# context: on an ordinary pull request every heavy step short-circuits and the
+# job reports green in seconds. release.yml's preflight names `profile` in
+# RELEASE_REQUIRED_CHECKS, so the real profile must be green on the commit being
+# published. The `pull_request:` trigger is kept for `release/*` head branches
+# only — `github.head_ref` exists on no other event, and a release PR should
+# carry the fan-out profile in its own green status. The deterministic
+# per-construct ASSERTION pins (the `perf-guards` job in chdb.yml) stay the
+# always-on lane; this one stays breadth-coverage. Mirrors chart-ci.yml's no-op
+# pattern.
 #
-# Triggers: pull_request + push-to-main + nightly + manual dispatch.
+# Triggers: pull_request (release/* only) + push-to-main + nightly + dispatch.
 
 on:
   pull_request:
@@ -61,8 +66,8 @@ jobs:
     timeout-minutes: 30
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
     # a release PR (head branch release/*). On a regular PR every heavy step is
-    # skipped and the job reports green without work — so `profile` can be a
-    # required check that gates release PRs but never blocks ordinary PRs.
+    # skipped and the job reports green without work — so `profile` gates the
+    # release and release PRs, and never blocks an ordinary PR.
     env:
       RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     steps:

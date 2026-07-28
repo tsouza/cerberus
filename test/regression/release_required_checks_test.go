@@ -37,6 +37,15 @@ import (
 // total OVER. Adding a required check to branch protection without adding it
 // here is the one drift this file cannot see; adding it here without wiring it
 // into release.yml fails immediately.
+//
+// The relation is a SUBSET, not equality: RELEASE_REQUIRED_CHECKS also names
+// release-ONLY gates that no PR ever waits on — `migration-e2e` (no
+// `pull_request:` trigger at all) and the substrate lanes `compose-smoke` /
+// `dashboard` / `profile`, which boot compose stacks, k3d clusters and a chDB
+// corpus walk and so short-circuit to a green no-op on an ordinary PR. Those
+// were the longest PR lanes by a wide margin and bought nothing a PR could act
+// on faster than the merge commit could; they moved to the release gate rather
+// than disappearing.
 var branchProtectionContexts = []string{
 	"chart-validate",
 	"check",
@@ -44,14 +53,11 @@ var branchProtectionContexts = []string{
 	"compatibility/prometheus",
 	"compatibility/prometheus-forced-route",
 	"compatibility/tempo",
-	"compose-smoke",
 	"coverage",
-	"dashboard",
 	"forbid-skip",
 	"lint",
 	"mutation",
 	"probe",
-	"profile",
 	"property (PromQL + LogQL + TraceQL, rapid N=500)",
 	"roundtrip (logql)",
 	"roundtrip (promql)",

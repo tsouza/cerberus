@@ -78,17 +78,30 @@ migrate *ARGS:
 # === Test ===
 
 # Run unit + spec tests with race detector, then type-check the build-tagged
-# lanes no other recipe compiles. `go vet` typechecks, so a rename in an
-# untagged package that breaks a `migration_tier1` or `migration_tier2`
-# assertion fails HERE, in the required `check` lane, instead of surfacing in
-# the scheduled `migration` workflow — the only lane that executes those
-# files. Two separate invocations, not one `-tags=migration_tier1,migration_tier2`:
-# the two tiers run against different compose stacks and never share a
-# process, and tier2_ruler_test.go's helpers are named to avoid colliding with
-# tier1_stack_test.go's only because both live in package migration — a single
-# combined vet call would silently start requiring that to keep holding.
-test:
+# lanes no other recipe compiles. This is the whole `check` gate in one
+# command, which is what you want locally; CI splits it across two concurrent
+# jobs via the two recipes below, so keep this one a pure composition of them
+# rather than a third copy of the commands.
+test: test-unit vet-tagged
+
+# The race-detected unit + spec suite. CI's `check-test` job runs exactly this
+# and nothing else: it is the long pole of the gate, and pairing it with the
+# quick type-check/build work would serialise two things that have no reason to
+# wait on each other.
+test-unit:
     go test -race ./...
+
+# Type-check the build-tagged migration lanes no other recipe compiles. `go vet`
+# typechecks, so a rename in an untagged package that breaks a `migration_tier1`
+# or `migration_tier2` assertion fails HERE, in the required `check` gate,
+# instead of surfacing in the scheduled `migration` workflow — the only lane
+# that executes those files. Two separate invocations, not one
+# `-tags=migration_tier1,migration_tier2`: the two tiers run against different
+# compose stacks and never share a process, and tier2_ruler_test.go's helpers
+# are named to avoid colliding with tier1_stack_test.go's only because both live
+# in package migration — a single combined vet call would silently start
+# requiring that to keep holding.
+vet-tagged:
     go vet -tags=migration_tier1 ./test/e2e/migration/...
     go vet -tags=migration_tier2 ./test/e2e/migration/...
 

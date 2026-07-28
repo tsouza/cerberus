@@ -1258,8 +1258,10 @@ is the `admin` RepositoryRole in `always` mode, which is why `eol-retire` needs
 `deletion` rule (GitHub records this as `Bypassed rule violations`), whereas the
 default `GITHUB_TOKEN` acts as `github-actions[bot]` — write, never admin — and
 is refused. The required-check set is deliberately lighter than `main`'s: the
-heavy substrate lanes (`compatibility/*`, `compose-smoke`, `dashboard`) are not
-gated on maintenance lines, because a backport must stay cheap enough to ship.
+`compatibility/*` lanes are not gated on maintenance lines, because a backport
+must stay cheap enough to ship. The substrate lanes (`compose-smoke`,
+`dashboard`) gate no pull request anywhere — they are release gates, enforced
+by release.yml's preflight on the commit being published.
 
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —
