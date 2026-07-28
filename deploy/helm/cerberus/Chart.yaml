@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.13.0
+version: 0.13.1
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.13.0"
+appVersion: "1.13.1"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,15 +45,27 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.13.0
+      image: ghcr.io/tsouza/cerberus:v1.13.1
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
-    - kind: added
-      description: "config: accept the chart's nested shape in cerberus.yaml (#1316)"
-    - kind: added
-      description: "migrate: read verify/inventory settings from cerberus.yaml (#1314)"
     - kind: fixed
-      description: "release: make the Homebrew publish path actually work (Formula/ dir + a runner with brew) (#1306)"
+      description: "promql: keep the `@` pin in range mode on every range-vector lowering (#1325)"
     - kind: fixed
-      description: "test/e2e: scope the tempo duration-filter search to the seed corpus (#1305)"
+      description: "prom: bound windowless metadata discovery by real retention (#1327)"
+    - kind: fixed
+      description: "ci: make the release gate, image probe and doc claims hold under audit (#1329)"
+    - kind: fixed
+      description: "migration: forward the story dispatch input to the tier-2 run (#1328)"
+    - kind: fixed
+      description: "optimizer: keep AggFunc.Params through a constant fold (#1326)"
+    - kind: fixed
+      description: "release: close the three gaps that let a release ship unverified (#1322)"
+    - kind: fixed
+      description: "ci: skip buildable images in the compose pre-pull (#1321)"
+    - kind: fixed
+      description: "ci: retry every image pull instead of failing the lane (#1319)"
+    - kind: fixed
+      description: "release: name the workflow a preflight wait is blocked on (#1318)"
+    - kind: changed
+      description: "chsql: skip the spans-scan emit guard when the SQL never names the spans table (#1330)"

@@ -4,6 +4,28 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.13.1] — 2026-07-28
+
+### Fixed
+
+- **promql:** keep the `@` pin in range mode on every range-vector lowering (#1325)
+- **prom:** bound windowless metadata discovery by real retention (#1327)
+- **ci:** make the release gate, image probe and doc claims hold under audit (#1329)
+- **migration:** forward the story dispatch input to the tier-2 run (#1328)
+- **optimizer:** keep AggFunc.Params through a constant fold (#1326)
+- **release:** close the three gaps that let a release ship unverified (#1322)
+- **ci:** skip buildable images in the compose pre-pull (#1321)
+- **ci:** retry every image pull instead of failing the lane (#1319)
+- **release:** name the workflow a preflight wait is blocked on (#1318)
+
+### Performance
+
+- **chsql:** skip the spans-scan emit guard when the SQL never names the spans table (#1330)
+
+### Documentation
+
+- correct parity-gate, config-source and forbid-skip claims (#1323)
+
 ## [v1.13.0] — 2026-07-27
 
 ### Added
