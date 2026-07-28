@@ -317,6 +317,16 @@ jobs:
       - name: release-preflight self-test (required-set guard)
         run: node --test .github/scripts/release-preflight.test.mjs
 
+      # Same reasoning one level out: release-gate-drift.yml is schedule-only, so
+      # its detector would otherwise go unexercised between weekly runs. The pure
+      # half — the release.yml block-scalar parse and the two drift comparisons —
+      # runs here. Its own negative controls matter most: a required name covered
+      # exactly, a protected context covered only by an informational PREFIX, and
+      # the `property (…, rapid N=500)` name surviving as ONE name, since a parser
+      # that split it would report permanent lane drift on a healthy repo.
+      - name: release-gate-drift self-test (gate rot detector)
+        run: node .github/scripts/release-gate-drift.mjs --self-test
+
       - name: brew-smoke self-test (formula-freshness guard)
         run: node --test .github/scripts/brew-smoke.test.mjs
 
