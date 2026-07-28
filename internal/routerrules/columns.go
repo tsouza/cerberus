@@ -1,5 +1,7 @@
 package routerrules
 
+import "sort"
+
 // CorpusTableName is the ClickHouse table the router corpus is written to. It is
 // re-declared here verbatim rather than imported from internal/optcorpus so this
 // package depends on neither optcorpus nor chclient (mirroring how optcorpus
@@ -39,6 +41,11 @@ const (
 type corpusColumn struct {
 	name string
 	kind ColumnKind
+	// runtimeCost marks a numeric column that ClickHouse MEASURES while the
+	// query runs, as opposed to one the solver computes from the query shape
+	// before dispatch. The distinction decides how a percentile over the column
+	// must be scoped — see runtimeCostColumns.
+	runtimeCost bool
 }
 
 // corpusColumns is the canonical column contract of cerberus_router_corpus,
@@ -58,10 +65,10 @@ var corpusColumns = []corpusColumn{
 	{name: "route", kind: ColumnEnum},
 	{name: "k_shards", kind: ColumnNumeric},
 	{name: "decision_reason", kind: ColumnGroup},
-	{name: "read_rows", kind: ColumnNumeric},
-	{name: "read_bytes", kind: ColumnNumeric},
-	{name: "query_duration_ms", kind: ColumnNumeric},
-	{name: "memory_usage", kind: ColumnNumeric},
+	{name: "read_rows", kind: ColumnNumeric, runtimeCost: true},
+	{name: "read_bytes", kind: ColumnNumeric, runtimeCost: true},
+	{name: "query_duration_ms", kind: ColumnNumeric, runtimeCost: true},
+	{name: "memory_usage", kind: ColumnNumeric, runtimeCost: true},
 	{name: "exit_status", kind: ColumnEnum},
 }
 
@@ -74,13 +81,46 @@ var columnKinds = func() map[string]ColumnKind {
 	return m
 }()
 
+// runtimeCostColumns indexes the columns ClickHouse measures during execution:
+// read_rows, read_bytes, query_duration_ms, memory_usage. Every other numeric
+// column (n_anchors, fanout, cumulative_d, outer_range, step, k_shards) is
+// GEOMETRY — the solver derives it from the query shape before dispatch — and
+// its value is the same whether the query then finished or died.
+//
+// The split decides how a percentile over the column must be scoped, which is
+// why it is enforced at catalog-validation time (see validateHealthScope):
+//
+//   - A percentile over a runtime-cost column is a "what does a normal query
+//     cost here?" watermark, so it MUST be scoped to exit_status: ok. An
+//     abnormal termination truncates the counters at whatever ClickHouse had
+//     accumulated when it gave up — a timeout's duration is the deadline, an
+//     OOM's memory is the cap, a killed scan's read_rows is however far it got —
+//     so those rows describe the failure, not the query. Folding them in drags
+//     the watermark toward the pathologies the rules exist to detect, and the
+//     rules stop firing exactly where they are needed.
+//
+//   - A percentile over a geometry column MUST NOT be scoped that way. There is
+//     no outcome bias to remove, so the scope only shrinks the sample; on a
+//     deployment whose heavy shapes are precisely the ones that fail, it can
+//     empty the population outright and collapse the watermark to a fire-on-
+//     everything floor.
+var runtimeCostColumns = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(corpusColumns))
+	for _, c := range corpusColumns {
+		if c.runtimeCost {
+			m[c.name] = struct{}{}
+		}
+	}
+	return m
+}()
+
 // enumDomains is the closed set of accepted category tokens per Enum column,
 // matching the optcorpus Enum8 DDL. A condition that compares an enum column
 // against a token outside its domain fails validation, catching typos like
 // route='C' or exit_status='killed'.
 var enumDomains = map[string]map[string]struct{}{
 	"route":       setOf("A", "B"),
-	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected"),
+	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected", "aborted", "error"),
 	"language":    setOf("promql", "logql", "traceql"),
 }
 
@@ -90,6 +130,23 @@ func setOf(xs ...string) map[string]struct{} {
 		m[x] = struct{}{}
 	}
 	return m
+}
+
+// EnumDomain returns the accepted category tokens for an Enum-typed corpus
+// column, sorted, or nil for a column that is not Enum-typed. It exposes the
+// closed set so a lockstep test can compare it against the writer's member
+// list without routerrules taking a build-time dependency on the writer.
+func EnumDomain(column string) []string {
+	dom, ok := enumDomains[column]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(dom))
+	for tok := range dom {
+		out = append(out, tok)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // knownColumn reports whether name is a corpus column.

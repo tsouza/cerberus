@@ -464,3 +464,69 @@ func (a *AddProjectionBuilder) frag() Frag {
 func (a *AddProjectionBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
+
+// --- ALTER TABLE ... MODIFY COLUMN surface ---
+//
+// ModifyColumnBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] MODIFY COLUMN IF EXISTS <col>
+// <type>`, the statement that reconciles a deployed column's declared type
+// with the one the running binary writes. Widening an Enum8 with new members
+// is metadata-only on ClickHouse — no part is rewritten and no mutation is
+// scheduled — so the same statement is safe to run on every start, and IF
+// EXISTS makes it a no-op on a table that was just created with the wide type.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// ModifyColumnBuilder builds an ALTER TABLE MODIFY COLUMN statement.
+type ModifyColumnBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	column   string
+	cluster  string // "" => no ON CLUSTER clause
+	colType  Frag
+}
+
+// AlterTableModifyColumn starts a MODIFY COLUMN builder retyping <column> on
+// [<database>.]<table> to colType. An empty database emits no qualifier, so a
+// table the connection's own database owns is referenced bare.
+func AlterTableModifyColumn(database, table, column string, colType Frag) *ModifyColumnBuilder {
+	return &ModifyColumnBuilder{database: database, table: table, column: column, colType: colType}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *ModifyColumnBuilder) OnCluster(name string) *ModifyColumnBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table/column identifiers via BareIdent, the optional
+// ON CLUSTER clause via the typed constructor, and the column type via the
+// caller's type Frag — no raw token is written here.
+func (a *ModifyColumnBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" MODIFY COLUMN IF EXISTS ")(b)
+		Col(a.column)(b)
+		ddlToken(" ")(b)
+		a.colType(b)
+	}
+}
+
+// SQL renders the ALTER TABLE MODIFY COLUMN statement to ClickHouse text via
+// RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (a *ModifyColumnBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
