@@ -69,11 +69,18 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 		{"route_a_timeout_should_shard", "language=traceql,shape_id=trc:spans", 1},
 		{"route_a_hit_sample_budget", "language=logql,shape_id=cerb:rate", 1},
 		{"route_b_overshard_low_fanout", "language=promql,shape_id=cerb:topk", 3},
-		// route_a_slow_hot_shape now carries decision_reason in its group key
-		// (the catalogVersion-2 one-line group_by amendment).
-		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=11", 4},
+		// route_a_slow_hot_shape carries decision_reason in its group key (the
+		// catalogVersion-2 one-line group_by amendment) and gates on
+		// slow_duration_watermark, a runtime-cost percentile scoped to
+		// exit_status: ok. The seed's promql durations are {10,11,12,20,30,40}
+		// clean plus two OOMs at {50,60}, so the clean median is 16 and all five
+		// route-A hash=11 rows clear it. traceql has exactly one clean row (the
+		// 1250ms trc:compare finish), so its norm is 1250 and the 25/30ms
+		// timeout+OOM pair under hash=55 is nowhere near slow for traceql — the
+		// rule correctly stays quiet rather than calling a 30ms query slow
+		// because two aborted traces happened to stop early.
+		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=11", 5},
 		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=logql,normalized_query_hash=22", 2},
-		{"route_a_slow_hot_shape", "decision_reason=instant,language=traceql,normalized_query_hash=55", 2},
 		// --- catalogVersion 2: N1 failure_cluster_by_reason -----------------
 		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=promql,shape_id=cerb:sum", 2},
 		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=logql,shape_id=cerb:rate", 1},

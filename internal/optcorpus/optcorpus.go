@@ -76,15 +76,20 @@ type RouteFeatures struct {
 // cost-distribution discriminator: an OOM or timeout exit is the very signal
 // route B (time-slice sharding) exists to avoid, so the go/no-go analysis
 // reads it directly.
-type ExitStatus uint8
+//
+// The underlying type is int8 because the corpus stores each member in a
+// ClickHouse Enum8, whose value domain IS int8 — the Go type and the column
+// type are the same width and signedness, so no member can round-trip to a
+// different value than it was declared with.
+type ExitStatus int8
 
 const (
 	// ExitOK is a clean QueryFinish.
 	ExitOK ExitStatus = iota
-	// ExitOOM is a QueryExceptionWhileProcessing whose exception is a
-	// ClickHouse memory-limit / OOM code. CH-side, derived from query_log.
+	// ExitOOM is an ExceptionWhileProcessing whose exception is a ClickHouse
+	// memory-limit / OOM code. CH-side, derived from query_log.
 	ExitOOM
-	// ExitTimeout is a QueryExceptionWhileProcessing whose exception is a
+	// ExitTimeout is an ExceptionWhileProcessing whose exception is a
 	// ClickHouse timeout / exceeded-execution-time code. CH-side, derived from
 	// query_log.
 	ExitTimeout
@@ -106,12 +111,53 @@ const (
 	// no CH query and no query_log row — the corpus row is decision-only, with
 	// no cost.
 	ExitRejected
+	// ExitAborted is a CH-side terminal outcome: the query was abandoned by
+	// its client mid-flight — a cancellation, a destroyed socket, a broken
+	// pipe. Its cost columns record what accrued up to the abort, not the cost
+	// of the query, so it is held apart from the healthy population the
+	// calibration watermarks are learnt from. The abort rate is an operational
+	// signal (clients giving up), distinct from ExitError's bug signal.
+	ExitAborted
+	// ExitError is a CH-side terminal outcome: the query failed for a reason
+	// that is neither a memory limit, a deadline, nor client abandonment. It
+	// states exactly what is known — the query failed — without inventing a
+	// cause, and it is the honest floor for any unrecognised exception code.
+	ExitError
 )
+
+// exitStatuses enumerates every ExitStatus in iota order. It is the single
+// source of truth the CH Enum8 column type, the string→Enum8 mapping, and the
+// deployed-column reconciliation are all derived from (chtable.go), so a new
+// member added to the iota above cannot reach a corpus row without the column
+// that stores it learning the same name and value.
+var exitStatuses = []ExitStatus{
+	ExitOK,
+	ExitOOM,
+	ExitTimeout,
+	ExitSampleBudget,
+	ExitBreaker,
+	ExitRejected,
+	ExitAborted,
+	ExitError,
+}
+
+// ExitStatusTokens returns every exit_status token the corpus can carry, in
+// Enum8-value order. It is the writer's half of the contract the corpus-mining
+// catalog validates rules against: a consumer that keeps its own copy of the
+// token set (routerrules does, to stay free of a dependency on this package)
+// can compare the two and fail loudly rather than silently rejecting a rule
+// that names a member this package emits.
+func ExitStatusTokens() []string {
+	out := make([]string, 0, len(exitStatuses))
+	for _, s := range exitStatuses {
+		out = append(out, s.String())
+	}
+	return out
+}
 
 // String renders the ExitStatus as the corpus enum token. The tokens are the
 // stable wire/DDL contract shared by the JSONL sink, the CH Enum8 column, and
-// the calibration SQL — keep them in lockstep with exitEnumValue (chtable.go)
-// and the CH Enum8 DDL (corpusCreateTableSQL).
+// the calibration SQL.
 func (e ExitStatus) String() string {
 	switch e {
 	case ExitOOM:
@@ -124,6 +170,10 @@ func (e ExitStatus) String() string {
 		return "breaker"
 	case ExitRejected:
 		return "rejected"
+	case ExitAborted:
+		return "aborted"
+	case ExitError:
+		return "error"
 	default:
 		return "ok"
 	}
@@ -263,8 +313,11 @@ type Row struct {
 	Route          string `json:"route"`
 	KShards        uint8  `json:"k_shards"`
 	DecisionReason string `json:"decision_reason"`
-	// ExitStatus is "ok" | "oom" | "timeout", derived by the reconciler from
-	// the system.query_log row type + exception.
+	// ExitStatus is one of the tokens ExitStatusTokens() enumerates — the
+	// query_log-derived terminal classes the reconciler assigns plus the
+	// cerberus-side ones the engine seam records directly. It is spelled as a
+	// string here because it is the JSONL wire form; the CH-table sink maps it
+	// back to the column's Enum8 value through exitEnumValue.
 	ExitStatus string `json:"exit_status"`
 }
 
@@ -284,17 +337,23 @@ type Sink interface {
 type QueryLogSource interface {
 	// FinishedByQueryID returns the terminal query_log rows for the supplied
 	// query_ids: clean finishes (type='QueryFinish') AND exception exits
-	// (type='QueryExceptionWhileProcessing'), so the corpus can record how a
-	// query terminated. Each returned SourceRow carries the query_id it belongs
-	// to so the reconciler can join it back to the observed Record. ids is
-	// never empty when called.
+	// (type='ExceptionWhileProcessing'), so the corpus can record how a query
+	// terminated. Both names are Enum8 members of system.query_log.type and
+	// must be resolved against the column's own type, never compared as bare
+	// strings — a non-member bare string coerces the comparison to String and
+	// matches nothing, silently. Each returned SourceRow carries the query_id
+	// it belongs to so the reconciler can join it back to the observed Record.
+	// ids is never empty when called.
 	FinishedByQueryID(ctx context.Context, ids []string) ([]SourceRow, error)
 }
 
 // SourceRow is one terminal system.query_log row as returned by a
 // QueryLogSource, before the reconciler joins the shape metadata onto it. It
 // carries the query_id (the join key), the raw cost columns, and the derived
-// exit status (clean / oom / timeout).
+// exit status — the five terminal classes a query_log row can express:
+// ExitOK, ExitOOM, ExitTimeout, ExitAborted, ExitError. The cerberus-side
+// classes (ExitSampleBudget, ExitBreaker, ExitRejected) never originate here;
+// the engine seam records them directly.
 type SourceRow struct {
 	QueryID             string
 	NormalizedQueryHash uint64
@@ -633,7 +692,7 @@ func (r *Reconciler) ObserveRejection(
 // resource cap the engine recognises in-process at the error site — currently
 // the per-query memory cap (max_memory_usage, CH code 241 MEMORY_LIMIT_EXCEEDED,
 // statusToken "oom"). The abort runs ON ClickHouse, so a system.query_log row
-// MAY land (type QueryExceptionWhileProcessing), but the corpus must not depend
+// MAY land (type ExceptionWhileProcessing), but the corpus must not depend
 // on the join landing: the row is recorded TERMINALLY here with the dispatch's
 // known route features and ZERO cost (read_rows / bytes / duration / memory are
 // unknowable at the engine error site — kept honestly unset, never fabricated).

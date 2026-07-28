@@ -122,9 +122,13 @@ spec-chdb:
 # shielded, non-required lane. Includes ./internal/solver/... so the A-vs-B
 # route memo chDB differential lane (avb_chdb_lane_test.go) actually RUNS the
 # parity proof against a real ClickHouse engine instead of only typechecking
-# under `go vet -tags chdb`.
+# under `go vet -tags chdb`. Includes ./internal/optcorpus/... so the
+# query_log.type Enum8 resolution probe (querylogenum_chdb_test.go) actually
+# RUNS: the corpus reconciler's terminal-row predicate is only correct because
+# of how a real engine resolves a name against an Enum8, and no shape assertion
+# over the emitted SQL can prove that.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
