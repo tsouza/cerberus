@@ -905,8 +905,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jlumbroso/free-disk-space@…            # same infra-flake fix as e2e.yml
-      - uses: docker/setup-buildx-action@v4
       # docker hub login for a higher pull rate limit — mirrors e2e.yml
+      - uses: ./.github/actions/setup-buildx      # retried buildkit bootstrap
       - run: docker compose -f tiers/tier1-dual/docker-compose.dual.yml up --wait --wait-timeout 300
       # seed the dual-write window; wait for the overlap to fill
       - run: node .github/scripts/migration-e2e.mjs   # MODE=run TIER=tier1 ARCHETYPE=${{ matrix.archetype }}
