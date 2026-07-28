@@ -2,6 +2,14 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
+## [Unreleased]
+
+## [v1.11.4] — 2026-07-28
+
+### Fixed
+
+- **release:** stop a maintenance backport publish from taking the GitHub `Latest` pointer — the draft-to-published flip defaulted `make_latest` to true, so /releases/latest followed publish order rather than version
+
 ## [v1.11.3] — 2026-07-28
 
 ### Fixed
@@ -16,8 +24,6 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 - **loki:** reject a non-positive `?step=` on `/loki/api/v1/query_range` — `step=0` parses cleanly, so it reached the resolution-cap division and panicked with "integer divide by zero" (backport of #1298, tests #1300)
 - **tempo:** align the request window to the step grid and enforce the resolution ceiling on the gRPC `MetricsQueryRange` export — it returned samples off Tempo's grid and accepted an unbounded matrix fan-out (backport of #1298, tests #1300)
-
-## [Unreleased]
 
 ## [v1.11.1] — 2026-07-17
 
