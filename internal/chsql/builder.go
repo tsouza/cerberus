@@ -48,14 +48,20 @@ func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
 //
 // IN-PACKAGE ESCAPE HATCH, NOT A SHORTCUT. No domain emitter calls it:
 // every operator-token-style glue site in `internal/chsql` composes typed
-// Frags instead, so writeSQL's only callers are the Builder's own tests,
-// which use it to hand-assemble adversarial token streams that no Frag
-// constructor would produce. It must NEVER be reached to build a
-// query/expression SHAPE that a Frag constructor already covers: any CH
-// function is Call("fn", args…), arithmetic is Mul/Add/Sub/Div, and so
-// on. If a shape genuinely has no constructor, add the constructor —
-// reaching for writeSQL puts raw SQL back in an emitter and the typed
-// surface stops being closed by construction.
+// Frags instead, so the only callers are this package's own tests
+// (builder_test.go, frag_goldens_test.go). Those tests splice literal
+// glue — a `, ` separator, an ` = ` operator, an ` AS L` alias — into
+// hand-built token streams that exercise Builder / QueryBuilder plumbing
+// (positional-arg binding order, clause placement) directly. Several of
+// those streams do have exact typed equivalents: `writeSQL("max(") …
+// writeSQL(")")` is Call("max", …), `Ident(x); writeSQL(" AS L")` is
+// As(…), `writeSQL("c._depth < "); Arg(5)` is Lt(…). In non-test code
+// those equivalents are mandatory — writeSQL must NEVER be reached to
+// build a query/expression SHAPE that a Frag constructor already covers:
+// any CH function is Call("fn", args…), arithmetic is Mul/Add/Sub/Div,
+// and so on. If a shape genuinely has no constructor, add the
+// constructor — reaching for writeSQL puts raw SQL back in an emitter
+// and the typed surface stops being closed by construction.
 //
 // (There is intentionally no writeByte method on Builder: io.ByteWriter
 // expects WriteByte(byte) error, and offering a non-error variant
@@ -118,9 +124,10 @@ func writeInlineNonFinite(b *Builder, v float64) bool {
 }
 
 // MapAt appends "<col>[?]" and binds key as a positional argument —
-// CH's Map column access. col is a single bare column name; for nested
-// or qualified references, write the prefix via writeSQL / QualIdent
-// before the bracket form lands.
+// CH's Map column access. col is a single bare column name; for a
+// qualified or otherwise composite container, use the typed Frag form
+// Subscript(container, key) instead — e.g.
+// Subscript(Qual("L", "Attributes"), Lit(key)) for `L`.`Attributes`[?].
 func (b *Builder) MapAt(col, key string) {
 	b.Ident(col)
 	b.sb.WriteByte('[')

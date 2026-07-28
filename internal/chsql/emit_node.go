@@ -213,7 +213,7 @@ func (e *emitter) emitUnionAll(u *chplan.UnionAll) error {
 // project a subset wrap the CrossJoin in a Project (or rely on the
 // surrounding Filter/Project to read the columns by name).
 //
-// This is the broadcast primitive for the PromQL heads: a `StepGrid`
+// This is the broadcast primitive for the PromQL head: a `StepGrid`
 // on the left contributes the single `anchor_ts` column, and the right
 // side contributes a per-series shape evaluated once. The range-mode
 // `absent(...)` lowering uses it to fan an inner count-check across the
