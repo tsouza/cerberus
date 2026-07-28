@@ -127,6 +127,7 @@ type surfaceConfig struct {
 	ch                   chExtra
 	httpServer           HTTPServerConfig
 	lokiTailWriteTimeout time.Duration
+	promMetadataLookback time.Duration
 }
 
 // poolKnobs carries the pool sizing FromEnv parsed plus whether the operator
@@ -162,7 +163,20 @@ func surfaceFromEnv(v *viper.Viper, queryTimeout time.Duration, pools poolKnobs)
 	if lokiTailWriteTimeout <= 0 {
 		return surfaceConfig{}, fmt.Errorf("%s: must be > 0, got %s", envLokiTailWriteTO, lokiTailWriteTimeout)
 	}
-	return surfaceConfig{ch: ch, httpServer: httpServer, lokiTailWriteTimeout: lokiTailWriteTimeout}, nil
+	promMetadataLookback, err := getDuration(v, envPromMetadataLookback)
+	if err != nil {
+		return surfaceConfig{}, err
+	}
+	if promMetadataLookback < 0 {
+		return surfaceConfig{}, fmt.Errorf("%s: must be >= 0, got %s",
+			envPromMetadataLookback, promMetadataLookback)
+	}
+	return surfaceConfig{
+		ch:                   ch,
+		httpServer:           httpServer,
+		lokiTailWriteTimeout: lokiTailWriteTimeout,
+		promMetadataLookback: promMetadataLookback,
+	}, nil
 }
 
 // chExtraFromEnv parses every "full surface" ClickHouse connection knob from
