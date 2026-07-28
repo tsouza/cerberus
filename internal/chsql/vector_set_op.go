@@ -20,13 +20,13 @@ const (
 // emitVectorSetOp renders a PromQL vector set operator (`and`, `or`,
 // `unless`) over the two child plans. The shape depends on the kind:
 //
-//   - VectorSetAnd (`A and B`): semi-join — keep LHS rows whose match-
-//     key signature appears in B. Rendered as
-//     `SELECT MetricName, Attributes, TimeUnix, Value FROM (SELECT * FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>)))`.
+//   - VectorSetAnd (`A and B`): semi-join — keep LHS rows whose match
+//     key appears in B. Rendered as
+//     `SELECT MetricName, Attributes, TimeUnix, Value FROM (SELECT * FROM (<A>) WHERE <key> IN (SELECT DISTINCT <key> FROM (<canonical B>)))`.
 //
 //   - VectorSetUnless (`A unless B`): anti-join — keep LHS rows whose
-//     match-key signature does NOT appear in B. Rendered as
-//     `SELECT MetricName, Attributes, TimeUnix, Value FROM (SELECT * FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>)))`.
+//     match key does NOT appear in B. Rendered as
+//     `SELECT MetricName, Attributes, TimeUnix, Value FROM (SELECT * FROM (<A>) WHERE <key> NOT IN (SELECT DISTINCT <key> FROM (<canonical B>)))`.
 //
 //   - VectorSetOr (`A or B`): left + anti-right — every LHS row plus
 //     every RHS row whose match-key signature does NOT appear in A.
@@ -45,12 +45,20 @@ const (
 // rewrite (`toJSONString(Attributes)`) into the WHERE comparison,
 // producing a `String IN Set<Map>` type mismatch.
 //
-// The match-key signature is the full Attributes column (default), or
-// the projected mapFilter expression for `on(...)` / `ignoring(...)`.
-// The IN-subquery uses `SELECT DISTINCT` so a many-rows-per-signature
-// RHS doesn't blow up the IN list — set ops are inherently many-to-
-// many on labels (PromQL parser rejects `group_left` / `group_right`
-// here), so the DISTINCT is both semantically correct and small.
+// The match key is a label signature — the full Attributes column
+// (default), or the projected mapFilter expression for `on(...)` /
+// `ignoring(...)` — extended with the evaluation timestamp in range
+// mode (StepAligned), where PromQL matches the arms once per evaluation
+// timestamp and every arm carries per-step rows under the shared grid
+// anchor. Instant mode keys on the signature alone: each arm holds one
+// row per series under an arm-local timestamp.
+//
+// The IN-subquery uses `SELECT DISTINCT` so a many-rows-per-key RHS
+// doesn't blow up the IN list — set ops are inherently many-to-many on
+// labels (PromQL parser rejects `group_left` / `group_right` here), so
+// the DISTINCT is both semantically correct and small. Its source is
+// the CANONICALISED right arm, whose 4-column projection guarantees the
+// TimestampColumn the range key references.
 //
 // Set ops never derive a new sample — they filter / union existing
 // ones — so MetricName / Attributes / TimeUnix / Value flow through
@@ -97,7 +105,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		inner := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(leftArm).
-			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, rightFrag, true /*in*/))
+			Where(setOpInSubqueryFrag(s, rightArm, true /*in*/))
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(inner.Frag())
@@ -109,7 +117,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		inner := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(leftArm).
-			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, rightFrag, false /*notIn*/))
+			Where(setOpInSubqueryFrag(s, rightArm, false /*notIn*/))
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(inner.Frag())
@@ -179,7 +187,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 				As(
 					Window(
 						Call("max", Eq(Col(setOpSideCol), InlineLit(0))),
-						[]Frag{matchKeyGroupExprFrag(s.Match, s.AttributesColumn)},
+						setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned),
 						nil,
 					),
 					setOpHasLeftCol,
@@ -457,28 +465,44 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 }
 
 // setOpInSubqueryFrag builds the WHERE predicate for an `IN` or `NOT IN`
-// against a DISTINCT signature subquery over the other side.
+// against a DISTINCT match-key subquery over the other side.
 //
-//	<sig> [NOT] IN (SELECT DISTINCT <sig> FROM <subquery>)
+//	<sig> [NOT] IN (SELECT DISTINCT <sig> FROM <subquery>)                  — instant
+//	(<sig>, TimeUnix) [NOT] IN (SELECT DISTINCT <sig>, TimeUnix FROM <sub>) — range
 //
-// <sig> is the match-key expression — for default matching it's the
-// bare Attributes column; for `on(labels)` / `ignoring(labels)` it's
+// <sig> is the label-signature expression — for default matching it's
+// the bare Attributes column; for `on(labels)` / `ignoring(labels)` it's
 // the corresponding mapFilter projection. Reusing the existing
 // matchKeyGroupExpr helper means the signature shape stays in sync
 // with VectorJoin (so the optimizer's match-key recognition keeps
 // working across both V-V binop families).
 //
+// In range mode the key carries the evaluation timestamp alongside the
+// signature, because PromQL matches set-op arms once per evaluation
+// timestamp. `sub` is therefore the CANONICALISED other arm — the
+// 4-column projection that structurally guarantees a TimestampColumn —
+// not the raw child, whose derived / matrix shapes need not expose one.
+//
 // DISTINCT keeps the IN-list small when the other side has many rows
-// per signature; set ops are inherently many-to-many on labels so a
+// per key; set ops are inherently many-to-many on labels so a
 // per-series subquery would otherwise emit one row per LHS+RHS series.
-func setOpInSubqueryFrag(m chplan.VectorMatch, attrsCol string, sub Frag, in bool) Frag {
-	sig := matchKeyGroupExprFrag(m, attrsCol)
+// `Distinct` renders on the first projection only, which is CH's
+// row-level DISTINCT over the whole SELECT list — exactly the
+// per-(signature, timestamp) key set the range shape needs.
+func setOpInSubqueryFrag(s *chplan.VectorSetOp, sub Frag, in bool) Frag {
+	keys := setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
+	var sig Frag
+	if len(keys) == 1 {
+		sig = keys[0]
+	} else {
+		sig = Tuple(keys...)
+	}
 	inner := NewQuery().
-		Select(Distinct(matchKeyGroupExprFrag(m, attrsCol))).
+		Select(append([]Frag{Distinct(keys[0])}, keys[1:]...)...).
 		From(sub)
 	// inner.Frag() already wraps the SELECT in parens; In / NotInSubquery
 	// each add the outer membership parens, giving the existing
-	// `<sig> [NOT] IN ((SELECT DISTINCT … FROM …))` byte shape.
+	// `<key> [NOT] IN ((SELECT DISTINCT … FROM …))` byte shape.
 	if in {
 		return In(sig, inner.Frag())
 	}

@@ -33,24 +33,27 @@ import (
 //	) WHERE <survival predicate>
 //
 // The survival shape differs by operator, but both reduce to a SINGLE
-// window aggregate partitioned by the match-key signature:
+// window aggregate partitioned by the match key — the label signature
+// in instant mode, `(signature, TimeUnix)` in range mode, where PromQL
+// matches the arms once per evaluation timestamp (see
+// setOpMatchKeyFrags):
 //
 //   - `or`  — earliest-arm-wins. `_setop_min_side =
-//     min(_setop_side) OVER (PARTITION BY <sig>)` is the lowest arm
-//     index that contributed a row for the signature. A row survives
+//     min(_setop_side) OVER (PARTITION BY <key>)` is the lowest arm
+//     index that contributed a row for the key. A row survives
 //     iff `_setop_side = _setop_min_side`: the earliest arm's rows all
-//     pass; every later arm's rows for the same signature drop. This
+//     pass; every later arm's rows for the same key drop. This
 //     generalises the binary `_setop_has_left = 0` test (where the only
 //     two indices are 0 / 1) to K arms and is byte-identical to the
 //     nested left-assoc `or` result.
 //   - `and` — present-in-every-arm. `_setop_sides =
 //     groupBitOr(bitShiftLeft(1, _setop_side)) OVER (PARTITION BY
-//     <sig>)` is the bitmask of arms that contributed a row for the
-//     signature. Only arm-0 rows survive (`and` keeps the LHS values),
+//     <key>)` is the bitmask of arms that contributed a row for the
+//     key. Only arm-0 rows survive (`and` keeps the LHS values),
 //     and only when the mask is all-ones — `(1 << K) - 1` — i.e. the
-//     signature appears in EVERY arm. This matches the nested
+//     key appears in EVERY arm. This matches the nested
 //     left-assoc semi-join `((a and b) and c)` exactly: a row of `a`
-//     survives iff its signature is present in `b` and in `c`.
+//     survives iff its key is present in `b` and in `c`.
 //
 // Each arm is canonicalised to the 4-column Sample tuple
 // (MetricName, Attributes, TimeUnix, Value) via the same per-arm
@@ -67,7 +70,7 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 		return err
 	}
 
-	sig := matchKeyGroupExprFrag(s.Match, s.AttributesColumn)
+	sig := setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
 	outCols := naryVectorSetOpOutputCols(s)
 
 	sideArms := make([]Frag, len(s.Arms))
@@ -89,7 +92,7 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 				outCols,
 				Col(setOpSideCol),
 				As(
-					Window(Call("min", Col(setOpSideCol)), []Frag{sig}, nil),
+					Window(Call("min", Col(setOpSideCol)), sig, nil),
 					narySetOpMinSideCol,
 				),
 			)...).
@@ -111,7 +114,7 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 				As(
 					Window(
 						Call("groupBitOr", narySetOpSideBitFrag()),
-						[]Frag{sig},
+						sig,
 						nil,
 					),
 					narySetOpSidesMaskCol,
@@ -191,6 +194,7 @@ func naryVectorSetOpCanonicalArmFrag(s *chplan.NaryVectorSetOp, arm chplan.Node,
 	view := &chplan.VectorSetOp{
 		Op:               s.Op,
 		Match:            s.Match,
+		StepAligned:      s.StepAligned,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,

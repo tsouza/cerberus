@@ -43,6 +43,16 @@ type NaryVectorSetOp struct {
 	Op    VectorSetOpKind
 	Match VectorMatch
 
+	// StepAligned marks a range-mode chain, whose arms all carry
+	// per-step rows under a shared grid anchor. PromQL evaluates set
+	// operators once per evaluation timestamp, so the match key is
+	// (label signature, timestamp) there; instant mode matches on the
+	// signature alone because each arm carries one row per series with
+	// an arm-local timestamp. Carried once for the whole chain, like
+	// the match key and the canonical column names. Mirrors
+	// VectorJoin.StepAligned.
+	StepAligned bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -69,7 +79,7 @@ func (s *NaryVectorSetOp) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if s.Op != o.Op || !s.Match.Equal(o.Match) {
+	if s.Op != o.Op || !s.Match.Equal(o.Match) || s.StepAligned != o.StepAligned {
 		return false
 	}
 	if s.MetricNameColumn != o.MetricNameColumn ||
