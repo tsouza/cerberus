@@ -97,6 +97,18 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 		}
 		newFuncs := make([]chplan.AggFunc, len(v.AggFuncs))
 		for i, af := range v.AggFuncs {
+			// Params and Args both fold: a parameterised aggregate
+			// renders as `fn(<params>)(<args>)`, and dropping either
+			// slice on the rebuild would silently change the function
+			// being called rather than just its folded operands.
+			newParams := make([]chplan.Expr, len(af.Params))
+			for j, p := range af.Params {
+				ne, ch := foldFn(p)
+				newParams[j] = ne
+				if ch {
+					anyChange = true
+				}
+			}
 			newArgs := make([]chplan.Expr, len(af.Args))
 			for j, a := range af.Args {
 				ne, ch := foldFn(a)
@@ -105,7 +117,12 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 					anyChange = true
 				}
 			}
-			newFuncs[i] = chplan.AggFunc{Name: af.Name, Args: newArgs, Alias: af.Alias}
+			newFuncs[i] = chplan.AggFunc{
+				Name:   af.Name,
+				Params: newParams,
+				Args:   newArgs,
+				Alias:  af.Alias,
+			}
 		}
 		if !anyChange {
 			return n, false
