@@ -3557,26 +3557,66 @@ func TestVectorSetOpProjectionOutputName_AliasBranch(t *testing.T) {
 // mis-classify the instant case as matrix.
 func TestVectorSetOpArmTimestampCol_OuterRangeBoundary(t *testing.T) {
 	t.Parallel()
+	view := &chplan.VectorSetOp{
+		MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
+		TimestampColumn: "TimeUnix", ValueColumn: "Value",
+	}
 	matrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: "TimeUnix"}
-	if col, ok := vectorSetOpArmTimestampCol(matrix); !ok || col != "TimeUnix" {
+	if col, ok := vectorSetOpArmTimestampCol(matrix, view); !ok || col != "TimeUnix" {
 		t.Errorf("OuterRange>0 RangeWindow = (%q,%v), want (TimeUnix,true)", col, ok)
 	}
 	instant := &chplan.RangeWindow{OuterRange: 0, TimestampColumn: "TimeUnix"}
-	if col, ok := vectorSetOpArmTimestampCol(instant); ok {
+	if col, ok := vectorSetOpArmTimestampCol(instant, view); ok {
 		t.Errorf("OuterRange==0 RangeWindow = (%q,true), want matrix=false (boundary)", col)
 	}
 	// A subquery-fed arm reduces over the inner grid's anchor, so its
 	// outer SELECT surfaces the timestamp under `anchor_ts`.
 	subq := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: chplan.RangeWindowAnchorColumn}
-	if col, ok := vectorSetOpArmTimestampCol(subq); !ok || col != chplan.RangeWindowAnchorColumn {
+	if col, ok := vectorSetOpArmTimestampCol(subq, view); !ok || col != chplan.RangeWindowAnchorColumn {
 		t.Errorf("subquery-fed RangeWindow = (%q,%v), want (%s,true)", col, ok, chplan.RangeWindowAnchorColumn)
 	}
-	// Recurses past a wrapping Project / Filter.
-	if _, ok := vectorSetOpArmTimestampCol(&chplan.Project{Input: matrix}); !ok {
-		t.Errorf("matrix detection must recurse through a Project wrapper")
+	// Recurses past a value-rewrite Project / a Filter — neither
+	// renames the anchor, so the matrix node's column still binds.
+	rewrite := &chplan.Project{Input: matrix, Projections: []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+	}}
+	if _, ok := vectorSetOpArmTimestampCol(rewrite, view); !ok {
+		t.Errorf("matrix detection must recurse through a value-rewrite Project wrapper")
 	}
-	if _, ok := vectorSetOpArmTimestampCol(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}); !ok {
+	if _, ok := vectorSetOpArmTimestampCol(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}, view); !ok {
 		t.Errorf("matrix detection must recurse through a Filter wrapper")
+	}
+}
+
+// TestVectorSetOpArmTimestampCol_StopsAtCanonicalProject kills the
+// CONDITIONALS_NEGATION on the canonical-Project guard in
+// vectorSetOpArmTimestampCol. A Project that already exposes the
+// canonical Sample tuple IS the arm's outermost SELECT, so it surfaces
+// the anchor under the set op's TimestampColumn. Walking past it reports
+// the RangeWindow's own column (`Timestamp` on the logs schema), which
+// that scope never exposes — ClickHouse then rejects the statement with
+// code 47 "Unknown expression identifier".
+func TestVectorSetOpArmTimestampCol_StopsAtCanonicalProject(t *testing.T) {
+	t.Parallel()
+	view := &chplan.VectorSetOp{
+		MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
+		TimestampColumn: "TimeUnix", ValueColumn: "Value",
+	}
+	logsMatrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: "Timestamp"}
+	canonical := &chplan.Project{Input: logsMatrix, Projections: []chplan.Projection{
+		{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+	}}
+	if col, ok := vectorSetOpArmTimestampCol(canonical, view); !ok || col != "TimeUnix" {
+		t.Errorf("canonical Project over a logs matrix arm = (%q,%v), want (TimeUnix,true)", col, ok)
+	}
+	// A Filter above the canonical Project is transparent, so the stop
+	// still applies.
+	filtered := &chplan.Filter{Input: canonical, Predicate: &chplan.LitBool{V: true}}
+	if col, ok := vectorSetOpArmTimestampCol(filtered, view); !ok || col != "TimeUnix" {
+		t.Errorf("Filter over a canonical Project = (%q,%v), want (TimeUnix,true)", col, ok)
 	}
 }
 
