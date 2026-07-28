@@ -148,7 +148,7 @@ func TestParseTimeProm(t *testing.T) {
 	}
 }
 
-func TestParseTimeLoki(t *testing.T) {
+func TestParseTimeUnixScaled(t *testing.T) {
 	def := time.Unix(1_000, 0).UTC()
 	tests := []struct {
 		name string

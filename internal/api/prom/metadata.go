@@ -242,39 +242,44 @@ func parseMetadataWindow(r *http.Request) (start, end time.Time, err error) {
 }
 
 // defaultMetadataLookback bounds the absent-window metadata-discovery scan
-// to the data-retention horizon rather than to a short recent window.
+// when the operator has not stated the deployment's retention.
 //
 // Reference Prometheus answers a windowless /api/v1/label/<l>/values,
 // /labels and /series over the ENTIRE queryable range (web/api/v1/api.go
 // defaults start to MinTime and end to MaxTime) — every name / value /
 // series still inside retention. Grafana's metric / label pickers send no
 // start/end under the common "On dashboard load" variable refresh, so
-// without a default the discovery arms emit a WHERE-less scan over every
-// toDate(TimeUnix) partition (the prod full-column scan this fix targets).
+// without a default the discovery arms enumerate every metric name / label
+// key ever written (the prod full-column scan this bound targets).
 //
-// Bounding the absent window to the retention horizon is what keeps the
-// answer byte-identical to Prometheus's: anything older than the tables'
-// TTL has already been ttl_only_drop_parts-dropped and is absent from both
-// backends, so no name/value/series that Prometheus would return is
-// dropped. It still emits a closed TimeUnix bound, so ClickHouse
-// partition-prunes whenever the table physically spans more than the
-// horizon (a request-supplied narrower range, honored verbatim, is where
-// the real pruning comes from).
+// What the bound buys differs per arm, and mostly it is not partition
+// pruning. A windowless request is nowAnchored, and the three
+// now-anchored arms (metricNamesSQL, unionLabelNamesSQL,
+// unionLabelValuesSQL) emit no WHERE at all: the horizon rides as
+// `GROUP BY <series keys> HAVING max(TimeUnix) >= start`, an aggregate
+// predicate ClickHouse serves from the proj_series aggregating projection
+// instead of the fact table. `end` is unused there — it is "now", and
+// samples are never future-dated. The one exception is the resource-label
+// arm (unionResourceLabelNamesSQL), which has no now-anchored form and
+// takes the derived [start,end] as a literal WHERE — that arm, and the
+// !nowAnchored path where a request supplies its own finite range, are
+// the only places the bound turns into MergeTree partition pruning.
 //
-// This constant is the FALLBACK for when cerberus cannot know that
-// horizon. Cerberus provisions no TTL by default (CERBERUS_SCHEMA_TTL is
-// 0 — retention is deliberately left to the operator), so there is no
-// retention horizon to read; two weeks is then a scan bound chosen to be
-// long enough to cover the metrics a dashboard picker actually offers,
-// not a completeness guarantee. cmd/cerberus overrides it with the
-// configured metric-table TTL whenever one IS set, which is the case that
-// makes the byte-identical claim above true; a deployment that retains
-// more than the fallback without provisioning a TTL through cerberus sets
-// CERBERUS_PROM_METADATA_LOOKBACK to its real retention to match.
-//
-// A SHORTER fallback (1h/6h/24h) prunes harder but silently drops metrics
-// that went quiet within retention — the no-silent-drop divergence the
-// windowless-completeness guards forbid.
+// The horizon is a SCAN BOUND, and any scan bound below the deployment's
+// real retention omits names / values / series that reference Prometheus
+// would return — a metric quiet for longer than the bound disappears from
+// Grafana's pickers. Cerberus cannot discover the real retention: nothing
+// it can read proves what ClickHouse physically holds (CERBERUS_SCHEMA_TTL
+// is a no-op unless auto-create is on, and its DDL is CREATE TABLE IF NOT
+// EXISTS, so it never reaches a table an OTel collector already created).
+// So this constant is a judgement call, and 14d is where the line sits:
+// long enough to cover a metric idle across a deploy freeze or a
+// low-traffic environment's weekend, short enough that the projection read
+// stays bounded. A SHORTER fallback (1h/6h/24h) prunes harder but starts
+// dropping ordinarily-quiet metrics.
+// An operator whose retention exceeds 14d states it via
+// CERBERUS_PROM_METADATA_LOOKBACK, which is the only way to make the
+// answer complete with respect to what ClickHouse actually holds.
 const defaultMetadataLookback = 14 * 24 * time.Hour
 
 // metadataLookback is the effective absent-window horizon: the configured

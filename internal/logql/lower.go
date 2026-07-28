@@ -111,9 +111,10 @@ func (c lowerCtx) rangeMode() bool {
 // Both call sites pass `Interval + Offset`: an offset shifts the window
 // further into the past, so it *adds* to how far back the clamp has to
 // reach. A non-positive extension is a no-op, so a zero-interval
-// selector needs no guard at the call site. So is a context with no
-// time window at all — a bare matcher query, or a caller that used
-// [Lower] rather than [LowerAt] — which keeps the clamp unmodified.
+// selector needs no guard at the call site. A context with no time
+// window at all is likewise a no-op — the [Lower] entry point, or a
+// [LowerAt] caller that passed zero bounds. Either way no clamp was
+// injected, so there is nothing for the extension to move.
 func (c lowerCtx) withMatcherWindowExtension(extension time.Duration) lowerCtx {
 	if extension <= 0 || !c.hasTimeWindow() {
 		return c

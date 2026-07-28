@@ -25,15 +25,6 @@ func resolveSignalTTL(p config.SchemaProvisioning, override time.Duration) time.
 	return p.TTL
 }
 
-// MetricsTTL is the retention cerberus provisions on the metric tables, under
-// the same per-signal-override rule [DDLConfig] applies. Zero means cerberus
-// emits no TTL clause and retention is entirely the operator's to manage — the
-// distinction the Prom metadata-discovery lookback turns on (see
-// internal/api/prom's defaultMetadataLookback).
-func MetricsTTL(cfg config.Config) time.Duration {
-	return resolveSignalTTL(cfg.SchemaProvisioning, cfg.SchemaProvisioning.TTLMetrics)
-}
-
 // storagePolicySetting is the MergeTree setting key the StoragePolicy shorthand
 // folds into the SETTINGS tail. Pinned first so the emitted DDL is
 // deterministic regardless of any further Settings entries.

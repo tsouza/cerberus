@@ -59,11 +59,17 @@ type Config struct {
 	// PromMetadataLookback is how far back a WINDOWLESS Prom
 	// metadata-discovery request (/api/v1/labels,
 	// /api/v1/label/<l>/values, /api/v1/series with no start/end)
-	// scans, via CERBERUS_PROM_METADATA_LOOKBACK. It exists so the scan
-	// bound can be told the deployment's real retention when cerberus
-	// does not provision it: `0` (the default) means "derive it" — the
-	// configured metric-table TTL when one is set, otherwise the Prom
-	// handler's own conservative fallback.
+	// scans, via CERBERUS_PROM_METADATA_LOOKBACK. It is the ONLY way to
+	// tell cerberus the deployment's real retention: no other config
+	// value proves what ClickHouse physically holds. SchemaProvisioning's
+	// TTL knobs look like they would, but they are a no-op unless
+	// AutoCreateSchema is on, and even then the DDL is CREATE TABLE IF
+	// NOT EXISTS — so a table the OTel collector already created keeps
+	// whatever retention it was created with. Deriving the bound from
+	// them would under-scan and silently drop metrics that went quiet
+	// inside real retention. `0` (the default) leaves the Prom handler on
+	// its own fallback horizon; setting this above the real retention
+	// only widens the scan, never drops results.
 	PromMetadataLookback time.Duration
 	// Logs is the OTel logs schema (table + columns the Loki API reads).
 	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
@@ -1300,10 +1306,9 @@ const defaultHTTPMaxBodyBytes int64 = 4 << 20
 const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
 
 // defaultPromMetadataLookback is zero on purpose: "no explicit lookback
-// configured", which lets cmd/cerberus derive the bound from the metric
-// tables' provisioned TTL (schemaboot.MetricsTTL) and fall back to the Prom
-// handler's own conservative horizon when no TTL is provisioned either. A
-// non-zero default here would silently win over a real, longer retention.
+// configured", which leaves the windowless metadata scan on the Prom
+// handler's own conservative fallback horizon. A non-zero default here would
+// duplicate that fallback in a second place and drift from it.
 const defaultPromMetadataLookback time.Duration = 0
 
 // defaultCHOptCorpusInterval is how often the query_log performance-corpus
