@@ -445,19 +445,29 @@ func setOpMatchKeyFrags(m chplan.VectorMatch, attrsCol, tsCol string, stepAligne
 	return keys
 }
 
+// canonicalMatchKeyFrag wraps a Map-valued match key in mapSort.
+//
+// A CH Map compares and groups positionally over its (keys, values)
+// arrays, so two logically identical label sets stored in different key
+// orders are unequal; mapSort makes the key compare by label set. It is
+// order-only and idempotent, so it can never merge two genuinely
+// different label sets.
+func canonicalMatchKeyFrag(key Frag) Frag { return Call("mapSort", key) }
+
 // matchKeyGroupExprFrag returns a Frag for the GROUP BY expression
 // that collapses rows onto a single matching key. For default matching
-// (full Attributes) this is just the Attributes column; for on(labels)
+// (full Attributes) this is the Attributes column; for on(labels)
 // it's `mapFilter((k, v) -> k IN (...), Attributes)`; for
-// ignoring(labels) it's the complementary mapFilter.
+// ignoring(labels) it's the complementary mapFilter. Each of those is
+// Map-valued, so each is canonicalised — see canonicalMatchKeyFrag.
 func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	if len(m.Labels) == 0 && !m.On {
-		return Col(attrsCol)
+		return canonicalMatchKeyFrag(Col(attrsCol))
 	}
 	if m.On && len(m.Labels) == 0 {
 		// on() with no labels - group everything onto a single
 		// match-key. CH doesn't allow an empty IN list, so emit a
-		// constant tuple.
+		// constant tuple. Not a Map: nothing to canonicalise.
 		return Call("tuple")
 	}
 	if m.On {
@@ -467,15 +477,15 @@ func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
 		for i, lbl := range m.Labels {
 			lbls[i] = Lit(lbl)
 		}
-		return Call(
+		return canonicalMatchKeyFrag(Call(
 			"mapFilter",
 			Lambda2("k", "v", In(BareIdent("k"), lbls...)),
 			Col(attrsCol),
-		)
+		))
 	}
 	// ignoring(...) — the complementary mapFilter. MapFilterExcept is a
 	// Builder helper that renders `mapFilter((k, v) -> NOT (k IN (…)), col)`.
-	return func(b *Builder) { b.MapFilterExcept(attrsCol, m.Labels...) }
+	return canonicalMatchKeyFrag(func(b *Builder) { b.MapFilterExcept(attrsCol, m.Labels...) })
 }
 
 // outputMatchSetFrag returns a Frag for the qualified output Attributes
@@ -781,7 +791,10 @@ func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol, tsCol string, step
 // composed on top without copying the per-shape branches.
 func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	if len(m.Labels) == 0 && !m.On {
-		return Eq(qualColFrag("L", attrsCol), qualColFrag("R", attrsCol))
+		return Eq(
+			canonicalMatchKeyFrag(qualColFrag("L", attrsCol)),
+			canonicalMatchKeyFrag(qualColFrag("R", attrsCol)),
+		)
 	}
 	if m.On && len(m.Labels) == 0 {
 		// on() with no labels - every row on the left pairs with
@@ -792,6 +805,8 @@ func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	}
 	if m.On {
 		// `L.<attrs>[?] = R.<attrs>[?]` per on(...) label, AND-joined.
+		// Per-label subscripts are Strings, not Maps — already
+		// order-insensitive, so nothing to canonicalise.
 		perLabel := make([]Frag, len(m.Labels))
 		for i, lbl := range m.Labels {
 			perLabel[i] = Eq(
@@ -813,5 +828,5 @@ func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 			qualColFrag(side, attrsCol),
 		)
 	}
-	return Eq(ignFilter("L"), ignFilter("R"))
+	return Eq(canonicalMatchKeyFrag(ignFilter("L")), canonicalMatchKeyFrag(ignFilter("R")))
 }
