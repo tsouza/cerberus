@@ -1586,7 +1586,7 @@ release-prep version chart_bump="patch":
     gh pr create --base main --head "$branch" \
         --title "chore(release): cerberus v{{version}} / chart ${chart}" \
         --body-file release-pr-body.md
-    echo "Opened release PR on $branch. After it merges + main is green: just release-tag {{version}}"
+    echo "Opened release PR on $branch. MERGING it publishes — release.yml runs on push-to-main, gates on the staged version bumps, and creates v{{version}} itself. Do not tag by hand."
 
 # Create/switch to the release/<major>.<minor>.x maintenance line off the
 # latest matching tag, ready for cherry-picking fix: commits to backport.
@@ -1602,8 +1602,9 @@ backport-line minor:
     echo "On release/{{minor}}.x (off $base). Cherry-pick the fix commits, then: just release-prep-backport <{{minor}}.Z>"
 
 # Stage a backport release on the current release/X.Y.x branch (after the
-# fix: commits are cherry-picked) and push the branch. Tag afterward with
-# `just release-tag`. No PR — the maintenance line is pushed + tagged.
+# fix: commits are cherry-picked) and push the branch. Pushing IS the trigger:
+# release.yml runs on `release/*.x` pushes, gates on the staged version bumps,
+# and creates the tag itself. No PR, and no manual tag.
 # Usage: just release-prep-backport 1.3.2
 release-prep-backport version chart_bump="patch":
     #!/usr/bin/env bash
@@ -1617,16 +1618,12 @@ release-prep-backport version chart_bump="patch":
     git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
     git commit -m "chore(release): cerberus v{{version}} / chart ${chart}"
     git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
-    echo "Staged v{{version}} on $(git rev-parse --abbrev-ref HEAD). After main is green: just release-tag {{version}}"
+    echo "Pushed v{{version}} to $(git rev-parse --abbrev-ref HEAD) — that push IS the trigger; release.yml builds, publishes, and tags. Do not tag by hand."
 
-# Tag the current HEAD as v<version> and push it (triggers release.yml).
-# Guards that HEAD's chart appVersion matches, so a tag can't drift from
-# the staged release commit. Usage: just release-tag 1.4.0
-release-tag version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    app="$(awk -F'"' '/^appVersion:/{print $2; exit}' deploy/helm/cerberus/Chart.yaml)"
-    test "$app" = "{{version}}" || { echo "HEAD appVersion=$app != {{version}} — run release-prep first"; exit 1; }
-    git tag "v{{version}}"
-    git push origin "v{{version}}"
-    echo "Pushed tag v{{version}} — release.yml will build + publish."
+# There is deliberately no `release-tag` recipe. release.yml's raw-tag trigger
+# was retired in favour of publish-on-merge, and `release-version-gate.mjs`
+# decides whether to publish by asking whether `v<appVersion>` already exists.
+# So pre-creating the tag by hand does not start a release — it PERMANENTLY
+# cancels one: the gate sees the tag, sets publish=false, and goreleaser,
+# publish and chart-release all skip. No job fails, and nothing ships.
+# `test/regression/release_gate_test.go` keeps the recipe from coming back.
