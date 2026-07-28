@@ -13,12 +13,16 @@
 // (`needs: publish`), never a retry loop and never `continue-on-error` — a
 // tolerated failure here is decoration, not a gate.
 //
-// PRERELEASES ARE NOT SKIPPED. `skip_upload: auto` in .goreleaser.yml means an
-// `rc.*` release writes NO formula, so the honest assertion for a prerelease is
-// the NEGATIVE one: the formula must still exist AND must NOT declare this
-// version. Bailing out on a "not applicable" flag would be `t.Skip` in workflow
-// clothing, and would wave through a `skip_upload` regression that started
-// publishing prerelease formulas to the stable tap.
+// NOTHING IS SKIPPED — the three releases shapes just get three assertions.
+// .goreleaser.yml's `skip_upload` template keeps two of them out of the tap, and
+// for those the honest assertion is the NEGATIVE one. Bailing out on a "not
+// applicable" flag would be `t.Skip` in workflow clothing, and would wave
+// through the very `skip_upload` regressions this job exists to catch:
+//   - newest line + stable — the formula must declare EXACTLY this version;
+//   - prerelease (`rc.*`)  — the formula must exist and must NOT declare it;
+//   - not the highest stable tag (a maintenance backport) — the formula must
+//     declare a STRICTLY NEWER version, proving this publish did not overwrite
+//     the newest line's. v1.12.1, cut after v1.13.0, did exactly that.
 //
 // ANTI-VACUOUS: the formula's declared version is compared to the release
 // version BEFORE `brew install` runs. That reads the tap's git state through
@@ -43,15 +47,20 @@
 //                     `1.11.2-rc.1`) — release.yml passes
 //                     `needs.gate.outputs.app_version`, which is the de-`v`'d
 //                     form the binary itself reports.
+//   RELEASE_IS_LATEST "true"/"false" — whether this tag is the highest stable
+//                     release, i.e. the line that owns the single shared tap
+//                     formula. Selects the assertion branch, so it is required
+//                     and has no default.
 //   GITHUB_TOKEN      token used to read the tap's formula via the contents API.
 //   GITHUB_API_URL    API base (default https://api.github.com).
 //   REPO_ROOT         checkout of the release commit — the working directory for
 //                     the `config-docs -check` payload run.
 //
-// Exit: 0 when every assertion for the branch taken holds; 1 on any missing env
-// var, an unreadable/unparseable formula, a formula-version mismatch (stable) or
-// match (prerelease), a failed install, a binary resolved outside the brew
-// prefix, a `--version` mismatch, or a failing payload verb.
+// Exit: 0 when every assertion for the branch taken holds; 1 on any missing or
+// unrecognised env var, an unreadable/unparseable formula, a formula-version
+// mismatch (newest + stable), match (prerelease) or not-newer-than-us
+// (maintenance), a failed install, a binary resolved outside the brew prefix, a
+// `--version` mismatch, or a failing payload verb.
 //
 // Imports only node: builtins. Run with `node .github/scripts/brew-smoke.mjs`.
 
@@ -111,36 +120,82 @@ export function formulaVersion(rbSource) {
   );
 }
 
-// verdict — the pure decision both branches share. Returns:
-//   mustInstall — true for a stable release (the formula is expected to declare
-//                 this version and `brew install` must work), false for a
-//                 prerelease (no formula is published for it).
+// compareVersions — semver-enough ordering for the two shapes goreleaser ever
+// puts in play: `X.Y.Z` and `X.Y.Z-<prerelease>`. Numeric triple first, then a
+// version WITH a prerelease suffix sorts below the same triple without one.
+// Returns <0, 0, >0. A non-numeric component sorts as 0 rather than NaN so a
+// malformed input can never make an ordering assertion vacuously true.
+export function compareVersions(a, b) {
+  const parts = (s) =>
+    String(s ?? '')
+      .trim()
+      .split('-', 1)[0]
+      .split('.')
+      .map((n) => (/^\d+$/.test(n) ? Number(n) : 0));
+  const pre = (s) => String(s ?? '').trim().includes('-');
+
+  const [pa, pb] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  if (pre(a) === pre(b)) return 0;
+  return pre(a) ? -1 : 1;
+}
+
+// verdict — the pure decision every branch shares. Takes `isLatest`: whether the
+// release being smoked is the highest stable tag in the repo, i.e. whether it is
+// the line that OWNS the single shared tap formula. Returns:
+//   mustInstall — true only when the tap is expected to declare exactly this
+//                 version (newest line + stable), so `brew install` must work.
+//                 False on the two branches where goreleaser deliberately wrote
+//                 no formula — each of which still gets its own assertion below,
+//                 never a bail-out.
 //   problems    — blocking problem strings; empty == the tap is in the state
 //                 this release requires.
-export function verdict({ version, formulaSource }) {
+export function verdict({ version, formulaSource, isLatest }) {
   const v = String(version ?? '').trim();
   const declared = formulaVersion(formulaSource);
   const stable = isStableRelease(v);
+  const newest = isLatest === true || String(isLatest).trim() === 'true';
   const problems = [];
 
-  if (stable) {
-    if (declared !== v) {
+  // Order matters: a PRERELEASE is never the highest stable tag, so it arrives
+  // here with newest === false. Testing it first keeps the forward `v1.14.0-rc.1`
+  // case (tap legitimately behind at v1.13.1) out of the maintenance branch's
+  // "the tap must be ahead of us" assertion, which only holds for backports.
+  if (!stable) {
+    if (declared === v) {
       problems.push(
-        `${TAP_REPO}:${TAP_FORMULA_PATH} declares version "${declared}" but this release is "${v}". ` +
-          `The formula was never pushed, or the push landed stale — goreleaser's brews block, ` +
-          `HOMEBREW_TAP_GITHUB_TOKEN, or the cross-repo write is broken. ` +
-          `\`brew install ${FORMULA_REF}\` would install the wrong version.`,
+        `${TAP_REPO}:${TAP_FORMULA_PATH} declares prerelease version "${v}". ` +
+          `.goreleaser.yml sets \`skip_upload: auto\`, so a prerelease must write NO formula — ` +
+          `the stable tap is now pointing operators at a prerelease.`,
       );
     }
-  } else if (declared === v) {
+  } else if (!newest) {
+    // MAINTENANCE branch. `skip_upload` resolves to "true" off RELEASE_IS_LATEST,
+    // so this publish must have left the tap alone — and the tap must still be
+    // ahead of it. `declared === v` is the exact regression that shipped v1.12.1
+    // over a v1.13.0 formula and downgraded every `brew install`.
+    if (compareVersions(declared, v) <= 0) {
+      problems.push(
+        `${TAP_REPO}:${TAP_FORMULA_PATH} declares version "${declared}", which is not newer than this ` +
+          `maintenance release "${v}". This release is not the highest stable tag, so .goreleaser.yml's ` +
+          `\`skip_upload\` template must have kept it out of the tap and left the newest line's formula ` +
+          `in place. \`brew install ${FORMULA_REF}\` now installs an older cerberus than the newest ` +
+          `released line.`,
+      );
+    }
+  } else if (declared !== v) {
     problems.push(
-      `${TAP_REPO}:${TAP_FORMULA_PATH} declares prerelease version "${v}". ` +
-        `.goreleaser.yml sets \`skip_upload: auto\`, so a prerelease must write NO formula — ` +
-        `the stable tap is now pointing operators at a prerelease.`,
+      `${TAP_REPO}:${TAP_FORMULA_PATH} declares version "${declared}" but this release is "${v}". ` +
+        `The formula was never pushed, or the push landed stale — goreleaser's brews block, ` +
+        `HOMEBREW_TAP_GITHUB_TOKEN, or the cross-repo write is broken. ` +
+        `\`brew install ${FORMULA_REF}\` would install the wrong version.`,
     );
   }
 
-  return { mustInstall: stable, problems };
+  return { mustInstall: newest && stable, problems };
 }
 
 // ---------------------------------------------------------------------------
@@ -184,11 +239,22 @@ function describe(res) {
 
 async function main() {
   const version = (process.env.RELEASE_VERSION ?? '').trim();
+  const isLatestRaw = (process.env.RELEASE_IS_LATEST ?? '').trim();
   const token = process.env.GITHUB_TOKEN;
   const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
   const repoRoot = process.env.REPO_ROOT;
 
   if (!version) fail('RELEASE_VERSION is required (the BARE published version, e.g. 1.11.2)');
+  // Required, and required to be one of exactly two words. Defaulting a missing
+  // value either way would silently pick an assertion branch: absent-means-false
+  // would stop asserting the tap was written on every mainline release, and
+  // absent-means-true would demand a formula a backport never wrote.
+  if (isLatestRaw !== 'true' && isLatestRaw !== 'false') {
+    fail(
+      `RELEASE_IS_LATEST must be exactly "true" or "false" (got "${isLatestRaw}") — it selects which ` +
+        `state the tap is asserted to be in, so it has no safe default.`,
+    );
+  }
   if (!token) fail('GITHUB_TOKEN is required to read the tap formula');
   if (!repoRoot) fail('REPO_ROOT is required — the `config-docs -check` payload runs against this commit\'s docs');
 
@@ -213,7 +279,7 @@ async function main() {
 
   let decision;
   try {
-    decision = verdict({ version, formulaSource });
+    decision = verdict({ version, formulaSource, isLatest: isLatestRaw });
   } catch (e) {
     fail(e.message);
   }
@@ -222,11 +288,15 @@ async function main() {
   if (decision.problems.length > 0) process.exit(1);
 
   if (!decision.mustInstall) {
-    // PRERELEASE branch — asserted, not skipped. The formula exists and does NOT
-    // declare this version, which is exactly what `skip_upload: auto` promises.
+    // NO-FORMULA branches — asserted above, not skipped. `verdict` has already
+    // proved the tap is in the state this release requires: for a prerelease,
+    // that it does NOT declare this version; for a maintenance backport, that it
+    // still declares a strictly newer one. Installing here would smoke the
+    // NEWEST line's binary and report it as this release's, which is worse than
+    // not installing.
     ghNotice(
-      `brew-smoke: prerelease ${version}: the tap correctly still declares ` +
-        `"${formulaVersion(formulaSource)}"; no formula is published for prereleases (skip_upload: auto).`,
+      `brew-smoke: ${version} did not write the tap (${isLatestRaw === 'true' ? 'prerelease' : 'not the highest stable tag'}); ` +
+        `the tap correctly still declares "${formulaVersion(formulaSource)}".`,
     );
     process.exit(0);
   }
