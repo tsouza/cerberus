@@ -56,19 +56,23 @@ import (
 // passthrough, Value as above. Sample selection mirrors the native
 // histogram_quantile scaffold exactly:
 //
-//   - Instant (`!histogramRangeApplies(ctx)`): the filtered exp-hist
+//   - Instant ([gridSingleAnchor]): the filtered exp-hist
 //     scan is aggregated with `argMax(<col>, TimeUnix)` GROUP BY
 //     Attributes, picking the newest sample per series before the
 //     value math runs. TimeUnix surfaces as now64(9) (instant eval
 //     anchor). Without this the bare scan emits every historical
 //     sample per series instead of the latest.
-//   - Range (`histogramRangeApplies(ctx)`): the scan cross-joins a
+//   - Range, unpinned ([gridFanout]): the scan cross-joins a
 //     StepGrid, each (sample, anchor) pair is filtered to the
-//     per-anchor lookback window (instantLookback = 5m), and
-//     `argMax(<col>, TimeUnix)` GROUP BY [anchor_ts, Attributes]
-//     selects the newest sample per (series, anchor). TimeUnix
-//     surfaces as anchor_ts so the matrix pivot sees one row per
-//     (series, step) rather than N rows all stamped now64(9).
+//     per-anchor lookback window (instantLookback = 5m, shifted by any
+//     `offset`), and `argMax(<col>, TimeUnix)` GROUP BY [anchor_ts,
+//     Attributes] selects the newest sample per (series, anchor).
+//     TimeUnix surfaces as anchor_ts so the matrix pivot sees one row
+//     per (series, step) rather than N rows all stamped now64(9).
+//   - Range, `@`-pinned ([gridBroadcast]): the instant selection above
+//     runs ONCE at the pinned anchor and [broadcastHistogramAtPin] fans
+//     its per-series value across the grid, since the pin fixes the
+//     window for every step and only the output timestamp varies.
 func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vecIdx := 0
 	if c.Func.Name == "histogram_fraction" {
@@ -102,15 +106,36 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		return nil, err
 	}
 
-	// Range mode (ctx.step > 0): fan the per-series newest-sample
-	// selection across the request's step grid so the matrix pivot
-	// sees one row per (series, step) instead of N now64(9) rows.
-	// Modifier-bearing selectors fall back to the instant path until
-	// matrix-anchor handling lands (mirrors the native quantile path).
-	if histogramRangeApplies(ctx) && !hasModifier(vs) {
+	// Range mode: fan the per-series newest-sample selection across the
+	// request's step grid so the matrix pivot sees one row per (series,
+	// step) instead of N now64(9) rows. An absolute `@` pins one window
+	// for the whole query, so it is evaluated once and broadcast over the
+	// grid — mirrors the native quantile path, through the same
+	// [rangeGridShapeFor] decision.
+	switch rangeGridShapeFor(vs, ctx) {
+	case gridFanout:
 		return lowerHistogramValueFnRange(vs, value, s, ctx), nil
+	case gridBroadcast:
+		inner, err := lowerHistogramValueFnInstant(vs, value, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return broadcastHistogramAtPin(inner, s, ctx), nil
 	}
+	return lowerHistogramValueFnInstant(vs, value, s, ctx)
+}
 
+// lowerHistogramValueFnInstant is the instant-mode lowering for the
+// native-histogram value functions: one row per series over the newest
+// sample within the selector's anchor. It is also the pinned-`@` half of
+// the range-mode split, which is why it is a named sibling of
+// lowerHistogramValueFnRange rather than the tail of the dispatcher.
+func lowerHistogramValueFnInstant(
+	vs *parser.VectorSelector,
+	value chplan.Expr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
 	// Instant mode: aggregate the filtered exp-hist scan with
 	// argMax(<col>, TimeUnix) GROUP BY Attributes so the value math
 	// reads the newest sample per series, then surface now64(9) as the
@@ -118,13 +143,9 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	// every historical sample per series.
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	if hasModifier(vs) {
-		anchor, err := anchorFromSelector(vs, ctx)
-		if err != nil {
-			return nil, err
-		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
-		pred = andExpr(pred, timeBound)
+	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
+	if err != nil {
+		return nil, err
 	}
 	var input chplan.Node = scan
 	if pred != nil {
@@ -212,7 +233,7 @@ func lowerHistogramValueFnRange(
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
 	agg := buildHistogramBucketFanout(
-		scan, pred, instantLookback,
+		scan, pred, windowFor(vs, instantLookback),
 		[]chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		[]string{s.AttributesColumn},
 		histogramValueLatestAggs(s), s, ctx,

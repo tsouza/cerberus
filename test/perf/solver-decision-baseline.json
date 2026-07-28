@@ -522,6 +522,18 @@
     "reason": "routed"
   },
   {
+    "query": "edge_absent_over_time_at_timestamp_range_pinned_absent",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "edge_absent_over_time_at_timestamp_range_pinned_present",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "edge_at_start_range",
     "routed": false,
     "k": 0,
@@ -586,6 +598,12 @@
     "routed": true,
     "k": 8,
     "reason": "routed"
+  },
+  {
+    "query": "edge_double_exp_smoothing_at_timestamp_range_pinned",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "edge_hq_native_negative_p0",
@@ -688,6 +706,24 @@
     "routed": true,
     "k": 8,
     "reason": "routed"
+  },
+  {
+    "query": "edge_predict_linear_at_timestamp_range_pinned",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "edge_quantile_over_time_at_pinned_phi_above_one",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "edge_quantile_over_time_at_timestamp_range_pinned",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "edge_rate_at_timestamp_range_pinned",
@@ -804,6 +840,18 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_count_exp_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_count_exp_bare_stale",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_count_exp_latest_sample",
     "routed": false,
     "k": 0,
@@ -852,6 +900,30 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_classic_agg_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_agg_offset_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_bare_at_pin_stale",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_bare_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_classic_edge_p0",
     "routed": false,
     "k": 0,
@@ -865,6 +937,12 @@
   },
   {
     "query": "histogram_quantile_classic_empty",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_latest_sample",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
@@ -906,6 +984,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_native_agg_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_native_agg_groupby",
     "routed": false,
     "k": 0,
@@ -924,7 +1008,25 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_native_bare_at_pinned_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_native_bare_offset_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_native_empty",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_native_latest_sample",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
@@ -1479,7 +1581,7 @@
     "query": "predict_linear_subscrape_drops",
     "routed": false,
     "k": 0,
-    "reason": "below-threshold"
+    "reason": "not-sliceable"
   },
   {
     "query": "present_over_time_with_data",
@@ -1495,21 +1597,21 @@
   },
   {
     "query": "quantile_over_time_p95",
-    "routed": true,
-    "k": 8,
-    "reason": "routed"
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "quantile_over_time_p95_exact_interp",
-    "routed": true,
-    "k": 8,
-    "reason": "routed"
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "quantile_over_time_q_above_one",
-    "routed": true,
-    "k": 8,
-    "reason": "routed"
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "quantile_over_time_q_above_one_no_modifier",
@@ -1519,9 +1621,9 @@
   },
   {
     "query": "quantile_over_time_q_negative",
-    "routed": true,
-    "k": 8,
-    "reason": "routed"
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
   },
   {
     "query": "quantile_over_time_q_negative_no_modifier",

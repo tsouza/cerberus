@@ -1,0 +1,91 @@
+# `histogram_quantile(phi, <native hist> @ <ts>)` over query_range. The `@`
+# pins the selection window to `(23:55, 00:00]` for EVERY step, so all six
+# steps in `[00:00:00, 00:05:00]` report the quantile of the 23:58 sample
+# and only the output timestamp varies.
+#
+# The post-pin samples sit three buckets higher (PositiveOffset 3 vs 0), so
+# a window re-anchored onto each step would climb to a visibly larger
+# quantile from 00:01 onward. Six identical rows are the pin surviving.
+
+-- query.promql --
+histogram_quantile(0.95, http_server_duration_exp_hist{service="api"} @ 1767225600)
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 0, 0, 3, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 0, 0, 3, [2, 4, 6], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 0, 0, 3, [4, 8, 12], 0, []);
+-- args --
+[0] string = ""
+[1] string = ""
+[2] int64 = 9
+[3] string = "http_server_duration_exp_hist"
+[4] string = "http.server.duration.exp.hist"
+[5] string = "http.server.duration.exp/hist"
+[6] string = "http.server.duration.exp_hist"
+[7] string = "http.server.duration/exp/hist"
+[8] string = "http.server.duration/exp_hist"
+[9] string = "http.server.duration_exp.hist"
+[10] string = "http.server.duration_exp_hist"
+[11] string = "http.server/duration/exp/hist"
+[12] string = "http.server/duration/exp_hist"
+[13] string = "http.server/duration_exp_hist"
+[14] string = "http.server_duration.exp.hist"
+[15] string = "http.server_duration.exp_hist"
+[16] string = "http.server_duration_exp.hist"
+[17] string = "http.server_duration_exp_hist"
+[18] string = "http/server/duration/exp/hist"
+[19] string = "http/server/duration/exp_hist"
+[20] string = "http/server/duration_exp_hist"
+[21] string = "http/server_duration_exp_hist"
+[22] string = "http_server.duration.exp.hist"
+[23] string = "http_server.duration.exp_hist"
+[24] string = "http_server.duration_exp.hist"
+[25] string = "http_server.duration_exp_hist"
+[26] string = "http_server_duration.exp.hist"
+[27] string = "http_server_duration.exp_hist"
+[28] string = "http_server_duration_exp.hist"
+[29] string = "service"
+[30] string = ""
+[31] string = "service"
+[32] string = ""
+[33] string = ""
+[34] string = "api"
+[35] string = "2026-01-01 00:00:00.000000000"
+[36] int64 = 9
+[37] string = "2026-01-01 00:00:00.000000000"
+[38] int64 = 9
+[39] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+    Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      HistogramQuantileNative phi=0.95 groupBy=[Attributes AS Attributes]
+        Aggregate groupBy=[Attributes AS Attributes] funcs=[argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+          Filter predicate=((((coalesce(nullIf(Attributes["service"], ""), nullIf(ResourceAttributes["service"], ""), "") = "api") AND (MetricName IN ("http_server_duration_exp_hist", "http.server.duration.exp.hist", "http.server.duration.exp/hist", "http.server.duration.exp_hist", "http.server.duration/exp/hist", "http.server.duration/exp_hist", "http.server.duration_exp.hist", "http.server.duration_exp_hist", "http.server/duration/exp/hist", "http.server/duration/exp_hist", "http.server/duration_exp_hist", "http.server_duration.exp.hist", "http.server_duration.exp_hist", "http.server_duration_exp.hist", "http.server_duration_exp_hist", "http/server/duration/exp/hist", "http/server/duration/exp_hist", "http/server/duration_exp_hist", "http/server_duration_exp_hist", "http_server.duration.exp.hist", "http_server.duration.exp_hist", "http_server.duration_exp.hist", "http_server.duration_exp_hist", "http_server_duration.exp.hist", "http_server_duration.exp_hist", "http_server_duration_exp.hist"))) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:00.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:00.000000000", 9) - toIntervalNanosecond(300000000000))))
+            Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] = 0, nan, if(0.95 < 0, -inf, if(0.95 > 1, inf, if(0.95 = 0, if(length(`NegativeBucketCounts`) > 0, -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + length(`NegativeBucketCounts`)), 0.0), if(0.95 = 1, if(length(`PositiveBucketCounts`) > 0, pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + length(`PositiveBucketCounts`)), if(`ZeroCount` > 0, 0., -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset`))), if(arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))) + 1 - ((0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]) - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]) / (arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1])), if(arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) = length(`NegativeBucketCounts`) + 1, -0. + 2 * 0. * ((0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]) - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]) / (arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - length(`NegativeBucketCounts`) - 2) + ((0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]) - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]) / (arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]))))))))) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))) AS R)
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:00Z", 7.464263932294459],
+  ["", {"service": "api"}, "2026-01-01T00:01:00Z", 7.464263932294459],
+  ["", {"service": "api"}, "2026-01-01T00:02:00Z", 7.464263932294459],
+  ["", {"service": "api"}, "2026-01-01T00:03:00Z", 7.464263932294459],
+  ["", {"service": "api"}, "2026-01-01T00:04:00Z", 7.464263932294459],
+  ["", {"service": "api"}, "2026-01-01T00:05:00Z", 7.464263932294459]
+]

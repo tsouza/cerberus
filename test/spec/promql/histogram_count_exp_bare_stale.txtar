@@ -1,0 +1,62 @@
+# The same staleness window on the native exponential-histogram value-fn
+# path, and with NO modifier at all: an unmodified bare selector is still
+# `(eval - 5m, eval]`, so a series whose newest sample predates the
+# lookback has no sample at the evaluation instant and is dropped.
+#
+# `fresh` is seeded one minute before the evaluation anchor, `stale` an
+# hour before it, so the answer is one row. Without the lower bound the
+# scan reaches back through all of history and `stale` returns an
+# hour-old count as though it were current.
+
+-- query.promql --
+histogram_count(http_server_request_duration)
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_request_duration', map('service', 'stale'), toDateTime64('2025-12-31 23:00:00', 9), 7, 70.0, 0, 0, 0, [1, 2, 4], 0, []),
+    ('http_server_request_duration', map('service', 'fresh'), toDateTime64('2025-12-31 23:59:00', 9), 11, 110.0, 0, 0, 0, [2, 4, 5], 0, []);
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "http_server_request_duration"
+[3] string = "http.server.request.duration"
+[4] string = "http.server.request/duration"
+[5] string = "http.server.request_duration"
+[6] string = "http.server/request/duration"
+[7] string = "http.server/request_duration"
+[8] string = "http.server_request.duration"
+[9] string = "http.server_request_duration"
+[10] string = "http/server/request/duration"
+[11] string = "http/server/request_duration"
+[12] string = "http/server_request_duration"
+[13] string = "http_server.request.duration"
+[14] string = "http_server.request_duration"
+[15] string = "http_server_request.duration"
+[16] string = "2026-01-01 00:00:01.000000000"
+[17] int64 = 9
+[18] string = "2026-01-01 00:00:01.000000000"
+[19] int64 = 9
+[20] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, toFloat64(Count) AS Value]
+  Aggregate groupBy=[Attributes AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+    Filter predicate=(((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)
+-- expected_rows --
+[
+  ["", {"service": "fresh"}, "2026-01-01T00:00:01Z", 11]
+]
