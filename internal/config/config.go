@@ -55,6 +55,16 @@ type Config struct {
 	// slow / dead client is torn down. Promoted from the hardcoded 10s in
 	// internal/api/loki/tail.go via CERBERUS_LOKI_TAIL_WRITE_TIMEOUT.
 	LokiTailWriteTimeout time.Duration
+
+	// PromMetadataLookback is how far back a WINDOWLESS Prom
+	// metadata-discovery request (/api/v1/labels,
+	// /api/v1/label/<l>/values, /api/v1/series with no start/end)
+	// scans, via CERBERUS_PROM_METADATA_LOOKBACK. It exists so the scan
+	// bound can be told the deployment's real retention when cerberus
+	// does not provision it: `0` (the default) means "derive it" — the
+	// configured metric-table TTL when one is set, otherwise the Prom
+	// handler's own conservative fallback.
+	PromMetadataLookback time.Duration
 	// Logs is the OTel logs schema (table + columns the Loki API reads).
 	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
 	// env overrides applied.
@@ -566,6 +576,7 @@ const (
 	envHTTPMaxHeaderBytes      = "CERBERUS_HTTP_MAX_HEADER_BYTES"
 	envHTTPMaxBodyBytes        = "CERBERUS_HTTP_MAX_BODY_BYTES"
 	envLokiTailWriteTO         = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envPromMetadataLookback    = "CERBERUS_PROM_METADATA_LOOKBACK"
 	envDebugPProf              = "CERBERUS_DEBUG_PPROF"
 	envTempoStructuralTwoPhase = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
 	envAutoCreateSchema        = "CERBERUS_AUTO_CREATE_SCHEMA"
@@ -861,6 +872,7 @@ func FromEnv() (Config, error) {
 		HTTPAddr:             getString(v, envHTTPAddr),
 		HTTPServer:           surface.httpServer,
 		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
+		PromMetadataLookback: surface.promMetadataLookback,
 		ClickHouse:           chCfg,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
@@ -937,6 +949,7 @@ var allEnvKeys = []string{
 	envHTTPMaxHeaderBytes,
 	envHTTPMaxBodyBytes,
 	envLokiTailWriteTO,
+	envPromMetadataLookback,
 	envDebugPProf,
 	envTempoStructuralTwoPhase,
 	envAutoCreateSchema,
@@ -1089,6 +1102,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envHTTPMaxHeaderBytes, defaultHTTPMaxHeaderBytes)
 	v.SetDefault(envHTTPMaxBodyBytes, defaultHTTPMaxBodyBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
+	v.SetDefault(envPromMetadataLookback, defaultPromMetadataLookback.String())
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
@@ -1284,6 +1298,13 @@ const defaultHTTPMaxBodyBytes int64 = 4 << 20
 // tailWriteTimeout in internal/api/loki/tail.go: the bound on a single
 // /tail WebSocket write before a slow / dead client is torn down.
 const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
+
+// defaultPromMetadataLookback is zero on purpose: "no explicit lookback
+// configured", which lets cmd/cerberus derive the bound from the metric
+// tables' provisioned TTL (schemaboot.MetricsTTL) and fall back to the Prom
+// handler's own conservative horizon when no TTL is provisioned either. A
+// non-zero default here would silently win over a real, longer retention.
+const defaultPromMetadataLookback time.Duration = 0
 
 // defaultCHOptCorpusInterval is how often the query_log performance-corpus
 // reconciler reconciles recently-dispatched query_ids against

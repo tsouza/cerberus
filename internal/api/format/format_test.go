@@ -178,7 +178,7 @@ func TestParseTimeLoki(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := format.ParseTimeLoki(tc.raw, def)
+			got, err := format.ParseTimeUnixScaled(tc.raw, def)
 			if tc.err {
 				if err == nil {
 					t.Fatalf("expected error, got %v", got)

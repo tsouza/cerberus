@@ -505,7 +505,24 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h.Version = Version
 	h.Lowerers = nativeRangeLowerers(optSet)
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	h.MetadataLookback = promMetadataLookback(cfg)
 	return h
+}
+
+// promMetadataLookback resolves the horizon a windowless Prom
+// metadata-discovery request scans. An explicit
+// CERBERUS_PROM_METADATA_LOOKBACK wins. Otherwise it is the retention
+// cerberus itself provisions on the metric tables, which is the horizon
+// beyond which ClickHouse has already dropped the parts — so bounding the
+// scan there cannot omit anything reference Prometheus would have
+// returned. Zero (no TTL provisioned, retention managed outside cerberus)
+// leaves the handler on its own conservative fallback; the env knob is how
+// an operator in that position states their real retention.
+func promMetadataLookback(cfg config.Config) time.Duration {
+	if cfg.PromMetadataLookback > 0 {
+		return cfg.PromMetadataLookback
+	}
+	return schemaboot.MetricsTTL(cfg)
 }
 
 // buildRouteMemo wires the failure-driven route memo (internal/routememo,

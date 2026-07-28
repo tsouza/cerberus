@@ -310,6 +310,7 @@ var envDocs = []EnvDoc{
 	{envExperimentalTSGrid, "bool", "Experimental flags", "Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.9."},
 
 	// --- Loki streaming ---
+	{envPromMetadataLookback, "duration", "Query limits and memory", "How far back a **windowless** Prom metadata-discovery request (`/api/v1/labels`, `/api/v1/label/<l>/values`, `/api/v1/series` with no `start`/`end` — the Grafana variable-refresh shape) scans. Requests that supply either bound are honored verbatim and ignore this. `0` (the default) derives the bound: the provisioned metric-table TTL (`CERBERUS_SCHEMA_TTL` / `_METRICS`) when one is set, otherwise a conservative 14d fallback. Set it explicitly to your real retention when ClickHouse retention is managed outside cerberus and exceeds that fallback, or discovery silently omits metrics older than it."},
 	{envLokiTailWriteTO, "duration", "Loki streaming", "Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`."},
 }
 
