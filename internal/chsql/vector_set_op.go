@@ -276,7 +276,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 // ValueColumn through).
 func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
 	derived := vectorSetOpArmIsDerivedShape(arm, s)
-	armTsCol, matrix := vectorSetOpArmTimestampCol(arm)
+	armTsCol, matrix := vectorSetOpArmTimestampCol(arm, s)
 
 	var metricNameFrag Frag
 	if derived {
@@ -362,12 +362,23 @@ func vectorSetOpSynthesizedAnchorFrag() Frag {
 // the fan-out matrix RangeWindow. The timestamp source is therefore that
 // column, not the now64() instant synthesis.
 //
+// The walk stops at a Project that already exposes the canonical
+// 4-column shape, because that Project IS the arm's outermost SELECT and
+// it has already re-aliased the matrix anchor to the set op's
+// TimestampColumn. Walking past it would report the RangeWindow's own
+// column name, which the canonical Project's scope no longer exposes —
+// the LogQL heads' `Timestamp` over a scope that surfaces
+// `anchor_ts AS TimeUnix`, which ClickHouse rejects with code 47
+// "Unknown expression identifier". The two shape classifiers must agree
+// on where an arm's outer scope begins, so this one stops exactly where
+// vectorSetOpArmIsDerivedShape does.
+//
 // Nested VectorSetOp arms are NOT matrix shape per se — but they emit
 // their own canonical 4-column SELECT (this very function's caller),
 // so the outer references TimeUnix by name regardless. They're
 // classified as canonical (not derived) by
 // vectorSetOpArmIsDerivedShape, so this helper isn't reached for them.
-func vectorSetOpArmTimestampCol(n chplan.Node) (string, bool) {
+func vectorSetOpArmTimestampCol(n chplan.Node, s *chplan.VectorSetOp) (string, bool) {
 	switch v := n.(type) {
 	case *chplan.RangeWindow:
 		if v.OuterRange > 0 {
@@ -376,9 +387,12 @@ func vectorSetOpArmTimestampCol(n chplan.Node) (string, bool) {
 	case *chplan.RangeWindowNative:
 		return v.TimestampColumn, true
 	case *chplan.Project:
-		return vectorSetOpArmTimestampCol(v.Input)
+		if vectorSetOpProjectExposesCanonical(v, s) {
+			return s.TimestampColumn, true
+		}
+		return vectorSetOpArmTimestampCol(v.Input, s)
 	case *chplan.Filter:
-		return vectorSetOpArmTimestampCol(v.Input)
+		return vectorSetOpArmTimestampCol(v.Input, s)
 	}
 	return "", false
 }
