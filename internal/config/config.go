@@ -1097,18 +1097,7 @@ func newLoader() *viper.Viper {
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
-	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
-	// Schema-provisioning bool + duration knobs need a non-empty default so
-	// the getBool / getDuration parsers don't reject an unset value. The
-	// string knobs (cluster, table engine, database replicated
-	// path/shard/replica) resolve "" via getString and need none —
-	// internal/schema/ddl supplies the {shard}/{replica} macro fallbacks and
-	// the bare ReplicatedMergeTree engine when the database is Replicated.
-	v.SetDefault(envSchemaDBReplicated, defaultSchemaDBReplicated)
-	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
+	setSchemaProvisioningDefaults(v)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
@@ -1143,6 +1132,25 @@ func newLoader() *viper.Viper {
 	// through the same fail-fast typed validation regardless of source.
 	_ = v.ReadInConfig()
 	return v
+}
+
+// setSchemaProvisioningDefaults seeds the CERBERUS_AUTO_CREATE_SCHEMA family.
+// Extracted from newLoader for the same reason as setCHOptDefaults: the block
+// is self-contained and keeping it inline inflates newLoader's statement count.
+//
+// The bool + duration knobs need a non-empty default so the getBool /
+// getDuration parsers don't reject an unset value. The string knobs (cluster,
+// table engine, database replicated path/shard/replica) resolve "" via
+// getString and need none — internal/schema/ddl supplies the {shard}/{replica}
+// macro fallbacks and the bare ReplicatedMergeTree engine when the database is
+// Replicated.
+func setSchemaProvisioningDefaults(v *viper.Viper) {
+	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
+	v.SetDefault(envSchemaDBReplicated, defaultSchemaDBReplicated)
+	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
 }
 
 // setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and
