@@ -157,7 +157,7 @@ ships a [SLSA build provenance](https://slsa.dev) attestation:
 gh attestation verify cerberus_*_linux_amd64.tar.gz --owner tsouza --repo cerberus
 ```
 
-The same binary is a Homebrew formula (macOS and Linuxbrew), which is the
+The same binary is a Homebrew cask (macOS and Linuxbrew), which is the
 quickest way to get the `cerberus migrate` CLI onto the machine holding your
 rules and dashboards — see [migrating to cerberus](docs/migration.md#step-1-install-the-binary):
 
@@ -165,7 +165,7 @@ rules and dashboards — see [migrating to cerberus](docs/migration.md#step-1-in
 brew install tsouza/tap/cerberus
 ```
 
-Only stable releases publish a formula, so `brew` never hands you a prerelease.
+Only stable releases publish a cask, so `brew` never hands you a prerelease.
 
 The surrounding runtime contract (lifecycle, scaling, the solver and
 experimental knobs in context) lives in

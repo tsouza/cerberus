@@ -1119,7 +1119,7 @@ publish gates handle either or both.
 by comparing it against the highest stable `v*` tag — is the single answer to
 "is this the newest release line?", and every resource that only one line can
 hold at a time is gated on it: the rolling `:latest` image tags, the tap's
-single Homebrew formula, and the GitHub `Latest` release pointer. A prerelease
+single Homebrew cask, and the GitHub `Latest` release pointer. A prerelease
 or a stable backport never drags any of the three backwards.
 
 #### De-gated lanes on the publish path
@@ -1146,7 +1146,7 @@ now the only thing standing between them and a publish.
 
 #### Homebrew tap
 
-Stable releases publish a Homebrew formula to the
+Stable releases publish a Homebrew cask to the
 [`tsouza/homebrew-tap`](https://github.com/tsouza/homebrew-tap) tap, so operators
 can install the single `cerberus` binary with:
 
@@ -1159,17 +1159,26 @@ machine that holds an operator's rules and dashboards, so the migration
 playbook points at it as the default install path — see
 [getting the `cerberus` binary](migration.md#step-1-install-the-binary).
 
-This is wired via the goreleaser `brews:` block (a Homebrew *formula*, not a
-cask, so it installs on Linuxbrew as well as macOS). The tap holds a SINGLE
-`cerberus` formula, so `skip_upload` is templated on `RELEASE_IS_LATEST` — the
-highest-stable-tag signal `release.yml` computes after pushing the tag — and
-only a stable release on the newest line ever writes it. Neither an `rc.*` nor a
-maintenance backport touches the tap: a backport is not a prerelease, so the bare
-`skip_upload: auto` that predated this let v1.12.1 overwrite v1.13.0's formula
-and downgrade every `brew install`. The block pins `directory: Formula`: Homebrew resolves a tap's formulae from
-`Formula/`, `HomebrewFormula/` or the tap root, but goreleaser's `directory`
-defaults to **empty** — the tap root — and `Formula/` is both the conventional
-layout and the path the smoke reads.
+This is wired via the goreleaser `homebrew_casks:` block. A *cask* is the right
+vehicle for a pre-built binary — a formula describes something Homebrew builds
+from source — and it is not a macOS-only choice: a cask that declares no
+`depends_on macos` reports `supports_linux?`, and Homebrew's cask installer gates
+on the cask's declared OS rather than on the host being a Mac, so one cask
+installs under Linuxbrew and macOS alike. Because the release binaries are
+neither Apple-signed nor notarised, the cask carries a post-install hook that
+strips the `com.apple.quarantine` xattr, without which the first run on macOS
+dies with "cerberus is damaged and can't be opened".
+
+The tap holds a SINGLE `cerberus` cask, so `skip_upload` is templated on
+`RELEASE_IS_LATEST` — the highest-stable-tag signal `release.yml` computes after
+pushing the tag — and only a stable release on the newest line ever writes it.
+Neither an `rc.*` nor a maintenance backport touches the tap: a backport is not a
+prerelease, so the bare `skip_upload: auto` that predated this let v1.12.1
+overwrite v1.13.0's formula and downgrade every `brew install`. The block states
+`directory: Casks`, which is both goreleaser's default and where Homebrew
+resolves a tap's casks from; it is written out rather than inherited because
+`brew-smoke.mjs` pins the same path, and a silent drift between the two would
+leave the smoke reading a file no release writes.
 
 Two prerequisites make the push work, and both are one-time:
 
@@ -1177,32 +1186,34 @@ Two prerequisites make the push work, and both are one-time:
 2. A PAT with push (`contents: write`) access to that tap is stored as the
    `HOMEBREW_TAP_GITHUB_TOKEN` repository secret on `tsouza/cerberus`. The
    default workflow `GITHUB_TOKEN` **cannot** push to another repo, so this
-   secret is mandatory — without it the brew push on the next stable release
+   secret is mandatory — without it the cask push on the next stable release
    fails.
 
 The `brew-smoke` job closes the loop on both of those prerequisites. It reads the
-tap's `Formula/cerberus.rb` through the API *before* touching `brew`, because a
-deleted `brews:` block or an expired `HOMEBREW_TAP_GITHUB_TOKEN` leaves a stale
-formula that an install would happily consume. A stable release must find the
-formula declaring exactly the version that just shipped; it then installs it and
+tap's `Casks/cerberus.rb` through the API *before* touching `brew`, because a
+deleted `homebrew_casks:` block or an expired `HOMEBREW_TAP_GITHUB_TOKEN` leaves
+a stale cask that an install would happily consume. A stable release must find
+the cask declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
-(`migrate schema`, `config-docs -check`) work from the installed binary. The two
-shapes that write no formula are **not** skipped — each takes the opposite
-assertion. An `rc.*` must have written none, so a formula declaring the
+(`migrate schema`, `config-docs -check`) work from the installed binary. The
+install names `--cask` explicitly, so if the tap ever serves a same-named formula
+again the job fails loudly instead of installing that one and calling the cask
+healthy. The two shapes that write no cask are **not** skipped — each takes the
+opposite assertion. An `rc.*` must have written none, so a cask declaring the
 prerelease version is a reported regression; a release that is not the highest
-stable tag must have left a strictly NEWER formula in place, so a tap that has
+stable tag must have left a strictly NEWER cask in place, so a tap that has
 fallen back to the backport's own version is one too. The job runs after
 `publish` because
 `brew install` downloads the release tarball, which 404s while the release is
 still a draft, and it runs on `macos-latest` because the Ubuntu runner image
-ships no Homebrew at all. That the formula (rather than a cask) also installs
-under Linuxbrew is a property of the artifact, not something CI exercises.
+ships no Homebrew at all. That the cask also installs under Linuxbrew is a
+property of the artifact, not something CI exercises.
 
 `brew-smoke` fires exactly once, inside the release run, which leaves one thing
 uncovered: it cannot re-check an *already-published* release. `rerun-failed-jobs`
 replays the workflow as it existed at the release commit, so a correction to the
 job — a different runner, a different tap path — can never be exercised against
-the release that needed it, and nothing here would notice a formula rotting
+the release that needed it, and nothing here would notice a cask rotting
 after publish (someone edits the tap, an asset is deleted, a checksum stops
 matching). The `brew-verify` workflow covers that: same `brew-smoke.mjs`, same
 assertions, but `workflow_dispatch` (with an optional bare `version`, defaulting
