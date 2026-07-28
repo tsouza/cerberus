@@ -20,12 +20,22 @@ known baseline instead of re-deriving from CI failure tickers.
 
 ## Where the patterns live
 
-The patterns run in **two places**, and the two MUST stay in sync:
+The gate **runs** in two places:
 
 1. `.github/workflows/ci.yml` job `forbid-skip` — required status check
-   on `main`.
-2. `lefthook.yml` `pre-push` hook — local-mirror of the same gate so a
+   on `main`. The job holds no regexes of its own: every step is
+   `run: node .github/scripts/forbid-skip.mjs` with a `CHECK:` naming
+   the arm to dispatch.
+2. `lefthook.yml` `pre-push` hook — local mirror of the same gate so a
    push that would have failed CI fails locally first.
+
+The regex **text** lives in three files, which MUST stay in lock-step:
+
+1. `.github/scripts/forbid-skip.mjs` — the CI source of truth, one
+   `case '<name>':` arm of the `CHECK` switch per scan.
+2. `lefthook.yml` — inline mirror, one command per scan.
+3. `scripts/test-forbid-skip.sh` — its own literal copies, asserted
+   against the match / counter-example pairs documented below.
 
 `scripts/test-forbid-skip.sh` is the assertion that the regexes still
 match their canonical positive examples and still reject the matching
@@ -34,8 +44,8 @@ the script directly) and as a step inside the `forbid-skip` CI job. The
 lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
-The two locations carry **identical** patterns for rows 1–5 of the
-summary table below. Row 6 is enforced by the CI `forbid-skip` job step
+Rows 1–5 of the summary table below are carried by all three copies.
+Row 6 is enforced by the CI `forbid-skip` job step
 "Reject should_skip overlay entries", which rejects every non-empty
 `should_skip:` block in `compatibility/**/*.{yml,yaml}` outright. Row 7
 is enforced by the CI step "Reject test escape-hatch patterns". Rows 8
@@ -72,8 +82,12 @@ count (6), so the number can never drift from the source switch.
 
 When a new offender shape is discovered:
 
-1. Add the new regex to **both** `.github/workflows/ci.yml` and
-   `lefthook.yml` in the same PR.
+1. Add the new regex to **all three** copies in the same PR:
+   `.github/scripts/forbid-skip.mjs` (widen an existing `case '<name>':`
+   arm of the `CHECK` switch, or add a new arm plus a matching
+   `run: node .github/scripts/forbid-skip.mjs` step with `CHECK: <name>`
+   in the `forbid-skip` job of `.github/workflows/ci.yml`),
+   `lefthook.yml`, and `scripts/test-forbid-skip.sh`.
 2. Add a new row to the summary table below + a detailed subsection
    covering the regex, its intent, a match-example, and a
    counter-example.
