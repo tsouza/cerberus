@@ -11,7 +11,11 @@ name: chart-ci
 on:
   pull_request:
   push:
-    branches: [main]
+    # `release/*.x` so `chart-validate` also runs on a maintenance-line hotfix
+    # push. There is no PR on that path, so release.yml's preflight is the only
+    # gate, and a lane that posts no check-run there would be certified by
+    # absence rather than by passing.
+    branches: [main, 'release/*.x']
   workflow_dispatch:
 
 permissions:
@@ -28,6 +32,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # Unconditional: the image guard's classifier and staging exemption are
+      # pure logic, and pinning them only when chart files change would leave
+      # them unexercised on the PRs most likely to edit the guard itself.
+      - name: chart-kubeconform self-test (image-guard classifier + staging exemption)
+        run: node .github/scripts/chart-kubeconform.mjs --self-test
 
       - uses: dorny/paths-filter@v4
         id: changes

@@ -17,7 +17,10 @@ name: coverage
 on:
   pull_request:
   push:
-    branches: [main]
+    # `release/*.x` so `coverage` also runs on a maintenance-line hotfix push —
+    # release.yml's preflight is the only gate on that path (no PR, so no
+    # branch protection) and it requires this check-run to exist.
+    branches: [main, 'release/*.x']
   schedule:
     # nightly at 05:30 UTC (45 min after compatibility.yml at 04:00 UTC
     # so the runner doesn't double-book; well clear of the chdb job).
