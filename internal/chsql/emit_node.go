@@ -169,21 +169,6 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 	return nil
 }
 
-// emitCrossJoin renders an unconditional Cartesian product as
-// `SELECT * FROM (<Left>) AS L CROSS JOIN (<Right>) AS R`. Both
-// subqueries get bare-uppercase aliases so CH 24.x's
-// `joined_subquery_requires_alias = 1` invariant is satisfied without
-// requiring callers to know the column-collision shape. Output rows
-// expose the union of both sides' columns; callers that need to
-// project a subset wrap the CrossJoin in a Project (or rely on the
-// surrounding Filter/Project to read the columns by name).
-//
-// Used by the range-mode `absent(...)` lowering to fan the inner
-// count-check across the StepGrid's anchor column. The StepGrid
-// emits a single `anchor_ts` column on the left; the Aggregate emits
-// `_cerb_n` on the right; the outer Filter reads both by bare name
-// (no collision), so the L/R aliases are inert beyond satisfying
-// the parser invariant.
 // emitUnionAll renders an N-way UNION ALL of the per-arm subtrees.
 // Every arm renders via subqueryFrag so the per-arm SELECT lands inside
 // parentheses (matching ClickHouse's `(SELECT …) UNION ALL (SELECT …)`
@@ -219,6 +204,22 @@ func (e *emitter) emitUnionAll(u *chplan.UnionAll) error {
 	return nil
 }
 
+// emitCrossJoin renders an unconditional Cartesian product as
+// `SELECT * FROM (<Left>) AS L CROSS JOIN (<Right>) AS R`. Both
+// subqueries get bare-uppercase aliases so CH 24.x's
+// `joined_subquery_requires_alias = 1` invariant is satisfied without
+// requiring callers to know the column-collision shape. Output rows
+// expose the union of both sides' columns; callers that need to
+// project a subset wrap the CrossJoin in a Project (or rely on the
+// surrounding Filter/Project to read the columns by name).
+//
+// This is the broadcast primitive for the PromQL head: a `StepGrid`
+// on the left contributes the single `anchor_ts` column, and the right
+// side contributes a per-series shape evaluated once. The range-mode
+// `absent(...)` lowering uses it to fan an inner count-check across the
+// grid — the Aggregate emits `_cerb_n`, the outer Filter reads both by
+// bare name (no collision), so the L/R aliases are inert beyond
+// satisfying the parser invariant.
 func (e *emitter) emitCrossJoin(j *chplan.CrossJoin) error {
 	leftSub, err := e.subqueryFrag(j.Left)
 	if err != nil {

@@ -46,19 +46,22 @@ func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
 // use the typed surface (QueryBuilder slots + Frag constructors like
 // Eq / And / Paren / Cast).
 //
-// IN-PACKAGE ESCAPE HATCH, NOT A SHORTCUT. writeSQL is the last resort
-// for the few remaining operator-token-style glue sites inside the
-// `internal/chsql` domain emitters that have not yet been ported to
-// typed Frags (histogram_quantile.go, histogram_quantile_native.go,
-// vector_join.go, structural_join.go, nested_set_annotate.go,
-// set_op.go, vector_set_op.go). It must NEVER be reached for to build a
-// query/expression SHAPE that a Frag constructor already covers: any CH
-// function is Call("fn", args…), arithmetic is Mul/Add/Sub/Div, and so
-// on. The 2026-06 typed-Frag sweep removed every writeSQL / sb.Write*
-// site from the range-window / over-time / fan-out emitters precisely
-// because those WERE expressible as Frags; the remaining callers are
-// tracked for the same treatment. When you touch one of those files,
-// port the glue you're near rather than adding more.
+// IN-PACKAGE ESCAPE HATCH, NOT A SHORTCUT. No domain emitter calls it:
+// every operator-token-style glue site in `internal/chsql` composes typed
+// Frags instead, so the only callers are this package's own tests
+// (builder_test.go, frag_goldens_test.go). Those tests splice literal
+// glue — a `, ` separator, an ` = ` operator, an ` AS L` alias — into
+// hand-built token streams that exercise Builder / QueryBuilder plumbing
+// (positional-arg binding order, clause placement) directly. Several of
+// those streams do have exact typed equivalents: `writeSQL("max(") …
+// writeSQL(")")` is Call("max", …), `Ident(x); writeSQL(" AS L")` is
+// As(…), `writeSQL("c._depth < "); Arg(5)` is Lt(…). In non-test code
+// those equivalents are mandatory — writeSQL must NEVER be reached to
+// build a query/expression SHAPE that a Frag constructor already covers:
+// any CH function is Call("fn", args…), arithmetic is Mul/Add/Sub/Div,
+// and so on. If a shape genuinely has no constructor, add the
+// constructor — reaching for writeSQL puts raw SQL back in an emitter
+// and the typed surface stops being closed by construction.
 //
 // (There is intentionally no writeByte method on Builder: io.ByteWriter
 // expects WriteByte(byte) error, and offering a non-error variant
@@ -121,9 +124,10 @@ func writeInlineNonFinite(b *Builder, v float64) bool {
 }
 
 // MapAt appends "<col>[?]" and binds key as a positional argument —
-// CH's Map column access. col is a single bare column name; for nested
-// or qualified references, write the prefix via writeSQL / QualIdent
-// before the bracket form lands.
+// CH's Map column access. col is a single bare column name; for a
+// qualified or otherwise composite container, use the typed Frag form
+// Subscript(container, key) instead — e.g.
+// Subscript(Qual("L", "Attributes"), Lit(key)) for `L`.`Attributes`[?].
 func (b *Builder) MapAt(col, key string) {
 	b.Ident(col)
 	b.sb.WriteByte('[')
