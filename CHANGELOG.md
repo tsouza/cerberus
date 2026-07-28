@@ -6,6 +6,10 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.13.1] — 2026-07-28
 
+### Changed
+
+- **release:** container images publish as a single multi-arch index (#1320). The per-arch `:<version>-amd64` / `-arm64` tags are gone — they only ever existed as inputs to the manifest, and nothing in the repo, chart, or docs pulled one. buildx now also attaches an SBOM attestation to the index.
+
 ### Fixed
 
 - **promql:** keep the `@` pin in range mode on every range-vector lowering (#1325)

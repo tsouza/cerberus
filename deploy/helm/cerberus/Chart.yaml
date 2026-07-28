@@ -69,3 +69,5 @@ annotations:
       description: "release: name the workflow a preflight wait is blocked on (#1318)"
     - kind: changed
       description: "chsql: skip the spans-scan emit guard when the SQL never names the spans table (#1330)"
+    - kind: changed
+      description: "release: container images publish as a single multi-arch index; the per-arch -amd64/-arm64 tags are gone (#1320)"
