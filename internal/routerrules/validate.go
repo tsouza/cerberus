@@ -104,6 +104,7 @@ func validateParamKind(p *ParamSpec, add func(string, ...any)) {
 			add("corpus_percentile param %q must set percentile.ref", p.Name)
 		}
 		validateScope(p.Name, p.Scope, add)
+		validateHealthScope(p.Name, p.Column, p.Scope, add)
 		validatePartition(p.Name, p.PartitionBy, add)
 	case ParamCorpusAgg:
 		validateColumn(p.Name, p.Column, add)
@@ -183,6 +184,35 @@ func validateScope(owner string, scope Scope, add func(string, ...any)) {
 		if !validEnumValue(col, val) {
 			add("%q scope value %q is not a valid category of enum column %q", owner, val, col)
 		}
+	}
+}
+
+// exitStatusColumn is the corpus column recording how a query terminated, and
+// exitStatusHealthy is its clean-finish token.
+const (
+	exitStatusColumn  = "exit_status"
+	exitStatusHealthy = "ok"
+)
+
+// validateHealthScope enforces the scoping a percentile's column demands: a
+// percentile over a runtime-cost column must be learned from the clean-finish
+// population, a percentile over a geometry column must not be. See
+// runtimeCostColumns for why each direction matters — both mistakes leave a
+// param that still resolves to a number, just the wrong one, so neither shows up
+// as anything but a rule that quietly under- or over-fires.
+func validateHealthScope(owner, col string, scope Scope, add func(string, ...any)) {
+	_, isCost := runtimeCostColumns[col]
+	got, scoped := scope[exitStatusColumn]
+	switch {
+	case isCost && !scoped:
+		add("corpus_percentile param %q measures runtime-cost column %q and must declare scope.%s: %s — a cost watermark learned over failed queries describes the failure, not the query",
+			owner, col, exitStatusColumn, exitStatusHealthy)
+	case isCost && got != exitStatusHealthy:
+		add("corpus_percentile param %q measures runtime-cost column %q and scopes %s to %q; only %q yields a usable cost watermark",
+			owner, col, exitStatusColumn, got, exitStatusHealthy)
+	case !isCost && scoped:
+		add("corpus_percentile param %q measures geometry column %q, which carries no outcome bias, so scoping it to %s: %s only shrinks the population and can empty it outright",
+			owner, col, exitStatusColumn, got)
 	}
 }
 

@@ -102,11 +102,27 @@ var effectivenessGolden = []effFinding{
 	// well below the cap, so they deliberately do NOT fire here anymore — that is
 	// the false-positive-by-construction the cap-relative gate removes.
 	{"route_a_memory_near_cap", "language=promql,shape_id=prom:mem_near_cap", 7, "lower_route_b_threshold"},
-	// slow hot shapes: the two slow failure clusters are also in their language's
-	// duration p95 tail (oom 4s / timeout 9s), so the slow-shape detector flags
-	// them by normalized_query_hash.
+	// slow hot shapes. slow_duration_watermark is a runtime-cost percentile
+	// learned over exit_status: ok, so promql's norm is the p95 of its 195 clean
+	// finishes (600 ms), not the p95 of a population whose tail is its own OOMs
+	// (4 s). Five promql/logql classes sit at or above their language's clean
+	// p95: the two slow failure clusters (oom 4 s / timeout 9 s) and the three
+	// slowest route-A shapes still finishing (topk_rate 800 ms, rate_sum_by_hot
+	// 700 ms, hq_rate_heavy 600 ms).
+	//
+	// The last three firing is the rule working as specified, not noise: its
+	// message calls itself a self-relative tail signal rather than an SLA breach,
+	// and a p95 gate means the slowest ~5% of healthy classes clear it by
+	// construction. Those are exactly the shapes whose re-route to B has the
+	// highest aggregate payoff. Contrast route_a_memory_near_cap, which is
+	// deliberately cap-relative instead — an absolute memory ceiling exists to
+	// compare against, whereas no absolute "too slow" line exists to replace this
+	// one with.
 	{"route_a_slow_hot_shape", "decision_reason=high-cardinality,language=logql,normalized_query_hash=202", 6, "lower_route_b_threshold"},
 	{"route_a_slow_hot_shape", "decision_reason=high-cardinality,language=promql,normalized_query_hash=105", 8, "lower_route_b_threshold"},
+	{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=106", 6, "lower_route_b_threshold"},
+	{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=110", 7, "lower_route_b_threshold"},
+	{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=111", 7, "lower_route_b_threshold"},
 }
 
 // TestEffectivenessGolden is the meaningfulness-vs-ground-truth assertion: every
