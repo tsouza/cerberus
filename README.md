@@ -167,8 +167,6 @@ brew install tsouza/tap/cerberus
 
 Only stable releases publish a formula, so `brew` never hands you a prerelease.
 
-Cerberus is configured **entirely** through `CERBERUS_*` environment
-variables — see the full [configuration reference](docs/configuration.md).
 The surrounding runtime contract (lifecycle, scaling, the solver and
 experimental knobs in context) lives in
 [`docs/operations.md`](docs/operations.md).
@@ -284,17 +282,28 @@ just compat-all          # or compat-promql / compat-logql / compat-traceql
 ```
 
 **What the required checks enforce.** The three `compatibility/<head>`
-checks run on every PR and **fail on infrastructure breakage** (stack
-won't boot, seed fails, report unparseable). Per-case **parity drift is
-report-only** by design ([#503](https://github.com/tsouza/cerberus/pull/503)):
-it is recorded in `report.json` and rendered into the live `compat-score.json`
-badge, but does not turn the required check red. The one lane that
-_hard-fails on any parity diff_ is `compatibility/prometheus-forced-route`
-(`FAIL_ON_DIFF=1`, proving the sharded solver route is byte-identical to
-reference Prometheus over the whole corpus) — and that lane _is_ a
-required check. The honest reading: the three head badges are a
-continuously re-measured conformance score, not a merge gate on numeric
-correctness.
+checks run on every PR in two layers. The harness itself is _scored_
+([#503](https://github.com/tsouza/cerberus/pull/503)): it accumulates
+per-case results into `report.json` / `compat-score.json` and exits 0
+even when a case diverges, so the harness step alone reddens the job
+only on infrastructure breakage (stack won't boot, seed fails, report
+unparseable). The gate is the step after it —
+[`compat-ratchet.mjs`](.github/scripts/compat-ratchet.mjs) compares the
+run's score against the committed floor in
+[`compatibility/parity-baseline.json`](compatibility/parity-baseline.json)
+and **fails the required job on any drop**. Both `passed` and `total`
+are floored, so a regression cannot hide by shrinking the corpus.
+Raising a floor is a deliberate same-PR edit to the baseline file.
+
+`compatibility/prometheus-forced-route` is stricter still: it runs with
+`FAIL_ON_DIFF=1` and hard-fails on _any_ per-case diff, which is what
+proves the sharded solver route is byte-identical to reference
+Prometheus over the whole corpus.
+
+So the three head badges are both: a continuously re-measured
+conformance score, and — through the ratchet floor — a merge gate.
+[`docs/compatibility.md`](docs/compatibility.md#parity-regression-ratchet-the-gate)
+is the canonical reference.
 
 **No allow-lists** — every diff against the reference is a real bug to
 fix at the source, not an exception to suppress. The full playbook

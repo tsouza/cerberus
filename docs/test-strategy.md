@@ -52,18 +52,22 @@ tolerated: a red informational lane is a real failure to fix, it is just
 not wired as a branch-protection gate (typically because it needs the chDB
 substrate, a Docker stack, or a soak streak before promotion).
 
-One subtlety on the three `compatibility/<head>` checks: they are required,
-but the *check* fails only on infrastructure breakage — per-case **numeric
-parity drift is report-only** (rendered into the badge score, not the exit
-code; see [`compatibility.md`](compatibility.md#ci-integration) and
-[#503](https://github.com/tsouza/cerberus/pull/503)). The only lane that
-hard-fails on a numeric parity diff is the *required*
-`compatibility/prometheus-forced-route` (`FAIL_ON_DIFF=1`). So the
-required differential checks gate *that the harness runs clean*, while the
-parity number itself is a continuously-measured score rather than a merge
-gate. A fail-on-parity gate is already required on the forced-route lane;
-extending it to the three `compatibility/<head>` heads is a tracked
-improvement.
+One subtlety on the three `compatibility/<head>` checks: each gates in two
+layers. The harness is *scored* — it accumulates per-case results into
+`compat-score.json` and exits 0 even when an individual case diverges
+([#503](https://github.com/tsouza/cerberus/pull/503)), so the harness step
+alone reddens the job only on infrastructure breakage. The gate is the step
+after it: `.github/scripts/compat-ratchet.mjs` compares the run's
+`passed` / `total` against the committed per-head floor in
+`compatibility/parity-baseline.json` and **fails the required job on any
+drop** — fewer passing cases, or a corpus smaller than baseline so a
+regression cannot hide by dropping a failing case. Noise *within* the
+floor is tolerated: the ratchet pins the aggregate, not individual case
+identity, so one case regressing while another starts passing does not
+gate. `compatibility/prometheus-forced-route` is stricter still — it runs
+the harness with `FAIL_ON_DIFF=1` and hard-fails on *any* per-case diff.
+See [`compatibility.md`](compatibility.md#parity-regression-ratchet-the-gate)
+for the floors themselves and the procedure for raising one.
 
 | Gate                                    | Workflow (job)                                       | Trigger                             | Required? | Scope                                                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------------------- | ---------------------------------------------------- | ----------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -72,9 +76,9 @@ improvement.
 | `forbid-skip`                           | `ci.yml` (`forbid-skip`)                             | PR + push                           | Required  | `t.Skip*`, "not implemented" in prod code, soft-assertion / silent-recover, escape-hatch patterns, `should_skip` overlay, scenario-suppressing `.feature` tags + godog skip routes, regex self-test, doc-count gate (`doc-counts.mjs`)                                                                                                                                              |
 | `probe`                                 | `chdb.yml` (`probe`)                                 | PR + push + nightly                 | Required  | chDB driver sanity (`TestChDBProbe`) + `just test-chdb` (api-handler + Layer 7b chdb lane)                                                                                                                                                                                                                                                                                          |
 | `roundtrip (promql / logql / traceql)`  | `chdb.yml` (matrix)                                  | PR + push + nightly                 | Required  | TXTAR chDB roundtrip per head (Layer 6a-c)                                                                                                                                                                                                                                                                                                                                          |
-| `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)     | PR + push + nightly + dispatch      | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness)                                                                                                                                                                                                                                                                                                       |
-| `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus                                                                                                                                                                                                                                                                                                       |
-| `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus)                                                                                                                                                                                                                                                                                                               |
+| `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)     | PR + push + nightly + dispatch      | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness) + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                   |
+| `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                   |
+| `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus) + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                           |
 | `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | PR + push + nightly                 | Required  | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                        |
 | `chart-validate`                        | `chart-ci.yml` (`chart-validate`)                    | PR + push + dispatch                | Required  | Helm chart lint + `helm-docs` README drift gate + `kubeconform` render + render assertions (split PDBs / derived `GOMEMLIMIT`) + `ct lint` over `deploy/helm/cerberus`; short-circuits to a green no-op when no chart file changed, so it reports on every PR                                                                                                                       |
 | `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Required  | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                            |
