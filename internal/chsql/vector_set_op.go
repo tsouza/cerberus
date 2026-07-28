@@ -276,7 +276,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 // ValueColumn through).
 func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
 	derived := vectorSetOpArmIsDerivedShape(arm, s)
-	matrix := vectorSetOpArmIsMatrixRangeWindow(arm)
+	armTsCol, matrix := vectorSetOpArmTimestampCol(arm)
 
 	var metricNameFrag Frag
 	if derived {
@@ -286,9 +286,12 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 	}
 
 	var timeFrag Frag
-	if derived && !matrix {
+	switch {
+	case derived && !matrix:
 		timeFrag = As(vectorSetOpSynthesizedAnchorFrag(), s.TimestampColumn)
-	} else {
+	case matrix && armTsCol != s.TimestampColumn:
+		timeFrag = As(Col(armTsCol), s.TimestampColumn)
+	default:
 		timeFrag = Col(s.TimestampColumn)
 	}
 
@@ -334,38 +337,50 @@ func vectorSetOpSynthesizedAnchorFrag() Frag {
 	}
 }
 
-// vectorSetOpArmIsMatrixRangeWindow reports whether arm is — after
-// walking past any value-rewrite Project / Filter — a matrix-mode
-// RangeWindow (OuterRange > 0). Matrix-mode RangeWindow's outer SELECT
-// aliases `anchor_ts AS <TimestampColumn>` (see
-// emitWindowedArrayPairsMatrix and emitWindowedArrayMatrix), so a
-// canonical-shape projection above it can reference TimeUnix as a real
-// column. Mirrors `isMatrixRangeWindow` in
-// internal/api/prom/handler.go.
+// vectorSetOpArmTimestampCol reports whether arm is — after walking past
+// any value-rewrite Project / Filter — a matrix-mode range arm
+// (RangeWindow with OuterRange > 0, or the ClickHouse-native
+// timeSeriesRateToGrid RangeWindowNative), and if so the column name its
+// outer SELECT surfaces the per-row grid anchor under. Mirrors
+// `isMatrixRangeWindow` in internal/api/prom/handler.go.
 //
-// The ClickHouse-native timeSeriesRateToGrid path is always matrix
-// shape: it explodes the grid into one row per anchor and surfaces the
-// per-row `anchor_ts` column, exactly like the fan-out matrix
-// RangeWindow. The TimeUnix source is therefore that column, not the
-// now64() instant synthesis.
+// Both matrix emitters alias the anchor to the node's own
+// TimestampColumn — `anchor_ts AS <TimestampColumn>` (see
+// emitWindowedArrayPairsMatrix / emitWindowedArrayMatrix and
+// emitRangeWindowNative) — and skip the alias when TimestampColumn is
+// already `anchor_ts`, which is what a subquery-fed arm carries: its
+// input is itself a grid, so the timestamp it reduces over is the inner
+// grid's anchor. The arm's timestamp therefore lives under the NODE's
+// TimestampColumn, not the set op's, and the canonical-shape projection
+// above aliases across when the two differ. Reading the node's column
+// rather than assuming the set op's is what keeps a subquery arm
+// (`a or max_over_time(b[3m:1m])`) from projecting an identifier its
+// own SELECT never exposes.
+//
+// The native path is always matrix shape: it explodes the grid into one
+// row per anchor and surfaces the per-row anchor column, exactly like
+// the fan-out matrix RangeWindow. The timestamp source is therefore that
+// column, not the now64() instant synthesis.
 //
 // Nested VectorSetOp arms are NOT matrix shape per se — but they emit
 // their own canonical 4-column SELECT (this very function's caller),
 // so the outer references TimeUnix by name regardless. They're
 // classified as canonical (not derived) by
 // vectorSetOpArmIsDerivedShape, so this helper isn't reached for them.
-func vectorSetOpArmIsMatrixRangeWindow(n chplan.Node) bool {
+func vectorSetOpArmTimestampCol(n chplan.Node) (string, bool) {
 	switch v := n.(type) {
 	case *chplan.RangeWindow:
-		return v.OuterRange > 0
+		if v.OuterRange > 0 {
+			return v.TimestampColumn, true
+		}
 	case *chplan.RangeWindowNative:
-		return true
+		return v.TimestampColumn, true
 	case *chplan.Project:
-		return vectorSetOpArmIsMatrixRangeWindow(v.Input)
+		return vectorSetOpArmTimestampCol(v.Input)
 	case *chplan.Filter:
-		return vectorSetOpArmIsMatrixRangeWindow(v.Input)
+		return vectorSetOpArmTimestampCol(v.Input)
 	}
-	return false
+	return "", false
 }
 
 // vectorSetOpArmIsDerivedShape reports whether a VectorSetOp arm's
