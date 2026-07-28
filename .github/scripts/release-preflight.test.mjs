@@ -25,12 +25,29 @@ import assert from 'node:assert/strict';
 
 import {
   evaluate,
+  parseCheckList,
   requiredChecksPending,
   allSuitesSettled,
   MODE_MAINLINE,
   MODE_MAINTENANCE,
   REUSABLE_JOB_SEPARATOR,
 } from './release-preflight.mjs';
+
+test('parseCheckList keeps commas inside a check name', () => {
+  // `property (PromQL + LogQL + TraceQL, rapid N=500)` is a branch-protection
+  // required context. Under a comma separator it split into two names no lane
+  // will ever post, so the preflight waited out its full window and aborted
+  // the release — a wiring bug that only ever surfaces mid-publish.
+  const names = parseCheckList(
+    'check\nproperty (PromQL + LogQL + TraceQL, rapid N=500)\n  migration-e2e  \n\n',
+  );
+  assert.deepEqual(names, [
+    'check',
+    'property (PromQL + LogQL + TraceQL, rapid N=500)',
+    'migration-e2e',
+  ]);
+  assert.deepEqual(parseCheckList(undefined), []);
+});
 
 // The release run's own jobs, as release.yml wires them into RELEASE_SELF_JOBS.
 const SELF_JOBS = new Set([
