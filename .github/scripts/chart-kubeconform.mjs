@@ -1,22 +1,23 @@
 // chart-kubeconform.mjs — render the Helm chart for the default values and
 // every ci/*-values.yaml fixture, schema-validate each rendered manifest set
 // with kubeconform, and assert the rendered container image tag actually
-// exists in the registry (the guard that would have caught an appVersion
-// pointing at an unpublished tag).
+// exists in the registry (the guard against an appVersion pointing at an
+// unpublished tag).
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
 //   KUBE_VERSION  k8s API version to validate against (default: 1.28.0)
 //   SKIP_IMAGE_CHECK  set to "1" to skip the registry existence probe
-//                     (e.g. air-gapped CI); the probe is best-effort and
-//                     only fails on a DEFINITIVE not-found, never on a
-//                     transient registry/network error.
+//                     entirely (air-gapped CI). This is the only waiver:
+//                     when the probe runs, a reference it cannot positively
+//                     verify fails the check.
 //
 // Deps: node: builtins only. Requires `helm` + `kubeconform` on PATH
 // (installed by the workflow via official actions) and, for the image
 // probe, `docker` (anonymous manifest inspect works for public images).
 //
-// Exit 1 on any kubeconform failure or a definitively-missing image.
+// Exit 1 on any kubeconform failure, any missing image, and any image whose
+// existence the probe could not establish.
 
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -50,8 +51,8 @@ function kubeconform(manifests, label) {
 // Collect distinct `image:` references from YAML text. Applied to the rendered
 // manifests AND to Chart.yaml itself, whose `artifacthub.io/images` annotation
 // advertises a `v`-prefixed ref that no rendered manifest carries — a second
-// tag shape, from a second goreleaser `tags:` entry, that nothing probed while
-// only rendered output was scanned.
+// tag shape, from a second goreleaser `tags:` entry, which scanning only the
+// rendered output would leave unprobed.
 export function imagesIn(yamlText) {
   const out = new Set()
   for (const m of yamlText.matchAll(/^\s*image:\s*["']?([^"'\s]+)["']?\s*$/gm)) {
@@ -60,17 +61,14 @@ export function imagesIn(yamlText) {
   return [...out]
 }
 
-// Best-effort registry existence probe. Only a DEFINITIVE not-found fails
-// the build; transient/auth errors are surfaced as a notice so a flaky
-// registry never blocks a chart PR.
-//
-// stderr MUST be piped. `docker manifest inspect` writes its verdict there
-// ("manifest unknown"), and with `stdio: 'ignore'` the thrown error carries
-// `stderr === null` and a `message` of only "Command failed: docker manifest
-// inspect <ref>" — no phrase the classifier below can match. Every failure,
-// including a definitive not-found, therefore fell through to 'unknown' and
-// was downgraded to a notice: the `chart-validate` required check could not
-// fail on the one condition it exists to catch.
+// classifyProbeFailure reads the registry's own words out of the probe's
+// stderr. `docker manifest inspect` writes its verdict there ("manifest
+// unknown"), so stderr has to be piped for any branch here to be reachable:
+// with stderr closed, execFileSync's error carries `stderr === null` and a
+// message of only "Command failed: docker manifest inspect <ref>", which
+// matches no phrase below and classifies as 'unknown'. The self-test drives
+// the real probe against a failing command, so the piping is asserted at the
+// call site rather than as a constant sitting next to it.
 export function classifyProbeFailure(err) {
   const msg = String(err.stderr || err.message || '')
   if (/manifest unknown|not found|no such manifest|MANIFEST_UNKNOWN|NAME_UNKNOWN|404/i.test(msg)) {
@@ -79,18 +77,35 @@ export function classifyProbeFailure(err) {
   return 'unknown'
 }
 
-// Named so the self-test can pin it. classifyProbeFailure is pure and would go
-// on passing its own assertions if this reverted to `stdio: 'ignore'` — the
-// defect lived here, not in the classifier, so this is what has to be gated.
-export const PROBE_SPAWN_OPTS = { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' }
+const PROBE_SPAWN_OPTS = { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' }
 
-function imageExists(ref) {
+// The probe command, taken as an argument so the self-test can exercise this
+// exact execFileSync call — same options object, same error handling — against
+// a command whose failure it controls.
+const DOCKER_MANIFEST_INSPECT = (ref) => ['docker', ['manifest', 'inspect', ref]]
+
+export function imageExists(ref, probeCmd = DOCKER_MANIFEST_INSPECT) {
+  const [file, args] = probeCmd(ref)
   try {
-    execFileSync('docker', ['manifest', 'inspect', ref], PROBE_SPAWN_OPTS)
+    execFileSync(file, args, PROBE_SPAWN_OPTS)
     return 'present'
   } catch (e) {
     return classifyProbeFailure(e)
   }
+}
+
+// probeVerdict maps a probe state onto the check's verdict. An image counts as
+// verified only when the probe positively confirmed it, so 'unknown' — an
+// auth/permission refusal, a rate limit, a DNS or TLS failure — is FATAL: a
+// guard that reached no verdict has verified nothing, and reporting green on
+// it means the `chart-validate` required check passes precisely when the guard
+// is broken. `SKIP_IMAGE_CHECK=1` is the explicit, visible waiver for runs with
+// no registry access. The staged-appVersion exemption covers a DEFINITIVE
+// not-found only: an unverifiable staged ref is still unverified.
+export function probeVerdict(state, isStaged) {
+  if (state === 'present') return 'ok'
+  if (state === 'missing' && isStaged) return 'staged'
+  return 'fail'
 }
 
 // The appVersion this very change stages, or null if it is unchanged.
@@ -129,13 +144,36 @@ function gitShow(ref, path) {
   }
 }
 
-// --- self-test: pins the pure classification/exemption logic ---------------
+// --- self-test: pins the probe call site and the verdict/exemption logic ---
 //
-// Each case that guards a regression also proves the OLD behaviour is gone,
-// rather than only that the new behaviour is present: `stdio: 'ignore'`
-// produced an error object with `stderr === null` and a bare "Command failed"
-// message, and that exact shape must classify as 'missing' now that stderr is
-// piped — asserting only on a piped-stderr fixture would pass either way.
+// The image guard is a chain — spawn options, classifier, verdict — and only
+// the middle link is pure. So the probe assertions run the REAL `imageExists`
+// against a command whose failure they control, instead of asserting on the
+// options object: a call site that stops piping stderr, or a verdict that
+// downgrades a failed probe to a notice, has to turn one of them red.
+
+// The phrases a controlled probe writes to stderr: a registry's not-found
+// verdict, and a refusal that says nothing about whether the image exists.
+const NOT_FOUND_STDERR = 'manifest unknown'
+const NO_VERDICT_STDERR = 'unauthorized: authentication required'
+
+// probeCmd factories for the self-test: a node subprocess that writes `phrase`
+// to stderr and exits non-zero, and one that succeeds silently.
+//
+// The phrase travels through argv base64-encoded because execFileSync's error
+// MESSAGE quotes the whole command line — a plaintext phrase there would reach
+// the classifier through `message` even with stderr closed, and the assertion
+// would then pass against a call site that pipes nothing. The fixture must
+// leave stderr as the only channel it can arrive on.
+const failingProbe = (phrase) => () => [
+  process.execPath,
+  [
+    '-e',
+    `process.stderr.write(Buffer.from('${Buffer.from(phrase).toString('base64')}', 'base64').toString()); process.exit(1)`,
+  ],
+]
+const succeedingProbe = () => [process.execPath, ['-e', '']]
+
 function selfTest() {
   const fails = []
   let passes = 0
@@ -144,24 +182,53 @@ function selfTest() {
     else fails.push(msg)
   }
 
-  // The defect was the spawn options, not the classifier. Pin them directly:
-  // without a piped stderr every branch below is unreachable in production.
-  check(PROBE_SPAWN_OPTS.stdio[2] === 'pipe', 'the probe pipes stderr — the classifier sees nothing otherwise')
-  check(PROBE_SPAWN_OPTS.encoding === 'utf8', 'probe stderr is decoded to a string, not a Buffer')
+  // End-to-end through the real spawn: the registry's not-found phrase only
+  // reaches the classifier if the call site pipes stderr, so a call site that
+  // closes it turns this from 'missing' into 'unknown'.
+  check(
+    imageExists('probe-self-test', failingProbe(NOT_FOUND_STDERR)) === 'missing',
+    'the probe call site pipes stderr — a registry not-found reaches the classifier',
+  )
+  check(
+    imageExists('probe-self-test', failingProbe(NO_VERDICT_STDERR)) === 'unknown',
+    'a refusal that is not a not-found reaches the classifier as unknown',
+  )
+  check(imageExists('probe-self-test', succeedingProbe) === 'present', 'a probe that exits 0 reports the image present')
+
+  // The fixture itself: its command line must carry no phrase the classifier
+  // recognises, or the two assertions above would pass on `message` alone.
+  const [file, args] = failingProbe(NOT_FOUND_STDERR)('probe-self-test')
+  check(
+    classifyProbeFailure({ stderr: null, message: `Command failed: ${file} ${args.join(' ')}` }) === 'unknown',
+    'the probe fixture reaches the classifier on stderr only, never through the quoted command line',
+  )
 
   const notFound = { stderr: 'manifest unknown\n', message: 'Command failed: docker manifest inspect x' }
   check(classifyProbeFailure(notFound) === 'missing', 'piped not-found stderr classifies as missing')
 
-  // The regression itself: with stdio 'ignore' this is all the probe ever saw.
+  // A probe whose stderr never arrives carries only "Command failed", which is
+  // no verdict at all — and no verdict fails the check.
   const swallowed = { stderr: null, message: 'Command failed: docker manifest inspect ghcr.io/tsouza/cerberus:1.13.1' }
-  check(
-    classifyProbeFailure(swallowed) === 'unknown',
-    'stderr-less failure is unknown — proves the guard was inert until stderr was piped',
-  )
+  check(classifyProbeFailure(swallowed) === 'unknown', 'a stderr-less failure is unknown, never a silent pass')
 
-  for (const transient of ['unauthorized: authentication required', 'toomanyrequests: retry later', 'tls: handshake timeout']) {
-    check(classifyProbeFailure({ stderr: transient }) === 'unknown', `transient stays unknown: ${transient}`)
+  // None of these says the image is absent, and none of them says it is there
+  // either: each classifies as unknown, and unknown fails the check.
+  for (const noVerdict of [NO_VERDICT_STDERR, 'toomanyrequests: retry later', 'tls: handshake timeout']) {
+    check(classifyProbeFailure({ stderr: noVerdict }) === 'unknown', `not a not-found verdict: ${noVerdict}`)
+    check(probeVerdict(classifyProbeFailure({ stderr: noVerdict }), false) === 'fail', `probe failure fails the check: ${noVerdict}`)
   }
+
+  check(probeVerdict('present', false) === 'ok', 'a confirmed image passes')
+  check(probeVerdict('missing', false) === 'fail', 'an unpublished image fails')
+  check(probeVerdict('missing', true) === 'staged', 'a definitive not-found on the staged appVersion is exempt')
+  check(
+    probeVerdict('unknown', false) === 'fail',
+    'an unverifiable image fails the check — a probe that reached no verdict verified nothing',
+  )
+  check(
+    probeVerdict('unknown', true) === 'fail',
+    'the staging exemption covers a definitive not-found only, never an unverifiable ref',
+  )
 
   check(appVersionOf('appVersion: "1.13.0"\n') === '1.13.0', 'appVersion parsed through quotes')
   check(appVersionOf('appVersion: 1.13.0\n') === '1.13.0', 'appVersion parsed unquoted')
@@ -247,15 +314,21 @@ const staged = stagedAppVersion(headChartYaml, gitShow(baseRef, join(CHART_DIR, 
 if (!SKIP_IMAGE_CHECK) {
   for (const ref of [...seenImages].sort()) {
     const state = imageExists(ref)
-    if (state === 'missing' && isStagedRef(ref, staged)) {
-      ghNotice(`image not published yet, as expected — this change stages appVersion ${staged}: ${ref}`)
-    } else if (state === 'missing') {
-      ghError(`rendered image does not exist in the registry: ${ref} — the chart's appVersion/image.tag points at an unpublished tag`)
-      ok = false
-    } else if (state === 'unknown') {
-      ghNotice(`could not verify image (transient/registry error, not failing): ${ref}`)
-    } else {
-      ghNotice(`image present: ${ref}`)
+    switch (probeVerdict(state, isStagedRef(ref, staged))) {
+      case 'ok':
+        ghNotice(`image present: ${ref}`)
+        break
+      case 'staged':
+        ghNotice(`image not published yet, as expected — this change stages appVersion ${staged}: ${ref}`)
+        break
+      default:
+        ghError(
+          state === 'missing'
+            ? `rendered image does not exist in the registry: ${ref} — the chart's appVersion/image.tag points at an unpublished tag`
+            : `could not verify image ${ref} — the registry probe reached no verdict, so the image-existence guard did not run. ` +
+                `Fix the registry access (or set SKIP_IMAGE_CHECK=1 for an air-gapped run); an unverified image is not a verified one.`,
+        )
+        ok = false
     }
   }
 }

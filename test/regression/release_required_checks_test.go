@@ -1,8 +1,11 @@
 package regression
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -93,8 +96,10 @@ func TestReleasePreflightCoversEveryBranchProtectionContext(t *testing.T) {
 				"RELEASE_INFORMATIONAL_CHECKS of %s job %q. On the maintenance path there is no PR "+
 				"and therefore no branch protection, so an unlisted lane is certified by absence: "+
 				"the preflight ignores what it was not told to expect and the release publishes on "+
-				"silence. Either require it, or de-gate it explicitly with a written reason.",
-				ctx, releaseWorkflowPath, preflightJob)
+				"silence. Either require it, or de-gate it: add it to RELEASE_INFORMATIONAL_CHECKS "+
+				"AND give it a row in the %q table of %s — TestDeGatedLanesAreDocumentedWithAReason "+
+				"holds those two in sync, so the reason is enforced rather than requested.",
+				ctx, releaseWorkflowPath, preflightJob, deGatedLanesHeading, operationsDocPath)
 		}
 	}
 }
@@ -128,6 +133,95 @@ func TestReleaseRequiredChecksAllHaveAMaintenanceTrigger(t *testing.T) {
 	}
 }
 
+const (
+	// operationsDocPath is where an operator reads the publish path, and so
+	// where the de-gating decisions have to be legible.
+	operationsDocPath = "../../docs/operations.md"
+	// deGatedLanesHeading is the section holding the lane -> reason table.
+	deGatedLanesHeading = "#### De-gated lanes on the publish path"
+)
+
+// deGatedLanesFromDocs reads the lane -> reason table under
+// deGatedLanesHeading. Rows are `| `lane` | reason |`; the header and its
+// separator are skipped, and the scan stops at the next heading.
+func deGatedLanesFromDocs(t *testing.T) map[string]string {
+	t.Helper()
+
+	doc := readFileString(t, operationsDocPath)
+	_, after, found := strings.Cut(doc, deGatedLanesHeading+"\n")
+	if !found {
+		t.Fatalf("%s has no %q section; that is where a de-gated lane's reason is written",
+			operationsDocPath, deGatedLanesHeading)
+	}
+	section, _, _ := strings.Cut(after, "\n#")
+
+	lanes := map[string]string{}
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cells) != 2 {
+			t.Fatalf("%s: %q table row has %d cells, want 2 (lane, reason):\n\t%s",
+				operationsDocPath, deGatedLanesHeading, len(cells), line)
+		}
+		lane := strings.Trim(strings.TrimSpace(cells[0]), "`")
+		reason := strings.TrimSpace(cells[1])
+		if lane == "Lane" || strings.HasPrefix(lane, "---") {
+			continue // header row and its separator
+		}
+		lanes[lane] = reason
+	}
+	return lanes
+}
+
+// TestDeGatedLanesAreDocumentedWithAReason makes the "de-gate it with a
+// written reason" instruction enforceable. RELEASE_INFORMATIONAL_CHECKS is a
+// bare list of names: on its own it can de-gate a branch-protection lane
+// silently, and the only rationale would be a YAML comment no operator reads.
+// This pins the two together — the documented set must be exactly the de-gated
+// set, and every row must carry a reason.
+func TestDeGatedLanesAreDocumentedWithAReason(t *testing.T) {
+	t.Parallel()
+
+	job := workflowJobBody(t, readFileString(t, releaseWorkflowPath), preflightJob)
+	informational := informationalChecksFromPreflight(t, job)
+	if len(informational) == 0 {
+		t.Fatalf("parsed no RELEASE_INFORMATIONAL_CHECKS out of %s job %q",
+			releaseWorkflowPath, preflightJob)
+	}
+	documented := deGatedLanesFromDocs(t)
+
+	for _, lane := range informational {
+		reason, ok := documented[lane]
+		if !ok {
+			t.Errorf("%s de-gates %q in RELEASE_INFORMATIONAL_CHECKS, but %s's %q table does not "+
+				"say why. A lane that stops gating a publish needs its reason where an operator "+
+				"reads the release pipeline, not only in a workflow comment.",
+				releaseWorkflowPath, lane, operationsDocPath, deGatedLanesHeading)
+			continue
+		}
+		if reason == "" {
+			t.Errorf("%s: %q row for de-gated lane %q has an empty reason cell",
+				operationsDocPath, deGatedLanesHeading, lane)
+		}
+	}
+
+	degated := map[string]bool{}
+	for _, lane := range informational {
+		degated[lane] = true
+	}
+	for lane := range documented {
+		if !degated[lane] {
+			t.Errorf("%s's %q table documents %q, but RELEASE_INFORMATIONAL_CHECKS in %s does not "+
+				"list it. Either the lane is gating again — delete the row — or the de-gating was "+
+				"dropped from the preflight and the doc now describes something untrue.",
+				operationsDocPath, deGatedLanesHeading, lane, releaseWorkflowPath)
+		}
+	}
+}
+
 // TestNoJustfileRecipePushesAReleaseTag pins the deletion of `just
 // release-tag`. release.yml's raw-tag trigger is retired, and
 // release-version-gate.mjs decides whether to publish by asking whether
@@ -143,20 +237,83 @@ func TestNoJustfileRecipePushesAReleaseTag(t *testing.T) {
 	if len(recipes) == 0 {
 		t.Fatal("parsed no recipes out of the Justfile")
 	}
+	const consequence = "Tags are created BY release.yml after it publishes. A hand-made tag makes " +
+		"the version gate see the version as already released, so the release is " +
+		"skipped in silence — every job green, nothing shipped."
 	for name, body := range recipes {
+		if strings.HasPrefix(name, releaseTagRecipePrefix) {
+			t.Errorf("Justfile declares recipe %q. There is deliberately no tag-cutting recipe: "+
+				consequence, name)
+		}
 		for _, line := range strings.Split(body, "\n") {
-			if !strings.Contains(line, "git tag") && !strings.Contains(line, "git push") {
-				continue
-			}
-			if strings.Contains(line, "v{{version}}") || strings.Contains(line, "chart-v") {
-				t.Errorf("Justfile recipe %q creates or pushes a release tag:\n\t%s\n"+
-					"Tags are created BY release.yml after it publishes. A hand-made tag makes "+
-					"the version gate see the version as already released, so the release is "+
-					"skipped in silence — every job green, nothing shipped.",
-					name, strings.TrimSpace(line))
+			if why := tagCuttingCommand(line); why != "" {
+				t.Errorf("Justfile recipe %q %s:\n\t%s\n"+consequence,
+					name, why, strings.TrimSpace(line))
 			}
 		}
 	}
+}
+
+// releaseTagRecipePrefix is the recipe name (and any variant of it) that must
+// never come back — see the comment above the test.
+const releaseTagRecipePrefix = "release-tag"
+
+var (
+	// gitTagReadOnly are the `git tag` sub-flags that only READ tags. Any
+	// other `git tag` invocation creates or deletes one.
+	gitTagReadOnly = map[string]bool{
+		"--list": true, "-l": true, "--points-at": true, "--contains": true,
+		"--no-contains": true, "--merged": true, "--no-merged": true,
+		"--verify": true, "--sort": true, "-n": true,
+	}
+	// gitPushTagFlags publish tags without ever naming one.
+	gitPushTagFlags = map[string]bool{"--tags": true, "--follow-tags": true}
+	// tagRefspec matches a pushed ref that is a release tag rather than a
+	// branch: an explicit refs/tags/ path, a literal `v1.2.3`, or the
+	// `v{{version}}` / `chart-v{{...}}` interpolations the release recipes
+	// build their names from. A branch ref like `release/v{{version}}-staging`
+	// is not anchored at `v`, so it does not match.
+	tagRefspec = regexp.MustCompile(`^["']?(refs/tags/|v\{\{|chart-v|v[0-9])`)
+)
+
+// tagCuttingCommand reports, in words fit for a failure message, why one shell
+// line from a recipe body creates or publishes a git tag — or "" if it does
+// not. It reads the command tokens rather than looking for a version literal,
+// so splitting the tag name into a shell variable does not evade it.
+func tagCuttingCommand(line string) string {
+	if strings.HasPrefix(strings.TrimSpace(line), "#") {
+		return "" // a shell comment runs nothing (recipe shebangs land here too).
+	}
+	fields := strings.Fields(line)
+	flag := func(f string) string { return strings.SplitN(f, "=", 2)[0] }
+	for i, tok := range fields {
+		rest := fields[i+1:]
+		switch {
+		case tok == "git" && len(rest) > 0 && rest[0] == "tag":
+			readOnly := false
+			for _, f := range rest[1:] {
+				if gitTagReadOnly[flag(f)] {
+					readOnly = true
+					break
+				}
+			}
+			if !readOnly {
+				return "creates a git tag"
+			}
+		case tok == "git" && len(rest) > 0 && rest[0] == "push":
+			for _, f := range rest[1:] {
+				if gitPushTagFlags[flag(f)] {
+					return "pushes tags"
+				}
+				if tagRefspec.MatchString(f) {
+					return "pushes a release tag"
+				}
+			}
+		case tok == "gh" && len(rest) > 1 && rest[0] == "release" && rest[1] == "create":
+			return "creates a GitHub release, which creates its tag"
+		}
+	}
+	return ""
 }
 
 // checkOwner is the workflow that posts a given check-run name.
@@ -176,27 +333,190 @@ func (o checkOwner) pushesOn(branch string) bool {
 
 // checkOwnerIndex resolves a check-run name to the workflow that posts it.
 // Job names that interpolate a matrix value (`roundtrip (${{ matrix.ql }})`)
-// are indexed by their literal prefix rather than expanded — enumerating the
-// matrix would be more machinery than the assertion needs, and the prefix is
-// unambiguous in practice.
+// are expanded into the concrete per-leg names GitHub instantiates, so the
+// lookup is exact: a required check named `roundtrip (metricsql)` resolves to
+// nothing, because no leg posts that check-run. A prefix match would accept it
+// and certify a lane that does not exist.
 type checkOwnerIndex struct {
-	exact    map[string]checkOwner
-	prefixes []struct {
-		prefix string
-		owner  checkOwner
-	}
+	exact map[string]checkOwner
 }
 
 func (i checkOwnerIndex) lookup(name string) (checkOwner, bool) {
-	if o, ok := i.exact[name]; ok {
-		return o, true
+	o, ok := i.exact[name]
+	return o, ok
+}
+
+// matrix keys that carry combinations rather than an axis of values.
+const (
+	matrixIncludeKey = "include"
+	matrixExcludeKey = "exclude"
+)
+
+// matrixRef matches one `${{ matrix.<key> }}` reference in a job name.
+var matrixRef = regexp.MustCompile(`\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}`)
+
+// matrixScalar renders one matrix value as the string GitHub interpolates.
+// Only scalars can appear in a job name; a nested mapping or sequence is a
+// shape this expander does not model, and it says so rather than guessing.
+func matrixScalar(t *testing.T, path, jobID, key string, n yaml.Node) string {
+	t.Helper()
+	if n.Kind != yaml.ScalarNode {
+		t.Fatalf("%s: job %q matrix key %q holds a non-scalar value; teach matrixCombos "+
+			"to expand it instead of leaving the job name unresolved", path, jobID, key)
 	}
-	for _, p := range i.prefixes {
-		if p.prefix != "" && strings.HasPrefix(name, p.prefix) {
-			return p.owner, true
+	return n.Value
+}
+
+// matrixComboList decodes `include:` / `exclude:` into key/value combinations.
+func matrixComboList(t *testing.T, path, jobID, key string, n yaml.Node) []map[string]string {
+	t.Helper()
+	if n.Kind != yaml.SequenceNode {
+		t.Fatalf("%s: job %q matrix %q is not a sequence", path, jobID, key)
+	}
+	out := make([]map[string]string, 0, len(n.Content))
+	for _, item := range n.Content {
+		if item.Kind != yaml.MappingNode {
+			t.Fatalf("%s: job %q matrix %q entry is not a mapping", path, jobID, key)
+		}
+		combo := map[string]string{}
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			k := item.Content[i].Value
+			combo[k] = matrixScalar(t, path, jobID, k, *item.Content[i+1])
+		}
+		out = append(out, combo)
+	}
+	return out
+}
+
+// matrixCombos expands `strategy.matrix` into the concrete key/value sets
+// GitHub instantiates: the cartesian product of the axes, minus `exclude:`,
+// extended by `include:` (an include entry that fits an existing combination
+// extends it; one that fits none becomes a combination of its own — and with
+// no axes at all, every include entry is its own combination).
+func matrixCombos(t *testing.T, path, jobID string, node yaml.Node) []map[string]string {
+	t.Helper()
+	if node.IsZero() {
+		return []map[string]string{{}}
+	}
+	if node.Kind != yaml.MappingNode {
+		t.Fatalf("%s: job %q has a strategy.matrix this expander cannot enumerate "+
+			"(expected a mapping of axes); teach matrixCombos its shape rather than "+
+			"letting the job name go unresolved", path, jobID)
+	}
+
+	var raw map[string]yaml.Node
+	if err := node.Decode(&raw); err != nil {
+		t.Fatalf("%s: job %q strategy.matrix: %v", path, jobID, err)
+	}
+
+	axes := make([]string, 0, len(raw))
+	for k := range raw {
+		if k != matrixIncludeKey && k != matrixExcludeKey {
+			axes = append(axes, k)
 		}
 	}
-	return checkOwner{}, false
+	sort.Strings(axes)
+
+	combos := []map[string]string{{}}
+	for _, axis := range axes {
+		values := raw[axis]
+		if values.Kind != yaml.SequenceNode {
+			t.Fatalf("%s: job %q matrix axis %q is not a sequence", path, jobID, axis)
+		}
+		next := make([]map[string]string, 0, len(combos)*len(values.Content))
+		for _, combo := range combos {
+			for _, v := range values.Content {
+				grown := maps.Clone(combo)
+				grown[axis] = matrixScalar(t, path, jobID, axis, *v)
+				next = append(next, grown)
+			}
+		}
+		combos = next
+	}
+
+	if ex, ok := raw[matrixExcludeKey]; ok {
+		for _, drop := range matrixComboList(t, path, jobID, matrixExcludeKey, ex) {
+			kept := make([]map[string]string, 0, len(combos))
+			for _, combo := range combos {
+				if !comboMatches(combo, drop) {
+					kept = append(kept, combo)
+				}
+			}
+			combos = kept
+		}
+	}
+
+	inc, ok := raw[matrixIncludeKey]
+	if !ok {
+		return combos
+	}
+	includes := matrixComboList(t, path, jobID, matrixIncludeKey, inc)
+	if len(axes) == 0 {
+		combos = make([]map[string]string, 0, len(includes))
+		for _, add := range includes {
+			combos = append(combos, maps.Clone(add))
+		}
+		return combos
+	}
+	for _, add := range includes {
+		extended := false
+		for _, combo := range combos {
+			if !comboCompatible(combo, add, axes) {
+				continue
+			}
+			for k, v := range add {
+				combo[k] = v
+			}
+			extended = true
+		}
+		if !extended {
+			combos = append(combos, maps.Clone(add))
+		}
+	}
+	return combos
+}
+
+// comboMatches reports whether combo carries every key/value in filter.
+func comboMatches(combo, filter map[string]string) bool {
+	for k, v := range filter {
+		if combo[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// comboCompatible reports whether an include entry can extend combo without
+// overwriting a value that came from an original matrix axis.
+func comboCompatible(combo, add map[string]string, axes []string) bool {
+	for _, axis := range axes {
+		if v, ok := add[axis]; ok && combo[axis] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// expandJobName resolves every `${{ matrix.* }}` reference in a job name
+// against one matrix combination, yielding the exact check-run name.
+func expandJobName(t *testing.T, path, jobID, name string, combo map[string]string) string {
+	t.Helper()
+	resolved := matrixRef.ReplaceAllStringFunc(name, func(ref string) string {
+		key := matrixRef.FindStringSubmatch(ref)[1]
+		v, ok := combo[key]
+		if !ok {
+			t.Fatalf("%s: job %q name references matrix.%s, which its strategy.matrix "+
+				"does not define", path, jobID, key)
+		}
+		return v
+	})
+	if strings.Contains(resolved, "${{") {
+		t.Fatalf("%s: job %q name %q still holds an unresolved ${{ … }} expression after "+
+			"matrix expansion, so its check-run name cannot be matched exactly. Teach "+
+			"workflowCheckOwners to resolve it — do not fall back to a prefix match, which "+
+			"would accept required-check names no job ever posts.", path, jobID, name)
+	}
+	return resolved
 }
 
 // workflowCheckOwners indexes every check-run name declared under
@@ -210,10 +530,6 @@ func workflowCheckOwners(t *testing.T) checkOwnerIndex {
 	}
 
 	exact := map[string]checkOwner{}
-	var prefixes []struct {
-		prefix string
-		owner  checkOwner
-	}
 
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".yml" {
@@ -227,7 +543,10 @@ func workflowCheckOwners(t *testing.T) checkOwnerIndex {
 		var doc struct {
 			On   yaml.Node `yaml:"on"`
 			Jobs map[string]struct {
-				Name string `yaml:"name"`
+				Name     string `yaml:"name"`
+				Strategy struct {
+					Matrix yaml.Node `yaml:"matrix"`
+				} `yaml:"strategy"`
 			} `yaml:"jobs"`
 		}
 		if err := yaml.Unmarshal([]byte(readFileString(t, path)), &doc); err != nil {
@@ -251,19 +570,23 @@ func workflowCheckOwners(t *testing.T) checkOwnerIndex {
 			if name == "" {
 				name = id
 			}
-			if i := strings.Index(name, "${{"); i >= 0 {
-				prefixes = append(prefixes, struct {
-					prefix string
-					owner  checkOwner
-				}{strings.TrimRight(name[:i], " "), owner})
-				continue
+			// A matrix is only expanded when the job name reads from it.
+			// Jobs whose name is fixed post that one name on every leg, and
+			// jobs named by their id post the id — neither needs the axes,
+			// and one of them (`compose-smoke-shard`) builds its matrix from
+			// a preceding job's output, which is not knowable from source.
+			combos := []map[string]string{{}}
+			if strings.Contains(name, "${{") {
+				combos = matrixCombos(t, path, id, jb.Strategy.Matrix)
 			}
-			exact[name] = owner
+			for _, combo := range combos {
+				exact[expandJobName(t, path, id, name, combo)] = owner
+			}
 		}
 	}
 
 	if len(exact) == 0 {
 		t.Fatalf("parsed no job names out of %s", workflowsDir)
 	}
-	return checkOwnerIndex{exact: exact, prefixes: prefixes}
+	return checkOwnerIndex{exact: exact}
 }
