@@ -33,6 +33,19 @@ import (
 // records ctx.Err() at the instant Close is entered, so hoisting the close
 // past the cancel — a plausible refactor of handleQueryRange, and one no
 // response assertion would notice — fails here.
+//
+// Scope, stated precisely so the name does not imply more than it covers:
+// TestPromRangeCursorClosedBeforeContextCancel is a GUARD, not a
+// demonstration. The prom seam already closed on a live context, so this test
+// passes against the handler as it stood before the teardown contract landed;
+// what it fails against is a future edit that fires the cancel first (verified
+// by making exactly that edit). The seam where the ordering was genuinely
+// inverted is the solver's fan-out, and TestShardCursorClose_DrainsChildren-
+// BeforeCancel is the test that fails against the unfixed code there.
+//
+// TestPromRangeCursorTeardownIsBounded below is the demonstrative half: it
+// fails against the pre-contract handler, because bounding the teardown — as
+// opposed to merely ordering it — is coverage the prom seam did not have.
 
 // teardownOrderCursor records the state of its query context at the instant
 // Close is entered. nil is the contract; context.Canceled is the driver state
