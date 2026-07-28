@@ -489,8 +489,20 @@ type verifyInputs struct {
 // newMigrateVerifyCmd is the online cutover parity gate: it replays every corpus
 // query against its head's reference backend AND cerberus over one query_range
 // window and diffs the results series-by-series, exiting non-zero on any
-// divergence or error. Every flag falls back to CERBERUS_VERIFY_*, from the
-// environment or from the same cerberus.yaml the gateway reads.
+// divergence or error.
+//
+// Every flag that names a BACKEND OR A WINDOW — the per-head URLs, tokens and
+// org-id, --corpus, --start/--end/--step, --tolerance, --report — falls back to
+// its CERBERUS_VERIFY_* setting, read from the environment or from the same
+// cerberus.yaml the gateway reads, so a cutover runs from the operator's own
+// config rather than a re-typed command line. --tolerance resolves its setting
+// inside RunE rather than as a flag default, so a malformed
+// CERBERUS_VERIFY_TOLERANCE is fatal even when the flag overrides it.
+//
+// --json and --out have NO setting: they choose how THIS invocation renders and
+// where it writes, which is the caller's framing of one run rather than part of
+// the cutover's configuration — the same split every other `migrate` subcommand
+// draws.
 func newMigrateVerifyCmd(set *config.Lookup) *cobra.Command {
 	var in verifyInputs
 	cmd := &cobra.Command{
