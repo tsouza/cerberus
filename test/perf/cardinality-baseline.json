@@ -2470,6 +2470,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/edge_absent_over_time_at_timestamp_range_pinned_absent",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/edge_absent_over_time_at_timestamp_range_pinned_present",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/edge_at_start_range",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -2576,6 +2596,16 @@
     "peak_intermediate": 3,
     "has_cross_join": false,
     "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/edge_double_exp_smoothing_at_timestamp_range_pinned",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -2726,6 +2756,36 @@
     "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/edge_predict_linear_at_timestamp_range_pinned",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/edge_quantile_over_time_at_pinned_phi_above_one",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/edge_quantile_over_time_at_timestamp_range_pinned",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },

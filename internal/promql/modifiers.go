@@ -187,6 +187,60 @@ func hasAbsoluteAt(vs *parser.VectorSelector) bool {
 	return vs.Timestamp != nil || vs.StartOrEnd != 0
 }
 
+// rangeGridShape classifies how a range-vector lowering must be shaped for
+// the surrounding query's evaluation mode. Every range-vector lowering
+// (`lowerRangeVectorCall`, predict_linear, holt_winters,
+// quantile_over_time, absent_over_time) reaches the decision through
+// [rangeGridShapeFor], so the pinned-vs-fanned rule has exactly one
+// definition — the per-site copies of the `ctx.step > 0 && …` gate each
+// omitted the pin check independently, which is how `@` came to be
+// silently discarded on every path but `lowerRangeVectorCall`.
+type rangeGridShape int
+
+const (
+	// gridSingleAnchor: one window at one anchor. An instant query, or a
+	// context-free Lower() with no eval range at all — the window keeps
+	// the anchor [anchorFromSelector] resolved and nothing re-anchors it.
+	gridSingleAnchor rangeGridShape = iota
+	// gridFanout: range mode, no absolute pin. Re-anchor the window onto
+	// every step in [start, end] so each grid point emits its own window
+	// value.
+	gridFanout
+	// gridBroadcast: range mode with an absolute `@` pin. Reference PromQL
+	// evaluates the SAME pinned window [anchor-range, anchor] at EVERY
+	// step — the `@` fixes the anchor and only the OUTPUT timestamps vary
+	// — so the window is evaluated ONCE at the pin and its per-series
+	// value is broadcast across the step grid. Fanning out instead would
+	// overwrite the pinned anchor with the grid anchor and lose the pin.
+	gridBroadcast
+)
+
+// rangeGridShapeFor picks the grid shape for a range-vector lowering over
+// vs under ctx. A bare `offset` does NOT force gridBroadcast: offset is a
+// relative shift against each step's eval time, so it stays per-step and
+// rides along on the fan-out via RangeWindow.Offset.
+func rangeGridShapeFor(vs *parser.VectorSelector, ctx lowerCtx) rangeGridShape {
+	if ctx.step <= 0 || ctx.start.IsZero() || ctx.end.IsZero() {
+		return gridSingleAnchor
+	}
+	if hasAbsoluteAt(vs) {
+		return gridBroadcast
+	}
+	return gridFanout
+}
+
+// applyStepGridFanout re-anchors rw onto the request's step grid: the
+// emitter pivots between the single-anchor (Step == 0) and per-anchor
+// fan-out shapes on Step, and reads Start / OuterRange for the grid
+// bounds. Only valid for [gridFanout] — it overwrites rw.End, which is
+// precisely what must NOT happen under an `@` pin.
+func applyStepGridFanout(rw *chplan.RangeWindow, ctx lowerCtx) {
+	rw.Start = ctx.start.UTC()
+	rw.End = ctx.end.UTC()
+	rw.Step = ctx.step
+	rw.OuterRange = ctx.end.Sub(ctx.start)
+}
+
 // timeBoundExpr builds `<col> <= <anchor>` for an instant-vector
 // VectorSelector with `@` or `offset`. The anchor is `now64(9)` (or a
 // literal toDateTime64) optionally minus a nanosecond interval.

@@ -1977,16 +1977,15 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	rangeMode := ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
-	pinned := hasAbsoluteAt(vs)
+	shape := rangeGridShapeFor(vs, ctx)
 	// node is the lowering that flows to the name-preservation seam below.
 	// Outside range mode it is the fan-out RangeWindow rw; in plain range mode
 	// the boot-wired rate strategy re-derives it (native or fan-out). The
 	// name-preservation wrap keys off c.Func.Name (PromQL semantics), never off
 	// the dispatch, so the two concerns compose without a dispatch-site branch.
 	node := chplan.Node(rw)
-	switch {
-	case rangeMode && pinned:
+	switch shape {
+	case gridBroadcast:
 		// `@`-pinned range-vector call (`rate(m[5m] @ <ts>)`,
 		// `... @ start()` / `@ end()`) under query_range. Reference
 		// PromQL evaluates the SAME pinned window [anchor - range,
@@ -2002,8 +2001,9 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// across the step grid via a CrossJoin(StepGrid). This is the
 		// range-vector sibling of wrapRangeAbsoluteAtBroadcast (the
 		// bare-selector `@`-pin path).
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, c.Func.Name, metricNameFromMatchers(vs.LabelMatchers)), nil
-	case rangeMode:
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, c.Func.Name,
+			metricNameFromMatchers(vs.LabelMatchers), &chplan.ColumnRef{Name: s.ValueColumn}), nil
+	case gridFanout:
 		// In range mode, fan the range function across the request's step
 		// grid: each anchor in [start, end] (spaced by step) emits one row
 		// per series with the per-anchor function value. The emitter
@@ -2013,10 +2013,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// query_range degenerates to a single anchor at end_ts and the
 		// matrix pivot only sees one sample per series — the same root
 		// cause as the bare-selector range-mode bug Pool-AK is fixing.
-		rw.Start = ctx.start.UTC()
-		rw.End = ctx.end.UTC()
-		rw.Step = ctx.step
-		rw.OuterRange = ctx.end.Sub(ctx.start)
+		applyStepGridFanout(rw, ctx)
 
 		// BOOT-WIRED native dispatch (PURE polymorphic — no branching here):
 		// hand the fan-out RangeWindow to the boot-wired rate strategy. The
@@ -2062,6 +2059,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		default:
 			node = ctx.lowerers.Rate.LowerRate(rw, s)
 		}
+	case gridSingleAnchor:
 	}
 	// `last_over_time` and `first_over_time` preserve `__name__`
 	// per Prometheus semantics — they're position-shift reducers that
@@ -2318,7 +2316,17 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 // contract `(MetricName, Attributes, anchor_ts AS TimeUnix, Value)`,
 // mirroring wrapRangeWindowPreserveName's matrix branch. Every other
 // range fn drops `__name__`, so MetricName is omitted.
-func wrapRangeWindowAtBroadcast(rw *chplan.RangeWindow, ctx lowerCtx, s schema.Metrics, fn, name string) chplan.Node {
+//
+// `value` is the expression projected as the Value column. Callers that
+// forward the window's own value pass `&chplan.ColumnRef{Name:
+// s.ValueColumn}`; `quantile_over_time` with an out-of-range literal phi
+// passes the PromQL-spec ±Inf / NaN constant instead, folding the
+// substitution that projectValueOverInner does on the non-pinned paths
+// into this projection (the broadcast shape has no MetricName column for
+// projectValueOverInner's generic branch to forward).
+func wrapRangeWindowAtBroadcast(
+	rw *chplan.RangeWindow, ctx lowerCtx, s schema.Metrics, fn, name string, value chplan.Expr,
+) chplan.Node {
 	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 	joined := &chplan.CrossJoin{Left: grid, Right: rw}
 
@@ -2333,7 +2341,7 @@ func wrapRangeWindowAtBroadcast(rw *chplan.RangeWindow, ctx lowerCtx, s schema.M
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: s.TimestampColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		chplan.Projection{Expr: value, Alias: s.ValueColumn},
 	)
 	return &chplan.Project{Input: joined, Projections: projections}
 }
