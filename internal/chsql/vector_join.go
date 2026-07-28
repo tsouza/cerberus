@@ -433,6 +433,18 @@ func matchCheckFrag(attrsCol string) Frag {
 	}
 }
 
+// setOpMatchKeyFrags returns the key a vector set operator matches
+// on: the label signature alone in instant mode, extended with the
+// evaluation-timestamp column in range mode, where every arm
+// projects the shared grid anchor under that name.
+func setOpMatchKeyFrags(m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) []Frag {
+	keys := []Frag{matchKeyGroupExprFrag(m, attrsCol)}
+	if stepAligned {
+		keys = append(keys, Col(tsCol))
+	}
+	return keys
+}
+
 // matchKeyGroupExprFrag returns a Frag for the GROUP BY expression
 // that collapses rows onto a single matching key. For default matching
 // (full Attributes) this is just the Attributes column; for on(labels)

@@ -161,6 +161,73 @@ func TestFlattenVectorSetOp_DifferingMatchDoesNotMerge(t *testing.T) {
 	}
 }
 
+// stepAlignedSetOp builds one range-mode chain link — the shape a
+// query_range lowering produces, where the match key carries the
+// evaluation timestamp alongside the label signature.
+func stepAlignedSetOp(op chplan.VectorSetOpKind, l, r chplan.Node, stepAligned bool) *chplan.VectorSetOp {
+	return &chplan.VectorSetOp{
+		Left: l, Right: r, Op: op, StepAligned: stepAligned,
+		MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
+		TimestampColumn: "TimeUnix", ValueColumn: "Value",
+	}
+}
+
+// TestFlattenVectorSetOp_StepAlignedChainCarriesFlag proves a range-mode
+// chain flattens with step alignment intact on the N-ary node. Dropping
+// the flag here would silently downgrade the whole chain to the
+// instant-mode signature-only match key, which matches set-op arms
+// across the entire range instead of per evaluation timestamp.
+func TestFlattenVectorSetOp_StepAlignedChainCarriesFlag(t *testing.T) {
+	t.Parallel()
+	a, b, c := tableScan("a"), tableScan("b"), tableScan("c")
+	in := stepAlignedSetOp(chplan.VectorSetOr,
+		stepAlignedSetOp(chplan.VectorSetOr, a, b, true), c, true)
+
+	out := optimizer.New(optimizer.FlattenVectorSetOp{}).Run(context.Background(), in)
+
+	nary, ok := out.(*chplan.NaryVectorSetOp)
+	if !ok {
+		t.Fatalf("expected *NaryVectorSetOp, got %T", out)
+	}
+	if !nary.StepAligned {
+		t.Errorf("StepAligned = false, want true (range-mode chain)")
+	}
+	if len(nary.Arms) != 3 {
+		t.Fatalf("Arms = %d, want 3", len(nary.Arms))
+	}
+}
+
+// TestFlattenVectorSetOp_MixedStepAlignmentDoesNotMerge keeps a chain
+// whose links disagree on step alignment un-spliced. The N-ary node
+// carries ONE flag for the whole chain, so merging a mixed chain would
+// evaluate some links under the wrong match key.
+func TestFlattenVectorSetOp_MixedStepAlignmentDoesNotMerge(t *testing.T) {
+	t.Parallel()
+	a, b, c := tableScan("a"), tableScan("b"), tableScan("c")
+	inner := stepAlignedSetOp(chplan.VectorSetOr, a, b, true)
+	outerNode := stepAlignedSetOp(chplan.VectorSetOr, inner, c, false)
+
+	out := optimizer.New(optimizer.FlattenVectorSetOp{}).Run(context.Background(), outerNode)
+
+	nary, ok := out.(*chplan.NaryVectorSetOp)
+	if !ok {
+		t.Fatalf("expected outer *NaryVectorSetOp, got %T", out)
+	}
+	if nary.StepAligned {
+		t.Errorf("outer StepAligned = true, want false (instant-mode root)")
+	}
+	if len(nary.Arms) != 2 {
+		t.Fatalf("outer arms = %d, want 2 (no cross-alignment splice)", len(nary.Arms))
+	}
+	innerNary, ok := nary.Arms[0].(*chplan.NaryVectorSetOp)
+	if !ok {
+		t.Fatalf("arm[0] should be the separately-flattened aligned chain, got %T", nary.Arms[0])
+	}
+	if !innerNary.StepAligned {
+		t.Errorf("arm[0].StepAligned = false, want true")
+	}
+}
+
 // TestFlattenVectorSetOp_SingleBinaryFlattensToTwoArms confirms a lone
 // `a or b` becomes a 2-arm N-ary node (the emitter handles >= 2 arms
 // uniformly, so even the degenerate binary collapses cleanly).

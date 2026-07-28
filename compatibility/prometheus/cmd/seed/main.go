@@ -43,6 +43,13 @@ const anchor = "2026-05-11 00:00:00"
 // matches TESTER_RANGE=3600 in run-compatibility.sh.
 const fixtureSteps = 240
 
+// sparseFixtureSteps ends demo_sparse_memory_bytes a quarter of the way
+// into the window, while every other family runs its full length. Set
+// operators between a sparse and a dense family therefore have to agree
+// per evaluation timestamp — the arms overlap early and diverge later,
+// so a match key that ignores the timestamp diverges from Prometheus.
+const sparseFixtureSteps = fixtureSteps / 4
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(logger); err != nil {
@@ -148,6 +155,7 @@ func insertFixture(ctx context.Context, conn driver.Conn) error {
 			ctx, s.sql,
 			clickhouse.Named("anchor", anchor),
 			clickhouse.Named("steps", uint64(fixtureSteps)),
+			clickhouse.Named("sparse_steps", uint64(sparseFixtureSteps)),
 		); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
@@ -237,6 +245,42 @@ var fixtureInserts = []namedStmt{
         FROM (
             SELECT step, instance, instance_idx, type, type_idx
             FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['cached','free','buffers','used']) AS type,
+                indexOf(['cached','free','buffers','used'], type) - 1 AS type_idx
+            ) AS t
+        )`,
+	},
+	// demo_sparse_memory_bytes: same 12-series label shape as
+	// demo_memory_usage_bytes, but only over the first quarter of the
+	// window. Set operators between the two share a match signature
+	// (the default signature excludes the metric name) while covering
+	// different spans of the evaluation grid.
+	{
+		name: "demo_sparse_memory_bytes",
+		sql: `INSERT INTO otel_metrics_gauge
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_sparse_memory_bytes',
+            'Memory in use, reported for part of the window only',
+            'bytes',
+            map('instance', instance, 'job', 'demo', 'type', type),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toFloat64(1024 * 1024 * 1024 + (step * 2048) + (instance_idx * 20000000) + (type_idx * 2000000))
+        FROM (
+            SELECT step, instance, instance_idx, type, type_idx
+            FROM (SELECT number AS step FROM numbers({sparse_steps:UInt64})) AS s
             CROSS JOIN (
                 SELECT arrayJoin(
                     ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']

@@ -282,17 +282,28 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.ReturnBool {
 			b.WriteString(" bool")
 		}
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
 		b.WriteString("\n")
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
 	case *chplan.VectorSetOp:
-		fmt.Fprintf(b, "%sVectorSetOp op=%s match=%s\n",
+		fmt.Fprintf(b, "%sVectorSetOp op=%s match=%s",
 			indent, v.Op, printVectorMatch(v.Match))
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
 	case *chplan.NaryVectorSetOp:
-		fmt.Fprintf(b, "%sNaryVectorSetOp op=%s match=%s arms=%d\n",
+		fmt.Fprintf(b, "%sNaryVectorSetOp op=%s match=%s arms=%d",
 			indent, v.Op, printVectorMatch(v.Match), len(v.Arms))
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
 		for _, arm := range v.Arms {
 			printNode(b, arm, depth+1)
 		}
