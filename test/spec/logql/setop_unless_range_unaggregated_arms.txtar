@@ -15,8 +15,13 @@
 # Window [00:00:00, 00:03:00] step 1m; each `[1m]` range is half-open
 # (`t - 1m < sample <= t`), so the anchors each arm produces are:
 #
-#   left  (|= "a", samples 00:00:00 / 00:00:30) -> 00:00, 00:01
-#   right (|= "b", samples 00:01:00 / 00:01:30) -> 00:01, 00:02
+#   left  (|= "a", samples 00:00:00 / 00:00:30 / 00:00:45) -> 00:00, 00:01
+#   right (|= "b", samples 00:01:00 / 00:01:30)            -> 00:01, 00:02
+#
+# The shared 00:01 anchor covers TWO left samples (00:00:30, 00:00:45)
+# but only ONE right sample (00:01:00). `unless` drops that anchor
+# regardless of value, so the surviving row is the unmatched 00:00
+# anchor with its single sample (1/60 = 0.0166…).
 #
 # `unless` keeps the left anchors the right arm never produced:
 # 00:00 alone.
@@ -40,8 +45,13 @@ CREATE TABLE otel_logs (
 INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
     (toDateTime64('2026-01-01 00:00:00', 9), 'a1', map('job', 'api', 'env', 'prod')),
     (toDateTime64('2026-01-01 00:00:30', 9), 'a2', map('job', 'api', 'env', 'prod')),
+    (toDateTime64('2026-01-01 00:00:45', 9), 'a3', map('job', 'api', 'env', 'prod')),
     (toDateTime64('2026-01-01 00:01:00', 9), 'b1', map('job', 'api', 'env', 'prod')),
     (toDateTime64('2026-01-01 00:01:30', 9), 'b2', map('job', 'api', 'env', 'prod'));
+-- expected_rows --
+[
+  ["", {"detected_level": "unknown", "env": "prod", "job": "api"}, "2026-01-01T00:00:00Z", 0.016666666666666666]
+]
 -- args --
 [0] string = ""
 [1] float64 = 60
