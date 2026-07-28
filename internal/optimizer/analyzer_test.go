@@ -232,6 +232,94 @@ func TestConstantFoldHeuristic_LeavesLiteralArithmeticAlone(t *testing.T) {
 	}
 }
 
+func TestConstantFoldSemantic_PreservesAggFuncParams(t *testing.T) {
+	t.Parallel()
+
+	// A parameterised aggregate renders as `<Name>(<Params>)(<Args>)`, so
+	// rebuilding the AggFunc without its Params turns `quantile(0.95)(v)`
+	// into `quantile()(v)` — a different function, not a folded operand.
+	// The fold here is triggered by the Args side (`1 + 2` → `3`), which
+	// is exactly the path that rebuilds every AggFunc in the node.
+	plan := &chplan.Aggregate{
+		Input:   &chplan.Scan{Table: "t"},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: []chplan.AggFunc{{
+			Name:   "quantile",
+			Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
+			Args: []chplan.Expr{&chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  &chplan.LitInt{V: 1},
+				Right: &chplan.LitInt{V: 2},
+			}},
+			Alias: "Value",
+		}},
+	}
+
+	out, changed := optimizer.ConstantFoldSemantic{}.Apply(plan)
+	if !changed {
+		t.Fatalf("ConstantFoldSemantic should have folded the AggFunc arg `1+2` → `3`")
+	}
+	agg, ok := out.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("expected *Aggregate, got %T", out)
+	}
+	af := agg.AggFuncs[0]
+	if len(af.Params) != 1 {
+		t.Fatalf("AggFunc.Params dropped by the fold rebuild: got %d params, want 1", len(af.Params))
+	}
+	p, ok := af.Params[0].(*chplan.LitFloat)
+	if !ok {
+		t.Fatalf("expected Params[0] LitFloat, got %T", af.Params[0])
+	}
+	if p.V != 0.95 {
+		t.Fatalf("expected Params[0] LitFloat(0.95), got LitFloat(%v)", p.V)
+	}
+	arg, ok := af.Args[0].(*chplan.LitInt)
+	if !ok || arg.V != 3 {
+		t.Fatalf("expected Args[0] LitInt(3), got %#v", af.Args[0])
+	}
+}
+
+func TestConstantFoldSemantic_FoldsAggFuncParams(t *testing.T) {
+	t.Parallel()
+
+	// The Params slice is an expression list like any other, so literal
+	// arithmetic inside it folds too — and folding it alone must be
+	// enough to report `changed`, otherwise the rebuilt node is discarded
+	// and the fold silently does nothing.
+	plan := &chplan.Aggregate{
+		Input:   &chplan.Scan{Table: "t"},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: []chplan.AggFunc{{
+			Name: "quantile",
+			Params: []chplan.Expr{&chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  &chplan.LitInt{V: 1},
+				Right: &chplan.LitInt{V: 2},
+			}},
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+			Alias: "Value",
+		}},
+	}
+
+	out, changed := optimizer.ConstantFoldSemantic{}.Apply(plan)
+	if !changed {
+		t.Fatalf("ConstantFoldSemantic should have folded the AggFunc param `1+2` → `3`")
+	}
+	agg, ok := out.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("expected *Aggregate, got %T", out)
+	}
+	if len(agg.AggFuncs[0].Params) != 1 {
+		t.Fatalf("AggFunc.Params dropped by the fold rebuild: got %d params, want 1",
+			len(agg.AggFuncs[0].Params))
+	}
+	p, ok := agg.AggFuncs[0].Params[0].(*chplan.LitInt)
+	if !ok || p.V != 3 {
+		t.Fatalf("expected Params[0] LitInt(3), got %#v", agg.AggFuncs[0].Params[0])
+	}
+}
+
 func TestDefault_AnalyzerRunsBeforeOptimizer(t *testing.T) {
 	t.Parallel()
 

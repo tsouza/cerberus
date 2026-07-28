@@ -46,19 +46,16 @@ func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
 // use the typed surface (QueryBuilder slots + Frag constructors like
 // Eq / And / Paren / Cast).
 //
-// IN-PACKAGE ESCAPE HATCH, NOT A SHORTCUT. writeSQL is the last resort
-// for the few remaining operator-token-style glue sites inside the
-// `internal/chsql` domain emitters that have not yet been ported to
-// typed Frags (histogram_quantile.go, histogram_quantile_native.go,
-// vector_join.go, structural_join.go, nested_set_annotate.go,
-// set_op.go, vector_set_op.go). It must NEVER be reached for to build a
+// IN-PACKAGE ESCAPE HATCH, NOT A SHORTCUT. No domain emitter calls it:
+// every operator-token-style glue site in `internal/chsql` composes typed
+// Frags instead, so writeSQL's only callers are the Builder's own tests,
+// which use it to hand-assemble adversarial token streams that no Frag
+// constructor would produce. It must NEVER be reached to build a
 // query/expression SHAPE that a Frag constructor already covers: any CH
 // function is Call("fn", args…), arithmetic is Mul/Add/Sub/Div, and so
-// on. The 2026-06 typed-Frag sweep removed every writeSQL / sb.Write*
-// site from the range-window / over-time / fan-out emitters precisely
-// because those WERE expressible as Frags; the remaining callers are
-// tracked for the same treatment. When you touch one of those files,
-// port the glue you're near rather than adding more.
+// on. If a shape genuinely has no constructor, add the constructor —
+// reaching for writeSQL puts raw SQL back in an emitter and the typed
+// surface stops being closed by construction.
 //
 // (There is intentionally no writeByte method on Builder: io.ByteWriter
 // expects WriteByte(byte) error, and offering a non-error variant
