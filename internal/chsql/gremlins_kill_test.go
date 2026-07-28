@@ -3549,26 +3549,33 @@ func TestVectorSetOpProjectionOutputName_AliasBranch(t *testing.T) {
 	}
 }
 
-// TestVectorSetOpArmIsMatrixRangeWindow_OuterRangeBoundary kills the
-// CONDITIONALS_BOUNDARY/NEGATION at vector_set_op.go:270
-// (`v.OuterRange > 0`). A matrix RangeWindow (OuterRange>0) is matrix
-// shape; an instant RangeWindow (OuterRange==0) is not. The boundary
-// mutant `>= 0` would mis-classify the instant case as matrix.
-func TestVectorSetOpArmIsMatrixRangeWindow_OuterRangeBoundary(t *testing.T) {
+// TestVectorSetOpArmTimestampCol_OuterRangeBoundary kills the
+// CONDITIONALS_BOUNDARY/NEGATION on `v.OuterRange > 0` in
+// vectorSetOpArmTimestampCol. A matrix RangeWindow (OuterRange>0) is
+// matrix shape and reports its own timestamp column; an instant
+// RangeWindow (OuterRange==0) is not. The boundary mutant `>= 0` would
+// mis-classify the instant case as matrix.
+func TestVectorSetOpArmTimestampCol_OuterRangeBoundary(t *testing.T) {
 	t.Parallel()
-	matrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute}
-	if !vectorSetOpArmIsMatrixRangeWindow(matrix) {
-		t.Errorf("OuterRange>0 RangeWindow must be matrix shape")
+	matrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: "TimeUnix"}
+	if col, ok := vectorSetOpArmTimestampCol(matrix); !ok || col != "TimeUnix" {
+		t.Errorf("OuterRange>0 RangeWindow = (%q,%v), want (TimeUnix,true)", col, ok)
 	}
-	instant := &chplan.RangeWindow{OuterRange: 0}
-	if vectorSetOpArmIsMatrixRangeWindow(instant) {
-		t.Errorf("OuterRange==0 RangeWindow must NOT be matrix shape (boundary)")
+	instant := &chplan.RangeWindow{OuterRange: 0, TimestampColumn: "TimeUnix"}
+	if col, ok := vectorSetOpArmTimestampCol(instant); ok {
+		t.Errorf("OuterRange==0 RangeWindow = (%q,true), want matrix=false (boundary)", col)
+	}
+	// A subquery-fed arm reduces over the inner grid's anchor, so its
+	// outer SELECT surfaces the timestamp under `anchor_ts`.
+	subq := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: chplan.RangeWindowAnchorColumn}
+	if col, ok := vectorSetOpArmTimestampCol(subq); !ok || col != chplan.RangeWindowAnchorColumn {
+		t.Errorf("subquery-fed RangeWindow = (%q,%v), want (%s,true)", col, ok, chplan.RangeWindowAnchorColumn)
 	}
 	// Recurses past a wrapping Project / Filter.
-	if !vectorSetOpArmIsMatrixRangeWindow(&chplan.Project{Input: matrix}) {
+	if _, ok := vectorSetOpArmTimestampCol(&chplan.Project{Input: matrix}); !ok {
 		t.Errorf("matrix detection must recurse through a Project wrapper")
 	}
-	if !vectorSetOpArmIsMatrixRangeWindow(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}) {
+	if _, ok := vectorSetOpArmTimestampCol(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}); !ok {
 		t.Errorf("matrix detection must recurse through a Filter wrapper")
 	}
 }

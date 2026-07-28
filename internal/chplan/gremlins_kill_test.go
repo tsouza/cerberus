@@ -87,7 +87,7 @@ func TestNaryVectorSetOp_Equal_Positive(t *testing.T) {
 
 // TestNaryVectorSetOp_Equal_Negative_Fields exercises each disjunct in
 // NaryVectorSetOp.Equal individually:
-//   - nary_vector_set_op.go:72 — `Op != || !Match.Equal`
+//   - nary_vector_set_op.go:72 — `Op != || !Match.Equal || StepAligned !=`
 //   - nary_vector_set_op.go:75/76/77 — the
 //     `MetricNameColumn != || AttributesColumn != || TimestampColumn !=
 //     || ValueColumn !=` chain
@@ -105,6 +105,7 @@ func TestNaryVectorSetOp_Equal_Negative_Fields(t *testing.T) {
 		{"match", func(n *chplan.NaryVectorSetOp) {
 			n.Match = chplan.VectorMatch{Labels: []string{"instance"}, On: true}
 		}},
+		{"stepAligned", func(n *chplan.NaryVectorSetOp) { n.StepAligned = true }},
 		{"metricNameColumn", func(n *chplan.NaryVectorSetOp) { n.MetricNameColumn = "Other" }},
 		{"attributesColumn", func(n *chplan.NaryVectorSetOp) { n.AttributesColumn = "Other" }},
 		{"timestampColumn", func(n *chplan.NaryVectorSetOp) { n.TimestampColumn = "Other" }},

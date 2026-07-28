@@ -1860,13 +1860,61 @@
     "reason": "routed"
   },
   {
+    "query": "setop_and_instant_shared_signature",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_and_range_gap",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "setop_and_rate",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
   },
   {
+    "query": "setop_and_subquery_arm_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_or_instant_shared_signature",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_or_native_ts_grid_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_or_range_gap",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "setop_or_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_or_subquery_arm_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "setop_unless_range_gap",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
