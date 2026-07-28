@@ -74,16 +74,21 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	} else {
 		rw.Scalars = []float64{tSeconds}
 	}
-	// Range mode (ctx.step > 0): fan across the request's step grid so
-	// each anchor in [start, end] emits its own per-window prediction.
-	// Mirrors lowerRangeVectorCall — without this gate the outer
-	// `RangeWindow` defaults to Step=0 and the matrix pivot collapses
-	// every step bucket onto a single anchor at end_ts.
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
-		rw.Start = ctx.start.UTC()
-		rw.End = ctx.end.UTC()
-		rw.Step = ctx.step
-		rw.OuterRange = ctx.end.Sub(ctx.start)
+	switch rangeGridShapeFor(vs, ctx) {
+	case gridFanout:
+		// Fan across the request's step grid so each anchor in
+		// [start, end] emits its own per-window prediction. Without this
+		// the outer `RangeWindow` defaults to Step=0 and the matrix pivot
+		// collapses every step bucket onto a single anchor at end_ts.
+		applyStepGridFanout(rw, ctx)
+	case gridBroadcast:
+		// `@`-pinned: one prediction from the pinned window, broadcast
+		// across the grid. The native PredictLinear strategy is skipped
+		// deliberately — timeSeriesPredictLinearToGrid computes a
+		// per-grid-anchor regression, which is the shape the pin forbids.
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, "predict_linear",
+			metricNameFromMatchers(vs.LabelMatchers), &chplan.ColumnRef{Name: s.ValueColumn}), nil
+	case gridSingleAnchor:
 	}
 	// Route through the boot-wired PredictLinear strategy: the native impl
 	// emits a RangeWindowNative (timeSeriesPredictLinearToGrid) for an eligible
@@ -153,14 +158,17 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	// Range mode (ctx.step > 0): fan across the request's step grid so
-	// each anchor in [start, end] emits its own per-window smoothed
-	// value (matches the lowerRangeVectorCall matrix gate).
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
-		rw.Start = ctx.start.UTC()
-		rw.End = ctx.end.UTC()
-		rw.Step = ctx.step
-		rw.OuterRange = ctx.end.Sub(ctx.start)
+	switch rangeGridShapeFor(vs, ctx) {
+	case gridFanout:
+		// Fan across the request's step grid so each anchor in
+		// [start, end] emits its own per-window smoothed value.
+		applyStepGridFanout(rw, ctx)
+	case gridBroadcast:
+		// `@`-pinned: smooth the pinned window once, broadcast the
+		// per-series result across the grid.
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, "holt_winters",
+			metricNameFromMatchers(vs.LabelMatchers), &chplan.ColumnRef{Name: s.ValueColumn}), nil
+	case gridSingleAnchor:
 	}
 	return rw, nil
 }
@@ -280,19 +288,32 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	} else {
 		window.ScalarExprs = []chplan.Expr{phiExpr}
 	}
-	// Range mode (ctx.step > 0): fan across the request's step grid so
-	// each anchor in [start, end] emits its own per-window quantile
-	// (matches the lowerRangeVectorCall matrix gate).
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
-		window.Start = ctx.start.UTC()
-		window.End = ctx.end.UTC()
-		window.Step = ctx.step
-		window.OuterRange = ctx.end.Sub(ctx.start)
+	// The Value column the output carries: the window's own quantile, or
+	// the PromQL-spec ±Inf / NaN constant for an out-of-range literal phi
+	// (the sentinel-phi window still decides WHICH series exist, only its
+	// computed value is discarded).
+	value := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
+	if replaceValue {
+		value = &chplan.LitFloat{V: infValue}
+	}
+	switch rangeGridShapeFor(vs, ctx) {
+	case gridFanout:
+		// Fan across the request's step grid so each anchor in
+		// [start, end] emits its own per-window quantile.
+		applyStepGridFanout(window, ctx)
+	case gridBroadcast:
+		// `@`-pinned: one quantile over the pinned window, broadcast
+		// across the grid. The value substitution folds into the
+		// broadcast projection rather than going through
+		// projectValueOverInner, which has no branch for that shape.
+		return wrapRangeWindowAtBroadcast(window, ctx, s, "quantile_over_time",
+			metricNameFromMatchers(vs.LabelMatchers), value), nil
+	case gridSingleAnchor:
 	}
 	if !replaceValue {
 		return window, nil
 	}
-	return projectValueOverInner(window, s, &chplan.LitFloat{V: infValue}), nil
+	return projectValueOverInner(window, s, value), nil
 }
 
 // outOfRangePhiInf reports whether phi falls outside PromQL's valid
