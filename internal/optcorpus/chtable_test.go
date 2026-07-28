@@ -2,11 +2,14 @@ package optcorpus
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // TestCorpusCreateTableSQL_Shape pins the rendered MergeTree DDL against the
@@ -35,7 +38,8 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 		"`query_duration_ms` UInt64",
 		"`memory_usage` UInt64",
 		"`exit_status` Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
-			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)",
+			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, " +
+			"'aborted' = 6, 'error' = 7)",
 		"ENGINE = MergeTree",
 		"ORDER BY (`shape_id`, `n_anchors`, `fanout`)",
 		"TTL toDateTime(event_time) + toIntervalDay(30)",
@@ -47,18 +51,79 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 	}
 }
 
-// fakeExecer records the DDL executed and the batch rows appended.
+// fakeExecer records every statement executed and the batch rows appended, and
+// answers the deployed-column read with deployedExitType (defaulting to the
+// type this binary writes, so construction succeeds unless a test says
+// otherwise).
 type fakeExecer struct {
-	execSQL  string
-	execErr  error
-	batchErr error
-	batch    *fakeBatch
+	execSQL          []string
+	execErr          error
+	batchErr         error
+	batch            *fakeBatch
+	deployedExitType string
+	queryErr         error
 }
 
 func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
-	f.execSQL = query
+	f.execSQL = append(f.execSQL, query)
 	return f.execErr
 }
+
+func (f *fakeExecer) Query(_ context.Context, _ string, _ ...any) (driver.Rows, error) {
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	deployed := f.deployedExitType
+	if deployed == "" {
+		deployed = chsql.RenderDDL(exitStatusEnumType())
+	}
+	return &fakeRows{value: deployed}, nil
+}
+
+// executed reports whether any recorded statement contains want.
+func (f *fakeExecer) executed(want string) bool {
+	for _, sql := range f.execSQL {
+		if strings.Contains(sql, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// fakeRows is a single-row, single-String-column driver.Rows: exactly the shape
+// the deployed-column read consumes.
+type fakeRows struct {
+	value string
+	done  bool
+}
+
+func (r *fakeRows) Next() bool {
+	if r.done {
+		return false
+	}
+	r.done = true
+	return true
+}
+
+func (r *fakeRows) Scan(dest ...any) error {
+	if len(dest) != 1 {
+		return errors.New("fakeRows: want exactly one scan destination")
+	}
+	p, ok := dest[0].(*string)
+	if !ok {
+		return errors.New("fakeRows: want a *string scan destination")
+	}
+	*p = r.value
+	return nil
+}
+
+func (r *fakeRows) HasData() bool                    { return !r.done }
+func (r *fakeRows) ScanStruct(any) error             { return nil }
+func (r *fakeRows) ColumnTypes() []driver.ColumnType { return nil }
+func (r *fakeRows) Totals(...any) error              { return nil }
+func (r *fakeRows) Columns() []string                { return []string{"type"} }
+func (r *fakeRows) Close() error                     { return nil }
+func (r *fakeRows) Err() error                       { return nil }
 
 func (f *fakeExecer) PrepareBatch(_ context.Context, _ string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	if f.batchErr != nil {
@@ -97,8 +162,11 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCHTableSink: %v", err)
 	}
-	if !strings.Contains(fe.execSQL, "CREATE TABLE IF NOT EXISTS cerberus_router_corpus") {
+	if !fe.executed("CREATE TABLE IF NOT EXISTS cerberus_router_corpus") {
 		t.Fatalf("construction did not run the corpus DDL; got %q", fe.execSQL)
+	}
+	if !fe.executed("MODIFY COLUMN IF EXISTS `exit_status`") {
+		t.Fatalf("construction did not reconcile the exit_status column; got %q", fe.execSQL)
 	}
 
 	row := Row{
@@ -161,13 +229,56 @@ func TestExitEnumValue(t *testing.T) {
 	if exitEnumValue("sample_budget") != 3 || exitEnumValue("breaker") != 4 || exitEnumValue("rejected") != 5 {
 		t.Error("cerberus-side exit enum mapping wrong")
 	}
+	// The ClickHouse-side abort / error classes take the next two values.
+	if exitEnumValue("aborted") != 6 || exitEnumValue("error") != 7 {
+		t.Error("clickhouse-side exit enum mapping wrong")
+	}
 	// The enum value must round-trip from ExitStatus.String() through
-	// exitEnumValue for every cerberus-side status.
-	for status, want := range map[ExitStatus]int8{
-		ExitSampleBudget: 3, ExitBreaker: 4, ExitRejected: 5,
-	} {
-		if got := exitEnumValue(status.String()); got != want {
-			t.Errorf("exitEnumValue(%q) = %d, want %d", status.String(), got, want)
+	// exitEnumValue for EVERY status, so a member added to the iota without a
+	// mapping cannot slip through.
+	for _, status := range exitStatuses {
+		if got := exitEnumValue(status.String()); got != int8(status) {
+			t.Errorf("exitEnumValue(%q) = %d, want %d", status.String(), got, int8(status))
+		}
+	}
+	if len(exitStatuses) != 8 {
+		t.Fatalf("exitStatuses covers %d statuses; the round-trip above must cover all 8", len(exitStatuses))
+	}
+}
+
+// TestEnum8Members_ParsesDeployedType pins the deployed-type parser against the
+// exact rendering ClickHouse returns from system.columns (spaces around `=`),
+// including an escaped quote inside a member name.
+func TestEnum8Members_ParsesDeployedType(t *testing.T) {
+	t.Parallel()
+	got := enum8Members(`Enum8('ok' = 0, 'o\'q' = 1, 'error' = 7)`)
+	want := []string{"ok", "o'q", "error"}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %d members (%v); want %d", len(got), got, len(want))
+	}
+	for _, member := range want {
+		if _, ok := got[member]; !ok {
+			t.Errorf("member %q missing from %v", member, got)
+		}
+	}
+}
+
+// TestNewCHTableSink_RejectsNarrowDeployedColumn pins that construction FAILS
+// when the deployed exit_status column cannot hold a member this binary emits,
+// naming it. Without this the sink would return healthy and every batch
+// carrying that member would be rejected on every reconcile interval.
+func TestNewCHTableSink_RejectsNarrowDeployedColumn(t *testing.T) {
+	t.Parallel()
+
+	fe := &fakeExecer{deployedExitType: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
+		"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)"}
+	_, err := NewCHTableSink(context.Background(), fe)
+	if err == nil {
+		t.Fatal("NewCHTableSink over a narrow exit_status column: want an error, got nil")
+	}
+	for _, member := range []string{ExitAborted.String(), ExitError.String()} {
+		if !strings.Contains(err.Error(), member) {
+			t.Errorf("error %q does not name the missing member %q", err, member)
 		}
 	}
 }

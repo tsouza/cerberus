@@ -76,7 +76,12 @@ type RouteFeatures struct {
 // cost-distribution discriminator: an OOM or timeout exit is the very signal
 // route B (time-slice sharding) exists to avoid, so the go/no-go analysis
 // reads it directly.
-type ExitStatus uint8
+//
+// The underlying type is int8 because the corpus stores each member in a
+// ClickHouse Enum8, whose value domain IS int8 — the Go type and the column
+// type are the same width and signedness, so no member can round-trip to a
+// different value than it was declared with.
+type ExitStatus int8
 
 const (
 	// ExitOK is a clean QueryFinish.
@@ -106,12 +111,53 @@ const (
 	// no CH query and no query_log row — the corpus row is decision-only, with
 	// no cost.
 	ExitRejected
+	// ExitAborted is a CH-side terminal outcome: the query was abandoned by
+	// its client mid-flight — a cancellation, a destroyed socket, a broken
+	// pipe. Its cost columns record what accrued up to the abort, not the cost
+	// of the query, so it is held apart from the healthy population the
+	// calibration watermarks are learnt from. The abort rate is an operational
+	// signal (clients giving up), distinct from ExitError's bug signal.
+	ExitAborted
+	// ExitError is a CH-side terminal outcome: the query failed for a reason
+	// that is neither a memory limit, a deadline, nor client abandonment. It
+	// states exactly what is known — the query failed — without inventing a
+	// cause, and it is the honest floor for any unrecognised exception code.
+	ExitError
 )
+
+// exitStatuses enumerates every ExitStatus in iota order. It is the single
+// source of truth the CH Enum8 column type, the string→Enum8 mapping, and the
+// deployed-column reconciliation are all derived from (chtable.go), so a new
+// member added to the iota above cannot reach a corpus row without the column
+// that stores it learning the same name and value.
+var exitStatuses = []ExitStatus{
+	ExitOK,
+	ExitOOM,
+	ExitTimeout,
+	ExitSampleBudget,
+	ExitBreaker,
+	ExitRejected,
+	ExitAborted,
+	ExitError,
+}
+
+// ExitStatusTokens returns every exit_status token the corpus can carry, in
+// Enum8-value order. It is the writer's half of the contract the corpus-mining
+// catalog validates rules against: a consumer that keeps its own copy of the
+// token set (routerrules does, to stay free of a dependency on this package)
+// can compare the two and fail loudly rather than silently rejecting a rule
+// that names a member this package emits.
+func ExitStatusTokens() []string {
+	out := make([]string, 0, len(exitStatuses))
+	for _, s := range exitStatuses {
+		out = append(out, s.String())
+	}
+	return out
+}
 
 // String renders the ExitStatus as the corpus enum token. The tokens are the
 // stable wire/DDL contract shared by the JSONL sink, the CH Enum8 column, and
-// the calibration SQL — keep them in lockstep with exitEnumValue (chtable.go)
-// and the CH Enum8 DDL (corpusCreateTableSQL).
+// the calibration SQL.
 func (e ExitStatus) String() string {
 	switch e {
 	case ExitOOM:
@@ -124,6 +170,10 @@ func (e ExitStatus) String() string {
 		return "breaker"
 	case ExitRejected:
 		return "rejected"
+	case ExitAborted:
+		return "aborted"
+	case ExitError:
+		return "error"
 	default:
 		return "ok"
 	}

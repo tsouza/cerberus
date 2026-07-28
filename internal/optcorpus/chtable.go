@@ -3,6 +3,7 @@ package optcorpus
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -32,6 +33,15 @@ type CHExecer interface {
 	PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error)
 }
 
+// CHTableConn is the full surface the CH-table sink needs: the write surface
+// that runs DDL and opens batches, plus the read surface that reads the
+// deployed column type back out of system.columns. clickhouse-go/v2's
+// driver.Conn satisfies both halves, so production wiring passes one value.
+type CHTableConn interface {
+	CHExecer
+	CHConn
+}
+
 // CHTableSink is the flag-gated ClickHouse-table sink the Row doc-comment
 // anticipates: instead of (or alongside) the JSONL file, it appends each
 // reconciled Row to a MergeTree the operator can query directly with the
@@ -56,18 +66,148 @@ type CHTableSink struct {
 // column-wise via Append — no value SQL is concatenated.
 const corpusInsertStmt = "INSERT INTO " + CorpusTableName
 
-// NewCHTableSink builds a CH-table sink over conn and ensures the corpus table
-// exists (CREATE TABLE IF NOT EXISTS). The DDL is rendered from the typed chsql
-// builder. A DDL failure is returned so the caller can fall back to the JSONL
-// sink rather than silently dropping the corpus.
-func NewCHTableSink(ctx context.Context, conn CHExecer) (*CHTableSink, error) {
+// exitStatusColumn is the corpus column holding the terminal outcome. It is
+// the one column whose type the running binary can outgrow, so it is named
+// once and shared by the DDL, the reconciling ALTER, and the verify read.
+const exitStatusColumn = "exit_status"
+
+// exitStatusEnumType renders the exit_status Enum8 from the exitStatuses list,
+// so the column type, the string→value mapping (exitEnumValue), and the
+// ExitStatus iota are one source of truth rather than three that must agree.
+func exitStatusEnumType() chsql.Frag {
+	pairs := make([]chsql.EnumPair, 0, len(exitStatuses))
+	for _, s := range exitStatuses {
+		pairs = append(pairs, chsql.EnumPair{Name: s.String(), Value: int64(s)})
+	}
+	return chsql.TypeEnum8(pairs...)
+}
+
+// NewCHTableSink builds a CH-table sink over conn and reconciles the corpus
+// table with the schema this binary writes, in three steps:
+//
+//	CREATE TABLE IF NOT EXISTS — makes the table on a fresh deployment.
+//	ALTER TABLE MODIFY COLUMN  — widens exit_status on a table that predates an
+//	                             exit-status member this binary can emit.
+//	                             CREATE IF NOT EXISTS alone cannot do this: it
+//	                             is a no-op against an existing table however
+//	                             its columns are declared.
+//	verify                     — reads the deployed exit_status type back and
+//	                             fails construction if a member is missing.
+//
+// The verify step is what makes the reconciliation honest rather than hopeful:
+// a MODIFY COLUMN the server accepted without producing the member set this
+// binary writes would otherwise surface much later as a batch the column
+// rejects, on every reconcile interval, forever. Any failure here is returned
+// so the caller falls back to the JSONL sink rather than dropping the corpus.
+func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("optcorpus: nil CH connection for table sink")
 	}
 	if err := conn.Exec(ctx, corpusCreateTableSQL()); err != nil {
 		return nil, fmt.Errorf("optcorpus: create %s: %w", CorpusTableName, err)
 	}
+	if err := conn.Exec(ctx, corpusAlterExitStatusSQL()); err != nil {
+		return nil, fmt.Errorf("optcorpus: widen %s.%s: %w", CorpusTableName, exitStatusColumn, err)
+	}
+	if err := verifyExitStatusColumn(ctx, conn); err != nil {
+		return nil, err
+	}
 	return &CHTableSink{conn: conn, table: CorpusTableName}, nil
+}
+
+// corpusAlterExitStatusSQL renders the statement that retypes the deployed
+// exit_status column to the member set this binary writes. Widening an Enum8
+// is metadata-only on ClickHouse — no part is rewritten, no mutation is
+// scheduled — so it is safe to issue on every start, and IF EXISTS makes it a
+// no-op on a table the CREATE above just made with the wide type.
+func corpusAlterExitStatusSQL() string {
+	return chsql.AlterTableModifyColumn("", CorpusTableName, exitStatusColumn, exitStatusEnumType()).SQL()
+}
+
+// verifyExitStatusColumn reads the DEPLOYED exit_status column type back from
+// system.columns and fails if it cannot hold every member this binary emits,
+// naming the missing ones. Reading the server's own answer — rather than
+// trusting that the ALTER did what it was asked — is the only check that
+// distinguishes a widened column from one the server left alone.
+func verifyExitStatusColumn(ctx context.Context, conn CHConn) error {
+	sql, args := corpusExitStatusTypeQuery()
+	rows, err := conn.Query(ctx, sql, args...)
+	if err != nil {
+		return fmt.Errorf("optcorpus: read deployed %s type: %w", exitStatusColumn, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("optcorpus: read deployed %s type: %w", exitStatusColumn, err)
+		}
+		return fmt.Errorf("optcorpus: %s.%s absent after reconciliation", CorpusTableName, exitStatusColumn)
+	}
+	var deployed string
+	if err := rows.Scan(&deployed); err != nil {
+		return fmt.Errorf("optcorpus: scan deployed %s type: %w", exitStatusColumn, err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("optcorpus: read deployed %s type: %w", exitStatusColumn, err)
+	}
+
+	have := enum8Members(deployed)
+	var missing []string
+	for _, s := range exitStatuses {
+		if _, ok := have[s.String()]; !ok {
+			missing = append(missing, s.String())
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("optcorpus: deployed %s.%s type %q missing member(s) %s",
+			CorpusTableName, exitStatusColumn, deployed, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// corpusExitStatusTypeQuery selects the deployed exit_status column type from
+// system.columns for the corpus table in the connection's own database — the
+// same unqualified table the DDL above creates.
+func corpusExitStatusTypeQuery() (string, []any) {
+	return chsql.NewQuery().
+		From(chsql.Qual("system", "columns")).
+		Select(chsql.BareIdent("type")).
+		Where(
+			chsql.Eq(chsql.BareIdent("database"), chsql.Call("currentDatabase")),
+			chsql.Eq(chsql.BareIdent("table"), chsql.Lit(CorpusTableName)),
+			chsql.Eq(chsql.BareIdent("name"), chsql.Lit(exitStatusColumn)),
+		).
+		Build()
+}
+
+// enum8Members extracts the member names from a rendered ClickHouse Enum8 type
+// such as `Enum8('ok' = 0, 'oom' = 1)`. Names are the single-quoted runs, with
+// ClickHouse's backslash escaping honoured so a name containing a quote is not
+// read as two members. The numeric values are deliberately ignored: a member
+// present under a different value is caught by the round-trip assertions on
+// exitEnumValue, whereas an ABSENT member is what wedges a batch.
+func enum8Members(chType string) map[string]struct{} {
+	members := map[string]struct{}{}
+	var cur strings.Builder
+	inName, escaped := false, false
+	for _, r := range chType {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case inName && r == '\\':
+			escaped = true
+		case r == '\'':
+			if inName {
+				members[cur.String()] = struct{}{}
+				cur.Reset()
+			}
+			inName = !inName
+		case inName:
+			cur.WriteRune(r)
+		}
+	}
+	return members
 }
 
 // corpusCreateTableSQL renders the corpus MergeTree DDL via the typed chsql
@@ -89,19 +229,7 @@ func corpusCreateTableSQL() string {
 		chsql.EnumPair{Name: "A", Value: 0},
 		chsql.EnumPair{Name: "B", Value: 1},
 	)
-	exitEnum := chsql.TypeEnum8(
-		chsql.EnumPair{Name: "ok", Value: 0},
-		chsql.EnumPair{Name: "oom", Value: 1},
-		chsql.EnumPair{Name: "timeout", Value: 2},
-		// Cerberus-side terminal outcomes query_log cannot reflect: the
-		// sample-budget 422 (after a clean CH finish), and the pre-dispatch
-		// breaker 503 / cap 400 rejections (no CH query at all). The Enum8
-		// values MUST stay in lockstep with the ExitStatus iota + its String()
-		// tokens (optcorpus.go) and exitEnumValue below.
-		chsql.EnumPair{Name: "sample_budget", Value: 3},
-		chsql.EnumPair{Name: "breaker", Value: 4},
-		chsql.EnumPair{Name: "rejected", Value: 5},
-	)
+	exitEnum := exitStatusEnumType()
 	return chsql.CreateTable(CorpusTableName).
 		IfNotExists().
 		Columns(
@@ -121,7 +249,7 @@ func corpusCreateTableSQL() string {
 			chsql.ColumnDef{Name: "read_bytes", Type: chsql.TypeRaw("UInt64")},
 			chsql.ColumnDef{Name: "query_duration_ms", Type: chsql.TypeRaw("UInt64")},
 			chsql.ColumnDef{Name: "memory_usage", Type: chsql.TypeRaw("UInt64")},
-			chsql.ColumnDef{Name: "exit_status", Type: exitEnum},
+			chsql.ColumnDef{Name: exitStatusColumn, Type: exitEnum},
 		).
 		Engine(chsql.EngineMergeTree()).
 		OrderBy("shape_id", "n_anchors", "fanout").
@@ -139,23 +267,17 @@ func routeEnumValue(route string) int8 {
 	return 0
 }
 
-// exitEnumValue maps the Row.ExitStatus string to the Enum8 value. The values
-// MUST match the corpusCreateTableSQL Enum8 DDL and the ExitStatus iota.
+// exitEnumValue maps the Row.ExitStatus token to the Enum8 value the column
+// stores, over the same exitStatuses list the column type is rendered from —
+// so a token and its stored value cannot disagree. An empty / unrecognised
+// token defaults to 'ok' (0), matching the ExitStatus zero value.
 func exitEnumValue(status string) int8 {
-	switch status {
-	case "oom":
-		return 1
-	case "timeout":
-		return 2
-	case "sample_budget":
-		return 3
-	case "breaker":
-		return 4
-	case "rejected":
-		return 5
-	default:
-		return 0
+	for _, s := range exitStatuses {
+		if s.String() == status {
+			return int8(s)
+		}
 	}
+	return int8(ExitOK)
 }
 
 // Write appends each Row to the corpus table via a columnar batch. event_time

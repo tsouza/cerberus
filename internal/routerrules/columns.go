@@ -1,5 +1,7 @@
 package routerrules
 
+import "sort"
+
 // CorpusTableName is the ClickHouse table the router corpus is written to. It is
 // re-declared here verbatim rather than imported from internal/optcorpus so this
 // package depends on neither optcorpus nor chclient (mirroring how optcorpus
@@ -80,7 +82,7 @@ var columnKinds = func() map[string]ColumnKind {
 // route='C' or exit_status='killed'.
 var enumDomains = map[string]map[string]struct{}{
 	"route":       setOf("A", "B"),
-	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected"),
+	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected", "aborted", "error"),
 	"language":    setOf("promql", "logql", "traceql"),
 }
 
@@ -90,6 +92,23 @@ func setOf(xs ...string) map[string]struct{} {
 		m[x] = struct{}{}
 	}
 	return m
+}
+
+// EnumDomain returns the accepted category tokens for an Enum-typed corpus
+// column, sorted, or nil for a column that is not Enum-typed. It exposes the
+// closed set so a lockstep test can compare it against the writer's member
+// list without routerrules taking a build-time dependency on the writer.
+func EnumDomain(column string) []string {
+	dom, ok := enumDomains[column]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(dom))
+	for tok := range dom {
+		out = append(out, tok)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // knownColumn reports whether name is a corpus column.
