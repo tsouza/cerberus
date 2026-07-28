@@ -1,0 +1,60 @@
+# `absent_over_time(m[5m] @ <ts>)` over query_range where the PINNED
+# window holds a sample. Reference PromQL checks the same pinned window
+# `(23:55, 00:00]` at every step, finds the 23:59 sample, and returns an
+# EMPTY result — no rows at all.
+#
+# This is the sharp end of the pin: fanning the window across the grid
+# re-anchors it, and the later anchors' windows (e.g. `(00:00, 00:05]`)
+# do NOT contain the 23:59 sample, so the fanned shape would report
+# `absent_over_time = 1` for them. Zero rows is the correct answer.
+
+-- query.promql --
+absent_over_time(http_requests_total{job="api"}[5m] @ 1767225600)
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- The only sample sits inside the pinned window and nowhere else.
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0);
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "api"
+[3] float64 = 1
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "http_requests_total"
+[11] string = "http.requests.total"
+[12] string = "http.requests/total"
+[13] string = "http.requests_total"
+[14] string = "http/requests/total"
+[15] string = "http/requests_total"
+[16] string = "http_requests.total"
+[17] string = "job"
+[18] string = ""
+[19] string = "job"
+[20] string = ""
+[21] string = ""
+[22] string = "api"
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+    AbsentOverTime range=5m0s step=0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="api"] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:00Z
+      Project [MetricName AS MetricName, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName)))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total")))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT toDateTime64('2026-01-01 00:00:00.000000000', 9) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT `MetricName` AS `MetricName`, mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)) AS R)
+-- expected_rows --
+[]

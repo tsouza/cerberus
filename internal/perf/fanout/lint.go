@@ -145,8 +145,11 @@ func lintCrossJoins(plan chplan.Node) []Violation {
 // sideIsBounded reports whether a CROSS JOIN side is statically safe:
 // either provably ≤1 row, or already reduced by an Aggregate (its row
 // count is series cardinality, the unavoidable output shape — not raw
-// scan rows). The check peels the alias/reshape wrappers (Project,
-// Limit, OrderBy) the lowerings put above the collapsing node.
+// scan rows). The check peels every ROW-PRESERVING wrapper the lowerings
+// put above the collapsing node: the alias/reshape ones (Project, OrderBy,
+// Limit) and the value-computing ones (HistogramQuantile /
+// HistogramQuantileNative), which emit exactly one row per input row and
+// therefore cannot turn a bounded input into an unbounded side.
 func sideIsBounded(n chplan.Node) bool {
 	for {
 		if collapsesFanout(n) {
@@ -167,6 +170,10 @@ func sideIsBounded(n chplan.Node) bool {
 		case *chplan.Project:
 			n = v.Input
 		case *chplan.OrderBy:
+			n = v.Input
+		case *chplan.HistogramQuantile:
+			n = v.Input
+		case *chplan.HistogramQuantileNative:
 			n = v.Input
 		default:
 			return false

@@ -61,9 +61,11 @@ type RangeBucketFanout struct {
 
 	// Offset is the PromQL `offset` modifier folded onto the membership
 	// window (shifts the window back by Offset; does NOT move the emitted
-	// anchor timestamp). The histogram range lowerings fall back to
-	// instant mode under modifiers, so this is zero in practice today; it
-	// is carried for parity with RangeLWR.
+	// anchor timestamp). `offset` is a relative shift against each step's
+	// eval time, so it rides the fan-out; an absolute `@` pin is the other
+	// case entirely and never reaches here — it fixes one window for the
+	// whole query, which the histogram lowerings serve by evaluating the
+	// instant tree once and broadcasting it across the step grid.
 	Offset time.Duration
 
 	// GroupBy / GroupByAliases are the user group keys (the full

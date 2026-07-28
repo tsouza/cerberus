@@ -245,7 +245,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	ts, err := format.ParseTimeLoki(r.FormValue("time"), time.Now())
+	ts, err := format.ParseTimeUnixScaled(r.FormValue("time"), time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -300,12 +300,12 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	start, err := format.ParseTimeLoki(r.FormValue("start"), time.Time{})
+	start, err := format.ParseTimeUnixScaled(r.FormValue("start"), time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := format.ParseTimeLoki(r.FormValue("end"), time.Time{})
+	end, err := format.ParseTimeUnixScaled(r.FormValue("end"), time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return

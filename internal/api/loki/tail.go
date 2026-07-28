@@ -107,7 +107,7 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start, err := format.ParseTimeLoki(r.URL.Query().Get("start"), time.Now().UTC())
+	start, err := format.ParseTimeUnixScaled(r.URL.Query().Get("start"), time.Now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

@@ -14,6 +14,17 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
+// resolveSignalTTL resolves the effective retention for one signal: a non-zero
+// per-signal override (CERBERUS_SCHEMA_TTL_{METRICS,LOGS,TRACES}) wins,
+// otherwise the signal inherits the global CERBERUS_SCHEMA_TTL default (which
+// is itself 0 = no retention unless the operator sets it).
+func resolveSignalTTL(p config.SchemaProvisioning, override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	return p.TTL
+}
+
 // storagePolicySetting is the MergeTree setting key the StoragePolicy shorthand
 // folds into the SETTINGS tail. Pinned first so the emitted DDL is
 // deterministic regardless of any further Settings entries.
@@ -29,14 +40,8 @@ const storagePolicySetting = "storage_policy"
 // silently diverging.
 func DDLConfig(cfg config.Config) (ddl.Config, error) {
 	p := cfg.SchemaProvisioning
-	// Per-signal TTL: a non-zero per-signal override wins; otherwise the signal
-	// inherits the global CERBERUS_SCHEMA_TTL default (which is itself 0 = no
-	// retention unless the operator sets it).
 	signalTTL := func(override time.Duration) time.Duration {
-		if override > 0 {
-			return override
-		}
-		return p.TTL
+		return resolveSignalTTL(p, override)
 	}
 	settings, err := schemaSettings(p)
 	if err != nil {
