@@ -392,7 +392,8 @@ func lowerOuterRangeFnOverSubquery(
 		// of this guard lives in `lowerRangeVectorCall`.
 		rw.End = anchor.End
 		widenSubquerySpine(inner, anchor.End.Add(-sub.Range), anchor.End)
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, outer.Func.Name, ""), nil
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, outer.Func.Name, "",
+			&chplan.ColumnRef{Name: s.ValueColumn}), nil
 	case rangeMode:
 		// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
 		// must fan across the request's step grid so each anchor in

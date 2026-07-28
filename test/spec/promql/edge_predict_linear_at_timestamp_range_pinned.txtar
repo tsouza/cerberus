@@ -1,0 +1,65 @@
+# `predict_linear(m[5m] @ <ts>, 600)` over query_range. Reference
+# PromQL evaluates the SAME pinned window `(23:55, 00:00]` at every step
+# in `[00:00:00, 00:05:00]` — the `@` fixes the anchor and only the
+# OUTPUT timestamps vary — so all 6 rows carry one identical prediction.
+#
+# The seed is built so the two readings disagree: the pinned window holds
+# 10 → 40 over three minutes (slope 1/6 per second, prediction 600s past
+# the anchor = 40 + 0.1667*(60 + 600) = 150), while the samples AFTER the
+# pin climb by 1 per minute. Fanning the window across the grid — which
+# is what the range-mode gate did before it consulted the pin — would
+# re-anchor onto each step, pick up those later samples, and emit six
+# DIFFERENT values. A flat column of 150 is the pin surviving.
+
+-- query.promql --
+predict_linear(http_requests_total[5m] @ 1767225600, 600)
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Two samples inside the pinned window, then a shallower ramp after it.
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:56:00', 9), 10.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 41.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 42.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 43.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 44.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 45.0);
+-- args --
+[0] float64 = 600
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "http_requests_total"
+[6] string = "http.requests.total"
+[7] string = "http.requests/total"
+[8] string = "http.requests_total"
+[9] string = "http/requests/total"
+[10] string = "http/requests_total"
+[11] string = "http_requests.total"
+-- chplan --
+Project [Attributes AS Attributes, anchor_ts AS anchor_ts, anchor_ts AS TimeUnix, Value AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+    RangeWindow func=predict_linear range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] scalars=[600] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:00Z
+      Project [MetricName AS MetricName, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', toDateTime64('2026-01-01 00:00:00.000000000', 9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', toDateTime64('2026-01-01 00:00:00.000000000', 9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:00.000000000', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT `MetricName` AS `MetricName`, mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2) AS R)
+-- expected_rows --
+[
+  [{"job": "api"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 150],
+  [{"job": "api"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 150],
+  [{"job": "api"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 150],
+  [{"job": "api"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 150],
+  [{"job": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 150],
+  [{"job": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 150]
+]

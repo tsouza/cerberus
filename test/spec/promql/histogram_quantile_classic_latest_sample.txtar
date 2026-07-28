@@ -1,0 +1,62 @@
+# Instant `histogram_quantile(phi, <bare classic hist>)` over a series
+# carrying MORE THAN ONE stored sample. Reference PromQL resolves a bare
+# selector to at most one sample per series, so the answer is a single row
+# interpolating the newest bucket array — the 00:00:00 sample, whose wider
+# bounds put p95 at 100 rather than the 23:00:00 sample's 1.0.
+#
+# Without the newest-sample collapse the quantile runs against every stored
+# row and the same series comes back twice, once per sample.
+
+-- query.promql --
+histogram_quantile(0.95, http_server_request_duration{service="api"})
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2025-12-31 23:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [10.0, 50.0, 100.0]);
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "http_server_request_duration"
+[3] string = "http.server.request.duration"
+[4] string = "http.server.request/duration"
+[5] string = "http.server.request_duration"
+[6] string = "http.server/request/duration"
+[7] string = "http.server/request_duration"
+[8] string = "http.server_request.duration"
+[9] string = "http.server_request_duration"
+[10] string = "http/server/request/duration"
+[11] string = "http/server/request_duration"
+[12] string = "http/server_request_duration"
+[13] string = "http_server.request.duration"
+[14] string = "http_server.request_duration"
+[15] string = "http_server_request.duration"
+[16] string = "service"
+[17] string = ""
+[18] string = "service"
+[19] string = ""
+[20] string = ""
+[21] string = "api"
+[22] string = "2026-01-01 00:00:01.000000000"
+[23] int64 = 9
+[24] string = "2026-01-01 00:00:01.000000000"
+[25] int64 = 9
+[26] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.95 groupBy=[Attributes AS Attributes]
+    Aggregate groupBy=[Attributes AS Attributes] funcs=[argMax(BucketCounts, TimeUnix) AS BucketCounts, argMax(ExplicitBounds, TimeUnix) AS ExplicitBounds]
+      Filter predicate=((((coalesce(nullIf(Attributes["service"], ""), nullIf(ResourceAttributes["service"], ""), "") = "api") AND (MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration"))) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.95 < 0, -inf, if(0.95 > 1, inf, if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`BucketCounts`, `TimeUnix`) AS `BucketCounts`, argMax(`ExplicitBounds`, `TimeUnix`) AS `ExplicitBounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 100]
+]

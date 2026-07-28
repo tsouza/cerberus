@@ -47,21 +47,133 @@ import (
 // downstream consumers (matrix pivot in handler.go), keyed by the
 // per-step anchor_ts.
 //
-// Selectors carrying `@`/offset modifiers fall through to the instant-
-// mode path; range-mode matrix-anchor handling for histogram_quantile
-// under modifiers falls back to instant mode. In practice the modifier-bearing
-// shapes are rare (Grafana never emits them on query_range), so the
-// instant-mode fallback is byte-stable for the existing fixtures and
-// the range-mode rewrite covers the wire-shape Grafana actually drives.
+// Modifiers split the same three ways every other range-vector lowering
+// splits them, through the one [rangeGridShapeFor] decision:
+//
+//   - `offset <d>` is a relative shift against each step's eval time, so
+//     it rides the fan-out: the per-anchor window becomes
+//     `(anchor - offset - lookback, anchor - offset]` via
+//     [chplan.RangeBucketFanout.Offset], and the emitted anchor timestamp
+//     is unchanged.
+//   - An absolute `@` pin fixes the window for the WHOLE query, so the
+//     quantile is evaluated once by the instant-mode lowering (which
+//     already resolves the pin through [anchorFromSelector]) and
+//     [broadcastHistogramAtPin] fans that per-series value across the step
+//     grid.
+//
+// Neither case may fall back to a bare instant lowering: that emits one
+// row per series stamped at a single anchor, which the matrix pivot
+// renders as a single point for the entire requested range.
 
 const histogramAnchorCol = "anchor_ts"
 
-// histogramRangeApplies reports whether the lowering context has a
-// non-zero step and a populated start/end so the range-mode rewrite can
-// fan an anchor grid across the request window. Mirrors the gate
-// lowerRangeVectorCall uses for the matrix RangeWindow fan-out.
-func histogramRangeApplies(ctx lowerCtx) bool {
-	return ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
+// histogramWindow is the per-anchor sample window a histogram fan-out
+// reads: `(anchor - offset - lookback, anchor - offset]`. lookback is the
+// staleness horizon (instantLookback for the bare / value-fn paths, the
+// inner rate's `[range]` for the aggregated ones); offset is the
+// selector's `offset` modifier, which shifts the window without moving
+// the emitted anchor timestamp. Keeping the two together means a lowering
+// cannot pass one and forget the other — dropping offset silently reads
+// the wrong window rather than failing.
+type histogramWindow struct {
+	lookback time.Duration
+	offset   time.Duration
+}
+
+// windowFor builds the fan-out window for a selector under a lookback.
+func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindow {
+	return histogramWindow{lookback: lookback, offset: vs.OriginalOffset}
+}
+
+// latestSampleAgg collapses a filtered histogram scan to the newest
+// sample per series. Reference PromQL resolves a bare selector to at most
+// ONE sample per series, so without this collapse the quantile is
+// evaluated against every stored sample and the same series is emitted
+// once per row it happens to have. The range lowerings get the identical
+// collapse from [chplan.RangeBucketFanout], keyed by (series, anchor)
+// instead of series alone.
+func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics) chplan.Node {
+	return &chplan.Aggregate{
+		Input:              input,
+		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases:     []string{s.AttributesColumn},
+		AggFuncs:           aggs,
+		DropEmptyOnNoGroup: true,
+	}
+}
+
+// classicBucketLatestAggs renders the newest-sample aggregates for a
+// classic histogram row. argMax(<col>, TimeUnix) picks the value at the
+// row with the highest TimeUnix in the group — the series for the instant
+// path, the (series, anchor) pair for the fan-out.
+func classicBucketLatestAggs(s schema.Metrics) []chplan.AggFunc {
+	return []chplan.AggFunc{
+		latestArgMax(s.BucketCountsColumn, s),
+		latestArgMax(s.ExplicitBoundsColumn, s),
+	}
+}
+
+// nativeExpHistLatestAggs is classicBucketLatestAggs for an exponential
+// histogram row: the per-row Scale / ZeroCount / ±Offset / ±BucketCounts
+// fields the merge and interpolation kernels read.
+func nativeExpHistLatestAggs(s schema.Metrics) []chplan.AggFunc {
+	aggs := []chplan.AggFunc{
+		latestArgMax(s.ScaleColumn, s),
+		latestArgMax(s.ZeroCountColumn, s),
+		latestArgMax(s.PositiveOffsetColumn, s),
+		latestArgMax(s.PositiveBucketCountsColumn, s),
+		latestArgMax(s.NegativeOffsetColumn, s),
+		latestArgMax(s.NegativeBucketCountsColumn, s),
+	}
+	// ZeroThreshold only exists when the physical schema persists the
+	// OTLP zero_threshold field — the upstream OTel-CH DDL doesn't, so
+	// the default schema leaves the column empty and the emitter renders
+	// a constant-0 zero-bucket width.
+	if s.ZeroThresholdColumn != "" {
+		aggs = append(aggs, latestArgMax(s.ZeroThresholdColumn, s))
+	}
+	return aggs
+}
+
+// latestArgMax is `argMax(<col>, TimeUnix) AS <col>`.
+func latestArgMax(col string, s schema.Metrics) chplan.AggFunc {
+	return chplan.AggFunc{
+		Name: "argMax",
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: col},
+			&chplan.ColumnRef{Name: s.TimestampColumn},
+		},
+		Alias: col,
+	}
+}
+
+// broadcastHistogramAtPin fans a histogram lowering pinned by an absolute
+// `@` across the request's step grid. inner is the INSTANT-mode tree —
+// one row per series at the pinned anchor, in the canonical Sample
+// contract — and reference PromQL evaluates that same pinned window at
+// every step, varying only the output timestamp. A CrossJoin with a
+// StepGrid over `[start, end]` supplies the timestamps and the outer
+// Project restamps TimeUnix from the grid anchor, so downstream consumers
+// see the identical 4-column shape the fan-out path emits.
+//
+// `anchor_ts` comes from the grid and `Attributes` / `Value` from inner,
+// so the bare names resolve unambiguously. inner's own TimeUnix is the
+// evaluation stamp every instant-mode histogram lowering emits — a plain
+// `now64(9)`, never the pinned anchor — so the grid's `anchor_ts` has to
+// replace it rather than merge with it, and it is simply not projected.
+// Derived histogram samples drop `__name__`, so MetricName is the empty
+// literal on both paths.
+func broadcastHistogramAtPin(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
+	return &chplan.Project{
+		Input: &chplan.CrossJoin{Left: grid, Right: inner},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: histogramAnchorCol}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // lowerHistogramQuantileClassicBareRange builds the range-mode plan tree
@@ -89,28 +201,10 @@ func lowerHistogramQuantileClassicBareRange(
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
-	bucketAggs := []chplan.AggFunc{
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.BucketCountsColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.BucketCountsColumn,
-		},
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.ExplicitBoundsColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.ExplicitBoundsColumn,
-		},
-	}
 	return buildHistogramRangeTree(
-		scan, pred, instantLookback,
+		scan, pred, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
-		bucketAggs, phi, s, ctx,
+		classicBucketLatestAggs(s), phi, s, ctx,
 	)
 }
 
@@ -146,7 +240,7 @@ func lowerHistogramQuantileClassicAggRange(
 		},
 	}
 	return buildHistogramRangeTree(
-		scan, pred, shape.windowRange,
+		scan, pred, windowFor(vs, shape.windowRange),
 		groupBy, groupByAliases, attrsRebuild,
 		bucketAggs, phi, s, ctx,
 	)
@@ -173,7 +267,7 @@ func lowerHistogramQuantileClassicAggRange(
 func buildHistogramRangeTree(
 	scan *chplan.Scan,
 	pred chplan.Expr,
-	lookback time.Duration,
+	win histogramWindow,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	attrsRebuild chplan.Expr,
@@ -184,7 +278,7 @@ func buildHistogramRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, lookback, userGroupBy, userAliases, bucketAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, bucketAggs, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
@@ -271,78 +365,10 @@ func lowerHistogramQuantileNativeBareRange(
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
-	// LWR aggregation: latest exp-histogram fields per (series, anchor).
-	// argMax(<col>, TimeUnix) picks the value at the row with the highest
-	// TimeUnix in the (series, anchor) group, matching the instant-mode
-	// "newest sample" semantic with anchor swapped in for `now64(9)`.
-	expHistAggs := []chplan.AggFunc{
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.ScaleColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.ScaleColumn,
-		},
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.ZeroCountColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.ZeroCountColumn,
-		},
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.PositiveOffsetColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.PositiveOffsetColumn,
-		},
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.PositiveBucketCountsColumn,
-		},
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.NegativeOffsetColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.NegativeOffsetColumn,
-		},
-		{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.NegativeBucketCountsColumn,
-		},
-	}
-	// argMax(ZeroThreshold, TimeUnix) only exists when the physical
-	// schema persists the OTLP zero_threshold field — the upstream
-	// OTel-CH DDL doesn't, so the default schema leaves the column
-	// empty and the emitter renders a constant-0 zero-bucket width.
-	if s.ZeroThresholdColumn != "" {
-		expHistAggs = append(expHistAggs, chplan.AggFunc{
-			Name: "argMax",
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.ZeroThresholdColumn},
-				&chplan.ColumnRef{Name: s.TimestampColumn},
-			},
-			Alias: s.ZeroThresholdColumn,
-		})
-	}
 	return buildHistogramNativeRangeTree(
-		scan, pred, instantLookback,
+		scan, pred, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
-		expHistAggs, phi, s, ctx,
+		nativeExpHistLatestAggs(s), phi, s, ctx,
 	)
 }
 
@@ -395,7 +421,7 @@ func lowerHistogramQuantileNativeAggRange(
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
 	}...)
 	return buildHistogramNativeRangeTreeMerge(
-		scan, pred, shape.windowRange,
+		scan, pred, windowFor(vs, shape.windowRange),
 		groupBy, groupByAliases, attrsRebuild,
 		expHistMergeAggs, phi, s, ctx,
 	)
@@ -409,7 +435,7 @@ func lowerHistogramQuantileNativeAggRange(
 func buildHistogramNativeRangeTree(
 	scan *chplan.Scan,
 	pred chplan.Expr,
-	lookback time.Duration,
+	win histogramWindow,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	attrsRebuild chplan.Expr,
@@ -420,7 +446,7 @@ func buildHistogramNativeRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, lookback, userGroupBy, userAliases, expHistAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, expHistAggs, s, ctx)
 
 	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
 	// fields (already aliased to their schema-canonical names by the
@@ -486,7 +512,7 @@ func buildHistogramNativeRangeTree(
 func buildHistogramNativeRangeTreeMerge(
 	scan *chplan.Scan,
 	pred chplan.Expr,
-	lookback time.Duration,
+	win histogramWindow,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	attrsRebuild chplan.Expr,
@@ -497,7 +523,7 @@ func buildHistogramNativeRangeTreeMerge(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, lookback, userGroupBy, userAliases, mergeAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, mergeAggs, s, ctx)
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
@@ -576,7 +602,7 @@ func buildHistogramNativeRangeTreeMerge(
 func buildHistogramBucketFanout(
 	scan *chplan.Scan,
 	pred chplan.Expr,
-	lookback time.Duration,
+	win histogramWindow,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	aggFuncs []chplan.AggFunc,
@@ -596,7 +622,8 @@ func buildHistogramBucketFanout(
 		Start:          ctx.start.UTC(),
 		End:            ctx.end.UTC(),
 		Step:           ctx.step,
-		Lookback:       lookback,
+		Lookback:       win.lookback,
+		Offset:         win.offset,
 		GroupBy:        userGroupBy,
 		GroupByAliases: userAliases,
 		AggFuncs:       aggFuncs,

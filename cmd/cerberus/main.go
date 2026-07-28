@@ -516,6 +516,11 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h.Version = Version
 	h.Lowerers = nativeRangeLowerers(optSet)
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	// CERBERUS_PROM_METADATA_LOOKBACK is the ONLY input to the windowless
+	// metadata-discovery horizon; zero leaves the handler on its own
+	// fallback. Nothing else in the config is evidence of what ClickHouse
+	// physically retains — see config.Config.PromMetadataLookback.
+	h.MetadataLookback = cfg.PromMetadataLookback
 	return h
 }
 

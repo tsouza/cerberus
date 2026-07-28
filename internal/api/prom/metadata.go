@@ -239,31 +239,56 @@ func parseMetadataWindow(r *http.Request) (start, end time.Time, err error) {
 }
 
 // defaultMetadataLookback bounds the absent-window metadata-discovery scan
-// to the data-retention horizon rather than to a short recent window.
+// when the operator has not stated the deployment's retention.
 //
 // Reference Prometheus answers a windowless /api/v1/label/<l>/values,
 // /labels and /series over the ENTIRE queryable range (web/api/v1/api.go
 // defaults start to MinTime and end to MaxTime) — every name / value /
 // series still inside retention. Grafana's metric / label pickers send no
 // start/end under the common "On dashboard load" variable refresh, so
-// without a default the discovery arms emit a WHERE-less scan over every
-// toDate(TimeUnix) partition (the prod full-column scan this fix targets).
+// without a default the discovery arms enumerate every metric name / label
+// key ever written (the prod full-column scan this bound targets).
 //
-// Defaulting the absent window to the retention horizon — the OTel-CH
-// metric tables' TTL, two weeks — keeps the answer byte-identical to
-// Prometheus's: anything older than the TTL has already been
-// ttl_only_drop_parts-dropped and is absent from both backends, so no
-// name/value/series that Prometheus would return is dropped. It still
-// emits a closed TimeUnix bound, so ClickHouse partition-prunes whenever
-// the table physically spans more than the horizon (a request-supplied
-// narrower range, honored verbatim, is where the real pruning comes from).
+// What the bound buys differs per arm, and mostly it is not partition
+// pruning. A windowless request is nowAnchored, and the three
+// now-anchored arms (metricNamesSQL, unionLabelNamesSQL,
+// unionLabelValuesSQL) emit no WHERE at all: the horizon rides as
+// `GROUP BY <series keys> HAVING max(TimeUnix) >= start`, an aggregate
+// predicate ClickHouse serves from the proj_series aggregating projection
+// instead of the fact table. `end` is unused there — it is "now", and
+// samples are never future-dated. The one exception is the resource-label
+// arm (unionResourceLabelNamesSQL), which has no now-anchored form and
+// takes the derived [start,end] as a literal WHERE — that arm, and the
+// !nowAnchored path where a request supplies its own finite range, are
+// the only places the bound turns into MergeTree partition pruning.
 //
-// A SHORTER default (1h/6h/24h) prunes harder but silently drops metrics
-// that went quiet within retention — the no-silent-drop divergence the
-// windowless-completeness guards forbid.
+// The horizon is a SCAN BOUND, and any scan bound below the deployment's
+// real retention omits names / values / series that reference Prometheus
+// would return — a metric quiet for longer than the bound disappears from
+// Grafana's pickers. Cerberus cannot discover the real retention: nothing
+// it can read proves what ClickHouse physically holds (CERBERUS_SCHEMA_TTL
+// is a no-op unless auto-create is on, and its DDL is CREATE TABLE IF NOT
+// EXISTS, so it never reaches a table an OTel collector already created).
+// So this constant is a judgement call, and 14d is where the line sits:
+// long enough to cover a metric idle across a deploy freeze or a
+// low-traffic environment's weekend, short enough that the projection read
+// stays bounded. A SHORTER fallback (1h/6h/24h) prunes harder but starts
+// dropping ordinarily-quiet metrics.
+// An operator whose retention exceeds 14d states it via
+// CERBERUS_PROM_METADATA_LOOKBACK, which is the only way to make the
+// answer complete with respect to what ClickHouse actually holds.
 const defaultMetadataLookback = 14 * 24 * time.Hour
 
-// boundMetadataWindow applies the default retention-horizon lookback when a
+// metadataLookback is the effective absent-window horizon: the configured
+// [Handler.MetadataLookback] when set, otherwise [defaultMetadataLookback].
+func (h *Handler) metadataLookback() time.Duration {
+	if h.MetadataLookback > 0 {
+		return h.MetadataLookback
+	}
+	return defaultMetadataLookback
+}
+
+// boundMetadataWindow applies the retention-horizon lookback when a
 // metadata request carries NO window (both bounds zero) — the Grafana
 // variable-query case. A request that supplies either bound is honored
 // verbatim: a one-sided window stays deliberately open-ended, matching
@@ -272,10 +297,10 @@ const defaultMetadataLookback = 14 * 24 * time.Hour
 // (metadataWindowPred) and the matched path (promql.LowerMetadataRange)
 // consume the returned [start,end], so wiring this once at the handler
 // covers every discovery shape.
-func boundMetadataWindow(start, end time.Time) (time.Time, time.Time) {
+func (h *Handler) boundMetadataWindow(start, end time.Time) (time.Time, time.Time) {
 	if start.IsZero() && end.IsZero() {
 		end = time.Now().UTC()
-		start = end.Add(-defaultMetadataLookback)
+		start = end.Add(-h.metadataLookback())
 	}
 	return start, end
 }
@@ -297,7 +322,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	// proj_series projection via the aggregate-only HAVING bound. A
 	// user-supplied finite [start,end] keeps the exact WHERE-bounded scan.
 	nowAnchored := endT.IsZero()
-	startT, endT = boundMetadataWindow(startT, endT)
+	startT, endT = h.boundMetadataWindow(startT, endT)
 
 	var names []string
 	if len(matchers) == 0 {
@@ -369,7 +394,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	// [start, now], since samples are never future-dated). A user-supplied
 	// finite end stays on the exact WHERE-bounded scan.
 	nowAnchored := endT.IsZero()
-	startT, endT = boundMetadataWindow(startT, endT)
+	startT, endT = h.boundMetadataWindow(startT, endT)
 
 	var values []string
 	if len(matchers) == 0 {
@@ -423,7 +448,7 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	// over every partition on every call. Bound it to the same default
 	// retention-horizon window the discovery handlers use so the per-table
 	// metadata fan-out partition-prunes too.
-	startT, endT := boundMetadataWindow(time.Time{}, time.Time{})
+	startT, endT := h.boundMetadataWindow(time.Time{}, time.Time{})
 	// /api/v1/metadata supplies no explicit end, so its window always ends
 	// "now" — the now-anchored case that routes onto proj_metric_metadata via
 	// the aggregate-only HAVING bound (see metricMetaSQL).
@@ -677,7 +702,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	startT, endT = boundMetadataWindow(startT, endT)
+	startT, endT = h.boundMetadataWindow(startT, endT)
 
 	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
 	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
