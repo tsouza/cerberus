@@ -137,25 +137,34 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// the existing error message if the shape isn't recognised).
 	if shape, ok := matchHistogramAggIdiom(c.Args[1]); ok {
 		if s.IsExpHistogramMetric(shape.selector.Name) {
-			// Range mode (ctx.step > 0): fan the exp-histogram merge +
-			// quantile interpolation across the request's step grid.
-			// Modifier-bearing selectors fall back to the instant path
-			// until matrix-anchor handling lands (rare in practice —
-			// Grafana never threads modifiers through histogram_quantile
-			// on query_range).
-			if histogramRangeApplies(ctx) && !hasModifier(shape.selector) {
+			// Range mode: fan the exp-histogram merge + quantile
+			// interpolation across the request's step grid, or — under an
+			// absolute `@` — evaluate it once at the pin and broadcast.
+			switch rangeGridShapeFor(shape.selector, ctx) {
+			case gridFanout:
 				return lowerHistogramQuantileNativeAggRange(shape, phi, s, ctx), nil
+			case gridBroadcast:
+				inner, err := lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
+				if err != nil {
+					return nil, err
+				}
+				return broadcastHistogramAtPin(inner, s, ctx), nil
 			}
 			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
-		// Range mode (ctx.step > 0): build a per-step plan that fans the
-		// bucket aggregation + quantile interpolation across the request's
-		// step grid. Modifier-bearing inner selectors fall back to the
-		// instant path until matrix-anchor handling for `@`/offset is
-		// wired (rare in practice — Grafana never threads modifiers
-		// through histogram_quantile on query_range).
-		if histogramRangeApplies(ctx) && !hasModifier(shape.selector) {
+		// Range mode: build a per-step plan that fans the bucket
+		// aggregation + quantile interpolation across the request's step
+		// grid, or — under an absolute `@` — evaluate it once at the pin
+		// and broadcast that value over the grid.
+		switch rangeGridShapeFor(shape.selector, ctx) {
+		case gridFanout:
 			return lowerHistogramQuantileClassicAggRange(shape, phi, s, ctx), nil
+		case gridBroadcast:
+			inner, err := lowerHistogramQuantileAgg(shape, phi, s, ctx)
+			if err != nil {
+				return nil, err
+			}
+			return broadcastHistogramAtPin(inner, s, ctx), nil
 		}
 		return lowerHistogramQuantileAgg(shape, phi, s, ctx)
 	}
@@ -196,26 +205,55 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// merged distribution into HistogramQuantileNative, so the matrix
 		// pivot sees one quantile row per (series, anchor) rather than
 		// the single instant-mode `now64(9)` row repeated for every
-		// step. Modifier-bearing selectors fall back to the instant
-		// path until matrix-anchor handling lands.
-		if histogramRangeApplies(ctx) && !hasModifier(vs) {
+		// step. An absolute `@` pins that window for the whole query, so
+		// it is evaluated once and broadcast instead.
+		switch rangeGridShapeFor(vs, ctx) {
+		case gridFanout:
 			return lowerHistogramQuantileNativeBareRange(vs, phi, s, ctx), nil
+		case gridBroadcast:
+			inner, err := lowerHistogramQuantileNative(vs, phi, s, ctx)
+			if err != nil {
+				return nil, err
+			}
+			return broadcastHistogramAtPin(inner, s, ctx), nil
 		}
 		return lowerHistogramQuantileNative(vs, phi, s, ctx)
 	}
 
-	// Range mode (ctx.step > 0): build a per-step plan that fans the
-	// classic-histogram bucket array forward through a StepGrid + LWR
-	// window so each step in `[start, end]` emits its own quantile row.
-	// Pool-AK flagged the now64(9) hardcode in this lowering as the
-	// `histogram_quantile classic-bucket still hardcodes now64(9) in
-	// range mode` bug surfaced when finishing the per-step LWR rework
-	// (PR #347). Modifier-bearing selectors fall back to the instant
-	// path until matrix-anchor handling lands.
-	if histogramRangeApplies(ctx) && !hasModifier(vs) {
+	// Range mode: build a per-step plan that fans the classic-histogram
+	// bucket array forward through a StepGrid + LWR window so each step
+	// in `[start, end]` emits its own quantile row. Pool-AK flagged the
+	// now64(9) hardcode in this lowering as the `histogram_quantile
+	// classic-bucket still hardcodes now64(9) in range mode` bug surfaced
+	// when finishing the per-step LWR rework (PR #347). An absolute `@`
+	// pins one window for the whole query, so it is evaluated once and
+	// broadcast over the grid rather than fanned.
+	switch rangeGridShapeFor(vs, ctx) {
+	case gridFanout:
 		return lowerHistogramQuantileClassicBareRange(vs, phi, s, ctx), nil
+	case gridBroadcast:
+		inner, err := lowerHistogramQuantileClassicBare(vs, phi, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return broadcastHistogramAtPin(inner, s, ctx), nil
 	}
+	return lowerHistogramQuantileClassicBare(vs, phi, s, ctx)
+}
 
+// lowerHistogramQuantileClassicBare is the instant-mode lowering for
+// `histogram_quantile(phi, <bare classic-histogram selector>)` — one
+// quantile row per series over the newest sample within the selector's
+// anchor. It is the pinned-`@` half of the range-mode split as well as
+// the instant path, which is why it is named alongside its three
+// siblings (lowerHistogramQuantileAgg / …Native / …NativeAgg) rather
+// than left inline.
+func lowerHistogramQuantileClassicBare(
+	vs *parser.VectorSelector,
+	phi phiArg,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
 	// Target the classic-histogram table directly. OTel-CH classic
 	// histograms are one row per series with parallel BucketCounts +
 	// ExplicitBounds arrays (no `le` label per row), under the bare
@@ -224,17 +262,9 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// `rate(<X>_bucket[5m])` filters against `MetricName='<X>'`.
 	scan := &chplan.Scan{Table: s.HistogramTable}
 	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
-	if hasModifier(vs) {
-		anchor, err := anchorFromSelector(vs, ctx)
-		if err != nil {
-			return nil, err
-		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
-		if pred == nil {
-			pred = timeBound
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
-		}
+	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
+	if err != nil {
+		return nil, err
 	}
 	var input chplan.Node = scan
 	if pred != nil {
@@ -242,7 +272,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	}
 
 	hq := &chplan.HistogramQuantile{
-		Input:                input,
+		Input:                latestSampleAgg(input, classicBucketLatestAggs(s), s),
 		Phi:                  phi.lit,
 		PhiExpr:              phi.expr,
 		BucketCountsColumn:   s.BucketCountsColumn,
@@ -706,17 +736,9 @@ func andExpr(a, b chplan.Expr) chplan.Expr {
 func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	if hasModifier(vs) {
-		anchor, err := anchorFromSelector(vs, ctx)
-		if err != nil {
-			return nil, err
-		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
-		if pred == nil {
-			pred = timeBound
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
-		}
+	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
+	if err != nil {
+		return nil, err
 	}
 	var input chplan.Node = scan
 	if pred != nil {
@@ -724,7 +746,7 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schem
 	}
 
 	hq := &chplan.HistogramQuantileNative{
-		Input:                      input,
+		Input:                      latestSampleAgg(input, nativeExpHistLatestAggs(s), s),
 		Phi:                        phi.lit,
 		PhiExpr:                    phi.expr,
 		ScaleColumn:                s.ScaleColumn,

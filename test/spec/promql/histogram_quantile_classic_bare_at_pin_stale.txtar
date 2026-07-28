@@ -1,0 +1,60 @@
+# A bare classic-histogram selector resolves per series to the newest
+# sample inside the staleness lookback ENDING AT THE PIN — `(23:55, 00:00]`
+# here, not `(-inf, 00:00]`.
+#
+# Two series share the metric. `fresh` has a sample at 23:58:00, two
+# minutes inside the lookback. `stale` has one at 23:00:00, an hour before
+# the pin and therefore outside it: reference PromQL sees no sample for
+# that series at the pinned instant and drops it entirely.
+#
+# So the answer is ONE row. With only the upper bound the `stale` row also
+# survives the filter and the query returns a quantile computed from an
+# hour-old histogram — the row count is what discriminates.
+
+-- query.promql --
+histogram_quantile(0.95, http_server_request_duration @ 1767225600)
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'stale'), toDateTime64('2025-12-31 23:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'fresh'), toDateTime64('2025-12-31 23:58:00', 9), [1, 2, 3], [10.0, 50.0, 100.0]);
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "http_server_request_duration"
+[3] string = "http.server.request.duration"
+[4] string = "http.server.request/duration"
+[5] string = "http.server.request_duration"
+[6] string = "http.server/request/duration"
+[7] string = "http.server/request_duration"
+[8] string = "http.server_request.duration"
+[9] string = "http.server_request_duration"
+[10] string = "http/server/request/duration"
+[11] string = "http/server/request_duration"
+[12] string = "http/server_request_duration"
+[13] string = "http_server.request.duration"
+[14] string = "http_server.request_duration"
+[15] string = "http_server_request.duration"
+[16] string = "2026-01-01 00:00:00.000000000"
+[17] int64 = 9
+[18] string = "2026-01-01 00:00:00.000000000"
+[19] int64 = 9
+[20] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.95 groupBy=[Attributes AS Attributes]
+    Aggregate groupBy=[Attributes AS Attributes] funcs=[argMax(BucketCounts, TimeUnix) AS BucketCounts, argMax(ExplicitBounds, TimeUnix) AS ExplicitBounds]
+      Filter predicate=(((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:00.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:00.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.95 < 0, -inf, if(0.95 > 1, inf, if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`BucketCounts`, `TimeUnix`) AS `BucketCounts`, argMax(`ExplicitBounds`, `TimeUnix`) AS `ExplicitBounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))
+-- expected_rows --
+[
+  ["", {"service": "fresh"}, "2026-01-01T00:00:01Z", 100]
+]

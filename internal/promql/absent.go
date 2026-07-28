@@ -260,16 +260,57 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 	}
-	// In range mode (Pool-AK's per-anchor query_range plumbing) fan the
-	// per-anchor lookback check across the request's step grid. The
-	// emitter pivots between the single-anchor (Step == 0) and
-	// arrayJoin-fanout (Step > 0) shapes via this Step value.
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	switch rangeGridShapeFor(vs, ctx) {
+	case gridFanout:
+		// Fan the per-anchor lookback check across the request's step
+		// grid. The emitter pivots between the single-anchor (Step == 0)
+		// and arrayJoin-fanout (Step > 0) shapes via this Step value.
 		a.Start = ctx.start.UTC()
 		a.End = ctx.end.UTC()
 		a.Step = ctx.step
+	case gridBroadcast:
+		// `@`-pinned: reference PromQL checks the SAME pinned window at
+		// every step, so the absence verdict is evaluated once and
+		// broadcast. Fanning out instead would overwrite the pinned
+		// `a.End` with the grid end and answer a different question at
+		// every step.
+		return wrapAbsentOverTimeAtBroadcast(a, ctx, s), nil
+	case gridSingleAnchor:
 	}
 	return a, nil
+}
+
+// wrapAbsentOverTimeAtBroadcast broadcasts an INSTANT-shape
+// AbsentOverTime pinned by an absolute `@` across the request's step
+// grid. The pinned window is evaluated ONCE, yielding either zero rows
+// (a sample fell in the window — `absent_over_time` is empty) or the one
+// synthesised series; a CrossJoin with the StepGrid then repeats that
+// verdict at every step timestamp, so 0 rows stay 0 and 1 row becomes one
+// row per step.
+//
+// The instant emitter already projects the canonical Sample quadruple
+// `(MetricName, Attributes, TimeUnix, Value)` (see
+// internal/chsql/absent_over_time.go), so the outer Project forwards
+// three of them unchanged and re-sources TimeUnix from the grid anchor —
+// the same 4-column contract the fan-out shape emits. This is the
+// AbsentOverTime sibling of wrapRangeWindowAtBroadcast; it needs its own
+// spelling because AbsentOverTime is not a RangeWindow and carries no
+// `anchor_ts` column of its own.
+func wrapAbsentOverTimeAtBroadcast(a *chplan.AbsentOverTime, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
+	joined := &chplan.CrossJoin{Left: grid, Right: a}
+	return &chplan.Project{
+		Input: joined,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{
+				Expr:  &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+				Alias: s.TimestampColumn,
+			},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // synthLabelsFromMatchers builds the matcher-derived label set Prom's
