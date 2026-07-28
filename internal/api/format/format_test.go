@@ -148,7 +148,7 @@ func TestParseTimeProm(t *testing.T) {
 	}
 }
 
-func TestParseTimeLoki(t *testing.T) {
+func TestParseTimeUnixScaled(t *testing.T) {
 	def := time.Unix(1_000, 0).UTC()
 	tests := []struct {
 		name string
@@ -178,7 +178,7 @@ func TestParseTimeLoki(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := format.ParseTimeLoki(tc.raw, def)
+			got, err := format.ParseTimeUnixScaled(tc.raw, def)
 			if tc.err {
 				if err == nil {
 					t.Fatalf("expected error, got %v", got)

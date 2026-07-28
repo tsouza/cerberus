@@ -108,10 +108,13 @@ func (c lowerCtx) rangeMode() bool {
 // back to `Start - max(range + offset)` whenever a range aggregation
 // lowering descends into its inner selector.
 //
-// A non-positive extension is a no-op so callers can pass `Interval -
-// Offset` without checking for zero. An extension stays clamped to the
-// query's actual range — instant queries (Step == 0) and bare matcher
-// queries still emit the unmodified clamp.
+// Both call sites pass `Interval + Offset`: an offset shifts the window
+// further into the past, so it *adds* to how far back the clamp has to
+// reach. A non-positive extension is a no-op, so a zero-interval
+// selector needs no guard at the call site. A context with no time
+// window at all is likewise a no-op — the [Lower] entry point, or a
+// [LowerAt] caller that passed zero bounds. Either way no clamp was
+// injected, so there is nothing for the extension to move.
 func (c lowerCtx) withMatcherWindowExtension(extension time.Duration) lowerCtx {
 	if extension <= 0 || !c.hasTimeWindow() {
 		return c
