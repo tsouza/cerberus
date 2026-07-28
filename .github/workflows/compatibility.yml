@@ -347,81 +347,15 @@ jobs:
       - name: Publish score to compat-scores branch
         # Only push: main triggers the publish; pull_request / schedule /
         # workflow_dispatch all short-circuit at the `if:` gate. The
-        # compat-scores branch
-        # is an orphan branch in the same repo that holds shields.io
-        # endpoint-badge JSON at badges/<head>.json — README badges hit
-        # the raw URL https://raw.githubusercontent.com/tsouza/cerberus/
-        # compat-scores/badges/<head>.json.
-        #
-        # First-run bootstrap: if origin/compat-scores doesn't exist yet,
-        # we create it as an --orphan branch with just the badges/ tree.
-        # Subsequent runs fast-forward over the previous tip.
-        #
-        # Concurrency: the three head jobs (prometheus / loki / tempo)
-        # may finish near-simultaneously and race to push to the same
-        # branch. We retry on "non-fast-forward" rejections by
-        # re-fetching the latest tip, re-applying our update, and
-        # pushing again — capped at MAX_ATTEMPTS to avoid an infinite
-        # loop if the remote is fundamentally unreachable.
+        # orphan-branch contract, the shields.io schema projection, and the
+        # retry that lets the three head jobs race safely against one branch
+        # all live in the module — see .github/scripts/compat-publish-score.mjs.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           HEAD: prometheus
           SRC: compatibility/prometheus/compat-score.json
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$SRC" ]; then
-            echo "no score file at $SRC; nothing to publish"
-            exit 0
-          fi
-          git config user.name "cerberus-compat-bot"
-          git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Stash a shields-compatible subset of the score file before we
-          # switch branches: the rich score file (passed / total / percent)
-          # is great for the artifact + step-summary, but shields.io's
-          # endpoint-badge schema is strict and rejects unknown keys with
-          # an "invalid properties: passed, total, percent" SVG title.
-          # Strip to the four schema-spec keys here so the orphan-branch
-          # JSON renders cleanly.
-          tmp=$(mktemp)
-          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
-
-          MAX_ATTEMPTS=5
-          attempt=1
-          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
-            git fetch origin compat-scores 2>/dev/null || true
-            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
-              git checkout -B compat-scores origin/compat-scores
-            else
-              # Orphan-bootstrap on first run: detach, clear the index +
-              # working tree, then commit the badges/ directory as the
-              # branch's initial state.
-              git checkout --orphan compat-scores
-              git rm -rf . 2>/dev/null || true
-              git clean -fdx
-            fi
-            mkdir -p badges
-            cp "$tmp" "badges/${HEAD}.json"
-            git add badges/
-            if git diff --staged --quiet; then
-              echo "score unchanged; no commit needed"
-              exit 0
-            fi
-            git commit -m "compat-scores: update ${HEAD} score"
-            if git push origin compat-scores; then
-              echo "==> published ${HEAD} score on attempt $attempt"
-              exit 0
-            fi
-            echo "==> push rejected (likely concurrent update); retrying"
-            # Reset our local branch state so the next iteration starts
-            # from a clean tree before re-fetching.
-            git reset --hard
-            attempt=$((attempt + 1))
-            sleep $((attempt * 2))
-          done
-          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
-          exit 1
+        run: node .github/scripts/compat-publish-score.mjs
 
       - name: Disk-pressure self-diagnosis on failure
         # Infra-flake breadcrumb: the compose stack (CH + reference Prom +
@@ -739,51 +673,7 @@ jobs:
           HEAD: tempo
           SRC: compatibility/tempo/reports/compat-score.json
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$SRC" ]; then
-            echo "no score file at $SRC; nothing to publish"
-            exit 0
-          fi
-          git config user.name "cerberus-compat-bot"
-          git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Strip cerberus-only bookkeeping (passed / total / percent)
-          # before publishing: shields.io rejects unknown keys on the
-          # endpoint-badge schema with an "invalid properties" SVG title.
-          tmp=$(mktemp)
-          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
-
-          MAX_ATTEMPTS=5
-          attempt=1
-          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
-            git fetch origin compat-scores 2>/dev/null || true
-            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
-              git checkout -B compat-scores origin/compat-scores
-            else
-              git checkout --orphan compat-scores
-              git rm -rf . 2>/dev/null || true
-              git clean -fdx
-            fi
-            mkdir -p badges
-            cp "$tmp" "badges/${HEAD}.json"
-            git add badges/
-            if git diff --staged --quiet; then
-              echo "score unchanged; no commit needed"
-              exit 0
-            fi
-            git commit -m "compat-scores: update ${HEAD} score"
-            if git push origin compat-scores; then
-              echo "==> published ${HEAD} score on attempt $attempt"
-              exit 0
-            fi
-            echo "==> push rejected (likely concurrent update); retrying"
-            git reset --hard
-            attempt=$((attempt + 1))
-            sleep $((attempt * 2))
-          done
-          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
-          exit 1
+        run: node .github/scripts/compat-publish-score.mjs
 
       - name: Disk-pressure self-diagnosis on failure
         # Same self-diagnosis as the prometheus job: the harness tears the
@@ -908,51 +798,7 @@ jobs:
           HEAD: loki
           SRC: compatibility/loki/reports/compat-score.json
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$SRC" ]; then
-            echo "no score file at $SRC; nothing to publish"
-            exit 0
-          fi
-          git config user.name "cerberus-compat-bot"
-          git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Strip cerberus-only bookkeeping (passed / total / percent)
-          # before publishing: shields.io rejects unknown keys on the
-          # endpoint-badge schema with an "invalid properties" SVG title.
-          tmp=$(mktemp)
-          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
-
-          MAX_ATTEMPTS=5
-          attempt=1
-          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
-            git fetch origin compat-scores 2>/dev/null || true
-            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
-              git checkout -B compat-scores origin/compat-scores
-            else
-              git checkout --orphan compat-scores
-              git rm -rf . 2>/dev/null || true
-              git clean -fdx
-            fi
-            mkdir -p badges
-            cp "$tmp" "badges/${HEAD}.json"
-            git add badges/
-            if git diff --staged --quiet; then
-              echo "score unchanged; no commit needed"
-              exit 0
-            fi
-            git commit -m "compat-scores: update ${HEAD} score"
-            if git push origin compat-scores; then
-              echo "==> published ${HEAD} score on attempt $attempt"
-              exit 0
-            fi
-            echo "==> push rejected (likely concurrent update); retrying"
-            git reset --hard
-            attempt=$((attempt + 1))
-            sleep $((attempt * 2))
-          done
-          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
-          exit 1
+        run: node .github/scripts/compat-publish-score.mjs
 
       - name: Disk-pressure self-diagnosis on failure
         # Same self-diagnosis as the prometheus job: the harness tears the

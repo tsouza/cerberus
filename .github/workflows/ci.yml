@@ -609,6 +609,14 @@ jobs:
           node --test .github/scripts/compose-smoke-matrix.test.mjs
           node --test .github/scripts/dashboard-matrix.test.mjs
 
+      # Same rationale, one lane over: the compat-scores badge publisher only
+      # runs on push-to-main, so a break in it would first surface as stale
+      # README badges nobody is watching. The test publishes against a real
+      # bare-repo remote in a temp dir — offline, ~1s — so the orphan
+      # bootstrap and the sibling-badge preservation are pinned on the PR path.
+      - name: Assert the compat-scores badge publisher still publishes
+        run: node --test .github/scripts/compat-publish-score.test.mjs
+
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no
   # network is touched, so it CANNOT flake on a slow/blocked host — every
