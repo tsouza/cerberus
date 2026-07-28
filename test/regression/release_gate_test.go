@@ -326,3 +326,64 @@ func TestEOLRetireUsesTheTokenThatBypassesTheReleaseRuleset(t *testing.T) {
 			releaseWorkflowPath, retireStep)
 	}
 }
+
+// release-gate-drift.yml watches RELEASE_REQUIRED_CHECKS for rot: a protected
+// context nobody listed (the release publishes past a lane every PR must pass)
+// or a listed name nothing posts (the next release waits out its window and
+// aborts mid-publish). Being schedule-only, it has the same blind spot the
+// release workflow has — no PR ever runs it — so the ways it can degrade to
+// decoration are invisible in a diff:
+//
+//   - the live comparison step dropped, leaving only `--self-test`: the weekly
+//     run goes green every week while comparing nothing;
+//   - RELEASE_PAT swapped for the default GITHUB_TOKEN: branch protection is
+//     unreadable to github-actions[bot] at any `permissions:` level, so the job
+//     reds every week until someone deletes it as noise;
+//   - the schedule removed: the detector survives as a manual-dispatch button
+//     nobody presses.
+func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
+	t.Parallel()
+
+	const (
+		driftWorkflowPath = "../../.github/workflows/release-gate-drift.yml"
+		driftScript       = "release-gate-drift.mjs"
+		selfTestFlag      = "--self-test"
+	)
+
+	body := readFileString(t, driftWorkflowPath)
+
+	if !strings.Contains(body, "schedule:") {
+		t.Fatalf("%s has no schedule: trigger. A rot detector that only runs on manual dispatch "+
+			"reports drift after the release it was meant to protect", driftWorkflowPath)
+	}
+
+	// The load-bearing assertion: at least one invocation WITHOUT the self-test
+	// flag. A file that mentions the script only inside a `--self-test` step is
+	// the exact hollow-green shape this pin exists to reject.
+	live := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, driftScript) && !strings.Contains(line, selfTestFlag) {
+			live++
+		}
+	}
+	if live == 0 {
+		t.Fatalf("%s never runs %s without %s — the workflow proves its own logic and compares it "+
+			"against nothing, so the gate is green whatever branch protection says",
+			driftWorkflowPath, driftScript, selfTestFlag)
+	}
+
+	if !strings.Contains(body, "secrets.RELEASE_PAT") {
+		t.Fatalf("%s no longer passes secrets.RELEASE_PAT. Reading a branch's protection settings "+
+			"needs repo-admin rights, which the default GITHUB_TOKEN lacks at every permissions: "+
+			"level, so the live comparison cannot run at all", driftWorkflowPath)
+	}
+
+	// The pure half has to stay on a PR lane, for the same reason
+	// release-preflight.test.mjs does: otherwise a logic regression sits
+	// undetected until the next weekly run.
+	ci := readFileString(t, "../../.github/workflows/ci.yml")
+	if !strings.Contains(ci, driftScript+" "+selfTestFlag) {
+		t.Fatalf("ci.yml no longer runs %s %s. The detector's parse and both drift comparisons "+
+			"would then be unexercised between weekly runs", driftScript, selfTestFlag)
+	}
+}

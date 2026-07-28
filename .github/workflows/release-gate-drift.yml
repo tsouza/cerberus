@@ -1,0 +1,52 @@
+name: release-gate-drift
+
+# Scheduled rot detector for the RELEASE GATE's expected check set.
+#
+# `release-preflight.mjs` blocks a publish until every name in release.yml's
+# `RELEASE_REQUIRED_CHECKS` has posted a green check-run. That list is
+# hand-maintained and only ever exercised mid-publish, so it rots in two
+# directions the preflight cannot see from the inside:
+#
+#   - branch protection gains a required context nobody added to the list, and
+#     the release publishes past a lane every PR has to pass;
+#   - a required name stops matching any lane that posts (a job renamed, a
+#     matrix leg reworded), and the next release waits out its full window on a
+#     check-run that never arrives, then aborts with the tag already cut.
+#
+# Both are one-line fixes when found here on a Tuesday and a broken publish when
+# found during one. The job is deliberately NOT a PR check: the drift it detects
+# comes from repo settings and from lanes over time, neither of which a PR diff
+# contains, so gating PRs on it would red them for something they did not do.
+on:
+  schedule:
+    # Tuesdays 06:00 UTC — a day offset from the weekly link check so the two
+    # scheduled reports do not land together.
+    - cron: '0 6 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: drift self-test
+        run: node .github/scripts/release-gate-drift.mjs --self-test
+
+      # RELEASE_PAT, not the default GITHUB_TOKEN: reading a branch's protection
+      # settings requires repo-admin rights, which the workflow token does not
+      # have at any `permissions:` level. The script fails closed if the token
+      # cannot see the protection (zero contexts reads as "vacuous", not "clean").
+      - name: Compare the release gate against live branch protection
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node .github/scripts/release-gate-drift.mjs
