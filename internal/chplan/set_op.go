@@ -11,7 +11,7 @@ const (
 	// on both sides. Lowers to an INNER JOIN on the identity key.
 	SetIntersect SetOp = "&&"
 	// SetUnion — `A || B` — keep rows appearing on either side. Lowers
-	// to a UNION DISTINCT of the two subqueries.
+	// to a UNION ALL of the two subqueries deduped on span identity.
 	SetUnion SetOp = "||"
 )
 

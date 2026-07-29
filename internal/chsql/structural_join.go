@@ -77,8 +77,9 @@ func effectiveRecursionDepth(maxDepth int) int {
 //
 // Union ops (`&>` / `&<` / `&~` / `&>>` / `&<<`) emit the positive
 // relation twice — once projecting R.*, once projecting L.* — and
-// glue the two arms with UNION DISTINCT. The output is the set of
-// spans on either side that participate in the relation.
+// glue the two arms with an identity dedup (see
+// emitStructuralSpanUnion). The output is the set of spans on either
+// side that participate in the relation.
 //
 // The direct case uses the QueryBuilder.Join slot; the recursive case
 // uses the QueryBuilder.WithRecursive slot for the WITH RECURSIVE …
@@ -114,8 +115,8 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 // JOIN kind to LEFT ANTI JOIN with R on the left side (so the result
 // projects R rows missing any matching L). Union variants (`&>` /
 // `&<` / `&~`) emit the positive INNER JOIN twice — once projecting
-// R.*, once L.* — joined with UNION DISTINCT. MaxDepth is ignored for
-// all direct flavours.
+// R.*, once L.* — glued by emitStructuralSpanUnion (UNION ALL plus
+// identity dedup). MaxDepth is ignored for all direct flavours.
 //
 // The projection list re-aliases the join-key columns (TraceId,
 // SpanId, ParentSpanId) to their bare names instead of letting `R.*`
@@ -170,8 +171,9 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		return nil
 	case j.Op.IsUnion():
 		// Union direct: (SELECT R.* FROM L INNER JOIN R ON <rel>)
-		//   UNION DISTINCT
-		// (SELECT L.* FROM L INNER JOIN R ON <rel>).
+		//   UNION ALL
+		// (SELECT L.* FROM L INNER JOIN R ON <rel>),
+		// identity-deduped by emitStructuralSpanUnion.
 		rightArm := NewQuery().
 			Select(rightProj...).
 			From(aliasedFrag(leftSub, "L")).
@@ -188,9 +190,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 				aliasedFrag(rightSub, "R"),
 				structuralDirectOnFrag(j, relFrag),
 			)
-		b := NewBuilder()
-		UnionDistinct(rightArm.Frag(), leftArm.Frag())(b)
-		e.splice(b)
+		e.emitStructuralSpanUnion(j, rightArm, leftArm)
 		return nil
 	default:
 		sb := NewQuery().
@@ -219,7 +219,8 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 //     the distinct-span rule (`L.SpanId != R.SpanId`) moved to WHERE —
 //     row-for-row equivalent to the old ON form.
 //   - `&~` (union): the inner shape emitted twice (projecting R.* and
-//     L.*) glued with UNION DISTINCT, mirroring the other union ops.
+//     L.*) glued by emitStructuralSpanUnion, mirroring the other union
+//     ops.
 //   - `!~` (negated): an anti join cannot move the inequality to WHERE
 //     (the non-match decision happens inside the join), so the L side
 //     collapses to one row per (TraceId, ParentSpanId) carrying the
@@ -298,9 +299,7 @@ func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
 			From(aliasedFrag(leftSub, "L")).
 			Join(InnerJoin, aliasedFrag(rightSub, "R"), onEq).
 			Where(distinctSpan)
-		b := NewBuilder()
-		UnionDistinct(rightArm.Frag(), leftArm.Frag())(b)
-		e.splice(b)
+		e.emitStructuralSpanUnion(j, rightArm, leftArm)
 		return nil
 	default:
 		sb := NewQuery().
@@ -355,6 +354,71 @@ func structuralProjectionFrags(j *chplan.StructuralJoin, side string) []Frag {
 		frags = append(frags, aliasedSideCol(side, col, col))
 	}
 	return frags
+}
+
+// structuralUnionOutputCols returns the bare output column names the
+// two arms of a union structural op project, in projection order: the
+// three join keys followed by ExtraProjectionColumns — exactly what
+// structuralProjectionFrags aliases. Returns nil when the arms fall back
+// to the `<side>.* EXCEPT (…)` shape (ExtraProjectionColumns unset, the
+// chplan-direct test path), whose column set is known only to
+// ClickHouse.
+func structuralUnionOutputCols(j *chplan.StructuralJoin) []string {
+	if len(j.ExtraProjectionColumns) == 0 {
+		return nil
+	}
+	keys := []string{j.TraceIDColumn, j.SpanIDColumn, j.ParentSpanIDColumn}
+	return append(keys, j.ExtraProjectionColumns...)
+}
+
+// emitStructuralSpanUnion glues the two projection arms of a `&`-prefixed
+// structural op into the operator's output:
+//
+//	SELECT <cols> FROM ((<R arm>) UNION ALL (<L arm>))
+//	LIMIT 1 BY <TraceId>, <SpanId>
+//
+// The dedup is on SPAN IDENTITY, not on the full row tuple — the same
+// shape emitStructuralSpanUnion's sibling, the `||` set-op emitter in
+// set_op.go, already uses, and it shares unionDedupLimitPerIdentity with
+// it. Both arms read the same spans table, so every row carrying a given
+// (TraceId, SpanId) describes the same span; keeping one is precisely the
+// union op's contract ("the set of spans on either side that participate
+// in the relation").
+//
+// This replaced a full-row `UNION DISTINCT`, which was wrong in one
+// specific, silent way. A ClickHouse Map compares POSITIONALLY over its
+// (keys, values) arrays, so map('job','api','dc','eu') and
+// map('dc','eu','job','api') are UNEQUAL despite carrying the same
+// attribute set. The OTel-CH exporter writes OTLP attributes in wire
+// order and never sorts them, and otel_traces is a plain MergeTree, so
+// two deliveries of one span (OTLP at-least-once retry, a re-exported
+// batch) can land as two rows whose only difference is the key order
+// inside ResourceAttributes / SpanAttributes — both of which the arms
+// project. UNION DISTINCT then saw two distinct tuples and returned the
+// SAME SPAN TWICE, while a byte-identical redelivery of the same span
+// collapsed to one row. Identity dedup is immune by construction: it
+// never looks at the Map columns.
+//
+// The outer projection lists the arms' bare aliases rather than `*`
+// wherever the arms enumerate them (structuralUnionOutputCols), so the
+// union's output column names stay resolvable to a wrapping subquery —
+// the same CH 25.8 analyzer constraint structuralProjectionFrags
+// documents. It falls back to `*` only on the `<side>.* EXCEPT (…)` arm
+// shape, where the column set is not knowable at emit time.
+func (e *emitter) emitStructuralSpanUnion(j *chplan.StructuralJoin, rightArm, leftArm *QueryBuilder) {
+	proj := []Frag{verbatim("*")}
+	if cols := structuralUnionOutputCols(j); len(cols) > 0 {
+		proj = make([]Frag, 0, len(cols))
+		for _, col := range cols {
+			proj = append(proj, Col(col))
+		}
+	}
+	sb := NewQuery().
+		Select(proj...).
+		From(Paren(UnionAll(rightArm.Frag(), leftArm.Frag()))).
+		Limit(unionDedupLimitPerIdentity).
+		LimitBy(Col(j.TraceIDColumn), Col(j.SpanIDColumn))
+	e.emitSelect(sb)
 }
 
 // aliasedSideCol renders `<side>.<col> AS <alias>` with `col` and
@@ -478,8 +542,8 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 // and swap the outer INNER JOIN for a LEFT ANTI JOIN with R on the
 // left side — the R rows that the L-rooted closure does *not* reach.
 // Union recursive variants (`&>>` / `&<<`) emit the closure-keyed
-// INNER JOIN twice (projecting R.* and L.* respectively) joined by
-// UNION DISTINCT, mirroring the direct-union shape.
+// INNER JOIN twice (projecting R.* and L.* respectively) glued by
+// emitStructuralSpanUnion, mirroring the direct-union shape.
 func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// Recursive step direction depends on the *positive* form of the
 	// operator — negated / union variants reuse the same closure.
@@ -651,9 +715,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			Select(leftProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(InnerJoin, aliasedFrag(inverseClosure.Frag(), "R"), onClause)
-		b := NewBuilder()
-		UnionDistinct(rightArm.Frag(), leftArm.Frag())(b)
-		e.splice(b)
+		e.emitStructuralSpanUnion(j, rightArm, leftArm)
 		return nil
 	default:
 		// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
@@ -680,9 +742,9 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 //
 // For `A &>> B` the canonical closure walks down from each L
 // (`t.ParentSpanId = c.SpanId`); the inverse walks up from each R
-// (`t.SpanId = c.ParentSpanId`). The two arms of the UNION DISTINCT
-// thus cover both projection directions, mirroring upstream's
-// `union=true` Span.DescendantOf semantics.
+// (`t.SpanId = c.ParentSpanId`). The two union arms thus cover both
+// projection directions, mirroring upstream's `union=true`
+// Span.DescendantOf semantics.
 func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, table, cteName string) (*QueryBuilder, error) {
 	var stepRel Frag
 	switch j.Op.Positive() {

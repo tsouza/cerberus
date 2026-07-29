@@ -7610,6 +7610,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/structural_union_child_dup_key_order",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/structural_union_descendant",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -7620,10 +7630,30 @@
     "max_recursion_depth": 2
   },
   {
+    "fixture": "traceql/structural_union_descendant_dup_key_order",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": true,
+    "max_recursion_depth": 3
+  },
+  {
     "fixture": "traceql/structural_union_sibling",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/structural_union_sibling_dup_key_order",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
