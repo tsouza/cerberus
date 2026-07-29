@@ -911,9 +911,9 @@ func selectorAttributesExpr(ctx lowerCtx, s schema.Metrics) chplan.Expr {
 		return &chplan.ColumnRef{Name: s.AttributesColumn}
 	}
 	if overlay := augmentAttributesForTopLevelExpr(s, base); overlay != nil {
-		return overlay
+		return canonicalAttributesExpr(overlay)
 	}
-	return base
+	return canonicalAttributesExpr(base)
 }
 
 // rewriteMetricName returns a copy of matchers where any

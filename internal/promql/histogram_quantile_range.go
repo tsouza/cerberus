@@ -92,10 +92,15 @@ func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindo
 // once per row it happens to have. The range lowerings get the identical
 // collapse from [chplan.RangeBucketFanout], keyed by (series, anchor)
 // instead of series alone.
+//
+// The group key goes through [canonicalGroupKeyExpr]: this reads the raw
+// table column, so it is a series-identity BINDING site, and without the
+// wrap one logical series stored under two Map key orders collapses as
+// two groups — each keeping only its own subset's newest sample.
 func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics) chplan.Node {
 	return &chplan.Aggregate{
 		Input:              input,
-		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupBy:            []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
 		GroupByAliases:     []string{s.AttributesColumn},
 		AggFuncs:           aggs,
 		DropEmptyOnNoGroup: true,
@@ -618,13 +623,18 @@ func buildHistogramBucketFanout(
 	}
 
 	return &chplan.RangeBucketFanout{
-		Input:          rawSide,
-		Start:          ctx.start.UTC(),
-		End:            ctx.end.UTC(),
-		Step:           ctx.step,
-		Lookback:       win.lookback,
-		Offset:         win.offset,
-		GroupBy:        userGroupBy,
+		Input:    rawSide,
+		Start:    ctx.start.UTC(),
+		End:      ctx.end.UTC(),
+		Step:     ctx.step,
+		Lookback: win.lookback,
+		Offset:   win.offset,
+		// The fan-out keys read the raw table column, so this is a
+		// series-identity binding site — see [canonicalGroupKeyExpr].
+		// Canonicalising here rather than at each caller keeps the one
+		// path that reaches this node from splitting into a canonical
+		// and a non-canonical variant.
+		GroupBy:        canonicalGroupKeyExprs(userGroupBy, s),
 		GroupByAliases: userAliases,
 		AggFuncs:       aggFuncs,
 		AnchorAlias:    histogramAnchorCol,

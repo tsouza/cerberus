@@ -1,7 +1,7 @@
 -- query.traceql --
 {nestedSetParent<0 && true && kind != nil} | rate() by(kind)
 -- sql --
-SELECT lower(`SpanKind`) AS `kind`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY lower(`SpanKind`)
+SELECT lower(`SpanKind`) AS `kind`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `kind`
 -- args --
 [0] int64 = 1
 [1] string = ""
