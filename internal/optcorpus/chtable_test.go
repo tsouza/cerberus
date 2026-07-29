@@ -369,14 +369,19 @@ func TestNewCHTableSink_CreateFailureIsFatal(t *testing.T) {
 // FAILS when the deployed exit_status column carries every expected member NAME
 // but at different integers.
 //
-// clickhouse-go appends an Enum8 column by VALUE, so such a column rejects every
-// batch with "unknown element N" exactly as a column missing a member does — but
-// a name-only membership check reports it healthy, the sink is built, and the
-// corpus silently stops accepting rows on every reconcile interval forever. The
-// shape is reachable whenever the table is operator-owned (the documented case)
-// or was created by a binary that ordered the ExitStatus iota differently; the
-// widening ALTER cannot repair it either, since ClickHouse refuses a MODIFY that
-// changes an existing member's value.
+// Write appends this column as an int8, and clickhouse-go's Enum8.AppendRow
+// keys the int path on the INTEGER — it never resolves a name. The transposition
+// used here (aborted/error swapped) leaves both integers defined in the deployed
+// type, so the append is ACCEPTED and every aborted row is stored as 'error' and
+// vice versa: silent, permanent mislabelling of the two outcomes the corpus
+// exists to distinguish. Renumber a member onto an integer the deployed type
+// does not define instead and the same column rejects every batch with "unknown
+// element N". A name-only membership check reports both shapes healthy.
+//
+// The shape is reachable whenever the table is operator-owned (the documented
+// case) or was created by a binary that ordered the ExitStatus iota differently;
+// the widening ALTER cannot repair it either, since ClickHouse refuses a MODIFY
+// that changes an existing member's value.
 func TestNewCHTableSink_RejectsRenumberedDeployedColumn(t *testing.T) {
 	t.Parallel()
 
@@ -409,5 +414,45 @@ func TestEnum8Members_ParsesValues(t *testing.T) {
 		if got[name] != value {
 			t.Errorf("member %q parsed as %d; want %d", name, got[name], value)
 		}
+	}
+}
+
+// TestEnum8AppendKeysOnTheInteger pins the upstream driver behaviour the whole
+// exit_status value check rests on: clickhouse-go's Enum8 column, given an int,
+// validates and stores that INTEGER against the deployed type and resolves no
+// name. Write appends this column as an int8, so the deployed integers are the
+// contract — not the deployed names.
+//
+// If a clickhouse-go bump ever made the int path resolve through the name
+// mapping instead, verifyExitStatusColumn's value comparison would be
+// over-strict rather than load-bearing, and this test is what says so.
+func TestEnum8AppendKeysOnTheInteger(t *testing.T) {
+	t.Parallel()
+
+	// The deployed type carries every expected NAME, with aborted/error
+	// transposed relative to this binary's ExitStatus iota.
+	deployed := column.Type("Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, 'sample_budget' = 3, " +
+		"'breaker' = 4, 'rejected' = 5, 'error' = 6, 'aborted' = 7)")
+	col, err := deployed.Column(exitStatusColumn, nil)
+	if err != nil {
+		t.Fatalf("Column(%s): %v", exitStatusColumn, err)
+	}
+
+	// What Write would append for an aborted row.
+	if err := col.AppendRow(exitEnumValue(ExitAborted.String())); err != nil {
+		t.Fatalf("AppendRow(%d) rejected by a type that defines that integer: %v — "+
+			"the int path is no longer keyed on the integer", int8(ExitAborted), err)
+	}
+	if got := col.Row(0, false); got != ExitError.String() {
+		t.Fatalf("appending the aborted integer stored %q; want %q — a by-name append "+
+			"would have stored %q and made the value check unnecessary",
+			got, ExitError.String(), ExitAborted.String())
+	}
+
+	// An integer the deployed type does not define is the rejecting shape.
+	undefinedEnumValue := int8(len(exitStatuses) + 1)
+	if err := col.AppendRow(undefinedEnumValue); err == nil {
+		t.Fatalf("AppendRow(%d) accepted by a type that does not define it; want rejection",
+			undefinedEnumValue)
 	}
 }

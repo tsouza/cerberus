@@ -987,20 +987,31 @@ func TestFreshEnoughForRouteMemo_ZeroStepNeverFresh(t *testing.T) {
 	}
 }
 
+// dispatchAwaitBudget / dispatchAwaitPoll bound awaitDispatch's poll. The
+// budget is generous relative to the microseconds a fake dispatch actually
+// takes, so a loaded CI runner cannot flake it; the poll is short enough that a
+// passing run costs nothing.
+const (
+	dispatchAwaitBudget = 2 * time.Second
+	dispatchAwaitPoll   = time.Millisecond
+)
+
 // awaitDispatch waits for the Executor to have opened at least one shard
-// cursor. Execute admits its shards from a launcher goroutine — the shard the
-// composer drains first must hold a slot before Execute returns, so Execute
-// returns before the opens have necessarily happened. Polling for the
-// observable effect is the honest form of "a dispatch happened"; sampling the
-// counter the instant Execute returns tests goroutine scheduling instead.
+// cursor. Execute hands its shards to a launcher goroutine and returns without
+// waiting for any of them to be admitted — it MUST, since a shard that has
+// filled its channel can only be unparked by a composer that cannot run until
+// Execute has returned. So the opens have not necessarily happened yet at the
+// instant Execute returns. Polling for the observable effect is the honest form
+// of "a dispatch happened"; sampling the counter on return tests goroutine
+// scheduling instead.
 func awaitDispatch(t *testing.T, cq *fakeSolverCursorClient, what string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(dispatchAwaitBudget)
 	for time.Now().Before(deadline) {
 		if cq.opens.Load() >= 1 {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(dispatchAwaitPoll)
 	}
-	t.Errorf("Executor cursor opens = %d, want >= 1 (%s)", cq.opens.Load(), what)
+	t.Fatalf("Executor cursor opens = %d, want >= 1 (%s)", cq.opens.Load(), what)
 }

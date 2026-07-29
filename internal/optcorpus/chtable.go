@@ -209,12 +209,23 @@ func corpusExitStatusTypeQuery() (string, []any) {
 // with ClickHouse's backslash escaping honoured so a name containing a quote is
 // not read as two members.
 //
-// The VALUE is part of the contract, not decoration: clickhouse-go appends an
-// Enum8 column by integer, so a column that carries every expected name at
-// different integers rejects every batch just as surely as one missing a name —
-// and a name-only check would report that column healthy. A member whose value
-// cannot be read is omitted rather than guessed; verify's job is to prove the
-// deployed column matches, and an unreadable value is not proof.
+// The VALUE is part of the contract, not decoration. Write appends this column
+// as an int8 (exitEnumValue), and clickhouse-go's Enum8.AppendRow keys the int
+// path on the INTEGER: it checks the value against the deployed type's defined
+// set and stores it verbatim, resolving no name. A deployed column carrying
+// every expected name at different integers therefore fails in whichever of two
+// ways is worse for the operator, and a name-only check calls it healthy in
+// both:
+//
+//   - the integer this binary writes is defined in the deployed type but under
+//     a DIFFERENT name — the batch is accepted and every such row is stored
+//     under the wrong label, silently, forever; or
+//   - the integer is not defined there at all — every batch is rejected with
+//     "unknown element N", exactly as for an absent member.
+//
+// A member whose value cannot be read is omitted rather than guessed; verify's
+// job is to prove the deployed column matches, and an unreadable value is not
+// proof.
 func enum8Members(chType string) map[string]int64 {
 	members := map[string]int64{}
 	var cur strings.Builder
