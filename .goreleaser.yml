@@ -47,10 +47,42 @@ archives:
 #
 # A CASK, not a `brews:` formula: a formula describes something Homebrew builds
 # from source, while a cask installs a pre-built artifact — which is exactly
-# what a release archive is. It is not a macOS-only choice: `supports_linux?`
-# holds for any cask that declares no `depends_on macos`, and Homebrew's cask
-# installer gates on the CASK's declared OS rather than on the host being a
-# Mac, so one cask installs under Linuxbrew and macOS alike.
+# what a release archive is. It is not a macOS-only choice, but NOT for the
+# reason casks are usually assumed to be Mac-bound, so the actual mechanism is
+# written down here rather than left to inference:
+#
+#   * The whole Linux gate is Homebrew's
+#     `extend/os/linux/cask/installer.rb#check_stanza_os_requirements`:
+#
+#         return if !cask.depends_on.requires_macos? &&
+#                   artifacts.all? { |artifact| supported_artifact?(artifact) }
+#         raise ::Cask::CaskError, "#{cask}: cask requires macOS."
+#
+#     A CONJUNCTION, so a cask installs on Linux only by satisfying both.
+#   * Clause 2, the artifacts: `supported_artifact?` rejects the sixteen classes
+#     in `MACOS_ONLY_ARTIFACTS` (`app`, `pkg`, `qlplugin`, `service`, …) and,
+#     separately, an `installer` that is a MANUAL install — the scripted form is
+#     fine. This cask's only artifact is `binary`, which is portable, so the
+#     install proceeds.
+#   * Clause 1, `depends_on macos:`, IS consulted on Linux — it is the first
+#     conjunct, not the inert stanza it is usually assumed to be off a Mac. What
+#     makes it harmless here is that `requires_macos?` is
+#     `@macos_bare_set_top_level || @macos_version_set_top_level ||
+#     @maximum_macos_set_top_level` (`cask/dsl/depends_on.rb`), i.e. only a
+#     TOP-LEVEL `depends_on macos:` sets it. The implicit `MacOSRequirement`
+#     Homebrew attaches to every cask does not, and goreleaser emits no
+#     `depends_on` at all, so it stays false.
+#   * `supports_linux?` is NOT the install-time predicate. Its only caller in
+#     all of Homebrew is `dev-cmd/generate-cask-ci-matrix.rb` — homebrew-cask's
+#     own CI runner selection, which has no bearing on a third-party tap. It
+#     returns FALSE for this cask (it requires the DSL `os` stanza, which
+#     goreleaser does not emit) even though `brew install` works fine.
+#
+# goreleaser emits `on_linux`/`on_intel`/`on_arm` url + sha256 pairs from the
+# `builds:` matrix above, so the cask carries real linux_amd64 / linux_arm64
+# artefacts. `brew-smoke.mjs` asserts that shape on every release, and the
+# `brew-smoke / ubuntu-latest` leg installs it on Linuxbrew for real — this
+# paragraph is checked by CI, not merely believed.
 homebrew_casks:
   - name: cerberus
     ids:
@@ -142,7 +174,7 @@ dockers_v2:
       # computed in release.yml: tag == highest stable semver). A prerelease
       # never advances it, AND a stable BACKPORT (e.g. v1.2.1 cut after v1.3.0)
       # must not drag it backwards either. An empty tag is dropped, which is how
-      # dockers_v2 spells the conditional push the old `skip_push` did.
+      # dockers_v2 spells a conditional push.
       - '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}latest{{ end }}'
     labels:
       org.opencontainers.image.title: "{{ .ProjectName }}"

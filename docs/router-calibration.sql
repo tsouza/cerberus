@@ -9,11 +9,17 @@
 -- query (routed). N/F/D are the RAW classifier scalars (n_anchors / fanout /
 -- cumulative_d) recorded for BOTH routes.
 --
--- exit_status values:
+-- exit_status values (the full set internal/optcorpus can write):
 --   * CH-side (derived from system.query_log):
 --       ok       — clean finish.
 --       oom      — ClickHouse MEMORY_LIMIT_EXCEEDED.
 --       timeout  — ClickHouse TIMEOUT_EXCEEDED / TOO_SLOW.
+--       aborted  — the query was abandoned by its client mid-flight: a
+--                  cancellation, a destroyed socket, a broken pipe. The client
+--                  walked away; the route it was on had nothing to do with it.
+--       error    — the query failed for a reason that is none of the above.
+--                  The honest floor for any exception code cerberus does not
+--                  recognise, never folded back into 'ok'.
 --   * Cerberus-side (recorded in-process; the query_log cannot reflect these):
 --       sample_budget — the query.maxSamples 422. The CH query FINISHED (cost
 --                       columns are real) but cerberus rejected the drain: too
@@ -23,8 +29,17 @@
 -- All three cerberus-side values are MISROUTE signals on route A: a route-A
 -- query that hit the sample budget, tripped the breaker, or was cap-rejected is
 -- a query the heuristic kept single-path but that cerberus could not serve.
--- `exit_status != 'ok'` therefore captures every failure class, CH- and
--- cerberus-side alike.
+-- The heuristic-failure predicate is therefore
+-- `exit_status NOT IN ('ok', 'aborted')` — every CH- and cerberus-side failure
+-- class, minus the client-abandonment rows, which say nothing about the route.
+--
+-- Cost columns (query_duration_ms / memory_usage / read_rows / read_bytes) are
+-- TRUNCATED on anything but a clean finish: a timeout's duration is the
+-- deadline, an OOM's memory is the cap, an abort's read_rows is however far it
+-- got. Every cost percentile below is therefore scoped to exit_status = 'ok',
+-- the same clean-finish population internal/routerrules requires a
+-- corpus_percentile over a runtime-cost column to declare. Counts are NOT
+-- scoped that way — a failure only counts if it is counted.
 --
 -- The question this file answers: is the current PURE heuristic good enough, or
 -- does the misroute rate justify a learned / calibrated router?
@@ -45,21 +60,28 @@
 ----------------------------------------------------------------------------
 SELECT
     route,
-    count()                                         AS queries,
-    round(quantile(0.50)(query_duration_ms))        AS p50_ms,
-    round(quantile(0.90)(query_duration_ms))        AS p90_ms,
-    round(quantile(0.99)(query_duration_ms))        AS p99_ms,
-    round(quantile(0.50)(memory_usage) / 1e6, 1)    AS p50_mem_mb,
-    round(quantile(0.99)(memory_usage) / 1e6, 1)    AS p99_mem_mb,
-    round(quantile(0.99)(read_rows) / 1e6, 1)       AS p99_read_mrows,
-    countIf(exit_status = 'oom')                     AS ooms,
-    countIf(exit_status = 'timeout')                 AS timeouts,
+    count()                                                                 AS queries,
+    countIf(exit_status = 'ok')                                             AS ok_queries,
+    -- Percentiles over the CLEAN-FINISH population only: a truncated counter
+    -- describes how the query died, not what the query costs.
+    round(quantileIf(0.50)(query_duration_ms, exit_status = 'ok'))          AS p50_ms,
+    round(quantileIf(0.90)(query_duration_ms, exit_status = 'ok'))          AS p90_ms,
+    round(quantileIf(0.99)(query_duration_ms, exit_status = 'ok'))          AS p99_ms,
+    round(quantileIf(0.50)(memory_usage, exit_status = 'ok') / 1e6, 1)      AS p50_mem_mb,
+    round(quantileIf(0.99)(memory_usage, exit_status = 'ok') / 1e6, 1)      AS p99_mem_mb,
+    round(quantileIf(0.99)(read_rows, exit_status = 'ok') / 1e6, 1)         AS p99_read_mrows,
+    -- CH-side terminal outcomes. `aborts` is the client walking away, held
+    -- apart from the failure classes; the columns below sum to `queries`.
+    countIf(exit_status = 'oom')                                            AS ooms,
+    countIf(exit_status = 'timeout')                                        AS timeouts,
+    countIf(exit_status = 'aborted')                                        AS aborts,
+    countIf(exit_status = 'error')                                          AS errors,
     -- Cerberus-side terminal outcomes (query_log cannot show these). On route A
     -- each is a misroute signal; sample_budget rows carry real CH cost (the
     -- query finished, cerberus rejected the drain), breaker/rejected are zero-cost.
-    countIf(exit_status = 'sample_budget')           AS sample_budget_rejects,
-    countIf(exit_status = 'breaker')                 AS breaker_rejects,
-    countIf(exit_status = 'rejected')                AS cap_rejects
+    countIf(exit_status = 'sample_budget')                                  AS sample_budget_rejects,
+    countIf(exit_status = 'breaker')                                        AS breaker_rejects,
+    countIf(exit_status = 'rejected')                                       AS cap_rejects
 FROM cerberus_router_corpus
 GROUP BY route
 ORDER BY route;
@@ -71,20 +93,25 @@ ORDER BY route;
 --    KEPT on route A but that landed in cost territory route B occupies (the
 --    territory slicing historically helped). A high share = misroute.
 ----------------------------------------------------------------------------
+-- Both floors, and both sides of every comparison against them, read the
+-- clean-finish population: a truncated counter would place a query in the wrong
+-- cost territory purely because it died early.
 WITH
-    (SELECT quantile(0.50)(memory_usage) FROM cerberus_router_corpus WHERE route = 'B') AS b_mem_floor,
-    (SELECT quantile(0.50)(query_duration_ms) FROM cerberus_router_corpus WHERE route = 'B') AS b_dur_floor
+    (SELECT quantile(0.50)(memory_usage) FROM cerberus_router_corpus WHERE route = 'B' AND exit_status = 'ok') AS b_mem_floor,
+    (SELECT quantile(0.50)(query_duration_ms) FROM cerberus_router_corpus WHERE route = 'B' AND exit_status = 'ok') AS b_dur_floor
 SELECT
     countIf(route = 'A')                                                       AS route_a_total,
-    countIf(route = 'A' AND memory_usage      >= b_mem_floor)                  AS a_in_b_mem_territory,
-    countIf(route = 'A' AND query_duration_ms >= b_dur_floor)                  AS a_in_b_dur_territory,
-    countIf(route = 'A' AND exit_status != 'ok')                               AS a_failed,
-    round(100 * countIf(route = 'A' AND memory_usage >= b_mem_floor)
-              / nullIf(countIf(route = 'A'), 0), 1)                            AS pct_a_misrouted_by_mem,
+    countIf(route = 'A' AND exit_status = 'ok')                                AS route_a_ok,
+    countIf(route = 'A' AND exit_status = 'ok' AND memory_usage      >= b_mem_floor) AS a_in_b_mem_territory,
+    countIf(route = 'A' AND exit_status = 'ok' AND query_duration_ms >= b_dur_floor) AS a_in_b_dur_territory,
+    -- Heuristic failures: every failure class, minus client abandonment.
+    countIf(route = 'A' AND exit_status NOT IN ('ok', 'aborted'))               AS a_failed,
+    round(100 * countIf(route = 'A' AND exit_status = 'ok' AND memory_usage >= b_mem_floor)
+              / nullIf(countIf(route = 'A' AND exit_status = 'ok'), 0), 1)     AS pct_a_misrouted_by_mem,
     -- The inverse: route-B queries that were CHEAP (below route A's median),
     -- i.e. sliced when slicing bought nothing (wasted shard machinery).
-    countIf(route = 'B' AND memory_usage <
-        (SELECT quantile(0.50)(memory_usage) FROM cerberus_router_corpus WHERE route = 'A')) AS b_wasted_slicing
+    countIf(route = 'B' AND exit_status = 'ok' AND memory_usage <
+        (SELECT quantile(0.50)(memory_usage) FROM cerberus_router_corpus WHERE route = 'A' AND exit_status = 'ok')) AS b_wasted_slicing
 FROM cerberus_router_corpus;
 
 ----------------------------------------------------------------------------
@@ -97,39 +124,49 @@ SELECT
     n_anchors,
     fanout,
     route,
-    count()                                          AS queries,
-    round(quantile(0.90)(query_duration_ms))         AS p90_ms,
-    round(quantile(0.90)(memory_usage) / 1e6, 1)     AS p90_mem_mb,
-    countIf(exit_status != 'ok')                      AS failures
+    count()                                                                 AS queries,
+    countIf(exit_status = 'ok')                                             AS ok_queries,
+    round(quantileIf(0.90)(query_duration_ms, exit_status = 'ok'))          AS p90_ms,
+    round(quantileIf(0.90)(memory_usage, exit_status = 'ok') / 1e6, 1)      AS p90_mem_mb,
+    -- ok_queries + failures + aborts = queries.
+    countIf(exit_status NOT IN ('ok', 'aborted'))                           AS failures,
+    countIf(exit_status = 'aborted')                                        AS aborts
 FROM cerberus_router_corpus
 GROUP BY n_anchors, fanout, route
 HAVING queries >= 5            -- ignore thin buckets with no statistical weight
 ORDER BY n_anchors, fanout, route;
 
 ----------------------------------------------------------------------------
--- 4. The decisive misroute count: route-A queries that did not finish 'ok' —
---    CH-side (oom / timeout) OR cerberus-side (sample_budget / breaker /
+-- 4. The decisive misroute count: route-A queries that FAILED — CH-side
+--    (oom / timeout / error) OR cerberus-side (sample_budget / breaker /
 --    rejected). These are unambiguous heuristic failures — the query died, was
 --    cap-rejected, or blew the sample budget on the single path the classifier
---    chose for it. Any non-trivial count here is a standalone go signal for
---    calibration, independent of the overlap math. The exit_status breakdown
---    shows which failure class dominates (a sample_budget-heavy bucket says the
---    single-path result set is too large — exactly route B's reason to exist).
+--    chose for it. Client-abandoned rows ('aborted') are excluded: the client
+--    walked away, which indicts nothing about the route. Any non-trivial count
+--    here is a standalone go signal for calibration, independent of the overlap
+--    math. The exit_status breakdown shows which failure class dominates (a
+--    sample_budget-heavy bucket says the single-path result set is too large —
+--    exactly route B's reason to exist).
 ----------------------------------------------------------------------------
 SELECT
     decision_reason,                                 -- why the classifier kept it on A
     n_anchors,
     fanout,
     cumulative_d,
-    count()                                          AS failed_route_a_queries,
-    countIf(exit_status = 'oom')                      AS ooms,
-    countIf(exit_status = 'timeout')                  AS timeouts,
-    countIf(exit_status = 'sample_budget')            AS sample_budget_rejects,
-    countIf(exit_status = 'breaker')                  AS breaker_rejects,
-    countIf(exit_status = 'rejected')                 AS cap_rejects,
-    round(quantile(0.99)(memory_usage) / 1e6, 1)     AS p99_mem_mb
+    count()                                                                 AS failed_route_a_queries,
+    -- The six classes below sum to failed_route_a_queries.
+    countIf(exit_status = 'oom')                                            AS ooms,
+    countIf(exit_status = 'timeout')                                        AS timeouts,
+    countIf(exit_status = 'error')                                          AS errors,
+    countIf(exit_status = 'sample_budget')                                  AS sample_budget_rejects,
+    countIf(exit_status = 'breaker')                                        AS breaker_rejects,
+    countIf(exit_status = 'rejected')                                       AS cap_rejects,
+    -- Read as cost ACCRUED BEFORE the failure, not as the query's cost: except
+    -- on sample_budget rows (where the CH query finished) the counter stopped
+    -- wherever ClickHouse gave up, and breaker/rejected rows never ran at all.
+    round(quantile(0.99)(memory_usage) / 1e6, 1)                            AS p99_accrued_mem_mb
 FROM cerberus_router_corpus
-WHERE route = 'A' AND exit_status != 'ok'
+WHERE route = 'A' AND exit_status NOT IN ('ok', 'aborted')
 GROUP BY decision_reason, n_anchors, fanout, cumulative_d
 ORDER BY failed_route_a_queries DESC
 LIMIT 50;

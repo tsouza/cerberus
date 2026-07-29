@@ -109,8 +109,12 @@ Each arrives with the step that uses it.
   has connected to anything — the first `migrate` command that opens a socket is
   step 6.
 
-`cerberus config-docs` prints every engine setting the file accepts;
-[`docs/configuration.md`](configuration.md) is the same list in prose, and
+[`docs/configuration.md`](configuration.md) lists every engine setting the file
+accepts, with each one's config-file path, type and default. That reference is
+generated from the binary's own metadata by `cerberus config-docs`, which
+*writes* the file (`-out` chooses the path, `-check` only reports drift rather
+than writing) — a repo-maintenance command, not a way to page through the
+settings on the machine you are installing on.
 [`docs/migration-reference.md`](migration-reference.md) is the full flag
 reference for the migration commands.
 

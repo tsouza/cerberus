@@ -1095,20 +1095,7 @@ carries as much weight as the steps themselves:
 1. **Drive everything merged first.** A cycle opens by draining the board: no
    open PR and no dangling branch-without-a-PR is left behind. A release ships
    the whole delta since the previous one, never a subset.
-2. **Backport everything to every line that stays supported.** Every fix that
-   landed on `main` since the previous release goes onto every
-   `release/<major>.<minor>.x` line that is still supported once this cycle
-   lands — step 3 settles which those are. "Everything" is the default rather
-   than a per-fix judgement call. A change is left out of a line only when the
-   backport is genuinely infeasible on that line, and a line that keeps
-   rejecting backports is a retirement candidate, not a standing exception. A
-   cycle that cuts a new minor also *adds* a line: the minor `main` is leaving
-   needs its own maintenance branch, created from the peeled tag of its last
-   release (`git push origin v<tag>^{}:refs/heads/release/<major>.<minor>.x` —
-   the ruleset carries no `creation` rule, so this needs no bypass). That branch
-   must exist before step 5 can publish a patch on it. See
-   [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
-3. **Settle the retirement set before any backport is cut.** When the cycle
+2. **Settle the retirement set before anything is cut.** When the cycle
    cuts a new minor — which a breaking change is by itself enough to force, see
    below — the oldest supported line falls out of the window defined in
    [release support window / EOL policy](#release-support-window--eol-policy).
@@ -1118,9 +1105,23 @@ carries as much weight as the steps themselves:
    is automatic, with the `eol-retire` job deleting the out-of-window branch
    after the new minor publishes. A patch-only cycle retires nothing and passes
    straight through.
-4. **Audit the delta.** One last pass over the complete diff since the previous
+3. **Audit the delta.** One last pass over the complete diff since the previous
    release: code against comments against docs, DRY, KISS, soundness. This is
-   the final gate — findings are fixed and merged here, before any tag exists.
+   the final gate — findings are fixed and merged onto `main` here, before any
+   line is backported and before any tag exists.
+4. **Backport everything to every line that stays supported.** Every fix that
+   landed on `main` since the previous release goes onto every
+   `release/<major>.<minor>.x` line that is still supported once this cycle
+   lands — step 2 settles which those are. "Everything" is the default rather
+   than a per-fix judgement call. A change is left out of a line only when the
+   backport is genuinely infeasible on that line, and a line that keeps
+   rejecting backports is a retirement candidate, not a standing exception. A
+   cycle that cuts a new minor also *adds* a line: the minor `main` is leaving
+   needs its own maintenance branch, created from the peeled tag of its last
+   release (`git push origin v<tag>^{}:refs/heads/release/<major>.<minor>.x` —
+   the ruleset carries no `creation` rule, so this needs no bypass). That branch
+   must exist before step 5 can publish a patch on it. See
+   [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
 5. **Publish the backport PATCH releases first.** Every still-supported older
    line gets its patch tag before the new head release exists.
 6. **Publish the new MINOR (or patch) release last.** `main`'s release is always
@@ -1129,18 +1130,23 @@ carries as much weight as the steps themselves:
 **Breaking changes are accepted in a new minor.** On the cerberus version line
 (`appVersion` / the `v<major>.<minor>.<patch>` tags) a breaking change does
 **not** require a major bump — the minor is its vehicle. That makes "does this
-delta break anything?" a step-3 input: a breaking change is on its own
+delta break anything?" a step-2 input: a breaking change is on its own
 sufficient reason for the cycle to cut a minor rather than a patch, and cutting
 a minor is what pushes the oldest line out of the support window and calls for
 a maintenance branch on the minor `main` is leaving. A cycle carrying neither a
 breaking change nor a new feature is a patch cycle: it retires nothing, creates
-no line, and passes step 3 straight through.
+no line, and passes step 2 straight through.
 
-Two properties follow from that order. Publishing the older lines first means
-the newest tag is never the one users find while the older lines are still
-mid-flight: by the time the head release appears, every supported line already
-sits at its final version. And placing the audit immediately before the first
-publish means nothing merges between the audit and the tags it cleared.
+Three properties follow from that order. The audit precedes the backport so
+that its findings reach every line: a fix merged onto `main` after the lines
+were cut would ship only in the head release, leaving each patch release to
+publish a defect `main` had already repaired. Auditing first also keeps the
+backport a single pass rather than one pass per round of findings. Publishing
+the older lines first means the newest tag is never the one users find while
+the older lines are still mid-flight: by the time the head release appears,
+every supported line already sits at its final version. And the audit is the
+last thing that merges — nothing lands between it and the tags it cleared, on
+any line.
 
 Each individual publish in steps 5 and 6 runs through the machinery below — a
 backport by pushing its `release/*.x` branch, the head release by merging its
@@ -1206,8 +1212,8 @@ Each edge is a gate, not a sequence:
   so everything that validates the built artifact sits before the point of no
   return. The flip states `--latest` explicitly: GitHub defaults `make_latest`
   to true, so leaving it implicit hands the repo's `Latest` pointer to whichever
-  release published most recently — which is how backporting v1.11.3 after
-  v1.13.0 pointed `/releases/latest` at the oldest supported line.
+  release published most recently — which on a maintenance backport would aim
+  `/releases/latest` at an older supported line.
 - **`brew-smoke`** installs from the tap and smokes the published binary (see
   below); **`eol-retire`** retires the line that just fell out of the support
   window.
@@ -1263,10 +1269,24 @@ playbook points at it as the default install path — see
 
 This is wired via the goreleaser `homebrew_casks:` block. A *cask* is the right
 vehicle for a pre-built binary — a formula describes something Homebrew builds
-from source — and it is not a macOS-only choice: a cask that declares no
-`depends_on macos` reports `supports_linux?`, and Homebrew's cask installer gates
-on the cask's declared OS rather than on the host being a Mac, so one cask
-installs under Linuxbrew and macOS alike. Because the release binaries are
+from source — and it is not a macOS-only choice, though not for the reason casks
+are usually assumed to be Mac-bound. The entire Linux gate is Homebrew's
+`check_stanza_os_requirements`, which proceeds only when a cask declares no
+top-level `depends_on macos:` **and** every one of its artifacts is supported off
+a Mac, and otherwise raises `<cask>: cask requires macOS.`. Both conjuncts
+matter: `depends_on macos:` *is* consulted on Linux, contrary to folklore — what
+makes it harmless here is that `requires_macos?` is set only by a *top-level*
+`depends_on macos:`, so neither the implicit `MacOSRequirement` Homebrew attaches
+to every cask nor goreleaser's output (which declares no `depends_on` at all)
+trips it. The unsupported artifacts are the sixteen classes in
+`MACOS_ONLY_ARTIFACTS` (`app`, `pkg`, `service`, …) plus an `installer` in its
+`manual:` form — a scripted `installer` is portable. `supports_linux?` is not the
+install-time predicate at all; its only caller is homebrew-cask's own CI matrix
+generator, and it reports `false` for this cask even though `brew install` works.
+What makes cerberus installable under Linuxbrew is that
+its sole artifact is a plain `binary`, and that goreleaser emits `on_linux`
+url/sha256 pairs for `linux_amd64` and `linux_arm64` from the same `builds:`
+matrix that feeds the darwin ones. Because the release binaries are
 neither Apple-signed nor notarised, the cask carries a post-install hook that
 strips the `com.apple.quarantine` xattr, without which the first run on macOS
 dies with "cerberus is damaged and can't be opened".
@@ -1298,18 +1318,38 @@ a stale cask that an install would happily consume. A stable release must find
 the cask declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
 (`migrate schema`, `config-docs -check`) work from the installed binary. The
-install names `--cask` explicitly, so if the tap ever serves a same-named formula
-again the job fails loudly instead of installing that one and calling the cask
-healthy. The two shapes that write no cask are **not** skipped — each takes the
+install runs the bare `brew install tsouza/tap/cerberus` documented above rather
+than `brew install --cask`, because those two are not equivalent when the tap
+serves a same-named formula: Homebrew resolves the bare ref to the FORMULA and
+`--cask` to the cask, so a `--cask` smoke would install one artifact while every
+operator installed the other. goreleaser writes `Casks/cerberus.rb` and deletes
+nothing, so the tap's whole file listing is additionally scanned for a leftover
+formula — every root Homebrew loads formulae from (`Formula/`,
+`HomebrewFormula/`, the tap root, the first two recursively so a sharded
+`Formula/c/cerberus.rb` counts), not just the historical path — and the smoke
+fails while one is present. The repair (delete it, add a `tap_migrations.json`)
+belongs to the tap repository, which no release run can touch. Because the ref
+being installed is the ambiguous one, the smoke also states *which* artifact
+Homebrew picked: after the install, `cerberus` must appear in
+`brew list --cask --versions` and must not appear in `brew list --formula
+--versions`. Neither `command -v` nor `--version` can tell those two apart.
+
+The two shapes that write no cask are **not** skipped — each takes the
 opposite assertion. An `rc.*` must have written none, so a cask declaring the
 prerelease version is a reported regression; a release that is not the highest
 stable tag must have left a strictly NEWER cask in place, so a tap that has
 fallen back to the backport's own version is one too. The job runs after
 `publish` because
 `brew install` downloads the release tarball, which 404s while the release is
-still a draft, and it runs on `macos-latest` because the Ubuntu runner image
-ships no Homebrew at all. That the cask also installs under Linuxbrew is a
-property of the artifact, not something CI exercises.
+still a draft. It runs as a `macos-latest` + `ubuntu-latest` matrix, so that the
+cask installs under Linuxbrew is exercised rather than assumed — cerberus is a
+Linux-first server binary, and a cask that has lost its Linux artefacts installs
+flawlessly on a Mac. (The Ubuntu image does ship Homebrew, under
+`/home/linuxbrew`; it just leaves it off `PATH`, which is why one Linux-only
+step adds it.) The cask's cross-platform *shape* — all four os/arch artefacts
+present, no macOS-only artifact stanza — is additionally asserted from the cask
+source on both legs and on all three release branches, because that is the one
+failure neither install can see from the other's side.
 
 `brew-smoke` fires exactly once, inside the release run, which leaves one thing
 uncovered: it cannot re-check an *already-published* release. `rerun-failed-jobs`

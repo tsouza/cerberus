@@ -58,8 +58,15 @@ deployment's own data.
 2. **Schema validation at load** (`validate.go`) additionally rejects: dangling
    `${param}` references, unknown resolver kinds, unknown columns (checked
    against the canonical corpus column allow-list in `columns.go`), duplicate
-   rule ids, cyclic parameter dependencies, an `apiVersion` mismatch, and a
-   numeric scalar smuggled into any enum or scope slot.
+   rule ids, cyclic parameter dependencies, an `apiVersion` mismatch, a
+   numeric scalar smuggled into any enum or scope slot, and a
+   `corpus_percentile` whose scope disagrees with the kind of column it
+   measures — over a runtime-cost column (`read_rows`, `read_bytes`,
+   `query_duration_ms`, `memory_usage`) it must declare `scope.exit_status: ok`,
+   because a cost watermark learned over failed queries describes the failure
+   rather than the query; over a geometry column it must not, because there is
+   no outcome bias to remove and the scope only shrinks the population, up to
+   emptying it outright.
 3. **A CI guard test**
    ([`catalog/router_rules_test.go`](../internal/routerrules/catalog/router_rules_test.go))
    walks the YAML tree of **every** embedded catalog file (the base plus each
