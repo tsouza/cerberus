@@ -38,12 +38,12 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 		{
 			name:      "and default match",
 			query:     `up and up`,
-			wantInSQL: []string{"`Attributes` IN (", "DISTINCT `Attributes`"},
+			wantInSQL: []string{"mapSort(`Attributes`) IN (", "DISTINCT mapSort(`Attributes`)"},
 		},
 		{
 			name:      "unless default match",
 			query:     `up unless up`,
-			wantInSQL: []string{"`Attributes` NOT IN (", "DISTINCT `Attributes`"},
+			wantInSQL: []string{"mapSort(`Attributes`) NOT IN (", "DISTINCT mapSort(`Attributes`)"},
 		},
 		{
 			name:  "or default match",
@@ -56,19 +56,19 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 			wantInSQL: []string{
 				"UNION ALL",
 				"`_setop_side`",
-				"max(`_setop_side` = 0) OVER (PARTITION BY `Attributes`)",
+				"max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`))",
 				"`_setop_has_left`",
 			},
 		},
 		{
 			name:      "and ignoring",
 			query:     `up and ignoring(instance) up`,
-			wantInSQL: []string{"mapFilter((k, v) -> NOT (k IN (?)), `Attributes`) IN ("},
+			wantInSQL: []string{"mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) IN ("},
 		},
 		{
 			name:      "unless on",
 			query:     `up unless on(job) up`,
-			wantInSQL: []string{"mapFilter((k, v) -> k IN (?), `Attributes`) NOT IN ("},
+			wantInSQL: []string{"mapSort(mapFilter((k, v) -> k IN (?), `Attributes`)) NOT IN ("},
 		},
 	}
 	for _, tc := range cases {

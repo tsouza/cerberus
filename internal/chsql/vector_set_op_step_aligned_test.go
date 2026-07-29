@@ -54,20 +54,20 @@ func TestEmitVectorSetOp_StepAlignedMatchKey(t *testing.T) {
 		{
 			name:        "and",
 			op:          chplan.VectorSetAnd,
-			stepAligned: "WHERE (`Attributes`, `TimeUnix`) IN ((SELECT DISTINCT `Attributes`, `TimeUnix` FROM",
-			labelOnly:   "WHERE `Attributes` IN ((SELECT DISTINCT `Attributes` FROM",
+			stepAligned: "WHERE (mapSort(`Attributes`), `TimeUnix`) IN ((SELECT DISTINCT mapSort(`Attributes`), `TimeUnix` FROM",
+			labelOnly:   "WHERE mapSort(`Attributes`) IN ((SELECT DISTINCT mapSort(`Attributes`) FROM",
 		},
 		{
 			name:        "unless",
 			op:          chplan.VectorSetUnless,
-			stepAligned: "WHERE (`Attributes`, `TimeUnix`) NOT IN ((SELECT DISTINCT `Attributes`, `TimeUnix` FROM",
-			labelOnly:   "WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM",
+			stepAligned: "WHERE (mapSort(`Attributes`), `TimeUnix`) NOT IN ((SELECT DISTINCT mapSort(`Attributes`), `TimeUnix` FROM",
+			labelOnly:   "WHERE mapSort(`Attributes`) NOT IN ((SELECT DISTINCT mapSort(`Attributes`) FROM",
 		},
 		{
 			name:        "or",
 			op:          chplan.VectorSetOr,
-			stepAligned: "OVER (PARTITION BY `Attributes`, `TimeUnix`)",
-			labelOnly:   "OVER (PARTITION BY `Attributes`)",
+			stepAligned: "OVER (PARTITION BY mapSort(`Attributes`), `TimeUnix`)",
+			labelOnly:   "OVER (PARTITION BY mapSort(`Attributes`))",
 		},
 	}
 

@@ -22,7 +22,7 @@ import (
 //   - group_right is the mirror.
 //   - One-to-one matching on a subset of labels (`on(...)` or
 //     `ignoring(...)`) embeds the runtime "many-to-many matching
-//     not allowed" guard via throwIf(uniqExact(Attributes) > 1, ...)
+//     not allowed" guard via throwIf(uniqExact(mapSort(Attributes)) > 1, ...)
 //     so the cardinality violation surfaces as a CH error rather
 //     than a silent cross-product.
 //   - Default (full-Attributes) matching skips the runtime guard —
@@ -122,7 +122,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if !strings.Contains(sql, "throwIf(uniqExact(`Attributes`) > 1, ?)") {
+		if !strings.Contains(sql, "throwIf(uniqExact(mapSort(`Attributes`)) > 1, ?)") {
 			t.Errorf("expected throwIf-uniqExact guard in SQL; got:\n%s", sql)
 		}
 		const wantMsg = "many-to-many matching not allowed: matching labels must be unique on one side"
@@ -146,7 +146,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if !strings.Contains(sql, "throwIf(uniqExact(`Attributes`) > 1, ?)") {
+		if !strings.Contains(sql, "throwIf(uniqExact(mapSort(`Attributes`)) > 1, ?)") {
 			t.Errorf("expected throwIf-uniqExact guard in SQL; got:\n%s", sql)
 		}
 	})
@@ -194,12 +194,12 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		// aggregation is wrapped in an outer Project that renames
 		// `_join_*` aliases back to canonical names, so the GROUP BY
 		// clause closes with `)) AS L`.
-		if !strings.Contains(sql, "GROUP BY `Attributes`)) AS L") {
+		if !strings.Contains(sql, "GROUP BY mapSort(`Attributes`))) AS L") {
 			t.Errorf("expected left side per-series aggregation; got:\n%s", sql)
 		}
 		// The "one" (right) side aggregates by the matching key with
 		// a uniqueness guard.
-		if !strings.Contains(sql, "throwIf(uniqExact(`Attributes`) > 1, ?)") {
+		if !strings.Contains(sql, "throwIf(uniqExact(mapSort(`Attributes`)) > 1, ?)") {
 			t.Errorf("expected right-side cardinality guard; got:\n%s", sql)
 		}
 	})
@@ -223,7 +223,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		// emits a constant `'' AS _join_MetricName` (joinMetricNameFrag)
 		// instead of reading the operand's MetricName. The per-side outer
 		// Project closes the inner agg's GROUP BY with a second `)`.
-		if !strings.Contains(sql, "GROUP BY `Attributes`)) AS R") {
+		if !strings.Contains(sql, "GROUP BY mapSort(`Attributes`))) AS R") {
 			t.Errorf("expected right side per-series aggregation; got:\n%s", sql)
 		}
 		// Output MetricName is empty (arithmetic V-V drops `__name__`
