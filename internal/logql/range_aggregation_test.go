@@ -431,13 +431,19 @@ func TestLowerVectorAggregationNestedMatrixBucketsOnTimeUnix(t *testing.T) {
 	// bucket on the inner aggregation's TimeUnix column. A regression
 	// that re-instates the bare-RangeWindow check skips the GROUP BY
 	// entirely and the emitter falls through to `emitAggregateNoGroup`
-	// — the test asserts the outer SELECT carries `GROUP BY` referencing
-	// `TimeUnix` and rejects an `anchor_ts`-only bucket reference (the
+	// — the test asserts the outer SELECT buckets on the re-projected
+	// TimeUnix and rejects an `anchor_ts`-only bucket reference (the
 	// inner RangeWindow's bucket is still in scope under that name, but
 	// it's been re-projected by the inner wrap, so the outer aggregate
 	// cannot reach it).
-	if !strings.Contains(sqlStr, "GROUP BY `TimeUnix`") {
-		t.Errorf("emitted SQL missing `GROUP BY `TimeUnix`` (nested matrix bucket lost)\nsql=%s", sqlStr)
+	//
+	// The bucket key is projected as `TimeUnix AS bucket_ts` and GROUP BY
+	// names it by that alias — see chsql.groupKeyFrags.
+	if !strings.Contains(sqlStr, "`TimeUnix` AS `bucket_ts`") {
+		t.Errorf("emitted SQL missing the `TimeUnix AS bucket_ts` bucket projection\nsql=%s", sqlStr)
+	}
+	if !strings.Contains(sqlStr, "GROUP BY `bucket_ts`") {
+		t.Errorf("emitted SQL missing `GROUP BY `bucket_ts`` (nested matrix bucket lost)\nsql=%s", sqlStr)
 	}
 }
 

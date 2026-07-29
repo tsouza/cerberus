@@ -88,12 +88,9 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 	attrExpr := m.Attr
 	sb.Where(Gte(func(b *Builder) { _ = b.Expr(attrExpr) }, InlineLit(int64(2))))
 
-	// GROUP BY <group cols>, bucket.
+	// GROUP BY <group cols>, bucket — see [groupKeyFrags].
 	groupFrags := make([]Frag, 0, len(m.GroupBy)+1)
-	for _, g := range m.GroupBy {
-		expr := g
-		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
-	}
+	groupFrags = append(groupFrags, groupKeyFrags(m.GroupBy, m.GroupByAliases)...)
 	groupFrags = append(groupFrags, Col(bucketAlias))
 	sb.GroupBy(groupFrags...)
 

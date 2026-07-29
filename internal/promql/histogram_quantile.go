@@ -379,6 +379,9 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 			)
 		}
 		phiStr := labels.FormatOpenMetricsFloat(phiLit)
+		// No canonicalisation here: the kernel below already binds
+		// Attributes canonically and mapConcat appends to that, so every
+		// row of one logical series gets the same key order.
 		attrs := &chplan.FuncCall{
 			Name: "mapConcat",
 			Args: []chplan.Expr{
@@ -637,11 +640,16 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 // agg == nil collapses to a single-group aggregation (the user only
 // wrote `rate(...)` with no `sum` wrapper) — still useful because the
 // rate's time window still applies.
+//
+// Every key here reads the raw histogram table column, so this is a
+// series-identity binding site: the whole-Map shapes go through
+// [canonicalGroupKeyExpr]. See its doc for why the histogram paths bind
+// their own keys instead of routing through the selector projection.
 func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr, []string, chplan.Expr) {
 	if agg == nil {
 		// `histogram_quantile(phi, rate(metric[5m]))` — group by series
 		// identity so each series gets its own bucket-rate vector.
-		return []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
 	}
@@ -653,15 +661,15 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 		// Attributes map directly (CH rejects mapFilter with an empty
 		// IN list as a syntax error).
 		if len(agg.Grouping) == 0 {
-			return []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+			return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
 				[]string{"gkey_0"},
 				&chplan.ColumnRef{Name: "gkey_0"}
 		}
 		return []chplan.Expr{
-				&chplan.MapWithoutKeys{
+				canonicalGroupKeyExpr(&chplan.MapWithoutKeys{
 					Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
 					Keys: append([]string(nil), agg.Grouping...),
-				},
+				}, s),
 			},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}

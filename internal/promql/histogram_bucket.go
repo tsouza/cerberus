@@ -194,6 +194,11 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 			},
 		},
 	}
+	// No canonicalisation here: mapConcat appends `le` to whatever the
+	// inner projection produced, and that projection already binds
+	// Attributes canonically, so every row of one logical series gets the
+	// same key order. Sorting again would cost a sort per row and change
+	// nothing.
 	mergedAttrs := &chplan.FuncCall{
 		Name: "mapConcat",
 		Args: []chplan.Expr{
