@@ -330,10 +330,96 @@ func mergeResourceAttributesExpr(s schema.Metrics) chplan.Expr {
 	}
 }
 
+// canonicalAttributesExpr wraps a projected label map in ClickHouse
+// `mapSort`, establishing the invariant every series-identity key in the
+// engine depends on: the Attributes Map is ordered by key.
+//
+// A CH Map compares and groups POSITIONALLY over its (keys, values)
+// arrays, so map('job','api','dc','eu') and map('dc','eu','job','api')
+// are unequal despite carrying the same label set. Divergent key order
+// reaches the store straight from ingestion — the OTel-CH exporter
+// preserves OTLP wire order and never sorts — so two scrapes of one
+// logical series can land under two physical orders. Every downstream
+// consumer that keys on the whole Map (the LWR per-series collapse, a
+// RangeWindow's per-series partition, `without(...)`, `topk`'s
+// PARTITION BY, the vector-join arms) would then see two series where
+// there is one: `count()` doubles, `sum()` adds the same series twice,
+// and a range function sees one sample per partition and returns empty.
+//
+// Canonicalising HERE — at the single projection that binds the
+// Attributes column every selector reads — fixes all of those at once,
+// because they all consume this value rather than the raw table column.
+// The alternative, wrapping each of the ~30 grouping sites, leaves every
+// future operator to remember the rule.
+//
+// mapSort is order-only and idempotent, so it can never merge two
+// genuinely different label sets, and re-wrapping an already-canonical
+// map (the vector-join match keys still wrap defensively) is a no-op.
+func canonicalAttributesExpr(expr chplan.Expr) chplan.Expr {
+	if call, ok := expr.(*chplan.FuncCall); ok && call.Name == canonicalMapFunc {
+		return expr
+	}
+	return &chplan.FuncCall{Name: canonicalMapFunc, Args: []chplan.Expr{expr}}
+}
+
+// canonicalMapFunc is the ClickHouse function that establishes the
+// key-order invariant. Named so [canonicalAttributesExpr] and its own
+// idempotence check cannot drift apart.
+const canonicalMapFunc = "mapSort"
+
+// canonicalGroupKeyExpr applies [canonicalAttributesExpr] to a
+// series-identity GROUP BY / PARTITION BY key that reads the raw
+// Attributes table column.
+//
+// The selector paths never need this: they bind Attributes through one
+// projection ([selectorAttributesExpr]), so canonicalising that
+// projection is enough and every downstream key reads the alias. The
+// HISTOGRAM paths have no such projection — they group straight off the
+// scan — so their identity keys ARE the binding site, and this is where
+// the same wrap gets applied. Because these keys are always aliased back
+// to the Attributes column, everything downstream of them inherits the
+// invariant exactly as the selector paths do.
+//
+// Only whole-Map keys are rewritten. A per-label subscript
+// (`Attributes['job']`, what `by(...)` lowers to) is a scalar String and
+// compares the same under any key order, so wrapping it would cost a
+// sort and buy nothing.
+func canonicalGroupKeyExpr(key chplan.Expr, s schema.Metrics) chplan.Expr {
+	switch v := key.(type) {
+	case *chplan.ColumnRef:
+		if isBareAttributesRef(v, s) {
+			return canonicalAttributesExpr(v)
+		}
+	case *chplan.MapWithoutKeys:
+		// `without(...)` filters keys out of the Map but preserves the
+		// order it was handed, so it inherits whatever order the raw
+		// column had. Canonicalise the map it reads.
+		return &chplan.MapWithoutKeys{
+			Map:  canonicalGroupKeyExpr(v.Map, s),
+			Keys: v.Keys,
+		}
+	}
+	return key
+}
+
+// canonicalGroupKeyExprs is [canonicalGroupKeyExpr] over a key list.
+func canonicalGroupKeyExprs(keys []chplan.Expr, s schema.Metrics) []chplan.Expr {
+	if keys == nil {
+		return nil
+	}
+	out := make([]chplan.Expr, len(keys))
+	for i, k := range keys {
+		out[i] = canonicalGroupKeyExpr(k, s)
+	}
+	return out
+}
+
 // isBareAttributesRef reports whether expr is exactly the bare Attributes
 // ColumnRef — used to skip the selector Project (and the matching pred
-// sink) when the resource merge is a no-op (no ResourceAttributesColumn)
-// and there is no outer-by overlay, keeping legacy fixtures byte-identical.
+// sink) when the projection would be an identity map. Since
+// [canonicalAttributesExpr] wraps every merged read-path map, this is now
+// true only in catalog mode and when the arms already pre-merged (and so
+// already canonicalised) the column.
 func isBareAttributesRef(expr chplan.Expr, s schema.Metrics) bool {
 	ref, ok := expr.(*chplan.ColumnRef)
 	return ok && ref.Name == s.AttributesColumn && ref.Qualifier == ""

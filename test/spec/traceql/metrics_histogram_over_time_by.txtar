@@ -1,12 +1,11 @@
 -- query.traceql --
 {} | histogram_over_time(duration) by (resource.service.name)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, pow(2, ceil(log2(toFloat64(`Duration`)))) / 1000000000 AS `__bucket`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) WHERE `Duration` >= 2 GROUP BY `ResourceAttributes`[?], `__bucket`
+SELECT `ResourceAttributes`[?] AS `service.name`, pow(2, ceil(log2(toFloat64(`Duration`)))) / 1000000000 AS `__bucket`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) WHERE `Duration` >= 2 GROUP BY `service.name`, `__bucket`
 -- args --
 [0] string = "service.name"
 [1] int64 = 1
 [2] bool = true
-[3] string = "service.name"
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),

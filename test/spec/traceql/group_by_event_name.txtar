@@ -12,4 +12,4 @@ Aggregate groupBy=[Events.Name AS GroupKey] funcs=[any(TraceId) AS TraceId, any(
   Filter predicate=true
     Scan(otel_traces)
 -- sql --
-SELECT `Events.Name` AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `Events.Name`
+SELECT `Events.Name` AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `GroupKey`

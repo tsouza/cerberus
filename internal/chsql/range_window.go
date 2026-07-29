@@ -63,13 +63,17 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 	// outer SELECT-list can pluck the values regardless of whether
 	// the source GroupByAliases was set.
 	multiGroupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	// The aliases the SELECT list actually projects — and therefore the
+	// names GROUP BY refers to below.
+	selectedAliases := m.GroupByAliases
+	if multi {
+		selectedAliases = multiGroupAliases
+	}
 	for i, g := range m.GroupBy {
 		expr := g
 		var alias string
-		if multi {
-			alias = multiGroupAliases[i]
-		} else if i < len(m.GroupByAliases) {
-			alias = m.GroupByAliases[i]
+		if i < len(selectedAliases) {
+			alias = selectedAliases[i]
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
@@ -84,13 +88,8 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		sb.Select(aggFuncFrag(af))
 	}
 	// An empty GroupBy appends no keys (GroupBy is a no-op on an empty
-	// slice), so no length guard is needed.
-	groupFrags := make([]Frag, 0, len(m.GroupBy))
-	for _, g := range m.GroupBy {
-		expr := g
-		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
-	}
-	sb.GroupBy(groupFrags...)
+	// slice), so no length guard is needed. See [groupKeyFrags].
+	sb.GroupBy(groupKeyFrags(m.GroupBy, selectedAliases)...)
 
 	if !multi {
 		e.emitSelect(sb)
@@ -1990,6 +1989,38 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 			continue
 		}
 		out = append(out, "g"+strconv.Itoa(i))
+	}
+	return out
+}
+
+// groupKeyFrags renders the GROUP BY key list for a SELECT that projects
+// its group-by columns as `<expr> AS <alias>`.
+//
+// A key is named by its ALIAS whenever it has one; only an un-aliased key
+// falls back to re-rendering the expression. ClickHouse resolves an
+// identifier inside GROUP BY against the SELECT aliases before the FROM
+// columns, so re-rendering an expression whose alias SHADOWS a column the
+// expression reads silently resolves to something else:
+//
+//	SELECT mapSort(Attributes) AS Attributes, argMax(…)
+//	FROM (…) GROUP BY mapSort(Attributes)
+//
+// groups by `mapSort(mapSort(Attributes))`, which no longer matches the
+// SELECT expression and fails with NOT_AN_AGGREGATE. Naming the alias is
+// unambiguous — it denotes exactly the projected expression — and renders
+// byte-identically for the common `<col> AS <col>` key.
+func groupKeyFrags(groupBy []chplan.Expr, aliases []string) []Frag {
+	if len(groupBy) == 0 {
+		return nil
+	}
+	out := make([]Frag, 0, len(groupBy))
+	for i, g := range groupBy {
+		if i < len(aliases) && aliases[i] != "" {
+			out = append(out, Col(aliases[i]))
+			continue
+		}
+		expr := g
+		out = append(out, func(b *Builder) { _ = b.Expr(expr) })
 	}
 	return out
 }

@@ -520,14 +520,9 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 		sb.Select(aggFuncFrag(af))
 	}
 
-	// GROUP BY mirrors the SELECT-list group-by expressions (without
-	// aliases — CH groups by the underlying expression, not the alias).
-	groupFrags := make([]Frag, 0, len(a.GroupBy))
-	for _, g := range a.GroupBy {
-		expr := g
-		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
-	}
-	sb.GroupBy(groupFrags...)
+	// GROUP BY mirrors the SELECT-list group-by keys — see [groupKeyFrags]
+	// for why an aliased key is named by its alias.
+	sb.GroupBy(groupKeyFrags(a.GroupBy, a.GroupByAliases)...)
 	e.emitSelect(sb)
 	return nil
 }

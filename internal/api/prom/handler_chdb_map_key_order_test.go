@@ -80,12 +80,20 @@ INSERT INTO otel_metrics_gauge VALUES
 		aAttrs1, ts, aVal, aAttrs2, ts, aVal, bAttrs, ts, bVal)
 }
 
-// runMapKeyOrderInstant drives the real `/api/v1/query` handler and
-// decodes the vector result.
+// runMapKeyOrderInstant drives the real `/api/v1/query` handler at the
+// seeded sample's instant and decodes the vector result.
 func runMapKeyOrderInstant(t *testing.T, baseURL, query string) []prom.VectorSample {
 	t.Helper()
+	return runMapKeyOrderInstantAt(t, baseURL, query, mapKeyOrderSeedTime)
+}
+
+// runMapKeyOrderInstantAt is [runMapKeyOrderInstant] with an explicit
+// evaluation instant, for seeds whose samples are not all at
+// mapKeyOrderSeedTime.
+func runMapKeyOrderInstantAt(t *testing.T, baseURL, query string, at time.Time) []prom.VectorSample {
+	t.Helper()
 	reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
-		baseURL, url.QueryEscape(query), mapKeyOrderSeedTime.Unix())
+		baseURL, url.QueryEscape(query), at.Unix())
 	resp, err := http.Get(reqURL)
 	if err != nil {
 		t.Fatalf("GET %s: %v", reqURL, err)
