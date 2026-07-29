@@ -4,7 +4,7 @@
 //
 // release.yml has no `pull_request:` trigger, so without this suite every edit
 // to the smoke would be unverified until a release is cut. The cases below pin
-// the four ways the smoke could go hollow:
+// the ways the smoke could go hollow:
 //
 //   1. a stale/never-pushed cask reported as fine (the goreleaser
 //      `homebrew_casks:` regression the whole job exists to catch);
@@ -12,7 +12,9 @@
 //      workflow clothing, which would wave through a `skip_upload` regression;
 //   3. an unparseable cask degrading into "couldn't tell, so pass";
 //   4. a maintenance backport silently overwriting the newest line's cask,
-//      which is what v1.12.1 did to v1.13.0's.
+//      which is what v1.12.1 did to v1.13.0's;
+//   5. a missing formula -> cask migration map read as "nothing to migrate",
+//      which is what stranded every existing formula install on 1.13.1.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,6 +26,7 @@ import {
   compareVersions,
   caskPortabilityProblems,
   formulaShadowProblems,
+  tapMigrationProblems,
   tapShadowingFormulaPaths,
   installedArtifactProblems,
   MACOS_ONLY_ARTIFACT_STANZAS,
@@ -251,6 +254,93 @@ test('the shadow scan does not fire on a cask, a doc, or another project', () =>
     ]),
     [],
   );
+});
+
+// --- the formula -> cask migration map --------------------------------------
+// Deleting the formula only decides what a FRESH install gets. These cases pin
+// the half that decides what an EXISTING formula install gets, which every
+// clean-runner install path is structurally blind to.
+
+test('a migration map pointing at this tap is the healthy state', () => {
+  assert.deepEqual(tapMigrationProblems('{"cerberus": "tsouza/tap"}'), []);
+});
+
+test('a fully-qualified migration target is NOT accepted as a spelling variant', () => {
+  // It reads as a different instruction, not a longer one. Homebrew splits the
+  // target on `/`: the two-part form has no name component and installs
+  // `<tap>/cerberus`, while the three-part form keeps only the trailing name and
+  // installs the bare token `cerberus`, resolved against whichever tap answers.
+  // Accepting both would bless a target whose behaviour was never verified.
+  assert.equal(tapMigrationProblems('{"cerberus": "tsouza/tap/cerberus"}').length, 1);
+});
+
+test('unrelated entries alongside the cerberus one are fine', () => {
+  // The map is shared by every project in the tap. Asserting on the whole file
+  // rather than the one key would fail the moment a second project migrates.
+  assert.deepEqual(
+    tapMigrationProblems('{"other-tool": "homebrew/core", "cerberus": "tsouza/tap"}'),
+    [],
+  );
+});
+
+test('an absent migration map is the reported failure, not a pass', () => {
+  // This is the bug as it actually shipped: `tap.tap_migrations[name]` returns
+  // nil for a missing file, which Homebrew reads as "this package did not move".
+  // The only signal is the one asserted here.
+  const problems = tapMigrationProblems(null);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /tap_migrations\.json/);
+  assert.match(problems[0], /"cerberus": "tsouza\/tap"/, 'the failure must carry the repair');
+});
+
+test('an undefined map is treated as absent, not as an object', () => {
+  // `tapFile` returns null on 404, but a caller reordering or refactoring that
+  // read could hand over undefined. Falling through to the key lookup would
+  // throw, and a throw here fails the job with a stack trace instead of the
+  // repair instruction.
+  assert.equal(tapMigrationProblems(undefined).length, 1);
+});
+
+test('a malformed migration map fails rather than parsing loosely', () => {
+  const problems = tapMigrationProblems('{"cerberus": "tsouza/tap",}');
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /not valid JSON/);
+});
+
+test('a JSON value that is not a name -> target map fails', () => {
+  // Homebrew indexes the parsed value by package name. An array or a scalar
+  // yields undefined for every name, migrating nobody, so the shape is asserted
+  // rather than inferred from the lookup coming back empty.
+  for (const source of ['[]', '"tsouza/tap"', 'null', '3']) {
+    const problems = tapMigrationProblems(source);
+    assert.equal(problems.length, 1, `${source} should be rejected`);
+    assert.match(problems[0], /not a JSON object/);
+  }
+});
+
+test('a map that exists but omits cerberus fails', () => {
+  // The realistic regression once the tap holds several projects: the file is
+  // present and valid, and the one entry that matters was dropped in an edit.
+  const problems = tapMigrationProblems('{"other-tool": "homebrew/core"}');
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /no "cerberus" entry/);
+  assert.match(problems[0], /other-tool/, 'the failure should show what the map DOES carry');
+});
+
+test('a migration pointed at a different tap fails', () => {
+  // Sends users somewhere cerberus is not published. Homebrew would find no
+  // replacement there and the user is stranded exactly as if the entry were
+  // missing — so "an entry exists" is not the assertion.
+  const problems = tapMigrationProblems('{"cerberus": "homebrew/core"}');
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /homebrew\/core/);
+});
+
+test('the migration target is matched exactly, not by substring', () => {
+  // `tsouza/tap-old` contains `tsouza/tap`. A substring check would accept a
+  // typo that points at a tap which does not exist.
+  assert.equal(tapMigrationProblems('{"cerberus": "tsouza/tap-old"}').length, 1);
+  assert.equal(tapMigrationProblems('{"cerberus": "not-tsouza/tap"}').length, 1);
 });
 
 // --- which artifact the bare ref resolved to --------------------------------
