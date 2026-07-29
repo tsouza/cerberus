@@ -279,7 +279,7 @@ func (x *Executor) Execute(
 		releaseGate:  releaseGate,
 		releaseAdmit: releaseAdmit,
 		chans:        make([]chan chclient.Sample, k),
-		childCursors: make([]chclient.Cursor, k),
+		stop:         make(chan struct{}),
 		interned:     make(map[string]internedSeries),
 	}
 
@@ -312,9 +312,10 @@ const shardChanCap = 4096
 
 // runShard is one producer goroutine. It derives its own progress ctx (one
 // recorder per ctx key — sharing would corrupt the rows/bytes histograms),
-// opens a cursor, drains it into out, and closes the cursor. It selects on
-// gctx.Done() while sending so it terminates the instant the group is
-// cancelled (provably leak-free under goleak).
+// opens a cursor, drains it into out, and tears the cursor down itself. It
+// selects on BOTH sc.stop (the composer stopped pulling — unwind cleanly) and
+// gctx.Done() (abort) while sending, so it terminates the instant either fires
+// (provably leak-free under goleak).
 //
 // First-error-wins is enforced by errgroup.WithContext: the first non-nil
 // return cancels gctx; siblings observe gctx.Done() and exit with the
@@ -351,8 +352,16 @@ func (sc *shardCursor) runShard(
 		pctx = chclient.WithQuerySetting(pctx, "max_memory_usage", perShardMemoryBytes)
 	}
 
-	cur, err := sc.client.QueryCursor(pctx, sql, args...)
+	// This shard's own cancel handle. The cursor is opened on qctx and torn
+	// down by THIS goroutine, so chclient.CloseCursor can drain the remaining
+	// rows on a live context and hand the pooled connection back — and can
+	// still bound that drain by cancelling exactly the query it owns, without
+	// aborting any sibling shard.
+	qctx, qcancel := context.WithCancel(pctx)
+
+	cur, err := sc.client.QueryCursor(qctx, sql, args...)
 	if err != nil {
+		qcancel()
 		// Open-time error. If the group is already cancelled, prefer the
 		// cause (a sibling's real error or the timeout) so a racing
 		// induced-cancel never masquerades as this shard's failure and a
@@ -363,14 +372,22 @@ func (sc *shardCursor) runShard(
 		return err
 	}
 
-	// Register the child cursor so Close can tear it down even if this
-	// producer is mid-drain when the group cancels.
-	sc.registerChild(idx, cur)
+	// This producer owns its cursor's teardown, so the close runs on a ctx
+	// that is still live whenever cerberus itself decided to stop. Only an
+	// ABORT (a sibling's error, the wall-clock timeout, the client walking
+	// away, or Close's bounded fallback) reaches here with qctx already dead,
+	// which is the destruction class clickhouse-go owns outright.
+	defer func() { sc.latchCloseErr(chclient.CloseCursor(qctx, cur, qcancel)) }()
 
 	for cur.Next() {
 		s := cur.Sample()
 		select {
 		case out <- s:
+		case <-sc.stop:
+			// The composer stopped pulling deliberately (teardown, or the
+			// composed output-row cap). This is not a failure: return nil and
+			// let the deferred teardown release the connection cleanly.
+			return nil
 		case <-gctx.Done():
 			// Group cancelled (sibling error, timeout, or client gone).
 			// Stop draining and report the cause so the error class is
