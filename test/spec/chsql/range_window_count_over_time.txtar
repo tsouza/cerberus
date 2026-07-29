@@ -1,7 +1,7 @@
 -- args --
 (none)
 -- sql --
-SELECT `Attributes`, toFloat64(count()) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge`) WHERE `TimeUnix` > now64(9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= now64(9) GROUP BY `Attributes`
+SELECT `Attributes`, toFloat64(count()) AS `Value` FROM (SELECT * REPLACE (mapSort(`Attributes`) AS `Attributes`) FROM (SELECT * FROM `otel_metrics_gauge`)) WHERE `TimeUnix` > now64(9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= now64(9) GROUP BY `Attributes`
 -- chplan --
 RangeWindow func=count_over_time range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
   Scan(otel_metrics_gauge)

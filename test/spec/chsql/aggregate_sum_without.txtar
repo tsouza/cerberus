@@ -1,5 +1,5 @@
 -- sql --
-SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`), sum(`Value`) AS `total` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`)
+SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`), sum(`Value`) AS `total` FROM (SELECT * REPLACE (mapSort(`Attributes`) AS `Attributes`) FROM (SELECT * FROM `otel_metrics_gauge`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`)
 -- args --
 [0] string = "instance"
 [1] string = "pod"
