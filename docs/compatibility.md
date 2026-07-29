@@ -311,12 +311,12 @@ aggregate comparison reports green while parity got worse on a real query.
 
 Four verdicts, all fatal:
 
-| verdict          | meaning                                         | how it is resolved                      |
-| ---------------- | ----------------------------------------------- | --------------------------------------- |
-| REGRESSED        | a recorded case now diverges                    | fix the engine                          |
-| VANISHED         | a recorded case did not run at all              | restore it, or move the baseline        |
-| ARRIVED-FAILING  | a case new to the corpus diverges on arrival    | fix the engine                          |
-| UNRECORDED       | a case new to the corpus passes                 | move the baseline so it is gated        |
+| verdict         | meaning                                      | how it is resolved               |
+| --------------- | -------------------------------------------- | -------------------------------- |
+| REGRESSED       | a recorded case now diverges                 | fix the engine                   |
+| VANISHED        | a recorded case did not run at all           | restore it, or move the baseline |
+| ARRIVED-FAILING | a case new to the corpus diverges on arrival | fix the engine                   |
+| UNRECORDED      | a case new to the corpus passes              | move the baseline so it is gated |
 
 `VANISHED` and `UNRECORDED` are loud rather than silent on purpose. A
 divergence must never be retired by deleting or renaming its case, and
