@@ -154,16 +154,33 @@ func (p *Planner) sliceAndDecide(plan chplan.Node, meta RequestMeta, sig signals
 // Cfg.MinAnchorsPerSlice) — no caller trusts a Decision computed at an
 // earlier point in time or against a different plan.
 func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, decision *Decision, k int64, eligible bool) {
-	// (2)-prefix: instant queries are never time-slice routed.
-	// Step == 0 means an instant evaluation; there is no anchor grid. The
-	// analyze pass below derives the cost grid (N/F/D/OuterRange); it has not
-	// run yet here, so the only meaningful scalar is Step (zero on an instant
-	// query). costGrid threads whatever the empty signals carry plus meta.Step.
-	if meta.Step <= 0 {
-		return signals{}, notRouted(ReasonInstant).withGrid(signals{}, meta), 0, false
-	}
-
+	// analyze runs FIRST, before any gate, so every Decision this classifier
+	// returns carries the plan's real cost grid — including the ones that
+	// refuse. The calibration corpus exists to replay routing decisions
+	// offline, and a refusal recorded with a zero grid is unreplayable: it
+	// says "we declined" without saying what we declined. analyze is a pure
+	// signal-gathering walk (it makes no routing decision and mutates no
+	// state), so hoisting it above the gates changes no outcome.
 	sig = p.analyze(plan, meta)
+
+	// (2)-prefix: instant queries are never time-slice routed. Step == 0 means
+	// an instant evaluation: the anchor grid is a single point (N = 1), and
+	// route B's only decomposition is anchor-grid partitioning (slicer.go),
+	// which needs N >= 2 to produce more than one shard. The refusal is
+	// definitional, so it is checked before the correctness gates.
+	//
+	// The grid this stamps is load-bearing for the corpus in two ways. It
+	// records the spine lookback (cumulativeD) that decides whether an instant
+	// query is heavy enough to be worth a different decomposition at all — a
+	// question the zero grid could not even be asked. And it makes GridOf's
+	// silent-miss failure mode (solver.go: a grid carrier not found leaves
+	// step == 0, so a RANGE query is classified instant) visible in the
+	// corpus: a genuine instant query records no anchor grid because its plan
+	// carries none, whereas a missed carrier records reason=instant alongside
+	// a non-zero N/F/OuterRange from the plan itself.
+	if meta.Step <= 0 {
+		return sig, notRouted(ReasonInstant).withGrid(sig, meta), 0, false
+	}
 
 	// (1) Slice-invariance: any unmarked node anywhere → route A.
 	if !sig.allSliceInvariant {
@@ -258,8 +275,10 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 }
 
 // notRouted builds a non-route Decision carrying only the reason. Callers
-// chain .withGrid(sig, meta) to attach the cost-grid readout once analyze
-// has run; the pre-analyze instant guard passes empty signals.
+// chain .withGrid(sig, meta) to attach the cost-grid readout. Every caller
+// inside classify runs after analyze, so no refusal is stamped with an empty
+// grid; Eligible's ModeSingle short-circuit is the one site that returns
+// before classify at all, and it documents its own zero grid.
 func notRouted(reason string) *Decision {
 	return &Decision{Reason: reason}
 }

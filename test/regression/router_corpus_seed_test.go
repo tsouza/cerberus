@@ -14,21 +14,16 @@ import (
 const routerCorpusSeed = "../../internal/routerrules/testdata/seed.jsonl"
 
 // validRouterDecisionReasons is the closed set of decision_reason tokens the
-// production solver actually emits (internal/solver/decision.go Reason* consts).
-// Importing the consts directly means a solver rename surfaces here as a compile
-// break, not a silent seed/production drift.
+// production solver actually emits. It is derived from solver.Reasons rather
+// than re-listed here: a hand-copied list only catches a RENAME (as a compile
+// break) and silently misses an ADDITION, which is how this set drifted a
+// Reason behind the solver once already.
 func validRouterDecisionReasons() map[string]struct{} {
-	return map[string]struct{}{
-		solver.ReasonRouted:         {},
-		solver.ReasonBelowThreshold: {},
-		solver.ReasonNotSliceable:   {},
-		solver.ReasonInstant:        {},
-		solver.ReasonHighD:          {},
-		solver.ReasonNow64:          {},
-		solver.ReasonGridMismatch:   {},
-		solver.ReasonIncommensurate: {},
-		solver.ReasonScalarHeavy:    {},
+	m := make(map[string]struct{}, len(solver.Reasons))
+	for _, r := range solver.Reasons {
+		m[r] = struct{}{}
 	}
+	return m
 }
 
 // TestRouterCorpusSeedUsesRealDecisionReasons pins the routerrules seed corpus
