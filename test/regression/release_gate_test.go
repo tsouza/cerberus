@@ -488,3 +488,50 @@ func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
 			"would then be unexercised between weekly runs", driftScript, selfTestFlag)
 	}
 }
+
+// prepare-release.yml stages a release PR from whatever ref it was dispatched
+// on. Cutting a maintenance patch means dispatching it on
+// release/<major>.<minor>.x — the staging branch is then cut from that
+// checkout, so the base the PR is opened against is the only thing keeping the
+// release on its own line. A literal base sends a maintenance line's entire
+// history at the head line instead, and nothing downstream notices: the PR
+// opens, CI runs, and the mistake is visible only to whoever reads the base.
+const (
+	prepareReleaseWorkflowPath = "../../.github/workflows/prepare-release.yml"
+	prepareReleaseJob          = "prepare"
+
+	// The env var carrying github.ref_name into the step's shell, and the
+	// expression that must feed it.
+	prepareReleaseBaseEnv  = "BASE"
+	prepareReleaseBaseExpr = "${{ github.ref_name }}"
+)
+
+func TestPrepareReleaseOpensThePRAgainstTheDispatchedLine(t *testing.T) {
+	t.Parallel()
+
+	workflow := readFileString(t, prepareReleaseWorkflowPath)
+	job := workflowJobBody(t, workflow, prepareReleaseJob)
+
+	if !strings.Contains(job, prepareReleaseBaseEnv+": "+prepareReleaseBaseExpr) {
+		t.Fatalf("%s job %q does not bind %s to %s. Without it the base is whatever the run: block "+
+			"hardcodes, and a maintenance release staged on release/<line>.x opens against the head "+
+			"line. Body:\n%s",
+			prepareReleaseWorkflowPath, prepareReleaseJob, prepareReleaseBaseEnv, prepareReleaseBaseExpr, job)
+	}
+
+	var create string
+	for _, line := range strings.Split(job, "\n") {
+		if strings.Contains(line, "gh pr create") {
+			create = strings.TrimSpace(line)
+		}
+	}
+	if create == "" {
+		t.Fatalf("%s job %q no longer opens the release PR with `gh pr create`; this pin cannot see "+
+			"which base it targets. Body:\n%s", prepareReleaseWorkflowPath, prepareReleaseJob, job)
+	}
+	if !strings.Contains(create, `--base "$`+prepareReleaseBaseEnv+`"`) {
+		t.Fatalf("%s job %q opens the release PR as %q — the base must be $%s, the dispatched ref, "+
+			"not a fixed branch name",
+			prepareReleaseWorkflowPath, prepareReleaseJob, create, prepareReleaseBaseEnv)
+	}
+}
