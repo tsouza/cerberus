@@ -279,6 +279,20 @@ All boolean knobs accept ` + "`1`/`0`/`true`/`false`" + `, case-insensitive (the
 ` + "`strconv.ParseBool`" + ` vocabulary), via one shared parser - so ` + "`true`" + ` and ` + "`1`" + ` are
 interchangeable for any ` + "`bool`" + `-typed variable below.
 
+All ` + "`duration`" + `-typed knobs share one grammar, via one shared parser: Go
+duration syntax (` + "`300ms`" + `, ` + "`1.5h`" + `, ` + "`2160h`" + `) **plus** the retention units Go has
+no spelling for (` + "`90d`" + `, ` + "`2w`" + `, ` + "`1y`" + `, fixed at 24h / 7d / 365d). Both spellings
+mean the same thing for every variable below, so a retention written ` + "`90d`" + ` and
+one written ` + "`2160h`" + ` are the same value wherever it is set. Calendar months and
+leap-aware years are deliberately absent - they are variable-length and cannot
+round-trip through a fixed duration.
+
+That grammar accepts a leading sign, so the range is stated separately: no
+` + "`duration`" + `-typed variable below accepts a negative value, and startup aborts
+naming the variable if one is set. Where ` + "`0`" + ` is meaningful it is documented per
+knob (usually "leave the underlying default in place"); where it would leave a
+feature switched on but inert, it is rejected too.
+
 Misconfigured values fail fast: an unparseable duration, an out-of-range
 integer, an unknown log level, or a malformed OTLP header list aborts startup
 with a clear error rather than silently downgrading behaviour. Secrets (the

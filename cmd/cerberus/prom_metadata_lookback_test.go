@@ -11,14 +11,16 @@ import (
 )
 
 // promLookbackEnv is the retention an operator states through
-// CERBERUS_PROM_METADATA_LOOKBACK in these tests. Written in hours because
-// the knob parses Go duration syntax; 2160h is 90 days, a realistic
-// day-scale retention that is deliberately unlike every default in play
-// (0 in the config, 14d in the handler fallback) so a value that survives
-// the whole env -> Config -> Handler chain can only have come from here.
-const promLookbackEnv = "2160h"
+// CERBERUS_PROM_METADATA_LOOKBACK in these tests. It is written the way an
+// operator states a retention — 90 days — which also pins that the retention
+// units survive the whole env -> Config -> Handler chain rather than only the
+// loader. The value is deliberately unlike every default in play (0 in the
+// config, 14d in the handler fallback), so a lookback that reaches the handler
+// can only have come from here.
+const promLookbackEnv = "90d"
 
-// promLookbackWant is promLookbackEnv as a duration.
+// promLookbackWant is promLookbackEnv as a duration: d is a fixed 24h, so
+// 90d is exactly 2160h.
 const promLookbackWant = 2160 * time.Hour
 
 // newPromHandlerForTest builds the prom handler exactly as run() does, off a

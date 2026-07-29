@@ -609,6 +609,31 @@ jobs:
           node --test .github/scripts/compose-smoke-matrix.test.mjs
           node --test .github/scripts/dashboard-matrix.test.mjs
 
+      # Committed-artefact discipline. Every other gate asks whether the tree
+      # COMPILES and PASSES; none asks what it CONTAINS, so a build artefact
+      # that gets `git add`-ed by accident survives indefinitely — a compiled
+      # ELF binary and a generated release-PR-body scratch file both did, at
+      # the repository root. Two scans close the class: no tracked blob may be
+      # a compiled binary (detected by CONTENT — executable magic or a NUL
+      # byte in git's own sniff window — never by extension, since the
+      # motivating artefact had none), and the repository root must match an
+      # exhaustive allow-list rather than a "dotfiles are fine" pattern.
+      #
+      # The self-test runs FIRST and proves both scans actually fire: it
+      # builds a throwaway git repo, plants a synthetic ELF blob and a stray
+      # root file, and asserts a non-zero exit naming each — a gate never
+      # shown to fail is indistinguishable from one that does nothing.
+      - name: Self-test the committed-artefact gate
+        run: node --test .github/scripts/repo-hygiene.test.mjs
+      - name: Reject tracked binary artefacts
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: binary
+      - name: Reject unsanctioned repository-root entries
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: root-allowlist
+
       # Same rationale, one lane over: the compat-scores badge publisher only
       # runs on push-to-main, so a break in it would first surface as stale
       # README badges nobody is watching. The test publishes against a real
@@ -616,6 +641,25 @@ jobs:
       # bootstrap and the sibling-badge preservation are pinned on the PR path.
       - name: Assert the compat-scores badge publisher still publishes
         run: node --test .github/scripts/compat-publish-score.test.mjs
+
+      # The parity ratchet is the gate behind the three required
+      # compatibility/* checks, and it only executes after a
+      # docker-compose harness has produced its artefacts — so a hole in
+      # it surfaces as a green required check over a regressed head,
+      # which is precisely the failure a count-only ratchet had. These
+      # tests drive the real script over fixture artefacts in a temp dir
+      # (offline, <1s) and include the negative control: a case regresses
+      # while an unrelated one starts passing, leaving every aggregate
+      # count satisfied, and the gate must still fail.
+      - name: Assert the parity ratchet gates on per-case identity
+        run: node --test .github/scripts/compat-ratchet.test.mjs
+
+      # The baseline updater writes the roster the ratchet gates on, so a
+      # bug in it either burns a CI cycle or records a divergence. The
+      # round-trip case pins that a freshly synced baseline gates green on
+      # the very run it was taken from.
+      - name: Assert the parity baseline updater writes a gateable roster
+        run: node --test .github/scripts/compat-baseline-sync.test.mjs
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no
