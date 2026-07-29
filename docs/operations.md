@@ -1261,7 +1261,7 @@ Stable releases publish a Homebrew cask to the
 can install the single `cerberus` binary with:
 
 ```sh
-brew install tsouza/tap/cerberus
+brew install --cask tsouza/tap/cerberus
 ```
 
 That is also the shortest way to get the `cerberus migrate` CLI onto the
@@ -1320,11 +1320,13 @@ a stale cask that an install would happily consume. A stable release must find
 the cask declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
 (`migrate schema`, `config-docs -check`) work from the installed binary. The
-install runs the bare `brew install tsouza/tap/cerberus` documented above rather
-than `brew install --cask`, because those two are not equivalent when the tap
-serves a same-named formula: Homebrew resolves the bare ref to the FORMULA and
-`--cask` to the cask, so a `--cask` smoke would install one artifact while every
-operator installed the other. goreleaser writes `Casks/cerberus.rb` and deletes
+install runs the *bare* `brew install tsouza/tap/cerberus` rather than the
+`--cask` form operators are given, because the bare ref is the strictly harder
+one to satisfy: the two are not equivalent when a tap serves a same-named
+formula — Homebrew resolves the bare ref to the FORMULA while `--cask` sails
+past it — so proving the bare ref lands on the cask proves the tap is
+unambiguous, which a `--cask` install cannot observe. goreleaser writes
+`Casks/cerberus.rb` and deletes
 nothing, so the tap's whole file listing is additionally scanned for a leftover
 formula — every root Homebrew loads formulae from (`Formula/`,
 `HomebrewFormula/`, the tap root, the first two recursively so a sharded
@@ -1372,22 +1374,6 @@ migration as a one-time event, because the file is a blob in a repository this o
 cannot write: nothing else would notice it being reverted, renamed or hand-edited,
 and no fresh install — which is every install path CI performs — can observe its
 absence.
-
-Operators who already hit this before the map landed are not migrated
-retroactively — the migration fires on the update that *observes* the deletion,
-which for them has already gone by. The repair is three commands:
-
-```sh
-brew uninstall --formula --force cerberus
-brew reinstall --cask tsouza/tap/cerberus
-cerberus --version
-```
-
-`--formula` is not optional: a bare `brew uninstall tsouza/tap/cerberus` resolves
-to the cask and removes the wrong one. And `reinstall` rather than `install`,
-because the cask is typically already registered as installed from the attempt
-that failed to link — `install` reports "the latest version is already installed"
-and never reaches the link step.
 
 The two shapes that write no cask are **not** skipped — each takes the
 opposite assertion. An `rc.*` must have written none, so a cask declaring the

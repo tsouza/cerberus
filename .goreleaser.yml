@@ -40,7 +40,7 @@ archives:
       - CHANGELOG.md
 
 # Homebrew cask published to the tsouza/homebrew-tap tap, so operators can
-# `brew install tsouza/tap/cerberus`. The tap holds ONE cerberus cask, so only
+# `brew install --cask tsouza/tap/cerberus`. The tap holds ONE cerberus cask, so only
 # stable releases on the newest line write it — see skip_upload below. The
 # cross-repo push needs a PAT (the default GITHUB_TOKEN cannot push to another
 # repo); it is supplied by the HOMEBREW_TAP_GITHUB_TOKEN secret in release.yml.
