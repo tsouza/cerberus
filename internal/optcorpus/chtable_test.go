@@ -364,3 +364,50 @@ func TestNewCHTableSink_CreateFailureIsFatal(t *testing.T) {
 		t.Fatal("NewCHTableSink with a refused CREATE: want an error, got nil")
 	}
 }
+
+// TestNewCHTableSink_RejectsRenumberedDeployedColumn pins that construction
+// FAILS when the deployed exit_status column carries every expected member NAME
+// but at different integers.
+//
+// clickhouse-go appends an Enum8 column by VALUE, so such a column rejects every
+// batch with "unknown element N" exactly as a column missing a member does — but
+// a name-only membership check reports it healthy, the sink is built, and the
+// corpus silently stops accepting rows on every reconcile interval forever. The
+// shape is reachable whenever the table is operator-owned (the documented case)
+// or was created by a binary that ordered the ExitStatus iota differently; the
+// widening ALTER cannot repair it either, since ClickHouse refuses a MODIFY that
+// changes an existing member's value.
+func TestNewCHTableSink_RejectsRenumberedDeployedColumn(t *testing.T) {
+	t.Parallel()
+
+	// Same members as exitStatusEnumType, with aborted/error transposed.
+	fe := &fakeExecer{deployedExitType: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
+		"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, 'error' = 6, 'aborted' = 7)"}
+	_, err := NewCHTableSink(context.Background(), fe)
+	if err == nil {
+		t.Fatal("NewCHTableSink over a renumbered exit_status column: want an error, got nil")
+	}
+	for _, member := range []string{ExitAborted.String(), ExitError.String()} {
+		if !strings.Contains(err.Error(), member) {
+			t.Errorf("error %q does not name the misnumbered member %q", err, member)
+		}
+	}
+}
+
+// TestEnum8Members_ParsesValues pins that the deployed-type parse carries the
+// integer each member is stored as, not just its name — the half the append
+// path actually keys on.
+func TestEnum8Members_ParsesValues(t *testing.T) {
+	t.Parallel()
+
+	got := enum8Members("Enum8('ok' = 0, 'oom' = 1, 'timeout' = -3)")
+	want := map[string]int64{"ok": 0, "oom": 1, "timeout": -3}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %v; want %v", got, want)
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("member %q parsed as %d; want %d", name, got[name], value)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package optcorpus
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -167,19 +168,23 @@ func verifyExitStatusColumn(ctx context.Context, conn CHConn, widenErr error) er
 	}
 
 	have := enum8Members(deployed)
-	var missing []string
+	var problems []string
 	for _, s := range exitStatuses {
-		if _, ok := have[s.String()]; !ok {
-			missing = append(missing, s.String())
+		got, ok := have[s.String()]
+		switch {
+		case !ok:
+			problems = append(problems, fmt.Sprintf("%s absent", s.String()))
+		case got != int64(s):
+			problems = append(problems, fmt.Sprintf("%s deployed as %d, this binary writes %d", s.String(), got, int64(s)))
 		}
 	}
-	if len(missing) > 0 {
+	if len(problems) > 0 {
 		if widenErr != nil {
-			return fmt.Errorf("optcorpus: deployed %s.%s type %q missing member(s) %s; widening it failed: %w",
-				CorpusTableName, exitStatusColumn, deployed, strings.Join(missing, ", "), widenErr)
+			return fmt.Errorf("optcorpus: deployed %s.%s type %q cannot hold what this binary writes (%s); widening it failed: %w",
+				CorpusTableName, exitStatusColumn, deployed, strings.Join(problems, "; "), widenErr)
 		}
-		return fmt.Errorf("optcorpus: deployed %s.%s type %q missing member(s) %s",
-			CorpusTableName, exitStatusColumn, deployed, strings.Join(missing, ", "))
+		return fmt.Errorf("optcorpus: deployed %s.%s type %q cannot hold what this binary writes (%s)",
+			CorpusTableName, exitStatusColumn, deployed, strings.Join(problems, "; "))
 	}
 	return nil
 }
@@ -199,17 +204,24 @@ func corpusExitStatusTypeQuery() (string, []any) {
 		Build()
 }
 
-// enum8Members extracts the member names from a rendered ClickHouse Enum8 type
-// such as `Enum8('ok' = 0, 'oom' = 1)`. Names are the single-quoted runs, with
-// ClickHouse's backslash escaping honoured so a name containing a quote is not
-// read as two members. The numeric values are deliberately ignored: a member
-// present under a different value is caught by the round-trip assertions on
-// exitEnumValue, whereas an ABSENT member is what wedges a batch.
-func enum8Members(chType string) map[string]struct{} {
-	members := map[string]struct{}{}
+// enum8Members extracts the name→value pairs from a rendered ClickHouse Enum8
+// type such as `Enum8('ok' = 0, 'oom' = 1)`. Names are the single-quoted runs,
+// with ClickHouse's backslash escaping honoured so a name containing a quote is
+// not read as two members.
+//
+// The VALUE is part of the contract, not decoration: clickhouse-go appends an
+// Enum8 column by integer, so a column that carries every expected name at
+// different integers rejects every batch just as surely as one missing a name —
+// and a name-only check would report that column healthy. A member whose value
+// cannot be read is omitted rather than guessed; verify's job is to prove the
+// deployed column matches, and an unreadable value is not proof.
+func enum8Members(chType string) map[string]int64 {
+	members := map[string]int64{}
 	var cur strings.Builder
 	inName, escaped := false, false
-	for _, r := range chType {
+	rs := []rune(chType)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
 		switch {
 		case escaped:
 			cur.WriteRune(r)
@@ -218,7 +230,10 @@ func enum8Members(chType string) map[string]struct{} {
 			escaped = true
 		case r == '\'':
 			if inName {
-				members[cur.String()] = struct{}{}
+				if v, n, ok := parseEnum8Value(rs[i+1:]); ok {
+					members[cur.String()] = v
+					i += n
+				}
 				cur.Reset()
 			}
 			inName = !inName
@@ -227,6 +242,40 @@ func enum8Members(chType string) map[string]struct{} {
 		}
 	}
 	return members
+}
+
+// parseEnum8Value reads the `= <int>` that follows a member name in a rendered
+// Enum8 type, returning the value and how many runes it consumed past the
+// closing quote. Reports false when the assignment is absent or unparseable.
+func parseEnum8Value(rs []rune) (int64, int, bool) {
+	i := 0
+	skipSpace := func() {
+		for i < len(rs) && (rs[i] == ' ' || rs[i] == '\t') {
+			i++
+		}
+	}
+	skipSpace()
+	if i >= len(rs) || rs[i] != '=' {
+		return 0, 0, false
+	}
+	i++
+	skipSpace()
+	start := i
+	if i < len(rs) && (rs[i] == '-' || rs[i] == '+') {
+		i++
+	}
+	digits := i
+	for i < len(rs) && rs[i] >= '0' && rs[i] <= '9' {
+		i++
+	}
+	if i == digits {
+		return 0, 0, false
+	}
+	v, err := strconv.ParseInt(string(rs[start:i]), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return v, i, true
 }
 
 // corpusCreateTableSQL renders the corpus MergeTree DDL via the typed chsql
