@@ -1368,6 +1368,48 @@
     "reason": "routed"
   },
   {
+    "query": "mapkey_order_binop_default_instant",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
+    "query": "mapkey_order_binop_ignoring_instant",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
+    "query": "mapkey_order_label_replace_binop_instant",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
+    "query": "mapkey_order_setop_and_default_instant",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "mapkey_order_setop_and_ignoring_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "mapkey_order_setop_and_on_instant",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "mapkey_order_setop_or_default_range",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "matcher_and_agg_by_service_name",
     "routed": true,
     "k": 8,
