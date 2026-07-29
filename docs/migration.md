@@ -136,6 +136,28 @@ cerberus --version
 ```
 
 Only stable releases publish a cask, so `brew` never hands you a prerelease.
+
+Check the version it printed against the
+[latest release](https://github.com/tsouza/cerberus/releases/latest) before
+going on, rather than checking that it printed one at all. cerberus was served
+as a Homebrew *formula* before it was served as a cask, and a machine that had
+the formula and updated past the changeover keeps running the old binary: `brew`
+declines to link the cask over the formula's, and nothing prints an error. The
+migration verbs are the part of the CLI that has moved most between releases, so
+an old binary here does not fail cleanly — it disagrees with this guide about
+which flags exist. If the version is behind:
+
+```sh
+brew uninstall --formula --force cerberus
+brew reinstall --cask tsouza/tap/cerberus
+cerberus --version
+```
+
+`--formula` is not optional: a bare `brew uninstall cerberus` resolves to the
+cask and removes the wrong one of the two. It is `reinstall` rather than
+`install` for the same reason the upgrade was silent — `install` sees the cask
+already there, reports as much, and never reaches the link step.
+
 If you would rather not use Homebrew, the same binary ships as a
 [release archive](https://github.com/tsouza/cerberus/releases) (linux / darwin ×
 amd64 / arm64, each with a [SLSA](https://slsa.dev) provenance attestation). Or
@@ -151,7 +173,8 @@ is why the rest of this guide assumes a local binary.
 
 **Post-conditions:**
 
-- `cerberus --version` prints a version.
+- `cerberus --version` prints the version you meant to install — not merely
+  *a* version, which a stale binary left behind by an earlier install also does.
 - Nothing anywhere else has changed.
 
 ## Step 2: Get your queries onto disk
