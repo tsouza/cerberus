@@ -142,6 +142,49 @@ func TestFromEnv_SchemaTTL_RejectsNegative(t *testing.T) {
 	}
 }
 
+// TestFromEnv_CHOptCorpusInterval_PositiveWhenEnabled pins the second half of
+// the corpus interval's range: non-negative always, strictly positive once the
+// reconciler is switched on. Reconciler.Run treats a non-positive interval as
+// "park on ctx and reconcile nothing", so an enabled corpus with `0s` would
+// report as enabled and never write a row — a feature that is inert while
+// looking live. When the reconciler is off the value never reaches Run, so `0s`
+// stays acceptable there and the guard does not fire.
+func TestFromEnv_CHOptCorpusInterval_PositiveWhenEnabled(t *testing.T) {
+	const (
+		enabledKey  = "CERBERUS_CH_OPT_CORPUS_ENABLED"
+		intervalKey = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
+	)
+	t.Run("enabled rejects zero", func(t *testing.T) {
+		t.Setenv(enabledKey, "true")
+		t.Setenv(intervalKey, "0s")
+		_, err := FromEnv()
+		if err == nil {
+			t.Fatalf("FromEnv accepted %s=0s with %s=true; want a range error", intervalKey, enabledKey)
+		}
+		if !strings.Contains(err.Error(), intervalKey) {
+			t.Errorf("error %q does not name %s", err, intervalKey)
+		}
+	})
+	t.Run("enabled accepts positive", func(t *testing.T) {
+		t.Setenv(enabledKey, "true")
+		t.Setenv(intervalKey, "30s")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if got := cfg.CHOptCorpus.Interval; got != 30*time.Second {
+			t.Errorf("Interval = %s; want 30s", got)
+		}
+	})
+	t.Run("disabled leaves zero inert", func(t *testing.T) {
+		t.Setenv(enabledKey, "false")
+		t.Setenv(intervalKey, "0s")
+		if _, err := FromEnv(); err != nil {
+			t.Fatalf("FromEnv rejected an inert %s=0s: %v", intervalKey, err)
+		}
+	})
+}
+
 // TestFromEnv_AutoCreateDatabase_InheritsSchema pins that
 // CERBERUS_AUTO_CREATE_DATABASE defaults to CERBERUS_AUTO_CREATE_SCHEMA's
 // value when unset, and that an explicit value overrides it.

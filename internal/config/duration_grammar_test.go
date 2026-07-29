@@ -60,6 +60,48 @@ func TestDurationKnobs_ShareOneGrammar(t *testing.T) {
 	}
 }
 
+// TestDurationKnobs_RejectNegative is the RANGE half of the class gate, and
+// the reason the grammar half is safe to widen. Merging the two grammars means
+// every duration knob now inherits Go duration syntax's sign, so `-1h` reaches
+// the loader as a well-formed value on all of them — including the four that
+// previously got their sign rejection for free from the retention regex. No
+// knob on this surface has a meaning below zero (they are timeouts, intervals,
+// lifetimes, retentions and lookbacks), so the invariant is flat: a negative
+// duration is a configuration error on every one of them, stated at the call
+// site rather than inherited from a parser.
+//
+// Driving it off envDocs is what makes it a class gate instead of a checklist:
+// a duration knob added later is covered the moment it is documented, and one
+// wired to a getter with no range check cannot pass.
+func TestDurationKnobs_RejectNegative(t *testing.T) {
+	const negative = "-1h"
+	// The range check is only reachable because the shared grammar accepts a
+	// sign. Assert that first, so this test cannot pass on a parse error.
+	if _, err := parseDuration(negative); err != nil {
+		t.Fatalf("parseDuration(%q) = %v; the range guards are unreachable", negative, err)
+	}
+	covered := 0
+	for _, d := range envDocs {
+		if d.Type != durationDocType {
+			continue
+		}
+		covered++
+		t.Run(d.Key, func(t *testing.T) {
+			t.Setenv(d.Key, negative)
+			_, err := FromEnv()
+			if err == nil {
+				t.Fatalf("FromEnv accepted %s=%s; want a range error", d.Key, negative)
+			}
+			if !strings.Contains(err.Error(), d.Key) {
+				t.Errorf("error %q does not name %s", err, d.Key)
+			}
+		})
+	}
+	if covered == 0 {
+		t.Fatalf("no EnvDoc carries Type %q — the class gate is inspecting nothing", durationDocType)
+	}
+}
+
 // TestParseDuration_GrammarsAgreeOnSharedUnits pins the property that makes
 // merging the two grammars safe: on the units both halves accept (ms/s/m/h)
 // they resolve a spelling to the SAME duration. If they disagreed anywhere,

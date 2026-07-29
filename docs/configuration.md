@@ -29,6 +29,12 @@ one written `2160h` are the same value wherever it is set. Calendar months and
 leap-aware years are deliberately absent - they are variable-length and cannot
 round-trip through a fixed duration.
 
+That grammar accepts a leading sign, so the range is stated separately: no
+`duration`-typed variable below accepts a negative value, and startup aborts
+naming the variable if one is set. Where `0` is meaningful it is documented per
+knob (usually "leave the underlying default in place"); where it would leave a
+feature switched on but inert, it is rejected too.
+
 Misconfigured values fail fast: an unparseable duration, an out-of-range
 integer, an unknown log level, or a malformed OTLP header list aborts startup
 with a clear error rather than silently downgrading behaviour. Secrets (the

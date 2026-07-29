@@ -765,7 +765,11 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 
-	dial, err := getDuration(v, envCHDialTimeout)
+	// A negative dial timeout is silently discarded downstream (chclient only
+	// honours a positive value and otherwise falls back to its own default),
+	// so it would look configured while doing nothing. `0` keeps meaning
+	// "leave the driver default alone"; below zero has no meaning at all.
+	dial, err := getNonNegativeDuration(v, envCHDialTimeout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1666,8 +1670,13 @@ func newLocalHandler(w io.Writer, cfg LogConfig) slog.Handler {
 // otlpFromEnv parses the CERBERUS_OTLP_* knobs from the viper loader.
 // Empty endpoint is the documented "disabled" state and not an error —
 // the caller installs noop providers in that case.
+//
+// Both durations are non-negative: internal/telemetry passes each to its OTel
+// SDK option only when it is positive, so a negative value would be dropped on
+// the floor and the operator would see the SDK default while believing the knob
+// took. `0` still means "leave the SDK default in place".
 func otlpFromEnv(v *viper.Viper) (OTLPConfig, error) {
-	timeout, err := getDuration(v, envOTLPTimeout)
+	timeout, err := getNonNegativeDuration(v, envOTLPTimeout)
 	if err != nil {
 		return OTLPConfig{}, err
 	}
@@ -1679,7 +1688,7 @@ func otlpFromEnv(v *viper.Viper) (OTLPConfig, error) {
 	if err != nil {
 		return OTLPConfig{}, fmt.Errorf("%s: %w", envOTLPHeaders, err)
 	}
-	exportInterval, err := getDuration(v, envOTLPExportInterval)
+	exportInterval, err := getNonNegativeDuration(v, envOTLPExportInterval)
 	if err != nil {
 		return OTLPConfig{}, err
 	}
@@ -2016,14 +2025,24 @@ func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 // fail fast on a malformed value; the sink path resolves via getString (empty is
 // valid and simply disables the file sink). Extracted from FromEnv so the parses
 // live in one place.
+//
+// The interval is gated the way the keepalive timings are: never negative, and
+// strictly positive once the reconciler is switched on. A non-positive interval
+// makes Reconciler.Run park on ctx and reconcile nothing, so an enabled corpus
+// would report as enabled while producing no rows at all — an inert feature
+// that looks live. When the reconciler is off the value is inert, so `0` is
+// left alone there.
 func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
 	enabled, err := getBool(v, envCHOptCorpusEnabled)
 	if err != nil {
 		return CHOptCorpusConfig{}, err
 	}
-	interval, err := getDuration(v, envCHOptCorpusInterval)
+	interval, err := getNonNegativeDuration(v, envCHOptCorpusInterval)
 	if err != nil {
 		return CHOptCorpusConfig{}, err
+	}
+	if enabled && interval <= 0 {
+		return CHOptCorpusConfig{}, fmt.Errorf("%s: must be > 0 when %s is set, got %s", envCHOptCorpusInterval, envCHOptCorpusEnabled, interval)
 	}
 	ring, err := getInt(v, envCHOptCorpusRing)
 	if err != nil {
