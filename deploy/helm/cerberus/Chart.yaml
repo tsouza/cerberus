@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.13.1
+version: 0.14.0
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.13.1"
+appVersion: "1.14.0"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,29 +45,27 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.13.1
+      image: ghcr.io/tsouza/cerberus:v1.14.0
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: fixed
-      description: "promql: keep the `@` pin in range mode on every range-vector lowering (#1325)"
+      description: "ci: analyse cold in the lint lane so a cache cannot decide the gate (#1363)"
     - kind: fixed
-      description: "prom: bound windowless metadata discovery by real retention (#1327)"
+      description: "ci: publish compat-scores from a scratch worktree, not the checkout (#1361)"
     - kind: fixed
-      description: "ci: make the release gate, image probe and doc claims hold under audit (#1329)"
+      description: "chsql: name the canonical key-order function once, not twice (#1365)"
     - kind: fixed
-      description: "migration: forward the story dispatch input to the tier-2 run (#1328)"
+      description: "chsql: canonicalise raw attribute-Map series keys at the emit chokepoint (#1362)"
     - kind: fixed
-      description: "optimizer: keep AggFunc.Params through a constant fold (#1326)"
+      description: "ci: run the Tier-0 explain goldens on pull requests (#1364)"
     - kind: fixed
-      description: "release: close the three gaps that let a release ship unverified (#1322)"
+      description: "loki: canonicalise Map key order on metadata series-identity keys (#1360)"
     - kind: fixed
-      description: "ci: skip buildable images in the compose pre-pull (#1321)"
+      description: "logql: canonicalise Map key order on stream-identity keys (#1358)"
     - kind: fixed
-      description: "ci: retry every image pull instead of failing the lane (#1319)"
+      description: "chsql: dedupe TraceQL structural unions on span identity (#1357)"
     - kind: fixed
-      description: "release: name the workflow a preflight wait is blocked on (#1318)"
-    - kind: changed
-      description: "chsql: skip the spans-scan emit guard when the SQL never names the spans table (#1330)"
-    - kind: changed
-      description: "release: container images publish as a single multi-arch index; the per-arch -amd64/-arm64 tags are gone (#1320)"
+      description: "promql: canonicalise Map key order on the non-join and histogram paths (#1356)"
+    - kind: fixed
+      description: "audit: unwedge the routed fan-out, harden the enum guard and shutdown ordering (#1353)"
