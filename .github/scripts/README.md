@@ -525,13 +525,20 @@ One implementation means a new rule guards BOTH lanes at once.
   (shields.io renders an `invalid properties` title if it sees cerberus's
   `passed` / `total` / `percent`), bootstraps the orphan branch on first
   run, and retries a rejected push so the three head jobs can race the same
-  branch. The workflow's `if:` gate keeps it to push-to-`main`.
+  branch. The workflow's `if:` gate keeps it to push-to-`main`. All git work
+  happens in a throwaway `git worktree` under `$RUNNER_TEMP` that is torn
+  down on every exit path, so the job's checkout is never switched: later
+  steps and the POST phase of a local composite action such as
+  `./.github/actions/setup-buildx` resolve their files out of it.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SRC` (path to that
-    head's `compat-score.json`).
+    head's `compat-score.json`); `RUNNER_TEMP` (optional; the OS temp dir
+    off-runner) sites the scratch worktree.
   - Exit: `0` published / already current / no score file to publish; `1`
     on a wiring slip, an unreadable score, or every push attempt rejected.
   - Tests: `compat-publish-score.test.mjs` (run in `ci.yml`), which
-    publishes against a real bare-repo remote in a temp dir.
+    publishes against a real bare-repo remote in a temp dir and asserts on
+    every scenario that the checkout came out on its original branch with
+    its files and scratch-worktree count unchanged.
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,

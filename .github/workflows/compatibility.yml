@@ -30,8 +30,11 @@ name: compatibility
 #     long-lived "shields.io endpoint badge" source — README badges hit
 #     a stable raw URL under it. The orphan branch is intentionally NOT
 #     covered by branch-protection rules (covering it would create an
-#     infinite check-rerun loop). First-run bootstrap creates the
-#     orphan branch in-place via `git checkout --orphan compat-scores`.
+#     infinite check-rerun loop). The publish happens in a throwaway
+#     `git worktree` under $RUNNER_TEMP, never in the job's checkout:
+#     later steps and a local composite action's POST phase both read
+#     that checkout, and a job whose tree was left on the orphan branch
+#     fails at teardown with "Can't find 'action.yml'".
 
 on:
   # PR trigger has no `paths:` filter so the three head checks always

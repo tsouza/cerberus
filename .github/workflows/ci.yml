@@ -584,10 +584,13 @@ jobs:
           CHECK: root-allowlist
 
       # Same rationale, one lane over: the compat-scores badge publisher only
-      # runs on push-to-main, so a break in it would first surface as stale
-      # README badges nobody is watching. The test publishes against a real
-      # bare-repo remote in a temp dir — offline, ~1s — so the orphan
-      # bootstrap and the sibling-badge preservation are pinned on the PR path.
+      # runs on push-to-main, so a break in it surfaces either as stale README
+      # badges nobody is watching or — as it did once — as a job that fails
+      # in its POST phase because the publish left the checkout on the orphan
+      # branch. The test publishes against a real bare-repo remote in a temp
+      # dir (offline; ~6s, one real retry backoff), pinning the orphan
+      # bootstrap, the sibling-badge preservation, and the invariant that the
+      # checkout comes out untouched, on the PR path.
       - name: Assert the compat-scores badge publisher still publishes
         run: node --test .github/scripts/compat-publish-score.test.mjs
 
