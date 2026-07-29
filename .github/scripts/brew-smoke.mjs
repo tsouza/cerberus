@@ -33,14 +33,15 @@
 // de-`v`'d release version — `grep -q "$TAG"` can never match (the tag carries
 // the `v`), and `grep -q "${TAG#v}"` passes on any superstring.
 //
-// THE DOCUMENTED COMMAND: the install below is the bare
-// `brew install tsouza/tap/cerberus` that README.md and docs/operations.md give
-// operators, not `brew install --cask …`. The tap can hold BOTH a cask and the
-// Formula/cerberus.rb it served before .goreleaser.yml moved off `brews:` —
-// goreleaser writes its own file and deletes nothing — and Homebrew resolves a
-// bare tap ref to the FORMULA when both exist. Under `--cask` that divergence
-// is invisible: the smoke installs the cask, every operator installs the stale
-// formula, and the release goes green. The tap is also probed directly for a
+// THE HARDER COMMAND: the install below is the bare
+// `brew install tsouza/tap/cerberus`, not the `brew install --cask …` that
+// README.md and docs/operations.md give operators, because the bare ref is the
+// strictly harder one to satisfy. The tap can hold BOTH a cask and a
+// Formula/cerberus.rb — goreleaser writes its own file and deletes nothing —
+// and Homebrew resolves a bare tap ref to the FORMULA when both exist. Under
+// `--cask` that divergence is invisible: the install sails past a shadowing
+// formula, so a smoke that passed would prove nothing about the tap being
+// unambiguous. The tap is also probed directly for a
 // leftover formula, so the failure names its cause instead of surfacing as an
 // unexplained version mismatch.
 //
@@ -166,7 +167,8 @@ const TAP_FORMULA_SHADOW_RE = /^(?:(?:Formula|HomebrewFormula)\/(?:.+\/)?cerberu
 // pattern.
 export const TAP_FORMULA_PATH = 'Formula/cerberus.rb';
 
-// How an operator names the cask: `brew install tsouza/tap/cerberus`.
+// The fully-qualified tap ref an operator names: `brew install --cask
+// tsouza/tap/cerberus`. The smoke installs it bare (see THE HARDER COMMAND).
 export const CASK_REF = 'tsouza/tap/cerberus';
 
 // A STABLE release is exactly `<major>.<minor>.<patch>`. Anything with a
@@ -341,13 +343,13 @@ export function tapShadowingFormulaPaths(paths) {
   return (paths ?? []).filter((p) => TAP_FORMULA_SHADOW_RE.test(String(p)));
 }
 
-// formulaShadowProblems — the tap must serve the cask under the name operators
-// actually type. Homebrew resolves a bare `<tap>/<name>` to a FORMULA when the
-// tap holds both a formula and a cask of that name, warning "Treating … as a
+// formulaShadowProblems — the tap must answer to `cerberus` with exactly one
+// artifact. Homebrew resolves a bare `<tap>/<name>` to a FORMULA when the tap
+// holds both a formula and a cask of that name, warning "Treating … as a
 // formula" and installing it. So a leftover Formula/cerberus.rb does not merely
 // clutter the tap: it takes over `brew install tsouza/tap/cerberus` entirely,
-// pinning every operator to whatever stale version that file declares while the
-// freshly-pushed cask sits beside it, unused.
+// serving whatever stale version that file declares while the freshly-pushed
+// cask sits beside it, unused.
 //
 // This cannot be fixed from cerberus's release run — goreleaser writes
 // Casks/cerberus.rb and has no way to delete a path it does not own — so it is
@@ -471,8 +473,8 @@ export function installedArtifactProblems(caskList, formulaList) {
   if (!names(caskList).has('cerberus')) {
     problems.push(
       `\`brew install ${CASK_REF}\` did not install a CASK named cerberus — \`brew list --cask ` +
-        `--versions\` does not list it. The documented bare ref resolved to something else, so the cask ` +
-        `this release pushed is not what an operator running that command receives.`,
+        `--versions\` does not list it. The bare tap ref resolved to something else, so the cask ` +
+        `this release pushed is not the only artifact answering to that name.`,
     );
   }
   if (names(formulaList).has('cerberus')) {
@@ -729,13 +731,13 @@ async function main() {
   }
   const brewPrefix = prefixRes.stdout.trim();
 
-  // The BARE ref, exactly as README.md / docs/operations.md / docs/migration.md
-  // tell operators to type it. `--cask` was used here previously on the theory
-  // that the disambiguator would make a same-named formula fail loudly; it does
-  // the opposite. When a tap serves both, `--cask` silently resolves to the
-  // cask while the bare name Homebrew gives operators resolves to the FORMULA,
-  // so the smoke would install one artifact and every user the other. Smoking
-  // the documented command is the only way that divergence can be seen.
+  // The BARE ref — deliberately NOT the `--cask` form README.md /
+  // docs/operations.md / docs/migration.md give operators. `--cask` is the
+  // weaker assertion: the disambiguator does not make a same-named formula fail
+  // loudly, it silently resolves past it, so a green `--cask` smoke says nothing
+  // about whether the tap serves exactly one artifact. The bare ref is the one
+  // Homebrew resolves to the FORMULA when both exist, so installing it and then
+  // asserting a CASK arrived is what proves the tap is unambiguous.
   const install = sh('brew', ['install', CASK_REF], { timeout: INSTALL_TIMEOUT_MS });
   if (install.status !== 0) {
     fail(`\`brew install ${CASK_REF}\` failed. ${describe(install)}`);
