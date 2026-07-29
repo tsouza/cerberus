@@ -42,6 +42,26 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/chsql")
 // fallback to it leaves them unaffected.
 var defaultSpansScanTable = schema.DefaultOTelTraces().SpansTable
 
+// attributeMapColumns names every label-Map column the three OTel-CH schemas
+// expose. It is what chplan.CanonicalizeSeriesIdentityKeys resolves a
+// series-identity key against at the emit chokepoint: a key that reads one of
+// these raw, without chplan.CanonicalMapFunc, splits one logical series across
+// the physical Map key orders the store happens to hold.
+//
+// The set is built from the schema DEFAULTS rather than threaded per request,
+// because the chokepoint has no schema in hand and the fixture lane threads no
+// context at all — defaults keep the golden corpus under the gate. A deployment
+// that RENAMES an attribute column is covered by its head's lowering, which is
+// schema-aware; this gate is the defence-in-depth layer behind it.
+var attributeMapColumns = func() chplan.AttributeMapColumns {
+	m, l, t := schema.DefaultOTelMetrics(), schema.DefaultOTelLogs(), schema.DefaultOTelTraces()
+	return chplan.NewAttributeMapColumns(
+		m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn,
+		l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn,
+		t.AttributesColumn, t.ResourceAttributesColumn, t.ScopeAttributesColumn,
+	)
+}()
+
 // GuardEmittedSQL is the single universal partition-pruning backstop every
 // spans-SQL string must pass before it reaches a ClickHouse querier. It scans
 // the final SQL text for a physical otel_traces scan sitting in a scope where
@@ -118,6 +138,13 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 		span.RecordError(err)
 		return "", nil, err
 	}
+	// Establish the Map key-order invariant on every series-identity key at the
+	// same chokepoint. Each head's lowering already establishes it, so this is
+	// an identity rewrite in production; it exists so a plan assembled without
+	// crossing a lowering — a hand-built tree, or a refactor that repoints a
+	// node past the canonicalising projection — cannot emit SQL that splits one
+	// series across two Map key orders.
+	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
 	e := &emitter{spansTable: spansTable, ctxSpansTable: spansTable}
 	if err := e.emitNode(n); err != nil {
 		span.RecordError(err)
