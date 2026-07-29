@@ -131,7 +131,7 @@ reference for the migration commands.
 **Do:**
 
 ```sh
-brew install tsouza/tap/cerberus
+brew install --cask tsouza/tap/cerberus
 cerberus --version
 ```
 
