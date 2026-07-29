@@ -46,9 +46,12 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		return decision, false
 	}
 
-	// "single" classifies but never routes.
+	// "single" classifies but never routes. The reason is routing-disabled,
+	// NOT below-threshold: no threshold was consulted, so this row is not
+	// evidence about where the threshold sits and must not join a population
+	// whose advice is "move the threshold".
 	if p.Cfg.Mode == ModeSingle {
-		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+		return notRouted(ReasonRoutingDisabled).withGrid(sig, meta), false
 	}
 
 	if p.Cfg.Mode == ModeAuto {
@@ -98,12 +101,17 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 // live-edge freshness, or corroboration — the caller applies its own gates
 // for those before dispatching.
 func (p *Planner) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
-	if p.Cfg.Mode == ModeSingle {
-		return notRouted(ReasonBelowThreshold).withGrid(signals{}, meta), false
-	}
+	// classify runs before the mode gate so this seam and Plan's cannot
+	// disagree about the same plan's geometry. Classification is a pure
+	// signal-gathering walk with no side effects, so running it on a
+	// deployment that will refuse anyway costs one tree walk and buys a
+	// corpus row that is honest about what was refused.
 	sig, decision, k, eligible := p.classify(plan, meta)
 	if !eligible {
 		return decision, false
+	}
+	if p.Cfg.Mode == ModeSingle {
+		return notRouted(ReasonRoutingDisabled).withGrid(sig, meta), false
 	}
 	return p.sliceAndDecide(plan, meta, sig, k)
 }
@@ -176,8 +184,15 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	// silent-miss failure mode (solver.go: a grid carrier not found leaves
 	// step == 0, so a RANGE query is classified instant) visible in the
 	// corpus: a genuine instant query records no anchor grid because its plan
-	// carries none, whereas a missed carrier records reason=instant alongside
-	// a non-zero N/F/OuterRange from the plan itself.
+	// carries none, whereas a missed carrier records a non-zero N/F/OuterRange
+	// from the plan itself NEXT TO a zero Step.
+	//
+	// Both conjuncts are needed. reason=instant is also emitted further down
+	// (the sawUnpinnedBound / sawInstantWindow gate), and that one fires on a
+	// genuine RANGE request — non-zero Step, real grid — so reason=instant
+	// beside a populated grid is ordinary, not a missed carrier. It is
+	// reason=instant beside a ZERO Step and a non-zero grid that cannot happen
+	// any other way.
 	if meta.Step <= 0 {
 		return sig, notRouted(ReasonInstant).withGrid(sig, meta), 0, false
 	}
@@ -207,10 +222,10 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	// wall-clock the plan-level now64 scanner never sees (it is minted in the
 	// SQL, not carried as a chplan FuncCall). Only the StepAligned (range-mode)
 	// join step-aligns on the real per-anchor TimestampColumn and is safe to
-	// slice; the instant shape fails closed to route A. Plan's Step<=0 guard
-	// already rejects instant *queries* before analyze, but a !StepAligned join
-	// can appear under a range-mode request, so this guard is both the
-	// load-bearing fail-close AND honest telemetry.
+	// slice; the instant shape fails closed to route A. The Step<=0 gate above
+	// already rejects instant *queries*, but a !StepAligned join can appear
+	// under a range-mode request, so this guard is both the load-bearing
+	// fail-close AND honest telemetry.
 	if sig.sawInstantVectorJoin {
 		return sig, notRouted(ReasonInstantJoin).withGrid(sig, meta), 0, false
 	}

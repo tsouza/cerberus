@@ -5,7 +5,7 @@
 -- DECISION the pure classifier made (internal/solver Planner.Plan) to the
 -- OBSERVED ClickHouse cost it actually paid (read_rows / read_bytes /
 -- query_duration_ms / memory_usage / exit_status). route = 'A' is a single CH
--- query (not routed / below-threshold); route = 'B' is a time-slice sharded
+-- query (any decision_reason other than 'routed'); route = 'B' is a sharded
 -- query (routed). N/F/D are the RAW classifier scalars (n_anchors / fanout /
 -- cumulative_d) recorded for BOTH routes.
 --
