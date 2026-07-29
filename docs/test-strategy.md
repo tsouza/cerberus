@@ -103,7 +103,7 @@ for the rosters themselves and the procedure for moving one.
 | `chaos`                                 | `e2e.yml` (`chaos`)                                  | push + nightly + dispatch           | Info      | k3d live-stack fault injection — resilience contracts under real faults (Layer 13). Phase-1 on push; full set on nightly/dispatch                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `startup-bench`                         | `e2e.yml` (`startup-bench`)                          | push + nightly + dispatch           | Info      | cerberus reaches `/healthz` under 2 s against an inline ClickHouse                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `strict-scan`                           | `strict-scan.yml` (`strict-scan`)                    | PR + push + nightly + dispatch      | Info      | Strict-scan differential (Layer 6e): executes the matrix golden SQL corpus against a real ClickHouse (testcontainers) through the production strict scan, then runs the router-corpus WRITE + READ seams and the optcorpus query_log-predicate + exit_status-enum reconciliation arms; fails on any coercion error chDB hides. Also hosts the real-CH differentials that need a driver + server rather than chDB: TraceQL spans-scan resource bounds, solver memory apportionment, and the connection-teardown pool census (Layer 6f) |
-| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | PR + push + nightly + dispatch      | Required  | gremlins per package (`chplan` / `chsql` / `optimizer` / `promql` / `logql` x4 / `traceql` / `qlcommon`) at the phase efficacy floor. Required on the PR; [de-gated on the publish path](operations.md#de-gated-lanes-on-the-publish-path)                                                                                                                                                                                                                                                                                            |
+| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | PR + push + nightly + dispatch      | Required  | gremlins per package at the phase efficacy floor (table in `.github/scripts/mutation-phases.mjs`). On a PR only the phases whose scope the PR changed; push / nightly / dispatch / `release/*` PRs sweep the full matrix. Required on the PR; [de-gated on the publish path](operations.md#de-gated-lanes-on-the-publish-path)                                                                                                                                                                                                        |
 | `property`                              | `property.yml`                                       | PR + push + nightly + dispatch      | Required  | rapid-driven oracle property tests, PromQL / LogQL / TraceQL (Layer 4 + 6 cross-check)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `coverage`                              | `coverage.yml`                                       | PR + push + nightly + dispatch      | Required  | merged default-tag + chdb-tagged cover profile, per-package summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `migration-tier1`                       | `migration-e2e.yml` (`migration-tier1`)              | push + nightly + dispatch           | Info      | Layer 14 Tier-1 substrate: pinned reference Prometheus / Loki / Tempo + ClickHouse + collector + cerberus, one all-signal fixture seeded into both sides, `migration_tier1`-tagged parity assertions plus the `@tier1` Gherkin scenarios, one compose lifecycle per run                                                                                                                                                                                                                                                               |
@@ -541,38 +541,45 @@ land in the standard test output.
 
 ## Gremlins mutation
 
-Per-package mutation thresholds live in `.gremlins.yaml`; each package
-runs as its own matrix entry in `.github/workflows/mutation.yml`. The
-gate is informational on push-to-main; flipped to required when a
-phase has held the 95% efficacy floor for a stable streak.
+`.gremlins.yaml` carries the floor for an unscoped whole-repo `just
+mutate`; the per-phase table — scope, efficacy floor, worker cap,
+exclude set, and the rationale behind each — lives in
+`.github/scripts/mutation-phases.mjs`, and `.github/workflows/mutation.yml`
+expands it into the `mutate` job's matrix. The rolled-up `mutation`
+context is a required check on `main`.
 
-| Phase                       | Package                  | Efficacy floor |
-| --------------------------- | ------------------------ | -------------- |
-| `phase1`                    | `internal/chplan`        | 95%            |
-| `phase2`                    | `internal/chsql`         | 95%            |
-| `phase3-optimizer`          | `internal/optimizer`     | 95%            |
-| `phase4-promql`             | `internal/promql`        | 95%            |
-| `phase4-logql-lower`        | `internal/logql`         | 95%            |
-| `phase4-logql-aggregation`  | `internal/logql`         | 93%            |
-| `phase4-logql-other-a`      | `internal/logql`         | 95%            |
-| `phase4-logql-other-b`      | `internal/logql`         | 95%            |
-| `phase4-logql-parser`       | `internal/logql/lsyntax` | 95%            |
-| `phase4-logql-lsyntax`      | `internal/logql/lsyntax` | 95%            |
-| `phase4-traceql`            | `internal/traceql`       | 95%            |
-| `phase5-qlcommon`           | `internal/qlcommon`      | 95%            |
+On a pull request the lane runs the phases whose scope that PR changed,
+and only those: a PR editing `internal/chplan` runs `phase1`, a PR
+editing only docs runs no leg and the aggregator passes through
+honestly. Push-to-main, the nightly, a manual dispatch, a `release/*`
+PR, and any PR touching the lane's own harness all sweep the FULL
+matrix, so no phase's floor is ever load-bearing on some PR happening
+to touch its package. `.github/scripts/mutation-matrix.mjs` computes
+that selection from the PR's own diff against its merge base and is
+unit-tested in the `check` job; when the diff cannot be computed it
+falls back to the full matrix rather than to an empty one.
+
+The phase inventory is not restated here. `mutation-phases.mjs` is the
+one place that carries it, and a table duplicated into prose drifts
+silently — this section previously named a `phase4-traceql` leg that
+had already been split in four, and a 93% floor that had already been
+raised back to 95%. Read the module.
 
 `internal/logql` is split into four sibling matrix entries (each scoped
 to `./internal/logql` but with disjoint `--exclude-files` regexes) to
 keep the `go test ./internal/logql` cycle under the ubuntu-latest memory
-ceiling; `phase4-logql-aggregation` sits one point lower at 93% to absorb
-a documented equivalent mutant. Its `internal/logql/lsyntax` parser
+ceiling. Its `internal/logql/lsyntax` parser
 subpackage gets its own pair of dedicated legs (`phase4-logql-parser` /
 `phase4-logql-lsyntax`, mirroring the `internal/traceql/ast` split
 below) rather than being swept into the four `internal/logql` legs —
 gremlins recurses into every subdirectory of a scope, so leaving
 `lsyntax` unexcluded there let a relocated, heavier test file bloat
 every one of those legs' `go test` cycles (2026-07-25 incident). See
-`.github/workflows/mutation.yml` for the per-phase exclude sets.
+`.github/scripts/mutation-phases.mjs` for the per-phase exclude sets.
+Those patterns are handed to Go's regexp, so `mutation-matrix.mjs`
+rejects any that reach for lookaround or a backreference — RE2 has
+neither, and a leg that only discovers this at run time has already
+spent its checkout and toolchain setup.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs
