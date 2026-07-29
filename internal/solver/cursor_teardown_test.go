@@ -128,7 +128,17 @@ func TestShardCursorClose_DrainsChildrenBeforeCancel(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	const shards = 4
-	const rowsPerShard = 5
+
+	// rowsPerShard MUST exceed shardChanCap. Below the channel capacity every
+	// producer completes all of its sends — and therefore runs its own deferred
+	// cursor teardown — before Close() is ever entered, so no producer is parked
+	// on a send at teardown time. That parked state is the only one in which the
+	// stop-before-cancel ordering is observable at all, and it is the only one
+	// that reaches the `case <-sc.stop:` send arm in runShard. Sized under the
+	// cap, these subtests pass against cancel-before-close and against a deleted
+	// stop arm: they assert on a teardown that already happened.
+	const parkedProducerBacklog = 8
+	const rowsPerShard = shardChanCap + parkedProducerBacklog
 
 	t.Run("clean full drain", func(t *testing.T) {
 		rec := newTeardownRecorder()
@@ -237,3 +247,57 @@ func TestShardCursorClose_SiblingError_NoDeadlock(t *testing.T) {
 // complete promptly before declaring it deadlocked. Generous relative to the
 // production drain budget so a loaded CI runner cannot flake it.
 const closeDeadlockBudget = 30 * time.Second
+
+// TestExecute_ShardsExceedingParallelism_DoNotWedge pins the liveness rule that
+// makes a routed fan-out terminate at all: the shard the composer is draining
+// must already hold one of the P_eff admission slots.
+//
+// A producer parks once it has buffered shardChanCap samples and only the
+// composer can unpark it, while the composer cannot start until Execute has
+// returned. With K > P_eff — the default shape, since defaultParallel is 3 and
+// a decision routinely slices into more shards than that — launching the shards
+// inline, or in the reverse of the drain order, left shard 0 waiting behind
+// P_eff already-parked producers that could never finish. The request then
+// yielded a wall-clock timeout instead of its rows, for every routed query
+// whose shards exceed shardChanCap samples.
+//
+// The row count is what makes this real: at or below shardChanCap every
+// producer completes its sends into the buffer and nothing ever parks, so the
+// wedge is invisible.
+func TestExecute_ShardsExceedingParallelism_DoNotWedge(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cfg := testCfg()
+	// K strictly greater than P_eff is the precondition; assert it rather than
+	// assume it, so a change to defaultParallel retunes the test instead of
+	// silently making it vacuous.
+	const shards = defaultParallel + 1
+	if cfg.Parallel >= shards {
+		t.Fatalf("Parallel=%d >= shards=%d: this test needs K > P_eff to exercise "+
+			"admission back-pressure at all", cfg.Parallel, shards)
+	}
+	const rowsPerShard = shardChanCap + 1
+
+	rec := newTeardownRecorder()
+	q := &teardownQuerier{rec: rec, rows: rowsPerShard, openErrAt: -1}
+	x := newExec(q, newFakeEmitter(), cfg, 32, newFakeBreaker(BreakerClosed), nil)
+
+	cur, _, err := x.Execute(context.Background(), "promql", makeDecision(shards), nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	n, derr := drainAll(cur)
+	if derr != nil {
+		t.Fatalf("drain: %v (a wall-clock timeout here means the fan-out wedged: "+
+			"the composer was waiting on a shard that never got an admission slot)", derr)
+	}
+	if want := shards * rowsPerShard; n != want {
+		t.Fatalf("drained %d rows; want %d — every shard must reach the composer", n, want)
+	}
+	if cerr := cur.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+	if got := rec.closedCount(); got != shards {
+		t.Fatalf("closed %d child cursors; want %d", got, shards)
+	}
+}

@@ -287,18 +287,39 @@ func (x *Executor) Execute(
 		sc.chans[i] = make(chan chclient.Sample, shardChanCap)
 	}
 
-	// LAUNCH newest-slice-first (minimizes live-edge snapshot skew);
-	// composition order is oldest-first regardless because the channels
-	// buffer and the shardCursor drains them in index order.
-	for i := k - 1; i >= 0; i-- {
-		shardIdx := i
-		sql := info.SQLs[shardIdx]
-		args := info.ShardArgs[shardIdx]
-		out := sc.chans[shardIdx]
-		g.Go(func() error {
-			return sc.runShard(gctx, langName, shardIdx, sql, args, budget, perShardMemoryBytes, out)
-		})
-	}
+	// LAUNCH in DRAIN order, off this goroutine. Both halves are liveness
+	// requirements, not preferences.
+	//
+	// A producer parks once it has buffered shardChanCap samples, and ONLY the
+	// composer can unpark it. The composer drains oldest-first and cannot run
+	// until Execute has returned. So with K > P_eff (routine: K_eff, and
+	// therefore P_eff, is clamped by the admit top-up and by gate/2):
+	//
+	//   - launching inline blocked Execute on the (P_eff+1)-th g.Go, so the
+	//     composer never started at all; and
+	//   - launching newest-slice-first put shard 0 — the one the composer
+	//     drains first — LAST in the admission queue, behind P_eff shards that
+	//     were already parked and could never finish.
+	//
+	// Either alone wedged the request until the wall-clock timeout, turning any
+	// routed query whose shards exceed shardChanCap rows into a timeout instead
+	// of a result. Draining in launch order makes admission monotone: shard i
+	// drains, finishes, frees its slot, and shard i+P_eff is admitted. The skew
+	// cost of not starting the newest slice first is bounded by the request
+	// timeout and is the correct trade against a hang.
+	sc.launched = make(chan struct{})
+	go func() {
+		defer close(sc.launched)
+		for i := 0; i < k; i++ {
+			shardIdx := i
+			sql := info.SQLs[shardIdx]
+			args := info.ShardArgs[shardIdx]
+			out := sc.chans[shardIdx]
+			g.Go(func() error {
+				return sc.runShard(gctx, langName, shardIdx, sql, args, budget, perShardMemoryBytes, out)
+			})
+		}
+	}()
 
 	return sc, info, nil
 }
