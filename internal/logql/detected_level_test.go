@@ -161,9 +161,10 @@ func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 	}
 
 	// Walk past the RangeWindow → Project → look at the identity
-	// projection's expression. It should be a `map(...)` whose value
-	// for `level` is the multiIf normalisation (a FuncCall named
-	// multiIf), not a MapAccess on ResourceAttributes.
+	// projection's expression. Under the key-order canonicalisation it
+	// should be a `map(...)` whose value for `level` is the multiIf
+	// normalisation (a FuncCall named multiIf), not a MapAccess on
+	// ResourceAttributes.
 	rw, ok := plan.(*chplan.RangeWindow)
 	if !ok {
 		t.Fatalf("lower top is %T; want *chplan.RangeWindow", plan)
@@ -175,9 +176,10 @@ func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 	if len(proj.Projections) == 0 {
 		t.Fatalf("Project has no projections")
 	}
-	mapCall, ok := proj.Projections[0].Expr.(*chplan.FuncCall)
+	identity := requireCanonicalIdentity(t, proj.Projections[0].Expr)
+	mapCall, ok := identity.(*chplan.FuncCall)
 	if !ok || mapCall.Name != "map" {
-		t.Fatalf("identity projection = %v; want FuncCall(map, ...)", proj.Projections[0].Expr)
+		t.Fatalf("identity projection = %v; want FuncCall(map, ...)", identity)
 	}
 	// args = ["level", <levelExpr>] for `by (level)`.
 	if got, want := len(mapCall.Args), 2; got != want {
