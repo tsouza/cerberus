@@ -39,7 +39,11 @@ func CloneNode(n Node) Node {
 		c.Input = CloneNode(v.Input)
 		return &c
 	case *Project:
-		return &Project{Input: CloneNode(v.Input), Projections: cloneProjections(v.Projections)}
+		return &Project{
+			Input:        CloneNode(v.Input),
+			Projections:  cloneProjections(v.Projections),
+			Replacements: cloneProjections(v.Replacements),
+		}
 	case *Aggregate:
 		return &Aggregate{
 			Input:              CloneNode(v.Input),

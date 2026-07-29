@@ -85,7 +85,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			}
 		}
 		if len(parts) == 0 {
-			fmt.Fprintf(b, "%sProject *\n", indent)
+			reps := make([]string, len(v.Replacements))
+			for i, p := range v.Replacements {
+				reps[i] = fmt.Sprintf("%s AS %s", printExpr(p.Expr), p.Alias)
+			}
+			if len(reps) == 0 {
+				fmt.Fprintf(b, "%sProject *\n", indent)
+			} else {
+				fmt.Fprintf(b, "%sProject * REPLACE [%s]\n", indent, strings.Join(reps, ", "))
+			}
 		} else {
 			fmt.Fprintf(b, "%sProject [%s]\n", indent, strings.Join(parts, ", "))
 		}

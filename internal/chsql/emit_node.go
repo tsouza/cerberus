@@ -463,6 +463,17 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 		expr := pr.Expr
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias)
 	}
+	if len(p.Projections) == 0 && len(p.Replacements) > 0 {
+		reps := make([]Frag, 0, len(p.Replacements))
+		for _, pr := range p.Replacements {
+			if err := (&Builder{}).Expr(pr.Expr); err != nil {
+				return err
+			}
+			expr := pr.Expr
+			reps = append(reps, As(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias))
+		}
+		sb.Select(StarReplace(reps))
+	}
 	e.emitSelect(sb)
 	return nil
 }
