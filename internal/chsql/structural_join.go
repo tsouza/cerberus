@@ -692,10 +692,11 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		return nil
 	case j.Op.IsUnion():
 		// Union recursive: emit two closure-keyed INNER-JOIN arms —
-		// one projecting R.*, one L.* — and dedup with UNION
-		// DISTINCT. The L arm pulls back to the L subquery via a
-		// second join on the closure so multi-level matches are
-		// recovered, mirroring the positive recursive shape.
+		// one projecting R.*, one L.* — glued by UNION ALL and
+		// deduped by identity with LIMIT 1 BY. The L arm pulls back
+		// to the L subquery via a second join on the closure so
+		// multi-level matches are recovered, mirroring the positive
+		// recursive shape.
 		rightArm := NewQuery().
 			Select(rightProj...).
 			From(aliasedFrag(closure.Frag(), "L")).
