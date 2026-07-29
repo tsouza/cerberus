@@ -46,6 +46,35 @@ One implementation means a new rule guards BOTH lanes at once.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+- **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
+  gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
+  what it CONTAINS, so a build artefact that is `git add`-ed by accident
+  survives indefinitely. Two scans close that class. `binary` rejects any
+  tracked blob that is compiled output, detected by CONTENT — an executable
+  magic (ELF / Mach-O / PE / WebAssembly / ar archive) at offset 0, or a NUL
+  byte inside the same leading window git itself sniffs when it classifies a
+  blob as binary — and never by extension, since a Go binary built from
+  `./cmd/<name>` carries none. Submodule gitlinks and symlinks are skipped
+  (neither stores content in this repository). `root-allowlist` holds the
+  repository root to `ROOT_ALLOWLIST`, an exhaustive list rather than a
+  pattern: dotfiles are enumerated too, so a stray `.perf-profile` is caught
+  exactly like a stray `perf-profile`. The comparison runs in BOTH directions
+  — an allow-list entry that is no longer tracked is also an error, so the
+  list cannot rot into a pre-approval for a future file of the same name. The
+  gate fails CLOSED: a tracked blob that cannot be read from the working tree
+  is retried out of the object store and, failing that, exits non-zero rather
+  than being assumed to be text. Since `git ls-files` is the input, the
+  companion fix for anything this catches is a `git rm` PLUS a `.gitignore`
+  rule — the ignore rule is what stops it coming back.
+  `repo-hygiene.test.mjs` is the `node --test` guard (cheap discipline lane,
+  run as the step BEFORE the gate): it builds a throwaway git repo, plants a
+  synthetic ELF blob and a stray root file, and asserts a non-zero exit
+  naming each, plus a clean exit on a conforming fixture — a gate never shown
+  to fail is indistinguishable from one that does nothing.
+  - Env: `CHECK` is one of `binary`, `root-allowlist`; `REPO_ROOT` (optional)
+    points the scan at another checkout (the self-test's fixture repo).
+  - Exit: `0` clean, `1` on any tracked binary / unsanctioned or rotted root
+    entry / unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
