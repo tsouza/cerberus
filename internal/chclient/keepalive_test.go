@@ -27,7 +27,7 @@ func TestNew_KeepAliveEnabled_BuildsDialer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	assertDialerConnects(t, dialContext(5*time.Second, cfg))
+	assertDialerConnects(t, dialContext(5*time.Second, cfg, connTelemetry()))
 }
 
 // TestNew_KeepAliveDisabled_StillDials asserts that with keepalive OFF New
@@ -42,7 +42,7 @@ func TestNew_KeepAliveDisabled_StillDials(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	assertDialerConnects(t, dialContext(5*time.Second, cfg))
+	assertDialerConnects(t, dialContext(5*time.Second, cfg, connTelemetry()))
 }
 
 // TestNew_ZeroConfig_Succeeds pins the bare-Config zero-value convention: a
