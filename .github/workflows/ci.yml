@@ -166,6 +166,19 @@ jobs:
           version: v2.12.2
           # Honours .golangci.yml; runs across the whole module.
           args: ./...
+          # Analyse cold. The action's analysis cache is a shared GitHub
+          # Actions entry, and those entries are immutable: once a key holds
+          # a partially-written cache, every later run that hits that key
+          # reuses it, and lint's verdict becomes a function of cache state
+          # rather than of the code. That is unsound in both directions — it
+          # can invent findings in files a PR never touched (staticcheck
+          # without its cross-package facts stops knowing t.Fatalf is
+          # terminating and reports SA5011 nil-derefs on correct code), and
+          # it can drop real ones just as silently. A required check has to
+          # be reproducible from the source alone. setup-go's module/build
+          # cache above stays on: Go's build cache is content-addressed, so
+          # a bad entry fails verification instead of being trusted.
+          skip-cache: true
 
       # The Tier-0 migration runner is `migration`-tagged, so neither the
       # test job nor golangci-lint (which sets no build-tags) compiles it —
