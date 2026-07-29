@@ -454,14 +454,21 @@ func setOpMatchKeyFrags(m chplan.VectorMatch, attrsCol, tsCol string, stepAligne
 	return keys
 }
 
-// canonicalMatchKeyFrag wraps a Map-valued match key in mapSort.
+// canonicalMatchKeyFrag wraps a Map-valued match key in the canonical
+// key-order function.
 //
 // A CH Map compares and groups positionally over its (keys, values)
 // arrays, so two logically identical label sets stored in different key
-// orders are unequal; mapSort makes the key compare by label set. It is
+// orders are unequal; the wrap makes the key compare by label set. It is
 // order-only and idempotent, so it can never merge two genuinely
 // different label sets.
-func canonicalMatchKeyFrag(key Frag) Frag { return Call("mapSort", key) }
+//
+// The function is named by [chplan.CanonicalMapFunc] rather than spelled
+// here: the plan IR ([chplan.CanonicalAttributesExpr]) and the Loki
+// metadata Frags read the same constant, and its idempotence check
+// matches on that name. A literal here would let this site drift onto a
+// different function while the IR kept believing the map was canonical.
+func canonicalMatchKeyFrag(key Frag) Frag { return Call(chplan.CanonicalMapFunc, key) }
 
 // matchKeyGroupExprFrag returns a Frag for the GROUP BY expression
 // that collapses rows onto a single matching key. For default matching
