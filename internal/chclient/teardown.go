@@ -129,8 +129,11 @@ func closeCursorWith(ctx context.Context, cur Cursor, cancel context.CancelFunc,
 		case cancelledOnEntry || cancelledDuringDrain:
 			record(teardownCancelled)
 		default:
-			// The driver reached its own terminal state while the context
-			// was live, so release(conn, nil) put the connection back.
+			// Close returned inside the budget on a live context, so teardown
+			// ran on cerberus's terms rather than being aborted. That is the
+			// whole claim: it does NOT assert the driver reached EndOfStream,
+			// because an early Close on a partially-read cursor lands here too
+			// and the driver destroys that socket instead of pooling it.
 			record(teardownDrained)
 		}
 		return err
