@@ -637,6 +637,24 @@ jobs:
           node --test .github/scripts/compose-smoke-matrix.test.mjs
           node --test .github/scripts/dashboard-matrix.test.mjs
 
+      # The compose lane's scope gate, same discipline one level up: it decides
+      # whether an ordinary PR boots the stack at all, and a wrong `false` is
+      # invisible — a clean short-circuit and a real one look identical from the
+      # outside. The tests pin the in/out decisions exactly and assert every
+      # declared path still resolves, so a rename cannot quietly retire the gate.
+      - name: Assert the compose-smoke scope gate decides correctly
+        run: node --test .github/scripts/compose-smoke-scope.test.mjs
+
+      # Same discipline for the mutation lane's phase planner, one step further:
+      # its selector decides which legs an ordinary PR runs, so a bug there is
+      # not a slow release but a SILENT one — legs quietly deselected while the
+      # required `mutation` context still reports green. The tests pin the phase
+      # table against this tree (every scope a real directory, every
+      # exclude_files pattern legal under Go's RE2) and pin the selection
+      # EXACTLY, not merely non-empty.
+      - name: Assert the mutation phase selector scopes correctly
+        run: node --test .github/scripts/mutation-matrix.test.mjs
+
       # Committed-artefact discipline. Every other gate asks whether the tree
       # COMPILES and PASSES; none asks what it CONTAINS, so a build artefact
       # that gets `git add`-ed by accident survives indefinitely — a compiled
