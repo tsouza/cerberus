@@ -41,6 +41,14 @@ type shardCursor struct {
 	// them in index order. Each is closed by its producer.
 	chans []chan chclient.Sample
 
+	// launched is closed once every shard has been handed to the errgroup.
+	// Admission is bounded by SetLimit(P_eff), so with K > P_eff the launcher
+	// blocks until a running shard finishes — which is why it runs off the
+	// Execute goroutine (see the launch loop) and why teardown must join it
+	// before g.Wait(): calling Wait while a Go is still pending would let it
+	// return on a momentarily-zero counter and miss the unlaunched shards.
+	launched chan struct{}
+
 	// stop is the STOP-STREAMING signal, closed by Close. It is deliberately
 	// distinct from cancelling gctx: a producer that observes stop unwinds
 	// while its ClickHouse query context is still LIVE, so it can hand the
@@ -268,6 +276,10 @@ func (sc *shardCursor) Close() error {
 		// that stop could not reach.
 		if !sc.waitProducers(cursorTeardownBudget) {
 			sc.cancelCause(context.Canceled)
+			// Cancelling frees every slot the launcher is queued behind, so
+			// joining it here terminates and makes the Wait below total over
+			// all K shards rather than the launched prefix.
+			<-sc.launched
 			_ = sc.g.Wait()
 		}
 
@@ -315,12 +327,20 @@ func (sc *shardCursor) TeardownBudget() time.Duration {
 }
 
 // waitProducers waits up to budget for every producer to return, reporting
-// whether they all did. The waiter goroutine is joined by the caller's
-// fallback g.Wait(), so no goroutine outlives Close.
+// whether they all did. The waiter goroutine is never joined: on the timeout
+// path the caller cancels and then runs the same <-sc.launched + g.Wait()
+// sequence itself, a second independent wait, and this goroutine unblocks on
+// its own the moment that cancellation lets the launcher and the group settle.
+// Both waits observe the same terminal state, so neither can be left parked.
 func (sc *shardCursor) waitProducers(budget time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Join the launcher first. Close has already closed sc.stop, so any
+		// producer parked on a send unwinds and frees the slot the launcher is
+		// waiting for; waiting here is what makes g.Wait() below observe every
+		// shard rather than a prefix of them.
+		<-sc.launched
 		_ = sc.g.Wait()
 	}()
 	timer := time.NewTimer(budget)

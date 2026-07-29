@@ -1212,8 +1212,8 @@ Each edge is a gate, not a sequence:
   so everything that validates the built artifact sits before the point of no
   return. The flip states `--latest` explicitly: GitHub defaults `make_latest`
   to true, so leaving it implicit hands the repo's `Latest` pointer to whichever
-  release published most recently — which is how backporting v1.11.3 after
-  v1.13.0 pointed `/releases/latest` at the oldest supported line.
+  release published most recently — which on a maintenance backport would aim
+  `/releases/latest` at an older supported line.
 - **`brew-smoke`** installs from the tap and smokes the published binary (see
   below); **`eol-retire`** retires the line that just fell out of the support
   window.
