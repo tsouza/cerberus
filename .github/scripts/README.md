@@ -670,6 +670,27 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
 
+- **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
+  Decides whether a pull request has to boot the compose stack at all. The lane
+  is a release gate, so an ordinary PR short-circuits it — but it is also the
+  only layer that runs cerberus against a REAL ClickHouse server, and chDB (what
+  every other execution layer uses) coerces column types the server rejects. So
+  the module keeps the short-circuit for changes the stack cannot see and boots
+  it for the ones it can: `HARNESS_PATHS` (the stack's own definition and
+  driver) and `SCOPE_PATHS` (`internal/chsql` emitted types, `internal/api` HTTP
+  surface, `internal/chclient` driver conversation, `cmd/cerberus` startup) —
+  deliberately NOT all of `internal/**`, which would re-gate every PR for
+  coverage the chdb-backed layers already give. `verify` asserts every declared
+  path still exists (a renamed entry matches nothing and silently retires the
+  gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
+  to `true`: push / schedule / dispatch / `release/*` PRs always run the full
+  lane, and an uncomputable diff boots the stack rather than skipping it.
+  `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the
+  `check` lane), and the `compose-smoke` aggregator treats a skipped setup as
+  green only when this job SUCCEEDED and reported `in_scope=false`.
+  - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
+    `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
+
 - **`compose-smoke-matrix.mjs`** — `e2e.yml`, the `compose-smoke-setup` job.
   Single source of truth for how the `compose-smoke` required PR gate fans its
   10 Playwright spec files out across a balanced matrix of isolated-compose-
