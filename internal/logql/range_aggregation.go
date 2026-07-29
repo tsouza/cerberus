@@ -169,10 +169,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	identityProj := chplan.Projection{
-		Expr:  withDetectedLevelAndColumns(s, identityBase, lc.OuterByLabels),
-		Alias: s.ResourceAttributesColumn,
-	}
+	identityExpr := withDetectedLevelAndColumns(s, identityBase, lc.OuterByLabels)
 	if groupBy != nil {
 		// With `by (...)` / `without (...)` the inner Project replaces
 		// the per-stream identity with the group-key map so the
@@ -183,16 +180,13 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		// `by (...)` / `without (...)` clause — that would defeat the
 		// caller's intent. The alias matches the column name the outer
 		// RangeWindow expects.
-		identityProj = chplan.Projection{Expr: groupBy, Alias: s.ResourceAttributesColumn}
+		identityExpr = groupBy
 	}
 	if errorBypassLabels != nil {
-		identityProj = chplan.Projection{
-			Expr:  errorBypassIdentityExpr(s, errorBypassLabels, identityProj.Expr),
-			Alias: s.ResourceAttributesColumn,
-		}
+		identityExpr = errorBypassIdentityExpr(s, errorBypassLabels, identityExpr)
 	}
 	projections := []chplan.Projection{
-		identityProj,
+		{Expr: canonicalIdentityExpr(identityExpr), Alias: s.ResourceAttributesColumn},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: valueExpr, Alias: rangeAggSynthValueColumn},
 	}
@@ -256,6 +250,40 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		rw.Scalars = []float64{*e.Params}
 	}
 	return rw, nil
+}
+
+// canonicalIdentityExpr canonicalises the key order of the LogQL
+// stream-identity Map so every whole-Map identity key downstream of it
+// compares by label SET rather than by physical key order. See
+// [chplan.CanonicalAttributesExpr] for why a ClickHouse Map needs this
+// and why the wrap is always safe (order-only, idempotent, so it can
+// never merge two genuinely different label sets).
+//
+// The LogQL metric path has exactly one binding family, mirroring how
+// the PromQL head canonicalises at its single selector projection:
+// [lowerRangeAggregation] projects the per-row stream identity under the
+// ResourceAttributes alias, and the RangeWindow's GROUP BY — plus every key derived from
+// it: the enclosing vector aggregation's `by (...)` subscripts and
+// `without (...)` MapWithoutKeys, topk's PARTITION BY, the vector-join
+// and set-op match keys — reads that alias out of the enclosing
+// subquery. Canonicalising the projection fixes all of them at once, and
+// the identity keys stay ALIAS references rather than re-rendered
+// expressions, so they never trip ClickHouse's "a SELECT alias shadows
+// the FROM column it reads" resolution order (see chsql.groupKeyFrags).
+//
+// It is applied once, at the projection, after the three mutually
+// exclusive identity shapes have settled — the default per-stream
+// identity, the `by (...)` / `without (...)` group-key override, and the
+// unwrap conversion-error bypass. Wrapping there rather than per-shape
+// keeps the bypass, whose Map-valued `if(...)` embeds one of the other
+// two, down to a single sort covering both of its arms.
+//
+// Per-label subscripts (`ResourceAttributes['job']`, what `by (...)`
+// lowers to) are scalar Strings and compare identically under any key
+// order, so they are deliberately NOT wrapped — that would buy a sort
+// and nothing else.
+func canonicalIdentityExpr(identity chplan.Expr) chplan.Expr {
+	return chplan.CanonicalAttributesExpr(identity)
 }
 
 // lowerAbsentOverTime implements LogQL `absent_over_time(<log-range>)`.

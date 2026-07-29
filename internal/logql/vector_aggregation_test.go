@@ -205,14 +205,16 @@ func TestLowerVectorAggregationByTopLevelColumn(t *testing.T) {
 	}
 
 	// The first projection is the identity wrap (aliased to
-	// ResourceAttributes). It must be a mapConcat whose synthesised
-	// inner map literal carries a `SeverityText` key.
+	// ResourceAttributes). Under the key-order canonicalisation it must
+	// be a mapConcat whose synthesised inner map literal carries a
+	// `SeverityText` key.
 	if len(innerProj.Projections) == 0 {
 		t.Fatalf("inner Project has no projections")
 	}
-	wrap, ok := innerProj.Projections[0].Expr.(*chplan.FuncCall)
+	identity := requireCanonicalIdentity(t, innerProj.Projections[0].Expr)
+	wrap, ok := identity.(*chplan.FuncCall)
 	if !ok || wrap.Name != "mapConcat" {
-		t.Fatalf("inner identity projection is %T (name %q), want *chplan.FuncCall(mapConcat)", innerProj.Projections[0].Expr, funcName(innerProj.Projections[0].Expr))
+		t.Fatalf("inner identity projection is %T (name %q), want *chplan.FuncCall(mapConcat)", identity, funcName(identity))
 	}
 	if len(wrap.Args) < 2 {
 		t.Fatalf("mapConcat has %d args, want >= 2", len(wrap.Args))

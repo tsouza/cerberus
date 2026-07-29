@@ -126,6 +126,22 @@ jobs:
         run: go test ./...
         working-directory: test/oracle
 
+      # goreleaser's `before` hook runs `go mod tidy` on every release, so a
+      # go.mod that isn't tidy means the release mutates the tree it is cutting
+      # from. That is how `spf13/pflag` sat marked `// indirect` while
+      # cmd/cerberus imported it directly. Both modules, since the nested
+      # oracle module drifts the same way and `just test` never reaches it.
+      - name: go.mod is tidy
+        run: |
+          for mod in . test/oracle; do
+            (cd "$mod" && go mod tidy)
+          done
+          if ! git diff --quiet -- '**/go.mod' '**/go.sum' go.mod go.sum; then
+            echo "::error::go mod tidy changed go.mod/go.sum — commit the result:"
+            git --no-pager diff -- '**/go.mod' '**/go.sum' go.mod go.sum
+            exit 1
+          fi
+
   # `lint` consolidates ALL linting in one job:
   #   - Go (golangci-lint v2 = formatters + linters from .golangci.yml)
   #   - Commit messages (commitlint, PR-only)
@@ -150,6 +166,19 @@ jobs:
           version: v2.12.2
           # Honours .golangci.yml; runs across the whole module.
           args: ./...
+          # Analyse cold. The action's analysis cache is a shared GitHub
+          # Actions entry, and those entries are immutable: once a key holds
+          # a partially-written cache, every later run that hits that key
+          # reuses it, and lint's verdict becomes a function of cache state
+          # rather than of the code. That is unsound in both directions — it
+          # can invent findings in files a PR never touched (staticcheck
+          # without its cross-package facts stops knowing t.Fatalf is
+          # terminating and reports SA5011 nil-derefs on correct code), and
+          # it can drop real ones just as silently. A required check has to
+          # be reproducible from the source alone. setup-go's module/build
+          # cache above stays on: Go's build cache is content-addressed, so
+          # a bad entry fails verification instead of being trusted.
+          skip-cache: true
 
       # The Tier-0 migration runner is `migration`-tagged, so neither the
       # test job nor golangci-lint (which sets no build-tags) compiles it —
@@ -158,6 +187,21 @@ jobs:
       # library on every PR: seconds, no Docker, no binary build.
       - name: vet the migration harness (tagged runner)
         run: go vet -tags=migration ./test/e2e/migration/...
+
+      # Vetting proves the runner compiles; it proves nothing about whether
+      # the committed explain goldens still describe what the emitter emits.
+      # Those goldens are the migration lane's only assertion over generated
+      # SQL, and the lane has no `pull_request:` trigger — so a change to a
+      # query shape merged green and turned `main` red on the next push,
+      # where release.yml's preflight (which requires migration-e2e green on
+      # the released commit) then refuses to publish. Diagnosing that on
+      # `main` costs a whole release cycle; the PR that moved the SQL is the
+      # cheapest place to notice. The Tier-0 slice is offline — committed
+      # fixtures, no Docker, no reference backend, no network — and runs in
+      # seconds, which is why the coverage ratchet and detector guard below
+      # already live here rather than waiting for the next push to main.
+      - name: run the Tier-0 migration scenarios (explain-golden drift)
+        run: go test -tags=migration ./test/e2e/migration/tiers/tier0-offline/... -count=1
 
       # go-arch-lint enforces the cerberus layering (parse → lower →
       # optimize → emit → execute) declared in .go-arch-lint.yml.
@@ -317,8 +361,38 @@ jobs:
       - name: release-preflight self-test (required-set guard)
         run: node --test .github/scripts/release-preflight.test.mjs
 
-      - name: brew-smoke self-test (formula-freshness guard)
+      # Same reasoning one level out: release-gate-drift.yml is schedule-only, so
+      # its detector would otherwise go unexercised between weekly runs. The pure
+      # half — the release.yml block-scalar parse and the two drift comparisons —
+      # runs here. Its own negative controls matter most: a required name covered
+      # exactly, a protected context covered only by an informational PREFIX, and
+      # the `property (…, rapid N=500)` name surviving as ONE name, since a parser
+      # that split it would report permanent lane drift on a healthy repo.
+      - name: release-gate-drift self-test (gate rot detector)
+        run: node .github/scripts/release-gate-drift.mjs --self-test
+
+      - name: brew-smoke self-test (cask-freshness guard)
         run: node --test .github/scripts/brew-smoke.test.mjs
+
+      # goreleaser deprecation gate. `goreleaser check` reports a deprecated
+      # config section as an advisory line and still exits 0, and release.yml is
+      # the only other place goreleaser runs — so a deprecation first becomes
+      # visible in the scroll-back of a release that already published. That is
+      # how `brews:` outlived its replacement by several releases. The action is
+      # pinned to the same distribution/version release.yml uses, so this gate
+      # reports exactly what the next release run would warn about.
+      - name: goreleaser-deprecations self-test (detector guard)
+        run: node --test .github/scripts/goreleaser-deprecations.test.mjs
+
+      - name: install goreleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+
+      - name: goreleaser config has no deprecated sections
+        run: node .github/scripts/goreleaser-deprecations.mjs
 
       # The migration lane's artifact resolver, here for the same reason:
       # migration-e2e.yml has no `pull_request:` trigger either, so this is the
@@ -485,6 +559,72 @@ jobs:
         run: |
           node .github/scripts/doc-counts.mjs --self-test
           node .github/scripts/doc-counts.mjs
+
+      # Coverage-discipline pins for the two e2e shard planners. e2e.yml is a
+      # RELEASE lane — it does not run on an ordinary PR at all — so a spec file
+      # that no shard claims would go unnoticed until a release stalled on it.
+      # These are pure in-process unit tests over the planner modules (no
+      # substrate, ~50ms both), which is exactly why they belong on the PR path
+      # even though the lane they plan does not.
+      - name: Assert every e2e spec is claimed by a shard
+        run: |
+          node --test .github/scripts/compose-smoke-matrix.test.mjs
+          node --test .github/scripts/dashboard-matrix.test.mjs
+
+      # Committed-artefact discipline. Every other gate asks whether the tree
+      # COMPILES and PASSES; none asks what it CONTAINS, so a build artefact
+      # that gets `git add`-ed by accident survives indefinitely — a compiled
+      # ELF binary and a generated release-PR-body scratch file both did, at
+      # the repository root. Two scans close the class: no tracked blob may be
+      # a compiled binary (detected by CONTENT — executable magic or a NUL
+      # byte in git's own sniff window — never by extension, since the
+      # motivating artefact had none), and the repository root must match an
+      # exhaustive allow-list rather than a "dotfiles are fine" pattern.
+      #
+      # The self-test runs FIRST and proves both scans actually fire: it
+      # builds a throwaway git repo, plants a synthetic ELF blob and a stray
+      # root file, and asserts a non-zero exit naming each — a gate never
+      # shown to fail is indistinguishable from one that does nothing.
+      - name: Self-test the committed-artefact gate
+        run: node --test .github/scripts/repo-hygiene.test.mjs
+      - name: Reject tracked binary artefacts
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: binary
+      - name: Reject unsanctioned repository-root entries
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: root-allowlist
+
+      # Same rationale, one lane over: the compat-scores badge publisher only
+      # runs on push-to-main, so a break in it surfaces either as stale README
+      # badges nobody is watching or — as it did once — as a job that fails
+      # in its POST phase because the publish left the checkout on the orphan
+      # branch. The test publishes against a real bare-repo remote in a temp
+      # dir (offline; ~6s, one real retry backoff), pinning the orphan
+      # bootstrap, the sibling-badge preservation, and the invariant that the
+      # checkout comes out untouched, on the PR path.
+      - name: Assert the compat-scores badge publisher still publishes
+        run: node --test .github/scripts/compat-publish-score.test.mjs
+
+      # The parity ratchet is the gate behind the three required
+      # compatibility/* checks, and it only executes after a
+      # docker-compose harness has produced its artefacts — so a hole in
+      # it surfaces as a green required check over a regressed head,
+      # which is precisely the failure a count-only ratchet had. These
+      # tests drive the real script over fixture artefacts in a temp dir
+      # (offline, <1s) and include the negative control: a case regresses
+      # while an unrelated one starts passing, leaving every aggregate
+      # count satisfied, and the gate must still fail.
+      - name: Assert the parity ratchet gates on per-case identity
+        run: node --test .github/scripts/compat-ratchet.test.mjs
+
+      # The baseline updater writes the roster the ratchet gates on, so a
+      # bug in it either burns a CI cycle or records a divergence. The
+      # round-trip case pins that a freshly synced baseline gates green on
+      # the very run it was taken from.
+      - name: Assert the parity baseline updater writes a gateable roster
+        run: node --test .github/scripts/compat-baseline-sync.test.mjs
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no

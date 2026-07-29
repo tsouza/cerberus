@@ -208,9 +208,11 @@ returned to the handler:
    composition order stays oldest-first because the channels buffer). Each
    producer derives its own progress recorder (one per ctx key — sharing would
    corrupt the rows/bytes histograms), carries the shared per-request sample
-   budget, opens its cursor, and drains it into a bounded channel
-   (cap 4096 samples). Producers select on the group ctx while sending, so they
-   terminate promptly on cancellation.
+   budget, opens its cursor **on its own cancellable child of the group ctx**,
+   and drains it into a bounded channel (cap 4096 samples). Each producer owns
+   its cursor end to end: it opens it, drains it, and tears it down. While
+   sending it selects on both the stop signal and the group ctx, so it
+   terminates promptly on either.
 
 **Composition is concatenation, not evaluation.** Each anchor belongs to
 exactly one slice and every shard emits final per-`(series, anchor)` values in
@@ -265,12 +267,31 @@ routed request advances the shared breaker counter by at most one. The gate
 acquire timeout and the solver timeout are likewise breaker-neutral: they
 signal local pool sizing or a gateway-chosen deadline, not CH health.
 
-**Lifecycle.** `Close` is idempotent (runs once): it cancels the group ctx so
-every producer unblocks and exits, waits for all producers, stops the deadline
-timer, closes every child cursor (releasing its connection and flushing its
-progress recorder), and releases the gate slots and the admission top-up
-exactly once each. A late-registered child cursor that races teardown is closed
-immediately so no connection leaks. A client disconnect propagates through the
+**Two teardown signals.** Stopping the stream and aborting the queries are
+distinct signals, and conflating them costs connections. clickhouse-go hands a
+pooled connection back only when its query ends on a live context; cancel first
+and the socket is destroyed instead (see
+[`operations.md`](operations.md#connection-teardown-contract)). So the composed
+cursor carries a **stop** channel alongside the group ctx:
+
+- **stop** — stop streaming. A producer blocked on a send unblocks here and
+  tears its own cursor down while its query ctx is still LIVE, so `K`
+  connections go back to the pool. This is the routine path, and it is what the
+  per-request output cap trips: the cap is a decision about how many rows to
+  hand OUT, never a reason to abort the ClickHouse queries dirtily.
+- **cancel** — abort. It belongs to a real failure (a sibling's error, the
+  wall-clock timeout, the client walking away) and is also the bounded fallback
+  for the one shape stop cannot reach: a producer parked inside `cur.Next()` on
+  a stalled shard, which observes stop only at its next send.
+
+**Lifecycle.** `Close` is idempotent (runs once): it closes the stop channel,
+waits up to a teardown budget for every producer to drain and release its
+connection, cancels the group ctx (unconditionally, so nothing derived from it
+outlives the request, and past the budget so a parked producer still
+terminates), stops the deadline timer, and releases the gate slots and the
+admission top-up exactly once each. Because each producer owns its own cursor,
+there is no registry of children to race against teardown. `Close` returns the
+first non-nil child teardown error. A client disconnect propagates through the
 request ctx to the group ctx to every shard. Every handler entrypoint is
 goleak-gated with routed queries.
 
@@ -535,8 +556,21 @@ To answer it the engine closes the loop the optimization corpus
 - **Join to observed cost.** At the dispatch seam the engine hands the corpus
   reconciler the decision read-out next to the CH `query_id`. The reconciler
   joins `query_id` → `system.query_log` (the cost columns plus a derived
-  `exit_status` of `ok` / `oom` / `timeout` from the row type + exception code)
-  and writes one corpus row per dispatch. All optcorpus invariants hold: it is
+  `exit_status` of `ok` / `oom` / `timeout` / `aborted` / `error` from the row
+  type + exception code) and writes one corpus row per dispatch. Terminal rows
+  are selected by naming the `type` Enum8 members through
+  `CAST(<name>, toTypeName(type))`: a bare string in the `IN`-list would make
+  ClickHouse coerce the comparison to `String`, so a member name that does not
+  exist would match nothing *silently*, whereas the CAST form raises
+  `UNKNOWN_ELEMENT_OF_ENUM`. A distributed query logs one row per participating
+  node under the same `query_id`, so the group's terminal state is reduced as
+  `max(type != QueryFinish)` — a comparison against the enum, never against the
+  member names, whose lexical order would rank a clean finish above an
+  exception. `ExceptionBeforeStart` rows are excluded: the query never ran, so
+  their zero cost would deflate every watermark learnt from the corpus.
+  An exception whose code cerberus does not recognise is `error` — the honest
+  floor, never folded back into the healthy `ok` population. All optcorpus
+  invariants hold: it is
   flag-gated, production-only, failure-open, and the observe call is a
   non-blocking channel send — the hot path is byte-unchanged when the corpus is
   off.
@@ -561,10 +595,37 @@ To answer it the engine closes the loop the optimization corpus
     classification ran). These outcomes carry the same invariants — flag-gated,
     failure-open, non-blocking, drop-under-burst — and the in-process capture
     works even where the query_log reconcile (production-only) does not.
+- **ClickHouse-side abort vs error.** A query that ended in a ClickHouse
+  exception is `aborted` when the code says the query was abandoned rather than
+  faulted — a client cancellation or a connection that went away mid-flight —
+  and `error` otherwise. The split matters because the two classes mean
+  opposite things for calibration: an abort measures how long a client was
+  willing to wait, so its truncated cost is not evidence about the route,
+  whereas an error is a fault whose cost is real.
 - **Sink.** With `CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable` the corpus lands in
   the `cerberus_router_corpus` MergeTree (DDL built with the typed `chsql` DDL
   builder, 30-day TTL); the default `jsonl` mode appends the same rows to the
-  sink-path file (load them into the same table shape for analysis).
+  sink-path file (load them into the same table shape for analysis). Sink
+  construction reconciles the deployed table with the schema the running binary
+  writes — `CREATE TABLE IF NOT EXISTS`, then an `ALTER TABLE … MODIFY COLUMN`
+  that widens `exit_status` to the member set this binary can emit, then a read
+  of `system.columns` that fails construction if a member is still missing.
+  `CREATE … IF NOT EXISTS` alone cannot do this: it is a no-op against an
+  existing table however its columns are declared, so a binary that learnt a new
+  member would write a value the deployed column cannot hold and every batch
+  would be rejected on every reconcile interval. The widening is **best-effort**
+  — a CH user with `INSERT` + `CREATE` but no `ALTER` grant, or an
+  operator-owned table that needs `ON CLUSTER`, still gets a working sink
+  whenever the deployed column already holds every member. The `system.columns`
+  read is the authority: it is the server's own answer, so the sink is never
+  built over a column that cannot hold what the binary writes.
+- **A sink that cannot be built disables the reconciler**, logged at startup
+  with the underlying error; it does not silently switch modes. There is no
+  fallback from `chtable` to `jsonl` — an operator who asked for the CH table
+  and got a local file instead would be told the corpus is healthy while nothing
+  reads it. The corpus is failure-open with respect to the **data plane**, which
+  is the invariant that matters: no query path depends on the sink, so a sink
+  outage costs calibration data and nothing else.
 
 This is a pure additive read-out: it records values the classifier already
 computed and **changes no routing behavior**. The captured features suffice to
@@ -589,8 +650,9 @@ Partial recovery is two-fold, and neither is an authoritative marker:
   is in-memory).
 - After a restart, the reconciler backfills the CH **cost** for any `query_id`
   that did finish on the CH side and still falls inside the query_log lookback
-  window — but it joins to `ok`/`oom`/`timeout` from query_log, never to a
-  cerberus-oom outcome, because no in-process call survived to stamp one.
+  window — but it joins to the query_log-derived `ok` / `oom` / `timeout` /
+  `aborted` / `error`, never to a cerberus-oom outcome, because no in-process
+  call survived to stamp one.
 
 An authoritative "cerberus-oom" marker would require an **external** signal — a
 k8s `OOMKilled` container event correlated back to the in-flight requests —

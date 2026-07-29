@@ -105,6 +105,49 @@ backend. The per-head state + trip telemetry
 (`cerberus_ch_breaker_state{head=…}` / `cerberus_ch_breaker_trips_total{head=…}`)
 shows exactly which head tripped.
 
+### Connection teardown contract
+
+A pooled ClickHouse connection survives a query only when that query reaches
+its terminal state with its context still live. clickhouse-go has exactly two
+terminal branches: drain to end-of-stream and the connection is released back
+to the idle pool; cancel and the driver writes `ClientCancel` and destroys the
+socket, because a cancelled query leaves undrained bytes on the wire. There is
+no third branch — a clean release requires reading the remainder.
+
+So every cursor cerberus opens is torn down **close first, cancel second**, and
+that ordering is structural rather than a property of some caller's defer
+order: `chclient.CloseCursor` owns both halves. It closes the cursor on its own
+goroutine while the query context is still live, races that drain against a
+fixed budget, and on expiry cancels — which unblocks the driver — and joins the
+drain before returning. Each cursor's ClickHouse query therefore runs on its
+OWN cancellable child of the request context, so teardown can cancel that query
+without touching anything else the request still needs.
+
+The budget is the deliberate trade. A caller that walked away must not be able
+to pin a pooled connection for the length of a result set nobody will read, so
+past the budget cerberus takes the destroyed socket and frees the pool slot
+immediately. `cerberus_ch_cursor_teardown_total{outcome="abandoned"}` counts
+exactly those, and a sustained non-zero rate is the signal that queries are
+returning far more rows than their callers consume — a query-shape problem, not
+a pool-sizing one. A teardown that begins on an ALREADY-dead context is a
+different event and is counted separately as `outcome="cancelled"`: the socket
+was destroyed by the client hanging up or the request deadline expiring, and no
+budget cerberus could choose would have saved it. See
+[`observability.md`](observability.md) for how the three outcomes decompose
+overall connection churn.
+
+The routed (multi-shard) path applies the same contract one level up: the
+composed cursor signals its producers to STOP STREAMING, each producer tears
+down its own cursor on its own live query context, and cancelling the shared
+group context is the abort signal and bounded fallback — never the routine
+teardown path. Because the cancel `CloseCursor` holds there is an ANCESTOR of
+every per-shard query context, a composed cursor reports its own longer budget
+through `chclient.ComposedCursor`: nesting its teardown inside a single
+connection's drain budget would fire the ancestor cancel at exactly the moment
+the K shard sockets were being released cleanly, destroying all of them. It is
+also why the composed teardown itself is not counted — its children each count
+their own. See [`solver.md`](solver.md).
+
 These resilience contracts — the breaker trip + recovery (and the
 per-head isolation + dedicated-probe-breaker `/readyz` contract above), the
 breaker-neutrality of query timeouts / admit + pool rejections, the
@@ -251,7 +294,7 @@ the SQL array machinery leaves at high cardinality. See
 - **The fan-out remains byte-for-byte available.** Pinning `ts_grid_range` off
   (an explicit list omitting it, or the legacy `=false`) restores the
   established fan-out exactly; on a < 25.9 server it is the only path. Every
-  existing golden, the compat 718/718 corpus, and the compose / e2e lanes are
+  existing golden, the compat 737/737 corpus, and the compose / e2e lanes are
   structurally the fan-out shape.
 
 **Parity.** Validated on the chDB substrate (26.5) by a dual-emit test
@@ -677,14 +720,13 @@ metrics tables share one TTL, the spans + `trace_id_ts` lookup share another
 short, metrics long). A deployment that needs genuinely per-table retention
 runs the DDL itself rather than via the auto-create hook.
 
-The TTL knobs accept the **Prometheus/Grafana duration syntax** operators
-already use for retention windows — `90d`, `2w`, `1y`, or the Go `2160h`
-form. `d`/`w`/`y` are fixed (24h / 7d / 365d), so a whole number of weeks
-renders as `toIntervalWeek(N)` and everything else as the coarsest exact
-ClickHouse interval (`toIntervalDay`/`Hour`/…). Calendar months and
-calendar-aware years are intentionally not supported: they are
-variable-length and a `1y` TTL is exactly 365 days, not a leap-aware
-calendar year.
+Retention is written in the duration grammar every cerberus duration knob
+shares — `90d`, `2w`, `1y`, or the equivalent `2160h` form. `d`/`w`/`y` are
+fixed (24h / 7d / 365d), so a whole number of weeks renders as
+`toIntervalWeek(N)` and everything else as the coarsest exact ClickHouse
+interval (`toIntervalDay`/`Hour`/…). Calendar months and calendar-aware
+years are intentionally not supported: they are variable-length and a `1y`
+TTL is exactly 365 days, not a leap-aware calendar year.
 
 Auto-create also reuses the **same** table names the query heads read
 (`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
@@ -1043,6 +1085,72 @@ data already persisted.
 The distroless image enforces this separation by construction: it
 ships only the compiled binary and root CA bundle.
 
+### Release ritual (the ordered cycle)
+
+Publishing is machinery; deciding *what* ships — and in which order — is the
+release ritual. Every cycle runs these six steps top to bottom. The ordering
+carries as much weight as the steps themselves:
+
+1. **Drive everything merged first.** A cycle opens by draining the board: no
+   open PR and no dangling branch-without-a-PR is left behind. A release ships
+   the whole delta since the previous one, never a subset.
+2. **Settle the retirement set before anything is cut.** When the cycle
+   cuts a new minor — which a breaking change is by itself enough to force, see
+   below — the oldest supported line falls out of the window defined in
+   [release support window / EOL policy](#release-support-window--eol-policy).
+   Work out which line that is up front, because it takes **no backport and no
+   patch release** this cycle — spending a release on a line about to be retired
+   is wasted work. This step is a decision, not an action: the retirement itself
+   is automatic, with the `eol-retire` job deleting the out-of-window branch
+   after the new minor publishes. A patch-only cycle retires nothing and passes
+   straight through.
+3. **Audit the delta.** One last pass over the complete diff since the previous
+   release: code against comments against docs, DRY, KISS, soundness. This is
+   the final gate — findings are fixed and merged onto `main` here, before any
+   line is backported and before any tag exists.
+4. **Backport everything to every line that stays supported.** Every fix that
+   landed on `main` since the previous release goes onto every
+   `release/<major>.<minor>.x` line that is still supported once this cycle
+   lands — step 2 settles which those are. "Everything" is the default rather
+   than a per-fix judgement call. A change is left out of a line only when the
+   backport is genuinely infeasible on that line, and a line that keeps
+   rejecting backports is a retirement candidate, not a standing exception. A
+   cycle that cuts a new minor also *adds* a line: the minor `main` is leaving
+   needs its own maintenance branch, created from the peeled tag of its last
+   release (`git push origin v<tag>^{}:refs/heads/release/<major>.<minor>.x` —
+   the ruleset carries no `creation` rule, so this needs no bypass). That branch
+   must exist before step 5 can publish a patch on it. See
+   [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
+5. **Publish the backport PATCH releases first.** Every still-supported older
+   line gets its patch tag before the new head release exists.
+6. **Publish the new MINOR (or patch) release last.** `main`'s release is always
+   the final publish of the cycle.
+
+**Breaking changes are accepted in a new minor.** On the cerberus version line
+(`appVersion` / the `v<major>.<minor>.<patch>` tags) a breaking change does
+**not** require a major bump — the minor is its vehicle. That makes "does this
+delta break anything?" a step-2 input: a breaking change is on its own
+sufficient reason for the cycle to cut a minor rather than a patch, and cutting
+a minor is what pushes the oldest line out of the support window and calls for
+a maintenance branch on the minor `main` is leaving. A cycle carrying neither a
+breaking change nor a new feature is a patch cycle: it retires nothing, creates
+no line, and passes step 2 straight through.
+
+Three properties follow from that order. The audit precedes the backport so
+that its findings reach every line: a fix merged onto `main` after the lines
+were cut would ship only in the head release, leaving each patch release to
+publish a defect `main` had already repaired. Auditing first also keeps the
+backport a single pass rather than one pass per round of findings. Publishing
+the older lines first means the newest tag is never the one users find while
+the older lines are still mid-flight: by the time the head release appears,
+every supported line already sits at its final version. And the audit is the
+last thing that merges — nothing lands between it and the tags it cleared, on
+any line.
+
+Each individual publish in steps 5 and 6 runs through the machinery below — a
+backport by pushing its `release/*.x` branch, the head release by merging its
+release PR.
+
 ### Release pipeline (publish-on-merge)
 
 Cerberus publishes when a **validated release PR is merged to main**, not when
@@ -1103,8 +1211,8 @@ Each edge is a gate, not a sequence:
   so everything that validates the built artifact sits before the point of no
   return. The flip states `--latest` explicitly: GitHub defaults `make_latest`
   to true, so leaving it implicit hands the repo's `Latest` pointer to whichever
-  release published most recently — which is how backporting v1.11.3 after
-  v1.13.0 pointed `/releases/latest` at the oldest supported line.
+  release published most recently — which on a maintenance backport would aim
+  `/releases/latest` at an older supported line.
 - **`brew-smoke`** installs from the tap and smokes the published binary (see
   below); **`eol-retire`** retires the line that just fell out of the support
   window.
@@ -1118,12 +1226,12 @@ publish gates handle either or both.
 by comparing it against the highest stable `v*` tag — is the single answer to
 "is this the newest release line?", and every resource that only one line can
 hold at a time is gated on it: the rolling `:latest` image tags, the tap's
-single Homebrew formula, and the GitHub `Latest` release pointer. A prerelease
+single Homebrew cask, and the GitHub `Latest` release pointer. A prerelease
 or a stable backport never drags any of the three backwards.
 
 #### Homebrew tap
 
-Stable releases publish a Homebrew formula to the
+Stable releases publish a Homebrew cask to the
 [`tsouza/homebrew-tap`](https://github.com/tsouza/homebrew-tap) tap, so operators
 can install the single `cerberus` binary with:
 
@@ -1131,17 +1239,40 @@ can install the single `cerberus` binary with:
 brew install tsouza/tap/cerberus
 ```
 
-This is wired via the goreleaser `brews:` block (a Homebrew *formula*, not a
-cask, so it installs on Linuxbrew as well as macOS). The tap holds a SINGLE
-`cerberus` formula, so `skip_upload` is templated on `RELEASE_IS_LATEST` — the
-highest-stable-tag signal `release.yml` computes after pushing the tag — and
-only a stable release on the newest line ever writes it. Neither an `rc.*` nor a
-maintenance backport touches the tap: a backport is not a prerelease, so the bare
-`skip_upload: auto` that predated this let v1.12.1 overwrite v1.13.0's formula
-and downgrade every `brew install`. The block pins `directory: Formula`: Homebrew resolves a tap's formulae from
-`Formula/`, `HomebrewFormula/` or the tap root, but goreleaser's `directory`
-defaults to **empty** — the tap root — and `Formula/` is both the conventional
-layout and the path the smoke reads.
+This is wired via the goreleaser `homebrew_casks:` block. A *cask* is the right
+vehicle for a pre-built binary — a formula describes something Homebrew builds
+from source — and it is not a macOS-only choice, though not for the reason casks
+are usually assumed to be Mac-bound. The entire Linux gate is Homebrew's
+`check_stanza_os_requirements`, which proceeds only when a cask declares no
+top-level `depends_on macos:` **and** every one of its artifacts is supported off
+a Mac, and otherwise raises `<cask>: cask requires macOS.`. Both conjuncts
+matter: `depends_on macos:` *is* consulted on Linux, contrary to folklore — what
+makes it harmless here is that `requires_macos?` is set only by a *top-level*
+`depends_on macos:`, so neither the implicit `MacOSRequirement` Homebrew attaches
+to every cask nor goreleaser's output (which declares no `depends_on` at all)
+trips it. The unsupported artifacts are the sixteen classes in
+`MACOS_ONLY_ARTIFACTS` (`app`, `pkg`, `service`, …) plus an `installer` in its
+`manual:` form — a scripted `installer` is portable. `supports_linux?` is not the
+install-time predicate at all; its only caller is homebrew-cask's own CI matrix
+generator, and it reports `false` for this cask even though `brew install` works.
+What makes cerberus installable under Linuxbrew is that
+its sole artifact is a plain `binary`, and that goreleaser emits `on_linux`
+url/sha256 pairs for `linux_amd64` and `linux_arm64` from the same `builds:`
+matrix that feeds the darwin ones. Because the release binaries are
+neither Apple-signed nor notarised, the cask carries a post-install hook that
+strips the `com.apple.quarantine` xattr, without which the first run on macOS
+dies with "cerberus is damaged and can't be opened".
+
+The tap holds a SINGLE `cerberus` cask, so `skip_upload` is templated on
+`RELEASE_IS_LATEST` — the highest-stable-tag signal `release.yml` computes after
+pushing the tag — and only a stable release on the newest line ever writes it.
+Neither an `rc.*` nor a maintenance backport touches the tap: a backport is not a
+prerelease, so the bare `skip_upload: auto` that predated this let v1.12.1
+overwrite v1.13.0's formula and downgrade every `brew install`. The block states
+`directory: Casks`, which is both goreleaser's default and where Homebrew
+resolves a tap's casks from; it is written out rather than inherited because
+`brew-smoke.mjs` pins the same path, and a silent drift between the two would
+leave the smoke reading a file no release writes.
 
 Two prerequisites make the push work, and both are one-time:
 
@@ -1149,26 +1280,48 @@ Two prerequisites make the push work, and both are one-time:
 2. A PAT with push (`contents: write`) access to that tap is stored as the
    `HOMEBREW_TAP_GITHUB_TOKEN` repository secret on `tsouza/cerberus`. The
    default workflow `GITHUB_TOKEN` **cannot** push to another repo, so this
-   secret is mandatory — without it the brew push on the next stable release
+   secret is mandatory — without it the cask push on the next stable release
    fails.
 
 The `brew-smoke` job closes the loop on both of those prerequisites. It reads the
-tap's `Formula/cerberus.rb` through the API *before* touching `brew`, because a
-deleted `brews:` block or an expired `HOMEBREW_TAP_GITHUB_TOKEN` leaves a stale
-formula that an install would happily consume. A stable release must find the
-formula declaring exactly the version that just shipped; it then installs it and
+tap's `Casks/cerberus.rb` through the API *before* touching `brew`, because a
+deleted `homebrew_casks:` block or an expired `HOMEBREW_TAP_GITHUB_TOKEN` leaves
+a stale cask that an install would happily consume. A stable release must find
+the cask declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
-(`migrate schema`, `config-docs -check`) work from the installed binary. The two
-shapes that write no formula are **not** skipped — each takes the opposite
-assertion. An `rc.*` must have written none, so a formula declaring the
+(`migrate schema`, `config-docs -check`) work from the installed binary. The
+install runs the bare `brew install tsouza/tap/cerberus` documented above rather
+than `brew install --cask`, because those two are not equivalent when the tap
+serves a same-named formula: Homebrew resolves the bare ref to the FORMULA and
+`--cask` to the cask, so a `--cask` smoke would install one artifact while every
+operator installed the other. goreleaser writes `Casks/cerberus.rb` and deletes
+nothing, so the tap's whole file listing is additionally scanned for a leftover
+formula — every root Homebrew loads formulae from (`Formula/`,
+`HomebrewFormula/`, the tap root, the first two recursively so a sharded
+`Formula/c/cerberus.rb` counts), not just the historical path — and the smoke
+fails while one is present. The repair (delete it, add a `tap_migrations.json`)
+belongs to the tap repository, which no release run can touch. Because the ref
+being installed is the ambiguous one, the smoke also states *which* artifact
+Homebrew picked: after the install, `cerberus` must appear in
+`brew list --cask --versions` and must not appear in `brew list --formula
+--versions`. Neither `command -v` nor `--version` can tell those two apart.
+
+The two shapes that write no cask are **not** skipped — each takes the
+opposite assertion. An `rc.*` must have written none, so a cask declaring the
 prerelease version is a reported regression; a release that is not the highest
-stable tag must have left a strictly NEWER formula in place, so a tap that has
+stable tag must have left a strictly NEWER cask in place, so a tap that has
 fallen back to the backport's own version is one too. The job runs after
-`publish` because `brew install` downloads the release tarball, which 404s
-while the release is still a draft, and it runs on `macos-latest` because the
-Ubuntu runner image ships no Homebrew at all. That the formula (rather than a
-cask) also installs under Linuxbrew is a property of the artifact, not
-something CI exercises.
+`publish` because
+`brew install` downloads the release tarball, which 404s while the release is
+still a draft. It runs as a `macos-latest` + `ubuntu-latest` matrix, so that the
+cask installs under Linuxbrew is exercised rather than assumed — cerberus is a
+Linux-first server binary, and a cask that has lost its Linux artefacts installs
+flawlessly on a Mac. (The Ubuntu image does ship Homebrew, under
+`/home/linuxbrew`; it just leaves it off `PATH`, which is why one Linux-only
+step adds it.) The cask's cross-platform *shape* — all four os/arch artefacts
+present, no macOS-only artifact stanza — is additionally asserted from the cask
+source on both legs and on all three release branches, because that is the one
+failure neither install can see from the other's side.
 
 #### Maintenance lines (hotfix backports)
 

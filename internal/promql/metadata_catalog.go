@@ -248,9 +248,9 @@ func selectorAttributesSource(cat *metadataCatalog, s schema.Metrics) chplan.Exp
 	}
 	merged := mergeResourceAttributesExpr(s)
 	if overlay := augmentAttributesForTopLevelExpr(s, merged); overlay != nil {
-		return overlay
+		return canonicalAttributesExpr(overlay)
 	}
-	return merged
+	return canonicalAttributesExpr(merged)
 }
 
 // selectorLabelProjections is [catalogAttributesProjections] over

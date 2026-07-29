@@ -163,13 +163,14 @@ func surfaceFromEnv(v *viper.Viper, queryTimeout time.Duration, pools poolKnobs)
 	if lokiTailWriteTimeout <= 0 {
 		return surfaceConfig{}, fmt.Errorf("%s: must be > 0, got %s", envLokiTailWriteTO, lokiTailWriteTimeout)
 	}
-	promMetadataLookback, err := getDuration(v, envPromMetadataLookback)
+	// A negative lookback would put the derived window's start AFTER "now", so
+	// every windowless discovery request would return an empty label / metric
+	// set — a silent total drop that reads like an empty database rather than a
+	// misconfiguration. The shared duration grammar accepts a sign, so the range
+	// check is stated here.
+	promMetadataLookback, err := getNonNegativeDuration(v, envPromMetadataLookback)
 	if err != nil {
 		return surfaceConfig{}, err
-	}
-	if promMetadataLookback < 0 {
-		return surfaceConfig{}, fmt.Errorf("%s: must be >= 0, got %s",
-			envPromMetadataLookback, promMetadataLookback)
 	}
 	return surfaceConfig{
 		ch:                   ch,

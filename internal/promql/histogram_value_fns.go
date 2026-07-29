@@ -152,13 +152,10 @@ func lowerHistogramValueFnInstant(
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 
-	agg := &chplan.Aggregate{
-		Input:              input,
-		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           histogramValueLatestAggs(s),
-		DropEmptyOnNoGroup: true,
-	}
+	// Identical collapse to the quantile paths' — share it rather than
+	// re-deriving the group key, so the canonicalisation it applies can
+	// never be true on one path and forgotten on the other.
+	agg := latestSampleAgg(input, histogramValueLatestAggs(s), s)
 
 	return &chplan.Project{
 		Input: agg,

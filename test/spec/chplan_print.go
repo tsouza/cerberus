@@ -85,7 +85,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			}
 		}
 		if len(parts) == 0 {
-			fmt.Fprintf(b, "%sProject *\n", indent)
+			reps := make([]string, len(v.Replacements))
+			for i, p := range v.Replacements {
+				reps[i] = fmt.Sprintf("%s AS %s", printExpr(p.Expr), p.Alias)
+			}
+			if len(reps) == 0 {
+				fmt.Fprintf(b, "%sProject *\n", indent)
+			} else {
+				fmt.Fprintf(b, "%sProject * REPLACE [%s]\n", indent, strings.Join(reps, ", "))
+			}
 		} else {
 			fmt.Fprintf(b, "%sProject [%s]\n", indent, strings.Join(parts, ", "))
 		}
@@ -282,17 +290,28 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.ReturnBool {
 			b.WriteString(" bool")
 		}
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
 		b.WriteString("\n")
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
 	case *chplan.VectorSetOp:
-		fmt.Fprintf(b, "%sVectorSetOp op=%s match=%s\n",
+		fmt.Fprintf(b, "%sVectorSetOp op=%s match=%s",
 			indent, v.Op, printVectorMatch(v.Match))
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
 	case *chplan.NaryVectorSetOp:
-		fmt.Fprintf(b, "%sNaryVectorSetOp op=%s match=%s arms=%d\n",
+		fmt.Fprintf(b, "%sNaryVectorSetOp op=%s match=%s arms=%d",
 			indent, v.Op, printVectorMatch(v.Match), len(v.Arms))
+		if v.StepAligned {
+			b.WriteString(" stepAligned")
+		}
+		b.WriteString("\n")
 		for _, arm := range v.Arms {
 			printNode(b, arm, depth+1)
 		}

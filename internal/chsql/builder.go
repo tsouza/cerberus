@@ -1182,6 +1182,16 @@ func UnionAll(parts ...Frag) Frag {
 // UnionDistinct renders `<p1> UNION DISTINCT <p2> UNION DISTINCT …`.
 // CH's UNION DISTINCT dedupes on the full row tuple. Same composition
 // shape as UnionAll; see its godoc.
+//
+// It has no caller in the emitters, and a new one needs a reason. A CH
+// Map compares POSITIONALLY over its (keys, values) arrays, so a full-row
+// dedup over any projection carrying ResourceAttributes / SpanAttributes
+// treats one span redelivered under a different OTLP attribute key order
+// as two rows. Every span-row union in this package therefore dedupes on
+// span IDENTITY instead — `UnionAll` + `LIMIT 1 BY (TraceId, SpanId)`;
+// see emitStructuralSpanUnion (structural_join.go) and emitSetOperation
+// (set_op.go). Reach for UnionDistinct only where the dedup tuple is
+// genuinely the whole row AND provably carries no Map column.
 func UnionDistinct(parts ...Frag) Frag {
 	if len(parts) == 0 {
 		panic("chsql: UnionDistinct requires at least one part")
@@ -1707,6 +1717,30 @@ func Window(fn Frag, partitionBy []Frag, orderBy []OrderKey) Frag {
 // SELECT *. Use QualStar for the qualified "<table>.*" form.
 func Star() Frag {
 	return func(b *Builder) { b.sb.WriteByte('*') }
+}
+
+// StarReplace returns a Frag rendering ClickHouse's asterisk modifier
+// "* REPLACE (<expr> AS <col>, …)" — the wildcard with named columns
+// substituted by an expression while every other column, and crucially
+// every column's NAME, passes through untouched. That name preservation
+// is the point: it lets a rewrite reshape a column in place without any
+// downstream reference to it having to change. An empty list renders the
+// bare "*", so a caller need not guard the degenerate case.
+func StarReplace(replacements []Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteByte('*')
+		if len(replacements) == 0 {
+			return
+		}
+		b.sb.WriteString(" REPLACE (")
+		for i, r := range replacements {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			r(b)
+		}
+		b.sb.WriteByte(')')
+	}
 }
 
 // QualStar returns a Frag rendering "<table>.*" with the table

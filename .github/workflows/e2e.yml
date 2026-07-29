@@ -357,13 +357,12 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      - uses: docker/setup-buildx-action@v4
-
       # Authenticated Docker Hub pulls get a far higher rate limit than
       # anonymous pulls from shared runner IPs (same hardening as the
       # compatibility workflow's compose jobs). Skips silently when the
       # secrets are absent (forks); GHCR mirroring is the stronger
-      # long-term fix.
+      # long-term fix. Ahead of the builder setup so the BuildKit
+      # bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -372,6 +371,8 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - uses: ./.github/actions/setup-buildx
 
       - name: docker compose up --wait
         run: |
@@ -573,8 +574,8 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      - uses: docker/setup-buildx-action@v4
-
+      # Ahead of the builder setup so the BuildKit bootstrap image is
+      # fetched under the same credentials.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -583,6 +584,8 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - uses: ./.github/actions/setup-buildx
 
       - name: docker compose up --wait
         run: docker compose up --wait --wait-timeout 300

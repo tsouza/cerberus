@@ -102,8 +102,8 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 			// Bound the row source too, not just the numbering. The numbering
 			// walk is bounded by TraceLimit (boundedRootScopeFrag), but the
 			// structural-union row source (v.Input) is otherwise computed over
-			// every trace in the window — two recursive closures + a wide-row
-			// UNION DISTINCT — and only truncated to N afterward, peaking past
+			// every trace in the window — two recursive closures + a union of
+			// two wide arms — and only truncated to N afterward, peaking past
 			// the per-query memory cap (#1109 prod OOM). Push one shared
 			// BoundedTraceScope gate into every leaf so the closures (seeded
 			// via the #77 seed re-render of those leaves) scan only the top-N

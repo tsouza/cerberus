@@ -37,6 +37,15 @@ func tolerantRowsErr(err error) error {
 // toJSONString wrap can't shadow the raw map the WHERE predicate
 // references (CH resolves WHERE identifiers against SELECT aliases
 // first).
+//
+// labels is the alias loki.buildSeriesSQL / buildDetectedLabelsSQL /
+// buildIndexVolumeSQL project for the canonicalised label-set Map
+// (mapSort(`ResourceAttributes`)). Those three are the only `labels`
+// aliases the engine emits and all three are Map-typed, so the textual
+// rewrite is unambiguous. Deliberately distinct from the source column
+// name for the same reason stream_labels is: these queries GROUP BY the
+// alias, and CH resolves GROUP BY identifiers against SELECT aliases
+// before FROM columns.
 var mapColumnNames = []string{
 	"Attributes",
 	"ExemplarAttributes",
@@ -44,6 +53,7 @@ var mapColumnNames = []string{
 	"ResourceAttributes",
 	"ScopeAttributes",
 	"SpanAttributes",
+	"labels",
 	"log_attributes",
 	"stream_labels",
 }

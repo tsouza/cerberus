@@ -762,7 +762,11 @@ const configFileBaseName = "cerberus"
 func FromEnv() (Config, error) {
 	v := newLoader()
 
-	dial, err := getDuration(v, envCHDialTimeout)
+	// A negative dial timeout is silently discarded downstream (chclient only
+	// honours a positive value and otherwise falls back to its own default),
+	// so it would look configured while doing nothing. `0` keeps meaning
+	// "leave the driver default alone"; below zero has no meaning at all.
+	dial, err := getNonNegativeDuration(v, envCHDialTimeout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1676,8 +1680,13 @@ func newLocalHandler(w io.Writer, cfg LogConfig) slog.Handler {
 // otlpFromEnv parses the CERBERUS_OTLP_* knobs from the viper loader.
 // Empty endpoint is the documented "disabled" state and not an error —
 // the caller installs noop providers in that case.
+//
+// Both durations are non-negative: internal/telemetry passes each to its OTel
+// SDK option only when it is positive, so a negative value would be dropped on
+// the floor and the operator would see the SDK default while believing the knob
+// took. `0` still means "leave the SDK default in place".
 func otlpFromEnv(v *viper.Viper) (OTLPConfig, error) {
-	timeout, err := getDuration(v, envOTLPTimeout)
+	timeout, err := getNonNegativeDuration(v, envOTLPTimeout)
 	if err != nil {
 		return OTLPConfig{}, err
 	}
@@ -1689,7 +1698,7 @@ func otlpFromEnv(v *viper.Viper) (OTLPConfig, error) {
 	if err != nil {
 		return OTLPConfig{}, fmt.Errorf("%s: %w", envOTLPHeaders, err)
 	}
-	exportInterval, err := getDuration(v, envOTLPExportInterval)
+	exportInterval, err := getNonNegativeDuration(v, envOTLPExportInterval)
 	if err != nil {
 		return OTLPConfig{}, err
 	}
@@ -1831,39 +1840,70 @@ func getBool(v *viper.Viper, key string) (bool, error) {
 	return b, nil
 }
 
-// getDuration resolves key and parses it with time.ParseDuration,
-// rejecting a malformed value with an error naming the env var.
+// parseDuration is the single shared duration parser for every CERBERUS_*
+// duration knob. It accepts the union of two grammars:
+//
+//   - Go's time.ParseDuration — `300ms`, `1.5h`, `100us`, `30m1h`, signed
+//     values, and every sub-second unit.
+//   - The Prometheus/Grafana retention units time.ParseDuration has no
+//     spelling for — `90d`, `2w`, `1y`, with d/w/y fixed at 24h / 7d / 365d.
+//     Calendar months and leap-aware years are intentionally absent: they are
+//     variable-length and cannot round-trip through a time.Duration.
+//
+// Neither grammar contains the other, so both are tried. The units they share
+// (ms/s/m/h) mean the same thing in each, so the union is unambiguous — no
+// input parses to two different durations.
+//
+// Routing every duration field through this one function is what makes the
+// whole config surface answer to one syntax: an operator never has to ask
+// which spelling a particular knob takes, and a retention written `90d` and
+// one written `2160h` are the same value everywhere. Whether a parsed value
+// is in RANGE — non-negative, strictly positive — is a separate, explicit
+// check at the call site (see getNonNegativeDuration), never an accident of
+// which grammar happened to reject a sign.
+func parseDuration(raw string) (time.Duration, error) {
+	if d, err := time.ParseDuration(raw); err == nil {
+		return d, nil
+	}
+	d, err := model.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"invalid duration %q: want Go duration syntax (300ms, 1.5h, 2160h) or retention units (90d, 2w, 1y)", raw,
+		)
+	}
+	return time.Duration(d), nil
+}
+
+// getDuration resolves key and parses it through the shared parseDuration
+// grammar, rejecting a malformed value with an error naming the env var.
 func getDuration(v *viper.Viper, key string) (time.Duration, error) {
 	raw := getString(v, key)
 	if raw == "" {
 		return 0, fmt.Errorf("%s: missing value", key)
 	}
-	d, err := time.ParseDuration(raw)
+	d, err := parseDuration(raw)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return d, nil
 }
 
-// getRetentionDuration resolves key as a retention duration using the
-// Prometheus/Grafana duration syntax operators already type for retention
-// windows — `90d`, `2w`, `1y`, as well as the `2160h` Go form. It is a
-// superset of getDuration (time.ParseDuration stops at hours), so existing
-// hour-based values keep working. Units d/w/y are fixed (d=24h, w=7d,
-// y=365d); calendar months/years are intentionally unsupported — they can't
-// round-trip through a time.Duration (see docs/configuration.md). Note the
-// Prometheus convention that compound values list units in descending order
-// (`1w2d` is valid, `2d1w` is not).
-func getRetentionDuration(v *viper.Viper, key string) (time.Duration, error) {
-	raw := getString(v, key)
-	if raw == "" {
-		return 0, fmt.Errorf("%s: missing value", key)
-	}
-	d, err := model.ParseDuration(raw)
+// getNonNegativeDuration resolves key through getDuration and then rejects a
+// negative value. It exists because the shared grammar accepts a sign (Go
+// duration syntax always has), so a knob whose semantics have no meaning
+// below zero — a retention, a lookback horizon — has to say so itself rather
+// than inherit the rejection from whichever parser it happened to use. That
+// separation is what keeps the check reachable and the error legible: the
+// operator is told the value is out of range, not that it failed to parse.
+func getNonNegativeDuration(v *viper.Viper, key string) (time.Duration, error) {
+	d, err := getDuration(v, key)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", key, err)
+		return 0, err
 	}
-	return time.Duration(d), nil
+	if d < 0 {
+		return 0, fmt.Errorf("%s: must be >= 0, got %s", key, d)
+	}
+	return d, nil
 }
 
 // bootFlags groups the boolean boot-time toggles FromEnv resolves: the
@@ -1995,14 +2035,24 @@ func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 // fail fast on a malformed value; the sink path resolves via getString (empty is
 // valid and simply disables the file sink). Extracted from FromEnv so the parses
 // live in one place.
+//
+// The interval is gated the way the keepalive timings are: never negative, and
+// strictly positive once the reconciler is switched on. A non-positive interval
+// makes Reconciler.Run park on ctx and reconcile nothing, so an enabled corpus
+// would report as enabled while producing no rows at all — an inert feature
+// that looks live. When the reconciler is off the value is inert, so `0` is
+// left alone there.
 func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
 	enabled, err := getBool(v, envCHOptCorpusEnabled)
 	if err != nil {
 		return CHOptCorpusConfig{}, err
 	}
-	interval, err := getDuration(v, envCHOptCorpusInterval)
+	interval, err := getNonNegativeDuration(v, envCHOptCorpusInterval)
 	if err != nil {
 		return CHOptCorpusConfig{}, err
+	}
+	if enabled && interval <= 0 {
+		return CHOptCorpusConfig{}, fmt.Errorf("%s: must be > 0 when %s is set, got %s", envCHOptCorpusInterval, envCHOptCorpusEnabled, interval)
 	}
 	ring, err := getInt(v, envCHOptCorpusRing)
 	if err != nil {
@@ -2019,28 +2069,28 @@ func chOptCorpusFromEnv(v *viper.Viper) (CHOptCorpusConfig, error) {
 
 // schemaProvisioningFromEnv parses the CERBERUS_SCHEMA_* auto-create knobs
 // into a SchemaProvisioning. Extracted from FromEnv so the boolean +
-// duration parses (each fail-fast on a malformed value) live in one place
-// rather than inflating FromEnv's branch count. The string knobs resolve via
-// getString (empty is valid); internal/schema/ddl supplies the
+// duration parses (each fail-fast on a malformed or negative value) live in
+// one place rather than inflating FromEnv's branch count. The string knobs
+// resolve via getString (empty is valid); internal/schema/ddl supplies the
 // {shard}/{replica} macro fallbacks when the database is Replicated.
 func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	replicated, err := getBool(v, envSchemaDBReplicated)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttl, err := getRetentionDuration(v, envSchemaTTL)
+	ttl, err := getNonNegativeDuration(v, envSchemaTTL)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlMetrics, err := getRetentionDuration(v, envSchemaTTLMetrics)
+	ttlMetrics, err := getNonNegativeDuration(v, envSchemaTTLMetrics)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlLogs, err := getRetentionDuration(v, envSchemaTTLLogs)
+	ttlLogs, err := getNonNegativeDuration(v, envSchemaTTLLogs)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlTraces, err := getRetentionDuration(v, envSchemaTTLTraces)
+	ttlTraces, err := getNonNegativeDuration(v, envSchemaTTLTraces)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}

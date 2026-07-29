@@ -252,11 +252,17 @@ func lowerVectorSetOp(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.N
 		match.On = vm.On
 	}
 
+	// Range mode (lc.Step > 0): both arms materialise per-step rows
+	// under the shared grid anchor, and the set op is evaluated once per
+	// evaluation timestamp — so the match key is (signature, anchor).
+	// Instant mode carries one row per series with an arm-local
+	// timestamp, so it keys on the signature alone.
 	return &chplan.VectorSetOp{
 		Left:             sampleShapeOverLogInner(left, s),
 		Right:            sampleShapeOverLogInner(right, s),
 		Op:               kind,
 		Match:            match,
+		StepAligned:      lc.Step > 0,
 		MetricNameColumn: "MetricName",
 		AttributesColumn: "Attributes",
 		TimestampColumn:  "TimeUnix",

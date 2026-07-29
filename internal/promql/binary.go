@@ -491,11 +491,17 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		match.On = b.VectorMatching.On
 	}
 
+	// Range mode (ctx.step > 0): both arms materialise per-step rows
+	// under the shared grid anchor, and PromQL evaluates the set op
+	// once per evaluation timestamp — so the match key is
+	// (signature, anchor). Instant mode carries one row per series with
+	// an arm-local timestamp, so it keys on the signature alone.
 	return &chplan.VectorSetOp{
 		Left:             left,
 		Right:            right,
 		Op:               kind,
 		Match:            match,
+		StepAligned:      ctx.step > 0,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,

@@ -13,7 +13,8 @@ name: compatibility
 # Action — no `curl | sh` installs. Actions used here:
 #   * actions/checkout@v7           — stdlib.
 #   * actions/setup-go@v7           — `go run ./cmd/seed` + driver builds.
-#   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
+#   * ./.github/actions/setup-buildx — buildkit-backed compose build, with
+#     the BuildKit bootstrap image acquired through a retry.
 #   * docker/login-action@v4        — authed Docker Hub pulls (rate limits).
 #   * taiki-e/install-action@v2     — installs `just`.
 #   * actions/upload-artifact@v7    — per-head report upload.
@@ -29,8 +30,11 @@ name: compatibility
 #     long-lived "shields.io endpoint badge" source — README badges hit
 #     a stable raw URL under it. The orphan branch is intentionally NOT
 #     covered by branch-protection rules (covering it would create an
-#     infinite check-rerun loop). First-run bootstrap creates the
-#     orphan branch in-place via `git checkout --orphan compat-scores`.
+#     infinite check-rerun loop). The publish happens in a throwaway
+#     `git worktree` under $RUNNER_TEMP, never in the job's checkout:
+#     later steps and a local composite action's POST phase both read
+#     that checkout, and a job whose tree was left on the orphan branch
+#     fails at teardown with "Can't find 'action.yml'".
 
 on:
   # PR trigger has no `paths:` filter so the three head checks always
@@ -313,115 +317,56 @@ jobs:
         # GATE: this is what makes compatibility/prometheus a real
         # source-of-truth check rather than an informational badge. PR
         # #503 (task #68) downgraded per-case diffs to report-only so the
-        # harness exits 0 even on a numeric regression; this step restores
-        # the gate by failing the job when the run's compat-score.json
-        # drops below the committed per-head floor in
-        # compatibility/parity-baseline.json. It compares integers
-        # (passed/total), not floats, so it can't flake (see the script
-        # header). Runs only when the harness itself succeeded — a harness
-        # infra failure is re-raised by the "Fail job" step below, and the
-        # ratchet shouldn't double-report a missing score in that path.
+        # harness exits 0 even on a parity regression; this step restores
+        # the gate by comparing the run's compat-cases.json against the
+        # committed per-case roster in compatibility/parity-baseline.json
+        # and failing on any case that moved. It gates on case IDENTITY,
+        # not on a count, so a regression cannot hide behind an unrelated
+        # case that started passing. Case IDs and pass/fail are both
+        # derived from static corpus identity and the scorer's own
+        # predicate, so it can't flake (see the script header). Runs only
+        # when the harness itself succeeded — a harness infra failure is
+        # re-raised by the "Fail job" step below, and the ratchet
+        # shouldn't double-report missing artefacts in that path.
         if: steps.compat.outcome == 'success'
         run: node .github/scripts/compat-ratchet.mjs
         env:
           HEAD: prometheus
           SCORE: compatibility/prometheus/compat-score.json
+          CASES: compatibility/prometheus/compat-cases.json
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: compatibility-prometheus-report
-          # Glob picks up both the upstream tester's report.json AND the
+          # Glob picks up the upstream tester's report.json, the
           # shields.io endpoint-badge compat-score.json the prom scorer
-          # emits next to it. `if-no-files-found: warn` keeps the upload
-          # step green when the harness crashed before producing either
-          # file (the explicit "Fail job" step still re-raises the
-          # underlying failure).
+          # emits next to it, and compat-cases.json — the per-case roster
+          # the ratchet gates on, which is also the authoritative source
+          # to copy from when a corpus change moves the baseline.
+          # `if-no-files-found: warn` keeps the upload step green when the
+          # harness crashed before producing them (the explicit "Fail job"
+          # step still re-raises the underlying failure).
           path: |
             compatibility/prometheus/report.json
             compatibility/prometheus/compat-score.json
+            compatibility/prometheus/compat-cases.json
           if-no-files-found: warn
           retention-days: 30
 
       - name: Publish score to compat-scores branch
         # Only push: main triggers the publish; pull_request / schedule /
         # workflow_dispatch all short-circuit at the `if:` gate. The
-        # compat-scores branch
-        # is an orphan branch in the same repo that holds shields.io
-        # endpoint-badge JSON at badges/<head>.json — README badges hit
-        # the raw URL https://raw.githubusercontent.com/tsouza/cerberus/
-        # compat-scores/badges/<head>.json.
-        #
-        # First-run bootstrap: if origin/compat-scores doesn't exist yet,
-        # we create it as an --orphan branch with just the badges/ tree.
-        # Subsequent runs fast-forward over the previous tip.
-        #
-        # Concurrency: the three head jobs (prometheus / loki / tempo)
-        # may finish near-simultaneously and race to push to the same
-        # branch. We retry on "non-fast-forward" rejections by
-        # re-fetching the latest tip, re-applying our update, and
-        # pushing again — capped at MAX_ATTEMPTS to avoid an infinite
-        # loop if the remote is fundamentally unreachable.
+        # orphan-branch contract, the shields.io schema projection, and the
+        # retry that lets the three head jobs race safely against one branch
+        # all live in the module — see .github/scripts/compat-publish-score.mjs.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           HEAD: prometheus
           SRC: compatibility/prometheus/compat-score.json
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$SRC" ]; then
-            echo "no score file at $SRC; nothing to publish"
-            exit 0
-          fi
-          git config user.name "cerberus-compat-bot"
-          git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Stash a shields-compatible subset of the score file before we
-          # switch branches: the rich score file (passed / total / percent)
-          # is great for the artifact + step-summary, but shields.io's
-          # endpoint-badge schema is strict and rejects unknown keys with
-          # an "invalid properties: passed, total, percent" SVG title.
-          # Strip to the four schema-spec keys here so the orphan-branch
-          # JSON renders cleanly.
-          tmp=$(mktemp)
-          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
-
-          MAX_ATTEMPTS=5
-          attempt=1
-          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
-            git fetch origin compat-scores 2>/dev/null || true
-            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
-              git checkout -B compat-scores origin/compat-scores
-            else
-              # Orphan-bootstrap on first run: detach, clear the index +
-              # working tree, then commit the badges/ directory as the
-              # branch's initial state.
-              git checkout --orphan compat-scores
-              git rm -rf . 2>/dev/null || true
-              git clean -fdx
-            fi
-            mkdir -p badges
-            cp "$tmp" "badges/${HEAD}.json"
-            git add badges/
-            if git diff --staged --quiet; then
-              echo "score unchanged; no commit needed"
-              exit 0
-            fi
-            git commit -m "compat-scores: update ${HEAD} score"
-            if git push origin compat-scores; then
-              echo "==> published ${HEAD} score on attempt $attempt"
-              exit 0
-            fi
-            echo "==> push rejected (likely concurrent update); retrying"
-            # Reset our local branch state so the next iteration starts
-            # from a clean tree before re-fetching.
-            git reset --hard
-            attempt=$((attempt + 1))
-            sleep $((attempt * 2))
-          done
-          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
-          exit 1
+        run: node .github/scripts/compat-publish-score.mjs
 
       - name: Disk-pressure self-diagnosis on failure
         # Infra-flake breadcrumb: the compose stack (CH + reference Prom +
@@ -667,14 +612,10 @@ jobs:
       - name: Disk free (after reclaim)
         run: df -h
 
-      # Buildx gives the Compose build cache, multi-arch support, and a
-      # consistent build backend. The harness uses local build contexts
-      # (cerberus + driver), so no remote registry login is needed.
-      - uses: docker/setup-buildx-action@v4
-
       # See the prometheus job: authed Docker Hub pulls dodge the
       # anonymous rate limit shared across runner IPs; skips silently
-      # on forks without the secrets.
+      # on forks without the secrets. Ahead of the builder setup so the
+      # BuildKit bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -683,6 +624,11 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Buildx gives the Compose build cache, multi-arch support, and a
+      # consistent build backend. The harness uses local build contexts
+      # (cerberus + driver), so the builder itself pushes nowhere.
+      - uses: ./.github/actions/setup-buildx
 
       - name: Run tempo-compatibility harness
         id: harness
@@ -705,8 +651,8 @@ jobs:
 
       - name: Parity-regression ratchet
         # GATE: see the prometheus job for the full rationale. Fails the
-        # job when tempo's compat-score.json drops below the committed
-        # floor in compatibility/parity-baseline.json (heads.tempo). This
+        # job when any tempo case moves against the committed per-case
+        # roster in compatibility/parity-baseline.json (heads.tempo). This
         # replaces the dead FAIL_ON_DIFF env removed from the harness step
         # above — it is the actual tempo parity gate.
         if: steps.harness.outcome == 'success'
@@ -714,12 +660,14 @@ jobs:
         env:
           HEAD: tempo
           SCORE: compatibility/tempo/reports/compat-score.json
+          CASES: compatibility/tempo/reports/compat-cases.json
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
-        # when the harness step failed. The differ writes diff.md and
-        # compat-score.json under this directory; the seeder leaves it
-        # empty. Globbing the entire reports/ tree picks up both.
+        # when the harness step failed. The differ writes diff.md,
+        # compat-score.json and compat-cases.json under this directory;
+        # the seeder leaves it empty. Globbing the entire reports/ tree
+        # picks up all of them.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -738,51 +686,7 @@ jobs:
           HEAD: tempo
           SRC: compatibility/tempo/reports/compat-score.json
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$SRC" ]; then
-            echo "no score file at $SRC; nothing to publish"
-            exit 0
-          fi
-          git config user.name "cerberus-compat-bot"
-          git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Strip cerberus-only bookkeeping (passed / total / percent)
-          # before publishing: shields.io rejects unknown keys on the
-          # endpoint-badge schema with an "invalid properties" SVG title.
-          tmp=$(mktemp)
-          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
-
-          MAX_ATTEMPTS=5
-          attempt=1
-          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
-            git fetch origin compat-scores 2>/dev/null || true
-            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
-              git checkout -B compat-scores origin/compat-scores
-            else
-              git checkout --orphan compat-scores
-              git rm -rf . 2>/dev/null || true
-              git clean -fdx
-            fi
-            mkdir -p badges
-            cp "$tmp" "badges/${HEAD}.json"
-            git add badges/
-            if git diff --staged --quiet; then
-              echo "score unchanged; no commit needed"
-              exit 0
-            fi
-            git commit -m "compat-scores: update ${HEAD} score"
-            if git push origin compat-scores; then
-              echo "==> published ${HEAD} score on attempt $attempt"
-              exit 0
-            fi
-            echo "==> push rejected (likely concurrent update); retrying"
-            git reset --hard
-            attempt=$((attempt + 1))
-            sleep $((attempt * 2))
-          done
-          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
-          exit 1
+        run: node .github/scripts/compat-publish-score.mjs
 
       - name: Disk-pressure self-diagnosis on failure
         # Same self-diagnosis as the prometheus job: the harness tears the
@@ -844,13 +748,10 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # Buildx gives the Compose build cache + a consistent backend
-      # for the local cerberus image context.
-      - uses: docker/setup-buildx-action@v4
-
       # See the prometheus job: authed Docker Hub pulls dodge the
       # anonymous rate limit shared across runner IPs; skips silently
-      # on forks without the secrets.
+      # on forks without the secrets. Ahead of the builder setup so the
+      # BuildKit bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -859,6 +760,10 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Buildx gives the Compose build cache + a consistent backend
+      # for the local cerberus image context.
+      - uses: ./.github/actions/setup-buildx
 
       - name: Run loki-compatibility harness
         id: harness
@@ -876,19 +781,21 @@ jobs:
 
       - name: Parity-regression ratchet
         # GATE: see the prometheus job for the full rationale. Fails the
-        # job when loki's compat-score.json drops below the committed
-        # floor in compatibility/parity-baseline.json (heads.loki).
+        # job when any loki case moves against the committed per-case
+        # roster in compatibility/parity-baseline.json (heads.loki).
         if: steps.harness.outcome == 'success'
         run: node .github/scripts/compat-ratchet.mjs
         env:
           HEAD: loki
           SCORE: compatibility/loki/reports/compat-score.json
+          CASES: compatibility/loki/reports/compat-cases.json
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
         # when the harness step failed. The script writes the raw
         # `go test -v` stream to compatibility/loki/reports/diff.json
-        # and the loki driver writes compat-score.json next to it.
+        # and the loki driver writes compat-score.json plus the per-case
+        # compat-cases.json roster next to it.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -907,51 +814,7 @@ jobs:
           HEAD: loki
           SRC: compatibility/loki/reports/compat-score.json
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$SRC" ]; then
-            echo "no score file at $SRC; nothing to publish"
-            exit 0
-          fi
-          git config user.name "cerberus-compat-bot"
-          git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Strip cerberus-only bookkeeping (passed / total / percent)
-          # before publishing: shields.io rejects unknown keys on the
-          # endpoint-badge schema with an "invalid properties" SVG title.
-          tmp=$(mktemp)
-          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
-
-          MAX_ATTEMPTS=5
-          attempt=1
-          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
-            git fetch origin compat-scores 2>/dev/null || true
-            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
-              git checkout -B compat-scores origin/compat-scores
-            else
-              git checkout --orphan compat-scores
-              git rm -rf . 2>/dev/null || true
-              git clean -fdx
-            fi
-            mkdir -p badges
-            cp "$tmp" "badges/${HEAD}.json"
-            git add badges/
-            if git diff --staged --quiet; then
-              echo "score unchanged; no commit needed"
-              exit 0
-            fi
-            git commit -m "compat-scores: update ${HEAD} score"
-            if git push origin compat-scores; then
-              echo "==> published ${HEAD} score on attempt $attempt"
-              exit 0
-            fi
-            echo "==> push rejected (likely concurrent update); retrying"
-            git reset --hard
-            attempt=$((attempt + 1))
-            sleep $((attempt * 2))
-          done
-          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
-          exit 1
+        run: node .github/scripts/compat-publish-score.mjs
 
       - name: Disk-pressure self-diagnosis on failure
         # Same self-diagnosis as the prometheus job: the harness tears the

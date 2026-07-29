@@ -46,6 +46,35 @@ One implementation means a new rule guards BOTH lanes at once.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+- **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
+  gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
+  what it CONTAINS, so a build artefact that is `git add`-ed by accident
+  survives indefinitely. Two scans close that class. `binary` rejects any
+  tracked blob that is compiled output, detected by CONTENT — an executable
+  magic (ELF / Mach-O / PE / WebAssembly / ar archive) at offset 0, or a NUL
+  byte inside the same leading window git itself sniffs when it classifies a
+  blob as binary — and never by extension, since a Go binary built from
+  `./cmd/<name>` carries none. Submodule gitlinks and symlinks are skipped
+  (neither stores content in this repository). `root-allowlist` holds the
+  repository root to `ROOT_ALLOWLIST`, an exhaustive list rather than a
+  pattern: dotfiles are enumerated too, so a stray `.perf-profile` is caught
+  exactly like a stray `perf-profile`. The comparison runs in BOTH directions
+  — an allow-list entry that is no longer tracked is also an error, so the
+  list cannot rot into a pre-approval for a future file of the same name. The
+  gate fails CLOSED: a tracked blob that cannot be read from the working tree
+  is retried out of the object store and, failing that, exits non-zero rather
+  than being assumed to be text. Since `git ls-files` is the input, the
+  companion fix for anything this catches is a `git rm` PLUS a `.gitignore`
+  rule — the ignore rule is what stops it coming back.
+  `repo-hygiene.test.mjs` is the `node --test` guard (cheap discipline lane,
+  run as the step BEFORE the gate): it builds a throwaway git repo, plants a
+  synthetic ELF blob and a stray root file, and asserts a non-zero exit
+  naming each, plus a clean exit on a conforming fixture — a gate never shown
+  to fail is indistinguishable from one that does nothing.
+  - Env: `CHECK` is one of `binary`, `root-allowlist`; `REPO_ROOT` (optional)
+    points the scan at another checkout (the self-test's fixture repo).
+  - Exit: `0` clean, `1` on any tracked binary / unsanctioned or rotted root
+    entry / unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
@@ -233,6 +262,30 @@ One implementation means a new rule guards BOTH lanes at once.
     `1` on a parse failure / `helm push` / `oras push` error, or when the
     version-gate cannot definitively determine existence (fails closed, with one
     `::error::`).
+- **`release-gate-drift.mjs`** — `release-gate-drift.yml`, the weekly `drift`
+  job. Rot detector for the EXPECTED set `release-preflight.mjs` gates on. Reads
+  `RELEASE_REQUIRED_CHECKS` + `RELEASE_INFORMATIONAL_CHECKS` out of release.yml
+  itself (one copy of the data, one parser; an empty parse throws rather than
+  comparing against nothing) and checks two directions the preflight structurally
+  cannot see from the inside. PROTECTION DRIFT: a live branch-protection required
+  context in neither list is a lane every PR must pass and the release does not
+  wait for — the dangerous direction, and invisible to an allow-list of names to
+  wait for. LANE DRIFT: a required name that posted no check-run anywhere in the
+  scanned commit window no longer matches a lane, so the next release waits out
+  its full window and aborts mid-publish. The window spans many commits because a
+  single commit's check-runs are a subset of the lane inventory (a docs-only push
+  skips `check`); absent from every commit means dead, not skipped. Pure exported
+  `parseBlockScalar` / `parseCheckLists` / `protectionDrift` / `laneDrift` plus a
+  `--self-test` the job runs first.
+  - Env: `GITHUB_TOKEN` (must be repo-ADMIN — branch protection is unreadable
+    with the default workflow token at any `permissions:` level, so the workflow
+    passes `RELEASE_PAT`), `GITHUB_REPOSITORY`, `GITHUB_API_URL` (default
+    `https://api.github.com`), `DRIFT_BRANCH` (default `main`), `DRIFT_HISTORY`
+    (default 20 commits), `RELEASE_WORKFLOW` (default
+    `.github/workflows/release.yml`).
+  - Exit: `0` when both directions are clean; `1` on any drift, an API read
+    failure, an unparseable release.yml, or protection reporting zero contexts
+    (fails closed — unreadable protection is not a clean bill of health).
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
   green-check guard for BOTH release paths, gated on the publish decision rather
   than on the branch: it runs whenever `app_publish` or `chart_publish` is true,
@@ -318,13 +371,19 @@ One implementation means a new rule guards BOTH lanes at once.
     never fail an already-published release); `1` only on a gross wiring error
     (missing repo/token) before any publish-affecting work.
 - **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`).
+  The job runs a `macos-latest` + `ubuntu-latest` matrix, so `brew install` is
+  exercised under Linuxbrew as well as on a Mac — cerberus is a Linux-first
+  server binary, and a cask broken for Linux is indistinguishable from a
+  healthy one when only macOS installs it. The Ubuntu image ships Homebrew
+  under `/home/linuxbrew` but leaves it off `PATH`; one Linux-only step adds
+  it.
   Proves the Homebrew tap actually serves the version that just shipped. Reads
-  `Formula/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
-  is the anti-vacuous check, because a deleted `brews:` block or an expired
-  `HOMEBREW_TAP_GITHUB_TOKEN` leaves a STALE formula that a warm `brew install`
+  `Casks/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
+  is the anti-vacuous check, because a deleted `homebrew_casks:` block or an expired
+  `HOMEBREW_TAP_GITHUB_TOKEN` leaves a STALE cask that a warm `brew install`
   would install happily. Then it branches EXPLICITLY on the release kind rather
   than skipping: a stable `X.Y.Z` on the newest release line requires the
-  formula to declare exactly that version, then installs it and asserts the
+  cask to declare exactly that version, then installs it and asserts the
   binary lands under `brew --prefix`,
   that `cerberus --version` EQUALS the bare release version (string equality, so
   an off-by-`v` or a stale ldflag cannot pass a substring test), and that two
@@ -332,31 +391,68 @@ One implementation means a new rule guards BOTH lanes at once.
   `config-docs -check` against `REPO_ROOT`'s `docs/configuration.md`. The other
   two release shapes take negative branches, because `.goreleaser.yml`'s
   `skip_upload` template keeps both out of the tap: an `rc.*` must NOT have
-  written a formula, and a release that is not the highest stable tag (a
-  maintenance backport) must have left a STRICTLY NEWER formula in place — the
+  written a cask, and a release that is not the highest stable tag (a
+  maintenance backport) must have left a STRICTLY NEWER cask in place — the
   regression that let v1.12.1, cut after v1.13.0, downgrade every
   `brew install`. `migrate gate` / `migrate verify` are deliberately unused —
   they exit non-zero on a legitimate no-go, so they cannot distinguish a broken
-  binary from a correct verdict. Pure exports `isStableRelease(version)`,
-  `formulaVersion(rbSource)` (declaration, then archive-name fallback, then
-  THROWS — an unparseable formula never degrades into a pass),
-  `compareVersions(a, b)` and `verdict({version, formulaSource, isLatest})`,
+  binary from a correct verdict. On EVERY branch — including the two that
+  install nothing — the cask source is also checked for cross-platform shape:
+  all four `darwin_amd64` / `darwin_arm64` / `linux_amd64` / `linux_arm64`
+  artefacts present, and no macOS-only artifact stanza (`app`, `pkg`,
+  `installer`, …), which is the sole condition Homebrew's Linux cask installer
+  refuses on. Whatever cask the tap holds is what every `brew install` gets, so
+  a Linux-broken cask is broken today regardless of which release was allowed
+  to write it. Pure exports `isStableRelease(version)`,
+  `caskVersion(rbSource)` (declaration, then archive-name fallback, then
+  THROWS — an unparseable cask never degrades into a pass),
+  `caskPortabilityProblems(rbSource)`,
+  `formulaShadowProblems(tapPaths)` / `tapShadowingFormulaPaths(tapPaths)` — the
+  tap must not still serve the `Formula/cerberus.rb` it held before
+  `.goreleaser.yml` moved off `brews:`, because Homebrew resolves a bare
+  `tsouza/tap/cerberus` to the FORMULA when a tap holds both, and goreleaser
+  deletes nothing it did not write; the whole tap listing is matched against
+  every root Homebrew loads formulae from, so a sharded or relocated formula
+  cannot slip past — `installedArtifactProblems(caskList, formulaList)` — which
+  of the two the bare install actually resolved to, read off
+  `brew list --{cask,formula} --versions` —
+  `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.
   - Env: `RELEASE_VERSION` (the BARE `X.Y.Z[-rc.N]`, i.e.
     `needs.gate.outputs.app_version`, never the `v`-prefixed tag),
     `RELEASE_IS_LATEST` (`"true"`/`"false"` — whether this is the highest stable
-    tag, i.e. the line that owns the tap's single formula; required, and
+    tag, i.e. the line that owns the tap's single cask; required, and
     rejected unless it is exactly one of those two words, since it selects the
     assertion branch), `GITHUB_TOKEN` (contents:read on the tap),
     `GITHUB_API_URL` (default `https://api.github.com`), `REPO_ROOT`
     (checkout root, for the `config-docs -check` payload).
-  - Exit: `0` when the formula state matches the release kind and (newest stable
+  - Exit: `0` when the cask state matches the release kind and (newest stable
     line only) the installed binary passes every assertion; `1` on a stale /
-    missing / unparseable formula, a prerelease formula that should not exist, a
-    tap formula that a backport overwrote, a missing or unrecognised
+    missing / unparseable cask, a prerelease cask that should not exist, a
+    tap cask that a backport overwrote, a missing or unrecognised
     `RELEASE_IS_LATEST`, a failed install, a version mismatch, or a failing
     payload verb.
+- **`goreleaser-deprecations.mjs`** — `ci.yml`, the `lint` job. Fails the build
+  when `.goreleaser.yml` uses any goreleaser feature upstream has deprecated.
+  `goreleaser check` prints a deprecation as an advisory line and still exits
+  `0`, and release.yml (which has no `pull_request:` trigger) is the only other
+  place goreleaser runs — so a deprecation notice first becomes visible in the
+  scroll-back of a release that already published, which is how `brews:` stayed
+  in the config for several releases after `homebrew_casks:` replaced it. The
+  gate reads the real tool's output rather than scanning the YAML for a
+  hardcoded list of dead keys, so a deprecation announced upstream tomorrow is
+  caught without this module knowing about it in advance. The CI step installs
+  the same `distribution` / `version` release.yml pins, so the gate reports
+  exactly what the next release run will warn about. Pure export
+  `deprecationsIn(output)` returns the DEDUPLICATED notices in a transcript
+  (goreleaser repeats one line per offending block, and reporting the same
+  migration N times obscures how many distinct ones are outstanding), covered by
+  `goreleaser-deprecations.test.mjs` on the same lane.
+  - Env: `GORELEASER_CONFIG` (default `.goreleaser.yml`), `GORELEASER_BIN`
+    (default `goreleaser`).
+  - Exit: `0` when the config validates with no deprecation notices; `1` on any
+    notice, or when `goreleaser check` itself fails or cannot run.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
@@ -384,17 +480,65 @@ One implementation means a new rule guards BOTH lanes at once.
   - Exit: always `0` (housekeeping; never gates).
 - **`compat-ratchet.mjs`** — `compatibility.yml`, the three
   `Parity-regression ratchet` steps. The GATE that makes the required
-  `compatibility/{prometheus,loki,tempo}` checks fail on a numeric parity
+  `compatibility/{prometheus,loki,tempo}` checks fail on a parity
   regression (not just on infra breakage). Compares the run's
-  `compat-score.json` against the committed floor in
-  `compatibility/parity-baseline.json` and fails when `passed` or `total`
-  drops below baseline. Integer comparison only, so it can't flake. Not
-  an allow-list — pins the aggregate floor, never individual cases.
+  `compat-cases.json` roster against the committed roster in
+  `compatibility/parity-baseline.json` and fails on any case that moved:
+  REGRESSED (recorded case now diverges), VANISHED (recorded case did not
+  run), ARRIVED-FAILING (new case diverges on arrival), UNRECORDED (new
+  case passes but nothing gates on it yet). Gating on case identity rather
+  than a count is the point — a count cannot tell a swap from a steady
+  state. Case IDs come from static corpus identity, so it can't flake. Not
+  an allow-list: the roster names the cases that must pass, and the
+  baseline records full parity (`passed == total == cases.length`), so
+  there is no shape in which a divergence is recordable as acceptable.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
-    head's `compat-score.json`), `BASELINE` (optional; default
+    head's `compat-score.json`), `CASES` (path to that head's
+    `compat-cases.json`), `BASELINE` (optional; default
     `compatibility/parity-baseline.json`).
-  - Exit: `0` at or above baseline, `1` on a below-baseline regression or
-    a missing/malformed score or baseline.
+  - Exit: `0` when the run matches the baseline roster exactly, `1` on any
+    moved case or a missing/malformed/internally-inconsistent score,
+    cases, or baseline file.
+  - Tests: `compat-ratchet.test.mjs` (run in `ci.yml`), which drives the
+    script over fixture artefacts and includes the negative control — a
+    case regresses while an unrelated one starts passing, so every
+    aggregate count is satisfied and the gate must still fail.
+- **`compat-baseline-sync.mjs`** — not wired into a workflow; run by hand
+  when a corpus change legitimately moves a head's roster. Rewrites
+  `heads.<head>` in `compatibility/parity-baseline.json` from a run's
+  `compat-cases.json` artefact, sorted and with counts derived from the
+  roster, so the committed list cannot drift from what the harness ran.
+  Refuses to write a roster that omits a failing case — that would make it
+  an allow-list generator.
+  - Args: path to a `compat-cases.json` (its `head` field selects the
+    entry to rewrite).
+  - Env: `BASELINE` (optional; default
+    `compatibility/parity-baseline.json`).
+  - Exit: `0` on a rewritten (or already-current) entry, `1` on bad
+    arguments, unreadable/malformed input, or a run containing a failing
+    case.
+- **`compat-publish-score.mjs`** — `compatibility.yml`, the three
+  `Publish score to compat-scores branch` steps. Publishes the head's
+  shields.io endpoint-badge JSON to `badges/<head>.json` on the
+  `compat-scores` orphan branch, which the README badges read over the raw
+  URL. Projects the score file down to the four endpoint-schema keys
+  (shields.io renders an `invalid properties` title if it sees cerberus's
+  `passed` / `total` / `percent`), bootstraps the orphan branch on first
+  run, and retries a rejected push so the three head jobs can race the same
+  branch. The workflow's `if:` gate keeps it to push-to-`main`. All git work
+  happens in a throwaway `git worktree` under `$RUNNER_TEMP` that is torn
+  down on every exit path, so the job's checkout is never switched: later
+  steps and the POST phase of a local composite action such as
+  `./.github/actions/setup-buildx` resolve their files out of it.
+  - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SRC` (path to that
+    head's `compat-score.json`); `RUNNER_TEMP` (optional; the OS temp dir
+    off-runner) sites the scratch worktree.
+  - Exit: `0` published / already current / no score file to publish; `1`
+    on a wiring slip, an unreadable score, or every push attempt rejected.
+  - Tests: `compat-publish-score.test.mjs` (run in `ci.yml`), which
+    publishes against a real bare-repo remote in a temp dir and asserts on
+    every scenario that the checkout came out on its original branch with
+    its files and scratch-worktree count unchanged.
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,
@@ -650,6 +794,21 @@ One implementation means a new rule guards BOTH lanes at once.
     `GIT_USER_EMAIL` (default `github-actions[bot]` identity).
   - Exit: `0` nothing to do or fixup pushed; `1` on a `go mod tidy` or git
     failure.
+- **`pull-buildkit-image.mjs`** — `.github/actions/setup-buildx` (the composite
+  every image-building job goes through). Acquires the BuildKit bootstrap image
+  into the local docker daemon, with retry, before
+  `docker/setup-buildx-action` boots a builder from it. The
+  `docker-container` driver pulls `moby/buildkit:<tag>` single-attempt inside
+  its own bootstrap — a step no `run:`-level retry can reach — so one reset
+  connection to Docker Hub fails the job before a single image is built. buildx
+  falls back to a locally present copy when its pull fails, which is what makes
+  pre-acquiring it sufficient; the module therefore asserts presence in the
+  daemon rather than a successful pull. The composite passes the same image ref
+  to `driver-opts: image=…`, so the warmed ref and the booted ref cannot drift.
+  - Env: `BUILDKIT_IMAGE` (required — image ref to acquire),
+    `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
+    step, attempt N sleeps N × this).
+  - Exit: `0` when the image is in the local daemon, `1` when it is not.
 
 ## Notes
 

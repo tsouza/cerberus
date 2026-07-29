@@ -7,7 +7,7 @@
 // so a count can never silently drift. It is assert-from-source, NOT a pinned
 // literal (which would just relocate the staleness into a second place).
 //
-// Two assertions:
+// Three assertions:
 //
 //   1. forbid-skip CHECK count — the canonical number of discipline scans is
 //      the number of `case '<name>':` arms actually dispatched by the CHECK
@@ -23,6 +23,14 @@
 //      sub-letters = 14). The gate asserts every "N-layer test map" claim in
 //      CLAUDE.md (and any prose layer-count claim in test-strategy.md /
 //      README.md) matches that live heading count.
+//
+//   3. compat parity floors — README.md and docs/test-strategy.md route
+//      readers to compat-ratchet.mjs's header for the canonical explanation of
+//      the parity gate, and that header states each head's committed floor
+//      ("prometheus 737/737"). The canonical numbers are the `heads` block of
+//      compatibility/parity-baseline.json; the gate asserts the header states
+//      exactly one floor per head and that each matches the baseline, so
+//      bumping a floor cannot leave the explanation behind.
 //
 // Robustness: each count is parsed from the actual structure (switch arms /
 // markdown headings), never from a string match on the prose it validates, so
@@ -51,6 +59,8 @@ const FORBID_SKIP_DOC = join(REPO, 'docs', 'forbid-skip.md');
 const TEST_STRATEGY_DOC = join(REPO, 'docs', 'test-strategy.md');
 const CLAUDE_DOC = join(REPO, 'CLAUDE.md');
 const README_DOC = join(REPO, 'README.md');
+const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
+const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline.json');
 
 // --- source-count derivations (the "from source" half) ---------------------
 
@@ -81,6 +91,23 @@ export function countTestLayers(src) {
     ints.add(Number(m[1]));
   }
   return { count: ints.size, ints: [...ints].sort((a, b) => a - b) };
+}
+
+// parityFloorClaims — the floors compat-ratchet.mjs's header states, one entry
+// per head name it is asked about. The source is line-comment prose, so a
+// claim can wrap across `//` continuations ("prometheus 737/737, loki\n//
+// 116/116"); comment markers are stripped and whitespace collapsed first so a
+// wrapped claim reads the same as an unwrapped one. Returns every match per
+// head, because "how many times is this claimed" is itself an assertion: zero
+// means the wording drifted out from under the gate.
+export function parityFloorClaims(src, heads) {
+  const prose = src.replace(/^[ \t]*\/\/[ \t]?/gm, ' ').replace(/\s+/g, ' ');
+  const out = {};
+  for (const head of heads) {
+    const re = new RegExp(`\\b${head}\\s+(\\d+)/(\\d+)\\b`, 'g');
+    out[head] = [...prose.matchAll(re)].map((m) => ({ passed: Number(m[1]), total: Number(m[2]) }));
+  }
+  return out;
 }
 
 // --- doc-claim extraction (the "doc-stated integer" half) ------------------
@@ -159,6 +186,44 @@ function assertClaims({ label, expected, docs, patterns }) {
   return ok;
 }
 
+// assertParityFloors compares the floors stated in compat-ratchet.mjs's header
+// against the committed baseline it describes. Exactly one claim per head: a
+// second one is a contradiction, and none means the prose stopped stating what
+// the gate validates.
+function assertParityFloors() {
+  const baseline = JSON.parse(readFileSync(PARITY_BASELINE, 'utf8'));
+  const heads = Object.keys(baseline.heads ?? {});
+  if (heads.length === 0) {
+    error('parity-floor: compatibility/parity-baseline.json declares no heads to validate against');
+    return false;
+  }
+  const claims = parityFloorClaims(readFileSync(COMPAT_RATCHET_MJS, 'utf8'), heads);
+  let ok = true;
+  for (const head of heads) {
+    const { passed, total } = baseline.heads[head];
+    const found = claims[head];
+    if (found.length !== 1) {
+      error(
+        `parity-floor: compat-ratchet.mjs states ${found.length} "${head} <passed>/<total>" floors, ` +
+          `expected exactly 1 — README.md and docs/test-strategy.md send readers there for the ` +
+          `canonical numbers, so the header must state each head's floor once`,
+        { file: '.github/scripts/compat-ratchet.mjs' },
+      );
+      ok = false;
+      continue;
+    }
+    if (found[0].passed !== passed || found[0].total !== total) {
+      error(
+        `parity-floor: compat-ratchet.mjs claims ${head} ${found[0].passed}/${found[0].total} but ` +
+          `compatibility/parity-baseline.json has ${passed}/${total}`,
+        { file: '.github/scripts/compat-ratchet.mjs' },
+      );
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 function runAssertions() {
   const forbidSrc = readFileSync(FORBID_SKIP_MJS, 'utf8');
   const { count: fsCount, names: fsNames } = countForbidSkipChecks(forbidSrc);
@@ -186,10 +251,12 @@ function runAssertions() {
     patterns: TEST_LAYER_CLAIM_PATTERNS,
   });
 
-  if (forbidOk && layerOk) {
+  const parityOk = assertParityFloors();
+
+  if (forbidOk && layerOk && parityOk) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
-        `(forbid-skip=${fsCount}, test-layers=${layerCount})`,
+        `(forbid-skip=${fsCount}, test-layers=${layerCount}, parity floors match the baseline)`,
     );
     return 0;
   }
@@ -282,6 +349,24 @@ function selfTest() {
     `layer gate would ACCEPT a doc claiming the real ${realLayers}`,
     realLayerClaims.length > 0 && realLayerClaims.every((c) => c.value === realLayers),
   );
+
+  // 5. The parity-floor extractor reads a wrapped comment claim, and the gate
+  //    rejects both a drifted number and a claim that disappeared.
+  const heads = ['prometheus', 'loki', 'tempo'];
+  const wrapped = ['// floors are prometheus 718/718, loki', '// 116/116, tempo 48/48 — see the baseline.'].join('\n');
+  const wrappedClaims = parityFloorClaims(wrapped, heads);
+  check(
+    'parity extractor reads a claim wrapped across // continuations',
+    wrappedClaims.loki.length === 1 && wrappedClaims.loki[0].passed === 116 && wrappedClaims.loki[0].total === 116,
+  );
+  const driftedClaims = parityFloorClaims('// floors are prometheus 574/574.', heads);
+  check(
+    'parity gate would REJECT a header claiming prometheus 574/574 against a 718/718 baseline',
+    driftedClaims.prometheus.length === 1 && driftedClaims.prometheus[0].passed !== 718,
+  );
+  check('parity gate would REJECT a header that states no floor at all', driftedClaims.tempo.length === 0);
+  // The REAL header must match the REAL baseline — the assertion the gate runs.
+  check('real compat-ratchet.mjs floors match compatibility/parity-baseline.json', assertParityFloors());
 
   if (failures === 0) {
     notice(`doc-counts --self-test: all ${'meta-assertions'} passed`);

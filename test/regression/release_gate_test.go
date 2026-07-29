@@ -25,7 +25,7 @@ import (
 //     public before anything drove the built image;
 //   - `continue-on-error` on brew-smoke: the job becomes decoration;
 //   - `skip_upload: auto` removed from .goreleaser.yml: prereleases start
-//     overwriting the tap formula, which is the thing brew-smoke's prerelease
+//     overwriting the tap cask, which is the thing brew-smoke's prerelease
 //     branch asserts against.
 const (
 	releaseWorkflowPath   = "../../.github/workflows/release.yml"
@@ -51,7 +51,7 @@ const (
 
 	// "Is this tag the highest stable release?" — the one signal that decides
 	// which release line may take a resource only one line can hold: the rolling
-	// `:latest` images, the Homebrew formula, and the GitHub `Latest` pointer.
+	// `:latest` images, the Homebrew cask, and the GitHub `Latest` pointer.
 	releaseIsLatestEnv = "RELEASE_IS_LATEST"
 	isLatestOutput     = "is_latest"
 	latestFlipToken    = "--latest="
@@ -245,8 +245,22 @@ func TestBrewSmokeIsBlockingAndOrderedAfterPublish(t *testing.T) {
 			"a broken tap would report green. Body:\n%s", releaseWorkflowPath, brewSmokeJob, job)
 	}
 
-	// The two no-formula branches of brew-smoke.mjs assert that a prerelease and
-	// a maintenance backport did NOT write a formula. Those assertions are only
+	// The cask serves both platforms, and cerberus is a Linux-first server
+	// binary. A macOS-only smoke reports green on a cask that no Linux operator
+	// can install, because `brew install` failing under Linuxbrew looks
+	// identical to it working when you only ever run it on a Mac. Dropping
+	// either leg from the matrix is a silent de-gate of exactly that, so the
+	// pair is pinned rather than left to review.
+	for _, os := range []string{"macos-latest", "ubuntu-latest"} {
+		if !strings.Contains(job, os) {
+			t.Fatalf("%s job %q no longer runs on %q. The cask declares darwin AND linux artefacts, so "+
+				"smoking one platform leaves the other asserted but never installed. Body:\n%s",
+				releaseWorkflowPath, brewSmokeJob, os, job)
+		}
+	}
+
+	// The two no-cask branches of brew-smoke.mjs assert that a prerelease and
+	// a maintenance backport did NOT write a cask. Those assertions are only
 	// meaningful while goreleaser is still configured to leave both taps alone,
 	// which is one template covering both conditions.
 	//
@@ -258,7 +272,7 @@ func TestBrewSmokeIsBlockingAndOrderedAfterPublish(t *testing.T) {
 	for _, want := range []string{releaseIsLatestEnv, "auto"} {
 		if !strings.Contains(skipUpload, want) {
 			t.Fatalf("%s has `skip_upload: %s`, which does not gate on %q. brew-smoke's prerelease and "+
-				"maintenance branches assert that neither wrote a formula, and would start failing every "+
+				"maintenance branches assert that neither wrote a cask, and would start failing every "+
 				"rc and every backport", goreleaserPath, skipUpload, want)
 		}
 	}
@@ -287,7 +301,7 @@ func valueOfYAMLKey(t *testing.T, body, key string) string {
 
 // TestOnlyTheNewestLineOwnsTheSharedReleaseResources pins the fix for v1.12.1 —
 // a backport cut after v1.13.0 — taking two resources that only one release line
-// can hold at a time: the Homebrew formula (it overwrote v1.13.0's, downgrading
+// can hold at a time: the Homebrew cask (it overwrote v1.13.0's, downgrading
 // every `brew install`) and the GitHub `Latest` pointer (v1.11.3, published last,
 // claimed it). Both defaults are silently wrong for a maintenance line:
 // `skip_upload: auto` filters only prereleases, and GitHub's release-update
@@ -330,7 +344,7 @@ func TestOnlyTheNewestLineOwnsTheSharedReleaseResources(t *testing.T) {
 	brew := workflowJobBody(t, workflow, brewSmokeJob)
 	if !strings.Contains(brew, releaseIsLatestEnv) {
 		t.Fatalf("%s job %q does not pass %s, so the smoke cannot assert that a backport left the "+
-			"newest line's formula in place. Body:\n%s",
+			"newest line's cask in place. Body:\n%s",
 			releaseWorkflowPath, brewSmokeJob, releaseIsLatestEnv, brew)
 	}
 }
@@ -411,5 +425,66 @@ func TestEOLRetireUsesTheTokenThatBypassesTheReleaseRuleset(t *testing.T) {
 			"github-actions[bot], which the release/*.x ruleset refuses, and the job is fail-open — "+
 			"the branch would survive with the release still green",
 			releaseWorkflowPath, retireStep)
+	}
+}
+
+// release-gate-drift.yml watches RELEASE_REQUIRED_CHECKS for rot: a protected
+// context nobody listed (the release publishes past a lane every PR must pass)
+// or a listed name nothing posts (the next release waits out its window and
+// aborts mid-publish). Being schedule-only, it has the same blind spot the
+// release workflow has — no PR ever runs it — so the ways it can degrade to
+// decoration are invisible in a diff:
+//
+//   - the live comparison step dropped, leaving only `--self-test`: the weekly
+//     run goes green every week while comparing nothing;
+//   - RELEASE_PAT swapped for the default GITHUB_TOKEN: branch protection is
+//     unreadable to github-actions[bot] at any `permissions:` level, so the job
+//     reds every week until someone deletes it as noise;
+//   - the schedule removed: the detector survives as a manual-dispatch button
+//     nobody presses.
+func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
+	t.Parallel()
+
+	const (
+		driftWorkflowPath = "../../.github/workflows/release-gate-drift.yml"
+		driftScript       = "release-gate-drift.mjs"
+		selfTestFlag      = "--self-test"
+	)
+
+	body := readFileString(t, driftWorkflowPath)
+
+	if !strings.Contains(body, "schedule:") {
+		t.Fatalf("%s has no schedule: trigger. A rot detector that only runs on manual dispatch "+
+			"reports drift after the release it was meant to protect", driftWorkflowPath)
+	}
+
+	// The load-bearing assertion: at least one invocation WITHOUT the self-test
+	// flag. A file that mentions the script only inside a `--self-test` step is
+	// the exact hollow-green shape this pin exists to reject.
+	live := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, driftScript) && !strings.Contains(line, selfTestFlag) {
+			live++
+		}
+	}
+	if live == 0 {
+		t.Fatalf("%s never runs %s without %s — the workflow proves its own logic and compares it "+
+			"against nothing, so the gate is green whatever branch protection says",
+			driftWorkflowPath, driftScript, selfTestFlag)
+	}
+
+	if !strings.Contains(body, "secrets.RELEASE_PAT") {
+		t.Fatalf("%s no longer passes secrets.RELEASE_PAT. Reading a branch's protection settings "+
+			"needs repo-admin rights, which the default GITHUB_TOKEN lacks at every permissions: "+
+			"level, so the live comparison cannot run at all", driftWorkflowPath)
+	}
+
+	// The pure half has to stay on a PR lane, for the same reason
+	// release-preflight.test.mjs does: otherwise a logic regression sits
+	// undetected until the next weekly run.
+	ci := readFileString(t, "../../.github/workflows/ci.yml")
+	if !strings.Contains(ci, driftScript+" "+selfTestFlag) {
+		t.Fatalf("ci.yml no longer runs %s %s. The detector's parse and both drift comparisons "+
+			"would then be unexercised between weekly runs", driftScript, selfTestFlag)
 	}
 }

@@ -3549,27 +3549,74 @@ func TestVectorSetOpProjectionOutputName_AliasBranch(t *testing.T) {
 	}
 }
 
-// TestVectorSetOpArmIsMatrixRangeWindow_OuterRangeBoundary kills the
-// CONDITIONALS_BOUNDARY/NEGATION at vector_set_op.go:270
-// (`v.OuterRange > 0`). A matrix RangeWindow (OuterRange>0) is matrix
-// shape; an instant RangeWindow (OuterRange==0) is not. The boundary
-// mutant `>= 0` would mis-classify the instant case as matrix.
-func TestVectorSetOpArmIsMatrixRangeWindow_OuterRangeBoundary(t *testing.T) {
+// TestVectorSetOpArmTimestampCol_OuterRangeBoundary kills the
+// CONDITIONALS_BOUNDARY/NEGATION on `v.OuterRange > 0` in
+// vectorSetOpArmTimestampCol. A matrix RangeWindow (OuterRange>0) is
+// matrix shape and reports its own timestamp column; an instant
+// RangeWindow (OuterRange==0) is not. The boundary mutant `>= 0` would
+// mis-classify the instant case as matrix.
+func TestVectorSetOpArmTimestampCol_OuterRangeBoundary(t *testing.T) {
 	t.Parallel()
-	matrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute}
-	if !vectorSetOpArmIsMatrixRangeWindow(matrix) {
-		t.Errorf("OuterRange>0 RangeWindow must be matrix shape")
+	view := &chplan.VectorSetOp{
+		MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
+		TimestampColumn: "TimeUnix", ValueColumn: "Value",
 	}
-	instant := &chplan.RangeWindow{OuterRange: 0}
-	if vectorSetOpArmIsMatrixRangeWindow(instant) {
-		t.Errorf("OuterRange==0 RangeWindow must NOT be matrix shape (boundary)")
+	matrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: "TimeUnix"}
+	if col, ok := vectorSetOpArmTimestampCol(matrix, view); !ok || col != "TimeUnix" {
+		t.Errorf("OuterRange>0 RangeWindow = (%q,%v), want (TimeUnix,true)", col, ok)
 	}
-	// Recurses past a wrapping Project / Filter.
-	if !vectorSetOpArmIsMatrixRangeWindow(&chplan.Project{Input: matrix}) {
-		t.Errorf("matrix detection must recurse through a Project wrapper")
+	instant := &chplan.RangeWindow{OuterRange: 0, TimestampColumn: "TimeUnix"}
+	if col, ok := vectorSetOpArmTimestampCol(instant, view); ok {
+		t.Errorf("OuterRange==0 RangeWindow = (%q,true), want matrix=false (boundary)", col)
 	}
-	if !vectorSetOpArmIsMatrixRangeWindow(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}) {
+	// A subquery-fed arm reduces over the inner grid's anchor, so its
+	// outer SELECT surfaces the timestamp under `anchor_ts`.
+	subq := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: chplan.RangeWindowAnchorColumn}
+	if col, ok := vectorSetOpArmTimestampCol(subq, view); !ok || col != chplan.RangeWindowAnchorColumn {
+		t.Errorf("subquery-fed RangeWindow = (%q,%v), want (%s,true)", col, ok, chplan.RangeWindowAnchorColumn)
+	}
+	// Recurses past a value-rewrite Project / a Filter — neither
+	// renames the anchor, so the matrix node's column still binds.
+	rewrite := &chplan.Project{Input: matrix, Projections: []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+	}}
+	if _, ok := vectorSetOpArmTimestampCol(rewrite, view); !ok {
+		t.Errorf("matrix detection must recurse through a value-rewrite Project wrapper")
+	}
+	if _, ok := vectorSetOpArmTimestampCol(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}, view); !ok {
 		t.Errorf("matrix detection must recurse through a Filter wrapper")
+	}
+}
+
+// TestVectorSetOpArmTimestampCol_StopsAtCanonicalProject kills the
+// CONDITIONALS_NEGATION on the canonical-Project guard in
+// vectorSetOpArmTimestampCol. A Project that already exposes the
+// canonical Sample tuple IS the arm's outermost SELECT, so it surfaces
+// the anchor under the set op's TimestampColumn. Walking past it reports
+// the RangeWindow's own column (`Timestamp` on the logs schema), which
+// that scope never exposes — ClickHouse then rejects the statement with
+// code 47 "Unknown expression identifier".
+func TestVectorSetOpArmTimestampCol_StopsAtCanonicalProject(t *testing.T) {
+	t.Parallel()
+	view := &chplan.VectorSetOp{
+		MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
+		TimestampColumn: "TimeUnix", ValueColumn: "Value",
+	}
+	logsMatrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute, TimestampColumn: "Timestamp"}
+	canonical := &chplan.Project{Input: logsMatrix, Projections: []chplan.Projection{
+		{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+	}}
+	if col, ok := vectorSetOpArmTimestampCol(canonical, view); !ok || col != "TimeUnix" {
+		t.Errorf("canonical Project over a logs matrix arm = (%q,%v), want (TimeUnix,true)", col, ok)
+	}
+	// A Filter above the canonical Project is transparent, so the stop
+	// still applies.
+	filtered := &chplan.Filter{Input: canonical, Predicate: &chplan.LitBool{V: true}}
+	if col, ok := vectorSetOpArmTimestampCol(filtered, view); !ok || col != "TimeUnix" {
+		t.Errorf("Filter over a canonical Project = (%q,%v), want (TimeUnix,true)", col, ok)
 	}
 }
 

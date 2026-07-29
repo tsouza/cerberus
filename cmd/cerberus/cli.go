@@ -29,14 +29,9 @@ func printVersion(w io.Writer) {
 // error line on failure: main() owns the single slog.Error + exit-code mapping.
 func newRootCmd(runServer func() error) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "cerberus",
-		Short: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse",
-		Long: "cerberus is an env-driven, stateless HTTP gateway that speaks the\n" +
-			"Prometheus, Loki, and Tempo wire formats and translates queries into\n" +
-			"ClickHouse SQL. Invoked with no subcommand it starts the server, reading\n" +
-			"all configuration from CERBERUS_* environment variables (see\n" +
-			"`cerberus config-docs`). Subcommands cover the offline migration preview\n" +
-			"(`migrate`) and the repo's documentation/analysis generators.",
+		Use:           "cerberus",
+		Short:         "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse",
+		Long:          rootLong(),
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,

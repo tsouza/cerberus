@@ -39,45 +39,91 @@ archives:
       - README.md
       - CHANGELOG.md
 
-# Homebrew formula published to the tsouza/homebrew-tap tap, so operators can
-# `brew install tsouza/tap/cerberus`. The tap holds ONE cerberus formula, so
-# only stable releases on the newest line write it — see skip_upload below. The
+# Homebrew cask published to the tsouza/homebrew-tap tap, so operators can
+# `brew install tsouza/tap/cerberus`. The tap holds ONE cerberus cask, so only
+# stable releases on the newest line write it — see skip_upload below. The
 # cross-repo push needs a PAT (the default GITHUB_TOKEN cannot push to another
 # repo); it is supplied by the HOMEBREW_TAP_GITHUB_TOKEN secret in release.yml.
 #
-# We use `brews:` (a Homebrew FORMULA), not `homebrew_casks:`, on purpose:
-# goreleaser is nudging toward casks, but casks are macOS-only, and cerberus is
-# a Linux-first server binary — a formula installs on both Linuxbrew and macOS.
-brews:
+# A CASK, not a `brews:` formula: a formula describes something Homebrew builds
+# from source, while a cask installs a pre-built artifact — which is exactly
+# what a release archive is. It is not a macOS-only choice, but NOT for the
+# reason casks are usually assumed to be Mac-bound, so the actual mechanism is
+# written down here rather than left to inference:
+#
+#   * The whole Linux gate is Homebrew's
+#     `extend/os/linux/cask/installer.rb#check_stanza_os_requirements`:
+#
+#         return if !cask.depends_on.requires_macos? &&
+#                   artifacts.all? { |artifact| supported_artifact?(artifact) }
+#         raise ::Cask::CaskError, "#{cask}: cask requires macOS."
+#
+#     A CONJUNCTION, so a cask installs on Linux only by satisfying both.
+#   * Clause 2, the artifacts: `supported_artifact?` rejects the sixteen classes
+#     in `MACOS_ONLY_ARTIFACTS` (`app`, `pkg`, `qlplugin`, `service`, …) and,
+#     separately, an `installer` that is a MANUAL install — the scripted form is
+#     fine. This cask's only artifact is `binary`, which is portable, so the
+#     install proceeds.
+#   * Clause 1, `depends_on macos:`, IS consulted on Linux — it is the first
+#     conjunct, not the inert stanza it is usually assumed to be off a Mac. What
+#     makes it harmless here is that `requires_macos?` is
+#     `@macos_bare_set_top_level || @macos_version_set_top_level ||
+#     @maximum_macos_set_top_level` (`cask/dsl/depends_on.rb`), i.e. only a
+#     TOP-LEVEL `depends_on macos:` sets it. The implicit `MacOSRequirement`
+#     Homebrew attaches to every cask does not, and goreleaser emits no
+#     `depends_on` at all, so it stays false.
+#   * `supports_linux?` is NOT the install-time predicate. Its only caller in
+#     all of Homebrew is `dev-cmd/generate-cask-ci-matrix.rb` — homebrew-cask's
+#     own CI runner selection, which has no bearing on a third-party tap. It
+#     returns FALSE for this cask (it requires the DSL `os` stanza, which
+#     goreleaser does not emit) even though `brew install` works fine.
+#
+# goreleaser emits `on_linux`/`on_intel`/`on_arm` url + sha256 pairs from the
+# `builds:` matrix above, so the cask carries real linux_amd64 / linux_arm64
+# artefacts. `brew-smoke.mjs` asserts that shape on every release, and the
+# `brew-smoke / ubuntu-latest` leg installs it on Linuxbrew for real — this
+# paragraph is checked by CI, not merely believed.
+homebrew_casks:
   - name: cerberus
     ids:
+      - cerberus
+    # Defaults to the cask name, which is already `cerberus`. Stated because
+    # brew-smoke.mjs asserts the installed binary resolves inside the brew
+    # prefix — the two have to agree on what gets linked into `bin`.
+    binaries:
       - cerberus
     repository:
       owner: tsouza
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    # Homebrew resolves a tap's formulae from `Formula/`, `HomebrewFormula/`,
-    # or the tap root, in that order — but goreleaser's `directory` defaults to
-    # EMPTY, i.e. the tap root, so v1.12.0 shipped `cerberus.rb` to the root.
-    # `Formula/` is the conventional layout, it is what `brew-smoke.mjs` pins
-    # (`TAP_FORMULA_PATH`), and it is the only one of the three that is not at
-    # risk from Homebrew's ongoing push to standardise tap layout. Pin it.
-    directory: Formula
+    # `Casks/` is both goreleaser's default and where Homebrew resolves a tap's
+    # casks from. Stated rather than inherited because brew-smoke.mjs pins the
+    # same path (`TAP_CASK_PATH`) and a silent drift between the two would make
+    # the smoke read a file no release writes.
+    directory: Casks
     homepage: "https://github.com/tsouza/cerberus"
     description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
-    license: "Apache-2.0"
     # `auto` on its own only keeps PRERELEASES out of the tap. A stable
     # BACKPORT is not a prerelease, so `auto` alone let v1.12.1 — cut after
     # v1.13.0 — write the tap formula and DOWNGRADE every `brew install` to the
     # older line. Gate on RELEASE_IS_LATEST too (release.yml computes it from
     # the highest stable tag, the same signal the rolling `:latest` images use),
-    # so only the newest release line ever owns the formula. `skip_upload` is
+    # so only the newest release line ever owns the cask. `skip_upload` is
     # templated in goreleaser's run phase and read back at publish time.
     skip_upload: '{{ if eq .Env.RELEASE_IS_LATEST "true" }}auto{{ else }}true{{ end }}'
-    install: |
-      bin.install "cerberus"
-    test: |
-      system "#{bin}/cerberus", "--version"
+    hooks:
+      post:
+        # The release binaries are not Apple-signed or notarised, so macOS
+        # quarantines them on download and the first run dies with "cerberus is
+        # damaged and can't be opened" — a broken install that the tap looks
+        # perfectly healthy for. Stripping the quarantine xattr is Homebrew's
+        # and goreleaser's documented workaround. Guarded on OS.mac? because
+        # there is no such attribute on Linux and `xattr` is not there to run.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/cerberus"]
+          end
 
 checksum:
   name_template: "checksums.txt"
@@ -88,123 +134,60 @@ snapshot:
 changelog:
   use: github-native
 
-dockers:
-  # Per-arch versioned image. Always pushed regardless of prerelease
-  # status. Tagged both `{{ .Version }}` (e.g. `1.0.0-RC1`, the
-  # goreleaser convention) and `v{{ .Version }}` (e.g. `v1.0.0-RC1`,
-  # the SemVer-with-`v` convention many ops tools default to).
-  - id: cerberus-amd64
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-amd64"
-    use: buildx
-    goos: linux
-    goarch: amd64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.description=Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+# Registry operations retry rather than failing the release on one slow
+# response. Stated rather than inherited -- these ARE goreleaser's defaults, but
+# "a transient registry timeout stopped the release one step short of shipping"
+# is a failure mode this repo has already been bitten by, so the retry belongs
+# where someone reading the publish config will see it.
+retry:
+  attempts: 10
+  delay: 10s
+  max_delay: 5m
 
-  - id: cerberus-arm64
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
-      - "docker.io/tsouza/cerberus:{{ .Version }}-arm64"
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-arm64"
-    use: buildx
-    goos: linux
-    goarch: arm64
+# One entry replaces the four `dockers` blocks and six `docker_manifests`
+# blocks this used to be. `dockers_v2` drives `docker buildx` directly, so the
+# multi-arch manifest is a product of listing `platforms` rather than a second
+# section that has to be kept in sync with the per-arch image names by hand.
+#
+# The per-arch `:{{ .Version }}-amd64` / `-arm64` tags the old shape published
+# are gone. They existed only as manifest inputs — nothing in this repo, the
+# chart, or the docs ever pulled one.
+#
+# Tagged both `{{ .Version }}` (e.g. `1.0.0-RC1`, the goreleaser convention)
+# and `v{{ .Version }}` (e.g. `v1.0.0-RC1`, the SemVer-with-`v` convention many
+# ops tools default to). Both registries get the identical tag set.
+dockers_v2:
+  - id: cerberus
+    ids:
+      - cerberus
     dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.description=Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-  # `latest-*` tags published ONLY for the HIGHEST stable release
-  # (RELEASE_IS_LATEST, computed in release.yml: tag == highest stable
-  # semver). A prerelease never advances `:latest`, AND a stable BACKPORT
-  # (e.g. v1.2.1 cut after v1.3.0) must not drag `:latest` backwards either.
-  - id: cerberus-amd64-latest
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:latest-amd64"
-      - "docker.io/tsouza/cerberus:latest-amd64"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    use: buildx
-    goos: linux
-    goarch: amd64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-  - id: cerberus-arm64-latest
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:latest-arm64"
-      - "docker.io/tsouza/cerberus:latest-arm64"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    use: buildx
-    goos: linux
-    goarch: arm64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-docker_manifests:
-  # Versioned multi-arch manifests — always published.
-  - name_template: "ghcr.io/tsouza/cerberus:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/tsouza/cerberus:v{{ .Version }}"
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
-  # `:latest` manifest — only the HIGHEST stable release (RELEASE_IS_LATEST):
-  # neither a prerelease nor a stable backport advances the rolling `:latest`.
-  - name_template: "ghcr.io/tsouza/cerberus:latest"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    image_templates:
-      - "ghcr.io/tsouza/cerberus:latest-amd64"
-      - "ghcr.io/tsouza/cerberus:latest-arm64"
-  # Docker Hub mirrors of the same manifests (same per-arch images, pushed to
-  # both registries in one build) — identical tag set and `:latest` gating.
-  - name_template: "docker.io/tsouza/cerberus:{{ .Version }}"
-    image_templates:
-      - "docker.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:{{ .Version }}-arm64"
-  - name_template: "docker.io/tsouza/cerberus:v{{ .Version }}"
-    image_templates:
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-amd64"
-      - "docker.io/tsouza/cerberus:v{{ .Version }}-arm64"
-  - name_template: "docker.io/tsouza/cerberus:latest"
-    skip_push: '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}false{{ else }}true{{ end }}'
-    image_templates:
-      - "docker.io/tsouza/cerberus:latest-amd64"
-      - "docker.io/tsouza/cerberus:latest-arm64"
+    images:
+      - ghcr.io/tsouza/cerberus
+      - docker.io/tsouza/cerberus
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{ .Version }}"
+      - "v{{ .Version }}"
+      # `:latest` moves ONLY for the HIGHEST stable release (RELEASE_IS_LATEST,
+      # computed in release.yml: tag == highest stable semver). A prerelease
+      # never advances it, AND a stable BACKPORT (e.g. v1.2.1 cut after v1.3.0)
+      # must not drag it backwards either. An empty tag is dropped, which is how
+      # dockers_v2 spells a conditional push.
+      - '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}latest{{ end }}'
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+      org.opencontainers.image.url: "https://github.com/tsouza/cerberus"
+      org.opencontainers.image.source: "https://github.com/tsouza/cerberus"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: "Apache-2.0"
+    # buildx attaches an SBOM attestation to the index. New with this shape --
+    # the old `dockers` blocks published none -- and it costs nothing: no extra
+    # secret, no extra tool, and it pairs with the binaries' SLSA provenance.
+    sbom: true
 
 release:
   # draft:true so goreleaser creates the GitHub release as a DRAFT (mutable)

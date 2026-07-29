@@ -68,6 +68,12 @@ type reportEnvelope struct {
 // emits per query. Empty strings + false booleans mean "passed";
 // any non-zero value means the case diverged.
 type reportResult struct {
+	// TestCase carries the case's identity. Only the query text is
+	// read: the upstream tester stamps the same start / end /
+	// resolution onto every row of a run (they come from the harness's
+	// pinned query window), so they identify the RUN, not the case.
+	TestCase reportTestCase `json:"testCase"`
+
 	// Diff is non-empty when the structural diff between the two
 	// backends reported a mismatch.
 	Diff string `json:"diff"`
@@ -79,6 +85,15 @@ type reportResult struct {
 	// UnexpectedSuccess is true when the case was tagged should_fail
 	// but actually succeeded.
 	UnexpectedSuccess bool `json:"unexpectedSuccess"`
+}
+
+// reportTestCase is the identity half of an upstream result row. The
+// upstream struct also carries skipComparison / shouldFail / start /
+// end / resolution; none of them distinguish one case from another in
+// this harness's configuration, so the query text is the whole
+// identity.
+type reportTestCase struct {
+	Query string `json:"query"`
 }
 
 // passed reports whether this case contributes to the "passed"
@@ -98,12 +113,13 @@ func run() error {
 	var (
 		reportPath = flag.String("report", "", "promql-compliance-tester report JSON (required)")
 		scorePath  = flag.String("score", "", "shields.io endpoint-badge score JSON output (required)")
+		casesPath  = flag.String("cases", "", "per-case parity sidecar JSON output (required)")
 		label      = flag.String("label", "PromQL compat", "badge label text")
 	)
 	flag.Parse()
 
-	if *reportPath == "" || *scorePath == "" {
-		return errors.New("both -report and -score are required")
+	if *reportPath == "" || *scorePath == "" || *casesPath == "" {
+		return errors.New("all of -report, -score and -cases are required")
 	}
 
 	data, err := os.ReadFile(*reportPath) //nolint:gosec // CLI-supplied trusted path
@@ -121,11 +137,31 @@ func run() error {
 	if err := score.Write(*scorePath, s); err != nil {
 		return fmt.Errorf("write score: %w", err)
 	}
+	if err := score.WriteCases(*casesPath, headName, caseSet(env.Results)); err != nil {
+		return fmt.Errorf("write cases: %w", err)
+	}
 
 	fmt.Fprintf(os.Stderr,
 		"==> score: passed=%d total=%d percent=%.2f color=%s -> %s\n",
 		passed, total, s.Percent, s.Color, *scorePath)
+	fmt.Fprintf(os.Stderr, "==> cases: %d -> %s\n", len(env.Results), *casesPath)
 	return nil
+}
+
+// headName is the harness identifier the ratchet keys its baseline
+// entry on; it must match compatibility/parity-baseline.json's
+// heads.<name> and the workflow's HEAD env var.
+const headName = "prometheus"
+
+// caseSet reduces the report rows to (identity, agreed) pairs. Every
+// row becomes a case — including the ones that diverged, because the
+// ratchet gates on the identity of what failed, not just how many did.
+func caseSet(results []reportResult) []score.Case {
+	cases := make([]score.Case, 0, len(results))
+	for _, r := range results {
+		cases = append(cases, score.Case{ID: r.TestCase.Query, Passed: r.passed()})
+	}
+	return cases
 }
 
 // tally derives (passed, total) from the report's per-result rows.
