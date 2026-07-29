@@ -55,6 +55,7 @@ func runDiff(args []string) error {
 		cerberusURL = fs.String("cerberus", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus HTTP base URL")
 		reportPath  = fs.String("report", envOr("REPORT_PATH", "/reports/diff.md"), "markdown report output path")
 		scorePath   = fs.String("score", envOr("SCORE_PATH", "/reports/compat-score.json"), "shields.io endpoint-badge score JSON output path")
+		casesPath   = fs.String("cases", envOr("CASES_PATH", "/reports/compat-cases.json"), "per-case parity roster JSON output path")
 		overall     = fs.Duration("timeout", 5*time.Minute, "overall driver timeout")
 		perReq      = fs.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout")
 		searchLimit = fs.Int("search-limit", 200, "Tempo /api/search ?limit= value")
@@ -138,6 +139,13 @@ func runDiff(args []string) error {
 	if err := score.Write(*scorePath, s); err != nil {
 		return fmt.Errorf("write score: %w", err)
 	}
+	// The per-case roster the parity ratchet gates on, derived from the
+	// SAME results slice as the score so the two artefacts can never
+	// disagree about what ran.
+	if err := score.WriteCases(*casesPath, headName, caseSet(results)); err != nil {
+		return fmt.Errorf("write cases: %w", err)
+	}
+	logger.Info("wrote per-case parity roster", "path", *casesPath, "cases", len(results))
 	logger.Info(
 		"wrote compat score",
 		"path", *scorePath,
@@ -163,11 +171,39 @@ func runDiff(args []string) error {
 func computeScore(results []CaseResult) (passed, total int) {
 	for _, r := range results {
 		total++
-		if r.HardError == "" && r.Diff.Equal && len(r.Assertions) == 0 {
+		if r.passed() {
 			passed++
 		}
 	}
 	return passed, total
+}
+
+// headName is the harness identifier the ratchet keys its baseline
+// entry on; it must match compatibility/parity-baseline.json's
+// heads.<name> and the workflow's HEAD env var.
+const headName = "tempo"
+
+// caseSet reduces the results to (identity, agreed) pairs for the
+// parity ratchet. The corpus case's endpoint + name is its identity —
+// both come from the committed TXTAR corpus, so the roster is stable
+// across runs even though the fixture anchor rolls with wall clock.
+// Diverging cases are included: the ratchet gates on WHICH cases
+// failed, not just how many.
+func caseSet(results []CaseResult) []score.Case {
+	cases := make([]score.Case, 0, len(results))
+	for _, r := range results {
+		cases = append(cases, score.Case{
+			ID:     r.Case.Endpoint + " | " + r.Case.Name,
+			Passed: r.passed(),
+		})
+	}
+	return cases
+}
+
+// passed is the single success predicate for a corpus case: it reached
+// both backends, the structural diff agreed, and no assertion fired.
+func (r CaseResult) passed() bool {
+	return r.HardError == "" && r.Diff.Equal && len(r.Assertions) == 0
 }
 
 // CaseResult is one corpus case's outcome. Populated incrementally

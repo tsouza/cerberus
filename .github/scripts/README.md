@@ -453,17 +453,43 @@ One implementation means a new rule guards BOTH lanes at once.
   - Exit: always `0` (housekeeping; never gates).
 - **`compat-ratchet.mjs`** — `compatibility.yml`, the three
   `Parity-regression ratchet` steps. The GATE that makes the required
-  `compatibility/{prometheus,loki,tempo}` checks fail on a numeric parity
+  `compatibility/{prometheus,loki,tempo}` checks fail on a parity
   regression (not just on infra breakage). Compares the run's
-  `compat-score.json` against the committed floor in
-  `compatibility/parity-baseline.json` and fails when `passed` or `total`
-  drops below baseline. Integer comparison only, so it can't flake. Not
-  an allow-list — pins the aggregate floor, never individual cases.
+  `compat-cases.json` roster against the committed roster in
+  `compatibility/parity-baseline.json` and fails on any case that moved:
+  REGRESSED (recorded case now diverges), VANISHED (recorded case did not
+  run), ARRIVED-FAILING (new case diverges on arrival), UNRECORDED (new
+  case passes but nothing gates on it yet). Gating on case identity rather
+  than a count is the point — a count cannot tell a swap from a steady
+  state. Case IDs come from static corpus identity, so it can't flake. Not
+  an allow-list: the roster names the cases that must pass, and the
+  baseline records full parity (`passed == total == cases.length`), so
+  there is no shape in which a divergence is recordable as acceptable.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
-    head's `compat-score.json`), `BASELINE` (optional; default
+    head's `compat-score.json`), `CASES` (path to that head's
+    `compat-cases.json`), `BASELINE` (optional; default
     `compatibility/parity-baseline.json`).
-  - Exit: `0` at or above baseline, `1` on a below-baseline regression or
-    a missing/malformed score or baseline.
+  - Exit: `0` when the run matches the baseline roster exactly, `1` on any
+    moved case or a missing/malformed/internally-inconsistent score,
+    cases, or baseline file.
+  - Tests: `compat-ratchet.test.mjs` (run in `ci.yml`), which drives the
+    script over fixture artefacts and includes the negative control — a
+    case regresses while an unrelated one starts passing, so every
+    aggregate count is satisfied and the gate must still fail.
+- **`compat-baseline-sync.mjs`** — not wired into a workflow; run by hand
+  when a corpus change legitimately moves a head's roster. Rewrites
+  `heads.<head>` in `compatibility/parity-baseline.json` from a run's
+  `compat-cases.json` artefact, sorted and with counts derived from the
+  roster, so the committed list cannot drift from what the harness ran.
+  Refuses to write a roster that omits a failing case — that would make it
+  an allow-list generator.
+  - Args: path to a `compat-cases.json` (its `head` field selects the
+    entry to rewrite).
+  - Env: `BASELINE` (optional; default
+    `compatibility/parity-baseline.json`).
+  - Exit: `0` on a rewritten (or already-current) entry, `1` on bad
+    arguments, unreadable/malformed input, or a run containing a failing
+    case.
 - **`compat-publish-score.mjs`** — `compatibility.yml`, the three
   `Publish score to compat-scores branch` steps. Publishes the head's
   shields.io endpoint-badge JSON to `badges/<head>.json` on the
