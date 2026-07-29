@@ -191,7 +191,9 @@ jobs:
           # on them would deadlock). A reusable workflow called from one of them
           # posts children as "<job> / <child>"; release-preflight.mjs matches
           # that prefix too, so release-artifact-migration's tier jobs are
-          # excluded without being named individually.
+          # excluded without being named individually. brew-smoke's per-OS
+          # matrix legs are named to the same "<job> / <child>" shape for the
+          # same reason — one entry below covers every leg.
           RELEASE_SELF_JOBS: gate,preflight,goreleaser,release-artifact-migration,publish,brew-smoke,chart-release
           # The EXPECTED set — exact check-run names that MUST have posted a run
           # on this commit. It is the branch-protection required set (see
@@ -474,13 +476,30 @@ jobs:
   #   - not the highest stable tag: the cask must declare a STRICTLY NEWER
   #     version, proving this publish did not overwrite the newest line's.
   brew-smoke:
-    name: brew-smoke
+    # BOTH platforms the cask serves. cerberus is a Linux-first server binary,
+    # so a macOS-only smoke would leave its primary install path asserted and
+    # unexercised — and `brew install` failing on Linux looks identical to it
+    # working, from a Mac. The Ubuntu leg is the one that proves goreleaser's
+    # `homebrew_casks:` block really is cross-platform.
+    #
+    # The `/` in the name is load-bearing: release-preflight.mjs excludes THIS
+    # run's own jobs by exact name or by the `<job> / <child>` prefix, so
+    # naming the legs `brew-smoke / <os>` keeps them covered by the existing
+    # `brew-smoke` entry in RELEASE_SELF_JOBS without a parallel list to
+    # maintain.
+    name: brew-smoke / ${{ matrix.os }}
     needs: [gate, goreleaser, publish]
     if: |
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
       needs.publish.result == 'success'
-    runs-on: ubuntu-latest
+    strategy:
+      # A Linux-only or macOS-only failure is the whole point of having two
+      # legs; cancelling the sibling would hide which platform broke.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
@@ -488,6 +507,22 @@ jobs:
       # registry against THIS commit's docs/configuration.md, so the release
       # tree has to be on disk.
       - uses: actions/checkout@v7
+
+      # The Ubuntu runner image DOES ship Homebrew (under /home/linuxbrew), it
+      # just leaves it off PATH, so `brew` is a bare ENOENT until its bin
+      # directory is added. v1.12.0 hit that ENOENT and it was read as "Ubuntu
+      # has no Homebrew", which is why this job was macOS-only for four
+      # releases. The macOS image links brew into PATH already, so the step is
+      # Linux-only. If a future image drops Homebrew entirely this fails loudly
+      # here rather than degrading the leg into a no-op.
+      - name: put Homebrew on PATH
+        if: runner.os == 'Linux'
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew || {
+            echo "::error::brew-smoke: the ${{ matrix.os }} image no longer ships Homebrew at /home/linuxbrew/.linuxbrew — the Linux leg needs an install step."
+            exit 1
+          }
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
 
       - name: brew-smoke self-test
         run: node --test .github/scripts/brew-smoke.test.mjs

@@ -371,6 +371,12 @@ One implementation means a new rule guards BOTH lanes at once.
     never fail an already-published release); `1` only on a gross wiring error
     (missing repo/token) before any publish-affecting work.
 - **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`).
+  The job runs a `macos-latest` + `ubuntu-latest` matrix, so `brew install` is
+  exercised under Linuxbrew as well as on a Mac — cerberus is a Linux-first
+  server binary, and a cask broken for Linux is indistinguishable from a
+  healthy one when only macOS installs it. The Ubuntu image ships Homebrew
+  under `/home/linuxbrew` but leaves it off `PATH`; one Linux-only step adds
+  it.
   Proves the Homebrew tap actually serves the version that just shipped. Reads
   `Casks/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
   is the anti-vacuous check, because a deleted `homebrew_casks:` block or an expired
@@ -390,9 +396,26 @@ One implementation means a new rule guards BOTH lanes at once.
   regression that let v1.12.1, cut after v1.13.0, downgrade every
   `brew install`. `migrate gate` / `migrate verify` are deliberately unused —
   they exit non-zero on a legitimate no-go, so they cannot distinguish a broken
-  binary from a correct verdict. Pure exports `isStableRelease(version)`,
+  binary from a correct verdict. On EVERY branch — including the two that
+  install nothing — the cask source is also checked for cross-platform shape:
+  all four `darwin_amd64` / `darwin_arm64` / `linux_amd64` / `linux_arm64`
+  artefacts present, and no macOS-only artifact stanza (`app`, `pkg`,
+  `installer`, …), which is the sole condition Homebrew's Linux cask installer
+  refuses on. Whatever cask the tap holds is what every `brew install` gets, so
+  a Linux-broken cask is broken today regardless of which release was allowed
+  to write it. Pure exports `isStableRelease(version)`,
   `caskVersion(rbSource)` (declaration, then archive-name fallback, then
   THROWS — an unparseable cask never degrades into a pass),
+  `caskPortabilityProblems(rbSource)`,
+  `formulaShadowProblems(tapPaths)` / `tapShadowingFormulaPaths(tapPaths)` — the
+  tap must not still serve the `Formula/cerberus.rb` it held before
+  `.goreleaser.yml` moved off `brews:`, because Homebrew resolves a bare
+  `tsouza/tap/cerberus` to the FORMULA when a tap holds both, and goreleaser
+  deletes nothing it did not write; the whole tap listing is matched against
+  every root Homebrew loads formulae from, so a sharded or relocated formula
+  cannot slip past — `installedArtifactProblems(caskList, formulaList)` — which
+  of the two the bare install actually resolved to, read off
+  `brew list --{cask,formula} --versions` —
   `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.

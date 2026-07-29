@@ -1235,10 +1235,24 @@ brew install tsouza/tap/cerberus
 
 This is wired via the goreleaser `homebrew_casks:` block. A *cask* is the right
 vehicle for a pre-built binary — a formula describes something Homebrew builds
-from source — and it is not a macOS-only choice: a cask that declares no
-`depends_on macos` reports `supports_linux?`, and Homebrew's cask installer gates
-on the cask's declared OS rather than on the host being a Mac, so one cask
-installs under Linuxbrew and macOS alike. Because the release binaries are
+from source — and it is not a macOS-only choice, though not for the reason casks
+are usually assumed to be Mac-bound. The entire Linux gate is Homebrew's
+`check_stanza_os_requirements`, which proceeds only when a cask declares no
+top-level `depends_on macos:` **and** every one of its artifacts is supported off
+a Mac, and otherwise raises `<cask>: cask requires macOS.`. Both conjuncts
+matter: `depends_on macos:` *is* consulted on Linux, contrary to folklore — what
+makes it harmless here is that `requires_macos?` is set only by a *top-level*
+`depends_on macos:`, so neither the implicit `MacOSRequirement` Homebrew attaches
+to every cask nor goreleaser's output (which declares no `depends_on` at all)
+trips it. The unsupported artifacts are the sixteen classes in
+`MACOS_ONLY_ARTIFACTS` (`app`, `pkg`, `service`, …) plus an `installer` in its
+`manual:` form — a scripted `installer` is portable. `supports_linux?` is not the
+install-time predicate at all; its only caller is homebrew-cask's own CI matrix
+generator, and it reports `false` for this cask even though `brew install` works.
+What makes cerberus installable under Linuxbrew is that
+its sole artifact is a plain `binary`, and that goreleaser emits `on_linux`
+url/sha256 pairs for `linux_amd64` and `linux_arm64` from the same `builds:`
+matrix that feeds the darwin ones. Because the release binaries are
 neither Apple-signed nor notarised, the cask carries a post-install hook that
 strips the `com.apple.quarantine` xattr, without which the first run on macOS
 dies with "cerberus is damaged and can't be opened".
@@ -1270,17 +1284,38 @@ a stale cask that an install would happily consume. A stable release must find
 the cask declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
 (`migrate schema`, `config-docs -check`) work from the installed binary. The
-install names `--cask` explicitly, so if the tap ever serves a same-named formula
-again the job fails loudly instead of installing that one and calling the cask
-healthy. The two shapes that write no cask are **not** skipped — each takes the
+install runs the bare `brew install tsouza/tap/cerberus` documented above rather
+than `brew install --cask`, because those two are not equivalent when the tap
+serves a same-named formula: Homebrew resolves the bare ref to the FORMULA and
+`--cask` to the cask, so a `--cask` smoke would install one artifact while every
+operator installed the other. goreleaser writes `Casks/cerberus.rb` and deletes
+nothing, so the tap's whole file listing is additionally scanned for a leftover
+formula — every root Homebrew loads formulae from (`Formula/`,
+`HomebrewFormula/`, the tap root, the first two recursively so a sharded
+`Formula/c/cerberus.rb` counts), not just the historical path — and the smoke
+fails while one is present. The repair (delete it, add a `tap_migrations.json`)
+belongs to the tap repository, which no release run can touch. Because the ref
+being installed is the ambiguous one, the smoke also states *which* artifact
+Homebrew picked: after the install, `cerberus` must appear in
+`brew list --cask --versions` and must not appear in `brew list --formula
+--versions`. Neither `command -v` nor `--version` can tell those two apart.
+
+The two shapes that write no cask are **not** skipped — each takes the
 opposite assertion. An `rc.*` must have written none, so a cask declaring the
 prerelease version is a reported regression; a release that is not the highest
 stable tag must have left a strictly NEWER cask in place, so a tap that has
 fallen back to the backport's own version is one too. The job runs after
-`publish` because `brew install` downloads the release tarball, which 404s
-while the release is still a draft, and it runs on `macos-latest` because the
-Ubuntu runner image ships no Homebrew at all. That the cask also installs under
-Linuxbrew is a property of the artifact, not something CI exercises.
+`publish` because
+`brew install` downloads the release tarball, which 404s while the release is
+still a draft. It runs as a `macos-latest` + `ubuntu-latest` matrix, so that the
+cask installs under Linuxbrew is exercised rather than assumed — cerberus is a
+Linux-first server binary, and a cask that has lost its Linux artefacts installs
+flawlessly on a Mac. (The Ubuntu image does ship Homebrew, under
+`/home/linuxbrew`; it just leaves it off `PATH`, which is why one Linux-only
+step adds it.) The cask's cross-platform *shape* — all four os/arch artefacts
+present, no macOS-only artifact stanza — is additionally asserted from the cask
+source on both legs and on all three release branches, because that is the one
+failure neither install can see from the other's side.
 
 #### Maintenance lines (hotfix backports)
 
