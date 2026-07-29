@@ -241,6 +241,21 @@ jobs:
       - name: vet the migration harness (tagged runner)
         run: go vet -tags=migration ./test/e2e/migration/...
 
+      # Vetting proves the runner compiles; it proves nothing about whether
+      # the committed explain goldens still describe what the emitter emits.
+      # Those goldens are the migration lane's only assertion over generated
+      # SQL, and the lane has no `pull_request:` trigger — so a change to a
+      # query shape merged green and turned `main` red on the next push,
+      # where release.yml's preflight (which requires migration-e2e green on
+      # the released commit) then refuses to publish. Diagnosing that on
+      # `main` costs a whole release cycle; the PR that moved the SQL is the
+      # cheapest place to notice. The Tier-0 slice is offline — committed
+      # fixtures, no Docker, no reference backend, no network — and runs in
+      # seconds, which is why the coverage ratchet and detector guard below
+      # already live here rather than waiting for the next push to main.
+      - name: run the Tier-0 migration scenarios (explain-golden drift)
+        run: go test -tags=migration ./test/e2e/migration/tiers/tier0-offline/... -count=1
+
       # go-arch-lint enforces the cerberus layering (parse → lower →
       # optimize → emit → execute) declared in .go-arch-lint.yml.
       # No first-party Action exists; install via `go install` so it
