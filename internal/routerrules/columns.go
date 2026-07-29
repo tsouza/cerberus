@@ -12,8 +12,8 @@ import "sort"
 const CorpusTableName = "cerberus_router_corpus"
 
 // ColumnKind classifies each corpus column so the validator can tell which
-// columns may legitimately carry an enum literal in a rule condition (the three
-// Enum-typed columns) versus which may only be compared against a resolved
+// columns may legitimately carry an enum literal in a rule condition (the
+// closed-domain columns) versus which may only be compared against a resolved
 // numeric parameter (the cost/feature columns).
 type ColumnKind uint8
 
@@ -22,16 +22,21 @@ const (
 	// condition may compare it only against a resolved ${param}, never against
 	// an inline number.
 	ColumnNumeric ColumnKind = iota
-	// ColumnEnum is one of the three Enum-typed columns. A condition may
-	// compare it against a domain category literal (eq / in) — these are
-	// classifier categories, not tunable numbers.
+	// ColumnEnum is a CLOSED-DOMAIN classifier column. A condition may compare
+	// it against a domain category literal (eq / in) — these are classifier
+	// categories, not tunable numbers. Membership is decided by whether the
+	// writer's vocabulary is closed, not by the ClickHouse storage type:
+	// decision_reason is LowCardinality(String) on disk but its value set is the
+	// solver's fixed Reason* vocabulary, so a rule may filter on it exactly as
+	// it filters on route or exit_status.
 	ColumnEnum
 	// ColumnTime is the event_time column. It is window-bounded by the source
 	// (via --since), never used as a rule-condition operand.
 	ColumnTime
-	// ColumnGroup is an identity/grouping column (shape id, query hash,
-	// decision reason). It is used as a group key or carried as finding
-	// context, never compared numerically.
+	// ColumnGroup is an OPEN-domain identity column (shape id, query hash). Its
+	// values are minted from the query text, so no closed literal set exists to
+	// validate a condition against. It is used as a group key or carried as
+	// finding context, never compared.
 	ColumnGroup
 )
 
@@ -64,7 +69,7 @@ var corpusColumns = []corpusColumn{
 	{name: "step", kind: ColumnNumeric},
 	{name: "route", kind: ColumnEnum},
 	{name: "k_shards", kind: ColumnNumeric},
-	{name: "decision_reason", kind: ColumnGroup},
+	{name: "decision_reason", kind: ColumnEnum},
 	{name: "read_rows", kind: ColumnNumeric, runtimeCost: true},
 	{name: "read_bytes", kind: ColumnNumeric, runtimeCost: true},
 	{name: "query_duration_ms", kind: ColumnNumeric, runtimeCost: true},
@@ -114,14 +119,38 @@ var runtimeCostColumns = func() map[string]struct{} {
 	return m
 }()
 
-// enumDomains is the closed set of accepted category tokens per Enum column,
-// matching the optcorpus Enum8 DDL. A condition that compares an enum column
-// against a token outside its domain fails validation, catching typos like
-// route='C' or exit_status='killed'.
+// enumDomains is the closed set of category tokens a rule may name per enum
+// column. A condition that compares an enum column against a token outside its
+// domain fails validation, catching typos like route='C' or exit_status='killed'.
+//
+// route / exit_status / language mirror the optcorpus Enum8 DDL. decision_reason
+// is LowCardinality(String) on disk but its writer-side vocabulary is just as
+// closed: it is re-declared here verbatim from the solver's Reason* consts,
+// following the same deliberate no-import contract as CorpusTableName above
+// (this package depends on neither the solver nor optcorpus). The two
+// declarations are a wire contract — a new Reason* const must be added here in
+// lockstep, and decision_reason_gate_test.go pins that they agree (a test file
+// may import the solver; production code in this package may not).
+//
+// The unclassified reason (the empty string every non-PromQL row carries,
+// because Solver.Classify only classifies PromQL) is deliberately NOT a member:
+// a rule must select its population by `language`, never by the absence of a
+// classification.
 var enumDomains = map[string]map[string]struct{}{
 	"route":       setOf("A", "B"),
 	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected", "aborted", "error"),
 	"language":    setOf("promql", "logql", "traceql"),
+	"decision_reason": setOf(
+		// Eligible: the plan cleared every structural gate and the COST
+		// thresholds decided the route. Only these two are actionable evidence
+		// about where a routing threshold sits.
+		"below-threshold", "high-D",
+		// Routed: eligible and sharded.
+		"routed",
+		// Structurally refused: route B cannot take the plan at any threshold.
+		"instant", "instant-join", "not-sliceable", "now64",
+		"grid-mismatch", "incommensurate", "scalar-heavy",
+	),
 }
 
 func setOf(xs ...string) map[string]struct{} {
@@ -155,7 +184,7 @@ func knownColumn(name string) bool {
 	return ok
 }
 
-// isEnumColumn reports whether name is one of the three Enum-typed columns.
+// isEnumColumn reports whether name is a closed-domain column.
 func isEnumColumn(name string) bool {
 	return columnKinds[name] == ColumnEnum
 }

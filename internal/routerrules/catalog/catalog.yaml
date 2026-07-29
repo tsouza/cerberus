@@ -18,10 +18,12 @@
 #
 # Grammar: see docs/router-rules.md. Adding a rule = dropping a new
 # rules/<rule_id>.yaml file (filename = rule id) and bumping catalogVersion —
-# no Go change.
+# no Go change. Narrowing or widening an existing rule's population bumps the
+# version too: it is what tells an operator their findings shifted for a reason
+# other than their own corpus moving.
 
 apiVersion: routerrules.cerberus/v1
-catalogVersion: 2
+catalogVersion: 3
 
 # --------------------------------------------------------------------------
 # params: NAME + how to RESOLVE, never the value.
