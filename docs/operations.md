@@ -200,8 +200,10 @@ on any diff vs reference Prometheus.
 **Shadow header.** Every response to a PromQL `query_range` carries the
 additive `X-Cerberus-Route-Decision` header reporting the per-request
 classification regardless of mode: `routed` (took route B),
-`below-threshold`, `instant`, `not-sliceable`, `high-D`, `now64`,
-`grid-mismatch`, `incommensurate`, or `scalar-heavy`. The header is **omitted**
+`below-threshold`, `instant`, `instant-join`, `not-sliceable`, `high-D`,
+`now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`, or
+`routing-disabled` (the reason recorded under `single`, where no threshold is
+consulted at all). The header is **omitted**
 for non-PromQL heads and when the solver is fully off (nil). It is purely
 diagnostic — observe it to see what the solver would do (under `single`) or
 did (under `auto`) without changing the wire body.

@@ -150,6 +150,9 @@ var enumDomains = map[string]map[string]struct{}{
 		// Structurally refused: route B cannot take the plan at any threshold.
 		"instant", "instant-join", "not-sliceable", "now64",
 		"grid-mismatch", "incommensurate", "scalar-heavy",
+		// Routing switched off deployment-wide: the plan was classified but no
+		// threshold was consulted, so the row says nothing about where one sits.
+		"routing-disabled",
 	),
 }
 
