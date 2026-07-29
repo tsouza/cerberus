@@ -102,6 +102,61 @@ func TestDurationKnobs_RejectNegative(t *testing.T) {
 	}
 }
 
+// zeroDocMarker is the inline-code spelling of zero every duration knob that
+// ACCEPTS `0` must carry in its documented description. Matching the rendered
+// markdown rather than a bare "0" keeps the gate from being satisfied by an
+// unrelated digit in a default or a range ("`0..12`" is not an explanation of
+// what setting the knob to zero does).
+const zeroDocMarker = "`0`"
+
+// TestDurationKnobs_ZeroIsRejectedOrDocumented is the ZERO half of the class
+// gate, and the assertion behind the generated reference's promise that "where
+// `0` is meaningful it is documented per knob ... where it would leave a
+// feature switched on but inert, it is rejected too".
+//
+// Zero is the one value on this surface that never means what it says: it is a
+// sentinel, and which sentinel depends entirely on what consumes the knob —
+// Go's `http.Server` falls back to another field, clickhouse-go substitutes its
+// own 30s default, the OTLP exporters keep the SDK's, the schema TTLs inherit
+// the global, and the reconciler would run enabled-but-inert. An operator
+// cannot guess which, so the invariant is: a duration knob either REJECTS zero
+// at startup, or its description says what zero does. Silence is the failure.
+//
+// Driving it off envDocs is what makes it a class gate rather than a checklist:
+// a duration knob added later is covered the moment it is documented.
+func TestDurationKnobs_ZeroIsRejectedOrDocumented(t *testing.T) {
+	const zero = "0s"
+	// The sentinel is only reachable because the shared grammar parses it.
+	// Assert that first, so this test cannot pass on a parse error.
+	if _, err := parseDuration(zero); err != nil {
+		t.Fatalf("parseDuration(%q) = %v; the zero arms are unreachable", zero, err)
+	}
+	covered := 0
+	for _, d := range envDocs {
+		if d.Type != durationDocType {
+			continue
+		}
+		covered++
+		t.Run(d.Key, func(t *testing.T) {
+			t.Setenv(d.Key, zero)
+			_, err := FromEnv()
+			if err != nil {
+				if !strings.Contains(err.Error(), d.Key) {
+					t.Errorf("error %q rejects zero without naming %s", err, d.Key)
+				}
+				return
+			}
+			if !strings.Contains(d.Desc, zeroDocMarker) {
+				t.Fatalf("%s accepts %s but its EnvDoc.Desc never says what %s means: %q",
+					d.Key, zero, zeroDocMarker, d.Desc)
+			}
+		})
+	}
+	if covered == 0 {
+		t.Fatalf("no EnvDoc carries Type %q — the class gate is inspecting nothing", durationDocType)
+	}
+}
+
 // TestParseDuration_GrammarsAgreeOnSharedUnits pins the property that makes
 // merging the two grammars safe: on the units both halves accept (ms/s/m/h)
 // they resolve a spelling to the SAME duration. If they disagreed anywhere,
