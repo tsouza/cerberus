@@ -217,7 +217,11 @@ func isErrorBypassIdentity(e chplan.Expr) bool {
 
 // rangeWindowIdentityExpr returns the series-identity projection expr from
 // a lowered range-aggregation plan (the first projection of the
-// RangeWindow's input Project, aliased to the ResourceAttributes column).
+// RangeWindow's input Project, aliased to the ResourceAttributes column),
+// exactly as lowered — including the [canonicalIdentityExpr] key-order
+// wrap. Callers that want to inspect the underlying label shape run it
+// through [requireCanonicalIdentity], which asserts the wrap is there
+// before peeling it.
 func rangeWindowIdentityExpr(t *testing.T, n chplan.Node) chplan.Expr {
 	t.Helper()
 	rw, ok := n.(*chplan.RangeWindow)
@@ -279,7 +283,7 @@ func TestUnwrapPostFilterMarksGateErrorBypass_Negation(t *testing.T) {
 		t.Fatalf("lowerRangeAggregation: %v", err)
 	}
 
-	identity := rangeWindowIdentityExpr(t, plan)
+	identity := requireCanonicalIdentity(t, rangeWindowIdentityExpr(t, plan))
 	if !isErrorBypassIdentity(identity) {
 		t.Errorf("series identity is NOT error-bypass-wrapped, but the numeric post-filter "+
 			"`status > 100` stamps a mark so hasMarks must be true.\n"+
@@ -328,7 +332,7 @@ func TestUnwrapPostFilterNoMarksSkipErrorBypass_Boundary(t *testing.T) {
 		t.Fatalf("lowerRangeAggregation: %v", err)
 	}
 
-	identity := rangeWindowIdentityExpr(t, plan)
+	identity := requireCanonicalIdentity(t, rangeWindowIdentityExpr(t, plan))
 	if isErrorBypassIdentity(identity) {
 		t.Errorf("series identity IS error-bypass-wrapped, but the string post-filter "+
 			"`foo = \"bar\"` stamps no mark so hasMarks must be false.\n"+
