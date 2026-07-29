@@ -617,6 +617,25 @@ jobs:
       - name: Assert the compat-scores badge publisher still publishes
         run: node --test .github/scripts/compat-publish-score.test.mjs
 
+      # The parity ratchet is the gate behind the three required
+      # compatibility/* checks, and it only executes after a
+      # docker-compose harness has produced its artefacts — so a hole in
+      # it surfaces as a green required check over a regressed head,
+      # which is precisely the failure a count-only ratchet had. These
+      # tests drive the real script over fixture artefacts in a temp dir
+      # (offline, <1s) and include the negative control: a case regresses
+      # while an unrelated one starts passing, leaving every aggregate
+      # count satisfied, and the gate must still fail.
+      - name: Assert the parity ratchet gates on per-case identity
+        run: node --test .github/scripts/compat-ratchet.test.mjs
+
+      # The baseline updater writes the roster the ratchet gates on, so a
+      # bug in it either burns a CI cycle or records a divergence. The
+      # round-trip case pins that a freshly synced baseline gates green on
+      # the very run it was taken from.
+      - name: Assert the parity baseline updater writes a gateable roster
+        run: node --test .github/scripts/compat-baseline-sync.test.mjs
+
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no
   # network is touched, so it CANNOT flake on a slow/blocked host — every

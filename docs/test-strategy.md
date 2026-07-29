@@ -65,20 +65,22 @@ substrate, a Docker stack, or a soak streak before promotion).
 
 One subtlety on the three `compatibility/<head>` checks: each gates in two
 layers. The harness is *scored* — it accumulates per-case results into
-`compat-score.json` and exits 0 even when an individual case diverges
+`compat-score.json` plus a per-case roster in `compat-cases.json`, and exits
+0 even when an individual case diverges
 ([#503](https://github.com/tsouza/cerberus/pull/503)), so the harness step
 alone reddens the job only on infrastructure breakage. The gate is the step
-after it: `.github/scripts/compat-ratchet.mjs` compares the run's
-`passed` / `total` against the committed per-head floor in
+after it: `.github/scripts/compat-ratchet.mjs` compares the run's roster
+against the committed per-head roster in
 `compatibility/parity-baseline.json` and **fails the required job on any
-drop** — fewer passing cases, or a corpus smaller than baseline so a
-regression cannot hide by dropping a failing case. Noise *within* the
-floor is tolerated: the ratchet pins the aggregate, not individual case
-identity, so one case regressing while another starts passing does not
-gate. `compatibility/prometheus-forced-route` is stricter still — it runs
-the harness with `FAIL_ON_DIFF=1` and hard-fails on *any* per-case diff.
+case that moved** — a recorded case that now diverges, a recorded case that
+stopped running, a new case that diverges on arrival, or a new case that
+passes but is not yet recorded. Because it gates on case *identity* rather
+than on a count, a regression cannot hide behind an unrelated case that
+started passing in the same run.
+`compatibility/prometheus-forced-route` runs the harness with
+`FAIL_ON_DIFF=1`, hard-failing inside the harness step itself.
 See [`compatibility.md`](compatibility.md#parity-regression-ratchet-the-gate)
-for the floors themselves and the procedure for raising one.
+for the rosters themselves and the procedure for moving one.
 
 | Gate                                    | Workflow (job)                                       | Trigger                             | Required? | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------------- | ---------------------------------------------------- | ----------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

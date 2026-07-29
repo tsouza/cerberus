@@ -1,18 +1,21 @@
 {
-  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-score.json against the matching entry here and FAIL the job when a run drops below baseline (a real numeric regression on the main route). Noise WITHIN the baseline is tolerated; only a DROP gates. This makes 'compat is the source of truth' a real gate, not just an informational badge. See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
-  "_contract": "Per head: 'passed' is the floor of agreeing cases (a run with fewer passing cases regresses); 'total' is the corpus floor (a run whose corpus shrank below this is rejected, so a regression can't hide by dropping a failing case). RAISE these numbers in lock-step whenever the harness legitimately gains passing cases or the corpus grows — never lower them without a documented reason.",
+  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-cases.json against the matching entry here and FAIL the job on any parity movement this file does not already record: a recorded case that now diverges, a recorded case that stopped running, a new case that diverges on arrival, or a new case that passes but is not yet recorded. See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
+  "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
       "passed": 737,
-      "total": 737
+      "total": 737,
+      "cases": []
     },
     "loki": {
       "passed": 116,
-      "total": 116
+      "total": 116,
+      "cases": []
     },
     "tempo": {
       "passed": 48,
-      "total": 48
+      "total": 48,
+      "cases": []
     }
   }
 }
