@@ -47,7 +47,7 @@ func TestEmitNaryVectorSetOp_OrThreeArms(t *testing.T) {
 		t.Errorf("UNION ALL count = %d, want 2 (single flat 3-arm union); sql=%s", got, sql)
 	}
 	// One min-side window, one survival predicate.
-	if !strings.Contains(sql, "min(`_setop_side`) OVER (PARTITION BY `Attributes`)") {
+	if !strings.Contains(sql, "min(`_setop_side`) OVER (PARTITION BY mapSort(`Attributes`))") {
 		t.Errorf("missing min-side window over the signature; sql=%s", sql)
 	}
 	if !strings.Contains(sql, "WHERE `_setop_side` = `_setop_min_side`") {
@@ -73,7 +73,7 @@ func TestEmitNaryVectorSetOp_AndThreeArms(t *testing.T) {
 	if got := strings.Count(sql, "UNION ALL"); got != 2 {
 		t.Errorf("UNION ALL count = %d, want 2; sql=%s", got, sql)
 	}
-	if !strings.Contains(sql, "groupBitOr(") || !strings.Contains(sql, "OVER (PARTITION BY `Attributes`)") {
+	if !strings.Contains(sql, "groupBitOr(") || !strings.Contains(sql, "OVER (PARTITION BY mapSort(`Attributes`))") {
 		t.Errorf("missing groupBitOr signature window; sql=%s", sql)
 	}
 	if !strings.Contains(sql, "`_setop_side` = 0") || !strings.Contains(sql, "`_setop_sides_mask` = 7") {
