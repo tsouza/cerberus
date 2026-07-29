@@ -49,8 +49,8 @@ func TestIndexStats_HappyPath(t *testing.T) {
 	// going through the Builder (no fmt.Sprintf string concatenation),
 	// and the time bounds must be present as DateTime64 literals.
 	lastSQL := q.LastSQL()
-	if !strings.Contains(lastSQL, "uniqExact(`ResourceAttributes`)") {
-		t.Errorf("missing uniqExact in SQL: %q", lastSQL)
+	if !strings.Contains(lastSQL, "uniqExact(mapSort(`ResourceAttributes`))") {
+		t.Errorf("missing canonicalised uniqExact in SQL: %q", lastSQL)
 	}
 	if !strings.Contains(lastSQL, "sum(length(`Body`))") {
 		t.Errorf("missing bytes agg in SQL: %q", lastSQL)

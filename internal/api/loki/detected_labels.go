@@ -79,7 +79,7 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 
 // buildDetectedLabelsSQL renders:
 //
-//	SELECT `ResourceAttributes` AS labels
+//	SELECT mapSort(`ResourceAttributes`) AS labels
 //	FROM `otel_logs`
 //	WHERE <matchers> AND `Timestamp` >= ? AND `Timestamp` <= ?
 //	GROUP BY labels
@@ -89,12 +89,19 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 // summariseDetectedLabels): a label key's cardinality is the number of
 // distinct values it carries across the matched stream set.
 //
+// The GROUP BY key is the whole label-set Map, so it carries the same
+// canonical key-order wrap /series does, for the same reason: one logical
+// stream delivered under two OTLP key orders otherwise groups as two
+// rows. summariseDetectedLabels folds values into per-key sets so the
+// cardinalities are correct either way, but the duplicated rows are
+// charged against the client's row drain budget — see buildSeriesSQL.
+//
 // All identifiers + time bounds flow through QueryBuilder slots; the
 // selector predicate and the request window are placed by
 // applySelectorAndWindow, which composes typed Frags throughout.
 func buildDetectedLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(chsql.Col(s.ResourceAttributesColumn), "labels")).
+		Select(chsql.As(canonicalLabelsFrag(chsql.Col(s.ResourceAttributesColumn)), "labels")).
 		From(chsql.Col(s.LogsTable))
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
