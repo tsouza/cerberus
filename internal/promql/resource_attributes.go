@@ -330,42 +330,27 @@ func mergeResourceAttributesExpr(s schema.Metrics) chplan.Expr {
 	}
 }
 
-// canonicalAttributesExpr wraps a projected label map in ClickHouse
-// `mapSort`, establishing the invariant every series-identity key in the
-// engine depends on: the Attributes Map is ordered by key.
-//
-// A CH Map compares and groups POSITIONALLY over its (keys, values)
-// arrays, so map('job','api','dc','eu') and map('dc','eu','job','api')
-// are unequal despite carrying the same label set. Divergent key order
-// reaches the store straight from ingestion — the OTel-CH exporter
-// preserves OTLP wire order and never sorts — so two scrapes of one
-// logical series can land under two physical orders. Every downstream
-// consumer that keys on the whole Map (the LWR per-series collapse, a
-// RangeWindow's per-series partition, `without(...)`, `topk`'s
-// PARTITION BY, the vector-join arms) would then see two series where
-// there is one: `count()` doubles, `sum()` adds the same series twice,
-// and a range function sees one sample per partition and returns empty.
+// canonicalAttributesExpr wraps a projected label map in the shared
+// key-order canonicaliser, establishing the invariant every
+// series-identity key in the engine depends on: the Attributes Map is
+// ordered by key. See [chplan.CanonicalAttributesExpr] for why a CH Map
+// needs this at all and why the wrap is always safe.
 //
 // Canonicalising HERE — at the single projection that binds the
-// Attributes column every selector reads — fixes all of those at once,
-// because they all consume this value rather than the raw table column.
-// The alternative, wrapping each of the ~30 grouping sites, leaves every
-// future operator to remember the rule.
+// Attributes column every selector reads — fixes every PromQL consumer
+// at once (the LWR per-series collapse, a RangeWindow's per-series
+// partition, `without(...)`, `topk`'s PARTITION BY, the vector-join
+// arms), because they all consume this value rather than the raw table
+// column. The alternative, wrapping each of the ~30 grouping sites,
+// leaves every future operator to remember the rule.
 //
-// mapSort is order-only and idempotent, so it can never merge two
-// genuinely different label sets, and re-wrapping an already-canonical
-// map (the vector-join match keys still wrap defensively) is a no-op.
+// The primitive lives in chplan because the LogQL head binds the same
+// invariant against the same Map columns at its own identity projection
+// (internal/logql/range_aggregation.go); a package-local copy would let
+// the two drift.
 func canonicalAttributesExpr(expr chplan.Expr) chplan.Expr {
-	if call, ok := expr.(*chplan.FuncCall); ok && call.Name == canonicalMapFunc {
-		return expr
-	}
-	return &chplan.FuncCall{Name: canonicalMapFunc, Args: []chplan.Expr{expr}}
+	return chplan.CanonicalAttributesExpr(expr)
 }
-
-// canonicalMapFunc is the ClickHouse function that establishes the
-// key-order invariant. Named so [canonicalAttributesExpr] and its own
-// idempotence check cannot drift apart.
-const canonicalMapFunc = "mapSort"
 
 // canonicalGroupKeyExpr applies [canonicalAttributesExpr] to a
 // series-identity GROUP BY / PARTITION BY key that reads the raw
