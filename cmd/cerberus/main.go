@@ -469,25 +469,71 @@ func run() error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("graceful shutdown: %w", err)
+
+	steps := shutdownSteps{
+		drainHTTP: srv.Shutdown,
+		flushOTLP: providers.Shutdown,
 	}
-	// Drain any in-flight gRPC streams before tearing telemetry down.
-	// GracefulStop blocks until every active RPC returns or its
-	// stream is closed by the HTTP/2 transport (which srv.Shutdown
-	// has already done). With no in-flight streams it returns
-	// immediately, so this is a no-op on the happy path. nil when the
-	// tempo head is disabled (no gRPC server was built).
+	// nil when the tempo head is disabled — no gRPC server was built.
 	if grpcServer != nil {
-		grpcServer.GracefulStop()
+		steps.stopGRPC = func(graceful bool) {
+			if graceful {
+				grpcServer.GracefulStop()
+				return
+			}
+			grpcServer.Stop()
+		}
 	}
-	// Flush any pending OTLP batches before the process exits. Noop
-	// when telemetry was disabled (Endpoint == "").
-	if err := providers.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("telemetry shutdown returned error", "err", err)
+	if err := shutdown(shutdownCtx, steps, logger); err != nil {
+		return err
 	}
 	logger.Info("cerberus stopped")
 	return nil
+}
+
+// shutdownSteps is the teardown surface run() owns, narrowed to the three calls
+// whose ORDER and whose run-even-on-failure contract are the thing worth
+// asserting. Extracting it is what makes that contract reachable from a test at
+// all: run() itself needs a listener, a ClickHouse pool and a signal.
+//
+// stopGRPC is nil when no gRPC server was built. Its argument is whether the
+// drain may block: GracefulStop takes no context and waits for every active RPC
+// to return, so calling it after the HTTP drain has already blown its deadline
+// would inherit that hang with nothing left to bound it.
+type shutdownSteps struct {
+	drainHTTP func(context.Context) error
+	stopGRPC  func(graceful bool)
+	flushOTLP func(context.Context) error
+}
+
+// shutdown tears the process down in dependency order and runs EVERY step even
+// when an earlier one fails, returning the first error.
+//
+// The order is a dependency chain: the HTTP drain closes the HTTP/2 transports
+// the gRPC streams ride on, so the gRPC drain after it is a no-op on the happy
+// path; the telemetry flush is last because the two steps before it emit the
+// spans and metrics it is flushing.
+//
+// Running the tail unconditionally is the whole point. Returning at the first
+// error would drop exactly the telemetry that describes the failed shutdown —
+// the one teardown an operator actually needs to see — and would leave the gRPC
+// listener holding its sockets until the process image went away.
+func shutdown(ctx context.Context, steps shutdownSteps, logger *slog.Logger) error {
+	var firstErr error
+	drained := true
+	if err := steps.drainHTTP(ctx); err != nil {
+		drained = false
+		firstErr = fmt.Errorf("graceful shutdown: %w", err)
+		logger.Warn("http graceful shutdown returned error", "err", err)
+	}
+	if steps.stopGRPC != nil {
+		steps.stopGRPC(drained)
+	}
+	// Noop when telemetry was disabled (Endpoint == "").
+	if err := steps.flushOTLP(ctx); err != nil {
+		logger.Warn("telemetry shutdown returned error", "err", err)
+	}
+	return firstErr
 }
 
 // solverGateReserve is the number of pooled connections the solver's GLOBAL

@@ -369,13 +369,14 @@ jobs:
       # newest line?" signal every downstream owner-of-a-shared-resource decision
       # reads. A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is NOT highest,
       # and must not take:
-      #   - the rolling `:latest` images (goreleaser's `latest-*` skip_push
-      #     templates read `.Env.RELEASE_IS_LATEST`);
-      #   - the Homebrew cask (`homebrew_casks[].skip_upload`, same env var) — `auto`
-      #     alone only filters prereleases, so v1.12.1 downgraded the tap from
-      #     v1.13.0;
-      #   - the GitHub `Latest` release pointer (the `publish` job's flip), which
-      #     otherwise follows publish ORDER and left /releases/latest on v1.11.3.
+      #   - the rolling `:latest` image tags (the `dockers_v2` tag template
+      #     renders EMPTY unless `.Env.RELEASE_IS_LATEST` is "true", and
+      #     goreleaser drops an empty tag);
+      #   - the Homebrew cask (`homebrew_casks[].skip_upload` templates to
+      #     `true` off the same env var) — `auto` on its own only filters
+      #     prereleases, and a backport is not a prerelease;
+      #   - the GitHub `Latest` release pointer (the `publish` job's explicit
+      #     `--latest` flip), which otherwise follows publish ORDER.
       # Needs fetch-depth: 0 so all tags (including the one just pushed) are
       # present.
       - name: Compute RELEASE_IS_LATEST
