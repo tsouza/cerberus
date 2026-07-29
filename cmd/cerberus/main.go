@@ -212,6 +212,33 @@ func main() {
 	}
 }
 
+// installStage2Logging replaces the stderr-only startup logger with the one
+// that fans every record out to BOTH the stderr handler (12-factor stream /
+// `kubectl logs` readability) AND the OTel slog bridge (records ship via OTLP
+// gRPC to the collector → CH `otel_logs`, landing alongside the same binary's
+// traces and metrics so a self-dashboard works against a running cluster).
+// With the endpoint empty, providers.LoggerProvider is the no-op
+// LoggerProvider — the bridge is a no-op and only stderr is written.
+//
+// It also routes the OTel SDK's own failures (export batches it could not
+// ship, collect / shutdown errors) into that same structured logger at WARN,
+// so a failure of the pipeline carrying cerberus's metrics, traces and logs is
+// itself visible — on stderr always, and over OTLP whenever the bridge is up.
+func installStage2Logging(cfg config.Config, providers *telemetry.Providers) *slog.Logger {
+	logger := config.NewTelemetryLogger(os.Stderr, cfg.Log, providers.LoggerProvider)
+	slog.SetDefault(logger)
+	telemetry.InstallErrorHandler(logger)
+
+	if cfg.OTLP.Endpoint != "" {
+		logger.Info(
+			"OTLP exporters enabled",
+			"endpoint", cfg.OTLP.Endpoint,
+			"insecure", cfg.OTLP.Insecure,
+		)
+	}
+	return logger
+}
+
 func run() error {
 	// Captured first so the /info fingerprint's uptimeSeconds counts from the
 	// earliest point in process lifetime, before any config/connection work.
@@ -222,11 +249,10 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Stage-1 logger: stderr-only, used until telemetry providers
-	// are built below. The startup log lines that come next describe
-	// the OTLP target itself, so they have to land before the OTel
-	// bridge is wired (and would be useless once the bridge is wired
-	// — they can't ship before the exporter is up).
+	// Stage-1 logger: stderr-only, and it covers exactly one line — the
+	// startup banner, which announces the OTLP target itself and so cannot
+	// ship over the bridge that target is on. Everything after the telemetry
+	// block below runs on the stage-2 logger.
 	logger := config.NewLogger(os.Stderr, cfg.Log)
 	slog.SetDefault(logger)
 
@@ -242,6 +268,40 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Install the W3C+Baggage propagator and build OTel providers from
+	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
+	// telemetry package returns noop providers, so cerberus stays a
+	// zero-collector-dependency binary by default.
+	//
+	// This is the FIRST thing run() does after the signal context, and the
+	// ordering is load-bearing rather than stylistic: OTel's global
+	// MeterProvider is a delegating shim, and a synchronous counter Add
+	// recorded before the real provider is installed is dropped outright —
+	// there is no buffering. Every zero-seeded counter cerberus mints at
+	// construction (the ClickHouse connection-lifecycle set, the per-head
+	// breaker set, the admit limiters' rejected counters) would therefore
+	// lose exactly the seed that makes a healthy replica export a flat 0
+	// instead of "No data". Observable gauges re-register and survive, which
+	// is what makes the loss so easy to miss: the pool census still appears
+	// while the counters beside it silently do not.
+	// Pinned by test/regression/telemetry_provider_ordering_test.go.
+	providers, err := telemetry.New(ctx, telemetry.Config{
+		Endpoint:       cfg.OTLP.Endpoint,
+		Insecure:       cfg.OTLP.Insecure,
+		Headers:        cfg.OTLP.Headers,
+		Timeout:        cfg.OTLP.Timeout,
+		ExportInterval: cfg.OTLP.ExportInterval,
+		ServiceName:    "cerberus",
+		ServiceVersion: Version,
+	})
+	if err != nil {
+		return fmt.Errorf("init telemetry: %w", err)
+	}
+	installOTel(providers.TracerProvider)
+	otel.SetMeterProvider(providers.MeterProvider)
+
+	logger = installStage2Logging(cfg, providers)
 
 	// Construction is lazy — chclient.New never dials, it only
 	// validates options. An error here is misconfiguration that can
@@ -301,54 +361,6 @@ func run() error {
 	schemaPresent, err := runRequirementsCheck(ctx, logger, client, cfg)
 	if err != nil {
 		return err
-	}
-
-	// Install the W3C+Baggage propagator and build OTel providers from
-	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
-	// telemetry package returns noop providers, so cerberus stays a
-	// zero-collector-dependency binary by default. The providers are
-	// installed BEFORE handler.Mount so the per-head admit limiters
-	// build their rejected-counter against the right meter provider.
-	providers, err := telemetry.New(ctx, telemetry.Config{
-		Endpoint:       cfg.OTLP.Endpoint,
-		Insecure:       cfg.OTLP.Insecure,
-		Headers:        cfg.OTLP.Headers,
-		Timeout:        cfg.OTLP.Timeout,
-		ExportInterval: cfg.OTLP.ExportInterval,
-		ServiceName:    "cerberus",
-		ServiceVersion: Version,
-	})
-	if err != nil {
-		return fmt.Errorf("init telemetry: %w", err)
-	}
-	installOTel(providers.TracerProvider)
-	otel.SetMeterProvider(providers.MeterProvider)
-
-	// Stage-2 logger: now that the OTLP log exporter is built, fan
-	// every slog record out to BOTH the stderr handler (12-factor
-	// stream / `kubectl logs` readability) AND the OTel slog bridge
-	// (records ship via OTLP gRPC to the collector → CH `otel_logs`,
-	// landing alongside the same binary's traces and metrics so a
-	// self-dashboard works against a running cluster). With the
-	// endpoint empty, providers.LoggerProvider is the no-op
-	// LoggerProvider — bridge is a no-op, only stderr is written.
-	logger = config.NewTelemetryLogger(os.Stderr, cfg.Log, providers.LoggerProvider)
-	slog.SetDefault(logger)
-
-	// Route the OTel SDK's own failures (export batches it could not
-	// ship, collect / shutdown errors) into that same structured logger
-	// at WARN. Installed right after the stage-2 logger so a failure of
-	// the pipeline carrying cerberus's metrics, traces and logs is
-	// itself visible — on stderr always, and over OTLP whenever the
-	// bridge is still up.
-	telemetry.InstallErrorHandler(logger)
-
-	if cfg.OTLP.Endpoint != "" {
-		logger.Info(
-			"OTLP exporters enabled",
-			"endpoint", cfg.OTLP.Endpoint,
-			"insecure", cfg.OTLP.Insecure,
-		)
 	}
 
 	// Build per-head admission-control limiters (see newAdmitLimiters).
@@ -841,7 +853,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 // outlives the probe; the breaker-guarded read surface still makes a genuinely
 // unreachable server fail (not hang), preserving the connectivity fallback.
 func probeVersionOverBootstrap(ctx context.Context, chCfg chclient.Config) (chopt.Version, error) {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg))
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, versionProbePool))
 	if err != nil {
 		return chopt.Version{}, fmt.Errorf("open bootstrap client for version probe: %w", err)
 	}
@@ -861,7 +873,7 @@ func probeVersionOverBootstrap(ctx context.Context, chCfg chclient.Config) (chop
 // SETTING, not the missing database. A failure to even open the client is
 // itself an unreachable verdict (conservative: native stays off), never fatal.
 func probeTSGridCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config) chopt.Capability {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg))
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, tsGridProbePool))
 	if err != nil {
 		return chopt.CapabilityUnreachable
 	}
@@ -1097,7 +1109,7 @@ func setupSchema(
 	cleanup := func() {} // no-op unless a bootstrap client is opened
 	applyCfg.SkipDatabaseCreate = !autoCreateDatabase
 	if autoCreateDatabase {
-		bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg))
+		bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, schemaApplyPool))
 		if err != nil {
 			// chclient.New is lazy (no dial) and only validates options the
 			// target client already validated, so this is effectively
@@ -1145,10 +1157,24 @@ const bootstrapDatabase = "default"
 // bootstrapClickHouseConfig returns chCfg rebound to the always-present
 // `default` database, for the one-time auto-create DDL. Everything else
 // (address, auth, TLS, pool sizing) is unchanged.
-func bootstrapClickHouseConfig(chCfg chclient.Config) chclient.Config {
+//
+// pool names this bootstrap connection's census. Each bootstrap client is a
+// pool of its own, live alongside the serving pool — the schema-apply one
+// overlaps it outright — and the connection gauges are process-wide, so
+// without distinct names two live pools would write one attribute set and one
+// would silently win.
+func bootstrapClickHouseConfig(chCfg chclient.Config, pool string) chclient.Config {
 	chCfg.Database = bootstrapDatabase
+	chCfg.PoolName = pool
 	return chCfg
 }
+
+// Bootstrap pool names, one per short-lived startup connection.
+const (
+	versionProbePool = "version-probe"
+	tsGridProbePool  = "tsgrid-probe"
+	schemaApplyPool  = "schema-apply"
+)
 
 // runRequirementsCheck runs the boot-time requirements check (gated ON by
 // default via CERBERUS_REQUIREMENTS_CHECK). It validates the connected
