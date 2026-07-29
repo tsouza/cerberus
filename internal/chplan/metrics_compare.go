@@ -110,6 +110,7 @@ func (m *MetricsCompare) Equal(other Node) bool {
 		return false
 	}
 	if m.TopN != o.TopN || m.StartNs != o.StartNs || m.EndNs != o.EndNs ||
+		m.InnerRootScoped != o.InnerRootScoped ||
 		m.TraceIDColumn != o.TraceIDColumn ||
 		m.RootNameAlias != o.RootNameAlias || m.RootServiceAlias != o.RootServiceAlias ||
 		m.SelAlias != o.SelAlias || m.AttrAlias != o.AttrAlias ||
