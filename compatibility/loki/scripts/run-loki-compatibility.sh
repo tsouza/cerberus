@@ -47,6 +47,10 @@
 #   DRIVER_SCORE        compat-score.json file path (default:
 #                       reports/compat-score.json). shields.io endpoint-
 #                       badge contract; see compatibility/internal/score.
+#   DRIVER_CASES        compat-cases.json file path (default:
+#                       reports/compat-cases.json). The per-case
+#                       (identity, agreed) roster the parity ratchet
+#                       gates on; see compatibility/internal/score.
 #   DRIVER_TIMEOUT      Per-request HTTP timeout (default: 30s).
 #   DRIVER_TOLERANCE    -tolerance flag (default: 1e-5; matches upstream).
 #   DRIVER_RANGE_TYPE   -range-type flag (default: range; 'instant' also valid).
@@ -66,6 +70,7 @@ cd "$ROOT_DIR"
 
 REPORT=${DRIVER_REPORT:-"$ROOT_DIR/reports/diff.json"}
 SCORE=${DRIVER_SCORE:-"$ROOT_DIR/reports/compat-score.json"}
+CASES=${DRIVER_CASES:-"$ROOT_DIR/reports/compat-cases.json"}
 TIMEOUT=${DRIVER_TIMEOUT:-30s}
 TOLERANCE=${DRIVER_TOLERANCE:-1e-5}
 RANGE_TYPE=${DRIVER_RANGE_TYPE:-range}
@@ -140,6 +145,7 @@ set +e
     -skip-baseline="$SKIP_BASELINE" \
     -report="$REPORT" \
     -score="$SCORE" \
+    -cases="$CASES" \
     -tolerance="$TOLERANCE" \
     -range-type="$RANGE_TYPE" \
     -parallelism="$PARALLELISM" \
@@ -164,6 +170,7 @@ echo "==> rejection-parity report written to $ROOT_DIR/reports/rejection-parity.
 
 echo "==> report written to $REPORT"
 echo "==> score written to $SCORE"
+echo "==> per-case roster written to $CASES"
 echo "==> summary:"
 if command -v jq >/dev/null 2>&1; then
     jq '{total: .totalResults, passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "" and (.unexpectedSuccess // false) == false)] | length), diffs: ([.results[]? | select((.diff // "") != "")] | length), unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length), unsupported: ([.results[]? | select((.unsupported // false) == true)] | length)}' "$REPORT" 2>/dev/null || echo "    (jq failed to parse $REPORT)"

@@ -37,6 +37,10 @@
 #                     compatibility/prometheus/compat-score.json).
 #                     Shields.io endpoint-badge contract — see
 #                     compatibility/internal/score for the schema.
+#   TESTER_CASES      compat-cases.json output path (default:
+#                     compatibility/prometheus/compat-cases.json). The
+#                     per-case (identity, agreed) roster the parity
+#                     ratchet gates on — see compatibility/internal/score.
 #   TESTER_QUERIES    queries yaml (default: compatibility/prometheus/cerberus-test-queries.yml,
 #                     a curated copy of upstream/promql/promql-test-queries.yml
 #                     with corpus-incompatible should_fail entries removed —
@@ -68,6 +72,7 @@ OUTPUT=${TESTER_OUTPUT:-"$ROOT_DIR/report.json"}
 # A dedicated reports/ sub-dir (like compatibility/{loki,tempo}/
 # reports/) would have required the workflow change up-front.
 SCORE=${TESTER_SCORE:-"$ROOT_DIR/compat-score.json"}
+CASES=${TESTER_CASES:-"$ROOT_DIR/compat-cases.json"}
 QUERIES=${TESTER_QUERIES:-"$ROOT_DIR/cerberus-test-queries.yml"}
 END_TIME=${TESTER_END_TIME:-"2026-05-11T01:00:00Z"}
 RANGE=${TESTER_RANGE:-3600}
@@ -200,16 +205,18 @@ echo "==> running rejection-parity driver (promql)"
 echo "==> rejection-parity report written to $ROOT_DIR/rejection-parity.json"
 
 # Build + run the in-tree scorer. The scorer reads report.json and
-# writes the shields.io endpoint-badge compat-score JSON to $SCORE.
+# writes the shields.io endpoint-badge compat-score JSON to $SCORE plus
+# the per-case parity roster to $CASES.
 # Its own exit is propagated — a scorer failure means the harness
 # can't produce the downstream artefact, which IS a hard failure.
 echo "==> building prometheus-compat-scorer"
 (cd "$ROOT_DIR/../.." && go build -o "$SCORER_BIN" ./compatibility/prometheus/cmd/scorer)
 
-mkdir -p "$(dirname "$SCORE")"
-"$SCORER_BIN" -report "$OUTPUT" -score "$SCORE"
+mkdir -p "$(dirname "$SCORE")" "$(dirname "$CASES")"
+"$SCORER_BIN" -report "$OUTPUT" -score "$SCORE" -cases "$CASES"
 
 echo "==> score written to $SCORE"
+echo "==> per-case roster written to $CASES"
 
 # FAIL_ON_DIFF gate (forced-route proof lane). When set, ANY per-case
 # diff or unexpected failure in report.json is a hard failure — the
@@ -224,7 +231,7 @@ if [ -n "${FAIL_ON_DIFF:-}" ]; then
     if [ "$DIFFS" -ne 0 ] || [ "$UNEXPECTED" -ne 0 ]; then
         echo "::error title=forced-route parity drift::FAIL_ON_DIFF set and report.json has ${DIFFS} diff(s) + ${UNEXPECTED} unexpected failure(s) — route B is NOT byte-identical to reference Prometheus over the corpus"
         echo "==> failing cases (query + diff/unexpectedFailure):"
-        jq -r '.results[]? | select((.diff // "") != "" or (.unexpectedFailure // "") != "") | "  - query: " + (.query // .expr // "(unknown)") + "\n    diff: " + ((.diff // "") | gsub("\n";"\n      ")) + (if (.unexpectedFailure // "") != "" then "\n    unexpectedFailure: " + .unexpectedFailure else "" end)' "$OUTPUT" || true
+        jq -r '.results[]? | select((.diff // "") != "" or (.unexpectedFailure // "") != "") | "  - query: " + (.testCase.query // "(unknown)") + "\n    diff: " + ((.diff // "") | gsub("\n";"\n      ")) + (if (.unexpectedFailure // "") != "" then "\n    unexpectedFailure: " + .unexpectedFailure else "" end)' "$OUTPUT" || true
         exit 1
     fi
     echo "==> FAIL_ON_DIFF: zero diffs over the full corpus under forced routing — route B == reference"

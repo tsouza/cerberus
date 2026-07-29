@@ -314,34 +314,41 @@ jobs:
         # GATE: this is what makes compatibility/prometheus a real
         # source-of-truth check rather than an informational badge. PR
         # #503 (task #68) downgraded per-case diffs to report-only so the
-        # harness exits 0 even on a numeric regression; this step restores
-        # the gate by failing the job when the run's compat-score.json
-        # drops below the committed per-head floor in
-        # compatibility/parity-baseline.json. It compares integers
-        # (passed/total), not floats, so it can't flake (see the script
-        # header). Runs only when the harness itself succeeded — a harness
-        # infra failure is re-raised by the "Fail job" step below, and the
-        # ratchet shouldn't double-report a missing score in that path.
+        # harness exits 0 even on a parity regression; this step restores
+        # the gate by comparing the run's compat-cases.json against the
+        # committed per-case roster in compatibility/parity-baseline.json
+        # and failing on any case that moved. It gates on case IDENTITY,
+        # not on a count, so a regression cannot hide behind an unrelated
+        # case that started passing. Case IDs and pass/fail are both
+        # derived from static corpus identity and the scorer's own
+        # predicate, so it can't flake (see the script header). Runs only
+        # when the harness itself succeeded — a harness infra failure is
+        # re-raised by the "Fail job" step below, and the ratchet
+        # shouldn't double-report missing artefacts in that path.
         if: steps.compat.outcome == 'success'
         run: node .github/scripts/compat-ratchet.mjs
         env:
           HEAD: prometheus
           SCORE: compatibility/prometheus/compat-score.json
+          CASES: compatibility/prometheus/compat-cases.json
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: compatibility-prometheus-report
-          # Glob picks up both the upstream tester's report.json AND the
+          # Glob picks up the upstream tester's report.json, the
           # shields.io endpoint-badge compat-score.json the prom scorer
-          # emits next to it. `if-no-files-found: warn` keeps the upload
-          # step green when the harness crashed before producing either
-          # file (the explicit "Fail job" step still re-raises the
-          # underlying failure).
+          # emits next to it, and compat-cases.json — the per-case roster
+          # the ratchet gates on, which is also the authoritative source
+          # to copy from when a corpus change moves the baseline.
+          # `if-no-files-found: warn` keeps the upload step green when the
+          # harness crashed before producing them (the explicit "Fail job"
+          # step still re-raises the underlying failure).
           path: |
             compatibility/prometheus/report.json
             compatibility/prometheus/compat-score.json
+            compatibility/prometheus/compat-cases.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -641,8 +648,8 @@ jobs:
 
       - name: Parity-regression ratchet
         # GATE: see the prometheus job for the full rationale. Fails the
-        # job when tempo's compat-score.json drops below the committed
-        # floor in compatibility/parity-baseline.json (heads.tempo). This
+        # job when any tempo case moves against the committed per-case
+        # roster in compatibility/parity-baseline.json (heads.tempo). This
         # replaces the dead FAIL_ON_DIFF env removed from the harness step
         # above — it is the actual tempo parity gate.
         if: steps.harness.outcome == 'success'
@@ -650,12 +657,14 @@ jobs:
         env:
           HEAD: tempo
           SCORE: compatibility/tempo/reports/compat-score.json
+          CASES: compatibility/tempo/reports/compat-cases.json
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
-        # when the harness step failed. The differ writes diff.md and
-        # compat-score.json under this directory; the seeder leaves it
-        # empty. Globbing the entire reports/ tree picks up both.
+        # when the harness step failed. The differ writes diff.md,
+        # compat-score.json and compat-cases.json under this directory;
+        # the seeder leaves it empty. Globbing the entire reports/ tree
+        # picks up all of them.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -769,19 +778,21 @@ jobs:
 
       - name: Parity-regression ratchet
         # GATE: see the prometheus job for the full rationale. Fails the
-        # job when loki's compat-score.json drops below the committed
-        # floor in compatibility/parity-baseline.json (heads.loki).
+        # job when any loki case moves against the committed per-case
+        # roster in compatibility/parity-baseline.json (heads.loki).
         if: steps.harness.outcome == 'success'
         run: node .github/scripts/compat-ratchet.mjs
         env:
           HEAD: loki
           SCORE: compatibility/loki/reports/compat-score.json
+          CASES: compatibility/loki/reports/compat-cases.json
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
         # when the harness step failed. The script writes the raw
         # `go test -v` stream to compatibility/loki/reports/diff.json
-        # and the loki driver writes compat-score.json next to it.
+        # and the loki driver writes compat-score.json plus the per-case
+        # compat-cases.json roster next to it.
         if: always()
         uses: actions/upload-artifact@v7
         with:
