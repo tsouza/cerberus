@@ -66,15 +66,15 @@ func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
 	}
 }
 
-// TestFromEnv_SchemaTTL_PrometheusSyntax confirms the TTL knobs accept the
-// Prometheus/Grafana duration syntax (90d, 2w, 1y) operators use for
-// retention windows — units Go's time.ParseDuration can't express — while
-// the hour form (2160h) still works.
-func TestFromEnv_SchemaTTL_PrometheusSyntax(t *testing.T) {
+// TestFromEnv_SchemaTTL_RetentionUnits confirms the TTL knobs accept the
+// retention units (90d, 2w, 1y) operators use for retention windows — units
+// Go's time.ParseDuration can't express — while the hour form (2160h) means
+// the same thing.
+func TestFromEnv_SchemaTTL_RetentionUnits(t *testing.T) {
 	t.Setenv("CERBERUS_SCHEMA_TTL", "90d")     // global
 	t.Setenv("CERBERUS_SCHEMA_TTL_LOGS", "2w") // per-signal
 	t.Setenv("CERBERUS_SCHEMA_TTL_METRICS", "1y")
-	t.Setenv("CERBERUS_SCHEMA_TTL_TRACES", "2160h") // Go hour form still valid
+	t.Setenv("CERBERUS_SCHEMA_TTL_TRACES", "2160h") // the equivalent hour form
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -105,6 +105,40 @@ func TestFromEnv_SchemaTTL_Invalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CERBERUS_SCHEMA_TTL") {
 		t.Errorf("error should name the var, got: %v", err)
+	}
+}
+
+// TestFromEnv_SchemaTTL_RejectsNegative pins the RANGE guard on the retention
+// knobs. The shared duration grammar accepts a sign, so `-1h` reaches the
+// loader as a well-formed value; only the non-negative check stops it from
+// reaching the DDL, where a negative TTL would expire every row the instant
+// it lands. Asserting on the guard's own wording makes the test fail both if
+// the guard is removed and if the rejection moves back into the parser and
+// leaves the guard unreachable.
+func TestFromEnv_SchemaTTL_RejectsNegative(t *testing.T) {
+	const rangeErr = "must be >= 0"
+	for _, key := range []string{
+		"CERBERUS_SCHEMA_TTL", "CERBERUS_SCHEMA_TTL_METRICS",
+		"CERBERUS_SCHEMA_TTL_LOGS", "CERBERUS_SCHEMA_TTL_TRACES",
+	} {
+		t.Run(key, func(t *testing.T) {
+			const negative = "-1h"
+			// The guard can only be what rejects this if the parser accepts it.
+			if _, err := parseDuration(negative); err != nil {
+				t.Fatalf("parseDuration(%q) = %v; the range guard is unreachable", negative, err)
+			}
+			t.Setenv(key, negative)
+			_, err := FromEnv()
+			if err == nil {
+				t.Fatalf("FromEnv accepted %s=%s; want a range error", key, negative)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error %q does not name %s", err, key)
+			}
+			if !strings.Contains(err.Error(), rangeErr) {
+				t.Errorf("error %q is not the range guard's (%q)", err, rangeErr)
+			}
+		})
 	}
 }
 
