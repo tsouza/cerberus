@@ -330,8 +330,8 @@ const routeSecond = int64(time.Second)
 // columns empty. Durations (D / OuterRange / Step) are reported in whole
 // seconds to match the UInt32 corpus columns. The Route enum is "B" on a true
 // route (Strategy set), "A" otherwise — read from the recorded Strategy, never
-// the Reason string, so the high-D / below-threshold fold cannot misclassify
-// the route.
+// the Reason string, so a Reason added to the solver later cannot be misread as
+// a route.
 func routeFeatures(d *solver.Decision) (present bool, route string, nAnchors, fanout, cumulativeD, outerRange, step uint32, kShards uint8, reason string) {
 	if d == nil {
 		return false, "", 0, 0, 0, 0, 0, 0, ""
