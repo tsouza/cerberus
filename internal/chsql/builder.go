@@ -1719,6 +1719,30 @@ func Star() Frag {
 	return func(b *Builder) { b.sb.WriteByte('*') }
 }
 
+// StarReplace returns a Frag rendering ClickHouse's asterisk modifier
+// "* REPLACE (<expr> AS <col>, …)" — the wildcard with named columns
+// substituted by an expression while every other column, and crucially
+// every column's NAME, passes through untouched. That name preservation
+// is the point: it lets a rewrite reshape a column in place without any
+// downstream reference to it having to change. An empty list renders the
+// bare "*", so a caller need not guard the degenerate case.
+func StarReplace(replacements []Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteByte('*')
+		if len(replacements) == 0 {
+			return
+		}
+		b.sb.WriteString(" REPLACE (")
+		for i, r := range replacements {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			r(b)
+		}
+		b.sb.WriteByte(')')
+	}
+}
+
 // QualStar returns a Frag rendering "<table>.*" with the table
 // identifier flowing through Ident's backtick quoting (so embedded
 // backticks are doubled).

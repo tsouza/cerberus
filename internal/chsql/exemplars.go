@@ -170,8 +170,13 @@ func (e *emitter) emitMetricsExemplars(
 		groupDisplayNames[i] = alias
 	}
 
+	// Establish the Map key-order invariant on the identity keys. This
+	// entrypoint bypasses Emit, so it carries its own call; wrapping the key
+	// expression is safe here because every key is projected under an alias
+	// and referenced by that alias from the outer grid upward.
+	groupKeys := chplan.CanonicalizeSeriesKeyExprs(m.GroupBy, []chplan.Node{m.Inner}, attributeMapColumns)
 	innerSb := NewQuery().From(inner)
-	for i, g := range m.GroupBy {
+	for i, g := range groupKeys {
 		expr := g
 		alias := groupAliases[i]
 		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
