@@ -1,14 +1,12 @@
 -- query.traceql --
 {} | count_over_time() by (resource.service.name, span.http.status_code)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.status_code`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?]
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.status_code`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`, `http.status_code`
 -- args --
 [0] string = "service.name"
 [1] string = "http.status_code"
 [2] int64 = 1
 [3] bool = true
-[4] string = "service.name"
-[5] string = "http.status_code"
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),

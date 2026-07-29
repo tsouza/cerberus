@@ -55,8 +55,8 @@ func TestLower_HistogramValueFns_InstantLatestSample(t *testing.T) {
 			if len(agg.GroupBy) != 1 {
 				t.Fatalf("instant GroupBy len = %d, want 1 (Attributes)", len(agg.GroupBy))
 			}
-			if got := colName(t, agg.GroupBy[0]); got != s.AttributesColumn {
-				t.Errorf("instant GroupBy[0] = %q, want %q", got, s.AttributesColumn)
+			if got := canonicalMapKeyColName(t, agg.GroupBy[0]); got != s.AttributesColumn {
+				t.Errorf("instant GroupBy[0] = %q, want mapSort(%q)", got, s.AttributesColumn)
 			}
 			assertArgMaxLatestAggs(t, s, agg.AggFuncs)
 		})
@@ -119,8 +119,8 @@ func TestLower_HistogramValueFns_RangeLatestSample(t *testing.T) {
 			if len(fanout.GroupBy) != 1 {
 				t.Fatalf("range GroupBy len = %d, want 1 ([Attributes])", len(fanout.GroupBy))
 			}
-			if got := colName(t, fanout.GroupBy[0]); got != s.AttributesColumn {
-				t.Errorf("range GroupBy[0] = %q, want %q", got, s.AttributesColumn)
+			if got := canonicalMapKeyColName(t, fanout.GroupBy[0]); got != s.AttributesColumn {
+				t.Errorf("range GroupBy[0] = %q, want mapSort(%q)", got, s.AttributesColumn)
 			}
 			assertArgMaxLatestAggs(t, s, fanout.AggFuncs)
 			// The single-pass fan-out must NOT contain the old O(rows × N)
@@ -192,6 +192,25 @@ func colName(t *testing.T, e chplan.Expr) string {
 		t.Fatalf("expr = %T, want *chplan.ColumnRef", e)
 	}
 	return cr.Name
+}
+
+// canonicalMapKeyColName asserts a series-identity group key is the
+// canonical `mapSort(<column>)` shape and returns the wrapped column
+// name. Without the wrap a Map key compares positionally, so one logical
+// series stored under two key orders splits into two groups.
+func canonicalMapKeyColName(t *testing.T, e chplan.Expr) string {
+	t.Helper()
+	fc, ok := e.(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("group key = %T, want *chplan.FuncCall (mapSort)", e)
+	}
+	if fc.Name != "mapSort" {
+		t.Fatalf("group key func = %q, want mapSort", fc.Name)
+	}
+	if len(fc.Args) != 1 {
+		t.Fatalf("mapSort arity = %d, want 1", len(fc.Args))
+	}
+	return colName(t, fc.Args[0])
 }
 
 // timeUnixAlias returns the column name backing the projection that the

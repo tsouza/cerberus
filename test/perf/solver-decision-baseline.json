@@ -1374,6 +1374,18 @@
     "reason": "routed"
   },
   {
+    "query": "map_key_order_exp_histogram_count",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "map_key_order_histogram_quantile",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "map_key_order_increase",
     "routed": true,
     "k": 8,

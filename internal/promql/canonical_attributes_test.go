@@ -3,6 +3,7 @@ package promql
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -117,53 +118,198 @@ func TestLoweredPlans_AttributesBindingsAreCanonical(t *testing.T) {
 		`label_replace(mko, "dc", "eu", "", "")`,
 		"mko / ignoring(dc) mko_b",
 		"mko unless mko_b",
-		"histogram_quantile(0.9, sum by (le) (rate(mko[5m])))",
+		// The histogram family groups straight off the histogram tables
+		// with no selector projection in between, so each of these binds
+		// series identity at its own group key. Both storage shapes
+		// (classic `_bucket` rows and native exponential rows), both
+		// evaluation modes, and the `sum by/without` wrapper that routes
+		// through histogramAggGroupBy are represented.
+		"histogram_quantile(0.9, mko_hist_bucket)",
+		"histogram_quantile(0.9, rate(mko_hist_bucket[5m]))",
+		"histogram_quantile(0.9, sum by (le) (rate(mko_hist_bucket[5m])))",
+		"histogram_quantile(0.9, sum without (dc) (rate(mko_hist_bucket[5m])))",
+		"histogram_quantile(0.9, sum (rate(mko_hist_bucket[5m])))",
+		"histogram_quantile(0.9, mko_exp_hist)",
+		"histogram_quantile(0.9, rate(mko_exp_hist[5m]))",
+		"histogram_count(mko_exp_hist)",
+		"histogram_sum(mko_exp_hist)",
+		"histogram_avg(mko_exp_hist)",
+		"histogram_fraction(0.2, 0.8, mko_exp_hist)",
+		`histogram_quantiles(mko_hist_bucket, "phi", 0.5, 0.9)`,
+		`histogram_quantiles(mko_hist_bucket, "phi", 0.5)`,
+		"mko_hist_bucket",
 	}
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	for _, q := range queries {
-		t.Run(q, func(t *testing.T) {
-			expr, err := p.ParseExpr(q)
-			if err != nil {
-				t.Fatalf("parse %q: %v", q, err)
-			}
-			plan, err := Lower(context.Background(), expr, s)
-			if err != nil {
-				t.Fatalf("lower %q: %v", q, err)
-			}
-			assertAttributesBindingsCanonical(t, plan, s)
-		})
+	// Instant and range mode take different lowering paths for the whole
+	// histogram family (Aggregate collapse vs RangeBucketFanout), so both
+	// have to be swept or half the binding sites go unvisited.
+	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	start := end.Add(-canonicalCorpusRange)
+	for _, mode := range []struct {
+		name  string
+		lower func(parser.Expr) (chplan.Node, error)
+	}{
+		{"instant", func(e parser.Expr) (chplan.Node, error) {
+			return LowerAt(context.Background(), e, s, end, end)
+		}},
+		{"range", func(e parser.Expr) (chplan.Node, error) {
+			return LowerAtRange(context.Background(), e, s, start, end, canonicalCorpusStep)
+		}},
+	} {
+		for _, q := range queries {
+			t.Run(mode.name+"/"+q, func(t *testing.T) {
+				expr, err := p.ParseExpr(q)
+				if err != nil {
+					t.Fatalf("parse %q: %v", q, err)
+				}
+				plan, err := mode.lower(expr)
+				if err != nil {
+					t.Fatalf("lower %q: %v", q, err)
+				}
+				assertAttributesBindingsCanonical(t, plan, s)
+			})
+		}
 	}
 }
 
-// assertAttributesBindingsCanonical walks every node of plan and fails on
-// any projection aliased to the Attributes column whose expression reads
-// that column without a `mapSort` on the path from the binding's root down
-// to the read.
+// Eval window for the range-mode corpus sweep. Any window works — the
+// invariant is shape, not data — so these are just small round numbers
+// that keep the fan-out cheap.
+const (
+	canonicalCorpusRange = 10 * time.Minute
+	canonicalCorpusStep  = time.Minute
+)
+
+// assertAttributesBindingsCanonical fails with the offending node for
+// every site in plan that binds series identity to an Attributes Map the
+// engine has not canonicalised.
 func assertAttributesBindingsCanonical(t *testing.T, plan chplan.Node, s schema.Metrics) {
 	t.Helper()
-	chplan.Walk(plan, func(n chplan.Node) bool {
-		proj, ok := n.(*chplan.Project)
-		if !ok {
-			return true
-		}
-		for _, p := range proj.Projections {
-			if p.Alias != s.AttributesColumn {
-				continue
-			}
-			// A bare pass-through of an already-canonical upstream
-			// binding reads the column without sorting it again, which
-			// is correct and must not be flagged.
-			if ref, isRef := p.Expr.(*chplan.ColumnRef); isRef && ref.Name == s.AttributesColumn {
-				continue
-			}
-			if !readsAttributesUnderMapSort(p.Expr, s.AttributesColumn, false) {
-				t.Errorf("projection %q binds an un-canonicalised map: %#v", p.Alias, p.Expr)
-			}
-		}
+	for _, bad := range uncanonicalAttributesBindings(plan, s) {
+		t.Errorf("%T binds an un-canonicalised Attributes map: %#v", bad, bad)
+	}
+}
+
+// uncanonicalAttributesBindings returns every node in plan whose own
+// Attributes binding reads the map without canonicalising it and without
+// inheriting a canonical one from its input.
+//
+// Two kinds of site bind Attributes. A Project aliases an expression to
+// the Attributes column — that is what the selector paths use. A grouping
+// operator (Aggregate, the histogram fan-out, the two histogram-quantile
+// nodes) names Attributes in GroupByAliases, which makes its group key the
+// binding — that is what the histogram paths use, because they group
+// straight off the scan with no selector projection in between.
+//
+// A binding is fine when its expression sorts every read of the column, or
+// when it merely passes through an input that is already canonical; the
+// recursion is what tells those two apart, and is why a bare `Attributes`
+// group key over a raw Scan is caught while the identical key over an
+// already-canonical subplan is not.
+func uncanonicalAttributesBindings(plan chplan.Node, s schema.Metrics) []chplan.Node {
+	var bad []chplan.Node
+	canonicalAttributesOut(plan, s, &bad)
+	return bad
+}
+
+// canonicalAttributesOut reports whether n's output Attributes column is
+// canonical, appending to bad any node that breaks the invariant.
+func canonicalAttributesOut(n chplan.Node, s schema.Metrics, bad *[]chplan.Node) bool {
+	if n == nil {
 		return true
-	})
+	}
+	// A Scan hands back the stored key order verbatim: the OTel-CH
+	// exporter preserves OTLP wire order and never sorts.
+	if _, isScan := n.(*chplan.Scan); isScan {
+		return false
+	}
+
+	inputsCanonical := true
+	for _, c := range n.Children() {
+		if !canonicalAttributesOut(c, s, bad) {
+			inputsCanonical = false
+		}
+	}
+
+	bindings := attributesBindings(n, s)
+	if len(bindings) == 0 {
+		return inputsCanonical
+	}
+	for _, b := range bindings {
+		// A binding is acceptable when it sorts every read of the column
+		// itself, or when it merely passes through an input that is
+		// already canonical.
+		if !readsAttributesUnderMapSort(b, s.AttributesColumn, false) && !inputsCanonical {
+			*bad = append(*bad, n)
+			return false
+		}
+	}
+	return true
+}
+
+// attributesBindings returns the expressions through which n establishes
+// series identity from the Attributes map: the projection aliased to the
+// column, plus every group key that carries the whole map.
+//
+// Group keys are matched on what they READ, not on their alias — the
+// histogram `sum by/without` paths alias theirs to `gkey_0` and rebuild
+// Attributes from that alias one node up, so an alias-only match would
+// walk straight past the binding that actually decides the grouping.
+func attributesBindings(n chplan.Node, s schema.Metrics) []chplan.Expr {
+	col := s.AttributesColumn
+	switch v := n.(type) {
+	case *chplan.Project:
+		for _, p := range v.Projections {
+			if p.Alias == col {
+				return []chplan.Expr{p.Expr}
+			}
+		}
+	case *chplan.Aggregate:
+		return wholeMapGroupKeys(v.GroupBy, col)
+	case *chplan.RangeBucketFanout:
+		return wholeMapGroupKeys(v.GroupBy, col)
+	case *chplan.HistogramQuantile:
+		return wholeMapGroupKeys(v.GroupBy, col)
+	case *chplan.HistogramQuantileNative:
+		return wholeMapGroupKeys(v.GroupBy, col)
+	}
+	return nil
+}
+
+// wholeMapGroupKeys picks the group keys that carry whole-Map series
+// identity.
+func wholeMapGroupKeys(keys []chplan.Expr, col string) []chplan.Expr {
+	var out []chplan.Expr
+	for _, k := range keys {
+		if carriesWholeMap(k, col) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// carriesWholeMap reports whether expr reads col as a Map rather than
+// through a subscript. A subscript (`Attributes['job']`, what `by(...)`
+// lowers to) yields a scalar String that compares the same under any key
+// order, so it is not an ordering hazard.
+func carriesWholeMap(expr chplan.Expr, col string) bool {
+	switch v := expr.(type) {
+	case *chplan.ColumnRef:
+		return v.Name == col
+	case *chplan.MapAccess:
+		return false
+	case *chplan.MapWithoutKeys:
+		return carriesWholeMap(v.Map, col)
+	case *chplan.FuncCall:
+		for _, a := range v.Args {
+			if carriesWholeMap(a, col) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // readsAttributesUnderMapSort reports whether every read of column inside
@@ -173,6 +319,10 @@ func readsAttributesUnderMapSort(expr chplan.Expr, column string, sorted bool) b
 	switch v := expr.(type) {
 	case *chplan.ColumnRef:
 		return sorted || v.Name != column
+	case *chplan.MapWithoutKeys:
+		// Key removal preserves the order it was handed, so it is
+		// canonical only if what it reads already was.
+		return readsAttributesUnderMapSort(v.Map, column, sorted)
 	case *chplan.FuncCall:
 		if v.Name == "mapSort" {
 			sorted = true

@@ -1,14 +1,12 @@
 -- query.traceql --
 {} | max_over_time(duration) by (resource.service.name, span.http.method)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.method`, max((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?]
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.method`, max((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`, `http.method`
 -- args --
 [0] string = "service.name"
 [1] string = "http.method"
 [2] float64 = 1e+09
 [3] bool = true
-[4] string = "service.name"
-[5] string = "http.method"
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),

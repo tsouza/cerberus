@@ -356,7 +356,62 @@ func mergeResourceAttributesExpr(s schema.Metrics) chplan.Expr {
 // genuinely different label sets, and re-wrapping an already-canonical
 // map (the vector-join match keys still wrap defensively) is a no-op.
 func canonicalAttributesExpr(expr chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "mapSort", Args: []chplan.Expr{expr}}
+	if call, ok := expr.(*chplan.FuncCall); ok && call.Name == canonicalMapFunc {
+		return expr
+	}
+	return &chplan.FuncCall{Name: canonicalMapFunc, Args: []chplan.Expr{expr}}
+}
+
+// canonicalMapFunc is the ClickHouse function that establishes the
+// key-order invariant. Named so [canonicalAttributesExpr] and its own
+// idempotence check cannot drift apart.
+const canonicalMapFunc = "mapSort"
+
+// canonicalGroupKeyExpr applies [canonicalAttributesExpr] to a
+// series-identity GROUP BY / PARTITION BY key that reads the raw
+// Attributes table column.
+//
+// The selector paths never need this: they bind Attributes through one
+// projection ([selectorAttributesExpr]), so canonicalising that
+// projection is enough and every downstream key reads the alias. The
+// HISTOGRAM paths have no such projection — they group straight off the
+// scan — so their identity keys ARE the binding site, and this is where
+// the same wrap gets applied. Because these keys are always aliased back
+// to the Attributes column, everything downstream of them inherits the
+// invariant exactly as the selector paths do.
+//
+// Only whole-Map keys are rewritten. A per-label subscript
+// (`Attributes['job']`, what `by(...)` lowers to) is a scalar String and
+// compares the same under any key order, so wrapping it would cost a
+// sort and buy nothing.
+func canonicalGroupKeyExpr(key chplan.Expr, s schema.Metrics) chplan.Expr {
+	switch v := key.(type) {
+	case *chplan.ColumnRef:
+		if isBareAttributesRef(v, s) {
+			return canonicalAttributesExpr(v)
+		}
+	case *chplan.MapWithoutKeys:
+		// `without(...)` filters keys out of the Map but preserves the
+		// order it was handed, so it inherits whatever order the raw
+		// column had. Canonicalise the map it reads.
+		return &chplan.MapWithoutKeys{
+			Map:  canonicalGroupKeyExpr(v.Map, s),
+			Keys: v.Keys,
+		}
+	}
+	return key
+}
+
+// canonicalGroupKeyExprs is [canonicalGroupKeyExpr] over a key list.
+func canonicalGroupKeyExprs(keys []chplan.Expr, s schema.Metrics) []chplan.Expr {
+	if keys == nil {
+		return nil
+	}
+	out := make([]chplan.Expr, len(keys))
+	for i, k := range keys {
+		out[i] = canonicalGroupKeyExpr(k, s)
+	}
+	return out
 }
 
 // isBareAttributesRef reports whether expr is exactly the bare Attributes
