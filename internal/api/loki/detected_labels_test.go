@@ -68,7 +68,7 @@ func TestDetectedLabels_HappyPath(t *testing.T) {
 
 	// SQL sanity: ResourceAttributes column + GROUP BY + time bounds.
 	last := q.LastSQL()
-	if !strings.Contains(last, "`ResourceAttributes` AS `labels`") {
+	if !strings.Contains(last, "mapSort(`ResourceAttributes`) AS `labels`") {
 		t.Errorf("missing labels projection in SQL: %q", last)
 	}
 	if !strings.Contains(last, "GROUP BY `labels`") {

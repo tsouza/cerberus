@@ -81,7 +81,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 // the chsql.Builder. The shape is:
 //
 //	SELECT
-//	  uniqExact(`ResourceAttributes`)         AS streams,
+//	  uniqExact(mapSort(`ResourceAttributes`)) AS streams,
 //	  count()                                  AS entries,
 //	  sum(length(`Body`))                     AS bytes
 //	FROM `otel_logs`
@@ -95,7 +95,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(
-			aggFrag("uniqExact", s.ResourceAttributesColumn),
+			streamsAggFrag(s.ResourceAttributesColumn),
 			countStar(),
 			bytesAggFrag(s.BodyColumn),
 		).
@@ -109,12 +109,19 @@ func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end ti
 	return sqlStr, args, nil
 }
 
-// aggFrag returns a Frag that emits "<fn>(`<col>`)" via the typed
-// Call constructor so the SQL stream stays inside the chsql surface
-// (no raw clause-keyword cosplay). fn is a CH function name and is
-// emitted verbatim by Call (same trust contract as Cast's type name).
-func aggFrag(fn, col string) chsql.Frag {
-	return chsql.Call(fn, chsql.Col(col))
+// streamsAggFrag returns the Frag that counts distinct streams:
+// "uniqExact(mapSort(`<col>`))", composed through the typed Call
+// constructor so the SQL stream stays inside the chsql surface (no raw
+// clause-keyword cosplay).
+//
+// uniqExact over the whole label-set Map is a series-identity key, and CH
+// hashes a Map positionally over its (keys, values) arrays, so the
+// canonical key-order wrap is what makes one logical stream delivered
+// under two OTLP key orders count once. The result is a scalar straight
+// out of CH — unlike /series there is no Go-side dedupe that could
+// recover a doubled count, so the wrap is the whole fix.
+func streamsAggFrag(col string) chsql.Frag {
+	return chsql.Call("uniqExact", canonicalLabelsFrag(chsql.Col(col)))
 }
 
 // countStar returns a Frag that emits "count()" via the typed Call
