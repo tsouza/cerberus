@@ -1110,8 +1110,8 @@ carries as much weight as the steps themselves:
    must exist before step 5 can publish a patch on it. See
    [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
 3. **Settle the retirement set before any backport is cut.** When the cycle
-   cuts a new minor, the oldest supported line falls out of the window defined
-   in
+   cuts a new minor — which a breaking change is by itself enough to force, see
+   below — the oldest supported line falls out of the window defined in
    [release support window / EOL policy](#release-support-window--eol-policy).
    Work out which line that is up front, because it takes **no backport and no
    patch release** this cycle — spending a release on a line about to be retired
@@ -1126,6 +1126,16 @@ carries as much weight as the steps themselves:
    line gets its patch tag before the new head release exists.
 6. **Publish the new MINOR (or patch) release last.** `main`'s release is always
    the final publish of the cycle.
+
+**Breaking changes are accepted in a new minor.** On the cerberus version line
+(`appVersion` / the `v<major>.<minor>.<patch>` tags) a breaking change does
+**not** require a major bump — the minor is its vehicle. That makes "does this
+delta break anything?" a step-3 input: a breaking change is on its own
+sufficient reason for the cycle to cut a minor rather than a patch, and cutting
+a minor is what pushes the oldest line out of the support window and calls for
+a maintenance branch on the minor `main` is leaving. A cycle carrying neither a
+breaking change nor a new feature is a patch cycle: it retires nothing, creates
+no line, and passes step 3 straight through.
 
 Two properties follow from that order. Publishing the older lines first means
 the newest tag is never the one users find while the older lines are still
