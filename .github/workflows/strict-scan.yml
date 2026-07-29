@@ -148,3 +148,15 @@ jobs:
       # enforced server-side. See internal/solver/executor_realch_integration_test.go.
       - name: Run solver memory-apportionment differential (real ClickHouse)
         run: just solver-memory-apportion-integration
+
+      # Whether a pooled ClickHouse connection SURVIVES a cursor teardown is
+      # observable only against a real driver + server: clickhouse-go releases a
+      # connection when a query ends on a live context and destroys the socket
+      # when it ends on a cancelled one, and the difference shows up purely as a
+      # pool statistic. chDB has no pool, and a fake cursor cannot model either
+      # branch, so every layer below this one passes identically whichever
+      # ordering the gateway uses. This step drives both orderings through the
+      # real driver and asserts the pool. See
+      # internal/chclient/conn_teardown_integration_test.go.
+      - name: Run chclient connection-teardown differential (real ClickHouse)
+        run: just chclient-integration
