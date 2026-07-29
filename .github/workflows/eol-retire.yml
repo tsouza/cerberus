@@ -1,0 +1,53 @@
+name: eol-retire
+
+# Deletes the maintenance branches that `RETIRED_LINES` in
+# release-preflight.mjs declares retired ahead of the support window.
+#
+# The window slide is already automated — release.yml retires the line a new
+# minor pushed out, in the same run that published it. This workflow covers the
+# other case: a line that stops being supportable BEFORE the arithmetic reaches
+# it, because it can no longer take the fixes the supported lines carry. That is
+# a judgement, not a computation, so it is dispatched by hand after the entry is
+# merged rather than fired by a release.
+#
+# Manual dispatch rather than push-to-main for the same reason: merging the
+# declaration is what makes the refusal to publish from the line take effect
+# immediately, and deleting the branch is a separate, irreversible step that
+# should be taken deliberately. `dry_run` defaults to true so the first run
+# always reports what it would delete.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would be deleted without deleting it.'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eol-retire
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    name: retire declared EOL lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: release-preflight self-test
+        run: node .github/scripts/release-preflight.mjs --self-test
+
+      - name: retire declared EOL lines
+        env:
+          # The `release/*.x` ruleset blocks deletion and bypasses only the
+          # admin role, which an admin-owned RELEASE_PAT inherits and
+          # github-actions[bot] does not. Falling back to github.token keeps the
+          # dispatch runnable without the secret; it will report the 403 rather
+          # than pretend the branch is gone.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node .github/scripts/release-preflight.mjs eol-retire-declared

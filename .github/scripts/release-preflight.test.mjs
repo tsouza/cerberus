@@ -28,9 +28,13 @@ import {
   parseCheckList,
   requiredChecksPending,
   allSuitesSettled,
+  supportWindowProblem,
+  unpublishedWorkProblem,
   MODE_MAINLINE,
   MODE_MAINTENANCE,
   REUSABLE_JOB_SEPARATOR,
+  RETIRED_LINES,
+  SUPPORTED_MINOR_LINES,
 } from './release-preflight.mjs';
 
 test('parseCheckList keeps commas inside a check name', () => {
@@ -238,4 +242,108 @@ test('legacy statuses satisfy the required set too, and a red one still blocks',
   const red = evaluate(world({ required, statuses: [{ context: 'GitGuardian', state: 'failure' }] }));
   assert.equal(red.problems.length, 1, `expected exactly one problem, got: ${red.problems.join('; ')}`);
   assert.equal(red.problems[0], 'GitGuardian: status failure');
+});
+
+// ---------------------------------------------------------------------------
+// early retirement — RETIRED_LINES, and the guard on deleting a branch
+// ---------------------------------------------------------------------------
+
+// Tags spanning the three lines the window keeps, so anything the declaration
+// rejects is rejected DESPITE the arithmetic saying it is supported.
+const IN_WINDOW_TAGS = ['v1.13.2', 'v1.12.3', 'v1.11.4', 'v1.10.7'];
+
+test('every declared retirement is a branch the window math can see', () => {
+  // `supportWindowProblem` returns null for anything that is not a maintenance
+  // branch, and it does so BEFORE consulting the declaration. A typo in a
+  // RETIRED_LINES key — `releases/1.11.x`, `release/1.11`, a stray space — is
+  // therefore not a loud failure but a silent one: the entry sits in the map
+  // looking authoritative while the line it names stays publishable. Asserting
+  // the declaration actually fires is the only thing standing between a typo
+  // and a retired line quietly accepting a release.
+  assert.ok(RETIRED_LINES.size > 0, 'the map is expected to hold the lines retired so far');
+  for (const [branch, reason] of RETIRED_LINES) {
+    const problem = supportWindowProblem({ branch, tags: IN_WINDOW_TAGS });
+    assert.ok(problem, `${branch} is declared retired but the gate does not block it`);
+    assert.match(problem, /end-of-life/);
+    assert.ok(reason && reason.length > 0, `${branch} is declared retired with no reason`);
+  }
+});
+
+test('release/1.11.x is retired even though the window still counts it as supported', () => {
+  // The case the declaration exists for. v1.13 is current and the window keeps
+  // the latest 3 minors, so 1.11 is one inside the boundary by arithmetic; it
+  // is retired anyway, and the block has to name the reason rather than the
+  // version distance, because the distance is not why.
+  assert.equal(SUPPORTED_MINOR_LINES, 3, 'the fixture below assumes a latest-3 window');
+  assert.equal(supportWindowProblem({ branch: 'release/1.12.x', tags: IN_WINDOW_TAGS }), null);
+
+  const problem = supportWindowProblem({ branch: 'release/1.11.x', tags: IN_WINDOW_TAGS });
+  assert.match(problem, /end-of-life/);
+  assert.match(problem, /retired ahead of the latest-3 support window/);
+  assert.doesNotMatch(problem, /minor\(s\) behind/, 'the arithmetic reason would be the wrong one here');
+});
+
+test('a declared retirement does not depend on the tag set being resolvable', () => {
+  // The declaration is the whole basis for the block, so it must survive a
+  // world where the window cannot be computed at all. Otherwise re-creating the
+  // deleted branch and publishing from it would be refused only while the tag
+  // listing happened to work.
+  assert.match(supportWindowProblem({ branch: 'release/1.11.x', tags: [] }), /end-of-life/);
+  assert.equal(supportWindowProblem({ branch: 'release/1.12.x', tags: [] }), null, 'negative control');
+});
+
+test('a branch whose tip is a published tag on its own line is safe to delete', () => {
+  const tags = [
+    { name: 'v1.11.4', sha: 'aaa' },
+    { name: 'v1.11.3', sha: 'bbb' },
+    { name: 'v1.12.3', sha: 'ccc' },
+  ];
+  assert.equal(unpublishedWorkProblem({ branch: 'release/1.11.x', tipSha: 'aaa', tags }), null);
+});
+
+test('a branch carrying commits no release published is refused, and the highest tag is named', () => {
+  // The state that makes deletion lossy: a backport merged but never released.
+  // Reporting the highest tag is what turns the refusal into an action — it is
+  // the commit the operator has to diff against to see what would be lost.
+  const tags = [
+    { name: 'v1.11.4', sha: 'aaa' },
+    { name: 'v1.11.10', sha: 'ddd' },
+  ];
+  const problem = unpublishedWorkProblem({ branch: 'release/1.11.x', tipSha: 'unreleased', tags });
+  assert.match(problem, /not the commit of any published v1\.11\.\* tag/);
+  assert.match(problem, /v1\.11\.10 at ddd/, 'highest is by patch NUMBER, not string order');
+});
+
+test('a tip matching some other line\'s tag does not count as published', () => {
+  // A coincidence between a branch tip and an unrelated line's tag says nothing
+  // about this line's history, and usually means the branch and its name have
+  // diverged — the point at which a destructive step should stop.
+  const tags = [
+    { name: 'v1.12.3', sha: 'ccc' },
+    { name: 'v1.11.4', sha: 'aaa' },
+  ];
+  assert.match(
+    unpublishedWorkProblem({ branch: 'release/1.11.x', tipSha: 'ccc', tags }),
+    /not the commit of any published v1\.11\.\* tag/,
+  );
+});
+
+test('a line with no stable tag at all is refused rather than assumed empty', () => {
+  // No tag means no reconstruction: the branch IS the only record. A prerelease
+  // does not count, matching the rest of the gate's reading of what "published"
+  // means.
+  const tags = [
+    { name: 'v1.11.0-rc.1', sha: 'aaa' },
+    { name: 'v1.12.3', sha: 'ccc' },
+  ];
+  const problem = unpublishedWorkProblem({ branch: 'release/1.11.x', tipSha: 'aaa', tags });
+  assert.match(problem, /no published stable tag/);
+});
+
+test('an unresolvable tip and a non-maintenance branch are both refusals, not passes', () => {
+  // Both are the shape where "nothing to check" reads identically to "checked
+  // and fine". This driver deletes branches, so neither may return null.
+  const tags = [{ name: 'v1.11.4', sha: 'aaa' }];
+  assert.match(unpublishedWorkProblem({ branch: 'release/1.11.x', tipSha: '', tags }), /could not resolve/);
+  assert.match(unpublishedWorkProblem({ branch: 'main', tipSha: 'aaa', tags }), /not a release maintenance line/);
 });

@@ -335,9 +335,22 @@ One implementation means a new rule guards BOTH lanes at once.
   (`X.Y.0`, `Y>0`) — patches / major bumps / backports / prereleases retire
   nothing — deletes only a provably out-of-window branch that exists (idempotent
   on a 404) with a `supportWindowProblem` cross-check, and ANY deletion failure
-  logs `::error::` and still exits 0 (the release already published). Pure
-  exported `MAINTENANCE_BRANCH_RE` + `currentMinor(tags)` +
+  logs `::error::` and still exits 0 (the release already published). A line can
+  also be retired AHEAD of the window slide, when it diverges far enough that
+  the fixes the supported lines carry no longer apply to it: `RETIRED_LINES`
+  maps such a branch to the reason it went early, `supportWindowProblem`
+  consults that map BEFORE the version arithmetic (so the refusal to publish
+  needs no resolvable tag set and survives the branch being re-created), and the
+  `eol-retire-declared` command — the `eol-retire.yml` manual dispatch, with a
+  `DRY_RUN` mode — deletes the declared branches. That driver is FAIL-CLOSED,
+  unlike its post-publish sibling: nothing rides on the dispatch, so a branch it
+  could not delete is a failed run rather than a silent no-op. Each deletion is
+  first proved lossless by `unpublishedWorkProblem`, which requires the branch
+  tip to be the commit of a published stable tag ON THAT LINE — a branch
+  carrying anything no release published stops the run and names the highest tag
+  to diff against. Pure exported `MAINTENANCE_BRANCH_RE` + `currentMinor(tags)` +
   `supportWindowProblem({branch, tags, windowSize})` +
+  `unpublishedWorkProblem({branch, tipSha, tags})` +
   `retireLineForPublish({version, tags, windowSize})` + `evaluate({branchHead,
   pushedSha, checkRuns, statuses, selfJobs, branchLabel, tags, informational,
   required, mode})` + `requiredChecksPending(checkRuns, required)` (no network,
@@ -365,8 +378,14 @@ One implementation means a new rule guards BOTH lanes at once.
   - Env (`eol-retire-line` command): `GITHUB_TOKEN` (contents:write — the
     workflow passes `RELEASE_PAT || github.token`), `GITHUB_REPOSITORY`,
     `RELEASE_APP_VERSION` (the just-published `X.Y.Z`), `GITHUB_API_URL`.
+  - Env (`eol-retire-declared` command): `GITHUB_TOKEN` (contents:write AND
+    bypass on the `release/*.x` deletion ruleset — in practice the admin-owned
+    `RELEASE_PAT`, since `github-actions[bot]` has write but not admin and is
+    refused with a 403), `GITHUB_REPOSITORY`, `GITHUB_API_URL`, `DRY_RUN`
+    (`'true'` resolves and checks every declared line but deletes nothing).
   - Args: argv `--self-test` runs the assertion suite; `eol-retire-line` runs
-    the active-EOL retirement; no command runs the preflight gate.
+    the active-EOL retirement; `eol-retire-declared` deletes the branches
+    `RETIRED_LINES` declares retired early; no command runs the preflight gate.
   - Exit (preflight): `0` when every required lane ran green and all other gated
     checks are green (plus, in `maintenance` mode, the line is in-window and the
     commit is the branch tip) — or a green self-test; `1` on a required lane
@@ -376,6 +395,11 @@ One implementation means a new rule guards BOTH lanes at once.
   - Exit (`eol-retire-line`): `0` always (fail-open — a retirement failure must
     never fail an already-published release); `1` only on a gross wiring error
     (missing repo/token) before any publish-affecting work.
+  - Exit (`eol-retire-declared`): `0` when every declared line is already absent
+    or was deleted; `1` on a missing env var, an unlistable tag set, a branch
+    that could not be resolved or deleted, or a branch carrying commits no
+    release published. Fail-CLOSED by design — nothing rides on the dispatch, so
+    an unreported no-op would be the only failure mode worth worrying about.
 - **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`),
   and `brew-verify.yml`, which re-runs the identical assertions on demand or
   weekly against an ALREADY-published version (the release-run job cannot be

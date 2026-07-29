@@ -1385,9 +1385,11 @@ required lane that never runs on the branch would block every hotfix release.
 
 ### Release support window / EOL policy
 
-Cerberus maintains the **latest 3 minor release lines**: the current minor plus
-the two prior. When a new minor ships, the line that becomes **3 minors behind**
-the current minor reaches **end-of-life (EOL)**. An EOL line:
+Cerberus maintains **at most the latest 3 minor release lines**: the current
+minor plus the two prior. When a new minor ships, the line that becomes **3
+minors behind** the current minor reaches **end-of-life (EOL)**. The window is an
+upper bound, not a promise — a line can also be **retired early** (see [Early
+retirement](#early-retirement)). An EOL line:
 
 - gets **no further hotfixes**;
 - has its `release/<major>.<minor>.x` maintenance branch **deleted
@@ -1457,6 +1459,40 @@ by release.yml's preflight on the commit being published.
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —
 stay available; only the future-hotfix branch is removed.
+
+#### Early retirement
+
+A line can reach end-of-life before the window slides past it. The window says
+how many lines cerberus is willing to support; it cannot say whether a
+particular line is still *supportable*. When a line diverges far enough that the
+fixes the other supported lines carry no longer apply to it — a correction that
+depends on a refactor it never took, a regression suite with no base on that
+branch — continuing to advertise support for it is the dishonest option.
+Retiring it early is the honest one.
+
+The declaration lives in `RETIRED_LINES` in
+`.github/scripts/release-preflight.mjs`, mapping the branch name to the reason
+it went early. Merging that entry is what makes the retirement real: the passive
+half (`supportWindowProblem`) consults the declaration **before** the version
+arithmetic, so the line stops being publishable immediately, and it stays
+refused even if the branch is later re-created.
+
+Deleting the branch is a separate, deliberate step — the `eol-retire` workflow,
+dispatched by hand, with `dry_run` defaulting to true so the first run only
+reports. Unlike its scheduled sibling it is **fail-closed**: nothing is riding on
+the dispatch, so a branch it could not delete is a failed run rather than a
+silent no-op that would leave the line standing while the docs said otherwise.
+Before each deletion it proves the retirement is lossless — the branch tip must
+be the commit of a published stable tag *on that line*, which is what makes the
+surviving tags a complete reconstruction of it. A branch carrying anything a
+release never published (an unreleased backport, a revert, a hand-pushed commit)
+stops the run and names the highest tag to diff against, rather than being
+retired at the cost of that work.
+
+Currently retired ahead of the window: **`release/1.11.x`**. It predates both
+the Map-canonicalisation family of wrong-answer fixes and the regression suite
+those fixes are pinned by, so the corrections `1.12.x` and `main` carry do not
+apply to it. `v1.11.*` tags and Releases are retained like any other EOL line.
 
 ## Dev / prod parity
 

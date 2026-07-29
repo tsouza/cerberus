@@ -186,9 +186,30 @@ const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
 // window / EOL policy" subsection of docs/operations.md.
 export const SUPPORTED_MINOR_LINES = 3;
 
+// Lines retired AHEAD of the window slide, branch name -> why.
+//
+// The window above is an upper bound on support, not a promise. A line stops
+// being supported the moment it can no longer take the fixes the other
+// supported lines carry — waiting for the arithmetic to catch up would leave it
+// advertising a support level it does not have, which is worse than retiring it
+// early. Declaring it here is what makes the retirement real: `supportWindowProblem`
+// refuses to publish from it, and the `eol-retire-declared` driver deletes the
+// branch.
+//
+// The reason travels with the entry because "why is this line gone while a
+// newer-by-one line is not" is the question a reader arrives with, and the
+// version arithmetic cannot answer it.
+export const RETIRED_LINES = new Map([
+  [
+    'release/1.11.x',
+    'it predates both the Map-canonicalisation family and the regression suite those fixes are ' +
+      'pinned by, so the wrong-answer corrections 1.12.x and main carry do not apply to it',
+  ],
+]);
+
 // A released app tag, `v<major>.<minor>.<patch>` (stable only — a prerelease
 // suffix like `-rc.1` does NOT establish a new supported line).
-const APP_TAG_RE = /^v(\d+)\.(\d+)\.\d+$/;
+const APP_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)$/;
 
 // A just-published app version, `<major>.<minor>.<patch>` (no `v`, stable). The
 // active-EOL retirement helper takes this shape (it is what the release gate
@@ -323,13 +344,28 @@ export function currentMinor(tags) {
 }
 
 // supportWindowProblem — given a maintenance branch and the released tag set,
-// return a blocking-problem string iff the branch is end-of-life (its minor is
-// SUPPORTED_MINOR_LINES or more behind the current minor on the same major), or
-// null when the line is in-window (or the window can't be computed yet). Lines
-// on an older major are always EOL once a newer major exists.
+// return a blocking-problem string iff the branch is end-of-life (declared in
+// RETIRED_LINES, or its minor is SUPPORTED_MINOR_LINES or more behind the
+// current minor on the same major), or null when the line is in-window (or the
+// window can't be computed yet). Lines on an older major are always EOL once a
+// newer major exists.
 export function supportWindowProblem({ branch, tags, windowSize = SUPPORTED_MINOR_LINES }) {
   const m = MAINTENANCE_BRANCH_RE.exec(branch);
   if (!m) return null; // not a maintenance line — caller already guards this
+
+  // Declared retirement outranks the arithmetic, and is checked BEFORE it: an
+  // early-retired line is EOL on the strength of the declaration alone, so this
+  // must not depend on the tag set being resolvable. Re-creating the deleted
+  // branch and pushing to it is therefore still refused.
+  const declared = RETIRED_LINES.get(branch);
+  if (declared) {
+    return (
+      `${branch} is end-of-life: it was retired ahead of the latest-${windowSize} support window because ` +
+      `${declared}. An EOL line gets no further hotfixes — see the Release support window / EOL policy ` +
+      `in docs/operations.md.`
+    );
+  }
+
   const line = [Number(m[1]), Number(m[2])];
   const cur = currentMinor(tags);
   if (!cur) return null; // no stable release yet — nothing to be behind of
@@ -351,6 +387,51 @@ export function supportWindowProblem({ branch, tags, windowSize = SUPPORTED_MINO
       `${branch} is end-of-life: minor ${line[0]}.${line[1]} is ${behind} minor(s) behind the current ` +
       `${cur[0]}.${cur[1]} (support window = latest ${windowSize} minor lines). An EOL line gets no ` +
       `further hotfixes — see the Release support window / EOL policy in docs/operations.md.`
+    );
+  }
+  return null;
+}
+
+// unpublishedWorkProblem — null when deleting `branch` at `tipSha` destroys
+// nothing, a blocking string when it might.
+//
+// Retiring a line deletes its branch, and the tags are what survive. That is
+// only lossless while every commit on the branch is reachable from one of them,
+// and the cheap sufficient check is that the TIP is a released tag's commit: if
+// it is, the branch is exactly its published history and the tags reconstruct
+// it. Anything else — a backport merged but never released, a revert, a
+// hand-pushed commit — moves the tip off the last tag, and the difference is
+// gone the moment the ref is deleted.
+//
+// The matching tag must belong to the line the branch names. A tip that happens
+// to coincide with some OTHER line's tag says nothing about this line's history
+// and usually means the branch name and the work on it have diverged, which is
+// the point at which a destructive step should stop rather than guess.
+//
+// `tags` is the `{ name, sha }` shape `listTags` returns.
+export function unpublishedWorkProblem({ branch, tipSha, tags }) {
+  const m = MAINTENANCE_BRANCH_RE.exec(branch);
+  if (!m) return `${branch} is not a release maintenance line — refusing to delete it.`;
+  if (!tipSha) return `could not resolve the tip commit of ${branch} — refusing to delete it.`;
+
+  const onLine = [];
+  for (const t of tags ?? []) {
+    const tag = APP_TAG_RE.exec(t.name ?? '');
+    if (tag && tag[1] === m[1] && tag[2] === m[2]) onLine.push({ ...t, patch: Number(tag[3]) });
+  }
+  if (onLine.length === 0) {
+    return (
+      `${branch} has no published stable tag — deleting it would be the only record of that work ` +
+      `disappearing. Refusing to delete it.`
+    );
+  }
+
+  if (!onLine.some((t) => t.sha === tipSha)) {
+    const highest = onLine.reduce((a, b) => (b.patch > a.patch ? b : a));
+    return (
+      `${branch} is at ${tipSha}, which is not the commit of any published v${m[1]}.${m[2]}.* tag ` +
+      `(highest on the line: ${highest.name} at ${highest.sha}). The branch carries commits no release ` +
+      `published, and deleting it would discard them. Publish or drop them first, then retire the line.`
     );
   }
   return null;
@@ -1177,6 +1258,35 @@ async function main() {
 // active-EOL driver — `eol-retire-line`
 // ---------------------------------------------------------------------------
 //
+// Both retirement drivers talk to the same API with the same auth, so the two
+// calls they share live here rather than being written twice with two chances
+// to drift.
+function apiHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+// listTags — every tag as `{ name, sha }`, where `sha` is the COMMIT the tag
+// resolves to (the tags API dereferences annotated tags for us, so a peeled and
+// a lightweight tag are indistinguishable here — which is what both callers
+// want). Fetched via the API so neither step needs a fetch-depth.
+async function listTags({ apiBase, repo, headers }) {
+  const out = [];
+  let page = 1;
+  for (;;) {
+    const res = await fetch(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`, { headers });
+    if (!res.ok) throw new Error(`GET tags -> ${res.status} ${res.statusText}`);
+    const data = (await res.json()) ?? [];
+    out.push(...data.map((t) => ({ name: t.name, sha: t.commit?.sha })));
+    if (data.length < 100) break;
+    page += 1;
+  }
+  return out;
+}
+
 // Runs POST-publish, after a NEW app version actually shipped. Computes the
 // line that just fell out of the support window via `retireLineForPublish`
 // (shared window math) and, if its `release/X.W.x` branch EXISTS, DELETES it.
@@ -1190,11 +1300,13 @@ async function main() {
 // could be marked continue-on-error too; we keep exit 0 to be safe regardless).
 //
 // Mechanism: deletes the ref via the Git refs API with the token in
-// GITHUB_TOKEN. The workflow passes RELEASE_PAT (fine-grained, contents:write)
-// when present, else the default github.token — both can delete an UNPROTECTED
-// `release/*.x` branch (verified: no ruleset / classic protection covers
-// `release/*`, only `main`). If a future ruleset protects `release/*`, wire a
-// bypass for the PAT identity; the fail-open contract means a 403 just logs.
+// GITHUB_TOKEN. The ruleset "release maintenance lines" targets
+// `refs/heads/release/*.x` and blocks `deletion`, so the token has to be able to
+// BYPASS it: the single bypass actor is the `admin` RepositoryRole in `always`
+// mode, which an admin-owned RELEASE_PAT inherits. The default `github.token`
+// acts as `github-actions[bot]` — write, never admin — and is refused with a
+// 403. The fail-open contract means that refusal logs loudly rather than
+// failing an already-published release.
 //
 // Env contract:
 //   GITHUB_TOKEN       token with contents:write (RELEASE_PAT or github.token).
@@ -1212,33 +1324,11 @@ async function retireLine() {
     process.exit(1);
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-
-  // All tags — the window anchors to the highest released stable minor. Fetched
-  // via the API so the step needs no fetch-depth. Fail-open: if we cannot list
-  // tags we cannot safely compute the window, so we retire nothing and return.
-  async function allTags() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const res = await fetch(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`, { headers });
-      if (!res.ok) throw new Error(`GET tags -> ${res.status} ${res.statusText}`);
-      const data = await res.json();
-      const names = (data ?? []).map((t) => t.name);
-      out.push(...names);
-      if (names.length < 100) break;
-      page += 1;
-    }
-    return out;
-  }
+  const headers = apiHeaders(token);
 
   let tags;
   try {
-    tags = await allTags();
+    tags = (await listTags({ apiBase, repo, headers })).map((t) => t.name);
   } catch (e) {
     ghError(`eol-retire-line: could not list tags (${e.message}) — retiring nothing this run (fail-open)`);
     process.exit(0);
@@ -1312,6 +1402,122 @@ async function retireLine() {
 }
 
 // ---------------------------------------------------------------------------
+// declared-EOL driver — `eol-retire-declared`
+// ---------------------------------------------------------------------------
+//
+// Retires the lines RETIRED_LINES declares dead ahead of the window slide.
+// `eol-retire-line` above is the scheduled half — it retires whatever the
+// arithmetic pushed out when a minor shipped — and this is the deliberate half;
+// they are separate entry points because they run at different times for
+// different reasons, and share the window math + tag listing rather than the
+// trigger.
+//
+// FAIL-CLOSED, unlike its sibling. `eol-retire-line` runs after a release is
+// already public, so a token refusal there must not red an otherwise-successful
+// publish. This one is dispatched on its own with nothing riding on it, so a
+// branch that could not be deleted is a failure: a silent no-op would leave the
+// line standing while the declaration and the docs both say it is gone, and
+// nothing would ever point out the disagreement.
+//
+// Nothing here is inferred. A line is retired because RETIRED_LINES names it,
+// and it is deleted only after `unpublishedWorkProblem` confirms the tags
+// reconstruct it — a branch holding anything a release did not publish stops
+// the run rather than being retired at the cost of that work.
+//
+// Env contract:
+//   GITHUB_TOKEN       token with contents:write AND bypass on the
+//                      `release/*.x` deletion ruleset — in practice the
+//                      admin-owned RELEASE_PAT, since github-actions[bot] has
+//                      write but not admin and is refused with a 403.
+//   GITHUB_REPOSITORY  owner/repo.
+//   GITHUB_API_URL     API base (default https://api.github.com).
+//   DRY_RUN            'true' -> resolve and check every line, delete nothing.
+// Exit: 0 when every declared line is absent or was deleted, 1 otherwise.
+async function retireDeclared() {
+  const token = process.env.GITHUB_TOKEN;
+  const repo = process.env.GITHUB_REPOSITORY;
+  const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
+  const dryRun = process.env.DRY_RUN === 'true';
+
+  if (!token || !repo) {
+    ghError('eol-retire-declared: GITHUB_TOKEN and GITHUB_REPOSITORY are required.');
+    process.exit(1);
+  }
+  if (RETIRED_LINES.size === 0) {
+    ghNotice('eol-retire-declared: RETIRED_LINES is empty — no line is declared retired, nothing to do.');
+    process.exit(0);
+  }
+
+  const headers = apiHeaders(token);
+
+  let tags;
+  try {
+    tags = await listTags({ apiBase, repo, headers });
+  } catch (e) {
+    ghError(`eol-retire-declared: could not list tags (${e.message}) — cannot prove a branch is safe to delete.`);
+    process.exit(1);
+  }
+
+  let failed = false;
+
+  for (const [branch, reason] of RETIRED_LINES) {
+    const ref = `heads/${branch}`;
+
+    let tipSha;
+    try {
+      const res = await fetch(`${apiBase}/repos/${repo}/git/ref/${ref}`, { headers });
+      if (res.status === 404) {
+        ghNotice(`eol-retire-declared: ${branch} is already absent — nothing to delete (idempotent).`);
+        continue;
+      }
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      tipSha = (await res.json())?.object?.sha;
+    } catch (e) {
+      ghError(`eol-retire-declared: could not resolve ${branch} (${e.message}).`);
+      failed = true;
+      continue;
+    }
+
+    const unsafe = unpublishedWorkProblem({ branch, tipSha, tags });
+    if (unsafe) {
+      ghError(`eol-retire-declared: ${unsafe}`);
+      failed = true;
+      continue;
+    }
+
+    if (dryRun) {
+      ghNotice(
+        `eol-retire-declared: DRY_RUN — would delete ${branch} (at ${tipSha}, a published tag's commit), ` +
+          `retired early because ${reason}.`,
+      );
+      continue;
+    }
+
+    try {
+      const res = await fetch(`${apiBase}/repos/${repo}/git/refs/${ref}`, { method: 'DELETE', headers });
+      if (res.status === 204) {
+        ghNotice(
+          `eol-retire-declared: deleted ${branch} — retired ahead of the latest-${SUPPORTED_MINOR_LINES} ` +
+            `support window because ${reason}. Its tags / Releases are retained.`,
+        );
+        continue;
+      }
+      const body = await res.text().catch(() => '');
+      throw new Error(`DELETE -> ${res.status} ${res.statusText} ${body}`);
+    } catch (e) {
+      ghError(
+        `eol-retire-declared: could not delete ${branch} (${e.message}). If this is a 403, the token ` +
+          `lacks bypass on the release/*.x deletion ruleset — dispatch again with RELEASE_PAT, or delete ` +
+          `it by hand: git push origin --delete ${branch}.`,
+      );
+      failed = true;
+    }
+  }
+
+  process.exit(failed ? 1 : 0);
+}
+
+// ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
 
@@ -1332,6 +1538,13 @@ if (invokedDirectly) {
       // Even an unexpected throw is fail-open: the release already shipped.
       ghError(`eol-retire-line: unexpected failure (${e.message}) — retiring nothing (fail-open)`);
       process.exit(0);
+    });
+  } else if (cmd === 'eol-retire-declared') {
+    retireDeclared().catch((e) => {
+      // Fail-closed: nothing is riding on this dispatch, so an unexpected throw
+      // is reported rather than swallowed.
+      ghError(`eol-retire-declared: unexpected failure (${e.message}) — no line retired.`);
+      process.exit(1);
     });
   } else {
     main().catch((e) => {
