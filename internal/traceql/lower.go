@@ -420,11 +420,12 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 	}
 
 	// Set operations (`&&` / `||`) lower to a chplan.SetOperation; the
-	// emitter renders an INNER JOIN (intersect) or UNION DISTINCT (union)
+	// emitter renders an INNER JOIN (intersect) or an identity-deduped
+	// UNION ALL (union)
 	// keyed on (TraceID, SpanID).
 	if setOp, ok := mapSetOp(op.Op); ok {
 		if setOp == chplan.SetUnion {
-			// UNION DISTINCT matches arm columns positionally and
+			// A CH UNION matches arm columns positionally and
 			// errors (CH code 258) when the counts differ. Structural
 			// arms expose the narrow span envelope (3 keys + the
 			// structuralExtraProjectionColumns list) while plain
@@ -558,9 +559,9 @@ func structuralExtraProjectionColumns(s schema.Traces) []string {
 // in that order (see chsql.structuralProjectionFrags) — while plain
 // Filter/Scan arms expose every table column via `SELECT *`. When the
 // two shapes mix, the wide arm is wrapped in a Project emitting
-// exactly the narrow list so ClickHouse's positional UNION DISTINCT
-// matches column-for-column. Same-shape pairs pass through untouched
-// (two wide arms keep the legacy full-row dedup semantics).
+// exactly the narrow list so ClickHouse's positional UNION matches
+// column-for-column. Same-shape pairs pass through untouched (two wide
+// arms are deduped on span identity like any other pair).
 func alignUnionArms(left, right chplan.Node, s schema.Traces) (chplan.Node, chplan.Node) {
 	ln, rn := isNarrowSpanArm(left), isNarrowSpanArm(right)
 	switch {
@@ -649,8 +650,8 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 // lower to the same StructuralJoin shape with a `Not…` Op constant;
 // the emitter swaps the outer INNER JOIN for a LEFT ANTI JOIN. The
 // union forms lower to a `Union…` Op constant; the emitter emits the
-// positive relation twice (once projecting each side) glued with
-// UNION DISTINCT.
+// positive relation twice (once projecting each side) glued with a
+// UNION ALL deduped on span identity.
 func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
 	switch op {
 	case traceql.OpSpansetChild:

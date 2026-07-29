@@ -36,8 +36,11 @@ package chplan
 // Negated ops reuse the relation predicate but swap the outer join
 // for a `LEFT ANTI JOIN` (direct case) or apply the closure with the
 // same anti-join shape (recursive case). Union ops emit the positive
-// relation twice — once projecting R.*, once projecting L.* — joined
-// by `UNION DISTINCT`.
+// relation twice — once projecting R.*, once projecting L.* — glued by
+// a `UNION ALL` deduped on span identity (`LIMIT 1 BY` the id key). The
+// dedup deliberately ignores the row payload: a CH Map compares
+// positionally, so a full-row dedup double-returns a span redelivered
+// under a different attribute key order.
 //
 // Multi-hop chains (`a > b > c`) already fall out of the binary node
 // shape: the lowering produces `StructuralJoin{Left: a, Right:

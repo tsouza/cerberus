@@ -406,7 +406,7 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 //   - SetOperation — every output row comes from one of the two arms,
 //     so traces(out) ⊆ traces(L) ∪ traces(R): UNION ALL the arm scopes
 //     (set-semantics IN makes duplicates free), skipping the
-//     wide-row UNION DISTINCT / INTERSECT dedup.
+//     arms' own identity dedup / INTERSECT.
 //   - StructuralJoin — every emitted span row originates in one of the
 //     two arms (which arm depends on the op: `>>` keeps R matches,
 //     negated forms keep the non-matching side, union-prefixed forms

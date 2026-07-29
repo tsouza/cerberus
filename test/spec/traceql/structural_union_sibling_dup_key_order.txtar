@@ -16,17 +16,24 @@ CREATE TABLE otel_traces (
     ScopeName String DEFAULT '',
     ScopeVersion String DEFAULT ''
 ) ENGINE = Memory;
-INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName) VALUES
-    ('t1', 's1', '',   'parent'),
-    ('t1', 's2', 's1', 'a'),
-    ('t1', 's3', 's1', 'b'),
-    ('t2', 's4', '',   'parent'),
-    ('t2', 's5', 's4', 'a'),
-    ('t2', 's6', 's4', 'c');
+-- The `&~` (sibling union) arm of the same duplicate-delivery shape
+-- structural_union_child_dup_key_order documents:
+--
+--   s2 -> redelivered with the ResourceAttributes keys REVERSED (trigger)
+--   s3 -> redelivered byte-identically (the control)
+--
+-- s2 is the L-arm span and s3 the R-arm span, so the divergence lands on
+-- the projection a full-row UNION DISTINCT could not collapse.
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName, ResourceAttributes) VALUES
+    ('t1', 's1', '',   'parent', map('job', 'api', 'dc', 'eu')),
+    ('t1', 's2', 's1', 'a',      map('job', 'api', 'dc', 'eu')),
+    ('t1', 's2', 's1', 'a',      map('dc', 'eu', 'job', 'api')),
+    ('t1', 's3', 's1', 'b',      map('job', 'api', 'dc', 'eu')),
+    ('t1', 's3', 's1', 'b',      map('job', 'api', 'dc', 'eu'));
 -- expected_rows --
 [
-  ["t1", "s2", "s1", "a", 0, 0, {}, {}, "", "", "", "", ""],
-  ["t1", "s3", "s1", "b", 0, 0, {}, {}, "", "", "", "", ""]
+  ["t1", "s2", "s1", "a", 0, 0, {"dc": "eu", "job": "api"}, {}, "", "", "", "", ""],
+  ["t1", "s3", "s1", "b", 0, 0, {"dc": "eu", "job": "api"}, {}, "", "", "", "", ""]
 ]
 -- args --
 [0] string = "a"

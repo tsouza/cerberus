@@ -91,7 +91,7 @@ func TestLowerSetOps(t *testing.T) {
 // `&>>`, `&<<`) structural variants. Each query should parse, lower
 // to a chplan.StructuralJoin, and carry the corresponding negated /
 // union Op constant — the emitter then turns the negated forms into a
-// LEFT ANTI JOIN and the union forms into a UNION DISTINCT pair (see
+// LEFT ANTI JOIN and the union forms into an identity-deduped pair (see
 // internal/chsql/structural_join.go).
 func TestLowerNegatedAndUnionStructural(t *testing.T) {
 	t.Parallel()
