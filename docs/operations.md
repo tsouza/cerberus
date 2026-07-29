@@ -1094,20 +1094,7 @@ carries as much weight as the steps themselves:
 1. **Drive everything merged first.** A cycle opens by draining the board: no
    open PR and no dangling branch-without-a-PR is left behind. A release ships
    the whole delta since the previous one, never a subset.
-2. **Backport everything to every line that stays supported.** Every fix that
-   landed on `main` since the previous release goes onto every
-   `release/<major>.<minor>.x` line that is still supported once this cycle
-   lands — step 3 settles which those are. "Everything" is the default rather
-   than a per-fix judgement call. A change is left out of a line only when the
-   backport is genuinely infeasible on that line, and a line that keeps
-   rejecting backports is a retirement candidate, not a standing exception. A
-   cycle that cuts a new minor also *adds* a line: the minor `main` is leaving
-   needs its own maintenance branch, created from the peeled tag of its last
-   release (`git push origin v<tag>^{}:refs/heads/release/<major>.<minor>.x` —
-   the ruleset carries no `creation` rule, so this needs no bypass). That branch
-   must exist before step 5 can publish a patch on it. See
-   [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
-3. **Settle the retirement set before any backport is cut.** When the cycle
+2. **Settle the retirement set before anything is cut.** When the cycle
    cuts a new minor — which a breaking change is by itself enough to force, see
    below — the oldest supported line falls out of the window defined in
    [release support window / EOL policy](#release-support-window--eol-policy).
@@ -1117,9 +1104,23 @@ carries as much weight as the steps themselves:
    is automatic, with the `eol-retire` job deleting the out-of-window branch
    after the new minor publishes. A patch-only cycle retires nothing and passes
    straight through.
-4. **Audit the delta.** One last pass over the complete diff since the previous
+3. **Audit the delta.** One last pass over the complete diff since the previous
    release: code against comments against docs, DRY, KISS, soundness. This is
-   the final gate — findings are fixed and merged here, before any tag exists.
+   the final gate — findings are fixed and merged onto `main` here, before any
+   line is backported and before any tag exists.
+4. **Backport everything to every line that stays supported.** Every fix that
+   landed on `main` since the previous release goes onto every
+   `release/<major>.<minor>.x` line that is still supported once this cycle
+   lands — step 2 settles which those are. "Everything" is the default rather
+   than a per-fix judgement call. A change is left out of a line only when the
+   backport is genuinely infeasible on that line, and a line that keeps
+   rejecting backports is a retirement candidate, not a standing exception. A
+   cycle that cuts a new minor also *adds* a line: the minor `main` is leaving
+   needs its own maintenance branch, created from the peeled tag of its last
+   release (`git push origin v<tag>^{}:refs/heads/release/<major>.<minor>.x` —
+   the ruleset carries no `creation` rule, so this needs no bypass). That branch
+   must exist before step 5 can publish a patch on it. See
+   [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
 5. **Publish the backport PATCH releases first.** Every still-supported older
    line gets its patch tag before the new head release exists.
 6. **Publish the new MINOR (or patch) release last.** `main`'s release is always
@@ -1128,18 +1129,23 @@ carries as much weight as the steps themselves:
 **Breaking changes are accepted in a new minor.** On the cerberus version line
 (`appVersion` / the `v<major>.<minor>.<patch>` tags) a breaking change does
 **not** require a major bump — the minor is its vehicle. That makes "does this
-delta break anything?" a step-3 input: a breaking change is on its own
+delta break anything?" a step-2 input: a breaking change is on its own
 sufficient reason for the cycle to cut a minor rather than a patch, and cutting
 a minor is what pushes the oldest line out of the support window and calls for
 a maintenance branch on the minor `main` is leaving. A cycle carrying neither a
 breaking change nor a new feature is a patch cycle: it retires nothing, creates
-no line, and passes step 3 straight through.
+no line, and passes step 2 straight through.
 
-Two properties follow from that order. Publishing the older lines first means
-the newest tag is never the one users find while the older lines are still
-mid-flight: by the time the head release appears, every supported line already
-sits at its final version. And placing the audit immediately before the first
-publish means nothing merges between the audit and the tags it cleared.
+Three properties follow from that order. The audit precedes the backport so
+that its findings reach every line: a fix merged onto `main` after the lines
+were cut would ship only in the head release, leaving each patch release to
+publish a defect `main` had already repaired. Auditing first also keeps the
+backport a single pass rather than one pass per round of findings. Publishing
+the older lines first means the newest tag is never the one users find while
+the older lines are still mid-flight: by the time the head release appears,
+every supported line already sits at its final version. And the audit is the
+last thing that merges — nothing lands between it and the tags it cleared, on
+any line.
 
 Each individual publish in steps 5 and 6 runs through the machinery below — a
 backport by pushing its `release/*.x` branch, the head release by merging its
