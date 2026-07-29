@@ -56,7 +56,21 @@ green no-op on an ordinary pull request, do their real work on the merge
 commit, and are named in release.yml's `RELEASE_REQUIRED_CHECKS`: nothing
 publishes until each has posted a green check-run on the commit being shipped.
 A `release/*` head branch still gets the full lane on the PR itself. The gate
-moved; it did not disappear. Every other job below is
+moved; it did not disappear.
+
+`compose-smoke` narrows that short-circuit by one step. It is the only
+lane that runs cerberus against a REAL ClickHouse server; every other
+execution layer runs against chDB, which coerces column types the
+server type-checks and rejects, so an emit-type or response-shape
+defect is green everywhere else and 502s in production. A pull request
+that changes something the stack can see differently — `internal/chsql`
+(the emitted types), `internal/api` (the HTTP surface),
+`internal/chclient` (the driver conversation), `cmd/cerberus` (startup)
+— therefore boots the stack on the PR. Everything else still
+short-circuits in seconds. `.github/scripts/compose-smoke-scope.mjs`
+owns the decision and the two path lists, computes them from the PR's
+own diff against its merge base, falls back to booting the stack when
+that diff cannot be computed, and is unit-tested in the `check` job. Every other job below is
 informational — it runs (push-to-main, nightly, or dispatch) and reports,
 but a red result does not block a merge. Informational does **not** mean
 tolerated: a red informational lane is a real failure to fix, it is just
@@ -92,7 +106,7 @@ for the rosters themselves and the procedure for moving one.
 | `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)     | PR + push + nightly + dispatch      | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness) + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                                                                                                                                                                     |
 | `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                                                                                                                                                                     |
 | `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus) + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                                                                                                                                                                             |
-| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | release PR + push + nightly         | Release   | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                                                                                                                                                                          |
+| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | in-scope PR + push + nightly        | Release   | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                                                                                                                                                                          |
 | `chart-validate`                        | `chart-ci.yml` (`chart-validate`)                    | PR + push + dispatch                | Required  | Helm chart lint + `helm-docs` README drift gate + `kubeconform` render + render assertions (split PDBs / derived `GOMEMLIMIT`) + `ct lint` over `deploy/helm/cerberus`; short-circuits to a green no-op when no chart file changed, so it reports on every PR                                                                                                                                                                                                                                                                         |
 | `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Required  | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`) | PR + push + nightly + dispatch      | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half)                                                                                                                                                                                                                                                                                                              |
@@ -736,9 +750,14 @@ internally over every dashboard/panel/surface, so Playwright's native
 `workers: 1` in `playwright.config.ts`) leaves them whole and buys
 nothing. The split is therefore **logical**: the spec FILES
 are partitioned across a matrix of jobs, each booting its OWN isolated
-compose stack, balanced by measured wall-clock weight. The partition,
-the explicit non-compose-smoke exclude list, and the coverage
-assertion are the single source of truth in
+compose stack, balanced by measured wall-clock weight. Whether the lane fans out at all on a
+pull request is a separate, earlier decision made by
+`.github/scripts/compose-smoke-scope.mjs` in the `compose-smoke-scope`
+job; the aggregator reads a skipped setup as green only when that job
+succeeded AND reported the change out of scope, so a scope job that
+crashed fails the gate instead of passing for the wrong reason. The
+partition, the explicit non-compose-smoke exclude list, and the
+coverage assertion are the single source of truth in
 `.github/scripts/compose-smoke-matrix.mjs` (`compose-smoke-setup`
 verifies + emits the matrix; `compose-smoke-shard` runs each shard;
 the aggregator job literally named `compose-smoke` needs the matrix
