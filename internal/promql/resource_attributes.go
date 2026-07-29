@@ -330,10 +330,41 @@ func mergeResourceAttributesExpr(s schema.Metrics) chplan.Expr {
 	}
 }
 
+// canonicalAttributesExpr wraps a projected label map in ClickHouse
+// `mapSort`, establishing the invariant every series-identity key in the
+// engine depends on: the Attributes Map is ordered by key.
+//
+// A CH Map compares and groups POSITIONALLY over its (keys, values)
+// arrays, so map('job','api','dc','eu') and map('dc','eu','job','api')
+// are unequal despite carrying the same label set. Divergent key order
+// reaches the store straight from ingestion — the OTel-CH exporter
+// preserves OTLP wire order and never sorts — so two scrapes of one
+// logical series can land under two physical orders. Every downstream
+// consumer that keys on the whole Map (the LWR per-series collapse, a
+// RangeWindow's per-series partition, `without(...)`, `topk`'s
+// PARTITION BY, the vector-join arms) would then see two series where
+// there is one: `count()` doubles, `sum()` adds the same series twice,
+// and a range function sees one sample per partition and returns empty.
+//
+// Canonicalising HERE — at the single projection that binds the
+// Attributes column every selector reads — fixes all of those at once,
+// because they all consume this value rather than the raw table column.
+// The alternative, wrapping each of the ~30 grouping sites, leaves every
+// future operator to remember the rule.
+//
+// mapSort is order-only and idempotent, so it can never merge two
+// genuinely different label sets, and re-wrapping an already-canonical
+// map (the vector-join match keys still wrap defensively) is a no-op.
+func canonicalAttributesExpr(expr chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Name: "mapSort", Args: []chplan.Expr{expr}}
+}
+
 // isBareAttributesRef reports whether expr is exactly the bare Attributes
 // ColumnRef — used to skip the selector Project (and the matching pred
-// sink) when the resource merge is a no-op (no ResourceAttributesColumn)
-// and there is no outer-by overlay, keeping legacy fixtures byte-identical.
+// sink) when the projection would be an identity map. Since
+// [canonicalAttributesExpr] wraps every merged read-path map, this is now
+// true only in catalog mode and when the arms already pre-merged (and so
+// already canonicalised) the column.
 func isBareAttributesRef(expr chplan.Expr, s schema.Metrics) bool {
 	ref, ok := expr.(*chplan.ColumnRef)
 	return ok && ref.Name == s.AttributesColumn && ref.Qualifier == ""

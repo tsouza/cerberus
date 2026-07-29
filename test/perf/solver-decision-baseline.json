@@ -1368,6 +1368,30 @@
     "reason": "routed"
   },
   {
+    "query": "map_key_order_count",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "map_key_order_increase",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "map_key_order_sum_by_labels",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "map_key_order_sum_without_label",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "mapkey_order_binop_default_instant",
     "routed": true,
     "k": 6,
