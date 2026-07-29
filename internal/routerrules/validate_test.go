@@ -1,6 +1,7 @@
 package routerrules
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -287,6 +288,7 @@ params:
     column: memory_usage
     percentile: { ref: pctile }
     partition_by: [language]
+    scope: { exit_status: ok }
 rules:
   - id: r1
     severity: high
@@ -304,5 +306,99 @@ rules:
 	}
 	if !strings.Contains(err.Error(), "partition column") || !strings.Contains(err.Error(), "group_by") {
 		t.Fatalf("error should name the partition/group_by mismatch, got: %v", err)
+	}
+}
+
+// healthScopeCatalogYAML is a one-param catalog whose percentile column and
+// exit_status scope the health-scope tests substitute, so each case differs from
+// the accepted shape in exactly the axis under test.
+const healthScopeCatalogYAML = `
+apiVersion: routerrules.cerberus/v1
+catalogVersion: 1
+params:
+  - name: pctile
+    kind: config
+    key: router_rules.watermark_percentile
+  - name: wm
+    kind: corpus_percentile
+    column: %s
+    percentile: { ref: pctile }
+%s
+rules:
+  - id: r1
+    severity: high
+    since: 1
+    status: active
+    group_by: [shape_id]
+    condition:
+      all:
+        - { col: %s, op: gte, param: wm }
+    finding: "x {wm}"
+`
+
+// TestValidateHealthScope pins the scoping a percentile's column demands, in
+// both directions.
+//
+// A runtime-cost percentile (memory_usage, read_rows, read_bytes,
+// query_duration_ms) is a "what does a normal query cost here?" watermark, so it
+// must be learned over clean finishes: a timed-out row's duration is the
+// deadline and an OOM row's memory is the cap, so those rows describe the
+// failure rather than the query, and folding them in drags the watermark toward
+// the pathologies the rules exist to detect.
+//
+// A geometry percentile (fanout, cumulative_d, n_anchors, k_shards) is derived
+// from the query shape before dispatch, so it carries no outcome bias to remove;
+// scoping it to clean finishes only shrinks the population, and on a deployment
+// whose heavy shapes are the ones that fail it empties the bucket and collapses
+// the watermark to a fire-on-everything floor.
+//
+// Both mistakes leave a param that still resolves to a number, just the wrong
+// one, so neither surfaces as anything but a rule that quietly under- or
+// over-fires. Load-time is the only place they are visible.
+func TestValidateHealthScope(t *testing.T) {
+	const (
+		healthy   = "    scope: { exit_status: ok }"
+		unhealthy = "    scope: { exit_status: oom }"
+		unscoped  = ""
+	)
+	cases := []struct {
+		name   string
+		column string
+		scope  string
+		want   string // substring the load error must name; empty = must load
+	}{
+		{name: "cost column scoped to ok loads", column: "query_duration_ms", scope: healthy},
+		{name: "geometry column unscoped loads", column: "cumulative_d", scope: unscoped},
+		{
+			name: "cost column unscoped is rejected", column: "read_rows", scope: unscoped,
+			want: "must declare scope.exit_status: ok",
+		},
+		{
+			name: "cost column scoped to a failure class is rejected", column: "memory_usage", scope: unhealthy,
+			want: `scopes exit_status to "oom"`,
+		},
+		{
+			name: "geometry column scoped to ok is rejected", column: "fanout", scope: healthy,
+			want: "measures geometry column",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			y := fmt.Sprintf(healthScopeCatalogYAML, tc.column, tc.scope, tc.column)
+			_, err := LoadCatalog([]byte(y))
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("expected catalog to load, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected load to fail naming %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error should name %q, got: %v", tc.want, err)
+			}
+		})
 	}
 }

@@ -191,7 +191,9 @@ jobs:
           # on them would deadlock). A reusable workflow called from one of them
           # posts children as "<job> / <child>"; release-preflight.mjs matches
           # that prefix too, so release-artifact-migration's tier jobs are
-          # excluded without being named individually.
+          # excluded without being named individually. brew-smoke's per-OS
+          # matrix legs are named to the same "<job> / <child>" shape for the
+          # same reason — one entry below covers every leg.
           # All three lists are NEWLINE-separated, one name per line: check-run
           # names are job display names and may contain commas (see `property
           # (…, rapid N=500)` below), so a comma cannot be the separator.
@@ -295,6 +297,12 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    outputs:
+      # Whether this tag is the highest stable release. Downstream jobs decide
+      # what the newest line alone may own (the GitHub `Latest` pointer, the
+      # Homebrew cask) off this, so it has to leave the job, not just the
+      # step.
+      is_latest: ${{ steps.is_latest.outputs.is_latest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -309,8 +317,6 @@ jobs:
 
       - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v4
-
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -321,11 +327,18 @@ jobs:
       # Docker Hub mirror — goreleaser pushes the same per-arch images +
       # manifests to docker.io/tsouza/cerberus in the same build. A login
       # failure aborts the whole release (atomic dual-registry push).
+      # Both logins sit ahead of the builder setup so the BuildKit
+      # bootstrap image is fetched under the same credentials.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # `dockers_v2` builds linux/amd64 + linux/arm64 through buildx, which
+      # needs the docker-container driver (the built-in `docker` driver is
+      # single-platform).
+      - uses: ./.github/actions/setup-buildx
 
       # Create + push the `v<appVersion>` annotated tag at the merge commit.
       # goreleaser reads the version from this tag. The push does NOT recurse:
@@ -352,23 +365,35 @@ jobs:
             echo "created + pushed ${TAG} at ${GITHUB_SHA}"
           fi
 
-      # Whether THIS tag is the highest stable release (so we move the rolling
-      # `:latest` images). A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is
-      # NOT highest -> `:latest` stays on v1.3.0. goreleaser reads this via
-      # `.Env.RELEASE_IS_LATEST` in the `latest-*` skip_push templates. Needs
-      # fetch-depth: 0 so all tags (including the one just pushed) are present.
+      # Whether THIS tag is the highest stable release — the single "is this the
+      # newest line?" signal every downstream owner-of-a-shared-resource decision
+      # reads. A stable BACKPORT (e.g. v1.2.1 cut after v1.3.0) is NOT highest,
+      # and must not take:
+      #   - the rolling `:latest` image tags (the `dockers_v2` tag template
+      #     renders EMPTY unless `.Env.RELEASE_IS_LATEST` is "true", and
+      #     goreleaser drops an empty tag);
+      #   - the Homebrew cask (`homebrew_casks[].skip_upload` templates to
+      #     `true` off the same env var) — `auto` on its own only filters
+      #     prereleases, and a backport is not a prerelease;
+      #   - the GitHub `Latest` release pointer (the `publish` job's explicit
+      #     `--latest` flip), which otherwise follows publish ORDER.
+      # Needs fetch-depth: 0 so all tags (including the one just pushed) are
+      # present.
       - name: Compute RELEASE_IS_LATEST
+        id: is_latest
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
         run: |
           tag="${TAG#v}"
           highest=$(git tag -l 'v*.*.*' | awk '!/-/' | sed 's/^v//' | sort -V | tail -1)
           if [ "$tag" = "$highest" ]; then
-            echo "RELEASE_IS_LATEST=true" >> "$GITHUB_ENV"
+            is_latest=true
           else
-            echo "RELEASE_IS_LATEST=false" >> "$GITHUB_ENV"
+            is_latest=false
           fi
-          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST set accordingly"
+          echo "RELEASE_IS_LATEST=${is_latest}" >> "$GITHUB_ENV"
+          echo "is_latest=${is_latest}" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST=${is_latest}"
 
       - id: goreleaser
         uses: goreleaser/goreleaser-action@v7
@@ -379,7 +404,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_IS_LATEST: ${{ env.RELEASE_IS_LATEST }}
-          # Cross-repo push to tsouza/homebrew-tap for the brews block. The
+          # Cross-repo push to tsouza/homebrew-tap for the homebrew_casks block. The
           # default GITHUB_TOKEN cannot push to another repo; this PAT can.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
@@ -461,11 +486,18 @@ jobs:
       # Publishing up-front (e.g. `gh release create`) would lock it before
       # goreleaser could upload — the 422 that broke v1.0.1.
       # Idempotent: a no-op if already published.
+      #
+      # `--latest` is explicit, not decoration: GitHub's update endpoint defaults
+      # `make_latest` to true, so the flip hands /releases/latest to whichever
+      # release published MOST RECENTLY. Cutting v1.11.3 after v1.13.0 therefore
+      # pointed the repo's Latest badge — and `gh release download` with no tag —
+      # at the oldest supported line. Only the highest stable tag takes it.
       - name: Publish release (flip draft -> published)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: gh release edit "${TAG}" --draft=false
+          IS_LATEST: ${{ needs.goreleaser.outputs.is_latest }}
+        run: gh release edit "${TAG}" --draft=false --latest="${IS_LATEST}"
 
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
@@ -486,25 +518,36 @@ jobs:
   # fixes for that 404 — a retry loop, `continue-on-error` — would ship the
   # release unverified and green, so the fix is to run after the flip.
   #
-  # Prereleases are NOT skipped. `skip_upload: auto` means an `rc.*` writes no
-  # formula, so brew-smoke.mjs takes the NEGATIVE branch instead: the formula
-  # must exist and must NOT declare this version.
+  # Neither prereleases nor maintenance backports are skipped — each just gets a
+  # different assertion, because `skip_upload` keeps both out of the tap:
+  #   - prerelease: the cask must exist and must NOT declare this version;
+  #   - not the highest stable tag: the cask must declare a STRICTLY NEWER
+  #     version, proving this publish did not overwrite the newest line's.
   brew-smoke:
-    name: brew-smoke
-    needs: [gate, publish]
+    # BOTH platforms the cask serves. cerberus is a Linux-first server binary,
+    # so a macOS-only smoke would leave its primary install path asserted and
+    # unexercised — and `brew install` failing on Linux looks identical to it
+    # working, from a Mac. The Ubuntu leg is the one that proves goreleaser's
+    # `homebrew_casks:` block really is cross-platform.
+    #
+    # The `/` in the name is load-bearing: release-preflight.mjs excludes THIS
+    # run's own jobs by exact name or by the `<job> / <child>` prefix, so
+    # naming the legs `brew-smoke / <os>` keeps them covered by the existing
+    # `brew-smoke` entry in RELEASE_SELF_JOBS without a parallel list to
+    # maintain.
+    name: brew-smoke / ${{ matrix.os }}
+    needs: [gate, goreleaser, publish]
     if: |
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
       needs.publish.result == 'success'
-    # macOS, NOT ubuntu-latest: the Ubuntu 24.04 runner image ships no
-    # Homebrew, so `brew` is a bare ENOENT there and the smoke can only ever
-    # fail. (It was ubuntu-latest until v1.12.0 — the first release to reach
-    # this job — proved it.) The macOS image has Homebrew preinstalled, needs
-    # no install step, and is the platform the overwhelming majority of
-    # `brew install` traffic comes from. Everything the smoke runs afterwards
-    # (`--version`, `migrate schema`, `config-docs -check`) is pure Go and
-    # platform-independent, so the darwin build exercises the same payloads.
-    runs-on: macos-latest
+    strategy:
+      # A Linux-only or macOS-only failure is the whole point of having two
+      # legs; cancelling the sibling would hide which platform broke.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
@@ -512,6 +555,22 @@ jobs:
       # registry against THIS commit's docs/configuration.md, so the release
       # tree has to be on disk.
       - uses: actions/checkout@v7
+
+      # The Ubuntu runner image DOES ship Homebrew (under /home/linuxbrew), it
+      # just leaves it off PATH, so `brew` is a bare ENOENT until its bin
+      # directory is added. v1.12.0 hit that ENOENT and it was read as "Ubuntu
+      # has no Homebrew", which is why this job was macOS-only for four
+      # releases. The macOS image links brew into PATH already, so the step is
+      # Linux-only. If a future image drops Homebrew entirely this fails loudly
+      # here rather than degrading the leg into a no-op.
+      - name: put Homebrew on PATH
+        if: runner.os == 'Linux'
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew || {
+            echo "::error::brew-smoke: the ${{ matrix.os }} image no longer ships Homebrew at /home/linuxbrew/.linuxbrew — the Linux leg needs an install step."
+            exit 1
+          }
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
 
       - name: brew-smoke self-test
         run: node --test .github/scripts/brew-smoke.test.mjs
@@ -521,6 +580,9 @@ jobs:
           # The BARE version. Comparing `cerberus --version` to `app_tag` would
           # be a guaranteed off-by-`v` mismatch.
           RELEASE_VERSION: ${{ needs.gate.outputs.app_version }}
+          # The same signal that decided whether goreleaser wrote the cask at
+          # all, so the smoke asserts the branch the tap actually took.
+          RELEASE_IS_LATEST: ${{ needs.goreleaser.outputs.is_latest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_ROOT: ${{ github.workspace }}
         run: node .github/scripts/brew-smoke.mjs

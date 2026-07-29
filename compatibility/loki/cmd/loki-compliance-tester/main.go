@@ -81,6 +81,7 @@ type flags struct {
 	metadataDir      string
 	reportPath       string
 	scorePath        string
+	casesPath        string
 	skipBaselinePath string
 	regenBaseline    bool
 	tolerance        float64
@@ -99,6 +100,7 @@ func parseFlags() flags {
 	flag.StringVar(&f.metadataDir, "metadata-dir", ".", "Directory containing dataset_metadata.json")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
 	flag.StringVar(&f.scorePath, "score", "", "shields.io endpoint-badge score JSON output path; empty means do not write")
+	flag.StringVar(&f.casesPath, "cases", "", "per-case parity roster JSON output path; empty means do not write")
 	flag.StringVar(&f.skipBaselinePath, "skip-baseline", "", "Path to the upstream-skip-baseline.txt file; when set, the harness asserts the upstream YAML `skip: true` set matches this file and fails on drift")
 	flag.BoolVar(&f.regenBaseline, "regen-baseline", false, "Regenerate -skip-baseline from the current corpus and exit (writes the file, then returns 0 without contacting any Loki endpoint)")
 	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (matches upstream remote_test.go default)")
@@ -228,7 +230,33 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "==> score: passed=%d total=%d percent=%.2f color=%s -> %s\n",
 			passed, total, s.Percent, s.Color, f.scorePath)
 	}
+
+	// The per-case roster the parity ratchet gates on. It is derived
+	// from the SAME results slice as the score, so the two artefacts
+	// can never disagree about what ran.
+	if f.casesPath != "" {
+		if err := score.WriteCases(f.casesPath, headName, caseSet(results)); err != nil {
+			return fmt.Errorf("writing cases: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "==> cases: %d -> %s\n", len(results), f.casesPath)
+	}
 	return nil
+}
+
+// headName is the harness identifier the ratchet keys its baseline
+// entry on; it must match compatibility/parity-baseline.json's
+// heads.<name> and the workflow's HEAD env var.
+const headName = "loki"
+
+// caseSet reduces the results to (identity, agreed) pairs for the
+// parity ratchet. Diverging cases are included — the ratchet gates on
+// WHICH cases failed, not just how many.
+func caseSet(results []Result) []score.Case {
+	cases := make([]score.Case, 0, len(results))
+	for _, r := range results {
+		cases = append(cases, score.Case{ID: r.TestCase.id(), Passed: r.success()})
+	}
+	return cases
 }
 
 // scoreCounts derives (passed, total) for the compat-score JSON.
@@ -1196,6 +1224,26 @@ type Result struct {
 	UnexpectedFailure string   `json:"unexpectedFailure"`
 	UnexpectedSuccess bool     `json:"unexpectedSuccess"`
 	Unsupported       bool     `json:"unsupported"`
+}
+
+// id renders the case's stable identity for the parity roster. It joins
+// the fields that distinguish one corpus case from another and omits
+// Start / End, which are wall-clock-derived and identify the RUN rather
+// than the case. Instant and range flavours of the same query are
+// distinct cases, so the lane flag is part of the identity.
+func (tc TestCase) id() string {
+	lane := "range"
+	if tc.Instant {
+		lane = "instant"
+	}
+	id := tc.Source + " | " + tc.Kind + " | " + lane + " | " + tc.Direction + " | " + tc.Query
+	if tc.Step != "" {
+		id += " | step=" + tc.Step
+	}
+	if tc.Description != "" {
+		id += " | " + tc.Description
+	}
+	return id
 }
 
 // success replicates `comparer.Result.Success` so the runtime can know

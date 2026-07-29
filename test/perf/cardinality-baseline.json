@@ -860,6 +860,36 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "logql/map_key_order_count_over_time",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/map_key_order_count_over_time_control",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/map_key_order_unwrap_error_bypass",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "logql/matcher_k8s_namespace_materialized",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -1216,6 +1246,66 @@
     "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_and_range_per_step",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_and_range_unaggregated_arms",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_or_range_per_step",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_or_range_unaggregated_arms",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_unless_range_per_step",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/setop_unless_range_unaggregated_arms",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -3820,6 +3910,136 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/map_key_order_count",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/map_key_order_exp_histogram_count",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/map_key_order_histogram_quantile",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/map_key_order_increase",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/map_key_order_sum_by_labels",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/map_key_order_sum_without_label",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_binop_default_instant",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_binop_ignoring_instant",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_label_replace_binop_instant",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_setop_and_default_instant",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_setop_and_ignoring_range",
+    "fan_factor": 5,
+    "scan_rows": 1,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_setop_and_on_instant",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/mapkey_order_setop_or_default_range",
+    "fan_factor": 1,
+    "scan_rows": 10,
+    "peak_intermediate": 10,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/matcher_and_agg_by_service_name",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -4570,6 +4790,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/setop_and_instant_shared_signature",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/setop_and_range_gap",
+    "fan_factor": 5,
+    "scan_rows": 1,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/setop_and_rate",
     "fan_factor": 1,
     "scan_rows": 4,
@@ -4580,12 +4820,72 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/setop_and_subquery_arm_range",
+    "fan_factor": 4,
+    "scan_rows": 1,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/setop_or_instant_shared_signature",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/setop_or_native_ts_grid_range",
+    "fan_factor": 1,
+    "scan_rows": 10,
+    "peak_intermediate": 10,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/setop_or_range_gap",
+    "fan_factor": 1,
+    "scan_rows": 8,
+    "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/setop_or_rate",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/setop_or_subquery_arm_range",
+    "fan_factor": 1,
+    "scan_rows": 7,
+    "peak_intermediate": 7,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/setop_unless_range_gap",
+    "fan_factor": 5,
+    "scan_rows": 1,
+    "peak_intermediate": 5,
+    "has_cross_join": false,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -7400,6 +7700,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/structural_union_child_dup_key_order",
+    "fan_factor": 1,
+    "scan_rows": 8,
+    "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/structural_union_descendant",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -7410,10 +7720,30 @@
     "max_recursion_depth": 2
   },
   {
+    "fixture": "traceql/structural_union_descendant_dup_key_order",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": true,
+    "max_recursion_depth": 2
+  },
+  {
     "fixture": "traceql/structural_union_sibling",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/structural_union_sibling_dup_key_order",
+    "fan_factor": 1,
+    "scan_rows": 8,
+    "peak_intermediate": 8,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,

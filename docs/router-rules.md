@@ -58,8 +58,15 @@ deployment's own data.
 2. **Schema validation at load** (`validate.go`) additionally rejects: dangling
    `${param}` references, unknown resolver kinds, unknown columns (checked
    against the canonical corpus column allow-list in `columns.go`), duplicate
-   rule ids, cyclic parameter dependencies, an `apiVersion` mismatch, and a
-   numeric scalar smuggled into any enum or scope slot.
+   rule ids, cyclic parameter dependencies, an `apiVersion` mismatch, a
+   numeric scalar smuggled into any enum or scope slot, and a
+   `corpus_percentile` whose scope disagrees with the kind of column it
+   measures — over a runtime-cost column (`read_rows`, `read_bytes`,
+   `query_duration_ms`, `memory_usage`) it must declare `scope.exit_status: ok`,
+   because a cost watermark learned over failed queries describes the failure
+   rather than the query; over a geometry column it must not, because there is
+   no outcome bias to remove and the scope only shrinks the population, up to
+   emptying it outright.
 3. **A CI guard test**
    ([`catalog/router_rules_test.go`](../internal/routerrules/catalog/router_rules_test.go))
    walks the YAML tree of **every** embedded catalog file (the base plus each
@@ -332,9 +339,30 @@ columnar `Enum8` batch, then reads the rows back to assert the `route` /
 `exit_status` enums round-tripped) and the **READ** path
 (`routerrules.chCorpusSource` — every strict-scanned aggregate the catalog
 resolves), plus the upstream `system.query_log` reconciler read
-(`optcorpus.CHQueryLogSource`). It is wired into the informational
+(`optcorpus.CHQueryLogSource`).
+
+Two further real-CH lanes live beside it in `internal/optcorpus`, both covering
+seams whose failure mode is *silence* on a fake:
+
+- [`queryexit_realch_integration_test.go`](../internal/optcorpus/queryexit_realch_integration_test.go)
+  seeds one query per terminal outcome ClickHouse can produce and asserts the
+  production `CHQueryLogSource` returns each exception exit classified by its
+  error code. Only a real server holds the `system.query_log.type` Enum8's
+  member list, so only a real server can tell a predicate that names a member
+  from one that names a string matching nothing. A companion case runs the
+  terminal reduction over enum-typed values to pin that an exception dominates
+  a clean finish in the same group regardless of member ordering.
+- [`enummigrate_realch_integration_test.go`](../internal/optcorpus/enummigrate_realch_integration_test.go)
+  creates the corpus table by hand with an `exit_status` column that predates
+  the binary's member set, then asserts sink construction widens it and a row
+  carrying a new member lands and reads back under its own name. A fake batch
+  accepts any `int8` and a freshly-created table always carries the newest
+  members, so no unit test can distinguish "the column already holds this" from
+  "the ALTER widened it".
+
+All three are wired into the informational
 [`strict-scan.yml`](../.github/workflows/strict-scan.yml) lane via
-`just router-corpus-integration` and runs on PR + push + nightly.
+`just router-corpus-integration` and run on PR + push + nightly.
 
 ### The effectiveness fixture
 

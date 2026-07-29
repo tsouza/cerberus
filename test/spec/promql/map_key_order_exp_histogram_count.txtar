@@ -1,0 +1,45 @@
+-- query.promql --
+histogram_count(mko_exp_hist)
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('mko_exp_hist', map('dc', 'eu', 'job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 10, 50, 0, 0, 0, [10], 0, []),
+    ('mko_exp_hist', map('job', 'api', 'dc', 'eu'), toDateTime64('2026-01-01 00:00:00', 9), 25, 250, 0, 0, 0, [0, 25], 0, []);
+-- expected_rows --
+[
+  ["", {"dc": "eu", "job": "api"}, "2026-01-01T00:00:01Z", 25]
+]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "mko_exp_hist"
+[3] string = "mko.exp.hist"
+[4] string = "mko.exp/hist"
+[5] string = "mko.exp_hist"
+[6] string = "mko/exp/hist"
+[7] string = "mko/exp_hist"
+[8] string = "mko_exp.hist"
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, toFloat64(Count) AS Value]
+  Aggregate groupBy=[mapSort(Attributes) AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+    Filter predicate=(((MetricName IN ("mko_exp_hist", "mko.exp.hist", "mko.exp/hist", "mko.exp_hist", "mko/exp/hist", "mko/exp_hist", "mko_exp.hist")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT mapSort(`Attributes`) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)

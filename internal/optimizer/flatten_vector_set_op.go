@@ -36,9 +36,10 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // the right operand is always a single arm in a left-assoc chain.
 //
 // Two links of a chain are mergeable only when they agree on the
-// operator, the match modifier (default / on / ignoring), and every
-// canonical Sample column name. A chain whose links disagree on any of
-// these isn't a single associative chain and is left untouched.
+// operator, the match modifier (default / on / ignoring), step
+// alignment, and every canonical Sample column name. A chain whose
+// links disagree on any of these isn't a single associative chain and
+// is left untouched.
 type FlattenVectorSetOp struct{}
 
 func (FlattenVectorSetOp) Name() string { return "flatten-vector-set-op" }
@@ -66,6 +67,7 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 		Arms:             arms,
 		Op:               binary.Op,
 		Match:            binary.Match,
+		StepAligned:      binary.StepAligned,
 		MetricNameColumn: binary.MetricNameColumn,
 		AttributesColumn: binary.AttributesColumn,
 		TimestampColumn:  binary.TimestampColumn,
@@ -82,7 +84,7 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 func flattenLeftArms(binary *chplan.VectorSetOp) (arms []chplan.Node, absorbed bool) {
 	switch left := binary.Left.(type) {
 	case *chplan.VectorSetOp:
-		if !sameVectorSetOpShape(binary, left.Op, left.Match,
+		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned,
 			left.MetricNameColumn, left.AttributesColumn,
 			left.TimestampColumn, left.ValueColumn) {
 			return []chplan.Node{binary.Left}, true
@@ -90,7 +92,7 @@ func flattenLeftArms(binary *chplan.VectorSetOp) (arms []chplan.Node, absorbed b
 		inner, _ := flattenLeftArms(left)
 		return append(inner, left.Right), true
 	case *chplan.NaryVectorSetOp:
-		if !sameVectorSetOpShape(binary, left.Op, left.Match,
+		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned,
 			left.MetricNameColumn, left.AttributesColumn,
 			left.TimestampColumn, left.ValueColumn) {
 			return []chplan.Node{binary.Left}, true
@@ -111,18 +113,23 @@ func flattenableVectorSetOp(op chplan.VectorSetOpKind) bool {
 }
 
 // sameVectorSetOpShape reports whether a candidate chain link agrees
-// with the root binary node on the operator, match modifier, and every
-// canonical Sample column name — the full set of fields the N-ary node
-// carries once for the whole chain. Two links that disagree on any of
-// these are not part of one associative chain and must not be merged.
+// with the root binary node on the operator, match modifier, step
+// alignment, and every canonical Sample column name — the full set of
+// fields the N-ary node carries once for the whole chain. Two links
+// that disagree on any of these are not part of one associative chain
+// and must not be merged: step alignment selects the match key
+// (signature vs (signature, timestamp)), so merging a mixed chain onto
+// one flag would silently evaluate some links under the wrong key.
 func sameVectorSetOpShape(
 	root *chplan.VectorSetOp,
 	op chplan.VectorSetOpKind,
 	match chplan.VectorMatch,
+	stepAligned bool,
 	metricName, attributes, timestamp, value string,
 ) bool {
 	return root.Op == op &&
 		root.Match.Equal(match) &&
+		root.StepAligned == stepAligned &&
 		root.MetricNameColumn == metricName &&
 		root.AttributesColumn == attributes &&
 		root.TimestampColumn == timestamp &&

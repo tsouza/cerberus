@@ -41,10 +41,27 @@ type shardCursor struct {
 	// them in index order. Each is closed by its producer.
 	chans []chan chclient.Sample
 
-	// childCursors[i] is shard i's open cursor, registered by the producer
-	// so Close can tear it down even mid-drain. Guarded by childMu.
-	childMu      sync.Mutex
-	childCursors []chclient.Cursor
+	// launched is closed once every shard has been handed to the errgroup.
+	// Admission is bounded by SetLimit(P_eff), so with K > P_eff the launcher
+	// blocks until a running shard finishes — which is why it runs off the
+	// Execute goroutine (see the launch loop) and why teardown must join it
+	// before g.Wait(): calling Wait while a Go is still pending would let it
+	// return on a momentarily-zero counter and miss the unlaunched shards.
+	launched chan struct{}
+
+	// stop is the STOP-STREAMING signal, closed by Close. It is deliberately
+	// distinct from cancelling gctx: a producer that observes stop unwinds
+	// while its ClickHouse query context is still LIVE, so it can hand the
+	// pooled connection back instead of having the socket destroyed (see
+	// chclient.CloseCursor for why the ordering is the whole invariant).
+	// Cancelling gctx is the ABORT signal — it belongs to a real failure (a
+	// sibling's error, the wall-clock timeout, the client walking away), and it
+	// is also the bounded fallback for a producer parked in cur.Next() that
+	// cannot observe stop until its next send.
+	stop chan struct{}
+
+	// closeMu guards closeErr, which producers latch from their own teardown.
+	closeMu sync.Mutex
 
 	// releaseGate / releaseAdmit free the global gate slots and the admit
 	// top-up. Each is idempotent; Close invokes them exactly once.
@@ -85,19 +102,17 @@ type shardCursor struct {
 	closeErr  error
 }
 
-// registerChild records a producer's open cursor so Close can close it even
-// if the producer is blocked mid-send when the group cancels. If the cursor
-// is registered after Close already ran (a late open racing teardown), it
-// is closed immediately so no connection leaks.
-func (sc *shardCursor) registerChild(idx int, cur chclient.Cursor) {
-	sc.childMu.Lock()
-	closedAlready := sc.childCursors == nil
-	if !closedAlready {
-		sc.childCursors[idx] = cur
+// latchCloseErr records a producer's cursor-teardown error. Close reports the
+// first non-nil one, so a caller still sees the diagnostics the driver
+// produced when a child could not be torn down cleanly.
+func (sc *shardCursor) latchCloseErr(err error) {
+	if err == nil {
+		return
 	}
-	sc.childMu.Unlock()
-	if closedAlready {
-		_ = cur.Close()
+	sc.closeMu.Lock()
+	defer sc.closeMu.Unlock()
+	if sc.closeErr == nil {
+		sc.closeErr = err
 	}
 }
 
@@ -123,10 +138,13 @@ func (sc *shardCursor) Next() bool {
 			// gateway heap: this is a distinct 422, never the upstream
 			// max-samples text.
 			if sc.cfg.MaxOutputRows > 0 && sc.emitted >= sc.cfg.MaxOutputRows {
+				// Latch the typed 422 and stop pulling. The group context is
+				// deliberately left LIVE: the cap is a cerberus-side decision
+				// about how many rows to HAND OUT, not a reason to abort the
+				// ClickHouse queries dirtily. Close releases the producers via
+				// the stop signal, so each tears its cursor down on a live ctx
+				// and the connections go back to the pool.
 				sc.err = &OutputCapError{Limit: sc.cfg.MaxOutputRows}
-				// Cancel the group so producers stop streaming; Close will
-				// drain + tear down.
-				sc.cancelCause(sc.err)
 				return false
 			}
 			s.Labels, s.SeriesID = sc.reintern(s.Labels)
@@ -235,39 +253,44 @@ func (sc *shardCursor) Err() error {
 }
 
 // Close tears the routed request down exactly once (docs/solver.md §"Failure
-// and cancellation contract", "Lifecycle"): cancel gctx → wait all
-// producers → close every child cursor → release the gate slots + admit
-// top-up → return the first non-nil child close error. Safe to call from
-// multiple goroutines; the teardown runs under sync.Once.
+// and cancellation contract", "Lifecycle"): signal stop → wait for every
+// producer to tear its own cursor down → cancel gctx → release the gate slots
+// + admit top-up → return the first non-nil child close error. Safe to call
+// from multiple goroutines; the teardown runs under sync.Once.
+//
+// The two signals are ordered, not interchangeable. stop tells the producers to
+// stop streaming while their ClickHouse query contexts are still LIVE, so each
+// child cursor is torn down by the goroutine that owns it, on a live ctx, and
+// clickhouse-go hands the connection back to the idle pool. Cancellation is the
+// ABORT signal and the bounded fallback: the one shape stop cannot reach is a
+// producer parked in cur.Next() on a stalled shard, and cancelling is what makes
+// teardown terminate unconditionally there.
 func (sc *shardCursor) Close() error {
 	sc.closeOnce.Do(func() {
-		// Cancel with a benign cause so any still-running producer unblocks
-		// and exits. If a real cause already latched (shard error / output
-		// cap / timeout), CancelCause keeps the FIRST cause — this call is a
-		// no-op on the cause, only ensuring cancellation.
-		sc.cancelCause(context.Canceled)
+		// 1. STOP STREAMING. Producers blocked on a send unblock here and run
+		// their own bounded cursor teardown on a still-live ctx.
+		close(sc.stop)
 
-		// Wait for every producer to return. They all select on gctx.Done()
-		// while sending, so this terminates promptly — the goleak guarantee.
-		_ = sc.g.Wait()
+		// 2. Bounded join. The budget is the ceiling on how long teardown may
+		// hold pooled connections; past it, cancelling gctx unblocks a producer
+		// that stop could not reach.
+		if !sc.waitProducers(cursorTeardownBudget) {
+			sc.cancelCause(context.Canceled)
+			// Cancelling frees every slot the launcher is queued behind, so
+			// joining it here terminates and makes the Wait below total over
+			// all K shards rather than the launched prefix.
+			<-sc.launched
+			_ = sc.g.Wait()
+		}
+
+		// 3. Cancel unconditionally so nothing derived from gctx outlives the
+		// request. If a real cause already latched (shard error / timeout),
+		// CancelCause keeps the FIRST cause — this call only ensures
+		// cancellation, it never reclassifies.
+		sc.cancelCause(context.Canceled)
 
 		if sc.timer != nil {
 			sc.timer.Stop()
-		}
-
-		// Close every child cursor. Take ownership of the slice under the
-		// lock and nil it so a late registerChild closes its own cursor.
-		sc.childMu.Lock()
-		children := sc.childCursors
-		sc.childCursors = nil
-		sc.childMu.Unlock()
-		for _, cur := range children {
-			if cur == nil {
-				continue
-			}
-			if cerr := cur.Close(); cerr != nil && sc.closeErr == nil {
-				sc.closeErr = cerr
-			}
 		}
 
 		// Release the gate slots and the admit top-up — exactly once each.
@@ -278,5 +301,54 @@ func (sc *shardCursor) Close() error {
 			sc.releaseAdmit()
 		}
 	})
+	sc.closeMu.Lock()
+	defer sc.closeMu.Unlock()
 	return sc.closeErr
+}
+
+// cursorTeardownBudget bounds the clean-teardown window for a routed request:
+// how long Close waits for the K producers to drain and release their
+// connections before falling back to cancellation. The producers tear down
+// CONCURRENTLY, so the multiple over chclient's per-cursor budget covers
+// scheduling skew, not K serial drains.
+const cursorTeardownBudget = 4 * chclient.CursorDrainBudget
+
+// TeardownBudget implements chclient.ComposedCursor: the ceiling Close itself
+// observes. It is the clean-teardown window plus the one per-connection drain
+// budget a producer still gets AFTER the fallback cancellation — a producer
+// parked in cur.Next() only starts its own bounded teardown once gctx dies.
+//
+// Reporting it is what keeps chclient.CloseCursor from racing this cursor
+// against a single connection's budget: the cancel CloseCursor holds is an
+// ANCESTOR of every child query context, so firing it at 250ms would destroy
+// exactly the K sockets the two-signal teardown exists to release cleanly.
+func (sc *shardCursor) TeardownBudget() time.Duration {
+	return cursorTeardownBudget + chclient.CursorDrainBudget
+}
+
+// waitProducers waits up to budget for every producer to return, reporting
+// whether they all did. The waiter goroutine is never joined: on the timeout
+// path the caller cancels and then runs the same <-sc.launched + g.Wait()
+// sequence itself, a second independent wait, and this goroutine unblocks on
+// its own the moment that cancellation lets the launcher and the group settle.
+// Both waits observe the same terminal state, so neither can be left parked.
+func (sc *shardCursor) waitProducers(budget time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Join the launcher first. Close has already closed sc.stop, so any
+		// producer parked on a send unwinds and frees the slot the launcher is
+		// waiting for; waiting here is what makes g.Wait() below observe every
+		// shard rather than a prefix of them.
+		<-sc.launched
+		_ = sc.g.Wait()
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }

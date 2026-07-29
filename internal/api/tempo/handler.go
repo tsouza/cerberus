@@ -1145,7 +1145,8 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// positive cousin's outer column-resolution shape: the
 		// emitter rewrites the SELECT for negated forms (R becomes
 		// the FROM source, closure is anti-joined) and emits two
-		// INNER-JOIN arms glued by UNION DISTINCT for union forms.
+		// INNER-JOIN arms glued by an identity-deduped UNION ALL for
+		// union forms.
 		// In both cases the outer scope's bare-column ambiguity (or
 		// lack thereof) mirrors the positive base relation, so we
 		// branch on `Positive()` rather than the raw Op.

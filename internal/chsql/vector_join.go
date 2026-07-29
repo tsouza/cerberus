@@ -203,34 +203,43 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 		// TimeUnix off the GROUP BY and uses max(TimeUnix) to pick
 		// the latest LWR sample — byte-stable for the existing
 		// fixtures.
+		// The arm's series-identity key is Map-valued, so it is
+		// canonicalised for the same reason the match key is: an arm
+		// whose row stream carries two physical key orders for one
+		// logical label set (a merge() scan spanning two tables, a
+		// mapUpdate/mapConcat rewrite upstream) would otherwise emit two
+		// rows, and the canonicalised ON below then pairs BOTH of them
+		// with the other side — a silently duplicated cross-product.
+		armKey := canonicalMatchKeyFrag(Col(j.AttributesColumn))
+		armAttrs := As(armKey, joinAlias(j.AttributesColumn))
 		switch {
 		case j.StepAligned:
 			inner.Select(
 				joinMetricNameFrag(j),
-				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				armAttrs,
 				As(Col(j.TimestampColumn), joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.AttributesColumn),
+				armKey,
 				Col(j.TimestampColumn),
 			)
 		case derived:
 			inner.Select(
 				joinMetricNameFrag(j),
-				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				armAttrs,
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.AttributesColumn),
+				armKey,
 			)
 		default:
 			inner.Select(
 				joinMetricNameFrag(j),
-				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				armAttrs,
 				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(
-				Col(j.AttributesColumn),
+				armKey,
 			)
 		}
 	} else {
@@ -257,7 +266,7 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 			// timestamp is synthesized (see the roleMany note above).
 			inner.Select(
 				joinMetricNameFrag(j),
-				aggAnyAs(j.AttributesColumn, joinAlias(j.AttributesColumn)),
+				As(Call("any", canonicalMatchKeyFrag(Col(j.AttributesColumn))), joinAlias(j.AttributesColumn)),
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
 				matchCheckFrag(j.AttributesColumn),
@@ -265,7 +274,7 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 		} else {
 			inner.Select(
 				joinMetricNameFrag(j),
-				argMaxAs(j.AttributesColumn, j.TimestampColumn, joinAlias(j.AttributesColumn)),
+				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
 				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 				matchCheckFrag(j.AttributesColumn),
@@ -422,7 +431,7 @@ func argMaxAs(valCol, byCol, alias string) Frag {
 func matchCheckFrag(attrsCol string) Frag {
 	check := Call(
 		"throwIf",
-		Gt(Call("uniqExact", Col(attrsCol)), InlineLit(1)),
+		Gt(Call("uniqExact", canonicalMatchKeyFrag(Col(attrsCol))), InlineLit(1)),
 		Lit("many-to-many matching not allowed: matching labels must be unique on one side"),
 	)
 	// `_cerberus_match_check` is an emitter-pinned bare alias (no
@@ -433,19 +442,48 @@ func matchCheckFrag(attrsCol string) Frag {
 	}
 }
 
+// setOpMatchKeyFrags returns the key a vector set operator matches
+// on: the label signature alone in instant mode, extended with the
+// evaluation-timestamp column in range mode, where every arm
+// projects the shared grid anchor under that name.
+func setOpMatchKeyFrags(m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) []Frag {
+	keys := []Frag{matchKeyGroupExprFrag(m, attrsCol)}
+	if stepAligned {
+		keys = append(keys, Col(tsCol))
+	}
+	return keys
+}
+
+// canonicalMatchKeyFrag wraps a Map-valued match key in the canonical
+// key-order function.
+//
+// A CH Map compares and groups positionally over its (keys, values)
+// arrays, so two logically identical label sets stored in different key
+// orders are unequal; the wrap makes the key compare by label set. It is
+// order-only and idempotent, so it can never merge two genuinely
+// different label sets.
+//
+// The function is named by [chplan.CanonicalMapFunc] rather than spelled
+// here: the plan IR ([chplan.CanonicalAttributesExpr]) and the Loki
+// metadata Frags read the same constant, and its idempotence check
+// matches on that name. A literal here would let this site drift onto a
+// different function while the IR kept believing the map was canonical.
+func canonicalMatchKeyFrag(key Frag) Frag { return Call(chplan.CanonicalMapFunc, key) }
+
 // matchKeyGroupExprFrag returns a Frag for the GROUP BY expression
 // that collapses rows onto a single matching key. For default matching
-// (full Attributes) this is just the Attributes column; for on(labels)
+// (full Attributes) this is the Attributes column; for on(labels)
 // it's `mapFilter((k, v) -> k IN (...), Attributes)`; for
-// ignoring(labels) it's the complementary mapFilter.
+// ignoring(labels) it's the complementary mapFilter. Each of those is
+// Map-valued, so each is canonicalised — see canonicalMatchKeyFrag.
 func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	if len(m.Labels) == 0 && !m.On {
-		return Col(attrsCol)
+		return canonicalMatchKeyFrag(Col(attrsCol))
 	}
 	if m.On && len(m.Labels) == 0 {
 		// on() with no labels - group everything onto a single
 		// match-key. CH doesn't allow an empty IN list, so emit a
-		// constant tuple.
+		// constant tuple. Not a Map: nothing to canonicalise.
 		return Call("tuple")
 	}
 	if m.On {
@@ -455,15 +493,15 @@ func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
 		for i, lbl := range m.Labels {
 			lbls[i] = Lit(lbl)
 		}
-		return Call(
+		return canonicalMatchKeyFrag(Call(
 			"mapFilter",
 			Lambda2("k", "v", In(BareIdent("k"), lbls...)),
 			Col(attrsCol),
-		)
+		))
 	}
 	// ignoring(...) — the complementary mapFilter. MapFilterExcept is a
 	// Builder helper that renders `mapFilter((k, v) -> NOT (k IN (…)), col)`.
-	return func(b *Builder) { b.MapFilterExcept(attrsCol, m.Labels...) }
+	return canonicalMatchKeyFrag(func(b *Builder) { b.MapFilterExcept(attrsCol, m.Labels...) })
 }
 
 // outputMatchSetFrag returns a Frag for the qualified output Attributes
@@ -769,7 +807,10 @@ func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol, tsCol string, step
 // composed on top without copying the per-shape branches.
 func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	if len(m.Labels) == 0 && !m.On {
-		return Eq(qualColFrag("L", attrsCol), qualColFrag("R", attrsCol))
+		return Eq(
+			canonicalMatchKeyFrag(qualColFrag("L", attrsCol)),
+			canonicalMatchKeyFrag(qualColFrag("R", attrsCol)),
+		)
 	}
 	if m.On && len(m.Labels) == 0 {
 		// on() with no labels - every row on the left pairs with
@@ -780,6 +821,8 @@ func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	}
 	if m.On {
 		// `L.<attrs>[?] = R.<attrs>[?]` per on(...) label, AND-joined.
+		// Per-label subscripts are Strings, not Maps — already
+		// order-insensitive, so nothing to canonicalise.
 		perLabel := make([]Frag, len(m.Labels))
 		for i, lbl := range m.Labels {
 			perLabel[i] = Eq(
@@ -801,5 +844,5 @@ func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 			qualColFrag(side, attrsCol),
 		)
 	}
-	return Eq(ignFilter("L"), ignFilter("R"))
+	return Eq(canonicalMatchKeyFrag(ignFilter("L")), canonicalMatchKeyFrag(ignFilter("R")))
 }

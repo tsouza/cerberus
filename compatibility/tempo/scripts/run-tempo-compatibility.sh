@@ -27,7 +27,9 @@
 #   COMPOSE_KEEP=1 ./...                                               leave stack up after run
 #
 # Env:
-#   REPORT_DIR     where the driver writes diff.md and compat-score.json
+#   REPORT_DIR     where the driver writes diff.md, compat-score.json and
+#                  compat-cases.json — the per-case (identity, agreed)
+#                  roster the parity ratchet gates on
 #                  (default: compatibility/tempo/reports/).
 #   COMPOSE_KEEP   non-empty: leave the compose stack running after the
 #                  differ completes (useful for poking at /api/traces
@@ -139,7 +141,8 @@ set +e
     --cerberus=http://localhost:29092 \
     --corpus="$ROOT_DIR/driver/corpus/smoke.txtar" \
     --report="$REPORT_DIR/diff.md" \
-    --score="$REPORT_DIR/compat-score.json"
+    --score="$REPORT_DIR/compat-score.json" \
+    --cases="$REPORT_DIR/compat-cases.json"
 DIFF_RC=$?
 set -e
 
@@ -161,5 +164,6 @@ echo "==> rejection-parity report written to $REPORT_DIR/rejection-parity.json"
 echo "==> differ exited with rc=$DIFF_RC"
 echo "==> report at $REPORT_DIR/diff.md"
 echo "==> score at $REPORT_DIR/compat-score.json"
+echo "==> per-case roster at $REPORT_DIR/compat-cases.json"
 
 exit "$DIFF_RC"

@@ -107,12 +107,20 @@ If you use Claude Code (or any agent that reads `CLAUDE.md` / `AGENTS.md`), the 
 
 ## Releasing
 
+The ordered cycle a release runs — merge everything, settle which line falls
+out of the support window, audit the delta, backport everything to every line
+that stays supported, then publish the backport patches before the head
+release — is the
+[release ritual](docs/operations.md#release-ritual-the-ordered-cycle).
+
 The binary and the Helm chart (`deploy/helm/cerberus/`) follow **independent
 SemVer lines**. `Chart.yaml` carries both: `version` is the *chart's* own
-SemVer (its `values.yaml` contract — breaking values change = major, additive
-toggle = minor, fix = patch), and `appVersion` tracks the cerberus binary it
-deploys by default. They move independently so each kind of change is
-expressible:
+SemVer, tracking its `values.yaml` contract (breaking values change = major,
+additive toggle = minor, fix = patch), and `appVersion` tracks the cerberus
+binary it deploys by default. The binary's line follows its own rule: **a
+breaking change ships in a new minor and does not require a major bump** — see
+the [release ritual](docs/operations.md#release-ritual-the-ordered-cycle). They
+move independently so each kind of change is expressible:
 
 | Change                                                   | What to do                                                                                                    | What publishes                                                                                |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |

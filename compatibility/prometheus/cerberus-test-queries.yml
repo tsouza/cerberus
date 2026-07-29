@@ -159,6 +159,38 @@ test_cases:
   # TODO(upstream): Add non-explicit many-to-one / one-to-many that errors.
   # TODO(upstream): Add many-to-many match that errors.
 
+  # Set operators. Prometheus evaluates these once per evaluation
+  # timestamp, so an arm only affects the other arm at the timestamps it
+  # actually produced a sample for. demo_sparse_memory_bytes carries the
+  # same label signature as demo_memory_usage_bytes but stops a quarter
+  # of the way into the window, so over a range query the two arms
+  # overlap early and diverge later. Matching on the label signature
+  # alone would make `or` lose the late steps, `and` invent them, and
+  # `unless` drop the whole series -- differences a range query exposes
+  # and an instant query at a single timestamp cannot.
+  - query: 'demo_sparse_memory_bytes or demo_memory_usage_bytes'
+  - query: 'demo_memory_usage_bytes or demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes and demo_sparse_memory_bytes'
+  - query: 'demo_sparse_memory_bytes and demo_memory_usage_bytes'
+  - query: 'demo_memory_usage_bytes unless demo_sparse_memory_bytes'
+  - query: 'demo_sparse_memory_bytes unless demo_memory_usage_bytes'
+  # Explicit matchers restrict the signature the per-timestamp key is
+  # built from: on(SUBSET) keys on just those labels, ignoring(SET)
+  # keys on everything else.
+  - query: 'demo_memory_usage_bytes and on(instance, job, type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes unless on(instance, job, type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes or on(instance, job, type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes and ignoring(type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes unless ignoring(type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes or ignoring(type) demo_sparse_memory_bytes'
+  # A set operator over range-vector arms, so both sides are derived
+  # shapes rather than bare selectors.
+  - query: 'rate(demo_cpu_usage_seconds_total[{{.range}}]) or rate(demo_http_requests_total[{{.range}}])'
+    variant_args: ['range']
+  # Chained set operators linearise into one n-ary node; the per-
+  # timestamp key has to survive that rewrite.
+  - query: 'demo_sparse_memory_bytes or demo_memory_usage_bytes or demo_disk_usage_bytes'
+
   # NaN/Inf/-Inf support.
   - query: 'demo_num_cpus * Inf'
   - query: 'demo_num_cpus * -Inf'

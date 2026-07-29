@@ -27,7 +27,7 @@
 //   3. compat parity floors — README.md and docs/test-strategy.md route
 //      readers to compat-ratchet.mjs's header for the canonical explanation of
 //      the parity gate, and that header states each head's committed floor
-//      ("prometheus 718/718"). The canonical numbers are the `heads` block of
+//      ("prometheus 737/737"). The canonical numbers are the `heads` block of
 //      compatibility/parity-baseline.json; the gate asserts the header states
 //      exactly one floor per head and that each matches the baseline, so
 //      bumping a floor cannot leave the explanation behind.
@@ -95,7 +95,7 @@ export function countTestLayers(src) {
 
 // parityFloorClaims — the floors compat-ratchet.mjs's header states, one entry
 // per head name it is asked about. The source is line-comment prose, so a
-// claim can wrap across `//` continuations ("prometheus 718/718, loki\n//
+// claim can wrap across `//` continuations ("prometheus 737/737, loki\n//
 // 116/116"); comment markers are stripped and whitespace collapsed first so a
 // wrapped claim reads the same as an unwrapped one. Returns every match per
 // head, because "how many times is this claimed" is itself an assertion: zero

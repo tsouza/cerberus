@@ -157,7 +157,7 @@ ships a [SLSA build provenance](https://slsa.dev) attestation:
 gh attestation verify cerberus_*_linux_amd64.tar.gz --owner tsouza --repo cerberus
 ```
 
-The same binary is a Homebrew formula (macOS and Linuxbrew), which is the
+The same binary is a Homebrew cask (macOS and Linuxbrew), which is the
 quickest way to get the `cerberus migrate` CLI onto the machine holding your
 rules and dashboards — see [migrating to cerberus](docs/migration.md#step-1-install-the-binary):
 
@@ -165,7 +165,7 @@ rules and dashboards — see [migrating to cerberus](docs/migration.md#step-1-in
 brew install tsouza/tap/cerberus
 ```
 
-Only stable releases publish a formula, so `brew` never hands you a prerelease.
+Only stable releases publish a cask, so `brew` never hands you a prerelease.
 
 The surrounding runtime contract (lifecycle, scaling, the solver and
 experimental knobs in context) lives in
@@ -263,7 +263,7 @@ real ClickHouse against an upstream oracle, not just the emitted SQL.
 The strongest leg is **PromQL**, which runs the third-party **PromQL
 Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
 Prometheus Conformance Program tooling) against a real `prom/prometheus`,
-seeded identically on both sides via remote-write. **718/718 cases pass,
+seeded identically on both sides via remote-write. **737/737 cases pass,
 no allow-list.** LogQL diffs against a real Loki on Grafana's own
 `pkg/logql/bench` corpus — solid, but a Grafana bench corpus rather than a
 standardised conformance suite. TraceQL is the lighter leg: there is **no
@@ -284,19 +284,22 @@ just compat-all          # or compat-promql / compat-logql / compat-traceql
 **What the required checks enforce.** The three `compatibility/<head>`
 checks run on every PR in two layers. The harness itself is _scored_
 ([#503](https://github.com/tsouza/cerberus/pull/503)): it accumulates
-per-case results into `report.json` / `compat-score.json` and exits 0
-even when a case diverges, so the harness step alone reddens the job
-only on infrastructure breakage (stack won't boot, seed fails, report
-unparseable). The gate is the step after it —
-[`compat-ratchet.mjs`](.github/scripts/compat-ratchet.mjs) compares the
-run's score against the committed floor in
+per-case results into `report.json` / `compat-score.json` plus a per-case
+roster in `compat-cases.json`, and exits 0 even when a case diverges, so
+the harness step alone reddens the job only on infrastructure breakage
+(stack won't boot, seed fails, report unparseable). The gate is the step
+after it — [`compat-ratchet.mjs`](.github/scripts/compat-ratchet.mjs)
+compares the run's roster against the committed one in
 [`compatibility/parity-baseline.json`](compatibility/parity-baseline.json)
-and **fails the required job on any drop**. Both `passed` and `total`
-are floored, so a regression cannot hide by shrinking the corpus.
-Raising a floor is a deliberate same-PR edit to the baseline file.
+and **fails the required job on any case that moved**: a recorded case
+that now diverges, one that stopped running, or a new case that either
+diverges on arrival or passes without being recorded. Gating on case
+identity rather than a count means a regression cannot hide behind an
+unrelated case that started passing in the same run. Moving a roster is a
+deliberate same-PR edit to the baseline file.
 
-`compatibility/prometheus-forced-route` is stricter still: it runs with
-`FAIL_ON_DIFF=1` and hard-fails on _any_ per-case diff, which is what
+`compatibility/prometheus-forced-route` runs with `FAIL_ON_DIFF=1` and
+hard-fails inside the harness on _any_ per-case diff, which is what
 proves the sharded solver route is byte-identical to reference
 Prometheus over the whole corpus.
 

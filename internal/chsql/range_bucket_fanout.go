@@ -153,16 +153,12 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		collapse.Select(aggFuncFrag(af))
 	}
 
-	// GROUP BY (<user-key exprs>, anchor_ts). CH groups by the underlying
-	// expression for the user keys (not the alias) and by the anchor's
-	// bare name. The anchor is referenced verbatim because it is the
-	// fanout SELECT's output column, not a base-table column.
+	// GROUP BY (anchor_ts, <user keys>). The anchor is referenced verbatim
+	// because it is the fanout SELECT's output column, not a base-table
+	// column; the user keys go through [groupKeyFrags].
 	groupFrags := make([]Frag, 0, len(r.GroupBy)+1)
 	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
-	for _, g := range r.GroupBy {
-		expr := g
-		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
-	}
+	groupFrags = append(groupFrags, groupKeyFrags(r.GroupBy, r.GroupByAliases)...)
 	collapse.GroupBy(groupFrags...)
 
 	e.emitSelect(collapse)

@@ -78,7 +78,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 // buildSeriesSQL renders:
 //
-//	SELECT `ResourceAttributes` AS labels
+//	SELECT mapSort(`ResourceAttributes`) AS labels
 //	FROM `otel_logs`
 //	WHERE (<group1>) OR (<group2>) ...
 //	  AND `Timestamp` >= ? AND `Timestamp` <= ?
@@ -87,9 +87,20 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // Multiple match[] selectors are OR'd (Loki's documented semantics —
 // each match[] independently contributes streams). All identifiers and
 // time bounds flow through QueryBuilder slots.
+//
+// The GROUP BY key is the whole label-set Map, so it carries the
+// canonical key-order wrap (canonicalLabelsFrag): one logical stream
+// delivered under two OTLP key orders otherwise groups as two rows.
+// dedupeLabelSets keys on the order-insensitive format.CanonicalKey, so
+// the wire answer is correct either way — but the split rows are not
+// free. They are counted against the client's row drain budget
+// (chclient.drainBudgetExceeded), so a duplicated stream set can push a
+// /series response that legitimately fits over CERBERUS_QUERY_MAX_SAMPLES
+// and turn a valid query into a rejection. The Go-side dedupe stays as
+// the defence-in-depth backstop; this closes the split at the source.
 func buildSeriesSQL(s schema.Logs, selectorGroups [][]*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(chsql.Col(s.ResourceAttributesColumn), "labels")).
+		Select(chsql.As(canonicalLabelsFrag(chsql.Col(s.ResourceAttributesColumn)), "labels")).
 		From(chsql.Col(s.LogsTable))
 
 	if len(selectorGroups) > 0 {

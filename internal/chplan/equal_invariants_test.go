@@ -963,6 +963,26 @@ func TestVectorSetOp_Equal_Negative_Match(t *testing.T) {
 	}
 }
 
+// TestVectorSetOp_Equal_Negative_StepAligned pins that step alignment
+// participates in structural equality. It selects the match key —
+// signature alone in instant mode, (signature, timestamp) in range mode
+// — so two otherwise-identical set ops that disagree on it emit
+// different SQL and must never compare Equal.
+func TestVectorSetOp_Equal_Negative_StepAligned(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetOr, StepAligned: true,
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetOr, StepAligned: false,
+	}
+	if a.Equal(b) {
+		t.Errorf("different StepAligned should not be Equal")
+	}
+}
+
 func TestVectorSetOp_Equal_Negative_ValueColumn(t *testing.T) {
 	t.Parallel()
 	a := &chplan.VectorSetOp{

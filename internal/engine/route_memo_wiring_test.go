@@ -667,13 +667,11 @@ func TestTryRouteMemoHit_DispatchesOnLivePreferBVerdict(t *testing.T) {
 	if usedDecision.K < 2 {
 		t.Errorf("usedDecision.K = %d, want >= 2 (the FRESHLY derived eligible decision, not the not-routed seed)", usedDecision.K)
 	}
-	if cq.opens.Load() < 1 {
-		// Execute opens one cursor PER SHARD (kEff of them, not one per
-		// dispatch) — the exact count depends on the decision's K clamped
-		// by Cfg.Parallel/MaxK, which this test does not pin. >=1 is the
-		// meaningful assertion: a dispatch actually happened.
-		t.Errorf("Executor cursor opens = %d, want >= 1 (a dispatch must have happened)", cq.opens.Load())
-	}
+	// Execute opens one cursor PER SHARD (kEff of them, not one per dispatch) —
+	// the exact count depends on the decision's K clamped by Cfg.Parallel/MaxK,
+	// which this test does not pin. >=1 is the meaningful assertion: a dispatch
+	// actually happened.
+	awaitDispatch(t, cq, "a dispatch must have happened")
 }
 
 // TestTryRouteMemoHit_UnknownKeyNeverDispatches pins the negative case: a
@@ -855,11 +853,9 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	if cur == nil || info == nil || usedDecision == nil || observeFn == nil {
 		t.Fatalf("retried=true but cur=%v info=%v usedDecision=%v observeFn-is-nil=%v", cur, info, usedDecision, observeFn == nil)
 	}
-	if cq.opens.Load() < 1 {
-		// Execute opens one cursor PER SHARD, not one per dispatch (see the
-		// comment in TestTryRouteMemoHit_DispatchesOnLivePreferBVerdict).
-		t.Errorf("Executor cursor opens after 2nd failure = %d, want >= 1 (a retry dispatch must have happened)", cq.opens.Load())
-	}
+	// Execute opens one cursor PER SHARD, not one per dispatch (see the comment
+	// in TestTryRouteMemoHit_DispatchesOnLivePreferBVerdict).
+	awaitDispatch(t, cq, "a retry dispatch must have happened")
 
 	// The probe's SUCCESS is what creates the memo's first verdict for this
 	// Key (Memo.Observe's OutcomeSuccess branch) — nothing else does. Before
@@ -989,4 +985,33 @@ func TestFreshEnoughForRouteMemo_ZeroStepNeverFresh(t *testing.T) {
 	if freshEnoughForRouteMemo(now.Add(-time.Hour), 0, now) {
 		t.Fatal("freshEnoughForRouteMemo reported fresh with step=0 — must fail closed")
 	}
+}
+
+// dispatchAwaitBudget / dispatchAwaitPoll bound awaitDispatch's poll. The
+// budget is generous relative to the microseconds a fake dispatch actually
+// takes, so a loaded CI runner cannot flake it; the poll is short enough that a
+// passing run costs nothing.
+const (
+	dispatchAwaitBudget = 2 * time.Second
+	dispatchAwaitPoll   = time.Millisecond
+)
+
+// awaitDispatch waits for the Executor to have opened at least one shard
+// cursor. Execute hands its shards to a launcher goroutine and returns without
+// waiting for any of them to be admitted — it MUST, since a shard that has
+// filled its channel can only be unparked by a composer that cannot run until
+// Execute has returned. So the opens have not necessarily happened yet at the
+// instant Execute returns. Polling for the observable effect is the honest form
+// of "a dispatch happened"; sampling the counter on return tests goroutine
+// scheduling instead.
+func awaitDispatch(t *testing.T, cq *fakeSolverCursorClient, what string) {
+	t.Helper()
+	deadline := time.Now().Add(dispatchAwaitBudget)
+	for time.Now().Before(deadline) {
+		if cq.opens.Load() >= 1 {
+			return
+		}
+		time.Sleep(dispatchAwaitPoll)
+	}
+	t.Fatalf("Executor cursor opens = %d, want >= 1 (%s)", cq.opens.Load(), what)
 }

@@ -4,15 +4,19 @@ Move a Prometheus-backed setup onto cerberus (ClickHouse) **without rebuilding
 dashboards or rewriting alerts** — and prove what changes *before* real traffic
 depends on it.
 
-Thirteen steps, in order (3–6 can go in any order). Each declares its
-**pre-conditions**, what you do, and its **post-conditions** — so you always
-know whether you are ready, and whether it worked.
+A step 0 to get ready, then thirteen steps in order (3–6 can go in any order).
+Each declares its **pre-conditions**, what you do, and its **post-conditions** —
+so you always know whether you are ready, and whether it worked.
 
 ```text
-1–2  install + gather   ──▶  3–6  assess   ──▶  7–9  stand it up
-                                                   │
-                        12–13  cut over  ◀── 10–11  verify + gate
+0  prepare  ──▶  1–2  install + gather  ──▶  3–6  assess  ──▶  7–9  stand it up
+                                                                  │
+                                       12–13  cut over  ◀── 10–11  verify + gate
 ```
+
+Configuration is built up the same way. Step 0 writes a small `cerberus.yaml`,
+and each later step adds only the keys it is about to use — so you are never
+reading a setting that names a file you do not have yet.
 
 `cerberus migrate` is read-only — it never writes to Prometheus, Grafana or
 ClickHouse. Steps 7, 8, 9, 12 and 13 are the ones that change anything, and you
@@ -32,24 +36,41 @@ works from your **real queries** rather than from `prometheus.yml` — a config
 file cannot tell you whether a query translates cleanly or falls over on
 cardinality.
 
-## Configuration
+## Step 0: Prepare the ground
 
-One file: `cerberus.yaml`, in the directory you run the tool from or in
-`/etc/cerberus/`. It is written in the same shape as the Helm chart's
-`values.yaml`, so a setting has one name whether you deploy cerberus with the
-chart or run the binary yourself. An exported environment variable overrides the
-file, and a CLI flag overrides both — so the file is where the settings live and
-the other two are for one-off overrides.
+Two things have to be true before the first command is worth running: someone
+has to own the ingestion change, and cerberus has to know which ClickHouse it
+is talking about.
 
-Here is a complete one for the general case: all three heads, one cerberus
-serving all of them.
+**Pre-conditions:**
+
+- A ClickHouse you can reach, or a decision about where it will live.
+
+**Do:**
+
+**Plan the dual ingestion path.** Cerberus reads ClickHouse; it does not fill
+it. The telemetry you are going to query has to get there from your
+OpenTelemetry Collector, and that is the one part of this migration that is not
+a cerberus command and cannot be hurried. At step 8 you add the Collector's
+ClickHouse exporter *alongside* the Prometheus write path you already have, and
+from that moment both fill in parallel. Step 10 proves parity by replaying your
+queries against both backends over the same window — so it can only look back as
+far as the overlap goes. Every hour you delay the Collector change is an hour
+you cannot verify over later. Settle now where ClickHouse lives, who makes the
+Collector change, and when.
+
+**Write the initial `cerberus.yaml`.** One file, in the directory you run the
+tool from or in `/etc/cerberus/`. It is written in the same shape as the Helm
+chart's `values.yaml`, so a setting has one name whether you deploy cerberus
+with the chart or run the binary yourself. An exported environment variable
+overrides the file, and a CLI flag overrides both — so the file is where the
+settings live and the other two are for one-off overrides.
+
+Start with the engine, and nothing else:
 
 ```yaml
 # cerberus.yaml
 
-# The engine. Give these the same values you give the deployed server —
-# `schema`, `classify` and `explain` read them so their output matches what
-# your cerberus will actually do.
 clickhouse:
   addr:
     - clickhouse.internal:9000 # list more hosts for a cluster
@@ -58,81 +79,54 @@ clickhouse:
 query:
   maxSamples: 5000000
   timeout: 2m
-
-migrate:
-  # Where to measure live cardinality (step 6).
-  inventory:
-    source: http://prometheus.internal:9090
-    window: 24h
-    loki:
-      source: http://loki.internal:3100
-      selectors:
-        - '{job="checkout"}'
-        - '{job="cart"}'
-    tempo:
-      source: http://tempo.internal:3200
-
-  # What to replay for parity, and against what (step 10).
-  verify:
-    corpus: corpus.json
-    ref: http://prometheus.internal:9090
-    cerberus: http://cerberus.internal:8080
-    start: -6h
-    end: now
-    step: 60s
-    loki:
-      ref: http://loki.internal:3100
-      cerberus: http://cerberus.internal:8080
-    tempo:
-      ref: http://tempo.internal:3200
-      cerberus: http://cerberus.internal:8080
 ```
 
-Drop the `loki:` blocks if you harvested no LogQL and the `tempo:` blocks if you
-harvested no TraceQL. Under `verify` it is both sides or neither — half a pair
-is an error, never a silently skipped head.
+Give these the values your **deployed** server will run with. `schema`,
+`classify` and `explain` all read them, so a preview built on different values
+describes a cerberus you are not going to run: `schema` would render DDL for the
+wrong database, and `classify` would bound queries by the wrong per-query
+budget.
+
+Keep the ClickHouse password out of the file — export `CERBERUS_CH_PASSWORD`
+instead. Add `clickhouse.protocol: http` if only port 8123 is reachable and not
+the native 9000.
 
 A key cerberus does not recognise stops it with an error naming the nearest one
-that does, rather than leaving the setting silently on its default.
+that does, rather than leaving the setting silently on its default. Leave the
+file out entirely and you get `localhost:9000`, database `default`, user
+`default` — enough to run the offline steps, not enough to reach a real cluster.
 
-Leave the file out entirely and you get `localhost:9000`, database `default`,
-user `default`, a `-1h`→`now` verify window at `60s`, and no backends to probe.
+Later steps add to this same file: step 6 adds where to measure cardinality,
+step 7 adds any schema overrides, step 10 adds what to replay and against what.
+Each arrives with the step that uses it.
 
-Add only what applies to you:
+**Post-conditions:**
 
-| Setting                                    | When you need it                                                        |
-| ------------------------------------------ | ----------------------------------------------------------------------- |
-| `clickhouse.protocol: http`                | Only port 8123 is reachable, not the native 9000.                       |
-| `schema.cluster`                           | You run `ON CLUSTER` DDL — the name goes into the rendered `CREATE`.    |
-| `schema.logs.table`, `schema.traces.table` | Your tables are not named the OTel defaults.                            |
-| `migrate.verify.tolerance`                 | Two samples may differ by more than the default `1e-9` and still match. |
-| `migrate.verify.report`                    | You want the full JSON diagnostics written to a file on a failing run.  |
+- `cerberus.yaml` on disk, naming the ClickHouse and the query budget your
+  server will run with.
+- You know who is making the Collector change, and when.
+- Nothing has changed in Prometheus, Grafana or ClickHouse. Nothing in this file
+  has connected to anything — the first `migrate` command that opens a socket is
+  step 6.
 
-Keep credentials out of the file — export them instead:
-`CERBERUS_CH_PASSWORD`, and a bearer token per URL above
-(`CERBERUS_VERIFY_REF_TOKEN`, `..._CERBERUS_TOKEN`, `..._REF_LOKI_TOKEN`,
-`..._CERBERUS_LOKI_TOKEN`, `..._REF_TEMPO_TOKEN`, `..._CERBERUS_TEMPO_TOKEN`).
-A multi-tenant reference Loki or Tempo also wants
-`CERBERUS_VERIFY_REF_LOKI_ORG_ID` / `CERBERUS_VERIFY_REF_TEMPO_ORG_ID`, which
-send `X-Scope-OrgID`; cerberus itself reads no tenant header, deliberately, so
-there is no cerberus-side equivalent.
-
-`cerberus config-docs` prints every engine setting the file accepts;
-[`docs/configuration.md`](configuration.md) is the same list in prose, and
+[`docs/configuration.md`](configuration.md) lists every engine setting the file
+accepts, with each one's config-file path, type and default. That reference is
+generated from the binary's own metadata by `cerberus config-docs`, which
+*writes* the file (`-out` chooses the path, `-check` only reports drift rather
+than writing) — a repo-maintenance command, not a way to page through the
+settings on the machine you are installing on.
 [`docs/migration-reference.md`](migration-reference.md) is the full flag
 reference for the migration commands.
-
-Nothing here ever connects to ClickHouse. `schema` prints DDL for you to pipe,
-and only `inventory` and `verify` open a socket — to your existing Prometheus,
-Loki or Tempo.
 
 ## Step 1: Install the binary
 
 **Pre-conditions:**
 
+- Step 0 done.
 - A machine that holds — or can hold — your rule YAML and exported dashboard
   JSON. A laptop or a jump host, not the cluster: the tool reads those files off
-  local disk and writes its artifacts back beside them.
+  local disk and writes its artifacts back beside them. Your `cerberus.yaml`
+  belongs there too.
 
 **Do:**
 
@@ -141,7 +135,7 @@ brew install tsouza/tap/cerberus
 cerberus --version
 ```
 
-Only stable releases publish a formula, so `brew` never hands you a prerelease.
+Only stable releases publish a cask, so `brew` never hands you a prerelease.
 If you would rather not use Homebrew, the same binary ships as a
 [release archive](https://github.com/tsouza/cerberus/releases) (linux / darwin ×
 amd64 / arm64, each with a [SLSA](https://slsa.dev) provenance attestation). Or
@@ -210,8 +204,8 @@ cerberus migrate harvest \
 **Pre-conditions:**
 
 - Step 3 done: `corpus.json` on disk.
-- `query.maxSamples` and `query.timeout` set to the values your production
-  server will run with, so the preview is bound by the real per-query budget.
+- The `query.maxSamples` and `query.timeout` you wrote in step 0 are the ones
+  your production server will run with — they are what bounds this preview.
   Still no network.
 
 **Do:**
@@ -267,9 +261,32 @@ cerberus migrate rulegraph \
 
 - The Prometheus you are migrating away from is running and reachable from this
   machine. This is the first step that goes on the network.
-- `migrate.inventory.source` set, or `--source` passed. Add
-  `migrate.inventory.loki.source` / `.loki.selectors` / `.tempo.source` only if
-  you harvested LogQL or TraceQL — see [Configuration](#configuration).
+
+**Configure:**
+
+Add to your `cerberus.yaml` — where to measure, and over what window:
+
+```yaml
+migrate:
+  inventory:
+    source: http://prometheus.internal:9090
+    window: 24h
+```
+
+Add the sub-blocks below **only** for the heads your step-3 corpus actually
+contains. If you harvested no LogQL, leave `loki:` out; same for `tempo:`.
+
+```yaml
+migrate:
+  inventory:
+    loki:
+      source: http://loki.internal:3100
+      selectors:
+        - '{job="checkout"}'
+        - '{job="cart"}'
+    tempo:
+      source: http://tempo.internal:3200
+```
 
 **Do:**
 
@@ -278,6 +295,8 @@ cerberus migrate inventory \
   --source http://prometheus.internal:9090 \
   --top 50 --json --out inventory.json
 ```
+
+The `--source` flag overrides the file, so either alone is enough.
 
 **Post-conditions:**
 
@@ -291,10 +310,19 @@ cerberus migrate inventory \
 **Pre-conditions:**
 
 - A ClickHouse you can reach with `clickhouse-client`.
-- `clickhouse.database`, plus any `schema.cluster` or table-name
-  override, set to exactly the values you will give the server in step 9 —
-  otherwise the tables you create are not the tables it will look for. Your
-  `cerberus.yaml` from [Configuration](#configuration) already carries them.
+- The `clickhouse.database` you wrote in step 0 is the one you will give the
+  server in step 9 — otherwise the tables you create here are not the tables it
+  will look for.
+
+**Configure:**
+
+Nothing to add for the default OTel layout. Add to your `cerberus.yaml` only
+what departs from it, and give the server the same values in step 9:
+
+| Setting                                    | When you need it                                                     |
+| ------------------------------------------ | -------------------------------------------------------------------- |
+| `schema.cluster`                           | You run `ON CLUSTER` DDL — the name goes into the rendered `CREATE`. |
+| `schema.logs.table`, `schema.traces.table` | Your tables are not named the OTel defaults.                         |
 
 **Do:**
 
@@ -324,7 +352,8 @@ same error it would abort the server with — a cheap pre-deploy check.
 
 **Do:**
 
-Not a cerberus command — collector configuration. Add the OTel Collector's
+The ingestion change you planned in step 0. Not a cerberus command — collector
+configuration. Add the OTel Collector's
 [ClickHouse exporter](../README.md#version-requirements) pointed at the database
 from step 7, and **keep the existing Prometheus write path running**. For a
 while, data flows into both.
@@ -342,9 +371,11 @@ while, data flows into both.
 
 - Step 8 done, with enough data accumulated to cover the window you intend to
   verify over.
-- Server configuration ready — `clickhouse.addr`, credentials, and the *same*
-  `clickhouse.database` / `schema.*` you used in step 7. That is a server job;
-  [`docs/operations.md`](operations.md) is its subject.
+- The server gets the `clickhouse` and `schema` settings from your
+  `cerberus.yaml`, unchanged — same database, same overrides, or it reads
+  different tables from the ones step 7 created. The `migrate` keys are for the
+  tool and mean nothing to the server; leaving them in is harmless. Running the
+  server is its own subject: [`docs/operations.md`](operations.md).
 
 **Do:**
 
@@ -362,11 +393,57 @@ This is the parity gate, and it is the only thing that earns you the flip.
 **Pre-conditions:**
 
 - Steps 3 and 9 done.
-- Dual-write open across the entire `--start`..`--end` window you ask for.
-- A `ref` / `cerberus` URL pair under `migrate.verify` for **each head your
-  corpus contains** — PromQL at the top level, LogQL and TraceQL in the `loki:`
-  and `tempo:` sub-blocks. Those keys, plus tokens and tenant ids, are in
-  [Configuration](#configuration).
+- Dual-write open across the entire `--start`..`--end` window you ask for — the
+  overlap you started at step 8 is the hard limit on how far back you can look.
+
+**Configure:**
+
+Add to your `cerberus.yaml`: what to replay, and the two backends to replay it
+against. `corpus.json` is the file step 3 produced.
+
+```yaml
+migrate:
+  verify: # alongside the `inventory:` block from step 6
+    corpus: corpus.json
+    ref: http://prometheus.internal:9090
+    cerberus: http://cerberus.internal:8080
+    start: -6h
+    end: now
+    step: 60s
+```
+
+Leave the window out and you replay `-1h`→`now` at `60s`. Widen it as far as
+your dual-write overlap allows — a longer window is more evidence.
+
+One `ref` / `cerberus` pair per head your corpus contains — PromQL at the top
+level, LogQL and TraceQL in sub-blocks. Add these only for the heads you
+harvested, and when you do add one it is **both sides or neither**: half a pair
+is an error, never a silently skipped head.
+
+```yaml
+migrate:
+  verify:
+    loki:
+      ref: http://loki.internal:3100
+      cerberus: http://cerberus.internal:8080
+    tempo:
+      ref: http://tempo.internal:3200
+      cerberus: http://cerberus.internal:8080
+```
+
+Credentials stay out of the file. Export a bearer token per URL above —
+`CERBERUS_VERIFY_REF_TOKEN`, `..._CERBERUS_TOKEN`, `..._REF_LOKI_TOKEN`,
+`..._CERBERUS_LOKI_TOKEN`, `..._REF_TEMPO_TOKEN`, `..._CERBERUS_TEMPO_TOKEN`. A
+multi-tenant reference Loki or Tempo also wants
+`CERBERUS_VERIFY_REF_LOKI_ORG_ID` / `CERBERUS_VERIFY_REF_TEMPO_ORG_ID`, which
+send `X-Scope-OrgID`; cerberus itself reads no tenant header, deliberately, so
+there is no cerberus-side equivalent.
+
+Two settings you will only want once a run tells you so:
+`migrate.verify.tolerance`, if two samples may differ by more than the default
+`1e-9` and still match — a deliberate decision, never a way to paper over a real
+difference — and `migrate.verify.report`, to write the full JSON diagnostics to
+a file on a failing run.
 
 **Do:**
 

@@ -20,10 +20,10 @@ numerical confidence is honestly lower (see
 > ([#503](https://github.com/tsouza/cerberus/pull/503)) — drift is
 > captured in the report + the live badge score, not in the harness exit
 > code — but the required check also runs a **parity-regression ratchet**
-> that fails the job if the score drops below a committed per-head floor.
-> So the badges are a continuously re-measured conformance score, *and* a
-> drop below baseline is a merge gate: noise within the baseline is
-> tolerated, a real regression is not. The
+> that fails the job if any case moves against the committed per-head
+> roster. So the badges are a continuously re-measured conformance score,
+> *and* every individual case is a merge gate: the ratchet names the cases
+> that must pass, so a regression cannot be offset by an unrelated win. The
 > `compatibility/prometheus-forced-route` lane additionally hard-fails on
 > *any* numeric parity diff (`FAIL_ON_DIFF=1`) and is itself a required
 > check. See [CI integration](#ci-integration).
@@ -55,10 +55,10 @@ branch as shields.io badge JSON; the README shows them live. On
   data).
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
-  template-expanded to 718 concrete cases.
-- **Today**: **718/718** cases pass; no allow-list exists. This is the
+  template-expanded to 737 concrete cases.
+- **Today**: **737/737** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 718/718 is a
+  a real reference. (Parity drift is report-only in CI; the 737/737 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -102,7 +102,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 718/718, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 737/737, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -276,12 +276,13 @@ orphan `compat-scores` branch so the README badges refresh.
 [#503](https://github.com/tsouza/cerberus/pull/503) it captures per-case
 numeric drift in `report.json` + the badge and exits 0, failing only on
 **infrastructure** errors (compose-up, seed, build, unparseable report).
-But the required job no longer passes on a numeric regression: a
+The required job does not pass on a parity regression, though: a
 **parity-regression ratchet** step (next section) runs after the harness
-and fails the job when the run's score drops below the committed
-per-head floor. So the required check gates **both** infrastructure
-breakage **and** a parity *regression* — while still tolerating noise
-within the baseline, which is what #503 was protecting against.
+and fails the job when any case moves against the committed per-head
+roster. So the required check gates **both** infrastructure breakage
+**and** every individual parity case, while keeping the harness's own
+exit code reserved for infrastructure — which is what #503 was
+protecting.
 
 The `compatibility/prometheus-forced-route` lane additionally
 **hard-fails on any parity diff** (`FAIL_ON_DIFF=1` in
@@ -292,45 +293,79 @@ every non-docs-only PR is gated on the full forced-route corpus run.
 ### Parity-regression ratchet (the gate)
 
 The three differs are **scored** — they accumulate per-case results,
-write `compat-score.json`, and exit 0 even when a case diverges, so the
-harness step turns the job red only on infrastructure breakage (corpus
-load, compose-up, missing report). On its own that makes the score an
-informational badge, not a gate: a real numeric regression on the main
-route would merge green.
+write `compat-score.json` plus a per-case roster in `compat-cases.json`,
+and exit 0 even when a case diverges, so the harness step turns the job
+red only on infrastructure breakage (corpus load, compose-up, missing
+report). On its own that makes the score an informational badge, not a
+gate: a real parity regression on the main route would merge green.
 
 The **parity-regression ratchet** closes that hole and makes
 "compatibility is the source of truth" a real gate. After each harness
 runs, `.github/scripts/compat-ratchet.mjs` reads the run's
-`compat-score.json` and the committed floor in
-`compatibility/parity-baseline.json`, and **fails the required job when
-the run drops below baseline** — either fewer passing cases (a real
-regression) or a corpus smaller than baseline (which could otherwise
-mask a regression by dropping a failing case). A run that matches or
-exceeds the floor passes; noise *within* the baseline is tolerated.
+`compat-cases.json` and the committed roster in
+`compatibility/parity-baseline.json`, and **fails the required job on any
+case that moved**. It gates on case *identity*, not on a count, because a
+count cannot tell a swap from a steady state: one case regressing while a
+different one starts passing leaves `passed`/`total` untouched, so an
+aggregate comparison reports green while parity got worse on a real query.
 
-The floors today (`heads.<name>.{passed,total}`):
+Four verdicts, all fatal:
+
+| verdict         | meaning                                      | how it is resolved               |
+| --------------- | -------------------------------------------- | -------------------------------- |
+| REGRESSED       | a recorded case now diverges                 | fix the engine                   |
+| VANISHED        | a recorded case did not run at all           | restore it, or move the baseline |
+| ARRIVED-FAILING | a case new to the corpus diverges on arrival | fix the engine                   |
+| UNRECORDED      | a case new to the corpus passes              | move the baseline so it is gated |
+
+`VANISHED` and `UNRECORDED` are loud rather than silent on purpose. A
+divergence must never be retired by deleting or renaming its case, and
+corpus coverage must never shrink unnoticed — so a disappearance is a
+failure that names the missing IDs. Likewise, a newly-passing case that
+nobody records is a case no future run is gated on, which means the
+ratchet has not actually ratcheted. `ARRIVED-FAILING` is fatal for the
+same reason the project has no allow-lists: "it wasn't passing before" is
+exactly the reasoning an allow-list encodes, and accepting it would let a
+corpus refresh import known-bad behaviour under a green check.
+
+The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 718 / 718    |
+| prometheus | 737 / 737    |
 | loki       | 116 / 116    |
 | tempo      | 48 / 48      |
 
-This is **not** an allow-list and does not resurrect the deleted
-`expected-failures.json`: it never names an individual case or excuses a
-specific failure — it pins only the aggregate floor and rejects any drop
-below it. It cannot flake because the differs compare with
-absolute + relative epsilon tolerance over canonical-key-sorted result
-sets against a deterministic seed, so `passed`/`total` are stable run to
-run (verified: three consecutive green main runs produced byte-identical
-718/718, 116/116, 48/48); the ratchet then compares **integers**, with
-no float/timing/ordering surface left to jitter.
+The baseline records **full parity** for every head — the ratchet asserts
+`passed == total == cases.length`, so the file has no shape in which a
+divergence can be recorded as acceptable. That is what keeps it the
+opposite of the deleted `expected-failures.json`: an allow-list names the
+cases you are permitted to fail, whereas this roster names the cases that
+must pass, and every entry on it is an obligation.
 
-When the harness legitimately gains passing cases or the corpus grows,
-**raise the matching floor** in `compatibility/parity-baseline.json` in
-the same PR — the ratchet's pass log prints the exact new numbers. Never
-*lower* a floor to make a real parity bug merge; fix the bug at the
-source instead.
+It cannot flake. Each case ID is built from that case's static corpus
+identity (query text, endpoint, suite, lane) and never from
+wall-clock-derived values, so an unchanged corpus yields a byte-identical
+roster; pass/fail per case comes from the same success predicate that
+feeds `compat-score.json`, comparing with absolute + relative epsilon
+tolerance over canonical-key-sorted result sets against a deterministic
+seed. There is no float, timing or ordering surface left to jitter.
+
+When the corpus legitimately grows, or a case is deliberately renamed or
+retired, **move the head's entry** in
+`compatibility/parity-baseline.json` in the same PR. Take the roster from
+the run's `compat-cases.json` (uploaded as a job artefact) rather than
+hand-editing it:
+
+```sh
+node .github/scripts/compat-baseline-sync.mjs path/to/compat-cases.json
+```
+
+That writes the entry sorted and with counts derived from the roster, so
+the committed list cannot drift from what the harness actually ran and
+the diff shows exactly which cases moved. It refuses to write a roster
+that omits a failing case — never make a real parity bug merge by moving
+the baseline around it; fix the bug at the source instead.
 
 ## Adding new test cases
 

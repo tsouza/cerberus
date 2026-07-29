@@ -67,7 +67,9 @@ func surfacedIdentityHasKey(t *testing.T, identityExpr chplan.Expr, target strin
 }
 
 // lowerTopKIdentityExpr lowers `query` (a topk/bottomk) in instant mode
-// and returns the inner range aggregation's identity projection expr.
+// and returns the inner range aggregation's identity projection expr as
+// lowered — including the [canonicalIdentityExpr] key-order wrap, which
+// callers peel with [requireCanonicalIdentity].
 func lowerTopKIdentityExpr(t *testing.T, query string, s schema.Logs) chplan.Expr {
 	t.Helper()
 	expr, err := syntax.ParseExpr(query)
@@ -129,7 +131,7 @@ func TestSortableShapedInnerThreadsOuterByColumn(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	const query = `topk(2, rate({app="api"}[5m])) by (ServiceName)`
 
-	identity := lowerTopKIdentityExpr(t, query, s)
+	identity := requireCanonicalIdentity(t, lowerTopKIdentityExpr(t, query, s))
 	if !surfacedIdentityHasKey(t, identity, s.ServiceNameColumn) {
 		t.Fatalf("topk by (ServiceName): inner identity map is missing the surfaced %q key — outer-by threading guard (line 390) leaked: a NEGATION mutant skipped withOuterByLabels", s.ServiceNameColumn)
 	}
@@ -156,7 +158,7 @@ func TestSortableShapedInnerSkipsThreadingForWithout(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	const query = `topk(2, rate({app="api"}[5m])) without (ServiceName)`
 
-	identity := lowerTopKIdentityExpr(t, query, s)
+	identity := requireCanonicalIdentity(t, lowerTopKIdentityExpr(t, query, s))
 	if surfacedIdentityHasKey(t, identity, s.ServiceNameColumn) {
 		t.Fatalf("topk without (ServiceName): inner identity map unexpectedly surfaced the %q key — the without-clause must NOT thread outer-by labels (line 390 INVERT_LOGICAL mutant flipped && to ||)", s.ServiceNameColumn)
 	}
