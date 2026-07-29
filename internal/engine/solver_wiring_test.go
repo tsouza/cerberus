@@ -193,8 +193,9 @@ func TestSolver_SingleMode_ShadowHeaderReportsClassification(t *testing.T) {
 	if !ok {
 		t.Fatalf("shadow header %s missing; headers=%v", engine.HeaderRouteDecision, res.Headers)
 	}
-	// Mode=single classifies an eligible plan as route-a / below-threshold.
-	const want = "route-a;reason=" + solver.ReasonBelowThreshold
+	// Mode=single classifies an eligible plan as route-a / routing-disabled:
+	// no threshold was consulted, so the header must not claim one refused it.
+	const want = "route-a;reason=" + solver.ReasonRoutingDisabled
 	if got != want {
 		t.Errorf("shadow header: got %q, want %q", got, want)
 	}
