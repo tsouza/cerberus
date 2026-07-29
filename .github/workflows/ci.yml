@@ -440,6 +440,14 @@ jobs:
       - name: brew-smoke self-test (cask-freshness guard)
         run: node --test .github/scripts/brew-smoke.test.mjs
 
+      # The upgrade harness itself needs Homebrew and several minutes, so it runs
+      # weekly in brew-verify.yml. Its VERDICT does not, and that is the half
+      # deciding whether a silently-skipped migration is reported — a verdict
+      # that reads Homebrew's silence as success would leave the weekly lane
+      # green while every existing formula install stayed on the old binary.
+      - name: brew-upgrade-path self-test (formula -> cask migration verdict)
+        run: node --test .github/scripts/brew-upgrade-path.test.mjs
+
       # goreleaser deprecation gate. `goreleaser check` reports a deprecated
       # config section as an advisory line and still exits 0, and release.yml is
       # the only other place goreleaser runs — so a deprecation first becomes

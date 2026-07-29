@@ -167,6 +167,16 @@ brew install tsouza/tap/cerberus
 
 Only stable releases publish a cask, so `brew` never hands you a prerelease.
 
+cerberus was briefly served as a Homebrew _formula_ instead. `brew update` moves
+an existing formula install across on its own, but a machine that had already
+updated past that point keeps running the old binary — `cerberus --version` will
+disagree with the release you expect. To repair it:
+
+```sh
+brew uninstall --formula --force cerberus
+brew reinstall --cask tsouza/tap/cerberus
+```
+
 The surrounding runtime contract (lifecycle, scaling, the solver and
 experimental knobs in context) lives in
 [`docs/operations.md`](docs/operations.md).

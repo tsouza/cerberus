@@ -464,7 +464,13 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   every root Homebrew loads formulae from, so a sharded or relocated formula
   cannot slip past — `installedArtifactProblems(caskList, formulaList)` — which
   of the two the bare install actually resolved to, read off
-  `brew list --{cask,formula} --versions` —
+  `brew list --{cask,formula} --versions`, via the shared
+  `brewListNames(out)` — `tapMigrationProblems(source)` — the tap's
+  `tap_migrations.json` must map `cerberus` to the bare tap name `tsouza/tap`,
+  which is what tells Homebrew the formula BECAME the cask; a missing map is
+  invisible to every fresh install and strands every existing formula install on
+  its old binary with no error printed, so the file is asserted on every release
+  rather than once at migration time —
   `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.
@@ -482,6 +488,37 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     tap cask that a backport overwrote, a missing or unrecognised
     `RELEASE_IS_LATEST`, a failed install, a version mismatch, or a failing
     payload verb.
+- **`brew-upgrade-path.mjs`** — `brew-verify.yml`, the `brew-migration` job
+  (`macos-latest` + `ubuntu-latest`, weekly + on demand). Proves an EXISTING
+  formula install is carried across to the cask. Every other install path CI
+  performs starts from an empty runner, and a machine with no cerberus on it
+  cannot observe the upgrade at all — which is how the formula → cask move
+  shipped with no `tap_migrations.json`: fresh installs were correct throughout
+  while every machine that already had the formula silently kept its old binary
+  (`brew upgrade` files a deleted formula under *Deleted Installed Formulae* and
+  moves on; installing the cask afterwards will not link over the formula's keg;
+  nothing in that sequence prints an error). The harness reconstructs a real
+  pre-migration machine: it rewinds the tap clone to the parent of the commit
+  that deleted the formula — derived from history, since a pinned SHA would drift
+  out of the tap and leave the job installing the CASK in step one and then
+  asserting vacuously that a cask is installed — installs the formula from it via
+  the bare ref, and lets `brew update` catch the clone up. That is the real
+  trigger: Homebrew drives the migration off the update's report of what was
+  DELETED, so it fires only for a clone that observes the deletion. It then
+  asserts three independent things, because they fail for different reasons: the
+  migration was announced, the cask ended up installed (Homebrew rescues a failed
+  migration install by design, so the announcement alone proves nothing), and the
+  binary on PATH reports the cask's version (the symptom the user sees, and the
+  one that fails on its own when the cask installed but could not link). Pure
+  export `upgradeOutcomeProblems({updateOutput, caskList, reportedVersion,
+  expectedVersion})`, covered by `brew-upgrade-path.test.mjs` on the required
+  `check` lane and as the job's own first step.
+  - Env: `TAP_MIGRATION_LEGACY_REV` (optional; overrides the derived rewind
+    point, for reproducing a specific report).
+  - Exit: `0` when the migration carried the machine across; `1` on a silent
+    update, a cask that never installed, a version that never moved, or a tap
+    whose history holds no formula to rewind to. There is no "could not tell"
+    exit.
 - **`goreleaser-deprecations.mjs`** — `ci.yml`, the `lint` job. Fails the build
   when `.goreleaser.yml` uses any goreleaser feature upstream has deprecated.
   `goreleaser check` prints a deprecation as an advisory line and still exits
