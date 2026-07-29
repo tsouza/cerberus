@@ -212,18 +212,46 @@ func TestPromCanonicalTopLevelLabel(t *testing.T) {
 	}
 }
 
-// TestAugmentSelectorAttributes_NoColumnsIsPassThrough pins that the
-// augmenting Project is suppressed only when the schema names NEITHER a
-// ResourceAttributes column nor a dedicated top-level one — with nothing
-// to merge or overlay the Project would be an identity map.
-func TestAugmentSelectorAttributes_NoColumnsIsPassThrough(t *testing.T) {
+// canonicalAttributesInner asserts that expr is the `mapSort` wrapper
+// [canonicalAttributesExpr] puts on every projected label map, and
+// returns the wrapped expression. Every selector Project must carry it:
+// it is the invariant that makes the Attributes Map usable as a
+// series-identity key (see canonicalAttributesExpr).
+func canonicalAttributesInner(t *testing.T, expr chplan.Expr) chplan.Expr {
+	t.Helper()
+	call, ok := expr.(*chplan.FuncCall)
+	if !ok || call.Name != "mapSort" {
+		t.Fatalf("attrs expr is not canonicalised: got %#v, want mapSort(...)", expr)
+	}
+	if len(call.Args) != 1 {
+		t.Fatalf("mapSort args: got %d, want 1", len(call.Args))
+	}
+	return call.Args[0]
+}
+
+// TestAugmentSelectorAttributes_NoColumnsStillCanonicalises pins the
+// schema that has NOTHING to merge — neither a ResourceAttributes column
+// nor a dedicated top-level one. The Project used to be suppressed here
+// as an identity map, which left the raw table's Attributes column
+// flowing into every downstream series-identity GROUP BY uncanonicalised
+// — the same silent series split the default schema suffered, reachable
+// on any custom schema that opts out of the resource merge. The Project
+// is now always emitted, carrying `mapSort(Attributes)`.
+func TestAugmentSelectorAttributes_NoColumnsStillCanonicalises(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
 	s.ResourceAttributesColumn = "" // opt out of the resource merge
 	s.ServiceNameColumn = ""        // opt out of the dedicated overlay
 	input := &chplan.Scan{Table: s.GaugeTable}
-	if got := augmentSelectorAttributes(input, lowerCtx{}, s); got != chplan.Node(input) {
-		t.Errorf("expected pass-through, got %#v", got)
+	got := augmentSelectorAttributes(input, lowerCtx{}, s)
+	proj, ok := got.(*chplan.Project)
+	if !ok {
+		t.Fatalf("got %T, want a *chplan.Project carrying the canonicalising wrap", got)
+	}
+	inner := canonicalAttributesInner(t, attributesProjection(t, proj, s))
+	ref, ok := inner.(*chplan.ColumnRef)
+	if !ok || ref.Name != s.AttributesColumn {
+		t.Fatalf("mapSort argument: got %#v, want the bare %s ColumnRef", inner, s.AttributesColumn)
 	}
 }
 
@@ -241,9 +269,9 @@ func TestAugmentSelectorAttributes_DedicatedColumnSurvivesResourceOptOut(t *test
 	if !ok {
 		t.Fatalf("expected a Project wrap with ServiceNameColumn set, got %T", got)
 	}
-	call, ok := attributesProjection(t, proj, s).(*chplan.FuncCall)
+	call, ok := canonicalAttributesInner(t, attributesProjection(t, proj, s)).(*chplan.FuncCall)
 	if !ok || call.Name != "mapConcat" {
-		t.Fatalf("Attributes projection: got %v, want mapConcat(Attributes, <dedicated>)", call)
+		t.Fatalf("Attributes projection: got %v, want mapSort(mapConcat(Attributes, <dedicated>))", call)
 	}
 }
 
@@ -271,9 +299,9 @@ func TestAugmentSelectorAttributes_BareSelectorCarriesServiceName(t *testing.T) 
 	if len(proj.Projections) != 4 {
 		t.Fatalf("projections: got %d, want 4", len(proj.Projections))
 	}
-	mapConcat, ok := attributesProjection(t, proj, s).(*chplan.FuncCall)
+	mapConcat, ok := canonicalAttributesInner(t, attributesProjection(t, proj, s)).(*chplan.FuncCall)
 	if !ok || mapConcat.Name != "mapConcat" {
-		t.Fatalf("attrs expr: got %#v, want mapConcat(...)", proj.Projections[1].Expr)
+		t.Fatalf("attrs expr: got %#v, want mapSort(mapConcat(...))", proj.Projections[1].Expr)
 	}
 	if len(mapConcat.Args) != 2 {
 		t.Fatalf("mapConcat args: got %d, want 2", len(mapConcat.Args))

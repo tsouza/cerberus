@@ -110,8 +110,10 @@ func TestEmitMetricsHistogramOverTimeByLabel(t *testing.T) {
 	if !strings.Contains(sql, "`ServiceName` AS `service.name`") {
 		t.Errorf("expected group-by SELECT alias, SQL=%s", sql)
 	}
-	if !strings.Contains(sql, "GROUP BY `ServiceName`, `__bucket`") {
-		t.Errorf("expected GROUP BY `ServiceName`, `__bucket`, SQL=%s", sql)
+	// An aliased group key is named by its ALIAS in GROUP BY, never by
+	// re-rendering the expression — see chsql.groupKeyFrags.
+	if !strings.Contains(sql, "GROUP BY `service.name`, `__bucket`") {
+		t.Errorf("expected GROUP BY `service.name`, `__bucket`, SQL=%s", sql)
 	}
 }
 
