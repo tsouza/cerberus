@@ -16,17 +16,25 @@ CREATE TABLE otel_traces (
     ScopeName String DEFAULT '',
     ScopeVersion String DEFAULT ''
 ) ENGINE = Memory;
-INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName) VALUES
-    ('t1', 's1', '',   'a'),
-    ('t1', 's2', 's1', 'mid'),
-    ('t1', 's3', 's2', 'b'),
-    ('t2', 's4', '',   'a'),
-    ('t2', 's5', 's4', 'c'),
-    ('t3', 's6', '',   'b');
+-- The `&>>` (recursive union) arm of the same duplicate-delivery shape
+-- structural_union_child_dup_key_order documents:
+--
+--   s1 -> redelivered with the ResourceAttributes keys REVERSED (trigger)
+--   s3 -> redelivered byte-identically (the control)
+--
+-- The recursive closure is already identity-deduped (SELECT DISTINCT
+-- TraceId, SpanId), so the divergence reaches the union only through the
+-- wide L-side projection — which is exactly where it bit.
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName, ResourceAttributes) VALUES
+    ('t1', 's1', '',   'a',   map('job', 'api', 'dc', 'eu')),
+    ('t1', 's1', '',   'a',   map('dc', 'eu', 'job', 'api')),
+    ('t1', 's2', 's1', 'mid', map('job', 'api', 'dc', 'eu')),
+    ('t1', 's3', 's2', 'b',   map('job', 'api', 'dc', 'eu')),
+    ('t1', 's3', 's2', 'b',   map('job', 'api', 'dc', 'eu'));
 -- expected_rows --
 [
-  ["t1", "s1", "", "a", 0, 0, {}, {}, "", "", "", "", ""],
-  ["t1", "s3", "s2", "b", 0, 0, {}, {}, "", "", "", "", ""]
+  ["t1", "s1", "", "a", 0, 0, {"dc": "eu", "job": "api"}, {}, "", "", "", "", ""],
+  ["t1", "s3", "s2", "b", 0, 0, {"dc": "eu", "job": "api"}, {}, "", "", "", "", ""]
 ]
 -- args --
 [0] string = "a"

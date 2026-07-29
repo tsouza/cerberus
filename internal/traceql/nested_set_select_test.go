@@ -126,7 +126,7 @@ func TestNestedSetOutsideSelectAnnotates(t *testing.T) {
 // structural arm exposes the narrow span envelope while a plain
 // filter arm is `SELECT *`; mixing them must wrap the plain arm in a
 // Project of the same ordered column list or ClickHouse rejects the
-// UNION DISTINCT with code 258 (UNION_ALL_RESULT_STRUCTURES_MISMATCH)
+// UNION with code 258 (UNION_ALL_RESULT_STRUCTURES_MISMATCH)
 // — the exact failure hiding behind Traces Drilldown's structure-tab
 // query once the select() 422 was fixed.
 func TestUnionArmAlignment(t *testing.T) {

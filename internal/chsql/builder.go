@@ -1182,6 +1182,16 @@ func UnionAll(parts ...Frag) Frag {
 // UnionDistinct renders `<p1> UNION DISTINCT <p2> UNION DISTINCT …`.
 // CH's UNION DISTINCT dedupes on the full row tuple. Same composition
 // shape as UnionAll; see its godoc.
+//
+// It has no caller in the emitters, and a new one needs a reason. A CH
+// Map compares POSITIONALLY over its (keys, values) arrays, so a full-row
+// dedup over any projection carrying ResourceAttributes / SpanAttributes
+// treats one span redelivered under a different OTLP attribute key order
+// as two rows. Every span-row union in this package therefore dedupes on
+// span IDENTITY instead — `UnionAll` + `LIMIT 1 BY (TraceId, SpanId)`;
+// see emitStructuralSpanUnion (structural_join.go) and emitSetOperation
+// (set_op.go). Reach for UnionDistinct only where the dedup tuple is
+// genuinely the whole row AND provably carries no Map column.
 func UnionDistinct(parts ...Frag) Frag {
 	if len(parts) == 0 {
 		panic("chsql: UnionDistinct requires at least one part")
