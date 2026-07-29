@@ -400,3 +400,232 @@ func lwrNodeKill(start, end time.Time, step, lookback, offset time.Duration) *ch
 		ValueCol:      "Value",
 	}
 }
+
+// -----------------------------------------------------------------------
+// Nil-child guards on the two experimental grid nodes.
+//
+// RangeWindowResample and RangeWindowNative are the only Equal methods that
+// tolerate a nil Input, and they do it with an explicit `r.Input == nil ||
+// o.Input == nil` guard. TestNodeEqual_DiscriminatesEveryField cannot reach
+// the guard — it compares fully-populated nodes — so the contract is pinned
+// here: a nil Input on one side alone is a difference, and the comparison
+// must answer it rather than dereference the nil.
+// -----------------------------------------------------------------------
+
+func TestRangeWindowResample_Equal_NilInputIsADifference(t *testing.T) {
+	t.Parallel()
+
+	populated := func(input chplan.Node) *chplan.RangeWindowResample {
+		return &chplan.RangeWindowResample{
+			Input:         input,
+			Start:         time.Unix(1_700_000_000, 0).UTC(),
+			End:           time.Unix(1_700_003_600, 0).UTC(),
+			Step:          30 * time.Second,
+			Lookback:      5 * time.Minute,
+			MetricNameCol: "MetricName",
+			AttributesCol: "Attributes",
+			TimestampCol:  "TimeUnix",
+			ValueCol:      "Value",
+		}
+	}
+
+	withInput := populated(&chplan.Scan{Table: "metrics"})
+	noInput := populated(nil)
+
+	if withInput.Equal(noInput) {
+		t.Error("a node with an Input must not equal one without")
+	}
+	if noInput.Equal(withInput) {
+		t.Error("the nil-Input guard must answer symmetrically, not dereference the nil Input")
+	}
+	if !noInput.Equal(populated(nil)) {
+		t.Error("two nil-Input nodes with identical scalars must be Equal")
+	}
+}
+
+func TestRangeWindowNative_Equal_NilInputIsADifference(t *testing.T) {
+	t.Parallel()
+
+	populated := func(input chplan.Node) *chplan.RangeWindowNative {
+		return &chplan.RangeWindowNative{
+			Input:           input,
+			Func:            "rate",
+			Range:           5 * time.Minute,
+			Step:            30 * time.Second,
+			Start:           time.Unix(1_700_000_000, 0).UTC(),
+			End:             time.Unix(1_700_003_600, 0).UTC(),
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+		}
+	}
+
+	withInput := populated(&chplan.Scan{Table: "metrics"})
+	noInput := populated(nil)
+
+	if withInput.Equal(noInput) {
+		t.Error("a node with an Input must not equal one without")
+	}
+	if noInput.Equal(withInput) {
+		t.Error("the nil-Input guard must answer symmetrically, not dereference the nil Input")
+	}
+	if !noInput.Equal(populated(nil)) {
+		t.Error("two nil-Input nodes with identical scalars must be Equal")
+	}
+}
+
+// -----------------------------------------------------------------------
+// RewriteChildren's InfoJoin arm rebuilds on a ONE-SIDED change.
+//
+// The exhaustiveness table plants its sentinel in every child slot at once,
+// so both sides always change together and the arm's `!inCh && !infoCh`
+// early-out is never exercised with a mixed verdict. Widening that to `||`
+// makes the arm drop a rewrite that reached only one side — the optimizer
+// then silently discards a rule's result on the base vector or the info
+// scan, whichever the other side did not also touch.
+// -----------------------------------------------------------------------
+
+func TestRewriteChildren_InfoJoin_KeepsAOneSidedRewrite(t *testing.T) {
+	t.Parallel()
+
+	base := &chplan.Scan{Table: "base"}
+	info := &chplan.Scan{Table: "info"}
+	rewritten := &chplan.Scan{Table: "rewritten"}
+
+	rewriteOnly := func(table string) func(chplan.Node) (chplan.Node, bool) {
+		return func(c chplan.Node) (chplan.Node, bool) {
+			if s, ok := c.(*chplan.Scan); ok && s.Table == table {
+				return rewritten, true
+			}
+			return c, false
+		}
+	}
+
+	for _, tc := range []struct {
+		name         string
+		side         string
+		wantInput    chplan.Node
+		wantInfoNode chplan.Node
+	}{
+		{name: "input only", side: "base", wantInput: rewritten, wantInfoNode: info},
+		{name: "info only", side: "info", wantInput: base, wantInfoNode: rewritten},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			in := &chplan.InfoJoin{Input: base, Info: info}
+			got, changed := chplan.RewriteChildren(in, rewriteOnly(tc.side))
+			if !changed {
+				t.Fatalf("rewriting the %s side must report changed=true", tc.side)
+			}
+			out, ok := got.(*chplan.InfoJoin)
+			if !ok {
+				t.Fatalf("RewriteChildren returned %T, want *chplan.InfoJoin", got)
+			}
+			if out == in {
+				t.Fatal("a changed InfoJoin must be rebuilt, not returned in place")
+			}
+			if out.Input != tc.wantInput {
+				t.Errorf("Input = %#v, want %#v", out.Input, tc.wantInput)
+			}
+			if out.Info != tc.wantInfoNode {
+				t.Errorf("Info = %#v, want %#v", out.Info, tc.wantInfoNode)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
+// inspectExpr's InSubquery arm.
+//
+// The arm carries the same `nodeVisit != nil && v.Subquery != nil` guard as
+// the ScalarSubquery arm above it, but only ScalarSubquery had a test. Each
+// half of the guard is load-bearing: InspectExpr passes a nil nodeVisit, and
+// an InSubquery built by a partially-lowered plan can carry a nil Subquery.
+// -----------------------------------------------------------------------
+
+func TestInspectExprNodes_InSubquery_SurfacesTheSubqueryPlan(t *testing.T) {
+	t.Parallel()
+
+	inner := &chplan.Scan{Table: "trace_ids"}
+	expr := &chplan.InSubquery{Left: &chplan.ColumnRef{Name: "TraceId"}, Subquery: inner}
+
+	var seen []chplan.Node
+	chplan.InspectExprNodes(expr, func(chplan.Expr) bool { return true }, func(n chplan.Node) {
+		seen = append(seen, n)
+	})
+
+	if len(seen) != 1 || seen[0] != chplan.Node(inner) {
+		t.Fatalf("nodeVisit saw %#v, want exactly the InSubquery's embedded plan Node", seen)
+	}
+}
+
+func TestInspectExprNodes_InSubquery_SkipsANilSubquery(t *testing.T) {
+	t.Parallel()
+
+	expr := &chplan.InSubquery{Left: &chplan.ColumnRef{Name: "TraceId"}}
+
+	chplan.InspectExprNodes(expr, func(chplan.Expr) bool { return true }, func(n chplan.Node) {
+		t.Fatalf("nodeVisit must not be invoked for a nil Subquery; got %#v", n)
+	})
+}
+
+func TestInspectExpr_InSubquery_StaysExprOnlyWithoutANodeVisitor(t *testing.T) {
+	t.Parallel()
+
+	expr := &chplan.InSubquery{
+		Left:     &chplan.ColumnRef{Name: "TraceId"},
+		Subquery: &chplan.Scan{Table: "trace_ids"},
+	}
+
+	// InspectExpr supplies a nil nodeVisit. The guard is what stops the arm
+	// calling through it; without it this panics rather than fails.
+	var visited []chplan.Expr
+	chplan.InspectExpr(expr, func(e chplan.Expr) bool {
+		visited = append(visited, e)
+		return true
+	})
+
+	if len(visited) != 2 {
+		t.Fatalf("visited %d expressions, want the InSubquery and its Left operand", len(visited))
+	}
+}
+
+// -----------------------------------------------------------------------
+// CanonicalAttributesExpr's idempotence check.
+//
+// The check tests the call's NAME, so it must wrap every OTHER Map-valued
+// call and skip only an already-canonical one. Inverting it turns the
+// helper into a no-op for exactly the calls that need the wrap.
+// -----------------------------------------------------------------------
+
+func TestCanonicalAttributesExpr_WrapsAnotherMapValuedCall(t *testing.T) {
+	t.Parallel()
+
+	inner := &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+
+	got := chplan.CanonicalAttributesExpr(inner)
+
+	call, ok := got.(*chplan.FuncCall)
+	if !ok || call.Name != chplan.CanonicalMapFunc {
+		t.Fatalf("got %#v, want a %s call wrapping the mapConcat", got, chplan.CanonicalMapFunc)
+	}
+	if len(call.Args) != 1 || call.Args[0] != chplan.Expr(inner) {
+		t.Fatalf("%s args = %#v, want exactly the wrapped expression", chplan.CanonicalMapFunc, call.Args)
+	}
+}
+
+func TestCanonicalAttributesExpr_LeavesACanonicalCallAlone(t *testing.T) {
+	t.Parallel()
+
+	inner := &chplan.FuncCall{
+		Name: chplan.CanonicalMapFunc,
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+
+	if got := chplan.CanonicalAttributesExpr(inner); got != chplan.Expr(inner) {
+		t.Fatalf("got %#v, want the already-canonical call back by identity", got)
+	}
+}
