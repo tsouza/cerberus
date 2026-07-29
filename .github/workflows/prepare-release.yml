@@ -112,10 +112,19 @@ jobs:
         # Prefer RELEASE_PAT so the created PR triggers pull_request CI; fall
         # back to github.token (PR created, but its checks won't run — see the
         # header note). gh reads GH_TOKEN.
+        #
+        # BASE is the ref the run was dispatched on, not a literal `main`: a
+        # maintenance release is staged by dispatching this workflow on
+        # release/<major>.<minor>.x, and the staging branch is cut from that
+        # checkout, so a hardcoded base would open the PR against main and offer
+        # to merge a whole maintenance line into the head line. The `issues`
+        # trigger has no such choice — a label-driven release always runs on the
+        # default branch, where ref_name is already `main`.
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
           VERSION: ${{ steps.prep.outputs.new_version }}
           CHART_VERSION: ${{ steps.prep.outputs.chart_version }}
+          BASE: ${{ github.ref_name }}
         run: |
           branch="release/v${VERSION}-chart-${CHART_VERSION}"
           title="chore(release): cerberus v${VERSION} / chart ${CHART_VERSION}"
@@ -125,7 +134,7 @@ jobs:
           git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
           git commit -m "$title"
           git push -u origin "$branch"
-          url="$(gh pr create --base main --head "$branch" --title "$title" --body-file release-pr-body.md)"
+          url="$(gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file release-pr-body.md)"
           echo "url=$url" >>"$GITHUB_OUTPUT"
           echo "PR: $url"
 
