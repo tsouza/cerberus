@@ -4,6 +4,45 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.12.3] — 2026-07-29
+
+### Fixed
+
+- **tempo:** stop zero-fill buckets turning quantiles into NaN (#1374)
+- **ci:** analyse cold in the lint lane so a cache cannot decide the gate (#1363)
+- **ci:** publish compat-scores from a scratch worktree, not the checkout (#1361)
+- **chsql:** name the canonical key-order function once, not twice (#1365)
+- **chsql:** canonicalise raw attribute-Map series keys at the emit chokepoint (#1362)
+- **ci:** run the Tier-0 explain goldens on pull requests (#1364)
+- **loki:** canonicalise Map key order on metadata series-identity keys (#1360)
+- **logql:** canonicalise Map key order on stream-identity keys (#1358)
+- **chsql:** dedupe TraceQL structural unions on span identity (#1357)
+- **promql:** canonicalise Map key order on the non-join and histogram paths (#1356)
+- **audit:** unwedge the routed fan-out, harden the enum guard and shutdown ordering (#1353)
+- **release:** smoke the documented brew command on Linux too (#1352)
+- **config:** one duration grammar for every CERBERUS_* knob (#1348)
+- **chsql:** canonicalise Map-valued vector-match keys with mapSort (#1346)
+- **chclient:** release pooled ClickHouse connections on cursor teardown (#1347)
+- **ci:** retry the buildkit bootstrap pull behind one buildx setup action (#1345)
+- **chsql:** bind a set-op arm's timestamp to the arm's own outer scope (#1344)
+- **optcorpus:** ingest query_log exception exits and reconcile the exit_status enum (#1341)
+- **cli:** lead the root help with an ASCII banner and a plain-English blurb (#1343)
+- **promql:** evaluate vector set operators per evaluation timestamp (#1340)
+
+### CI
+
+- **release:** open the release PR against the dispatched line (#1372)
+- **compat:** gate the parity ratchet on per-case identity, not a count (#1350)
+- **compat:** extract the compat-scores badge publisher to a module (#1342)
+- detect release-gate rot before it breaks a publish (#1334)
+
+### Documentation
+
+- reconcile the generated + hand-merged docs for the 1.12.x backports
+- **config:** say what `0` does on every duration knob that accepts it (#1355)
+- **operations:** audit the delta before the backport, not after (#1354)
+- **operations:** document the canonical ordered release ritual (#1349)
+
 ## [v1.12.2] — 2026-07-28
 
 ### Fixed
