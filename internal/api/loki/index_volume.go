@@ -97,7 +97,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 // /index/volume. The CH shape is:
 //
 //	SELECT
-//	    <group-key-frag> AS labels,
+//	    mapSort(<group-key-frag>) AS labels,
 //	    sum(length(`Body`)) AS bytes
 //	FROM `otel_logs`
 //	WHERE <matchers> AND <time bounds>
@@ -110,6 +110,19 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 //   - `ResourceAttributes` (default — full label set)
 //   - `mapFilter((k, v) -> k IN (?, ?, …), ResourceAttributes)` when
 //     `targetLabels` is set and aggregateBy is "labels" (or unset)
+//
+// The group key is the WHOLE label-set Map, so it carries the canonical
+// key-order wrap (canonicalLabelsFrag). Without it one logical stream
+// delivered under two OTLP key orders groups as two rows, each holding
+// half the byte volume — and, because the wrap sits inside the aliased
+// projection that GROUP BY / ORDER BY / LIMIT all read, the split also
+// corrupts the top-N ranking: a genuinely-top stream can be halved out of
+// the returned set entirely. mapFilter preserves the source map's key
+// order, so the projected form needs the wrap just as much as the bare
+// column does; wrapping the outer frag covers both branches at once.
+// There is no Go-side re-aggregation here — handleIndexVolume loops rows
+// straight into VectorSample — so this SQL is the only place the split
+// can be closed.
 //
 // All identifiers and bound keys flow through Builder helpers — no
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
@@ -125,7 +138,7 @@ func buildIndexVolumeSQL(
 
 	sb := chsql.NewQuery().
 		Select(
-			chsql.As(groupFrag, "labels"),
+			chsql.As(canonicalLabelsFrag(groupFrag), "labels"),
 			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
 		).
 		From(chsql.Col(s.LogsTable))
