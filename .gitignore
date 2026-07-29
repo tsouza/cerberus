@@ -38,6 +38,14 @@ dist/
 # route-rules CLI build output (never commit the compiled binary)
 /route-rules
 /cmd/route-rules/route-rules
+# perf-profile CLI build output + the JSON report `just perf-profile` writes
+# (`go build ./cmd/perf-profile` drops the compiled binary at the repo root
+# under the bare package name, with no extension to give it away).
+/perf-profile
+/perf-profile.json
+# Generated release-PR body — `just prepare-release` / prepare-release.yml
+# write it next to the checkout and feed it straight to `gh pr create`.
+/release-pr-body.md
 
 # direnv local override
 .direnv/
