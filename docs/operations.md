@@ -1327,7 +1327,9 @@ belongs to the tap repository, which no release run can touch. Because the ref
 being installed is the ambiguous one, the smoke also states *which* artifact
 Homebrew picked: after the install, `cerberus` must appear in
 `brew list --cask --versions` and must not appear in `brew list --formula
---versions`. Neither `command -v` nor `--version` can tell those two apart. The two shapes that write no cask are **not** skipped — each takes the
+--versions`. Neither `command -v` nor `--version` can tell those two apart.
+
+The two shapes that write no cask are **not** skipped — each takes the
 opposite assertion. An `rc.*` must have written none, so a cask declaring the
 prerelease version is a reported regression; a release that is not the highest
 stable tag must have left a strictly NEWER cask in place, so a tap that has
