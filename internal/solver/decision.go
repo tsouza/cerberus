@@ -129,6 +129,28 @@ const (
 	ReasonInstantJoin = "instant-join"
 )
 
+// Reasons is the complete Reason vocabulary above, in declaration order.
+//
+// It exists because the vocabulary is MIRRORED outside this package — every
+// Decision reaches the calibration corpus, and internal/routerrules re-declares
+// the token set as the closed domain of the decision_reason column so a rule may
+// filter on it. That mirror is a hand-maintained wire contract (routerrules
+// deliberately imports neither the solver nor optcorpus), so it needs one
+// enumerable source to be pinned against; adding a Reason* const without adding
+// it here is what the lockstep test in that package catches.
+var Reasons = []string{
+	ReasonRouted,
+	ReasonBelowThreshold,
+	ReasonNotSliceable,
+	ReasonInstant,
+	ReasonHighD,
+	ReasonNow64,
+	ReasonGridMismatch,
+	ReasonIncommensurate,
+	ReasonScalarHeavy,
+	ReasonInstantJoin,
+}
+
 // Slice is one shard of the anchor-grid decomposition. Bounds are
 // anchor-grid-aligned; Plan is a re-anchored view of the optimized plan that
 // SHARES the immutable off-spine subtrees with the original (only the

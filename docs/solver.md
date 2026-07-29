@@ -90,9 +90,20 @@ thresholds drop to the floor, so every eligible plan routes at `K_min = 2`
 Under `single` the Planner classifies but never routes.
 
 Every classification — routed or not — produces a `Decision` carrying the
-reason (`routed`, `below-threshold`, `not-sliceable`, `instant`, `high-D`,
-`now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`) for the shadow
-header.
+reason (`routed`, `below-threshold`, `not-sliceable`, `instant`, `instant-join`,
+`high-D`, `now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`) for the
+shadow header, alongside the plan's cost grid (`N`, `F`, `D`, `OuterRange`,
+`Step`).
+
+The grid is populated on **every** Decision, including the refusals. The signal
+walk that derives it makes no routing decision and mutates nothing, so it runs
+before the gates rather than after them. This is what makes the calibration
+corpus replayable: a refusal recorded with a zero grid says "we declined"
+without saying what we declined, which is indistinguishable from a plan that
+genuinely had no geometry. It also makes one silent failure mode legible — a
+range query whose grid carrier the classifier fails to find looks instant, and
+now records `reason=instant` next to a non-zero `N`/`F`/`OuterRange` that a
+genuine instant query could not have.
 
 ## Slicing geometry
 
