@@ -33,6 +33,27 @@
 // de-`v`'d release version — `grep -q "$TAG"` can never match (the tag carries
 // the `v`), and `grep -q "${TAG#v}"` passes on any superstring.
 //
+// THE DOCUMENTED COMMAND: the install below is the bare
+// `brew install tsouza/tap/cerberus` that README.md and docs/operations.md give
+// operators, not `brew install --cask …`. The tap can hold BOTH a cask and the
+// Formula/cerberus.rb it served before .goreleaser.yml moved off `brews:` —
+// goreleaser writes its own file and deletes nothing — and Homebrew resolves a
+// bare tap ref to the FORMULA when both exist. Under `--cask` that divergence
+// is invisible: the smoke installs the cask, every operator installs the stale
+// formula, and the release goes green. The tap is also probed directly for a
+// leftover formula, so the failure names its cause instead of surfacing as an
+// unexplained version mismatch.
+//
+// CROSS-PLATFORM: cerberus is a Linux-first server binary, so "the cask
+// installs" has to mean it installs on LINUX, not merely on whichever runner
+// happens to execute this. That is covered from two directions. This script is
+// run on both a macOS and a Linux runner (see the `brew-smoke` matrix in
+// release.yml and brew-verify.yml), so `brew install` is exercised under
+// Linuxbrew for real. And `caskPortabilityProblems` inspects the cask SOURCE on
+// every leg, catching the failure a single-OS install can never see: a cask
+// that dropped its linux_* artefacts, or grew a macOS-only artifact stanza,
+// installs flawlessly on macOS while being broken everywhere else.
+//
 // Payload verbs (proving the SHIPPED bytes work, not just that a file landed):
 //   - `cerberus migrate schema` — offline DDL render; must exit 0 and emit
 //     CREATE statements.
@@ -73,6 +94,13 @@ import { spawnSync } from 'node:child_process';
 const TAP_REPO = 'tsouza/homebrew-tap';
 const TAP_CASK_PATH = 'Casks/cerberus.rb';
 
+// The formula path the tap used to serve, before .goreleaser.yml moved from
+// `brews:` to `homebrew_casks:`. goreleaser writes its own file and never
+// deletes the other one, so a tap can end up holding BOTH — and Homebrew
+// resolves a bare `tsouza/tap/cerberus` to the FORMULA when it does. Asserted
+// absent, not cleaned up from here: the tap is a different repository.
+const TAP_FORMULA_PATH = 'Formula/cerberus.rb';
+
 // How an operator names the cask: `brew install tsouza/tap/cerberus`.
 const CASK_REF = 'tsouza/tap/cerberus';
 
@@ -88,6 +116,40 @@ const CASK_VERSION_RE = /^\s*version\s+"([^"]+)"/m;
 // name goreleaser builds, `cerberus_<version>_<os>_<arch>.tar.gz` (the
 // `name_template` in .goreleaser.yml `archives:`).
 const CASK_ARCHIVE_RE = /cerberus_([^_]+)_(?:linux|darwin)_(?:amd64|arm64)\.tar\.gz/;
+
+// Every (os, arch) target .goreleaser.yml's `builds:` matrix produces. A cask
+// that omits one silently strands that platform on `brew install`, and the
+// omission is INVISIBLE to a smoke that only installs on its own runner: a
+// darwin-only cask installs perfectly on macOS. cerberus is a Linux-first
+// server binary, so the Linux pair is the one that must never quietly vanish.
+const REQUIRED_CASK_TARGETS = ['darwin_amd64', 'darwin_arm64', 'linux_amd64', 'linux_arm64'];
+
+// Cask artifact stanzas Homebrew treats as macOS-only. Its Linux installer
+// (`extend/os/linux/cask/installer.rb#check_stanza_os_requirements`) raises
+// "macOS is required for this software." when a cask declares ANY of these, and
+// that check is the ENTIRE Linux gate — `depends_on macos` is never consulted
+// off a Mac. So a cask whose artifacts are all portable installs under
+// Linuxbrew, and one that grows any stanza below stops installing there. Kept
+// in step with Homebrew's `MACOS_ONLY_ARTIFACTS` (cask/artifact.rb).
+const MACOS_ONLY_ARTIFACT_STANZAS = [
+  'app',
+  'audio_unit_plugin',
+  'colorpicker',
+  'dictionary',
+  'input_method',
+  'installer',
+  'internet_plugin',
+  'keyboard_layout',
+  'mdimporter',
+  'pkg',
+  'prefpane',
+  'qlplugin',
+  'screen_saver',
+  'service',
+  'suite',
+  'vst_plugin',
+  'vst3_plugin',
+];
 
 // The install command's timeout. A brew install that hangs must fail the job
 // rather than burn the whole runner allowance.
@@ -120,6 +182,68 @@ export function caskVersion(rbSource) {
       `declaration nor a cerberus_<version>_<os>_<arch>.tar.gz archive name is present. ` +
       `An unreadable cask is a release failure, not a pass.`,
   );
+}
+
+// caskPortabilityProblems — the CROSS-PLATFORM shape assertions, evaluated on
+// whatever cask the tap currently holds. Deliberately independent of which
+// release is being smoked and of which runner is running: `brew install` on the
+// smoke's own OS proves only that OS, and cerberus's primary platform (Linux)
+// is the one no macOS runner can vouch for. These two checks encode the exact
+// mechanism Homebrew uses, so a goreleaser template change that darwin-only's
+// the cask goes red on the release that ships it rather than on the first
+// Linux operator to hit it.
+export function caskPortabilityProblems(rbSource) {
+  const src = String(rbSource ?? '');
+  const problems = [];
+
+  const missing = REQUIRED_CASK_TARGETS.filter((t) => !src.includes(`_${t}.tar.gz`));
+  if (missing.length > 0) {
+    problems.push(
+      `${TAP_REPO}:${TAP_CASK_PATH} declares no artefact for ${missing.join(', ')}. ` +
+        `.goreleaser.yml's \`builds:\` matrix produces all of ${REQUIRED_CASK_TARGETS.join(', ')}, so a ` +
+        `cask missing any of them means the homebrew_casks template stopped emitting that platform. ` +
+        `\`brew install ${CASK_REF}\` is broken for it — and a macOS-only smoke cannot see that.`,
+    );
+  }
+
+  // Stanza match is anchored to the start of a line (modulo indentation) so the
+  // word appearing inside a url, a desc, or a comment cannot fake a hit.
+  const declared = MACOS_ONLY_ARTIFACT_STANZAS.filter((stanza) =>
+    new RegExp(String.raw`^\s*${stanza}\s+`, 'm').test(src),
+  );
+  if (declared.length > 0) {
+    problems.push(
+      `${TAP_REPO}:${TAP_CASK_PATH} declares the macOS-only artifact stanza(s) ${declared.join(', ')}. ` +
+        `Homebrew's Linux cask installer raises "macOS is required for this software." for any cask ` +
+        `carrying one, so this cask no longer installs under Linuxbrew at all. cerberus ships a plain ` +
+        `\`binary\` artifact precisely to stay installable on both.`,
+    );
+  }
+
+  return problems;
+}
+
+// formulaShadowProblems — the tap must serve the cask under the name operators
+// actually type. Homebrew resolves a bare `<tap>/<name>` to a FORMULA when the
+// tap holds both a formula and a cask of that name, warning "Treating … as a
+// formula" and installing it. So a leftover Formula/cerberus.rb does not merely
+// clutter the tap: it takes over `brew install tsouza/tap/cerberus` entirely,
+// pinning every operator to whatever stale version that file declares while the
+// freshly-pushed cask sits beside it, unused.
+//
+// This cannot be fixed from cerberus's release run — goreleaser writes
+// Casks/cerberus.rb and has no way to delete a path it does not own — so it is
+// asserted here and repaired in the tap repository.
+export function formulaShadowProblems(formulaPresent) {
+  if (!formulaPresent) return [];
+  return [
+    `${TAP_REPO} still serves ${TAP_FORMULA_PATH} alongside ${TAP_CASK_PATH}. Homebrew resolves the ` +
+      `bare \`brew install ${CASK_REF}\` — the command README.md and docs/operations.md give operators — ` +
+      `to the FORMULA when a tap holds both, so every install would get the formula's version and ignore ` +
+      `the cask this release just pushed. Delete ${TAP_FORMULA_PATH} from ${TAP_REPO} and add a ` +
+      `tap_migrations.json mapping {"cerberus": "${TAP_REPO.split('/')[0]}/tap"} so existing formula ` +
+      `installs are told how to move across.`,
+  ];
 }
 
 // compareVersions — semver-enough ordering for the two shapes goreleaser ever
@@ -160,7 +284,12 @@ export function verdict({ version, caskSource, isLatest }) {
   const declared = caskVersion(caskSource);
   const stable = isStableRelease(v);
   const newest = isLatest === true || String(isLatest).trim() === 'true';
-  const problems = [];
+
+  // Portability is asserted on EVERY branch, not just the one that installs.
+  // Whatever cask the tap holds right now is the one every `brew install` gets;
+  // if it cannot serve Linux, that is broken today regardless of whether this
+  // particular release was the one allowed to write it.
+  const problems = caskPortabilityProblems(caskSource);
 
   // Order matters: a PRERELEASE is never the highest stable tag, so it arrives
   // here with newest === false. Testing it first keeps the forward `v1.14.0-rc.1`
@@ -260,24 +389,41 @@ async function main() {
   if (!token) fail('GITHUB_TOKEN is required to read the tap cask');
   if (!repoRoot) fail('REPO_ROOT is required — the `config-docs -check` payload runs against this commit\'s docs');
 
+  // tapFile — read one path from the tap. Returns the source, or null on 404.
+  // Any other status is an unknown tap state and fails the caller rather than
+  // being read as "absent", which would turn a rate limit or an outage into a
+  // silent pass on the assertions below.
+  const tapFile = async (path) => {
+    const url = `${apiBase}/repos/${TAP_REPO}/contents/${path}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.raw+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      fail(`GET ${url} -> ${res.status} ${res.statusText}. ${TAP_REPO} is not readable.`);
+    }
+    return res.text();
+  };
+
   // --- read the tap's cask through the API ------------------------------------
   // Both branches need it, and a 404 is a hard failure on both: a tap that has
   // no cerberus cask at all is broken regardless of what we just published.
-  const url = `${apiBase}/repos/${TAP_REPO}/contents/${TAP_CASK_PATH}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github.raw+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
-  if (!res.ok) {
+  const caskSource = await tapFile(TAP_CASK_PATH);
+  if (caskSource === null) {
     fail(
-      `GET ${url} -> ${res.status} ${res.statusText}. ${TAP_REPO} has no readable ${TAP_CASK_PATH}: ` +
+      `${TAP_REPO} has no readable ${TAP_CASK_PATH}: ` +
         `\`brew install ${CASK_REF}\` is broken for every operator, whatever this release published.`,
     );
   }
-  const caskSource = await res.text();
+
+  // A leftover formula does not just sit there — it WINS the bare install. This
+  // is checked before the version assertions because a shadowed cask makes every
+  // one of them describe a file no operator ever receives.
+  const shadow = formulaShadowProblems((await tapFile(TAP_FORMULA_PATH)) !== null);
 
   let decision;
   try {
@@ -286,8 +432,9 @@ async function main() {
     fail(e.message);
   }
 
-  for (const p of decision.problems) ghError(`brew-smoke: ${p}`);
-  if (decision.problems.length > 0) process.exit(1);
+  const problems = [...shadow, ...decision.problems];
+  for (const p of problems) ghError(`brew-smoke: ${p}`);
+  if (problems.length > 0) process.exit(1);
 
   if (!decision.mustInstall) {
     // NO-CASK branches — asserted above, not skipped. `verdict` has already
@@ -312,12 +459,16 @@ async function main() {
   }
   const brewPrefix = prefixRes.stdout.trim();
 
-  // `--cask` rather than a bare name: the disambiguator makes the smoke fail
-  // loudly if the tap ever serves a same-named FORMULA again, instead of
-  // quietly installing that one and reporting the cask healthy.
-  const install = sh('brew', ['install', '--cask', CASK_REF], { timeout: INSTALL_TIMEOUT_MS });
+  // The BARE ref, exactly as README.md / docs/operations.md / docs/migration.md
+  // tell operators to type it. `--cask` was used here previously on the theory
+  // that the disambiguator would make a same-named formula fail loudly; it does
+  // the opposite. When a tap serves both, `--cask` silently resolves to the
+  // cask while the bare name Homebrew gives operators resolves to the FORMULA,
+  // so the smoke would install one artifact and every user the other. Smoking
+  // the documented command is the only way that divergence can be seen.
+  const install = sh('brew', ['install', CASK_REF], { timeout: INSTALL_TIMEOUT_MS });
   if (install.status !== 0) {
-    fail(`\`brew install --cask ${CASK_REF}\` failed. ${describe(install)}`);
+    fail(`\`brew install ${CASK_REF}\` failed. ${describe(install)}`);
   }
 
   // The binary under test must be the one brew just installed — a cerberus

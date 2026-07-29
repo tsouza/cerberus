@@ -47,10 +47,32 @@ archives:
 #
 # A CASK, not a `brews:` formula: a formula describes something Homebrew builds
 # from source, while a cask installs a pre-built artifact — which is exactly
-# what a release archive is. It is not a macOS-only choice: `supports_linux?`
-# holds for any cask that declares no `depends_on macos`, and Homebrew's cask
-# installer gates on the CASK's declared OS rather than on the host being a
-# Mac, so one cask installs under Linuxbrew and macOS alike.
+# what a release archive is. It is not a macOS-only choice, but NOT for the
+# reason casks are usually assumed to be Mac-bound, so the actual mechanism is
+# written down here rather than left to inference:
+#
+#   * Homebrew's Linux cask installer refuses exactly one thing — a cask whose
+#     ARTIFACTS include a macOS-only type (`app`, `pkg`, `installer`,
+#     `qlplugin`, `service`, …). That is the whole gate; see Homebrew's
+#     `extend/os/linux/cask/installer.rb#check_stanza_os_requirements`, which
+#     raises "macOS is required for this software." on that condition and
+#     otherwise returns. This cask's only artifact is `binary`, which is
+#     portable, so the install proceeds.
+#   * `depends_on macos` is IRRELEVANT on Linux. Homebrew injects an implicit
+#     one into every cask (`cask.rb` -> `DSL#add_implicit_macos_dependency`),
+#     and only the macOS installer ever checks it. A cask that "declares no
+#     `depends_on macos`" does not exist.
+#   * `supports_linux?` is NOT the install-time predicate. Its only caller in
+#     all of Homebrew is `dev-cmd/generate-cask-ci-matrix.rb` — homebrew-cask's
+#     own CI runner selection, which has no bearing on a third-party tap. It
+#     returns FALSE for this cask (it requires the DSL `os` stanza, which
+#     goreleaser does not emit) even though `brew install` works fine.
+#
+# goreleaser emits `on_linux`/`on_intel`/`on_arm` url + sha256 pairs from the
+# `builds:` matrix above, so the cask carries real linux_amd64 / linux_arm64
+# artefacts. `brew-smoke.mjs` asserts that shape on every release, and the
+# `brew-smoke / ubuntu-latest` leg installs it on Linuxbrew for real — this
+# paragraph is checked by CI, not merely believed.
 homebrew_casks:
   - name: cerberus
     ids:

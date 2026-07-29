@@ -17,24 +17,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isStableRelease, caskVersion, verdict, compareVersions } from './brew-smoke.mjs';
+import {
+  isStableRelease,
+  caskVersion,
+  verdict,
+  compareVersions,
+  caskPortabilityProblems,
+  formulaShadowProblems,
+} from './brew-smoke.mjs';
 
-// A minimal stand-in for what goreleaser writes into the tap.
-function cask(version) {
+// Every (os, arch) pair .goreleaser.yml's `builds:` matrix produces, in the
+// order goreleaser emits them.
+const ALL_TARGETS = ['darwin_amd64', 'darwin_arm64', 'linux_amd64', 'linux_arm64'];
+
+// A stand-in for what goreleaser writes into the tap. It carries the FULL
+// four-target shape on purpose: a fixture that only modelled darwin would let
+// the portability assertions pass vacuously, which is the exact hollowness
+// those assertions exist to prevent.
+function cask(version, { targets = ALL_TARGETS, artifact = '  binary "cerberus"' } = {}) {
+  const urls = targets.map(
+    (t) =>
+      `  url "https://github.com/tsouza/cerberus/releases/download/v${version}/cerberus_${version}_${t}.tar.gz"`,
+  );
   return [
     'cask "cerberus" do',
     `  version "${version}"`,
     '',
-    '  url "https://github.com/tsouza/cerberus/releases/download/v' +
-      version +
-      '/cerberus_' +
-      version +
-      '_darwin_arm64.tar.gz"',
+    ...urls,
     '  name "cerberus"',
     '  desc "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"',
     '  homepage "https://github.com/tsouza/cerberus"',
     '',
-    '  binary "cerberus"',
+    artifact,
     'end',
   ].join('\n');
 }
@@ -61,6 +75,75 @@ test('caskVersion reads the declaration, falls back to the archive name', () => 
   assert.equal(caskVersion(archiveOnly), '1.11.2');
 });
 
+// --- cross-platform shape ---------------------------------------------------
+// cerberus is a Linux-first server binary, but a cask that serves only darwin
+// installs perfectly on the macOS runner. These cases pin the two ways the tap
+// can be broken for Linux while looking green from a Mac.
+
+test('a full four-target cask has no portability problems', () => {
+  assert.deepEqual(caskPortabilityProblems(cask('1.13.0')), []);
+});
+
+test('a darwin-only cask is a portability failure', () => {
+  const problems = caskPortabilityProblems(
+    cask('1.13.0', { targets: ['darwin_amd64', 'darwin_arm64'] }),
+  );
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /linux_amd64, linux_arm64/);
+});
+
+test('a single missing arch is named, not rounded off', () => {
+  const problems = caskPortabilityProblems(
+    cask('1.13.0', { targets: ['darwin_amd64', 'darwin_arm64', 'linux_amd64'] }),
+  );
+  assert.equal(problems.length, 1);
+  // The "declares no artefact for …" clause names ONLY the absent target. (The
+  // message also enumerates the full expected set further on, so the assertion
+  // has to be anchored to that clause rather than to the message as a whole.)
+  assert.match(problems[0], /declares no artefact for linux_arm64\./);
+});
+
+test('a macOS-only artifact stanza is a portability failure', () => {
+  // Homebrew's Linux installer raises "macOS is required for this software."
+  // for any of these, so the cask would stop installing under Linuxbrew even
+  // with every linux_* url still present.
+  for (const stanza of ['app "Cerberus.app"', 'pkg "cerberus.pkg"', 'suite "Cerberus"']) {
+    const problems = caskPortabilityProblems(cask('1.13.0', { artifact: `  ${stanza}` }));
+    assert.equal(problems.length, 1, stanza);
+    assert.match(problems[0], /macOS-only artifact stanza/);
+  }
+});
+
+test('the macOS-only scan does not fire on words inside urls, desc or comments', () => {
+  // `service`, `installer` and friends are ordinary English. Matching them
+  // anywhere in the file would red every healthy release.
+  const src = cask('1.13.0').replace(
+    '  desc "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"',
+    [
+      '  desc "Drop-in gateway service for ClickHouse"',
+      '  # the installer strips the quarantine xattr; app data is untouched',
+    ].join('\n'),
+  );
+  assert.deepEqual(caskPortabilityProblems(src), []);
+});
+
+// --- formula shadow ---------------------------------------------------------
+// goreleaser writes Casks/cerberus.rb and never deletes the Formula/cerberus.rb
+// the tap served before the `brews:` -> `homebrew_casks:` move. A tap holding
+// both resolves the bare `brew install tsouza/tap/cerberus` to the FORMULA, so
+// the cask this release pushes reaches nobody.
+
+test('a leftover tap formula is a blocking problem', () => {
+  const problems = formulaShadowProblems(true);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /Formula\/cerberus\.rb/);
+  assert.match(problems[0], /tap_migrations\.json/);
+});
+
+test('a tap serving only the cask is clean', () => {
+  assert.deepEqual(formulaShadowProblems(false), []);
+});
+
 test('an unparseable cask THROWS rather than passing', () => {
   assert.throws(() => caskVersion('cask "cerberus" do\nend\n'), /could not determine the version/);
   assert.throws(() => caskVersion(''), /could not determine the version/);
@@ -77,6 +160,26 @@ const OLDER = '1.11.3'; // the tap left behind
 const NEWER = '1.13.0'; // the tap already on a higher line
 const RC = '1.12.1-rc.1'; // a prerelease of RELEASED
 const FORWARD_RC = '1.14.0-rc.1'; // a prerelease ABOVE everything released
+
+test('verdict reports portability problems on every branch, not just the installing one', () => {
+  // A tap that cannot serve Linux is broken TODAY, whatever this particular
+  // release was allowed to write. Asserting it only on the stable-newest branch
+  // would let a backport or a prerelease sail past a cask no Linux operator can
+  // install.
+  const darwinOnly = (v) => cask(v, { targets: ['darwin_amd64', 'darwin_arm64'] });
+
+  for (const [label, args] of [
+    ['stable newest', { version: RELEASED, caskSource: darwinOnly(RELEASED), isLatest: 'true' }],
+    ['maintenance', { version: RELEASED, caskSource: darwinOnly(NEWER), isLatest: 'false' }],
+    ['prerelease', { version: FORWARD_RC, caskSource: darwinOnly(NEWER), isLatest: 'false' }],
+  ]) {
+    const { problems } = verdict(args);
+    assert.ok(
+      problems.some((p) => /linux_amd64, linux_arm64/.test(p)),
+      `${label} branch must surface the missing Linux artefacts`,
+    );
+  }
+});
 
 // Each row: what the tap declares, what is being released, whether the release
 // is the highest stable tag, and the state that combination must be reported in.
