@@ -190,6 +190,64 @@ each one so a rename cannot ship silently.
 | `cerberus_clickhouse_bytes_read`           | histogram | `cerberus_ql`                                                                               |
 | `cerberus_query_inflight`                  | gauge     | `cerberus_ql`                                                                               |
 
+#### ClickHouse connection lifecycle
+
+A second instrument set lives in `internal/chclient`, under the
+`github.com/tsouza/cerberus/internal/chclient` meter scope. It describes
+the connection pool rather than the query pipeline.
+
+| Metric                              | Type    | Attributes | Meaning                                                                    |
+| ----------------------------------- | ------- | ---------- | -------------------------------------------------------------------------- |
+| `cerberus_ch_conn_dials_total`      | counter | —          | TCP connections opened to ClickHouse.                                      |
+| `cerberus_ch_cursor_teardown_total` | counter | `outcome`  | Cursor teardowns, split `drained` / `abandoned` / `cancelled`.             |
+| `cerberus_ch_conn_open`             | gauge   | `pool`     | Pooled connections open (busy + idle), read live from the driver.          |
+| `cerberus_ch_conn_idle`             | gauge   | `pool`     | Pooled connections idle and reusable.                                      |
+
+A dial happens only when the pool has no warm connection to hand back, so
+`rate(cerberus_ch_conn_dials_total[5m])` is the bottom-line cost of
+connection churn — but it does not say WHO paid it. Three destroyers
+share the bill: a query cancelled mid-flight (the driver tears the socket
+down rather than leave undrained bytes on the wire), a cursor teardown
+that outran its drain budget, and the driver's own age eviction at
+`CERBERUS_CH_CONN_MAX_LIFETIME`. The teardown counter names cerberus's
+own share directly, and its three outcomes are the three fates a pooled
+connection can meet:
+
+- `drained` — the cursor reached end-of-stream inside its budget while
+  the query context was still live. This is the only outcome that
+  returns the connection to the pool; everything else costs a redial.
+- `abandoned` — the cursor did not finish inside the drain budget, so
+  teardown cancelled it. Bounded by design: an unread remainder must not
+  pin a pool slot, and paying a dial is the cheaper of the two.
+- `cancelled` — the query context was already dead when teardown began
+  (client hang-up, request deadline, an upstream cancellation). The
+  socket was destroyed by that cancellation, not by cerberus's budget.
+
+Separating `cancelled` from `abandoned` is what makes the counter
+actionable. Both destroy a socket, but only `abandoned` is a cerberus
+tuning signal — a rising `abandoned` rate says the drain budget is too
+tight for the result sizes in flight, while a rising `cancelled` rate
+says clients are walking away and no budget change will help. Summed,
+the two account for cerberus's contribution to churn, and the residual
+against `cerberus_ch_conn_dials_total` is the driver's own age eviction.
+
+The `pool` attribute exists because the connection gauges are
+process-wide while the pools are not: alongside the long-lived `serving`
+pool, startup opens short-lived bootstrap pools for the version probe,
+the ts-grid capability probe and the schema apply. The gauges are
+observable instruments keyed by attribute set, so without the label
+those pools would collapse onto one series with a single registration
+silently winning — `cerberus_ch_conn_open{pool="serving"}` is the one to
+alert on, and a bootstrap pool still visible long after startup is
+itself the finding.
+
+Every counter is zero-initialised at startup — including one series per
+teardown outcome — so a replica that has never churned a connection
+exports a flat `0` rather than "No data". The seeding is why the
+MeterProvider is installed before any instrument is minted: OTel's
+package-global provider is a delegating shim, and a synchronous `Add`
+recorded before delegation is dropped with no buffering and no error.
+
 #### Failure classification
 
 `result` alone answers "did the query fail", never "whose fault was
