@@ -46,6 +46,35 @@ One implementation means a new rule guards BOTH lanes at once.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+- **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
+  gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
+  what it CONTAINS, so a build artefact that is `git add`-ed by accident
+  survives indefinitely. Two scans close that class. `binary` rejects any
+  tracked blob that is compiled output, detected by CONTENT — an executable
+  magic (ELF / Mach-O / PE / WebAssembly / ar archive) at offset 0, or a NUL
+  byte inside the same leading window git itself sniffs when it classifies a
+  blob as binary — and never by extension, since a Go binary built from
+  `./cmd/<name>` carries none. Submodule gitlinks and symlinks are skipped
+  (neither stores content in this repository). `root-allowlist` holds the
+  repository root to `ROOT_ALLOWLIST`, an exhaustive list rather than a
+  pattern: dotfiles are enumerated too, so a stray `.perf-profile` is caught
+  exactly like a stray `perf-profile`. The comparison runs in BOTH directions
+  — an allow-list entry that is no longer tracked is also an error, so the
+  list cannot rot into a pre-approval for a future file of the same name. The
+  gate fails CLOSED: a tracked blob that cannot be read from the working tree
+  is retried out of the object store and, failing that, exits non-zero rather
+  than being assumed to be text. Since `git ls-files` is the input, the
+  companion fix for anything this catches is a `git rm` PLUS a `.gitignore`
+  rule — the ignore rule is what stops it coming back.
+  `repo-hygiene.test.mjs` is the `node --test` guard (cheap discipline lane,
+  run as the step BEFORE the gate): it builds a throwaway git repo, plants a
+  synthetic ELF blob and a stray root file, and asserts a non-zero exit
+  naming each, plus a clean exit on a conforming fixture — a gate never shown
+  to fail is indistinguishable from one that does nothing.
+  - Env: `CHECK` is one of `binary`, `root-allowlist`; `REPO_ROOT` (optional)
+    points the scan at another checkout (the self-test's fixture repo).
+  - Exit: `0` clean, `1` on any tracked binary / unsanctioned or rotted root
+    entry / unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
@@ -351,8 +380,12 @@ One implementation means a new rule guards BOTH lanes at once.
   and `brew-verify.yml`, which re-runs the identical assertions on demand or
   weekly against an ALREADY-published version (the release-run job cannot be
   replayed with a fix, since `rerun-failed-jobs` restores the workflow as it
-  was at the release commit). Both jobs run on `macos-latest` — the Ubuntu
-  runner image ships no Homebrew, so `brew` is a bare ENOENT there.
+  was at the release commit). Both jobs run a `macos-latest` + `ubuntu-latest`
+  matrix, so `brew install` is exercised under Linuxbrew as well as on a Mac —
+  cerberus is a Linux-first server binary, and a cask broken for Linux is
+  indistinguishable from a healthy one when only macOS installs it. The Ubuntu
+  image ships Homebrew under `/home/linuxbrew` but leaves it off `PATH`; one
+  Linux-only step adds it.
   Proves the Homebrew tap actually serves the version that just shipped. Reads
   `Casks/cerberus.rb` from `tsouza/homebrew-tap` through the API FIRST: that
   is the anti-vacuous check, because a deleted `homebrew_casks:` block or an expired
@@ -372,9 +405,26 @@ One implementation means a new rule guards BOTH lanes at once.
   regression that let v1.12.1, cut after v1.13.0, downgrade every
   `brew install`. `migrate gate` / `migrate verify` are deliberately unused —
   they exit non-zero on a legitimate no-go, so they cannot distinguish a broken
-  binary from a correct verdict. Pure exports `isStableRelease(version)`,
+  binary from a correct verdict. On EVERY branch — including the two that
+  install nothing — the cask source is also checked for cross-platform shape:
+  all four `darwin_amd64` / `darwin_arm64` / `linux_amd64` / `linux_arm64`
+  artefacts present, and no macOS-only artifact stanza (`app`, `pkg`,
+  `installer`, …), which is the sole condition Homebrew's Linux cask installer
+  refuses on. Whatever cask the tap holds is what every `brew install` gets, so
+  a Linux-broken cask is broken today regardless of which release was allowed
+  to write it. Pure exports `isStableRelease(version)`,
   `caskVersion(rbSource)` (declaration, then archive-name fallback, then
   THROWS — an unparseable cask never degrades into a pass),
+  `caskPortabilityProblems(rbSource)`,
+  `formulaShadowProblems(tapPaths)` / `tapShadowingFormulaPaths(tapPaths)` — the
+  tap must not still serve the `Formula/cerberus.rb` it held before
+  `.goreleaser.yml` moved off `brews:`, because Homebrew resolves a bare
+  `tsouza/tap/cerberus` to the FORMULA when a tap holds both, and goreleaser
+  deletes nothing it did not write; the whole tap listing is matched against
+  every root Homebrew loads formulae from, so a sharded or relocated formula
+  cannot slip past — `installedArtifactProblems(caskList, formulaList)` — which
+  of the two the bare install actually resolved to, read off
+  `brew list --{cask,formula} --versions` —
   `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.
