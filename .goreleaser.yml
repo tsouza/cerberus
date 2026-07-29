@@ -51,17 +51,27 @@ archives:
 # reason casks are usually assumed to be Mac-bound, so the actual mechanism is
 # written down here rather than left to inference:
 #
-#   * Homebrew's Linux cask installer refuses exactly one thing — a cask whose
-#     ARTIFACTS include a macOS-only type (`app`, `pkg`, `installer`,
-#     `qlplugin`, `service`, …). That is the whole gate; see Homebrew's
-#     `extend/os/linux/cask/installer.rb#check_stanza_os_requirements`, which
-#     raises "macOS is required for this software." on that condition and
-#     otherwise returns. This cask's only artifact is `binary`, which is
-#     portable, so the install proceeds.
-#   * `depends_on macos` is IRRELEVANT on Linux. Homebrew injects an implicit
-#     one into every cask (`cask.rb` -> `DSL#add_implicit_macos_dependency`),
-#     and only the macOS installer ever checks it. A cask that "declares no
-#     `depends_on macos`" does not exist.
+#   * The whole Linux gate is Homebrew's
+#     `extend/os/linux/cask/installer.rb#check_stanza_os_requirements`:
+#
+#         return if !cask.depends_on.requires_macos? &&
+#                   artifacts.all? { |artifact| supported_artifact?(artifact) }
+#         raise ::Cask::CaskError, "#{cask}: cask requires macOS."
+#
+#     A CONJUNCTION, so a cask installs on Linux only by satisfying both.
+#   * Clause 2, the artifacts: `supported_artifact?` rejects the sixteen classes
+#     in `MACOS_ONLY_ARTIFACTS` (`app`, `pkg`, `qlplugin`, `service`, …) and,
+#     separately, an `installer` that is a MANUAL install — the scripted form is
+#     fine. This cask's only artifact is `binary`, which is portable, so the
+#     install proceeds.
+#   * Clause 1, `depends_on macos:`, IS consulted on Linux — it is the first
+#     conjunct, not the inert stanza it is usually assumed to be off a Mac. What
+#     makes it harmless here is that `requires_macos?` is
+#     `@macos_bare_set_top_level || @macos_version_set_top_level ||
+#     @maximum_macos_set_top_level` (`cask/dsl/depends_on.rb`), i.e. only a
+#     TOP-LEVEL `depends_on macos:` sets it. The implicit `MacOSRequirement`
+#     Homebrew attaches to every cask does not, and goreleaser emits no
+#     `depends_on` at all, so it stays false.
 #   * `supports_linux?` is NOT the install-time predicate. Its only caller in
 #     all of Homebrew is `dev-cmd/generate-cask-ci-matrix.rb` — homebrew-cask's
 #     own CI runner selection, which has no bearing on a third-party tap. It

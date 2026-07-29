@@ -387,10 +387,15 @@ One implementation means a new rule guards BOTH lanes at once.
   `caskVersion(rbSource)` (declaration, then archive-name fallback, then
   THROWS — an unparseable cask never degrades into a pass),
   `caskPortabilityProblems(rbSource)`,
-  `formulaShadowProblems(formulaPresent)` — the tap must not still serve the
-  `Formula/cerberus.rb` it held before `.goreleaser.yml` moved off `brews:`,
-  because Homebrew resolves a bare `tsouza/tap/cerberus` to the FORMULA when a
-  tap holds both, and goreleaser deletes nothing it did not write —
+  `formulaShadowProblems(tapPaths)` / `tapShadowingFormulaPaths(tapPaths)` — the
+  tap must not still serve the `Formula/cerberus.rb` it held before
+  `.goreleaser.yml` moved off `brews:`, because Homebrew resolves a bare
+  `tsouza/tap/cerberus` to the FORMULA when a tap holds both, and goreleaser
+  deletes nothing it did not write; the whole tap listing is matched against
+  every root Homebrew loads formulae from, so a sharded or relocated formula
+  cannot slip past — `installedArtifactProblems(caskList, formulaList)` — which
+  of the two the bare install actually resolved to, read off
+  `brew list --{cask,formula} --versions` —
   `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.
