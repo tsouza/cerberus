@@ -347,7 +347,8 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// per (group, anchor) so empty anchors survive the GROUP BY).
 	// Collapse the bucket rows into the per-(group, phi, anchor) scalar
 	// wire shape via Tempo's `Log2QuantileWithBucket` — empty anchors
-	// resolve to 0 because the phantom-bucket totalCount is zero.
+	// resolve to 0 because the phantom rows are all the anchor has, so
+	// its histogram is empty once they are discarded.
 	samples := res.Samples
 	if metrics.Op == chplan.MetricsOpQuantileOverTime {
 		samples = postProcessQuantileBuckets(samples, metrics)
@@ -821,9 +822,22 @@ func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggr
 		sort.Slice(g.buckets, func(i, j int) bool {
 			return g.buckets[i].max < g.buckets[j].max
 		})
-		buckets := make([]histogramBucket, len(g.buckets))
-		for i, b := range g.buckets {
-			buckets[i] = histogramBucket{Max: b.max, Count: b.count}
+		// Drop the zero-fill rows before the histogram sees them. The
+		// emitter plants a synthetic (bucket 0, count 0) row per (group,
+		// anchor) so an anchor with no spans still produces a row, but
+		// upstream's Histogram only ever holds buckets that were actually
+		// observed — it appends a bucket on first observation. A synthetic
+		// bucket left in the slice is read as a real boundary: it sorts to
+		// the front and becomes the predecessor the quantile interpolates
+		// down to, moving the estimate a whole octave. An anchor whose rows
+		// are ALL zero-fill correctly reduces to an empty histogram, which
+		// the quantile reports as 0 — the zero-fill's whole purpose.
+		buckets := make([]histogramBucket, 0, len(g.buckets))
+		for _, b := range g.buckets {
+			if b.count <= 0 {
+				continue
+			}
+			buckets = append(buckets, histogramBucket{Max: b.max, Count: b.count})
 		}
 		for _, phi := range m.Quantiles {
 			value, _ := log2QuantileWithBucket(phi, buckets)

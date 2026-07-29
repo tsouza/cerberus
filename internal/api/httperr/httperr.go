@@ -18,6 +18,7 @@
 package httperr
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 )
@@ -55,12 +56,75 @@ func (e *Error) Error() string { return e.Err.Error() }
 // [errors.Is] / [errors.As] across the boundary.
 func (e *Error) Unwrap() error { return e.Err }
 
+// MarshalFailureKind is the error-type string [WriteJSON] reports when a
+// response body cannot be marshalled. It is deliberately the Prom / Loki
+// "internal" vocabulary word: a body that will not marshal is a defect in
+// this gateway, never something the request asked for.
+const MarshalFailureKind = "internal"
+
+// marshalFailure is the envelope [WriteJSON] falls back to when the
+// caller's body cannot be marshalled. Its field set is the union of the
+// three heads' error shapes — `status`/`errorType`/`error` for Prom and
+// Loki, `error`/`message` for Tempo — so whichever client is on the other
+// end reads a populated error rather than a parse failure. Every field is
+// a string, so this envelope cannot itself fail to marshal.
+type marshalFailure struct {
+	Status    string `json:"status"`
+	ErrorType string `json:"errorType"`
+	Error     string `json:"error"`
+	Message   string `json:"message"`
+}
+
 // WriteJSON writes `body` as JSON with the given HTTP status. The
-// Content-Type is set to `application/json` before WriteHeader, and the
-// encoder's error is intentionally discarded — at that point the status
-// is already on the wire and there's nothing the caller can do.
+// Content-Type is set to `application/json` before WriteHeader.
+//
+// The body is marshalled BEFORE the status line goes out. That ordering is
+// the point of this function: [json.Encoder.Encode] buffers the whole value
+// and only then reports a failure, so encoding straight to w commits the
+// status first and discovers the problem second. A body carrying a NaN or
+// ±Inf — the shape a numeric bug in any head produces — would then reach
+// the client as a 200 with zero bytes, which is indistinguishable from a
+// legitimately empty result. A wrong answer that presents as success is
+// worse than an outage: nothing upstream can detect it. Marshalling first
+// turns that class into a 500 carrying [marshalFailure] instead.
+//
+// Errors from the write itself stay discarded, unlike marshal errors: once
+// the header is committed the status is on the wire, and a client that
+// disconnected mid-body is not the server's to repair.
 func WriteJSON(w http.ResponseWriter, status int, body any) {
+	// Encode, not Marshal: Encode is what the response bytes have always
+	// been produced by, and it terminates the body with a newline that
+	// handler-side snapshots depend on.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		writeMarshalFailure(w, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// writeMarshalFailure reports an unmarshalable response body as a 500. It
+// is reached only when [WriteJSON]'s caller handed over a value the JSON
+// encoder rejects, so the status the caller asked for is discarded: that
+// status described a response this gateway turned out to be unable to
+// produce.
+func writeMarshalFailure(w http.ResponseWriter, cause error) {
+	msg := "response body could not be encoded: " + cause.Error()
+	body, err := json.Marshal(marshalFailure{
+		Status:    "error",
+		ErrorType: MarshalFailureKind,
+		Error:     msg,
+		Message:   msg,
+	})
+	if err != nil {
+		// Unreachable: marshalFailure is four strings. Fall back to a bare
+		// status rather than pretending the response has a body.
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write(append(body, '\n'))
 }

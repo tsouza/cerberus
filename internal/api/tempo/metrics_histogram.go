@@ -136,8 +136,16 @@ func log2QuantileWithBucket(p float64, buckets []histogramBucket) (float64, int)
 	frac := float64(target-consumed) / float64(buckets[idx].Count)
 
 	upper := math.Log2(buckets[idx].Max)
-	lower := upper - 1 // one octave below, for the no-predecessor case
-	if idx > 0 {
+	// One octave below is the lower boundary whenever the predecessor
+	// carries none. That covers the first bucket, which has no predecessor
+	// at all, and equally a predecessor whose Max is not positive: log2 of
+	// a non-positive boundary is -Inf or NaN, and an infinite octave span
+	// makes the interpolation below evaluate to NaN. A NaN here does not
+	// stay here — it reaches the JSON encoder, which refuses the whole
+	// response — so the boundary convention has to be total, not merely
+	// correct on well-formed input.
+	lower := upper - 1
+	if idx > 0 && buckets[idx-1].Max > 0 {
 		lower = math.Log2(buckets[idx-1].Max)
 	}
 	return math.Pow(2, lower+(upper-lower)*frac), idx

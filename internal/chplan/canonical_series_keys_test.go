@@ -160,3 +160,136 @@ func TestCanonicalizeSeriesKeyExprs_LeavesCanonicalKeysAlone(t *testing.T) {
 		t.Fatalf("an already-canonical key must not be double-wrapped; got %#v", out)
 	}
 }
+
+// TestCanonicalizeSeriesKeyExprs_WrapsARawKeyAfterANonRawOne pins that a key
+// the walk cannot prove raw only makes THAT key pass through — the scan must
+// carry on to the keys behind it. A `break` in place of the `continue` stops
+// at the first ordinary key (a bare value column, which every real key list
+// carries alongside the attribute Map) and leaves the raw Map behind it
+// unwrapped, which is the silent series-split the whole file exists to stop.
+func TestCanonicalizeSeriesKeyExprs_WrapsARawKeyAfterANonRawOne(t *testing.T) {
+	inputs := []chplan.Node{gaugeScan()}
+	keys := []chplan.Expr{
+		&chplan.ColumnRef{Name: "Value"},      // not an attribute Map: skipped
+		&chplan.ColumnRef{Name: "Attributes"}, // raw Map: must still be wrapped
+	}
+
+	out := chplan.CanonicalizeSeriesKeyExprs(keys, inputs, attrCols())
+
+	if len(out) != 2 {
+		t.Fatalf("want 2 keys back, got %d", len(out))
+	}
+	if !out[0].Equal(keys[0]) {
+		t.Errorf("the non-raw key must pass through untouched; got %#v", out[0])
+	}
+	call, ok := out[1].(*chplan.FuncCall)
+	if !ok || call.Name != chplan.CanonicalMapFunc {
+		t.Fatalf("the raw key behind it must be wrapped in %s; got %#v", chplan.CanonicalMapFunc, out[1])
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_WrapsARawKeyAfterANonRawOne is the
+// whole-plan counterpart: an Aggregate keyed on an ordinary column AND the
+// raw attribute Map still gets the repair. The column scan behind the node's
+// key list has to survive a key it cannot prove raw.
+func TestCanonicalizeSeriesIdentityKeys_WrapsARawKeyAfterANonRawOne(t *testing.T) {
+	in := &chplan.Aggregate{
+		Input: gaugeScan(),
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "Value"},
+			&chplan.ColumnRef{Name: "Attributes"},
+		},
+		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+	}
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	reps := projectReplacements(t, out)
+	if len(reps) != 1 || reps[0].Alias != "Attributes" {
+		t.Fatalf("want the Attributes column canonicalised beneath the Aggregate; got %#v", reps)
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_WrapsThroughAMapValuedCall pins that the
+// idempotence check tests for the CANONICAL function specifically. A key like
+// `mapConcat(Attributes)` is a Map-returning call sitting bare in a key list —
+// the binding site — so the walk has to descend into its arguments. Treating
+// every named call as already canonical skips the descent and leaves the
+// positional Map comparison unrepaired.
+func TestCanonicalizeSeriesIdentityKeys_WrapsThroughAMapValuedCall(t *testing.T) {
+	in := &chplan.Aggregate{
+		Input: gaugeScan(),
+		GroupBy: []chplan.Expr{&chplan.FuncCall{
+			Name: "mapConcat",
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		}},
+		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+	}
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	reps := projectReplacements(t, out)
+	if len(reps) != 1 || reps[0].Alias != "Attributes" {
+		t.Fatalf("want the Attributes column canonicalised beneath the Aggregate; got %#v", reps)
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_ResolvesTheProjectionThatBindsTheName
+// pins that resolving a column through an explicit projection list matches on
+// the alias that actually binds the name. Answering with the WRONG projection
+// reads a sibling's expression, so a plan whose projection already
+// canonicalises the Map is judged raw and gets a second, redundant repair
+// layer inserted beneath it.
+func TestCanonicalizeSeriesIdentityKeys_ResolvesTheProjectionThatBindsTheName(t *testing.T) {
+	canonicalising := &chplan.Project{
+		Input: gaugeScan(),
+		Projections: []chplan.Projection{
+			// A sibling that reads the RAW Map, bound under a different name.
+			{Expr: &chplan.ColumnRef{Name: "Attributes"}, Alias: "RawCopy"},
+			// The projection that actually binds "Attributes", already canonical.
+			{Expr: chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}), Alias: "Attributes"},
+		},
+	}
+	in := &chplan.Aggregate{
+		Input:    canonicalising,
+		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+	}
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	if out != chplan.Node(in) {
+		t.Fatalf("a key already canonicalised by the projection that binds it needs no repair; got %#v", out)
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_ScansPastANonBindingProjection is the
+// mirror of the test above: the projection that binds the key is again not the
+// first one, but this time it hands through the RAW Map, so the key does need
+// repair. Abandoning the projection list at the first alias that does not match
+// leaves the binding unresolved, and an unresolved binding is treated as "not
+// raw" — the plan then compares Maps positionally and answers with the wrong
+// series identity.
+func TestCanonicalizeSeriesIdentityKeys_ScansPastANonBindingProjection(t *testing.T) {
+	binding := &chplan.Project{
+		Input: gaugeScan(),
+		Projections: []chplan.Projection{
+			// A non-matching alias the scan has to walk past.
+			{Expr: chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}), Alias: "Canonical"},
+			// The projection that actually binds "Attributes", still raw.
+			{Expr: &chplan.ColumnRef{Name: "Attributes"}, Alias: "Attributes"},
+		},
+	}
+	in := &chplan.Aggregate{
+		Input:    binding,
+		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+	}
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	reps := projectReplacements(t, out)
+	if len(reps) != 1 || reps[0].Alias != "Attributes" {
+		t.Fatalf("want the Attributes column canonicalised beneath the Aggregate; got %#v", reps)
+	}
+}
