@@ -142,7 +142,7 @@ dockers_v2:
       # computed in release.yml: tag == highest stable semver). A prerelease
       # never advances it, AND a stable BACKPORT (e.g. v1.2.1 cut after v1.3.0)
       # must not drag it backwards either. An empty tag is dropped, which is how
-      # dockers_v2 spells the conditional push the old `skip_push` did.
+      # dockers_v2 spells a conditional push.
       - '{{ if and (not .Prerelease) (eq .Env.RELEASE_IS_LATEST "true") }}latest{{ end }}'
     labels:
       org.opencontainers.image.title: "{{ .ProjectName }}"

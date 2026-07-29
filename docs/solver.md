@@ -650,8 +650,9 @@ Partial recovery is two-fold, and neither is an authoritative marker:
   is in-memory).
 - After a restart, the reconciler backfills the CH **cost** for any `query_id`
   that did finish on the CH side and still falls inside the query_log lookback
-  window — but it joins to `ok`/`oom`/`timeout` from query_log, never to a
-  cerberus-oom outcome, because no in-process call survived to stamp one.
+  window — but it joins to the query_log-derived `ok` / `oom` / `timeout` /
+  `aborted` / `error`, never to a cerberus-oom outcome, because no in-process
+  call survived to stamp one.
 
 An authoritative "cerberus-oom" marker would require an **external** signal — a
 k8s `OOMKilled` container event correlated back to the in-flight requests —

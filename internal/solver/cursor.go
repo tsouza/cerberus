@@ -327,8 +327,11 @@ func (sc *shardCursor) TeardownBudget() time.Duration {
 }
 
 // waitProducers waits up to budget for every producer to return, reporting
-// whether they all did. The waiter goroutine is joined by the caller's
-// fallback g.Wait(), so no goroutine outlives Close.
+// whether they all did. The waiter goroutine is never joined: on the timeout
+// path the caller cancels and then runs the same <-sc.launched + g.Wait()
+// sequence itself, a second independent wait, and this goroutine unblocks on
+// its own the moment that cancellation lets the launcher and the group settle.
+// Both waits observe the same terminal state, so neither can be left parked.
 func (sc *shardCursor) waitProducers(budget time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
