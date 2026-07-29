@@ -18,6 +18,15 @@ name: brew-verify
 # It reuses `brew-smoke.mjs` unchanged, so there is one implementation of what
 # "the published cask is healthy" means; this lane only differs in when it
 # runs and which version it targets.
+#
+# The second job, `brew-migration`, covers a different question: not whether a
+# fresh install works, but whether an EXISTING formula install is carried across
+# to the cask. Every install path CI performs starts from an empty runner and is
+# therefore blind to it, which is how cerberus shipped the formula -> cask move
+# with no tap_migrations.json and left early adopters running the old binary with
+# no error printed anywhere. It lives here rather than in release.yml because it
+# takes minutes and re-verifies a property of the TAP, which changes on its own
+# schedule.
 on:
   workflow_dispatch:
     inputs:
@@ -113,3 +122,41 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_ROOT: ${{ github.workspace }}
         run: node .github/scripts/brew-smoke.mjs
+
+  # The upgrade path, which no install-from-empty can see. `brew-verify` above
+  # and `brew-smoke` in release.yml both start from a runner with no cerberus on
+  # it, so both are structurally blind to what happens to a machine that already
+  # had the FORMULA — the shape cerberus shipped through 1.13.1. That gap is how
+  # the missing tap_migrations.json reached users: every fresh install was
+  # correct while every existing one silently stayed on the old binary.
+  #
+  # Separate from the job above rather than a step inside it, because it rewinds
+  # the tap clone and installs a superseded release: sharing a runner with the
+  # published-cask assertions would have each job's brew state decide the other's
+  # verdict.
+  brew-migration:
+    name: brew-migration (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same as the job above: the Ubuntu image ships Homebrew under
+      # /home/linuxbrew but leaves it off PATH.
+      - name: put Homebrew on PATH
+        if: runner.os == 'Linux'
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew || {
+            echo "::error::brew-migration: the ${{ matrix.os }} image no longer ships Homebrew at /home/linuxbrew/.linuxbrew — the Linux leg needs an install step."
+            exit 1
+          }
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+
+      - name: brew-upgrade-path self-test
+        run: node --test .github/scripts/brew-upgrade-path.test.mjs
+
+      - name: migrate a formula install to the cask
+        run: node .github/scripts/brew-upgrade-path.mjs
