@@ -50,7 +50,7 @@ func TestEmitVectorSetOp_And_ExactShape(t *testing.T) {
 	if !strings.Contains(sql, "IN (") || strings.Contains(sql, "NOT IN") {
 		t.Errorf("`and` must emit IN (not NOT IN); sql=%s", sql)
 	}
-	if !strings.Contains(sql, "SELECT DISTINCT `Attributes`") {
+	if !strings.Contains(sql, "SELECT DISTINCT mapSort(`Attributes`)") {
 		t.Errorf("`and` must filter against DISTINCT signature subquery; sql=%s", sql)
 	}
 	// Semi-join shape never unions arms.
@@ -72,7 +72,7 @@ func TestEmitVectorSetOp_Unless_ExactShape(t *testing.T) {
 	if !strings.Contains(sql, "NOT IN (") {
 		t.Errorf("`unless` must emit NOT IN; sql=%s", sql)
 	}
-	if !strings.Contains(sql, "SELECT DISTINCT `Attributes`") {
+	if !strings.Contains(sql, "SELECT DISTINCT mapSort(`Attributes`)") {
 		t.Errorf("`unless` must filter against DISTINCT signature subquery; sql=%s", sql)
 	}
 	if strings.Contains(sql, "UNION ALL") {
