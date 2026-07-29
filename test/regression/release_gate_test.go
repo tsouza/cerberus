@@ -246,6 +246,20 @@ func TestBrewSmokeIsBlockingAndOrderedAfterPublish(t *testing.T) {
 			"a broken tap would report green. Body:\n%s", releaseWorkflowPath, brewSmokeJob, job)
 	}
 
+	// The cask serves both platforms, and cerberus is a Linux-first server
+	// binary. A macOS-only smoke reports green on a cask that no Linux operator
+	// can install, because `brew install` failing under Linuxbrew looks
+	// identical to it working when you only ever run it on a Mac. Dropping
+	// either leg from the matrix is a silent de-gate of exactly that, so the
+	// pair is pinned rather than left to review.
+	for _, os := range []string{"macos-latest", "ubuntu-latest"} {
+		if !strings.Contains(job, os) {
+			t.Fatalf("%s job %q no longer runs on %q. The cask declares darwin AND linux artefacts, so "+
+				"smoking one platform leaves the other asserted but never installed. Body:\n%s",
+				releaseWorkflowPath, brewSmokeJob, os, job)
+		}
+	}
+
 	// The two no-cask branches of brew-smoke.mjs assert that a prerelease and
 	// a maintenance backport did NOT write a cask. Those assertions are only
 	// meaningful while goreleaser is still configured to leave both taps alone,

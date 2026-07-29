@@ -41,10 +41,15 @@ concurrency:
 
 jobs:
   brew-verify:
-    name: brew-verify
-    # Homebrew is preinstalled here and absent from the Ubuntu 24.04 image.
-    # Same reasoning as release.yml's brew-smoke — see the comment there.
-    runs-on: macos-latest
+    name: brew-verify (${{ matrix.os }})
+    # Both platforms the cask serves, mirroring release.yml's brew-smoke matrix
+    # — see the comment there for why the Linux leg exists and why the Ubuntu
+    # image needs a PATH step to reach the Homebrew it already ships.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       # Resolve the target version BEFORE checkout, because the checkout has to
       # land on that version's tag: the `config-docs -check` payload compares
@@ -83,6 +88,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: v${{ steps.resolve.outputs.version }}
+
+      # See release.yml's brew-smoke: the Ubuntu image ships Homebrew under
+      # /home/linuxbrew but leaves it off PATH.
+      - name: put Homebrew on PATH
+        if: runner.os == 'Linux'
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew || {
+            echo "::error::brew-verify: the ${{ matrix.os }} image no longer ships Homebrew at /home/linuxbrew/.linuxbrew — the Linux leg needs an install step."
+            exit 1
+          }
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
 
       - name: brew-smoke self-test
         run: node --test .github/scripts/brew-smoke.test.mjs
