@@ -132,6 +132,13 @@ Each recipe:
    to `compatibility/<head>/reports/`.
 4. Tears the stack down.
 
+Each harness's compose project is named per checkout —
+`cerberus-compatibility` and its two siblings, plus the suffix
+`scripts/compose-project-suffix.sh` derives from the checkout's path (empty in a
+primary checkout and in CI). Two checkouts run two independent stacks instead of
+adopting and tearing down each other's containers; the recipes and the harness
+scripts both derive it, so it applies whichever way a run is launched.
+
 Set `COMPOSE_KEEP=1` to leave the stack running for inspection:
 
 ```sh

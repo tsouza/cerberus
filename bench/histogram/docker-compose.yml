@@ -1,20 +1,26 @@
 # Histogram-quantile benchmark stack: ClickHouse + cerberus + Prometheus + Mimir
 # on one network. All host ports live in the 52xxx range to avoid the dev
 # instances (18085/18086), the snapshot CH (38123/39000), the prod tunnel
-# (47000/48123), and any other 49xxx bench stack that may be running on this
-# machine. Container names carry the `histbench-ab5` prefix so a second stack
-# can never collide with a leftover default-named `histbench-*` stack.
+# (47000/48123), and any other bench stack that may be running on this machine.
 #
-# Bring up:   docker compose -p histbench-ab5 up -d --build --wait
-# Tear down:  docker compose -p histbench-ab5 down -v
-name: histbench-ab5
+# Bring up:   ./run.sh smoke
+# Tear down:  ./run.sh down
+#
+# No service names a `container_name`: that key opts a container OUT of project
+# scoping — the daemon uses the literal, so a second copy of this stack collides
+# on the container name however the project is named. Compose's own
+# `<project>-<service>-<n>` naming is what keeps the stacks apart, and run.sh
+# asks compose for the resulting names rather than reconstructing them.
+#
+# The project-name suffix is empty in a primary checkout and in CI, and
+# per-worktree otherwise. See scripts/compose-project-suffix.sh.
+name: histbench-ab5${COMPOSE_PROJECT_SUFFIX:-}
 
 services:
   clickhouse:
     # 26.x so cerberus's native timeSeriesRateToGrid path (floor 25.9) is
     # exercised rather than the arrayJoin fan-out fallback.
     image: clickhouse/clickhouse-server:26.6 # Ubuntu-base (NOT alpine — see compat harness note)
-    container_name: histbench-ab5-clickhouse
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus
@@ -34,8 +40,7 @@ services:
       - "52123:8123" # http
 
   cerberus:
-    image: cerberus:histbench-ab5
-    container_name: histbench-ab5-cerberus
+    image: cerberus:histbench-ab5${COMPOSE_PROJECT_SUFFIX:-}
     build:
       context: ../..
       dockerfile: Dockerfile.local
@@ -73,7 +78,6 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.11.3
-    container_name: histbench-ab5-prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -91,7 +95,6 @@ services:
 
   mimir:
     image: grafana/mimir:2.14.0
-    container_name: histbench-ab5-mimir
     command:
       - -config.file=/etc/mimir/mimir.yaml
       - -target=all # monolithic single-binary mode

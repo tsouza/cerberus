@@ -6,10 +6,16 @@
 #   docker compose -f tiers/tier1-dual/docker-compose.dual.yml \
 #                   -f tiers/tier2-ruler/docker-compose.ruler.yml up --wait
 #
-# No `name:` here on purpose: leaving it unset keeps the merged project on
-# Tier-1's `cerberus-migration-tier1` name, so these two new services join
-# the SAME default network as cerberus/clickhouse/prometheus/etc. instead of
-# minting a second, disconnected compose project.
+# No `name:` here on purpose: leaving it unset keeps the merged project on the
+# name Tier-1's file declares, so these two new services join the SAME default
+# network as cerberus/clickhouse/prometheus/etc. instead of minting a second,
+# disconnected compose project. That inheritance is load-bearing twice over —
+# it also carries Tier-1's per-checkout COMPOSE_PROJECT_SUFFIX (see
+# scripts/compose-project-suffix.sh), so both tiers land in one isolated
+# project. Adding a `name:` here, even the same string Tier-1 uses, splits the
+# stack in two: the LAST `-f` file's `name:` wins, so this file would name the
+# merged project and would have to re-derive the suffix to stay in step.
+# test/regression/compose_project_isolation_test.go pins the absence.
 #
 # Adds the "real query-only external ruler" docs/migration-testing.md
 # section 3 describes for Tier 2 — here, Grafana-managed alerting rather
@@ -104,7 +110,7 @@ services:
       retries: 24
 
   dead-end-receiver:
-    image: cerberus-migration-tier2:dead-end-receiver
+    image: cerberus-migration-tier2:dead-end-receiver${COMPOSE_PROJECT_SUFFIX:-}
     pull_policy: build
     build:
       # Also resolved against tier1-dual's directory (see the grafana

@@ -173,9 +173,14 @@ func parseFlags() flags {
 	flag.StringVar(&f.promURL, "prom-url", envOr("BENCH_PROM_URL", "http://localhost:49090"), "prometheus base URL")
 	flag.StringVar(&f.mimirURL, "mimir-url", envOr("BENCH_MIMIR_URL", "http://localhost:49009/prometheus"), "mimir query base URL (empty to skip)")
 	flag.StringVar(&f.mimirOrgID, "mimir-org-id", envOr("BENCH_MIMIR_ORGID", ""), "mimir X-Scope-OrgID header")
-	flag.StringVar(&f.cerberusCtr, "cerberus-ctr", envOr("BENCH_CERBERUS_CTR", "histbench-cerberus"), "cerberus container name")
-	flag.StringVar(&f.promCtr, "prom-ctr", envOr("BENCH_PROM_CTR", "histbench-prometheus"), "prometheus container name")
-	flag.StringVar(&f.mimirCtr, "mimir-ctr", envOr("BENCH_MIMIR_CTR", "histbench-mimir"), "mimir container name")
+	// Container names default to empty — "sample no resource stats for this
+	// backend". They are compose-assigned, so the project name they carry
+	// varies per checkout; run.sh asks compose for them and passes them in.
+	// A guessed default would name a container that exists nowhere and sample
+	// nothing while looking configured.
+	flag.StringVar(&f.cerberusCtr, "cerberus-ctr", envOr("BENCH_CERBERUS_CTR", ""), "cerberus container name (empty to skip resource sampling)")
+	flag.StringVar(&f.promCtr, "prom-ctr", envOr("BENCH_PROM_CTR", ""), "prometheus container name (empty to skip resource sampling)")
+	flag.StringVar(&f.mimirCtr, "mimir-ctr", envOr("BENCH_MIMIR_CTR", ""), "mimir container name (empty to skip resource sampling)")
 	flag.Parse()
 	return f
 }

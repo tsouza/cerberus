@@ -852,7 +852,8 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   constants live in `test/e2e/migration/lib/provenance.go` for the Go side, and
   `test/regression/migration_tier1_test.go` holds every copy equal. The
   exported `CERBERUS_IMAGE` is what the tier-1/tier-2 compose stacks
-  interpolate (`image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}`,
+  interpolate
+  (`image: ${CERBERUS_IMAGE:-cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}}`,
   `pull_policy: never`), and `CERBERUS_EXPECT_VERSION` is exported only on the
   image path — on the source path the CLI and the compose image are two
   different builds, so each is held to its own stamp rather than to a shared
@@ -863,7 +864,10 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     workflow inputs; both empty = build from source, both set = test that
     image, exactly one set = error), `BUILD_DIR` (default `build`),
     `GITHUB_ENV` (the runner file `CERBERUS_BIN` / `CERBERUS_IMAGE` /
-    `CERBERUS_EXPECT_VERSION` are appended to).
+    `CERBERUS_EXPECT_VERSION` are appended to), `COMPOSE_PROJECT_SUFFIX` (the
+    per-checkout suffix the local image tag carries, so the tag this module
+    names is the one the stack runs; empty in a CI checkout, which is what
+    every CI checkout is — see `scripts/compose-project-suffix.sh`).
   - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
     pair, a failed build / pull / extract, a `--version` that errors, prints
     nothing, prints more than one line, or prints the wrong stamp.
