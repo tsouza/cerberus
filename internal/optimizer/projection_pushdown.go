@@ -223,16 +223,29 @@ func rangeWindowColumns(r *chplan.RangeWindow) []string {
 //     timeSeriesRateToGrid aggregate's second paren group (`Col(...)` each).
 //   - the column refs walked out of GroupBy — the inner SELECT's series keys
 //     and `GROUP BY` list (rendered by collectGroupByFrags).
+//   - the column refs walked out of Recollapse — the deferred label-shaping
+//     tower the middle (merge) level evaluates, which reads raw columns
+//     (ResourceAttributes, ServiceName, …) the two-level shape only ever saw
+//     through a Project that no longer exists once the shaping is hoisted.
 //
 // Every other identifier the native emit names — `grid`, `grid_ts`,
-// `grid_val`, `anchor_ts` — is SYNTHETIC (produced inside the subquery via
-// the timeSeriesRateToGrid / timeSeriesRange / ARRAY JOIN machinery), so it
-// is never a Scan read and must NOT be added here. The native node carries
-// no ScalarExprs (unlike RangeWindow), so this set is strictly
-// {TimestampColumn, ValueColumn} ∪ refs(GroupBy). Dropping any of these —
-// in particular the identity columns the GroupBy walks (the MetricName-class
-// #860/#861 failure) — 502s the native query at runtime, so the enumeration
-// must match the emit's reads exactly.
+// `grid_val`, `anchor_ts`, `grid_state`, `shaped_key_<i>` — is SYNTHETIC
+// (produced inside the subquery via the timeSeriesRateToGrid /
+// timeSeriesRange / ARRAY JOIN machinery), so it is never a Scan read and must
+// NOT be added here. The native node carries no ScalarExprs (unlike
+// RangeWindow), so this set is strictly {TimestampColumn, ValueColumn} ∪
+// refs(GroupBy) ∪ refs(Recollapse). Dropping any of these — in particular the
+// identity columns the GroupBy walks (the MetricName-class #860/#861 failure)
+// — 502s the native query at runtime, so the enumeration must match the emit's
+// reads exactly.
+//
+// The Recollapse walk is deliberately redundant with the emitter's own
+// containment guard (chsql.requireRecollapseColumnsGrouped), which rejects any
+// deferred shaping expression reading a column that is not already a GroupBy
+// key: enumeration alone would leave the emitter free to reference an
+// ungrouped column, while containment alone would leave this pushdown one
+// invariant-relaxation away from re-opening the #860/#861 dropped-column
+// class. Both ship.
 func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
 	seen := map[string]struct{}{}
 	if r.TimestampColumn != "" {
@@ -244,6 +257,9 @@ func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
 	collect := collectColumn(seen)
 	for _, g := range r.GroupBy {
 		walkExpr(g, collect)
+	}
+	for _, p := range r.Recollapse {
+		walkExpr(p.Expr, collect)
 	}
 	return sortedColumnSet(seen)
 }

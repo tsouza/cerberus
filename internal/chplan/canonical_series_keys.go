@@ -202,6 +202,20 @@ func seriesIdentityKeys(n Node) []Expr {
 	case *RangeWindow:
 		return v.GroupBy
 	case *RangeWindowNative:
+		// With the label shaping deferred, the node's OUTPUT series identity
+		// is the PASS-THROUGH GroupBy keys plus the Recollapse expressions.
+		// The shaping INPUTS are excluded because they are consumed entirely
+		// below the merge, which re-pools them: reporting them would have the
+		// walk see a raw `Attributes` map as this node's identity key and
+		// splice a repair Project on top of a result the deferred tower has
+		// already canonicalised. The pass-through keys are the opposite case —
+		// grouped raw at the state level, re-grouped on the same raw frag at
+		// the merge level and emitted verbatim — so excluding them would let a
+		// pass-through attribute Map key split one logical series into two
+		// positional groups, each carrying a partial rate.
+		if len(v.Recollapse) > 0 {
+			return recollapseIdentityKeys(v)
+		}
 		return v.GroupBy
 	case *RangeBucketFanout:
 		return v.GroupBy
@@ -356,6 +370,69 @@ func seriesIdentityKeyAliases(n Node) []string {
 		return v.GroupByAliases
 	case *RangeBucketFanout:
 		return v.GroupByAliases
+	case *RangeWindowNative:
+		// Only the deferred-shaping shape aliases its keys; the two-level one
+		// projects GroupBy unaliased, so it keeps the nil fall-through.
+		if len(v.Recollapse) > 0 {
+			return recollapseIdentityKeyAliases(v)
+		}
 	}
 	return nil
+}
+
+// recollapseIdentityKeys / recollapseIdentityKeyAliases answer a deferred-shaping
+// [RangeWindowNative]'s output series identity: its PASS-THROUGH GroupBy keys in
+// GroupBy order, followed by its Recollapse expressions. The two lists are read
+// POSITIONALLY against each other by [columnBindingIsRaw], so they must be built
+// from the same partition — a pass-through key's alias is its own column name,
+// which is what the merge and outer levels emit it under.
+func recollapseIdentityKeys(r *RangeWindowNative) []Expr {
+	pass, _ := recollapsePassThroughGroupBy(r)
+	keys := make([]Expr, 0, len(pass)+len(r.Recollapse))
+	for _, i := range pass {
+		keys = append(keys, r.GroupBy[i])
+	}
+	return append(keys, projectionExprs(r.Recollapse)...)
+}
+
+func recollapseIdentityKeyAliases(r *RangeWindowNative) []string {
+	pass, cols := recollapsePassThroughGroupBy(r)
+	aliases := make([]string, 0, len(pass)+len(r.Recollapse))
+	for _, i := range pass {
+		aliases = append(aliases, cols[i])
+	}
+	return append(aliases, projectionAliases(r.Recollapse)...)
+}
+
+// recollapsePassThroughGroupBy returns the pass-through GroupBy indexes and the
+// GroupBy column names they index into. A GroupBy that is not the plain-column
+// shape the deferred-shaping emitter requires has no pass-through set at all:
+// such a node is rejected before it renders, so the identity is reported as the
+// shaped keys alone rather than guessed at.
+func recollapsePassThroughGroupBy(r *RangeWindowNative) (pass []int, cols []string) {
+	cols, computed := r.GroupByColumns()
+	if computed != nil {
+		return nil, nil
+	}
+	pass, _ = r.PartitionRecollapseGroupBy(cols)
+	return pass, cols
+}
+
+// projectionExprs and projectionAliases split a [Projection] list into the two
+// positionally-aligned halves [seriesIdentityKeys] and
+// [seriesIdentityKeyAliases] answer with.
+func projectionExprs(ps []Projection) []Expr {
+	out := make([]Expr, len(ps))
+	for i := range ps {
+		out[i] = ps[i].Expr
+	}
+	return out
+}
+
+func projectionAliases(ps []Projection) []string {
+	out := make([]string, len(ps))
+	for i := range ps {
+		out[i] = ps[i].Alias
+	}
+	return out
 }

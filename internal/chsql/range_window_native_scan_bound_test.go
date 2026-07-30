@@ -234,7 +234,7 @@ func TestNativeTSGrid_ScanBound_PerJoinOperand(t *testing.T) {
 		what string
 		s    string
 	}{
-		{"native aggregate", nativeTSGridFn["rate"]},
+		{"native aggregate", nativeTSGridFn["rate"].Fn},
 		{"lower scan bound", nativeScanBoundLower},
 		{"upper scan bound", nativeScanBoundUpper},
 	} {

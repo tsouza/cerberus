@@ -1572,6 +1572,36 @@
     "reason": "routed"
   },
   {
+    "query": "native_rate_recollapse_collision",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "native_rate_recollapse_collision_two_level",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "native_rate_recollapse_histogram_companion",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "native_rate_recollapse_metric_name_isolation",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "native_rate_recollapse_range_step",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "native_resample_offset",
     "routed": true,
     "k": 8,

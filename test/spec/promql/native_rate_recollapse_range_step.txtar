@@ -1,0 +1,107 @@
+# Deferred label shaping (ts_grid_recollapse) on the native
+# timeSeriesRateToGrid lowering: the SQL-shape floor.
+#
+# Same query, same `range_step`, same seed, same grid as
+# native_rate_range_step.txtar — the ONLY difference is the
+# `experimental_ts_grid_recollapse` section. Diffing the two fixtures
+# therefore isolates exactly what the hoist changes, and the shared
+# `expected_rows` pins that it changes nothing observable.
+#
+# The rewrite defers the label-shaping tower
+# (mapSort(mapConcat(mapUpdate(mapFromArrays(...))))) from BELOW the
+# aggregate to ABOVE it, so it runs once per raw SERIES instead of once
+# per raw ROW. Three levels replace the usual two:
+#
+#   state : GROUP BY the RAW shaping inputs -> timeSeriesRateToGridState
+#   merge : shaping tower AS shaped_key_0  -> timeSeriesRateToGridMerge
+#   outer : shaped_key_0 AS Attributes     -> ARRAY JOIN grid, grid_ts
+#
+# Two properties of the `-- sql --` golden are load-bearing and must be
+# read, not skimmed, on any regeneration:
+#
+#  1. The state level's `GROUP BY` lists the RAW columns
+#     (`Attributes`, `ResourceAttributes`, `ServiceName`) and contains NO
+#     mapSort. Grouping the state level on the SHAPED map instead would
+#     return correct rows at the OLD cost — an inert rewrite no assertion
+#     on the result can see.
+#  2. The shaped map is aliased `shaped_key_0` at the merge level and
+#     renamed to `Attributes` only at the OUTER level. Aliasing it back to
+#     `Attributes` at the level that carries GROUP BY re-binds the grouping
+#     key to the shaped column, which is failure mode 1 by another route.
+
+-- query.promql --
+sum by(cerberus_ql) (rate(cerberus_queries_total[5m]))
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_recollapse --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:03:00', 9), 36.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:04:00', 9), 48.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:05:00', 9), 60.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:01:00', 9), 6.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:02:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:03:00', 9), 18.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:04:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:05:00', 9), 30.0);
+-- expected_rows --
+[
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:01:00Z", 0.02],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:01:30Z", 0.03],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:02:00Z", 0.04],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:02:30Z", 0.05],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:03:00Z", 0.060000000000000005],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:03:30Z", 0.07],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:04:00Z", 0.08],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:04:30Z", 0.09],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:05:00Z", 0.1],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:01:00Z", 0.04],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:01:30Z", 0.06],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:02:00Z", 0.08],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:02:30Z", 0.1],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:03:00Z", 0.12000000000000001],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:03:30Z", 0.14],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:04:00Z", 0.16],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:04:30Z", 0.18],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:05:00Z", 0.2]
+]
+-- args --
+[0] string = ""
+[1] string = "cerberus_ql"
+[2] string = "cerberus_ql"
+[3] string = "cerberus_ql"
+[4] string = "cerberus.ql"
+[5] string = "cerberus.ql"
+[6] string = "cerberus/ql"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = "service.name"
+[10] string = "service_name"
+[11] string = ""
+[12] string = "service_name"
+[13] string = "cerberus_queries_total"
+[14] string = "cerberus.queries.total"
+[15] string = "cerberus.queries/total"
+[16] string = "cerberus.queries_total"
+[17] string = "cerberus/queries/total"
+[18] string = "cerberus/queries_total"
+[19] string = "cerberus_queries.total"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("cerberus_ql", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], if(mapContains(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])) AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+    RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[ResourceAttributes, Attributes, ServiceName] recollapse=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])) AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `shaped_key_0` AS `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `ResourceAttributes`, `Attributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `ResourceAttributes`, `Attributes`, `ServiceName`) GROUP BY `shaped_key_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY `gkey_0`, `bucket_ts`)
