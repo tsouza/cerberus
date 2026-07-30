@@ -149,15 +149,47 @@ jobs:
   # COST: N shards = N parallel compose builds/boots — billable minutes rise
   # ~Nx, but wall-clock drops from the serial sum toward the longest shard.
   # That latency win on the slowest required PR gate is the whole point.
+  # Decides whether THIS pull request has to boot the stack. push / schedule /
+  # `release/*` PRs always do, exactly as before; an ordinary PR does
+  # only when it changed a path this stack can see differently from chDB — the
+  # emitted column types, the HTTP surface, the driver, the binary's own startup.
+  # Everything else short-circuits in seconds, which is the de-gating this lane
+  # was traded for. Costs ~10s and boots nothing. The rationale and the two path
+  # lists live in the module, not here.
+  compose-smoke-scope:
+    name: compose-smoke-scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      in_scope: ${{ steps.scope.outputs.in_scope }}
+    steps:
+      # fetch-depth: 0 — the module diffs the PR head against its merge base,
+      # which a shallow clone cannot reach. Without the full history the diff
+      # comes back uncomputable and the lane boots the stack anyway; correct,
+      # but it would silently pay 25 minutes on every PR.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: scope
+        name: decide whether this change is visible to the compose stack
+        run: node .github/scripts/compose-smoke-scope.mjs
+        env:
+          MODE: emit
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   compose-smoke-setup:
     name: compose-smoke-setup
-    # push + schedule always; pull_request ONLY when the head branch is
-    # `release/*`. An ordinary PR skips the whole lane in seconds — compose-smoke
-    # is a release gate now, not a PR gate (see the `on:` block). Dispatch is the
-    # dashboard lane's crawl-regen entry point and boots no compose stack.
-    if: >-
-      github.event_name == 'push' || github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
+    needs: compose-smoke-scope
+    # The scope job answers push / schedule / `release/*` with an unconditional
+    # true and `workflow_dispatch` with an unconditional false, so every path
+    # runs exactly as it did when this guard was an inline event test. What
+    # changed is the ordinary PR: it now boots the stack when it touched
+    # something the stack can see.
+    if: needs.compose-smoke-scope.outputs.in_scope == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -568,27 +600,42 @@ jobs:
   # (shard-crawl)` check but does NOT roll into this required gate.
   compose-smoke:
     name: compose-smoke
-    needs: [compose-smoke-setup, compose-smoke-shard]
+    needs: [compose-smoke-scope, compose-smoke-setup, compose-smoke-shard]
     # always() so it still runs (and reports) when setup/shards skipped — on an
-    # ordinary PR the whole lane short-circuits, and this aggregate reports green
-    # in seconds rather than going missing. It is no longer a branch-protection
-    # context, but release.yml's preflight reads it by name on the merge commit,
-    # so it must always exist and always be honest about what ran.
+    # out-of-scope PR the whole lane short-circuits, and this aggregate reports
+    # green in seconds rather than going missing. It is no longer a
+    # branch-protection context, but release.yml's preflight reads it by name on
+    # the merge commit, so it must always exist and always be honest about what
+    # ran.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: gate on every required shard
         run: |
+          echo "scope  = ${{ needs.compose-smoke-scope.result }} (in_scope=${{ needs.compose-smoke-scope.outputs.in_scope }})"
           echo "setup  = ${{ needs.compose-smoke-setup.result }}"
           echo "shards = ${{ needs.compose-smoke-shard.result }}"
-          # Docs-only PR (or any path that skipped setup) → the required check
-          # must report green without work. A skipped setup means the matrix
-          # never fanned out; pass the gate through, mirroring the old job's
-          # docs-only short-circuit.
+          # A skipped setup is green ONLY on two facts together: the scope job
+          # SUCCEEDED, and it said this change is out of scope. Reading the skip
+          # alone would be the hollow green this lane was fixed to remove — a
+          # crashed or cancelled scope job also skips setup, and that is a lane
+          # that failed to decide, not a lane with nothing to do.
           if [ "${{ needs.compose-smoke-setup.result }}" = "skipped" ]; then
-            echo "compose-smoke skipped (docs-only PR / gate not green / not applicable) — passing the required check."
+            if [ "${{ needs.compose-smoke-scope.result }}" != "success" ]; then
+              echo "::error::compose-smoke-setup skipped because compose-smoke-scope did not succeed (${{ needs.compose-smoke-scope.result }}) — the lane never decided whether it had work."
+              exit 1
+            fi
+            if [ "${{ needs.compose-smoke-scope.outputs.in_scope }}" != "false" ]; then
+              echo "::error::compose-smoke-setup skipped although compose-smoke-scope reported in_scope='${{ needs.compose-smoke-scope.outputs.in_scope }}' — the stack should have booted."
+              exit 1
+            fi
+            echo "no changed path is visible to the compose stack — passing the required check without booting it."
             exit 0
+          fi
+          if [ "${{ needs.compose-smoke-scope.result }}" != "success" ]; then
+            echo "::error::compose-smoke-scope did not succeed (${{ needs.compose-smoke-scope.result }})."
+            exit 1
           fi
           # Otherwise setup must have succeeded and the REQUIRED matrix must be a
           # clean success. A matrix exposes ONE rolled-up .result to dependents:

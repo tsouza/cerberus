@@ -51,7 +51,11 @@
 #   no host port mapping needed since only the cerberus container talks
 #   to it.)
 
-name: cerberus
+# Project name. The suffix is empty in a primary checkout — a plain clone, and
+# every CI checkout — so this stack is `cerberus`; a linked worktree gets its
+# own `cerberus-<hash>` so concurrent agents don't tear down each other's
+# containers, networks and volumes. See scripts/compose-project-suffix.sh.
+name: cerberus${COMPOSE_PROJECT_SUFFIX:-}
 
 networks:
   cerberus-dev:
@@ -160,7 +164,7 @@ services:
     # collector's clickhouseexporter is the sole schema authority — so it
     # WAITS for the exporter-created tables to appear, then INSERTs its rows
     # into them (see test/e2e/seed/cmd/seed/main.go waitForTables).
-    image: cerberus-seed:dev
+    image: cerberus-seed:dev${COMPOSE_PROJECT_SUFFIX:-}
     pull_policy: build
     build:
       context: .
@@ -259,7 +263,7 @@ services:
         condition: service_started
 
   cerberus:
-    image: cerberus:dev
+    image: cerberus:dev${COMPOSE_PROJECT_SUFFIX:-}
     pull_policy: build
     build:
       context: .
@@ -380,7 +384,7 @@ services:
         condition: service_started
 
   cerberus-nosplit:
-    image: cerberus:dev
+    image: cerberus:dev${COMPOSE_PROJECT_SUFFIX:-}
     pull_policy: build
     profiles: [twophase]
     build:

@@ -28,6 +28,14 @@ universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
 (unassigned / double-assigned / phantom / stale-exclude / bad-shard-name).
 One implementation means a new rule guards BOTH lanes at once.
 
+`lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
+lane guards?" — `runsFullLane()` (which events must never take a scoped
+subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
+when it cannot be computed, which callers must read as "run everything" rather
+than as "nothing changed"), and segment-wise `underPrefix` / `matchesAny`.
+It exists so the two dangerous parts — the always-full event set and the
+uncomputable-diff fallback — cannot drift between the lanes that use it.
+
 ## Modules
 
 - **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
@@ -180,6 +188,38 @@ One implementation means a new rule guards BOTH lanes at once.
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
+- **`mutation-phases.mjs`** — data, imported by `mutation-matrix.mjs`. The single
+  source of truth for the `mutation` lane's phase partition: each entry is one
+  gremlins run (`scope` package, optional scope-relative `exclude_files` RE2
+  alternation, `workers` cap, `--threshold-efficacy` bar), rendered straight into
+  `mutation.yml`'s `strategy.matrix`. It carries the per-leg rationale — the
+  logql/traceql OOM splits, the equivalent-mutant analysis behind each bar — that
+  used to live in the workflow. Also exports `HARNESS_PATHS`: the paths that
+  change the lane itself and therefore force the FULL matrix.
+  - Env: none (pure data module).
+- **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
+  phases run and emits them as the `mutate` `strategy.matrix`. On push /
+  schedule / dispatch and on a `release/*` PR it selects every phase; on an
+  ordinary PR it selects only the legs whose scope the diff touches, applying
+  each leg's `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
+  A changed path that lies inside a phase scope while claiming no leg is a
+  coverage gap and fails the job rather than being dropped. `verify` mode asserts
+  the table alone (every scope an existing directory, every pattern legal under
+  Go's RE2 — no lookaround, no backreferences); `emit` re-runs verify first, so
+  it cannot ship a matrix built from a table that would have failed. `dump`
+  validates and then writes the table to stdout as JSON and nothing else —
+  that is the stream `test/regression/mutation_leg_partition_test.go` parses to
+  assert every mutable file under a mutated package is claimed by exactly one
+  leg, an invariant no single leg's regex can express.
+  - Env: `MODE` (`emit` | `verify` | `dump`, also argv\[2]; default `verify`),
+    `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
+  - Outputs: `matrix` (`{include:[…]}`), `has_phases` (`true` | `false` — the
+    aggregator reads it to tell "nothing in scope changed" apart from "the matrix
+    did not run").
+  - Exit: `0` clean / matrix emitted; `1` on a table violation, a coverage gap,
+    or a bad `MODE`.
+  - Tests: `node --test .github/scripts/mutation-matrix.test.mjs` (run by the
+    `forbid-skip` job).
 - **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
   The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
   to main (not on a raw pushed tag — that trigger is retired). On the resulting
@@ -424,7 +464,13 @@ One implementation means a new rule guards BOTH lanes at once.
   every root Homebrew loads formulae from, so a sharded or relocated formula
   cannot slip past — `installedArtifactProblems(caskList, formulaList)` — which
   of the two the bare install actually resolved to, read off
-  `brew list --{cask,formula} --versions` —
+  `brew list --{cask,formula} --versions`, via the shared
+  `brewListNames(out)` — `tapMigrationProblems(source)` — the tap's
+  `tap_migrations.json` must map `cerberus` to the bare tap name `tsouza/tap`,
+  which is what tells Homebrew the formula BECAME the cask; a missing map is
+  invisible to every fresh install and strands every existing formula install on
+  its old binary with no error printed, so the file is asserted on every release
+  rather than once at migration time —
   `compareVersions(a, b)` and `verdict({version, caskSource, isLatest})`,
   covered by `brew-smoke.test.mjs` on the required `lint` lane and as the job's
   own first step.
@@ -442,6 +488,37 @@ One implementation means a new rule guards BOTH lanes at once.
     tap cask that a backport overwrote, a missing or unrecognised
     `RELEASE_IS_LATEST`, a failed install, a version mismatch, or a failing
     payload verb.
+- **`brew-upgrade-path.mjs`** — `brew-verify.yml`, the `brew-migration` job
+  (`macos-latest` + `ubuntu-latest`, weekly + on demand). Proves an EXISTING
+  formula install is carried across to the cask. Every other install path CI
+  performs starts from an empty runner, and a machine with no cerberus on it
+  cannot observe the upgrade at all — which is how the formula → cask move
+  shipped with no `tap_migrations.json`: fresh installs were correct throughout
+  while every machine that already had the formula silently kept its old binary
+  (`brew upgrade` files a deleted formula under *Deleted Installed Formulae* and
+  moves on; installing the cask afterwards will not link over the formula's keg;
+  nothing in that sequence prints an error). The harness reconstructs a real
+  pre-migration machine: it rewinds the tap clone to the parent of the commit
+  that deleted the formula — derived from history, since a pinned SHA would drift
+  out of the tap and leave the job installing the CASK in step one and then
+  asserting vacuously that a cask is installed — installs the formula from it via
+  the bare ref, and lets `brew update` catch the clone up. That is the real
+  trigger: Homebrew drives the migration off the update's report of what was
+  DELETED, so it fires only for a clone that observes the deletion. It then
+  asserts three independent things, because they fail for different reasons: the
+  migration was announced, the cask ended up installed (Homebrew rescues a failed
+  migration install by design, so the announcement alone proves nothing), and the
+  binary on PATH reports the cask's version (the symptom the user sees, and the
+  one that fails on its own when the cask installed but could not link). Pure
+  export `upgradeOutcomeProblems({updateOutput, caskList, reportedVersion,
+  expectedVersion})`, covered by `brew-upgrade-path.test.mjs` on the required
+  `lint` job and as the job's own first step.
+  - Env: `TAP_MIGRATION_LEGACY_REV` (optional; overrides the derived rewind
+    point, for reproducing a specific report).
+  - Exit: `0` when the migration carried the machine across; `1` on a silent
+    update, a cask that never installed, a version that never moved, or a tap
+    whose history holds no formula to rewind to. There is no "could not tell"
+    exit.
 - **`goreleaser-deprecations.mjs`** — `ci.yml`, the `lint` job. Fails the build
   when `.goreleaser.yml` uses any goreleaser feature upstream has deprecated.
   `goreleaser check` prints a deprecation as an advisory line and still exits
@@ -630,6 +707,29 @@ One implementation means a new rule guards BOTH lanes at once.
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
 
+- **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
+  Decides whether a pull request has to boot the compose stack at all. The lane
+  is a release gate, so an ordinary PR short-circuits it — but it is also the
+  only layer that runs cerberus against a REAL ClickHouse server, and chDB (what
+  every other execution layer uses) coerces column types the server rejects. So
+  the module keeps the short-circuit for changes the stack cannot see and boots
+  it for the ones it can: `HARNESS_PATHS` (the stack's own definition and
+  driver) and `SCOPE_PATHS` (`internal/chsql` emitted types, `internal/api` HTTP
+  surface, `internal/chclient` driver conversation, `cmd/cerberus` startup) —
+  deliberately NOT all of `internal/**`, which would re-gate every PR for
+  coverage the chdb-backed layers already give. `verify` asserts every declared
+  path still exists (a renamed entry matches nothing and silently retires the
+  gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
+  to `true`: push / schedule / `release/*` PRs always run the full lane, and an
+  uncomputable diff boots the stack rather than skipping it. `workflow_dispatch`
+  is the one named exception (`NON_BOOTING_EVENTS`) — e2e.yml's only dispatch
+  input regenerates the k3d crawl inventory, which no compose shard can see.
+  `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the
+  `forbid-skip` job), and the `compose-smoke` aggregator treats a skipped setup
+  as green only when this job SUCCEEDED and reported `in_scope=false`.
+  - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
+    `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
+
 - **`compose-smoke-matrix.mjs`** — `e2e.yml`, the `compose-smoke-setup` job.
   Single source of truth for how the `compose-smoke` required PR gate fans its
   10 Playwright spec files out across a balanced matrix of isolated-compose-
@@ -642,7 +742,7 @@ One implementation means a new rule guards BOTH lanes at once.
   no-run. Coverage assertion is collect-all-violations: unassigned (the
   forbidden gap), double-assigned, phantom/stale, and bad-shard-name are each
   reported, then `exit 1`. `compose-smoke-matrix.test.mjs` is the `node --test`
-  guard (run on the cheap `gate` lane) that pins the invariant + proves the
+  guard (run on the cheap `forbid-skip` job) that pins the invariant + proves the
   detectors fire. Two extra responsibilities: (1) it carries the per-shard
   `timeoutMinutes` ceiling on each emitted entry — the crawl shard gets a hard
   30-min cap (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the concurrency
@@ -754,7 +854,8 @@ One implementation means a new rule guards BOTH lanes at once.
   constants live in `test/e2e/migration/lib/provenance.go` for the Go side, and
   `test/regression/migration_tier1_test.go` holds every copy equal. The
   exported `CERBERUS_IMAGE` is what the tier-1/tier-2 compose stacks
-  interpolate (`image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}`,
+  interpolate
+  (`image: ${CERBERUS_IMAGE:-cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}}`,
   `pull_policy: never`), and `CERBERUS_EXPECT_VERSION` is exported only on the
   image path — on the source path the CLI and the compose image are two
   different builds, so each is held to its own stamp rather than to a shared
@@ -765,7 +866,10 @@ One implementation means a new rule guards BOTH lanes at once.
     workflow inputs; both empty = build from source, both set = test that
     image, exactly one set = error), `BUILD_DIR` (default `build`),
     `GITHUB_ENV` (the runner file `CERBERUS_BIN` / `CERBERUS_IMAGE` /
-    `CERBERUS_EXPECT_VERSION` are appended to).
+    `CERBERUS_EXPECT_VERSION` are appended to), `COMPOSE_PROJECT_SUFFIX` (the
+    per-checkout suffix the local image tag carries, so the tag this module
+    names is the one the stack runs; empty in a CI checkout, which is what
+    every CI checkout is — see `scripts/compose-project-suffix.sh`).
   - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
     pair, a failed build / pull / extract, a `--version` that errors, prints
     nothing, prints more than one line, or prints the wrong stamp.
@@ -784,7 +888,7 @@ One implementation means a new rule guards BOTH lanes at once.
   no-run. Coverage assertion is collect-all-violations (unassigned,
   double-assigned, phantom/stale, bad-shard-name, and the "exactly one shard
   runs Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
-  `node --test` guard (run on the cheap `gate` lane) pinning the invariant +
+  `node --test` guard (run on the cheap `forbid-skip` job) pinning the invariant +
   proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
   deliberately small. Each emitted entry also carries a per-shard
   `timeoutMinutes`: the crawl shard gets a hard 30-min cap

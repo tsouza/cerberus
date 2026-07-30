@@ -33,16 +33,27 @@
 // de-`v`'d release version — `grep -q "$TAG"` can never match (the tag carries
 // the `v`), and `grep -q "${TAG#v}"` passes on any superstring.
 //
-// THE DOCUMENTED COMMAND: the install below is the bare
-// `brew install tsouza/tap/cerberus` that README.md and docs/operations.md give
-// operators, not `brew install --cask …`. The tap can hold BOTH a cask and the
-// Formula/cerberus.rb it served before .goreleaser.yml moved off `brews:` —
-// goreleaser writes its own file and deletes nothing — and Homebrew resolves a
-// bare tap ref to the FORMULA when both exist. Under `--cask` that divergence
-// is invisible: the smoke installs the cask, every operator installs the stale
-// formula, and the release goes green. The tap is also probed directly for a
+// THE HARDER COMMAND: the install below is the bare
+// `brew install tsouza/tap/cerberus`, not the `brew install --cask …` that
+// README.md and docs/operations.md give operators, because the bare ref is the
+// strictly harder one to satisfy. The tap can hold BOTH a cask and a
+// Formula/cerberus.rb — goreleaser writes its own file and deletes nothing —
+// and Homebrew resolves a bare tap ref to the FORMULA when both exist. Under
+// `--cask` that divergence is invisible: the install sails past a shadowing
+// formula, so a smoke that passed would prove nothing about the tap being
+// unambiguous. The tap is also probed directly for a
 // leftover formula, so the failure names its cause instead of surfacing as an
 // unexplained version mismatch.
+//
+// THE USERS A FRESH INSTALL CANNOT SEE: deleting the formula fixes the install
+// this job performs, and nothing else. A machine that already had the formula is
+// not upgraded by it — `brew upgrade` files a deleted formula under "Deleted
+// Installed Formulae" and moves on, and installing the cask afterwards declines
+// to link over the formula's binary. The user is left on the old version with no
+// error printed anywhere, and the earliest adopters are hit hardest. Homebrew's
+// mechanism for this is the tap's `tap_migrations.json`, which is a blob in a
+// repository this one cannot write, so it is ASSERTED here on every release the
+// same way the cask is.
 //
 // CROSS-PLATFORM: cerberus is a Linux-first server binary, so "the cask
 // installs" has to mean it installs on LINUX, not merely on whichever runner
@@ -94,6 +105,41 @@ import { spawnSync } from 'node:child_process';
 const TAP_REPO = 'tsouza/homebrew-tap';
 const TAP_CASK_PATH = 'Casks/cerberus.rb';
 
+// The tap's formula -> cask migration map, and the name it must carry.
+//
+// Deleting Formula/cerberus.rb makes the cask win a FRESH install, which is all
+// the shadow assertion below can see. It does nothing for a machine that
+// already has the formula: `brew upgrade` lists the package under "Deleted
+// Installed Formulae" and skips it (a deleted formula has no newer version to
+// move to), and installing the cask afterwards refuses to link because the
+// formula's keg still owns `<prefix>/bin/cerberus` — "It seems there is already
+// a Binary at … from formula cerberus; skipping link". The machine ends up with
+// the new cask in the Caskroom, the old binary on PATH, and no error anywhere.
+//
+// Homebrew's answer is this file. `Reporter#migrate_tap_migration` looks up
+// every package the update deleted in `tap.tap_migrations`, and when the target
+// resolves to a cask in the same tap it unlinks the formula and installs the
+// cask for the user. The lookup returns nil when the file is absent, which is
+// silently indistinguishable from "no migration needed".
+//
+// It is asserted here rather than written here for the same reason as the
+// shadow check: the tap is a different repository and goreleaser only writes
+// the one file it owns.
+export const TAP_MIGRATIONS_PATH = 'tap_migrations.json';
+export const TAP_MIGRATION_NAME = 'cerberus';
+
+// What the entry must point at: the tap's Homebrew name, unqualified —
+// `tsouza/homebrew-tap` on GitHub, `tsouza/tap` to brew. This is the shape
+// homebrew/core uses for its own formula -> cask migrations, and the only one
+// whose handling is unambiguous. Homebrew splits the target on `/`: a two-part
+// value has no name component, so it is read as "same package, that tap" and
+// installed as the fully-qualified `<tap>/cerberus`. A THREE-part value takes a
+// different branch that keeps only the trailing name and installs the BARE token
+// `cerberus`, leaving the resolution to whichever tap answers first. That is not
+// a spelling variant of the same instruction, so it is not accepted as one.
+export const TAP_BREW_NAME = `${TAP_REPO.split('/')[0]}/tap`;
+const TAP_MIGRATION_TARGET = TAP_BREW_NAME;
+
 // Every tap path from which Homebrew would load a FORMULA named `cerberus`,
 // shadowing the cask of the same name. The tap served `Formula/cerberus.rb`
 // before .goreleaser.yml moved from `brews:` to `homebrew_casks:`; goreleaser
@@ -119,10 +165,11 @@ const TAP_FORMULA_SHADOW_RE = /^(?:(?:Formula|HomebrewFormula)\/(?:.+\/)?cerberu
 // The path the tap actually holds today, named in the repair instructions so
 // the failure tells an operator which file to delete rather than describing a
 // pattern.
-const TAP_FORMULA_PATH = 'Formula/cerberus.rb';
+export const TAP_FORMULA_PATH = 'Formula/cerberus.rb';
 
-// How an operator names the cask: `brew install tsouza/tap/cerberus`.
-const CASK_REF = 'tsouza/tap/cerberus';
+// The fully-qualified tap ref an operator names: `brew install --cask
+// tsouza/tap/cerberus`. The smoke installs it bare (see THE HARDER COMMAND).
+export const CASK_REF = 'tsouza/tap/cerberus';
 
 // A STABLE release is exactly `<major>.<minor>.<patch>`. Anything with a
 // prerelease suffix (`-rc.1`, `-RC1`) is a prerelease, which `skip_upload: auto`
@@ -296,13 +343,13 @@ export function tapShadowingFormulaPaths(paths) {
   return (paths ?? []).filter((p) => TAP_FORMULA_SHADOW_RE.test(String(p)));
 }
 
-// formulaShadowProblems — the tap must serve the cask under the name operators
-// actually type. Homebrew resolves a bare `<tap>/<name>` to a FORMULA when the
-// tap holds both a formula and a cask of that name, warning "Treating … as a
+// formulaShadowProblems — the tap must answer to `cerberus` with exactly one
+// artifact. Homebrew resolves a bare `<tap>/<name>` to a FORMULA when the tap
+// holds both a formula and a cask of that name, warning "Treating … as a
 // formula" and installing it. So a leftover Formula/cerberus.rb does not merely
 // clutter the tap: it takes over `brew install tsouza/tap/cerberus` entirely,
-// pinning every operator to whatever stale version that file declares while the
-// freshly-pushed cask sits beside it, unused.
+// serving whatever stale version that file declares while the freshly-pushed
+// cask sits beside it, unused.
 //
 // This cannot be fixed from cerberus's release run — goreleaser writes
 // Casks/cerberus.rb and has no way to delete a path it does not own — so it is
@@ -312,12 +359,95 @@ export function formulaShadowProblems(shadowPaths) {
   if (found.length === 0) return [];
   return [
     `${TAP_REPO} still serves ${found.join(', ')} alongside ${TAP_CASK_PATH}. Homebrew resolves the ` +
-      `bare \`brew install ${CASK_REF}\` — the command README.md and docs/operations.md give operators — ` +
-      `to the FORMULA when a tap holds both, so every install would get the formula's version and ignore ` +
-      `the cask this release just pushed. Delete ${TAP_FORMULA_PATH} from ${TAP_REPO} and add a ` +
-      `tap_migrations.json mapping {"cerberus": "${TAP_REPO.split('/')[0]}/tap"} so existing formula ` +
-      `installs are told how to move across.`,
+      `bare \`brew install ${CASK_REF}\` to the FORMULA when a tap holds both, so anyone typing it — ` +
+      `off an older doc, a blog post, or muscle memory from before the cask — gets the formula's ` +
+      `version and ignores the cask this release just pushed. Delete ${TAP_FORMULA_PATH} from ` +
+      `${TAP_REPO}. (Existing formula installs are moved across by ${TAP_MIGRATIONS_PATH}, asserted ` +
+      `separately.)`,
   ];
+}
+
+// tapMigrationProblems — the tap must tell Homebrew that the formula BECAME the
+// cask, not merely that the formula is gone.
+//
+// This is the half of the formula -> cask move that no fresh install can
+// observe, which is why it shipped broken: every install path CI exercises
+// starts from a clean runner, where a missing migration map is invisible. The
+// machines it strands are the ones that had the formula first — the users who
+// adopted cerberus EARLIEST — and they get no error, just an old binary on PATH
+// under a `--version` that disagrees with the release notes.
+//
+// Absence is the failure this exists to catch, so an unreadable or malformed
+// file is treated as absent rather than shrugged off: `tapFile` already turns a
+// non-404 error into a hard failure, so `null` here means the file genuinely is
+// not there.
+export function tapMigrationProblems(source) {
+  const repair =
+    `Add ${TAP_MIGRATIONS_PATH} to ${TAP_REPO} containing ` +
+    `{"${TAP_MIGRATION_NAME}": "${TAP_BREW_NAME}"}.`;
+
+  if (source === null || source === undefined) {
+    return [
+      `${TAP_REPO} has no ${TAP_MIGRATIONS_PATH}. Homebrew looks a deleted package up in ` +
+        `\`tap.tap_migrations\` to decide whether it MOVED, so without that file every machine that ` +
+        `installed cerberus as a formula is stranded: \`brew upgrade\` skips it as a deleted formula, ` +
+        `and the cask cannot link over the formula's binary. Those users keep running the old version ` +
+        `with no error. ${repair}`,
+    ];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch (e) {
+    return [
+      `${TAP_REPO}'s ${TAP_MIGRATIONS_PATH} is not valid JSON (${e.message}). Homebrew cannot read it, ` +
+        `so it migrates nobody — the same outcome as the file being absent, minus the clue. ${repair}`,
+    ];
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return [
+      `${TAP_REPO}'s ${TAP_MIGRATIONS_PATH} is not a JSON object (got ${Array.isArray(parsed) ? 'an array' : typeof parsed}). ` +
+        `Homebrew reads it as a name -> destination map. ${repair}`,
+    ];
+  }
+
+  const target = parsed[TAP_MIGRATION_NAME];
+  if (target === undefined) {
+    return [
+      `${TAP_REPO}'s ${TAP_MIGRATIONS_PATH} has no "${TAP_MIGRATION_NAME}" entry ` +
+        `(it maps ${Object.keys(parsed).length > 0 ? Object.keys(parsed).join(', ') : 'nothing'}). ` +
+        `The lookup is by package name, so an entry under any other name migrates nobody. ${repair}`,
+    ];
+  }
+
+  if (target !== TAP_MIGRATION_TARGET) {
+    return [
+      `${TAP_REPO}'s ${TAP_MIGRATIONS_PATH} points "${TAP_MIGRATION_NAME}" at "${target}" rather than ` +
+        `"${TAP_MIGRATION_TARGET}". Homebrew reads the target as the tap to move the package to, so ` +
+        `anything else either sends users to a tap that does not publish cerberus or drops them onto a ` +
+        `bare, tap-ambiguous token. ${repair}`,
+    ];
+  }
+
+  return [];
+}
+
+// brewListNames — the package names in `brew list --cask|--formula --versions`
+// output.
+//
+// Each line is `<name> <version…>`, so the leading token is the name. Matching
+// the leading token rather than searching the text is what stops a package
+// merely NAMED after cerberus, or a version string that happens to contain it,
+// from answering an is-it-installed question.
+export function brewListNames(out) {
+  return new Set(
+    String(out ?? '')
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter(Boolean),
+  );
 }
 
 // installedArtifactProblems — after the bare `brew install`, WHICH of the two
@@ -338,20 +468,14 @@ export function formulaShadowProblems(shadowPaths) {
 // name. Those commands list what IS installed and exit 0 either way, so the
 // assertion never rests on an error code meaning what we hope it means.
 export function installedArtifactProblems(caskList, formulaList) {
-  const names = (out) =>
-    new Set(
-      String(out ?? '')
-        .split('\n')
-        .map((line) => line.trim().split(/\s+/)[0])
-        .filter(Boolean),
-    );
+  const names = brewListNames;
 
   const problems = [];
   if (!names(caskList).has('cerberus')) {
     problems.push(
       `\`brew install ${CASK_REF}\` did not install a CASK named cerberus — \`brew list --cask ` +
-        `--versions\` does not list it. The documented bare ref resolved to something else, so the cask ` +
-        `this release pushed is not what an operator running that command receives.`,
+        `--versions\` does not list it. The bare tap ref resolved to something else, so the cask ` +
+        `this release pushed is not the only artifact answering to that name.`,
     );
   }
   if (names(formulaList).has('cerberus')) {
@@ -565,6 +689,15 @@ async function main() {
   // one of them describe a file no operator ever receives.
   const shadow = formulaShadowProblems(await tapPaths());
 
+  // The other half of the same move: the formula being gone is what makes the
+  // cask win a FRESH install, and this is what makes an EXISTING formula install
+  // follow it across. Checked on every release rather than once at migration
+  // time, because the file is a plain blob in another repository — nothing but
+  // this assertion would notice it being reverted, renamed or hand-edited, and
+  // the damage is invisible until an early adopter's `brew upgrade` quietly
+  // leaves them on an old binary.
+  const migration = tapMigrationProblems(await tapFile(TAP_MIGRATIONS_PATH));
+
   let decision;
   try {
     decision = verdict({ version, caskSource, isLatest: isLatestRaw });
@@ -572,7 +705,7 @@ async function main() {
     fail(e.message);
   }
 
-  const problems = [...shadow, ...decision.problems];
+  const problems = [...shadow, ...migration, ...decision.problems];
   for (const p of problems) ghError(`brew-smoke: ${p}`);
   if (problems.length > 0) process.exit(1);
 
@@ -599,13 +732,13 @@ async function main() {
   }
   const brewPrefix = prefixRes.stdout.trim();
 
-  // The BARE ref, exactly as README.md / docs/operations.md / docs/migration.md
-  // tell operators to type it. `--cask` was used here previously on the theory
-  // that the disambiguator would make a same-named formula fail loudly; it does
-  // the opposite. When a tap serves both, `--cask` silently resolves to the
-  // cask while the bare name Homebrew gives operators resolves to the FORMULA,
-  // so the smoke would install one artifact and every user the other. Smoking
-  // the documented command is the only way that divergence can be seen.
+  // The BARE ref — deliberately NOT the `--cask` form README.md /
+  // docs/operations.md / docs/migration.md give operators. `--cask` is the
+  // weaker assertion: the disambiguator does not make a same-named formula fail
+  // loudly, it silently resolves past it, so a green `--cask` smoke says nothing
+  // about whether the tap serves exactly one artifact. The bare ref is the one
+  // Homebrew resolves to the FORMULA when both exist, so installing it and then
+  // asserting a CASK arrived is what proves the tap is unambiguous.
   const install = sh('brew', ['install', CASK_REF], { timeout: INSTALL_TIMEOUT_MS });
   if (install.status !== 0) {
     fail(`\`brew install ${CASK_REF}\` failed. ${describe(install)}`);

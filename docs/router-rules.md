@@ -66,7 +66,15 @@ deployment's own data.
    because a cost watermark learned over failed queries describes the failure
    rather than the query; over a geometry column it must not, because there is
    no outcome bias to remove and the scope only shrinks the population, up to
-   emptying it outright.
+   emptying it outright. A geometry percentile is instead restricted along the
+   other axis — to the rows the solver classified — because the router classifies
+   PromQL only, so on the other two heads the geometry columns are absent rather
+   than small and fitting a percentile over their zeroes yields a threshold of
+   zero that a `>=` leaf then matches unconditionally. The restriction is derived
+   from the column (`isGeometryColumn`), not declared per-param, so it cannot be
+   forgotten on the next geometry param; where it leaves a language with no rows
+   that language's partition key is simply absent, which skips the rule for that
+   language rather than firing it on everything.
 3. **A CI guard test**
    ([`catalog/router_rules_test.go`](../internal/routerrules/catalog/router_rules_test.go))
    walks the YAML tree of **every** embedded catalog file (the base plus each
@@ -204,10 +212,17 @@ operator sees concrete values (`… at/above 4.2 GiB`) even though the file said
 
 ## The shipped rule set
 
-The catalog ships twelve generic detectors (`catalogVersion: 2`). The first
-seven (`since: 1`) pair an observed cost with the recorded route; the next five
-(`since: 2`) generalize beyond the route-A/route-B framing and attribute each
-finding by the **solver decision reason** (see below).
+The catalog ships twelve generic detectors at `catalogVersion: 4`, grouped by the
+`since` counter each rule carries. The first seven (`since: 1`) pair an observed
+cost with the recorded route; the next five (`since: 2`) generalize beyond the
+route-A/route-B framing and attribute each finding by the **solver decision
+reason** (see below).
+
+`catalogVersion` runs ahead of the highest `since` because it also counts revisions
+that change which rows an existing rule sees without adding a rule — widening the
+recorded population (version 3) or narrowing a param's population (version 4).
+Those bumps carry no new detector, and that is exactly what they are for: they tell
+an operator their findings shifted for a reason other than their own corpus moving.
 
 ### catalogVersion 1 — observed-cost / recorded-route pairs
 
@@ -215,7 +230,7 @@ finding by the **solver decision reason** (see below).
 | ---------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `oom_on_route_a`                   | critical | route-A OOMs (route B exists to avoid them; unconditional, no threshold).                                                                                                                                                                            |
 | `route_a_memory_near_cap`          | high     | route-A queries whose peak memory is at/above a fraction (`memory_near_cap_fraction`, default 0.8) of the configured cap (`query.max_memory_bytes`) — the leading indicator before an OOM. Gated on proximity to the actual cap, not the corpus p95. |
-| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards.                                                                                                                                                                            |
+| `route_a_high_fanout_should_shard` | medium   | route-A queries with fan-out in the range the deployment normally shards, restricted to the ones route B *could* have taken — `decision_reason` in {`below-threshold`, `high-D`}. A structural refusal cannot be un-refused by a threshold.          |
 | `route_a_timeout_should_shard`     | high     | route-A timeouts (time-slicing bounds per-shard wall-clock).                                                                                                                                                                                         |
 | `route_a_hit_sample_budget`        | high     | route-A queries that hit the sample budget (sharding keeps each shard under budget).                                                                                                                                                                 |
 | `route_b_overshard_low_fanout`     | medium   | route-B queries that paid k-shard overhead below the fan-out floor while finishing fast (route-B regret).                                                                                                                                            |
@@ -239,23 +254,37 @@ ships the buildable form instead: it fires on the cerberus-side rejection
 share as message context (`{cerberus_reject_ratio}`, a `corpus_count_ratio`
 scalar) — context, never a gate, so no inline tolerance number is needed.
 
-### decision_reason is an attribution column, never a condition operand
+### decision_reason attributes a finding, and gates the rules whose advice depends on it
 
-The catalogVersion-2 failure rules group by `decision_reason` — the
-shadow-header value the solver records to explain each non-route decision
-(`routed`, `below-threshold`, `not-sliceable`, `instant`, `high-D`, `now64`,
-`grid-mismatch`, `incommensurate`, `scalar-heavy`; see
-[`internal/solver/decision.go`](../internal/solver/decision.go)). It is a
-**grouping / attribution** column: it tells the operator *which solver path*
-produced the failure, so they can pick the right lever (shard vs cap vs reject
-vs rewrite) — the catalog never encodes that branch in a number. It is **never**
-a condition operand (the grammar classifies it `ColumnGroup`, rejected in a
-leaf). Because the rules only group by it, they are immune to token drift; the
-finding message is the only place the token surfaces, so it always shows
-whatever token the corpus actually carries. A meta-test
-([`test/regression/router_corpus_seed_test.go`](../test/regression/router_corpus_seed_test.go))
-pins the seed corpus's `decision_reason` tokens to the solver's `Reason*`
-constants so the fixtures never drift from production.
+`decision_reason` is the shadow-header value the solver records to explain each
+routing decision (`routed`, `below-threshold`, `not-sliceable`, `instant`,
+`instant-join`, `high-D`, `now64`, `grid-mismatch`, `incommensurate`,
+`scalar-heavy`, `routing-disabled`; see
+[`internal/solver/decision.go`](../internal/solver/decision.go)). Its primary
+use is **grouping / attribution**: the failure rules group by it so the operator
+can see *which solver path* produced the failure and pick the right lever (shard
+vs cap vs reject vs rewrite) — the catalog never encodes that branch in a number.
+
+It is also a legal **condition operand**, because for some rules the reason is
+not colour but correctness. `route_a_high_fanout_should_shard` advises "lower
+the route-B threshold", which can only change the outcome for a plan the solver
+found *eligible* and then declined on cost — `below-threshold` and `high-D`.
+Every other token is a **structural** refusal: route B cannot take an instant
+query, a now64 plan, or a non-slice-invariant plan at *any* threshold, so the
+same advice there is wrong rather than merely weak. The rule states the
+membership positively (`in [below-threshold, high-D]`), so a Reason added to the
+solver later is excluded by default instead of silently joining the population.
+
+That makes the token set a **closed domain**, not free text: the grammar
+classifies `decision_reason` `ColumnEnum` and validates every literal against
+the vocabulary, so `route_a_high_fanout_should_shard`-style typos
+(`below_threshold`) fail at catalog load rather than producing a rule that never
+fires. Two meta-tests keep the vocabulary honest — one in
+[`internal/routerrules`](../internal/routerrules/decision_reason_gate_test.go)
+pins the enum domain against `solver.Reasons` (and proves the reason gate itself
+fires only for the two cost-declined tokens), and one in
+[`test/regression`](../test/regression/router_corpus_seed_test.go) pins the seed
+corpus's tokens to the same list so the fixtures never drift from production.
 
 ## Running it
 
@@ -371,7 +400,21 @@ values) calibrated to a realistic query mix: a PromQL-dominant, range-heavy
 healthy majority on route A, plus an injected failure surface a healthy
 deployment lacks — OOM / timeout / sample-budget / breaker / rejected clusters, a
 route-B failing cluster with non-zero `k_shards`, a route-B overshard-regret
-class, a high-fanout route-A class, and a high-geometry sub-population. It proves
+class, a high-fanout route-A class, and a high-geometry sub-population.
+
+Every fixture is constrained to states the production solver can actually reach,
+and `test/regression/router_corpus_seed_test.go` pins that: a `decision_reason` is
+a `solver.Reasons` member or absent, `route == "B"` and the `routed` reason are the
+same event, and only a PromQL row carries a route, a reason, or geometry at all —
+the router classifies nothing else, so on every other head those columns are
+absent rather than small. That last invariant is the load-bearing one. A fixture
+that fakes geometry onto a LogQL row makes a `cumulative_d >= p(cumulative_d)`
+leaf look selective, while on real data that language's whole geometry population
+is zero, the fitted percentile is zero, and the leaf matches every failing row it
+has. The fixtures also carry both populations — classified and unclassified — so
+neither the route-scoped rules nor the two non-PromQL heads go untested.
+
+It proves
 the catalog is **effective**, not just well-formed: default-lane tests assert that
 every rule fires on its planted pathology with the expected class set and support,
 that the hard-failure rules stay quiet on the healthy majority (a real

@@ -25,10 +25,17 @@ Requirements: Docker (+ compose v2) and the Go toolchain. `run.sh` builds the
 cerberus image from the repo root (`Dockerfile.local`), brings up the stack,
 seeds the fixture, times the query battery, and writes [`RESULTS.md`](RESULTS.md).
 
-All host ports live in the **51xxx** range (ClickHouse `51000/51123`, cerberus
-`51091`, Prometheus `51090`, Mimir `51009`) and the compose project is
-`histbench-a29`, so the stack dodges other services (and any other bench stack)
+All host ports live in the **52xxx** range (ClickHouse `52000/52123`, cerberus
+`52091`, Prometheus `52090`, Mimir `52009`), so the stack dodges other services
 that may be running on the box.
+
+The compose project is `histbench-ab5` plus this checkout's own suffix — empty
+in a primary checkout, a short hash of the worktree path otherwise, derived by
+`scripts/compose-project-suffix.sh`. Two checkouts of the repo therefore run two
+independent bench stacks rather than one stack they take turns tearing down.
+Container names follow from the project, so `run.sh` asks compose for the names
+it assigned and passes them to the resource sampler instead of reconstructing
+them.
 
 ## How it works
 

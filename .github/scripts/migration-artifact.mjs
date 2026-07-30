@@ -34,6 +34,10 @@
 //                                  travels with CERBERUS_IMAGE_INPUT.
 //   BUILD_DIR                      where the resolved binary lands
 //                                  (default `build`).
+//   COMPOSE_PROJECT_SUFFIX         per-checkout suffix the local image tag
+//                                  carries, so the tag named here is the one
+//                                  the compose stack runs. Empty in a primary
+//                                  checkout, which is every CI checkout.
 //   GITHUB_ENV                     runner file the resolved plan is exported
 //                                  through (CERBERUS_BIN / CERBERUS_IMAGE /
 //                                  CERBERUS_EXPECT_VERSION).
@@ -53,11 +57,23 @@ import { capture, error, notice, log } from './lib/gh.mjs';
 // declaration by test/regression/migration_tier1_test.go, which reads both.
 export const SOURCE_BUILD_VERSION = 'dev';
 
+// COMPOSE_SUFFIX_REF is the per-checkout suffix interpolation every compose
+// project name and every locally built image tag in this repo ends with. Each
+// consumer expands it in its own runtime: compose interpolates it, a Justfile
+// recipe lets its shell do it, and expandComposeSuffix does it here, so all
+// three name one image. Empty in a primary checkout, which is what every CI
+// checkout is. See scripts/compose-project-suffix.sh.
+const COMPOSE_SUFFIX_REF = '${COMPOSE_PROJECT_SUFFIX:-}';
+
+function expandComposeSuffix(ref) {
+  return ref.replace(COMPOSE_SUFFIX_REF, process.env.COMPOSE_PROJECT_SUFFIX ?? '');
+}
+
 // LOCAL_IMAGE_TAG is the tag the compose stacks run when no released image is
 // supplied. Held equal to the `${CERBERUS_IMAGE:-…}` default in
 // tiers/tier1-dual/docker-compose.dual.yml and to the Justfile's
 // MIGRATION_LOCAL_IMAGE by the same regression pin.
-export const LOCAL_IMAGE_TAG = 'cerberus:migration-tier1';
+export const LOCAL_IMAGE_TAG = expandComposeSuffix('cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}');
 
 // IMAGE_BINARY_PATH is where the cerberus image keeps its binary — the same
 // path Dockerfile.local's and Dockerfile's `COPY --from=build` write to, and

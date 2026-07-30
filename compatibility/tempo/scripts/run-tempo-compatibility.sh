@@ -48,6 +48,14 @@ ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 REPO_ROOT=$(cd "$ROOT_DIR/../.." && pwd)
 cd "$ROOT_DIR"
 
+# The per-checkout suffix docker-compose.yml's `name:` interpolates. Already set
+# when this script runs under `just`; derived here so a direct invocation — the
+# way CI and a local run both reach it — isolates too. Empty in a primary
+# checkout, so CI's project name is unchanged.
+# See scripts/compose-project-suffix.sh.
+COMPOSE_PROJECT_SUFFIX="$("$REPO_ROOT/scripts/compose-project-suffix.sh")"
+export COMPOSE_PROJECT_SUFFIX
+
 REPORT_DIR=${REPORT_DIR:-"$ROOT_DIR/reports"}
 mkdir -p "$REPORT_DIR"
 chmod a+w "$REPORT_DIR"

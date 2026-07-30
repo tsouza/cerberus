@@ -46,9 +46,12 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		return decision, false
 	}
 
-	// "single" classifies but never routes.
+	// "single" classifies but never routes. The reason is routing-disabled,
+	// NOT below-threshold: no threshold was consulted, so this row is not
+	// evidence about where the threshold sits and must not join a population
+	// whose advice is "move the threshold".
 	if p.Cfg.Mode == ModeSingle {
-		return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
+		return notRouted(ReasonRoutingDisabled).withGrid(sig, meta), false
 	}
 
 	if p.Cfg.Mode == ModeAuto {
@@ -98,12 +101,17 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 // live-edge freshness, or corroboration — the caller applies its own gates
 // for those before dispatching.
 func (p *Planner) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
-	if p.Cfg.Mode == ModeSingle {
-		return notRouted(ReasonBelowThreshold).withGrid(signals{}, meta), false
-	}
+	// classify runs before the mode gate so this seam and Plan's cannot
+	// disagree about the same plan's geometry. Classification is a pure
+	// signal-gathering walk with no side effects, so running it on a
+	// deployment that will refuse anyway costs one tree walk and buys a
+	// corpus row that is honest about what was refused.
 	sig, decision, k, eligible := p.classify(plan, meta)
 	if !eligible {
 		return decision, false
+	}
+	if p.Cfg.Mode == ModeSingle {
+		return notRouted(ReasonRoutingDisabled).withGrid(sig, meta), false
 	}
 	return p.sliceAndDecide(plan, meta, sig, k)
 }
@@ -154,16 +162,40 @@ func (p *Planner) sliceAndDecide(plan chplan.Node, meta RequestMeta, sig signals
 // Cfg.MinAnchorsPerSlice) — no caller trusts a Decision computed at an
 // earlier point in time or against a different plan.
 func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, decision *Decision, k int64, eligible bool) {
-	// (2)-prefix: instant queries are never time-slice routed.
-	// Step == 0 means an instant evaluation; there is no anchor grid. The
-	// analyze pass below derives the cost grid (N/F/D/OuterRange); it has not
-	// run yet here, so the only meaningful scalar is Step (zero on an instant
-	// query). costGrid threads whatever the empty signals carry plus meta.Step.
-	if meta.Step <= 0 {
-		return signals{}, notRouted(ReasonInstant).withGrid(signals{}, meta), 0, false
-	}
-
+	// analyze runs FIRST, before any gate, so every Decision this classifier
+	// returns carries the plan's real cost grid — including the ones that
+	// refuse. The calibration corpus exists to replay routing decisions
+	// offline, and a refusal recorded with a zero grid is unreplayable: it
+	// says "we declined" without saying what we declined. analyze is a pure
+	// signal-gathering walk (it makes no routing decision and mutates no
+	// state), so hoisting it above the gates changes no outcome.
 	sig = p.analyze(plan, meta)
+
+	// (2)-prefix: instant queries are never time-slice routed. Step == 0 means
+	// an instant evaluation: the anchor grid is a single point (N = 1), and
+	// route B's only decomposition is anchor-grid partitioning (slicer.go),
+	// which needs N >= 2 to produce more than one shard. The refusal is
+	// definitional, so it is checked before the correctness gates.
+	//
+	// The grid this stamps is load-bearing for the corpus in two ways. It
+	// records the spine lookback (cumulativeD) that decides whether an instant
+	// query is heavy enough to be worth a different decomposition at all — a
+	// question the zero grid could not even be asked. And it makes GridOf's
+	// silent-miss failure mode (solver.go: a grid carrier not found leaves
+	// step == 0, so a RANGE query is classified instant) visible in the
+	// corpus: a genuine instant query records no anchor grid because its plan
+	// carries none, whereas a missed carrier records a non-zero N/F/OuterRange
+	// from the plan itself NEXT TO a zero Step.
+	//
+	// Both conjuncts are needed. reason=instant is also emitted further down
+	// (the sawUnpinnedBound / sawInstantWindow gate), and that one fires on a
+	// genuine RANGE request — non-zero Step, real grid — so reason=instant
+	// beside a populated grid is ordinary, not a missed carrier. It is
+	// reason=instant beside a ZERO Step and a non-zero grid that cannot happen
+	// any other way.
+	if meta.Step <= 0 {
+		return sig, notRouted(ReasonInstant).withGrid(sig, meta), 0, false
+	}
 
 	// (1) Slice-invariance: any unmarked node anywhere → route A.
 	if !sig.allSliceInvariant {
@@ -190,10 +222,10 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	// wall-clock the plan-level now64 scanner never sees (it is minted in the
 	// SQL, not carried as a chplan FuncCall). Only the StepAligned (range-mode)
 	// join step-aligns on the real per-anchor TimestampColumn and is safe to
-	// slice; the instant shape fails closed to route A. Plan's Step<=0 guard
-	// already rejects instant *queries* before analyze, but a !StepAligned join
-	// can appear under a range-mode request, so this guard is both the
-	// load-bearing fail-close AND honest telemetry.
+	// slice; the instant shape fails closed to route A. The Step<=0 gate above
+	// already rejects instant *queries*, but a !StepAligned join can appear
+	// under a range-mode request, so this guard is both the load-bearing
+	// fail-close AND honest telemetry.
 	if sig.sawInstantVectorJoin {
 		return sig, notRouted(ReasonInstantJoin).withGrid(sig, meta), 0, false
 	}
@@ -258,8 +290,11 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 }
 
 // notRouted builds a non-route Decision carrying only the reason. Callers
-// chain .withGrid(sig, meta) to attach the cost-grid readout once analyze
-// has run; the pre-analyze instant guard passes empty signals.
+// chain .withGrid(sig, meta) to attach the cost-grid readout. Every refusal in
+// this package is raised after classify has run, so none of them reaches the
+// corpus with an all-zero grid — a refused row is still a calibration
+// datapoint, and a zero grid would be indistinguishable from a genuinely
+// trivial query.
 func notRouted(reason string) *Decision {
 	return &Decision{Reason: reason}
 }

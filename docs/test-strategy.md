@@ -56,7 +56,21 @@ green no-op on an ordinary pull request, do their real work on the merge
 commit, and are named in release.yml's `RELEASE_REQUIRED_CHECKS`: nothing
 publishes until each has posted a green check-run on the commit being shipped.
 A `release/*` head branch still gets the full lane on the PR itself. The gate
-moved; it did not disappear. Every other job below is
+moved; it did not disappear.
+
+`compose-smoke` narrows that short-circuit by one step. It is the only
+lane that runs cerberus against a REAL ClickHouse server; every other
+execution layer runs against chDB, which coerces column types the
+server type-checks and rejects, so an emit-type or response-shape
+defect is green everywhere else and 502s in production. A pull request
+that changes something the stack can see differently — `internal/chsql`
+(the emitted types), `internal/api` (the HTTP surface),
+`internal/chclient` (the driver conversation), `cmd/cerberus` (startup)
+— therefore boots the stack on the PR. Everything else still
+short-circuits in seconds. `.github/scripts/compose-smoke-scope.mjs`
+owns the decision and the two path lists, computes them from the PR's
+own diff against its merge base, falls back to booting the stack when
+that diff cannot be computed, and is unit-tested in the `forbid-skip` job. Every other job below is
 informational — it runs (push-to-main, nightly, or dispatch) and reports,
 but a red result does not block a merge. Informational does **not** mean
 tolerated: a red informational lane is a real failure to fix, it is just
@@ -92,7 +106,7 @@ for the rosters themselves and the procedure for moving one.
 | `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)     | PR + push + nightly + dispatch      | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness) + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                                                                                                                                                                     |
 | `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)           | PR + push + nightly + dispatch      | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                                                                                                                                                                     |
 | `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)          | PR + push + nightly + dispatch      | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus) + parity-regression ratchet vs `compatibility/parity-baseline.json`                                                                                                                                                                                                                                                                                                                                                                                             |
-| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | release PR + push + nightly         | Release   | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                                                                                                                                                                          |
+| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                          | in-scope PR + push + nightly        | Release   | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                                                                                                                                                                          |
 | `chart-validate`                        | `chart-ci.yml` (`chart-validate`)                    | PR + push + dispatch                | Required  | Helm chart lint + `helm-docs` README drift gate + `kubeconform` render + render assertions (split PDBs / derived `GOMEMLIMIT`) + `ct lint` over `deploy/helm/cerberus`; short-circuits to a green no-op when no chart file changed, so it reports on every PR                                                                                                                                                                                                                                                                         |
 | `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Required  | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`) | PR + push + nightly + dispatch      | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half)                                                                                                                                                                                                                                                                                                              |
@@ -103,7 +117,7 @@ for the rosters themselves and the procedure for moving one.
 | `chaos`                                 | `e2e.yml` (`chaos`)                                  | push + nightly + dispatch           | Info      | k3d live-stack fault injection — resilience contracts under real faults (Layer 13). Phase-1 on push; full set on nightly/dispatch                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `startup-bench`                         | `e2e.yml` (`startup-bench`)                          | push + nightly + dispatch           | Info      | cerberus reaches `/healthz` under 2 s against an inline ClickHouse                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `strict-scan`                           | `strict-scan.yml` (`strict-scan`)                    | PR + push + nightly + dispatch      | Info      | Strict-scan differential (Layer 6e): executes the matrix golden SQL corpus against a real ClickHouse (testcontainers) through the production strict scan, then runs the router-corpus WRITE + READ seams and the optcorpus query_log-predicate + exit_status-enum reconciliation arms; fails on any coercion error chDB hides. Also hosts the real-CH differentials that need a driver + server rather than chDB: TraceQL spans-scan resource bounds, solver memory apportionment, and the connection-teardown pool census (Layer 6f) |
-| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | PR + push + nightly + dispatch      | Required  | gremlins per package (`chplan` / `chsql` / `optimizer` / `promql` / `logql` x4 / `traceql` / `qlcommon`) at the phase efficacy floor. Required on the PR; [de-gated on the publish path](operations.md#de-gated-lanes-on-the-publish-path)                                                                                                                                                                                                                                                                                            |
+| `mutation` (per phase)                  | `mutation.yml` (matrix)                              | PR + push + nightly + dispatch      | Required  | gremlins per package at the phase efficacy floor (table in `.github/scripts/mutation-phases.mjs`). On a PR only the phases whose scope the PR changed; push / nightly / dispatch / `release/*` PRs sweep the full matrix. Required on the PR; [de-gated on the publish path](operations.md#de-gated-lanes-on-the-publish-path)                                                                                                                                                                                                        |
 | `property`                              | `property.yml`                                       | PR + push + nightly + dispatch      | Required  | rapid-driven oracle property tests, PromQL / LogQL / TraceQL (Layer 4 + 6 cross-check)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `coverage`                              | `coverage.yml`                                       | PR + push + nightly + dispatch      | Required  | merged default-tag + chdb-tagged cover profile, per-package summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `migration-tier1`                       | `migration-e2e.yml` (`migration-tier1`)              | push + nightly + dispatch           | Info      | Layer 14 Tier-1 substrate: pinned reference Prometheus / Loki / Tempo + ClickHouse + collector + cerberus, one all-signal fixture seeded into both sides, `migration_tier1`-tagged parity assertions plus the `@tier1` Gherkin scenarios, one compose lifecycle per run                                                                                                                                                                                                                                                               |
@@ -541,38 +555,44 @@ land in the standard test output.
 
 ## Gremlins mutation
 
-Per-package mutation thresholds live in `.gremlins.yaml`; each package
-runs as its own matrix entry in `.github/workflows/mutation.yml`. The
-gate is informational on push-to-main; flipped to required when a
-phase has held the 95% efficacy floor for a stable streak.
+`.gremlins.yaml` carries the floor for an unscoped whole-repo `just
+mutate`; the per-phase table — scope, efficacy floor, worker cap,
+exclude set, and the rationale behind each — lives in
+`.github/scripts/mutation-phases.mjs`, and `.github/workflows/mutation.yml`
+expands it into the `mutate` job's matrix. The rolled-up `mutation`
+context is a required check on `main`.
 
-| Phase                       | Package                  | Efficacy floor |
-| --------------------------- | ------------------------ | -------------- |
-| `phase1`                    | `internal/chplan`        | 95%            |
-| `phase2`                    | `internal/chsql`         | 95%            |
-| `phase3-optimizer`          | `internal/optimizer`     | 95%            |
-| `phase4-promql`             | `internal/promql`        | 95%            |
-| `phase4-logql-lower`        | `internal/logql`         | 95%            |
-| `phase4-logql-aggregation`  | `internal/logql`         | 93%            |
-| `phase4-logql-other-a`      | `internal/logql`         | 95%            |
-| `phase4-logql-other-b`      | `internal/logql`         | 95%            |
-| `phase4-logql-parser`       | `internal/logql/lsyntax` | 95%            |
-| `phase4-logql-lsyntax`      | `internal/logql/lsyntax` | 95%            |
-| `phase4-traceql`            | `internal/traceql`       | 95%            |
-| `phase5-qlcommon`           | `internal/qlcommon`      | 95%            |
+On a pull request the lane runs the phases whose scope that PR changed,
+and only those: a PR editing `internal/chplan` runs `phase1`, a PR
+editing only docs runs no leg and the aggregator passes through
+honestly. Push-to-main, the nightly, a manual dispatch, a `release/*`
+PR, and any PR touching the lane's own harness all sweep the FULL
+matrix, so no phase's floor is ever load-bearing on some PR happening
+to touch its package. `.github/scripts/mutation-matrix.mjs` computes
+that selection from the PR's own diff against its merge base and is
+unit-tested in the `forbid-skip` job; when the diff cannot be computed
+it falls back to the full matrix rather than to an empty one.
+
+The phase inventory is not restated here. `mutation-phases.mjs` is the
+one place that carries it: leg names and per-leg efficacy floors change
+with the packages they cover, and a table duplicated into prose drifts
+out of step without anything going red. Read the module.
 
 `internal/logql` is split into four sibling matrix entries (each scoped
 to `./internal/logql` but with disjoint `--exclude-files` regexes) to
 keep the `go test ./internal/logql` cycle under the ubuntu-latest memory
-ceiling; `phase4-logql-aggregation` sits one point lower at 93% to absorb
-a documented equivalent mutant. Its `internal/logql/lsyntax` parser
+ceiling. Its `internal/logql/lsyntax` parser
 subpackage gets its own pair of dedicated legs (`phase4-logql-parser` /
 `phase4-logql-lsyntax`, mirroring the `internal/traceql/ast` split
 below) rather than being swept into the four `internal/logql` legs —
 gremlins recurses into every subdirectory of a scope, so leaving
 `lsyntax` unexcluded there let a relocated, heavier test file bloat
 every one of those legs' `go test` cycles (2026-07-25 incident). See
-`.github/workflows/mutation.yml` for the per-phase exclude sets.
+`.github/scripts/mutation-phases.mjs` for the per-phase exclude sets.
+Those patterns are handed to Go's regexp, so `mutation-matrix.mjs`
+rejects any that reach for lookaround or a backreference — RE2 has
+neither, and a leg that only discovers this at run time has already
+spent its checkout and toolchain setup.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs
@@ -729,9 +749,14 @@ internally over every dashboard/panel/surface, so Playwright's native
 `workers: 1` in `playwright.config.ts`) leaves them whole and buys
 nothing. The split is therefore **logical**: the spec FILES
 are partitioned across a matrix of jobs, each booting its OWN isolated
-compose stack, balanced by measured wall-clock weight. The partition,
-the explicit non-compose-smoke exclude list, and the coverage
-assertion are the single source of truth in
+compose stack, balanced by measured wall-clock weight. Whether the lane fans out at all on a
+pull request is a separate, earlier decision made by
+`.github/scripts/compose-smoke-scope.mjs` in the `compose-smoke-scope`
+job; the aggregator reads a skipped setup as green only when that job
+succeeded AND reported the change out of scope, so a scope job that
+crashed fails the gate instead of passing for the wrong reason. The
+partition, the explicit non-compose-smoke exclude list, and the
+coverage assertion are the single source of truth in
 `.github/scripts/compose-smoke-matrix.mjs` (`compose-smoke-setup`
 verifies + emits the matrix; `compose-smoke-shard` runs each shard;
 the aggregator job literally named `compose-smoke` needs the matrix

@@ -56,11 +56,10 @@ difference, so your existing dashboards and alerts keep working unchanged.
 </pre></td></tr></table>
 </div>
 
-**Cerberus does not ingest or store anything.** Your OpenTelemetry
-Collector already writes telemetry into ClickHouse through its ClickHouse
-exporter; cerberus only reads it back. So you do **not** point Promtail, an
-OTel agent, or any other writer at cerberus — those keep writing straight
-to ClickHouse exactly as they do now. Cerberus sits on the read side only.
+**Cerberus never ingests or stores anything.** Your OpenTelemetry Collector
+already writes telemetry into ClickHouse through its ClickHouse exporter, and
+cerberus only reads it back. Writers keep pointing at ClickHouse exactly as
+they do today — never at cerberus.
 
 > [!NOTE]
 > **1.0 — stable wire API, young project.** The Prometheus / Loki / Tempo
@@ -76,44 +75,38 @@ Metrics, logs, and traces rarely share a store. The usual answer is
 Prometheus + Loki + Tempo: three systems, three retention policies, three
 storage bills — for what is largely the same OpenTelemetry data sliced
 three ways. ClickHouse is a great single store for all three signals.
-Cerberus supplies the missing **query side**, so you get one backend
-without giving up the query languages and tooling you already use.
+Cerberus supplies the missing **query side**.
 
 - **No Grafana plugin.** Cerberus speaks each upstream HTTP API verbatim
   (`/api/v1/query_range`, `/loki/api/v1/query_range`, `/api/search`, …),
   so Grafana sees three ordinary datasources.
 - **No new query language.** PromQL, LogQL, and TraceQL — exactly as your
   dashboards and alerts already write them.
-- **Faithful parsers.** PromQL is parsed by the upstream Apache
-  `prometheus/promql/parser`. LogQL and TraceQL are parsed by cerberus's
-  own clean-room Apache reimplementations of the published grammars
-  (`internal/logql/lsyntax`, `internal/traceql/ast`), checked against the
-  real Grafana parsers in testing. If upstream parses a query, so does
-  cerberus — without linking Grafana's AGPL-licensed code into the binary.
+- **Faithful parsers.** If upstream parses a query, so does cerberus.
+  PromQL goes through the upstream Apache `prometheus/promql/parser`; LogQL
+  and TraceQL go through cerberus's own clean-room Apache reimplementations
+  of the published grammars, checked against the real Grafana parsers in
+  testing — so no AGPL-licensed code is linked into the binary.
 
 ## How it works
 
-ClickHouse holds your telemetry in the **standard OpenTelemetry ClickHouse
-schema** — one table per signal, not one giant table:
+Your telemetry lives in the **standard OpenTelemetry ClickHouse schema** —
+one table per signal, not one giant table: `otel_traces`, `otel_logs`, and
+metrics split by type across `otel_metrics_gauge`, `otel_metrics_sum`,
+`otel_metrics_histogram`, `otel_metrics_exponential_histogram`, and
+`otel_metrics_summary`. That is what the Collector's ClickHouse exporter
+writes by default. Cerberus reads those tables and never creates or writes
+them. Different column layout? Point cerberus at it with the
+[`CERBERUS_SCHEMA_*` overrides](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
 
-- traces in `otel_traces`,
-- logs in `otel_logs`,
-- metrics split by type across `otel_metrics_gauge`, `otel_metrics_sum`,
-  `otel_metrics_histogram`, `otel_metrics_exponential_histogram`, and
-  `otel_metrics_summary`.
+Every query takes the same path:
 
-This is the layout the OpenTelemetry Collector's ClickHouse exporter writes
-by default. Cerberus reads those tables; it never creates or writes them.
-If your column layout differs from the exporter defaults, point cerberus at
-it with `CERBERUS_SCHEMA_*` overrides — see the
-[configuration reference](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
+**parse → lower to a shared plan → optimize → ClickHouse SQL → stream back
+in the upstream wire format**
 
-Each query takes one path: the head parses its language and lowers it to a
-shared plan, a small optimizer rewrites that plan, and cerberus emits
-parameterised ClickHouse SQL and streams the result back in the upstream
-wire format. There is **one** pipeline behind all three heads, so a new
-optimization costs one implementation, not three. The full breakdown is in
-[`docs/engine.md`](docs/engine.md); the performance strategy is in
+One pipeline sits behind all three heads, so a new optimization costs one
+implementation instead of three. The full breakdown is in
+[`docs/engine.md`](docs/engine.md), the performance strategy in
 [`docs/performance.md`](docs/performance.md).
 
 > **Rate-over-range is exact by default.** `rate(…)` range queries match
@@ -121,9 +114,11 @@ optimization costs one implementation, not three. The full breakdown is in
 > For million-row queries an experimental native ClickHouse path
 > (`timeSeriesRateToGrid`) trades a sub-observable last-bit rounding
 > difference for flat memory and an order-of-magnitude speed-up — see the
-> [exactness-vs-scale tradeoff guide](docs/performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
+> [exactness-vs-scale guide](docs/performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
 
 ## Quick start
+
+Kick the tyres locally, no ClickHouse of your own required:
 
 ```sh
 git clone https://github.com/tsouza/cerberus.git && cd cerberus
@@ -131,17 +126,20 @@ docker compose up --wait
 open http://localhost:3000   # Grafana (auto-login as admin); cerberus on :8080
 ```
 
-That builds cerberus, boots single-node ClickHouse, loads a deterministic
+That builds cerberus, boots a single-node ClickHouse, loads a deterministic
 OTel fixture (logs / traces / metrics), and brings up Grafana
 pre-provisioned with cerberus as three datasources. A fresh dashboard
 populates in ~30s; `docker compose down -v` wipes the volume.
 
-### From a published release
+### Install a release
 
 Cerberus is one stateless binary, configured from a `cerberus.yaml` or from
 `CERBERUS_*` environment variables — the same settings either way (see
-[`docs/configuration.md`](docs/configuration.md)).
-Pin an explicit tag — `:latest` only moves with stable releases:
+[`docs/configuration.md`](docs/configuration.md)). The runtime contract
+around it — lifecycle, scaling, the solver and experimental knobs in
+context — is in [`docs/operations.md`](docs/operations.md).
+
+**Docker.** Pin an explicit tag; `:latest` only moves with stable releases.
 
 ```sh
 docker pull ghcr.io/tsouza/cerberus:<tag>
@@ -149,33 +147,26 @@ docker run --rm -p 8080:8080 -e CERBERUS_CH_ADDR=clickhouse:9000 \
   ghcr.io/tsouza/cerberus:<tag>
 ```
 
-Prebuilt binaries (linux / darwin × amd64 / arm64) are on the
-[release page](https://github.com/tsouza/cerberus/releases); each release
-ships a [SLSA build provenance](https://slsa.dev) attestation:
+**Homebrew** (macOS and Linuxbrew). The quickest way to get the
+`cerberus migrate` CLI onto the machine holding your rules and dashboards —
+see [migrating to cerberus](docs/migration.md#step-1-install-the-binary).
+Only stable releases publish a cask, so `brew` never hands you a prerelease.
+
+```sh
+brew install --cask tsouza/tap/cerberus
+```
+
+**Binaries.** linux / darwin × amd64 / arm64 on the
+[release page](https://github.com/tsouza/cerberus/releases), each with a
+[SLSA build provenance](https://slsa.dev) attestation:
 
 ```sh
 gh attestation verify cerberus_*_linux_amd64.tar.gz --owner tsouza --repo cerberus
 ```
 
-The same binary is a Homebrew cask (macOS and Linuxbrew), which is the
-quickest way to get the `cerberus migrate` CLI onto the machine holding your
-rules and dashboards — see [migrating to cerberus](docs/migration.md#step-1-install-the-binary):
-
-```sh
-brew install tsouza/tap/cerberus
-```
-
-Only stable releases publish a cask, so `brew` never hands you a prerelease.
-
-The surrounding runtime contract (lifecycle, scaling, the solver and
-experimental knobs in context) lives in
-[`docs/operations.md`](docs/operations.md).
-
-### Helm (Kubernetes)
-
-A production Helm chart lives in
-[`deploy/helm/cerberus`](deploy/helm/cerberus) and is published as an OCI
-artifact (cosign-signed, with SLSA provenance):
+**Helm.** A production chart lives in
+[`deploy/helm/cerberus`](deploy/helm/cerberus), published as a
+cosign-signed OCI artifact with SLSA provenance:
 
 ```sh
 helm install cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus --version <x.y.z> \
@@ -183,28 +174,30 @@ helm install cerberus oci://ghcr.io/tsouza/cerberus/charts/cerberus --version <x
   --set clickhouse.existingSecret=ch-creds
 ```
 
-The chart is stateless and secure-by-default, with typed
+It is stateless and secure-by-default, with typed
 ClickHouse / OTLP / schema / admit blocks plus full escape hatches
-(`extraEnv`, sidecars, affinity, ingress, HPA, PDB, NetworkPolicy). See
-the [chart README](deploy/helm/cerberus/README.md) for the complete values
+(`extraEnv`, sidecars, affinity, ingress, HPA, PDB, NetworkPolicy). The
+[chart README](deploy/helm/cerberus/README.md) has the complete values
 reference and a production HA example.
 
 ## Migrating from Prometheus
 
-Already running Prometheus? Cerberus is built to **replace its storage and
-query engine — not your dashboards, alerts, or ruler.** Cerberus has no rule
-engine and never ingests, so your recording/alerting rules keep being evaluated
-by whatever evaluates them today; the move is ultimately a datasource **URL
-swap**. But you only earn that swap after _proving_, query by query, that
-cerberus returns the same numbers on your own data.
+Cerberus replaces Prometheus's **storage and query engine — not your
+dashboards, alerts, or ruler.** It has no rule engine and never ingests, so
+your recording and alerting rules keep being evaluated by whatever evaluates
+them today, and the move is ultimately a datasource **URL swap**. You just
+have to earn that swap by proving, query by query, that cerberus returns the
+same numbers on your own data.
 
-The release `cerberus` binary ships a `migrate` subcommand for exactly that. It **harvests** your
-real PromQL, LogQL, and TraceQL from rule files and exported dashboards, **previews** the ClickHouse
-SQL and schema offline, then **replays every metric query against its head's
-reference backend — Prometheus, Loki, Tempo — and against cerberus, and diffs the
-results** — and folds every artifact into one go/no-go **gate** that refuses the
-cutover while a single query still diverges. Nothing is allow-listed; the gate
-earns the flip.
+The `migrate` subcommand in the release binary is built for exactly that. It
+
+- **harvests** your real PromQL, LogQL, and TraceQL from rule files and
+  exported dashboards,
+- **previews** the ClickHouse SQL and schema offline,
+- **replays** every metric query against its head's reference backend
+  (Prometheus, Loki, Tempo) _and_ against cerberus, then diffs the results,
+- **gates** the cutover on all of it, refusing the flip while a single query
+  still diverges. Nothing is allow-listed; the gate earns the flip.
 
 **→ Follow the step-by-step operator playbook in
 [`docs/migration.md`](docs/migration.md).**
@@ -220,56 +213,45 @@ was written in.
 | ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. |
 | OTel exporter schema | **clickhouseexporter 0.152.0** | A table layout, not a binary version — any matching writer works.   |
 
-**ClickHouse.** 24.8 is the lowest version cerberus's emitted SQL is
-correct on; a query that runs on 24.8 runs on every newer server too. The
-differential compatibility harnesses execute on ClickHouse 26.5, so the
-validated SQL is exercised forward of the floor as well. On modern
-ClickHouse, the optimization auto-picker
-(`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes the server version
-once at startup and turns on result-equivalent optimizations it supports —
-`aggregation_in_order` (24.8+), `condition_cache` (25.3+), and the native
-`timeSeries*ToGrid` aggregates (25.9+). Those native aggregates are
-validated result-correct at flat memory but kept behind an "experimental"
-label; `auto` selects them by version, so eligible
-`rate(<counter>[range])` range queries lower to the compiled
-`timeSeriesRateToGrid` aggregate on 25.9+ and emit the 24.8-safe SQL
-unchanged below it. The one opt-in-only feature is
-`columnar_result_decode` (a perf tradeoff `auto` never selects). See
-[`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) and
-[`docs/operations.md`](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259)
-for the runtime contract.
+**ClickHouse 24.8+.** A query that runs on 24.8 runs on every newer server
+too, and the differential harnesses execute on ClickHouse 26.5, so the
+validated SQL is exercised well forward of the floor.
 
-**OTel schema — the shape, not the exporter.** Cerberus reads the standard
+You do not have to tune for your server version. The optimization
+auto-picker (`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes it once
+at startup and turns on the result-equivalent optimizations it finds:
+
+- `aggregation_in_order` — 24.8+
+- `condition_cache` — 25.3+
+- the native `timeSeries*ToGrid` aggregates — 25.9+, so an eligible
+  `rate(<counter>[range])` range query lowers to the compiled
+  `timeSeriesRateToGrid` aggregate there and emits the 24.8-safe SQL
+  unchanged below it. Validated result-correct at flat memory, still
+  labelled experimental.
+- `columnar_result_decode` — opt-in only; a perf tradeoff `auto` never
+  selects for you.
+
+[`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) and
+[the runtime contract](docs/operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259)
+have the details.
+
+**The schema shape, not the exporter.** Cerberus reads the standard
 OpenTelemetry ClickHouse schema, pinned to the `clickhouseexporter`
 **v0.152.0** table layout (via the `tsouza/…:cerberus-ddl` fork in
 [`go.mod`](go.mod)). What matters is the column names, types, and `Map`
-shapes — not which binary wrote them. Any exporter, collector pipeline, or
-other path that produces that layout works. If yours differs, point
-cerberus at it with the `CERBERUS_SCHEMA_*` overrides — see the
-[configuration reference](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
+shapes — not which binary wrote them — so any exporter, collector pipeline,
+or other path that produces that layout works. If yours differs, point
+cerberus at it with the
+[`CERBERUS_SCHEMA_*` overrides](docs/configuration.md#schema-overrides-and-prometheus-resource-labels).
 
 ## Compatibility
 
-The three `*QL compat` badges at the top are **parity scores** —
-`passed / total` cases where cerberus returned the same answer as a
-reference Prometheus / Loki / Tempo on the same seeded data. Here is how
-they are measured.
-
-Each query language has a **differential harness**: cerberus and a
-reference engine answer the same corpus against the same seeded data, and
-the responses are diffed case-for-case — pinning observed behaviour on
-real ClickHouse against an upstream oracle, not just the emitted SQL.
-
-The strongest leg is **PromQL**, which runs the third-party **PromQL
-Compliance Tester** (`prometheus/compliance`, the PromLabs / CNCF
-Prometheus Conformance Program tooling) against a real `prom/prometheus`,
-seeded identically on both sides via remote-write. **737/737 cases pass,
-no allow-list.** LogQL diffs against a real Loki on Grafana's own
-`pkg/logql/bench` corpus — solid, but a Grafana bench corpus rather than a
-standardised conformance suite. TraceQL is the lighter leg: there is **no
-third-party TraceQL conformance suite**, so its corpus is cerberus-owned
-(author-written TXTAR), and its numerical confidence is correspondingly
-lower than PromQL's.
+The three `*QL compat` badges at the top are **parity scores**:
+`passed / total` cases where cerberus returned the same answer as a real
+Prometheus / Loki / Tempo on the same seeded data. Each head has a
+**differential harness** that answers one corpus with both engines and diffs
+the responses case-for-case — pinning observed behaviour on real ClickHouse
+against an upstream oracle, not just the emitted SQL.
 
 | Head    | Reference + corpus                                                  | Required check             | Conformance leg                           |
 | ------- | ------------------------------------------------------------------- | -------------------------- | ----------------------------------------- |
@@ -277,77 +259,106 @@ lower than PromQL's.
 | LogQL   | real Loki vs `grafana/loki:pkg/logql/bench` corpus                  | `compatibility/loki`       | real-backend diff, Grafana bench corpus   |
 | TraceQL | real Tempo vs cerberus-owned TXTAR corpus                           | `compatibility/tempo`      | author-written corpus (lightest)          |
 
+PromQL is the strongest leg: the third-party **PromQL Compliance Tester**
+(PromLabs / CNCF Prometheus Conformance Program tooling) against a real
+`prom/prometheus`, seeded identically on both sides via remote-write —
+**737/737 cases pass, no allow-list.** LogQL is solid but measured on a
+Grafana bench corpus rather than a standardised conformance suite. TraceQL
+is the lightest leg: no third-party TraceQL conformance suite exists, so its
+corpus is author-written TXTAR and its numerical confidence is
+correspondingly lower than PromQL's.
+
 ```sh
 just compat-all          # or compat-promql / compat-logql / compat-traceql
 ```
 
-**What the required checks enforce.** The three `compatibility/<head>`
-checks run on every PR in two layers. The harness itself is _scored_
+**No allow-lists.** Every diff against the reference is a real bug to fix at
+the source, not an exception to suppress. The full playbook — per-head
+drivers, local reproduction, rejection parity, the sole pinned
+`upstream-skip-baseline` contract — is in
+[`docs/compatibility.md`](docs/compatibility.md).
+
+<details>
+<summary><b>How those badges double as a merge gate</b></summary>
+
+<br>
+
+The three `compatibility/<head>` checks run on every PR in two layers.
+
+The harness itself is _scored_
 ([#503](https://github.com/tsouza/cerberus/pull/503)): it accumulates
 per-case results into `report.json` / `compat-score.json` plus a per-case
-roster in `compat-cases.json`, and exits 0 even when a case diverges, so
+roster in `compat-cases.json`, and exits 0 even when a case diverges — so
 the harness step alone reddens the job only on infrastructure breakage
-(stack won't boot, seed fails, report unparseable). The gate is the step
-after it — [`compat-ratchet.mjs`](.github/scripts/compat-ratchet.mjs)
-compares the run's roster against the committed one in
+(stack won't boot, seed fails, report unparseable).
+
+The gate is the step after it.
+[`compat-ratchet.mjs`](.github/scripts/compat-ratchet.mjs) compares the
+run's roster against the committed one in
 [`compatibility/parity-baseline.json`](compatibility/parity-baseline.json)
-and **fails the required job on any case that moved**: a recorded case
-that now diverges, one that stopped running, or a new case that either
-diverges on arrival or passes without being recorded. Gating on case
-identity rather than a count means a regression cannot hide behind an
-unrelated case that started passing in the same run. Moving a roster is a
-deliberate same-PR edit to the baseline file.
+and **fails the required job on any case that moved**: a recorded case that
+now diverges, one that stopped running, or a new case that either diverges
+on arrival or passes without being recorded. Gating on case identity rather
+than a count means a regression cannot hide behind an unrelated case that
+started passing in the same run, and moving a roster is a deliberate
+same-PR edit to the baseline file.
 
-`compatibility/prometheus-forced-route` runs with `FAIL_ON_DIFF=1` and
-hard-fails inside the harness on _any_ per-case diff, which is what
-proves the sharded solver route is byte-identical to reference
-Prometheus over the whole corpus.
+`compatibility/prometheus-forced-route` goes further: `FAIL_ON_DIFF=1`
+hard-fails inside the harness on _any_ per-case diff, which is what proves
+the sharded solver route is byte-identical to reference Prometheus over the
+whole corpus.
 
-So the three head badges are both: a continuously re-measured
-conformance score, and — through the ratchet floor — a merge gate.
+So each head badge is both a continuously re-measured conformance score and
+— through the ratchet floor — a merge gate.
 [`docs/compatibility.md`](docs/compatibility.md#parity-regression-ratchet-the-gate)
 is the canonical reference.
 
-**No allow-lists** — every diff against the reference is a real bug to
-fix at the source, not an exception to suppress. The full playbook
-(per-head drivers, local reproduction, rejection parity, the sole pinned
-`upstream-skip-baseline` contract) is in
-[`docs/compatibility.md`](docs/compatibility.md).
+</details>
 
 ## Testing
 
-Cerberus is tested at 14 layers, from parser and plan checks through
-emitted-SQL goldens and query roundtrips on real ClickHouse, the
-differential harnesses above, end-to-end Grafana flows, chaos and
-leak detectors, performance guards, and an oracle-based property
-framework.
-`just test` runs the core lanes; see
-[`docs/test-strategy.md`](docs/test-strategy.md) for the canonical layer
-map, the CI-gate inventory, and the gremlins rollout.
+Cerberus is tested at 14 layers: parser and plan checks, emitted-SQL
+goldens, query roundtrips on real ClickHouse, the differential harnesses
+above, end-to-end Grafana flows, chaos and leak detectors, performance
+guards, and an oracle-based property framework. `just test` runs the core
+lanes; [`docs/test-strategy.md`](docs/test-strategy.md) is the canonical
+layer map and CI-gate inventory.
 
 ## Documentation
 
-| Doc                                                                      | What's in it                                                                                                                  |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| [`docs/engine.md`](docs/engine.md)                                       | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                  |
-| [`docs/migration.md`](docs/migration.md)                                 | The operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.    |
-| [`docs/migration-reference.md`](docs/migration-reference.md)             | The contract behind that playbook: every `migrate` flag, what each comparator calls equal, and what each gate blocks on.      |
-| [`docs/coverage.md`](docs/coverage.md)                                   | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                  |
-| [`docs/configuration.md`](docs/configuration.md)                         | Every setting, grouped by area, with types and defaults — as a `CERBERUS_*` variable or the equivalent `cerberus.yaml` key.   |
-| [`docs/operations.md`](docs/operations.md)                               | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                           |
-| [`docs/performance.md`](docs/performance.md)                             | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression.                               |
-| [`docs/optimization-rules.md`](docs/optimization-rules.md)               | The standing optimizer-design rules (feature-registry single-source-of-truth, clone-less-not-faster).                         |
-| [`docs/clickhouse-optimizations.md`](docs/clickhouse-optimizations.md)   | The ClickHouse-optimization suite: feature registry, version gating, the runtime probe, and the query_log corpus reconciler.  |
-| [`docs/solver.md`](docs/solver.md)                                       | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.                                  |
-| [`docs/router-rules.md`](docs/router-rules.md)                           | The offline router-rules catalog: generic drivers in the repo, per-deployment thresholds resolved from the corpus at runtime. |
-| [`docs/native-clickhouse.md`](docs/native-clickhouse.md)                 | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates (the upstream positioning).       |
-| [`docs/benchmarks.md`](docs/benchmarks.md)                               | Benchmark methodology and the recorded numbers (regenerable).                                                                 |
-| [`docs/compatibility.md`](docs/compatibility.md)                         | The differential-harness playbook for all three heads.                                                                        |
-| [`docs/test-strategy.md`](docs/test-strategy.md)                         | The 14-layer test map and CI-gate inventory.                                                                                  |
-| [`docs/observability.md`](docs/observability.md)                         | Self-observability across logs / metrics / traces (OTLP export).                                                              |
-| [`docs/health.md`](docs/health.md)                                       | `/readyz` / `/healthz` probe semantics.                                                                                       |
-| [`docs/upstream-forks.md`](docs/upstream-forks.md)                       | The `tsouza/*` parser-fork + Dependabot-watch flow.                                                                           |
-| [`docs/forbid-skip.md`](docs/forbid-skip.md)                             | The forbidden-pattern reference for the `forbid-skip` gate.                                                                   |
+### Using cerberus
+
+| Doc                                                          | What's in it                                                                                                                |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| [`migration.md`](docs/migration.md)                          | Operator playbook for moving off Prometheus: assess your queries, verify parity against both backends, then flip over.      |
+| [`migration-reference.md`](docs/migration-reference.md)      | The contract behind that playbook: every `migrate` flag, what each comparator calls equal, what each gate blocks on.        |
+| [`configuration.md`](docs/configuration.md)                  | Every setting, grouped by area, with types and defaults — as a `CERBERUS_*` variable or the equivalent `cerberus.yaml` key. |
+| [`operations.md`](docs/operations.md)                        | Runtime contract: lifecycle, scaling, the solver and experimental knobs in context.                                         |
+| [`coverage.md`](docs/coverage.md)                            | Per-function / per-construct support status across PromQL / LogQL / TraceQL.                                                |
+| [`observability.md`](docs/observability.md)                  | Self-observability across logs / metrics / traces (OTLP export).                                                            |
+| [`health.md`](docs/health.md)                                | `/readyz` / `/healthz` probe semantics.                                                                                     |
+
+### How it works inside
+
+| Doc                                                               | What's in it                                                                                                                  |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| [`engine.md`](docs/engine.md)                                     | The shared query pipeline, the `Lang` contract, and the per-stage breakdown.                                                  |
+| [`performance.md`](docs/performance.md)                           | The compute-fan-out strategy, per-layer optimisations, and how they're held against regression.                               |
+| [`clickhouse-optimizations.md`](docs/clickhouse-optimizations.md) | The ClickHouse-optimization suite: feature registry, version gating, the runtime probe, the query_log corpus reconciler.      |
+| [`solver.md`](docs/solver.md)                                     | The sharded-pushdown solver: eligibility, slicing, execution, and the cancellation contract.                                  |
+| [`router-rules.md`](docs/router-rules.md)                         | The offline router-rules catalog: generic drivers in the repo, per-deployment thresholds resolved from the corpus at runtime. |
+| [`native-clickhouse.md`](docs/native-clickhouse.md)               | What native ClickHouse capability cerberus uses today, and why we don't upstream aggregates.                                  |
+| [`benchmarks.md`](docs/benchmarks.md)                             | Benchmark methodology and the recorded numbers (regenerable).                                                                 |
+
+### Working on cerberus
+
+| Doc                                                        | What's in it                                                                                          |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [`test-strategy.md`](docs/test-strategy.md)                | The 14-layer test map and CI-gate inventory.                                                          |
+| [`compatibility.md`](docs/compatibility.md)                | The differential-harness playbook for all three heads.                                                |
+| [`optimization-rules.md`](docs/optimization-rules.md)      | The standing optimizer-design rules (feature-registry single-source-of-truth, clone-less-not-faster). |
+| [`upstream-forks.md`](docs/upstream-forks.md)              | The `tsouza/*` parser-fork + Dependabot-watch flow.                                                   |
+| [`forbid-skip.md`](docs/forbid-skip.md)                    | The forbidden-pattern reference for the `forbid-skip` gate.                                           |
 
 ## Contributing
 

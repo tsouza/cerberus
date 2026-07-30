@@ -262,8 +262,19 @@ func substituteMessage(msg string, groupKey map[string]string, env Env) string {
 	return sb.String()
 }
 
+// unclassifiedLabel is what an absent classification reads as in a finding
+// MESSAGE. A group key over route or decision_reason carries the empty token on
+// a row the solver never classified (see geometryColumns in columns.go), and
+// splicing that straight into prose renders as "reason=" — indistinguishable
+// from a substitution bug. The group key itself keeps the corpus value verbatim:
+// this is a rendering choice, not a change to class identity.
+const unclassifiedLabel = "unclassified"
+
 func resolvePlaceholder(name string, groupKey map[string]string, env Env) string {
 	if v, ok := groupKey[name]; ok {
+		if v == "" {
+			return unclassifiedLabel
+		}
 		return v
 	}
 	if v, ok := env[name]; ok {

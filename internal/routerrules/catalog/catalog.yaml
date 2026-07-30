@@ -18,10 +18,12 @@
 #
 # Grammar: see docs/router-rules.md. Adding a rule = dropping a new
 # rules/<rule_id>.yaml file (filename = rule id) and bumping catalogVersion —
-# no Go change.
+# no Go change. Narrowing or widening an existing rule's population bumps the
+# version too: it is what tells an operator their findings shifted for a reason
+# other than their own corpus moving.
 
 apiVersion: routerrules.cerberus/v1
-catalogVersion: 2
+catalogVersion: 4
 
 # --------------------------------------------------------------------------
 # params: NAME + how to RESOLVE, never the value.
@@ -71,6 +73,18 @@ params:
   # bias (the solver derives it from the query shape before dispatch), so it
   # declares no exit_status scope: the filter would only shrink the population,
   # and on a deployment whose heavy shapes are the ones that fail it empties it.
+  #
+  # A geometry percentile IS restricted, along the other axis: to the rows the
+  # solver actually classified. The router classifies PromQL only, so a LogQL or
+  # TraceQL row has every geometry column at zero — not "small geometry", ABSENT
+  # geometry. Fitting a percentile over those zeroes yields a legitimate 0, and a
+  # rule whose leaf is `cumulative_d >= that` then matches every failing row of
+  # that language: the gate stops selecting and degenerates into "this query
+  # failed". The population restriction is derived from the column (see
+  # isGeometryColumn in resolve.go), not declared per-param, so it cannot be
+  # forgotten on the next geometry param — and where it empties a language's
+  # population that language's partition key is simply absent, which skips the
+  # rule for that language rather than firing it on everything.
   - name: memory_high_watermark
     kind: corpus_percentile
     column: memory_usage
@@ -111,6 +125,11 @@ params:
   # Per-shape cumulative-D tail learned from the corpus. cumulative_d is the
   # spine lookback the solver itself uses for eligibility, so its tail is the
   # most direct "this shape's geometry is pathological" signal.
+  #
+  # Geometry, so the population is the classified rows only (see the note above the
+  # first corpus-derived param): on a deployment serving all three heads the LogQL
+  # and TraceQL partitions have no key here at all, and the rule that reads this
+  # watermark is skipped for those languages instead of matching every failure.
   - name: d_high_watermark
     kind: corpus_percentile
     column: cumulative_d

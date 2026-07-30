@@ -200,8 +200,10 @@ on any diff vs reference Prometheus.
 **Shadow header.** Every response to a PromQL `query_range` carries the
 additive `X-Cerberus-Route-Decision` header reporting the per-request
 classification regardless of mode: `routed` (took route B),
-`below-threshold`, `instant`, `not-sliceable`, `high-D`, `now64`,
-`grid-mismatch`, `incommensurate`, or `scalar-heavy`. The header is **omitted**
+`below-threshold`, `instant`, `instant-join`, `not-sliceable`, `high-D`,
+`now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`, or
+`routing-disabled` (the reason recorded under `single`, where no threshold is
+consulted at all). The header is **omitted**
 for non-PromQL heads and when the solver is fully off (nil). It is purely
 diagnostic — observe it to see what the solver would do (under `single`) or
 did (under `auto`) without changing the wire body.
@@ -1259,7 +1261,7 @@ Stable releases publish a Homebrew cask to the
 can install the single `cerberus` binary with:
 
 ```sh
-brew install tsouza/tap/cerberus
+brew install --cask tsouza/tap/cerberus
 ```
 
 That is also the shortest way to get the `cerberus migrate` CLI onto the
@@ -1318,21 +1320,60 @@ a stale cask that an install would happily consume. A stable release must find
 the cask declaring exactly the version that just shipped; it then installs it and
 asserts `cerberus --version` equals that version and that two offline verbs
 (`migrate schema`, `config-docs -check`) work from the installed binary. The
-install runs the bare `brew install tsouza/tap/cerberus` documented above rather
-than `brew install --cask`, because those two are not equivalent when the tap
-serves a same-named formula: Homebrew resolves the bare ref to the FORMULA and
-`--cask` to the cask, so a `--cask` smoke would install one artifact while every
-operator installed the other. goreleaser writes `Casks/cerberus.rb` and deletes
+install runs the *bare* `brew install tsouza/tap/cerberus` rather than the
+`--cask` form operators are given, because the bare ref is the strictly harder
+one to satisfy: the two are not equivalent when a tap serves a same-named
+formula — Homebrew resolves the bare ref to the FORMULA while `--cask` sails
+past it — so proving the bare ref lands on the cask proves the tap is
+unambiguous, which a `--cask` install cannot observe. goreleaser writes
+`Casks/cerberus.rb` and deletes
 nothing, so the tap's whole file listing is additionally scanned for a leftover
 formula — every root Homebrew loads formulae from (`Formula/`,
 `HomebrewFormula/`, the tap root, the first two recursively so a sharded
 `Formula/c/cerberus.rb` counts), not just the historical path — and the smoke
-fails while one is present. The repair (delete it, add a `tap_migrations.json`)
-belongs to the tap repository, which no release run can touch. Because the ref
+fails while one is present. The repair belongs to the tap repository, which no
+release run can touch. Because the ref
 being installed is the ambiguous one, the smoke also states *which* artifact
 Homebrew picked: after the install, `cerberus` must appear in
 `brew list --cask --versions` and must not appear in `brew list --formula
 --versions`. Neither `command -v` nor `--version` can tell those two apart.
+
+Deleting the formula decides what a **new** install receives. What an **existing**
+formula install receives is decided by a second file, `tap_migrations.json` at the
+tap root:
+
+```json
+{
+  "cerberus": "tsouza/tap"
+}
+```
+
+Homebrew looks every package an update *deleted* up in that map. A hit whose
+target resolves to a cask in the same tap makes `brew update` unlink the formula
+and install the cask in its place, printing `cerberus has been migrated from a
+formula to a cask.`. A miss — including the map being absent — is
+indistinguishable from "this package did not move", and that is the whole failure
+mode: `brew upgrade` files the package under *Deleted Installed Formulae* and
+moves on, because a deleted formula has no newer version to move to. Installing
+the cask by hand afterwards does not rescue it either, since the formula's keg
+still owns `<prefix>/bin/cerberus` and the cask declines to link over it
+(`It seems there is already a Binary at … from formula cerberus; skipping link`).
+The machine ends up with the new cask in the Caskroom, the old binary on `PATH`,
+and no error printed anywhere. The users it strands are the ones who installed
+cerberus *earliest*.
+
+The target is written as the bare tap name, which is how homebrew/core spells its
+own formula-to-cask migrations. Homebrew splits it on `/`: a two-part value has no
+name component and is read as "same package, that tap", installing the
+fully-qualified `tsouza/tap/cerberus`. A three-part `tsouza/tap/cerberus` takes a
+different branch that keeps only the trailing name and installs the bare token
+`cerberus`, resolved against whichever tap answers first — so the two spellings
+are different instructions, not variants of one, and `brew-smoke.mjs` accepts only
+the first. It reads the map on **every** release rather than treating the
+migration as a one-time event, because the file is a blob in a repository this one
+cannot write: nothing else would notice it being reverted, renamed or hand-edited,
+and no fresh install — which is every install path CI performs — can observe its
+absence.
 
 The two shapes that write no cask are **not** skipped — each takes the
 opposite assertion. An `rc.*` must have written none, so a cask declaring the
