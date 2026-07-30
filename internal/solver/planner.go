@@ -290,10 +290,11 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 }
 
 // notRouted builds a non-route Decision carrying only the reason. Callers
-// chain .withGrid(sig, meta) to attach the cost-grid readout. Every caller
-// inside classify runs after analyze, so no refusal is stamped with an empty
-// grid; Eligible's ModeSingle short-circuit is the one site that returns
-// before classify at all, and it documents its own zero grid.
+// chain .withGrid(sig, meta) to attach the cost-grid readout. Every refusal in
+// this package is raised after classify has run, so none of them reaches the
+// corpus with an all-zero grid — a refused row is still a calibration
+// datapoint, and a zero grid would be indistinguishable from a genuinely
+// trivial query.
 func notRouted(reason string) *Decision {
 	return &Decision{Reason: reason}
 }

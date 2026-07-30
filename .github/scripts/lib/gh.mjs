@@ -71,12 +71,32 @@ export function log(line = '') {
   process.stdout.write(`${line}\n`);
 }
 
+// The spawnSync options capture()/exec() forward. Anything outside this set is
+// a caller mistake, and one that used to be SILENT: capture() builds its own
+// options object rather than spreading `opts`, so an unrecognised key was
+// dropped without a word. `capture(cmd, [], { shell: true })` therefore ran the
+// whole command string as argv[0], which never resolves — the caller saw a
+// plain non-zero status and read it as "the command said no", so the gate that
+// depended on it was permanently, quietly wrong. Failing loudly turns that into
+// a first-run crash instead of a lane that reports nothing for months.
+const CAPTURE_OPTS = new Set(['encoding', 'maxBuffer', 'input', 'cwd', 'env', 'timeout', 'killSignal']);
+
 // capture() — run a command, return { status, stdout, stderr }. Never
 // throws on a non-zero exit; the caller decides what a failure means.
 // `input` (Buffer|string) is fed to stdin when provided. `timeout` (ms), when
 // set, bounds the run — spawnSync kills the child past the deadline and sets
 // res.error, which we surface as a non-zero { status }.
+//
+// There is no `shell` option on purpose. To run something that needs a shell,
+// spawn one explicitly: capture('sh', ['-c', '<script>']).
 export function capture(cmd, args, opts = {}) {
+  const unknown = Object.keys(opts).filter((k) => !CAPTURE_OPTS.has(k));
+  if (unknown.length > 0) {
+    throw new TypeError(
+      `capture(${cmd}): unsupported option(s) ${unknown.join(', ')} — they are not forwarded to spawnSync. ` +
+        `Supported: ${[...CAPTURE_OPTS].join(', ')}. For a shell, spawn one: capture('sh', ['-c', '…']).`,
+    );
+  }
   const res = spawnSync(cmd, args, {
     encoding: opts.encoding === undefined ? 'utf8' : opts.encoding,
     maxBuffer: opts.maxBuffer ?? 256 * 1024 * 1024,

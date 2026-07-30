@@ -271,7 +271,9 @@ function main() {
   // resolves to now is the whole question. A failure to resolve is itself an
   // outcome — an unlinked formula with no linked cask leaves the command gone —
   // and is reported as an empty version rather than crashing the job.
-  const which = capture('command -v cerberus', [], { shell: true });
+  // `command` is a shell builtin, so this needs a shell — spawned explicitly,
+  // because capture() does not forward a `shell` option.
+  const which = capture('sh', ['-c', 'command -v cerberus']);
   const resolved = which.status === 0 ? which.stdout.trim() : '';
   const versionRes = resolved ? capture(resolved, ['--version']) : { status: 1, stdout: '', stderr: '' };
   const reported = versionRes.status === 0 ? versionRes.stdout.trim() : '<not on PATH>';

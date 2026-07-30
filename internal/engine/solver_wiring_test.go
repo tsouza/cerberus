@@ -17,7 +17,8 @@ import (
 // outermost RangeWindow carries it pinned so the solver's GridOf reads back
 // exactly (meta.Start/End/Step) and the Planner sees a grid-matched,
 // slice-invariant, eligible plan — which Mode=single classifies WITHOUT
-// routing (Reason=below-threshold).
+// routing (Reason=routing-disabled: the mode refuses before any threshold is
+// consulted, so the reason names the mode, not the plan's shape).
 var (
 	gridStart = time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
 	gridStep  = 15 * time.Second

@@ -150,7 +150,7 @@ jobs:
   # ~Nx, but wall-clock drops from the serial sum toward the longest shard.
   # That latency win on the slowest required PR gate is the whole point.
   # Decides whether THIS pull request has to boot the stack. push / schedule /
-  # dispatch / `release/*` PRs always do, exactly as before; an ordinary PR does
+  # `release/*` PRs always do, exactly as before; an ordinary PR does
   # only when it changed a path this stack can see differently from chDB — the
   # emitted column types, the HTTP surface, the driver, the binary's own startup.
   # Everything else short-circuits in seconds, which is the de-gating this lane
@@ -184,10 +184,11 @@ jobs:
   compose-smoke-setup:
     name: compose-smoke-setup
     needs: compose-smoke-scope
-    # The scope job answers push / schedule / dispatch / `release/*` with an
-    # unconditional true, so those paths run the full lane exactly as they did
-    # when this guard was an inline event test. What changed is the ordinary PR:
-    # it now boots the stack when it touched something the stack can see.
+    # The scope job answers push / schedule / `release/*` with an unconditional
+    # true and `workflow_dispatch` with an unconditional false, so every path
+    # runs exactly as it did when this guard was an inline event test. What
+    # changed is the ordinary PR: it now boots the stack when it touched
+    # something the stack can see.
     if: needs.compose-smoke-scope.outputs.in_scope == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -1,5 +1,5 @@
 // brew-upgrade-path.test.mjs — node:test guard for the formula -> cask upgrade
-// harness's verdict, run on the required `check` lane.
+// harness's verdict, run on the required `lint` job.
 //
 // The harness itself needs a Homebrew installation and several minutes, so it
 // runs weekly rather than per-PR. Its verdict function does not, and it is the

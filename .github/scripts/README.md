@@ -219,7 +219,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` clean / matrix emitted; `1` on a table violation, a coverage gap,
     or a bad `MODE`.
   - Tests: `node --test .github/scripts/mutation-matrix.test.mjs` (run by the
-    `check` job).
+    `forbid-skip` job).
 - **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
   The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
   to main (not on a raw pushed tag — that trigger is retired). On the resulting
@@ -512,7 +512,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   one that fails on its own when the cask installed but could not link). Pure
   export `upgradeOutcomeProblems({updateOutput, caskList, reportedVersion,
   expectedVersion})`, covered by `brew-upgrade-path.test.mjs` on the required
-  `check` lane and as the job's own first step.
+  `lint` job and as the job's own first step.
   - Env: `TAP_MIGRATION_LEGACY_REV` (optional; overrides the derived rewind
     point, for reproducing a specific report).
   - Exit: `0` when the migration carried the machine across; `1` on a silent
@@ -720,11 +720,13 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   coverage the chdb-backed layers already give. `verify` asserts every declared
   path still exists (a renamed entry matches nothing and silently retires the
   gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
-  to `true`: push / schedule / dispatch / `release/*` PRs always run the full
-  lane, and an uncomputable diff boots the stack rather than skipping it.
+  to `true`: push / schedule / `release/*` PRs always run the full lane, and an
+  uncomputable diff boots the stack rather than skipping it. `workflow_dispatch`
+  is the one named exception (`NON_BOOTING_EVENTS`) — e2e.yml's only dispatch
+  input regenerates the k3d crawl inventory, which no compose shard can see.
   `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the
-  `check` lane), and the `compose-smoke` aggregator treats a skipped setup as
-  green only when this job SUCCEEDED and reported `in_scope=false`.
+  `forbid-skip` job), and the `compose-smoke` aggregator treats a skipped setup
+  as green only when this job SUCCEEDED and reported `in_scope=false`.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
     `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
 
@@ -740,7 +742,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   no-run. Coverage assertion is collect-all-violations: unassigned (the
   forbidden gap), double-assigned, phantom/stale, and bad-shard-name are each
   reported, then `exit 1`. `compose-smoke-matrix.test.mjs` is the `node --test`
-  guard (run on the cheap `gate` lane) that pins the invariant + proves the
+  guard (run on the cheap `forbid-skip` job) that pins the invariant + proves the
   detectors fire. Two extra responsibilities: (1) it carries the per-shard
   `timeoutMinutes` ceiling on each emitted entry — the crawl shard gets a hard
   30-min cap (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the concurrency
@@ -886,7 +888,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   no-run. Coverage assertion is collect-all-violations (unassigned,
   double-assigned, phantom/stale, bad-shard-name, and the "exactly one shard
   runs Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
-  `node --test` guard (run on the cheap `gate` lane) pinning the invariant +
+  `node --test` guard (run on the cheap `forbid-skip` job) pinning the invariant +
   proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
   deliberately small. Each emitted entry also carries a per-shard
   `timeoutMinutes`: the crawl shard gets a hard 30-min cap
