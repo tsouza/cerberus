@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -75,12 +76,21 @@ type effFinding struct {
 var effectivenessGolden = []effFinding{
 	// route-A OOM cluster (and the route-agnostic / heavy-geometry generalizers).
 	{"oom_on_route_a", "language=promql,shape_id=prom:rate_sum_by_wide", 8, "force_route_b"},
-	{"failure_cluster_by_reason", "decision_reason=high-cardinality,language=promql,shape_id=prom:rate_sum_by_wide", 8, "investigate_failure_cluster"},
-	{"heavy_shape_geometry_failing", "decision_reason=high-cardinality,language=promql,shape_id=prom:rate_sum_by_wide", 8, "investigate_heavy_geometry"},
-	// route-A timeout cluster (logql).
-	{"route_a_timeout_should_shard", "language=logql,shape_id=log:unwrap_rate", 6, "force_route_b"},
-	{"failure_cluster_by_reason", "decision_reason=high-cardinality,language=logql,shape_id=log:unwrap_rate", 6, "investigate_failure_cluster"},
-	{"heavy_shape_geometry_failing", "decision_reason=high-cardinality,language=logql,shape_id=log:unwrap_rate", 6, "investigate_heavy_geometry"},
+	{"failure_cluster_by_reason", "decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_wide", 8, "investigate_failure_cluster"},
+	{"heavy_shape_geometry_failing", "decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_wide", 8, "investigate_heavy_geometry"},
+	// route-A timeout cluster. The router only classifies PromQL, so a route-A
+	// pathology can only ever live on a promql shape — see the unclassified
+	// logql/traceql clusters below for the other side of that boundary.
+	{"route_a_timeout_should_shard", "language=promql,shape_id=prom:rate_sum_by_deep", 6, "force_route_b"},
+	{"failure_cluster_by_reason", "decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_deep", 6, "investigate_failure_cluster"},
+	{"heavy_shape_geometry_failing", "decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_deep", 6, "investigate_heavy_geometry"},
+	// Unclassified failure cluster (logql). Route-AGNOSTIC rules own it: "your
+	// failures concentrate in this cluster; raise the sample budget or
+	// pre-aggregate" is sound advice for a LogQL query. Route-SCOPED rules must
+	// stay silent — there is no route to force, and the geometry columns are all
+	// zero because the solver never ran, so heavy_shape_geometry_failing firing
+	// here would mean it fires on every LogQL failure there is.
+	{"failure_cluster_by_reason", "decision_reason=,language=logql,shape_id=log:unwrap_rate", 6, "investigate_failure_cluster"},
 	// route-A sample-budget cluster.
 	{"route_a_hit_sample_budget", "language=promql,shape_id=prom:topk_rate", 6, "force_route_b"},
 	{"cerberus_side_rejection_pressure", "exit_status=sample_budget,language=promql,shape_id=prom:topk_rate", 6, "review_rejection_guardrail"},
@@ -88,9 +98,9 @@ var effectivenessGolden = []effFinding{
 	{"cerberus_side_rejection_pressure", "exit_status=breaker,language=traceql,shape_id=trc:breaker", 5, "review_rejection_guardrail"},
 	{"cerberus_side_rejection_pressure", "exit_status=rejected,language=promql,shape_id=prom:rejected", 5, "review_rejection_guardrail"},
 	// route-B still-failing cluster with non-zero k_shards (N2 guardrail) + N1/N4.
-	{"route_b_still_failing", "decision_reason=not-sliceable,language=promql,shape_id=prom:rate_sum_by_huge", 6, "cap_cardinality_or_reject"},
-	{"failure_cluster_by_reason", "decision_reason=not-sliceable,language=promql,shape_id=prom:rate_sum_by_huge", 6, "investigate_failure_cluster"},
-	{"heavy_shape_geometry_failing", "decision_reason=not-sliceable,language=promql,shape_id=prom:rate_sum_by_huge", 6, "investigate_heavy_geometry"},
+	{"route_b_still_failing", "decision_reason=routed,language=promql,shape_id=prom:rate_sum_by_huge", 6, "cap_cardinality_or_reject"},
+	{"failure_cluster_by_reason", "decision_reason=routed,language=promql,shape_id=prom:rate_sum_by_huge", 6, "investigate_failure_cluster"},
+	{"heavy_shape_geometry_failing", "decision_reason=routed,language=promql,shape_id=prom:rate_sum_by_huge", 6, "investigate_heavy_geometry"},
 	// route-B overshard-regret class.
 	{"route_b_overshard_low_fanout", "language=promql,shape_id=prom:rate_overshard", 7, "raise_route_b_threshold"},
 	// high-fanout route-A class.
@@ -105,10 +115,13 @@ var effectivenessGolden = []effFinding{
 	// slow hot shapes. slow_duration_watermark is a runtime-cost percentile
 	// learned over exit_status: ok, so promql's norm is the p95 of its 195 clean
 	// finishes (600 ms), not the p95 of a population whose tail is its own OOMs
-	// (4 s). Five promql/logql classes sit at or above their language's clean
-	// p95: the two slow failure clusters (oom 4 s / timeout 9 s) and the three
-	// slowest route-A shapes still finishing (topk_rate 800 ms, rate_sum_by_hot
-	// 700 ms, hq_rate_heavy 600 ms).
+	// (4 s). Five promql classes sit at or above promql's clean p95: the two slow
+	// failure clusters (oom 4 s / timeout 9 s) and the three slowest route-A
+	// shapes still finishing (topk_rate 800 ms, rate_sum_by_hot 700 ms,
+	// hq_rate_heavy 600 ms). Every class here is promql because the leaf is
+	// route == A and the router classifies nothing else; logql's own clean-p95
+	// watermark is still learned (it is a runtime-cost percentile, measured by
+	// ClickHouse regardless of routing) — it simply has no route-A rows to gate.
 	//
 	// The last three firing is the rule working as specified, not noise: its
 	// message calls itself a self-relative tail signal rather than an SLA breach,
@@ -118,8 +131,8 @@ var effectivenessGolden = []effFinding{
 	// deliberately cap-relative instead — an absolute memory ceiling exists to
 	// compare against, whereas no absolute "too slow" line exists to replace this
 	// one with.
-	{"route_a_slow_hot_shape", "decision_reason=high-cardinality,language=logql,normalized_query_hash=202", 6, "lower_route_b_threshold"},
-	{"route_a_slow_hot_shape", "decision_reason=high-cardinality,language=promql,normalized_query_hash=105", 8, "lower_route_b_threshold"},
+	{"route_a_slow_hot_shape", "decision_reason=high-D,language=promql,normalized_query_hash=105", 8, "lower_route_b_threshold"},
+	{"route_a_slow_hot_shape", "decision_reason=high-D,language=promql,normalized_query_hash=113", 6, "lower_route_b_threshold"},
 	{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=106", 6, "lower_route_b_threshold"},
 	{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=110", 7, "lower_route_b_threshold"},
 	{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=111", 7, "lower_route_b_threshold"},
@@ -285,12 +298,20 @@ func TestRuleSlowHotShapeFires(t *testing.T) {
 	rep := effReport(t, false)
 	fired := firingClasses(rep, "route_a_slow_hot_shape")
 	want := []string{
-		"decision_reason=high-cardinality,language=logql,normalized_query_hash=202",
-		"decision_reason=high-cardinality,language=promql,normalized_query_hash=105",
+		"decision_reason=high-D,language=promql,normalized_query_hash=105",
+		"decision_reason=high-D,language=promql,normalized_query_hash=113",
 	}
 	for _, w := range want {
 		if _, ok := fired[w]; !ok {
 			t.Errorf("route_a_slow_hot_shape should fire on slow class %q, got %v", w, fired)
+		}
+	}
+	// The rule's route == A leaf means only promql can ever reach it: the slowest
+	// logql/traceql classes in the fixture are unclassified, so their route token
+	// is empty and no amount of slowness gets them here.
+	for class := range fired {
+		if !strings.Contains(class, "language=promql") {
+			t.Errorf("route_a_slow_hot_shape fired on a non-promql class %q — nothing else carries a route", class)
 		}
 	}
 }
@@ -298,8 +319,14 @@ func TestRuleSlowHotShapeFires(t *testing.T) {
 func TestRuleTimeoutShouldShardFiresAndQuiet(t *testing.T) {
 	rep := effReport(t, false)
 	fired := firingClasses(rep, "route_a_timeout_should_shard")
-	if fired["language=logql,shape_id=log:unwrap_rate"] != 6 {
+	if fired["language=promql,shape_id=prom:rate_sum_by_deep"] != 6 {
 		t.Errorf("route_a_timeout_should_shard should fire on the route-A timeout cluster (support 6), got %v", fired)
+	}
+	// The fixture's other timeout cluster, log:unwrap_rate, is unclassified: same
+	// support, same exit_status, no route. "force route B" is not an action that
+	// exists for it, so the rule must leave it to the route-agnostic rules.
+	if _, ok := fired["language=logql,shape_id=log:unwrap_rate"]; ok {
+		t.Error("route_a_timeout_should_shard must not fire on an unclassified timeout cluster")
 	}
 	if len(fired) != 1 {
 		t.Errorf("route_a_timeout_should_shard should fire on exactly one class, got %v", fired)
@@ -325,7 +352,7 @@ func TestRuleOvershardLowFanoutFires(t *testing.T) {
 func TestRuleRouteBStillFailingFires(t *testing.T) {
 	rep := effReport(t, false)
 	fired := firingClasses(rep, "route_b_still_failing")
-	if fired["decision_reason=not-sliceable,language=promql,shape_id=prom:rate_sum_by_huge"] != 6 {
+	if fired["decision_reason=routed,language=promql,shape_id=prom:rate_sum_by_huge"] != 6 {
 		t.Errorf("route_b_still_failing should fire on the route-B failing cluster (support 6), got %v", fired)
 	}
 }
@@ -351,10 +378,12 @@ func TestRuleRejectionPressureFiresPerExitStatus(t *testing.T) {
 func TestRuleFailureClusterByReasonFires(t *testing.T) {
 	rep := effReport(t, false)
 	fired := firingClasses(rep, "failure_cluster_by_reason")
+	// Route-agnostic by design, so the unclassified logql cluster belongs here:
+	// "your failures concentrate in this cluster" is actionable for any head.
 	want := []string{
-		"decision_reason=high-cardinality,language=logql,shape_id=log:unwrap_rate",
-		"decision_reason=high-cardinality,language=promql,shape_id=prom:rate_sum_by_wide",
-		"decision_reason=not-sliceable,language=promql,shape_id=prom:rate_sum_by_huge",
+		"decision_reason=,language=logql,shape_id=log:unwrap_rate",
+		"decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_wide",
+		"decision_reason=routed,language=promql,shape_id=prom:rate_sum_by_huge",
 	}
 	for _, w := range want {
 		if _, ok := fired[w]; !ok {
@@ -367,14 +396,28 @@ func TestRuleHeavyGeometryFailingFires(t *testing.T) {
 	rep := effReport(t, false)
 	fired := firingClasses(rep, "heavy_shape_geometry_failing")
 	want := []string{
-		"decision_reason=high-cardinality,language=logql,shape_id=log:unwrap_rate",
-		"decision_reason=high-cardinality,language=promql,shape_id=prom:rate_sum_by_wide",
-		"decision_reason=not-sliceable,language=promql,shape_id=prom:rate_sum_by_huge",
+		"decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_deep",
+		"decision_reason=high-D,language=promql,shape_id=prom:rate_sum_by_wide",
+		"decision_reason=routed,language=promql,shape_id=prom:rate_sum_by_huge",
 	}
 	for _, w := range want {
 		if _, ok := fired[w]; !ok {
 			t.Errorf("heavy_shape_geometry_failing should fire on %q, got %v", w, fired)
 		}
+	}
+	// The rule gates on cumulative_d >= a percentile of cumulative_d. For a
+	// language the solver never classifies, every row's cumulative_d is
+	// identically 0, so the fitted percentile IS 0 and `>= 0` matches every
+	// failing row that language has — the rule degenerates into "this query
+	// failed". The geometry population is restricted to classified rows, which
+	// leaves the logql/traceql partitions empty and the rule silent there.
+	for class := range fired {
+		if !strings.Contains(class, "language=promql") {
+			t.Errorf("heavy_shape_geometry_failing fired on %q — geometry is only measured on classified rows", class)
+		}
+	}
+	if len(fired) != len(want) {
+		t.Errorf("heavy_shape_geometry_failing fired on %d classes, want %d: %v", len(fired), len(want), fired)
 	}
 }
 

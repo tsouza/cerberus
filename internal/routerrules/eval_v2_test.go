@@ -54,14 +54,14 @@ func countFor(r *Report, rule string) int {
 // --- N1 failure_cluster_by_reason -----------------------------------------
 
 // TestN1FiresOnHardFailureCluster confirms N1 fires on a route-agnostic hard
-// failure cluster (route-B trc:compare oom+timeout) attributed by solver
+// failure cluster (the route-B cerb:wide oom+timeout pair) attributed by solver
 // reason, and carries the geometry/cost evidence aggregates.
 func TestN1FiresOnHardFailureCluster(t *testing.T) {
 	r := evalReport(t, false)
 	f, ok := findingFor(r, "failure_cluster_by_reason",
-		"decision_reason=not-sliceable,language=traceql,shape_id=trc:compare")
+		"decision_reason=routed,language=promql,shape_id=cerb:wide")
 	if !ok {
-		t.Fatal("N1 should fire on the route-B not-sliceable hard-failure cluster")
+		t.Fatal("N1 should fire on the route-B routed hard-failure cluster")
 	}
 	if f.Support != 2 {
 		t.Errorf("N1 support = %d, want 2", f.Support)
@@ -77,13 +77,16 @@ func TestN1FiresOnHardFailureCluster(t *testing.T) {
 }
 
 // TestN1NoFireOnHealthyCluster is the NO-FIRE boundary: a class that is entirely
-// exit_status=ok (the trc:compare ok row is the only ok one, but the topk/sum
-// healthy classes are pure-ok) must not produce an N1 finding.
+// exit_status=ok must not produce an N1 finding. Both pure-ok classes are here on
+// purpose, one classified and one not: cerb:count is the unclassified class that
+// never fails, so it separates "N1 fires on an unclassified FAILURE" (which it
+// must — see TestN1FiresOnUnclassifiedFailure) from "N1 fires on anything
+// unclassified" (which would make the rule useless on two of three heads).
 func TestN1NoFireOnHealthyCluster(t *testing.T) {
 	r := evalReport(t, false)
 	for _, class := range []string{
 		"decision_reason=routed,language=promql,shape_id=cerb:topk",
-		"decision_reason=routed,language=logql,shape_id=cerb:rate",
+		"decision_reason=,language=logql,shape_id=cerb:count",
 	} {
 		if _, ok := findingFor(r, "failure_cluster_by_reason", class); ok {
 			t.Errorf("N1 must not fire on healthy class %q", class)
@@ -118,7 +121,7 @@ func TestN1AndOomOnRouteADoNotDedup(t *testing.T) {
 func TestN2FiresOnRouteBFailure(t *testing.T) {
 	r := evalReport(t, false)
 	f, ok := findingFor(r, "route_b_still_failing",
-		"decision_reason=not-sliceable,language=traceql,shape_id=trc:compare")
+		"decision_reason=routed,language=promql,shape_id=cerb:wide")
 	if !ok {
 		t.Fatal("N2 should fire on the route-B failing cluster")
 	}
@@ -138,10 +141,16 @@ func TestN2FiresOnRouteBFailure(t *testing.T) {
 // excludes it) must not fire N2. The total N2 count must be exactly 1.
 func TestN2NoFireOnRouteAFailureOrRouteBOk(t *testing.T) {
 	r := evalReport(t, false)
-	// route-A failure (trc:spans oom/timeout) is owned by N1, never N2.
+	// route-A failure (cerb:rate_wide timeout) is owned by N1, never N2.
 	if _, ok := findingFor(r, "route_b_still_failing",
-		"decision_reason=instant,language=traceql,shape_id=trc:spans"); ok {
+		"decision_reason=below-threshold,language=promql,shape_id=cerb:rate_wide"); ok {
 		t.Error("N2 must not fire on a route-A failure")
+	}
+	// An unclassified failure has no route at all, so it can satisfy neither
+	// route leaf — N2 is structurally silent on two of the three heads.
+	if _, ok := findingFor(r, "route_b_still_failing",
+		"decision_reason=,language=traceql,shape_id=trc:compare"); ok {
+		t.Error("N2 must not fire on an unclassified failure")
 	}
 	// route-B healthy classes must not fire N2.
 	if _, ok := findingFor(r, "route_b_still_failing",
@@ -157,6 +166,12 @@ func TestN2NoFireOnRouteAFailureOrRouteBOk(t *testing.T) {
 
 // TestN3FiresPerExitStatus confirms N3 fires once per cerberus-side terminal
 // status (sample_budget / breaker / rejected), each as a distinct group.
+//
+// Two of the four classes are unclassified, and that is the point of the rule
+// being route-agnostic: raising query.max_samples or investigating CH health is
+// sound advice for a LogQL or TraceQL query, whereas the route-scoped
+// route_a_hit_sample_budget ("force route B") reads the same LogQL row and
+// correctly says nothing about it.
 func TestN3FiresPerExitStatus(t *testing.T) {
 	r := evalReport(t, false)
 	for _, c := range []struct {
@@ -164,6 +179,7 @@ func TestN3FiresPerExitStatus(t *testing.T) {
 		support int64
 	}{
 		{"exit_status=sample_budget,language=logql,shape_id=cerb:rate", 1},
+		{"exit_status=sample_budget,language=promql,shape_id=cerb:rate_wide", 1},
 		{"exit_status=breaker,language=traceql,shape_id=trc:breaker", 2},
 		{"exit_status=rejected,language=traceql,shape_id=trc:rejected", 2},
 	} {
@@ -176,8 +192,9 @@ func TestN3FiresPerExitStatus(t *testing.T) {
 			t.Errorf("N3 %q support = %d, want %d", c.class, f.Support, c.support)
 		}
 	}
-	if got := countFor(r, "cerberus_side_rejection_pressure"); got != 3 {
-		t.Errorf("N3 fired %d times, want exactly 3", got)
+	const wantN3Count = 4
+	if got := countFor(r, "cerberus_side_rejection_pressure"); got != wantN3Count {
+		t.Errorf("N3 fired %d times, want exactly %d", got, wantN3Count)
 	}
 }
 
@@ -194,14 +211,19 @@ func TestN3SurfacesDeploymentWideRejectRatio(t *testing.T) {
 	if !ok {
 		t.Fatal("N3 should fire on the rejected cluster")
 	}
-	// 2 rejected over 13 route-A rows = 0.15384615...; formatNumeric renders the
+	// 2 rejected over 7 route-A rows = 0.28571428...; formatNumeric renders the
 	// full-precision fraction. Assert the placeholder was substituted (no raw
 	// token) and the leading digits of the ratio are present.
+	//
+	// The denominator counts route-A rows, so it is 7 (cerb:sum's five plus
+	// cerb:rate_wide's two) and not 12 — the unclassified rows are not part of the
+	// routable population, and folding them in would understate the share of that
+	// population cerberus is rejecting.
 	if containsToken(f.Message, "{cerberus_reject_ratio}") {
 		t.Errorf("the message-only ratio placeholder was not substituted: %q", f.Message)
 	}
-	if !containsToken(f.Message, "0.1538") {
-		t.Errorf("expected the deployment-wide reject ratio (~0.1538) in the message, got: %q", f.Message)
+	if !containsToken(f.Message, "0.2857") {
+		t.Errorf("expected the deployment-wide reject ratio (~0.2857) in the message, got: %q", f.Message)
 	}
 }
 
@@ -228,9 +250,9 @@ func TestN3NoFireOnSuccessOrCHsideFailure(t *testing.T) {
 func TestN4FiresOnHeavyGeometry(t *testing.T) {
 	r := evalReport(t, false)
 	f, ok := findingFor(r, "heavy_shape_geometry_failing",
-		"decision_reason=not-sliceable,language=traceql,shape_id=trc:compare")
+		"decision_reason=routed,language=promql,shape_id=cerb:wide")
 	if !ok {
-		t.Fatal("N4 should fire on the heavy-geometry traceql failure cluster")
+		t.Fatal("N4 should fire on the heavy-geometry promql failure cluster")
 	}
 	for _, key := range []string{"max(cumulative_d)", "max(n_anchors)", "max(fanout)"} {
 		if _, ok := f.Evidence[key]; !ok {
@@ -244,17 +266,87 @@ func TestN4FiresOnHeavyGeometry(t *testing.T) {
 
 // TestN4NoFireWhenFailingButLightGeometry is the critical boundary: a class that
 // FAILS (so N1 fires) but whose cumulative_d is below its own tail must NOT fire
-// N4. trc:spans (cumulative_d 40/50, below the traceql median 250) is exactly
+// N4. cerb:rate_wide (cumulative_d 100, below the promql median 300) is exactly
 // that case — it fires N1 but not N4.
+//
+// The boundary class has to be a CLASSIFIED one. An unclassified class would pass
+// this assertion for the wrong reason: its whole language is absent from the
+// geometry population, so N4 never evaluates it at all, and the test would go on
+// passing even if the light-geometry leaf were deleted.
 func TestN4NoFireWhenFailingButLightGeometry(t *testing.T) {
 	r := evalReport(t, false)
-	if _, ok := findingFor(r, "failure_cluster_by_reason",
-		"decision_reason=instant,language=traceql,shape_id=trc:spans"); !ok {
-		t.Fatal("precondition: N1 should fire on trc:spans (it is a hard-failure class)")
+	const lightFailingClass = "decision_reason=below-threshold,language=promql,shape_id=cerb:rate_wide"
+	if _, ok := findingFor(r, "failure_cluster_by_reason", lightFailingClass); !ok {
+		t.Fatal("precondition: N1 should fire on cerb:rate_wide (it is a hard-failure class)")
 	}
-	if _, ok := findingFor(r, "heavy_shape_geometry_failing",
-		"decision_reason=instant,language=traceql,shape_id=trc:spans"); ok {
+	if _, ok := findingFor(r, "heavy_shape_geometry_failing", lightFailingClass); ok {
 		t.Error("N4 must NOT fire on a failing-but-light-geometry class (cumulative_d below tail)")
+	}
+}
+
+// TestN4SkipsUnclassifiedLanguages is the other half of the N4 boundary, and the
+// regression pin for the fire-on-everything floor: for a language whose rows the
+// solver never classified, every geometry column is identically 0, so a fitted
+// percentile over cumulative_d IS 0 and `cumulative_d >= 0` would match every
+// failing row that language has. resolveCorpus restricts a geometry population to
+// classified rows (AggSpec.ClassifiedOnly), which leaves the logql and traceql
+// partitions absent — expandPartitioned then builds no sub-eval for them and the
+// rule is skipped for those languages entirely.
+//
+// The assertions below are deliberately in both directions. N4 must be silent on
+// the unclassified hard-failure clusters, AND N1 must fire on those very same
+// clusters — otherwise "N4 stayed quiet" would be explained by the rows being
+// absent from the corpus rather than by the geometry restriction. Skipping a
+// partition is also NOT a Skipped entry: Skipped records a NoSignal scalar param,
+// and an absent partition key is a narrower population, not a missing param.
+func TestN4SkipsUnclassifiedLanguages(t *testing.T) {
+	r := evalReport(t, false)
+	for _, class := range []string{
+		"decision_reason=,language=logql,shape_id=cerb:rate",
+		"decision_reason=,language=traceql,shape_id=trc:compare",
+		"decision_reason=,language=traceql,shape_id=trc:spans",
+	} {
+		if _, ok := findingFor(r, "failure_cluster_by_reason", class); !ok {
+			t.Errorf("precondition: N1 should fire on unclassified hard-failure class %q", class)
+		}
+		if _, ok := findingFor(r, "heavy_shape_geometry_failing", class); ok {
+			t.Errorf("N4 fired on unclassified class %q: a 0-valued geometry percentile "+
+				"is a fire-on-everything floor, not a learned watermark", class)
+		}
+	}
+	for _, f := range r.Findings {
+		if f.RuleID != "heavy_shape_geometry_failing" {
+			continue
+		}
+		if lang := f.GroupKey["language"]; lang != "promql" {
+			t.Errorf("N4 fired on %q, the only classified language is promql: %+v", lang, f.GroupKey)
+		}
+	}
+	if len(r.Skipped) != 0 {
+		t.Errorf("an absent geometry partition must not be reported as a skipped param: %+v", r.Skipped)
+	}
+}
+
+// TestN1FiresOnUnclassifiedFailure is the positive counterpart: a route-agnostic
+// failure rule MUST still fire on a language the solver does not classify. A
+// LogQL query that times out is a real hard-failure cluster whatever the router
+// did or didn't decide, and the fix for the fire-on-everything floor must not be
+// "ignore two of the three heads".
+func TestN1FiresOnUnclassifiedFailure(t *testing.T) {
+	r := evalReport(t, false)
+	f, ok := findingFor(r, "failure_cluster_by_reason",
+		"decision_reason=,language=logql,shape_id=cerb:rate")
+	if !ok {
+		t.Fatal("N1 should fire on the unclassified logql timeout cluster")
+	}
+	// The group key keeps the corpus value verbatim (the empty token), while the
+	// MESSAGE renders it as a word — a bare "reason=" is indistinguishable from a
+	// substitution bug to whoever reads the finding.
+	if got := f.GroupKey["decision_reason"]; got != "" {
+		t.Errorf("unclassified group key = %q, want the corpus token verbatim", got)
+	}
+	if !containsToken(f.Message, unclassifiedLabel) {
+		t.Errorf("expected the message to name the absent classification, got: %q", f.Message)
 	}
 }
 
@@ -271,20 +363,23 @@ func TestN4NoFireWhenFailingButLightGeometry(t *testing.T) {
 //
 //	cerb:rate  ok [6000,7000,8000] wm=7000 -> {7000,8000}        support 2
 //	cerb:sum   ok [700,800,900]    wm=800  -> {800,900}          support 2
+//	cerb:count ok [1000,1100,1200] wm=1100 -> {1100,1200}        support 2
 //	cerb:topk  ok [300,310,320]    wm=310  -> {310,320}          support 2
+//	cerb:wide  ok [9300]           wm=9300 -> {9300}             support 1
 //	trc:compare ok [9200]          wm=9200 -> {9200}             support 1
-//	trc:breaker/trc:rejected/trc:spans: zero ok rows -> empty wm -> no fire
+//	cerb:rate_wide/trc:breaker/trc:rejected/trc:spans: zero ok rows ->
+//	empty wm -> no fire
 //
-// So N5 fires on EXACTLY 4 classes. Mutation coverage:
+// So N5 fires on EXACTLY 6 classes. Mutation coverage:
 //   - Deleting the `read_rows >= read_rows_high_watermark` leaf (MUT5) makes
-//     every ok row match, so cerb:sum/rate/topk each jump to support 3 — caught
-//     by the per-class support==2 assertions.
+//     every ok row match, so cerb:sum/rate/count/topk each jump to support 3 —
+//     caught by the per-class support==2 assertions.
 //   - Flipping `exit_status == ok` to `in [oom,timeout]` (MUT6) is the subtle
 //     one: the watermark param is scoped to ok rows, so it stays put, but the
 //     firing rows become the oom/timeout rows. cerb:rate's timeout row (5000)
-//     and cerb:topk have no oom/timeout rows >= their watermark, so BOTH classes
-//     vanish and the total drops to 2 — caught by the exact count==4 plus the
-//     "cerb:rate and cerb:topk must fire" assertions.
+//     is below its watermark and cerb:count/cerb:topk have no failures at all,
+//     so all three classes vanish and the total drops to 3 — caught by the
+//     exact count==6 plus the "these classes must fire" assertions.
 func TestN5IsExperimentalGated(t *testing.T) {
 	active := evalReport(t, false)
 	if got := countFor(active, "read_amplification_hot_shape"); got != 0 {
@@ -294,20 +389,24 @@ func TestN5IsExperimentalGated(t *testing.T) {
 
 	// Exact class set — pins both leaves: the read_rows leaf (any added class
 	// from a deleted/loosened gate trips this) and the exit_status leaf (MUT6
-	// drops cerb:rate + cerb:topk, shrinking the set to 2).
-	const wantN5Count = 4
+	// drops cerb:rate + cerb:count + cerb:topk, shrinking the set to 3).
+	const wantN5Count = 6
 	if got := countFor(exp, "read_amplification_hot_shape"); got != wantN5Count {
 		t.Errorf("N5 fired on %d classes, want %d:\n%+v", got, wantN5Count, exp.Findings)
 	}
 
 	// Per-class support. cerb:sum==2 kills MUT5 (the deleted read_rows leaf
-	// lets all 3 ok rows through -> support 3). cerb:rate==2 / cerb:topk==2
-	// both kill MUT6 (those classes have no oom/timeout rows above their
-	// healthy watermark, so flipping the status leaf makes them disappear).
+	// lets all 3 ok rows through -> support 3). cerb:rate / cerb:count /
+	// cerb:topk all kill MUT6 (none has an oom/timeout row above its healthy
+	// watermark, so flipping the status leaf makes them disappear). N5 is
+	// route-agnostic by design — read amplification is a shape property, so the
+	// unclassified logql classes belong in this set.
 	wantSupport := map[string]int64{
 		"language=logql,shape_id=cerb:rate":     2,
+		"language=logql,shape_id=cerb:count":    2,
 		"language=promql,shape_id=cerb:sum":     2,
 		"language=promql,shape_id=cerb:topk":    2,
+		"language=promql,shape_id=cerb:wide":    1,
 		"language=traceql,shape_id=trc:compare": 1,
 	}
 	for class, want := range wantSupport {
@@ -326,6 +425,7 @@ func TestN5IsExperimentalGated(t *testing.T) {
 	// the watermark from the full population instead of the ok-scoped one would
 	// let these in.)
 	for _, class := range []string{
+		"language=promql,shape_id=cerb:rate_wide",
 		"language=traceql,shape_id=trc:breaker",
 		"language=traceql,shape_id=trc:rejected",
 		"language=traceql,shape_id=trc:spans",
@@ -472,13 +572,18 @@ rules:
 			t.Errorf("applies_to:[traceql] rule fired on a %q row: %+v", lang, f.GroupKey)
 		}
 	}
-	// The promql cerb:sum OOM cluster and logql cerb:rate timeout DO satisfy the
-	// condition but must be excluded; only traceql failures remain.
+	// Every non-traceql failure cluster in the seed DOES satisfy the condition —
+	// classified (cerb:sum oom, cerb:rate_wide timeout, cerb:wide oom/timeout)
+	// and unclassified (cerb:rate timeout) alike — but must be excluded; only
+	// traceql failures remain.
 	if len(report.Findings) == 0 {
 		t.Fatal("expected the traceql failure clusters to fire")
 	}
+	excluded := map[string]struct{}{
+		"cerb:sum": {}, "cerb:rate": {}, "cerb:rate_wide": {}, "cerb:wide": {},
+	}
 	for _, f := range report.Findings {
-		if f.GroupKey["shape_id"] == "cerb:sum" || f.GroupKey["shape_id"] == "cerb:rate" {
+		if _, bad := excluded[f.GroupKey["shape_id"]]; bad {
 			t.Errorf("promql/logql failure cluster leaked past applies_to:[traceql]: %+v", f.GroupKey)
 		}
 	}

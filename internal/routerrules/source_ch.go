@@ -102,6 +102,27 @@ func groupKeyFrag(col string) chsql.Frag {
 	return chsql.Call("toString", chsql.BareIdent(col))
 }
 
+// classifiedFrag is the `toString(route) != ”` predicate that restricts a
+// population to rows the solver classified (see AggSpec.ClassifiedOnly).
+//
+// It compares the route NAME rather than the enum literal for two reasons. The
+// JSONL backend compares the same string, so the two backends admit exactly the
+// same rows; and a rule run against a corpus table that predates the
+// unclassified member would reject a bare `route != ”` outright ("unknown
+// element"), whereas toString is valid against any Enum8 width.
+//
+// Rows written BEFORE the unclassified member existed were stored under 'A' by
+// the sink's old fold, so they are indistinguishable from genuine route-A rows
+// and this predicate admits them. That information is gone from disk, not
+// recoverable by a smarter query; the corpus TTL ages those rows out within its
+// retention window.
+func classifiedFrag() chsql.Frag {
+	return chsql.Neq(
+		chsql.Call("toString", chsql.BareIdent(routeColumn)),
+		chsql.InlineLit(routeUnclassified),
+	)
+}
+
 // sinceFrag returns the event_time window predicate, or nil when unwindowed.
 func (s *chCorpusSource) sinceFrag() chsql.Frag {
 	if s.since <= 0 {
@@ -167,6 +188,9 @@ func (s *chCorpusSource) scalarOrPartition(ctx context.Context, spec AggSpec, ag
 	aggExpr = toFloat64Frag(chsql.Call("ifNull", aggExpr, chsql.InlineLit(int64(0))))
 	qb := chsql.NewQuery().From(chsql.BareIdent(CorpusTableName))
 	conds := scopeConds(spec.Scope)
+	if spec.ClassifiedOnly {
+		conds = append(conds, classifiedFrag())
+	}
 	if sf := s.sinceFrag(); sf != nil {
 		conds = append(conds, sf)
 	}

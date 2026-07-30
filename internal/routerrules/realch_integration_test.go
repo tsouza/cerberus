@@ -252,6 +252,14 @@ func assertCorpusLanded(ctx context.Context, t *testing.T, conn driver.Conn, wan
 		wantRoute[normRoute(r.Route)]++
 		wantExit[normExit(r.ExitStatus)]++
 	}
+
+	// The unclassified read-back below is the load-bearing half of this assertion,
+	// and it only asserts anything if the fixture HAS unclassified rows — with an
+	// all-classified corpus the whole route comparison passes on 'A'/'B' alone and
+	// the fold-to-'A' bug walks straight through. Pin the precondition.
+	if wantRoute[routeUnclassified] == 0 {
+		t.Fatalf("fixture has no unclassified rows, so the route read-back cannot detect an unclassified route folded into 'A'")
+	}
 	gotRoute := scanEnumCounts(ctx, t, conn,
 		"SELECT toString(route), count() FROM "+optcorpus.CorpusTableName+" GROUP BY route")
 	gotExit := scanEnumCounts(ctx, t, conn,
@@ -288,13 +296,21 @@ func scanEnumCounts(ctx context.Context, t *testing.T, conn driver.Conn, sql str
 	return out
 }
 
-// normRoute / normExit mirror routeEnumValue / exitEnumValue: an empty / unknown
-// route is stored as 'A', an empty / unknown exit_status as 'ok'.
+// normRoute / normExit mirror routeEnumValue / exitEnumValue: a route the solver
+// classified is stored under its own name and anything else — an unclassified row,
+// or an unrecognised classifier read-out — under the unclassified member, while an
+// empty / unknown exit_status is stored as 'ok'.
+//
+// The unclassified member is the point of the read-back here: it proves the real
+// driver round-trips an unclassified row as itself rather than as 'A', which is
+// what keeps `route = 'A'` meaning "classified" on a production server.
 func normRoute(route string) string {
-	if route == "B" {
-		return "B"
+	switch route {
+	case "A", "B":
+		return route
+	default:
+		return routeUnclassified
 	}
-	return "A"
 }
 
 func normExit(status string) string {

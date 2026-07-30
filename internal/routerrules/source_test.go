@@ -55,7 +55,7 @@ func TestJSONLAggMax(t *testing.T) {
 	if err != nil {
 		t.Fatalf("aggregate: %v", err)
 	}
-	if v.Scalar != 550 { // logql sample_budget row has memory 550, the route-A max
+	if v.Scalar != 550 { // cerb:rate_wide's sample_budget row: 550, the route-A max
 		t.Fatalf("max memory = %v, want 550", v.Scalar)
 	}
 }
@@ -70,8 +70,11 @@ func TestJSONLCountRatio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("aggregate: %v", err)
 	}
-	// 4 oom rows (any route) over 13 route-A rows in the seed.
-	want := 4.0 / 13.0
+	// 5 oom rows (any route, including the unclassified ones) over the 7 rows
+	// that carry route A. The two scopes are deliberately mismatched: this pins
+	// that the numerator and denominator are filtered independently, so a
+	// deployment-wide failure ratio can exceed the routed population.
+	want := 5.0 / 7.0
 	if v.Scalar < want-1e-9 || v.Scalar > want+1e-9 {
 		t.Fatalf("oom ratio = %v, want %v", v.Scalar, want)
 	}

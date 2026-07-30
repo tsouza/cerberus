@@ -61,41 +61,69 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 		support int64
 	}{
 		// --- shipped 7-rule baseline (catalogVersion 1) ---------------------
+		//
+		// Every route-scoped rule below fires on a PROMQL class, and on nothing
+		// else. That is not a fixture preference — Solver.Classify only classifies
+		// PromQL, so a LogQL or TraceQL corpus row carries no route at all and can
+		// never satisfy a `route: A` / `route: B` leaf. A route-scoped finding on a
+		// non-PromQL class would be a recommendation ("force route B") for a query
+		// the router never even looks at.
 		{"oom_on_route_a", "language=promql,shape_id=cerb:sum", 2},
-		{"oom_on_route_a", "language=traceql,shape_id=trc:spans", 1},
 		{"route_a_memory_near_cap", "language=promql,shape_id=cerb:sum", 2},
-		{"route_a_high_fanout_should_shard", "language=logql,shape_id=cerb:rate", 2},
-		{"route_a_timeout_should_shard", "language=logql,shape_id=cerb:rate", 1},
-		{"route_a_timeout_should_shard", "language=traceql,shape_id=trc:spans", 1},
-		{"route_a_hit_sample_budget", "language=logql,shape_id=cerb:rate", 1},
+		{"route_a_high_fanout_should_shard", "language=promql,shape_id=cerb:rate_wide", 2},
+		{"route_a_timeout_should_shard", "language=promql,shape_id=cerb:rate_wide", 1},
+		{"route_a_hit_sample_budget", "language=promql,shape_id=cerb:rate_wide", 1},
 		{"route_b_overshard_low_fanout", "language=promql,shape_id=cerb:topk", 3},
 		// route_a_slow_hot_shape carries decision_reason in its group key (the
 		// catalogVersion-2 one-line group_by amendment) and gates on
 		// slow_duration_watermark, a runtime-cost percentile scoped to
-		// exit_status: ok. The seed's promql durations are {10,11,12,20,30,40}
-		// clean plus two OOMs at {50,60}, so the clean median is 16 and all five
-		// route-A hash=11 rows clear it. traceql has exactly one clean row (the
-		// 1250ms trc:compare finish), so its norm is 1250 and the 25/30ms
-		// timeout+OOM pair under hash=55 is nowhere near slow for traceql — the
-		// rule correctly stays quiet rather than calling a 30ms query slow
-		// because two aborted traces happened to stop early.
+		// exit_status: ok. The seed's clean promql durations are
+		// {10,11,12,20,30,40,1250}, so the nearest-rank median is 20 and both
+		// route-A promql hashes clear it (hash=11 on all five rows, hash=88 on its
+		// 900/950ms pair).
+		//
+		// The watermark is a runtime-cost percentile, so it is NOT restricted to
+		// classified rows and the logql/traceql partitions still exist — but with
+		// no route-A row in either language the rule stays quiet there, which is
+		// the correct outcome and a different mechanism from N4's below.
 		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=11", 5},
-		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=logql,normalized_query_hash=22", 2},
+		{"route_a_slow_hot_shape", "decision_reason=below-threshold,language=promql,normalized_query_hash=88", 2},
 		// --- catalogVersion 2: N1 failure_cluster_by_reason -----------------
+		//
+		// N1 is deliberately route-agnostic, so it is the one failure rule that
+		// SHOULD fire on an unclassified class: a LogQL shape that OOMs is a real
+		// hard-failure cluster whatever the router did or didn't decide. Its group
+		// key then degenerates to one bucket per (shape, language), which is
+		// honest — an unclassified row has no reason dimension to split on.
 		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=promql,shape_id=cerb:sum", 2},
-		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=logql,shape_id=cerb:rate", 1},
-		{"failure_cluster_by_reason", "decision_reason=not-sliceable,language=traceql,shape_id=trc:compare", 2},
-		{"failure_cluster_by_reason", "decision_reason=instant,language=traceql,shape_id=trc:spans", 2},
+		{"failure_cluster_by_reason", "decision_reason=below-threshold,language=promql,shape_id=cerb:rate_wide", 1},
+		{"failure_cluster_by_reason", "decision_reason=routed,language=promql,shape_id=cerb:wide", 2},
+		{"failure_cluster_by_reason", "decision_reason=,language=logql,shape_id=cerb:rate", 1},
+		{"failure_cluster_by_reason", "decision_reason=,language=traceql,shape_id=trc:compare", 2},
+		{"failure_cluster_by_reason", "decision_reason=,language=traceql,shape_id=trc:spans", 2},
 		// --- N2 route_b_still_failing ---------------------------------------
-		{"route_b_still_failing", "decision_reason=not-sliceable,language=traceql,shape_id=trc:compare", 2},
+		{"route_b_still_failing", "decision_reason=routed,language=promql,shape_id=cerb:wide", 2},
 		// --- N3 cerberus_side_rejection_pressure (one per exit_status) -------
+		//
+		// N3 is route-agnostic for the same reason N1 is, and the LogQL
+		// sample_budget cluster is exactly why: "you hit the sample budget, raise
+		// query.max_samples or pre-aggregate" is sound advice for a LogQL query,
+		// while "force route B" (route_a_hit_sample_budget, above) is not. The two
+		// rules see the same row and only one of them speaks.
 		{"cerberus_side_rejection_pressure", "exit_status=sample_budget,language=logql,shape_id=cerb:rate", 1},
+		{"cerberus_side_rejection_pressure", "exit_status=sample_budget,language=promql,shape_id=cerb:rate_wide", 1},
 		{"cerberus_side_rejection_pressure", "exit_status=breaker,language=traceql,shape_id=trc:breaker", 2},
 		{"cerberus_side_rejection_pressure", "exit_status=rejected,language=traceql,shape_id=trc:rejected", 2},
 		// --- N4 heavy_shape_geometry_failing --------------------------------
+		//
+		// N4 gates on cumulative_d >= d_high_watermark, a GEOMETRY percentile, so
+		// its population is restricted to classified rows. The logql and traceql
+		// partitions therefore do not exist at all and the rule is skipped for
+		// those languages — the mechanism that keeps a language whose geometry is
+		// identically 0 from fitting a watermark of 0 and matching every row it
+		// has. TestN4SkipsUnclassifiedLanguages pins that directly.
 		{"heavy_shape_geometry_failing", "decision_reason=below-threshold,language=promql,shape_id=cerb:sum", 2},
-		{"heavy_shape_geometry_failing", "decision_reason=below-threshold,language=logql,shape_id=cerb:rate", 1},
-		{"heavy_shape_geometry_failing", "decision_reason=not-sliceable,language=traceql,shape_id=trc:compare", 2},
+		{"heavy_shape_geometry_failing", "decision_reason=routed,language=promql,shape_id=cerb:wide", 2},
 		// N5 read_amplification_hot_shape is experimental (asserted separately).
 	}
 	for _, w := range want {
