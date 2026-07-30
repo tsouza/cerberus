@@ -221,6 +221,16 @@ type NativeRateLowerer struct {
 	// Fallback is the concrete lowerer for shapes the native path cannot
 	// handle. Boot wires it to FanoutRateLowerer{}.
 	Fallback RateLowerer
+
+	// Recollapse additionally defers the label-shaping Project past the native
+	// aggregate on inputs that carry a hoistable one, so the OTel → Prometheus
+	// attribute reshape runs once per raw series instead of once per raw row.
+	// cmd/cerberus sets it ONLY when chopt resolved the ts_grid_recollapse
+	// feature at boot; it is carried on the strategy rather than read per query
+	// for the same reason the native/fan-out choice is. A node the deferral
+	// does not apply to keeps the unchanged two-level shape — this never
+	// changes WHETHER the native lowering fires, only which shape it emits.
+	Recollapse bool
 }
 
 // LowerRate returns a RangeWindowNative for an eligible range-mode rate shape,
@@ -228,7 +238,7 @@ type NativeRateLowerer struct {
 // the intrinsic SHAPE check (rate func, materialised grid, plain Scan/Filter
 // input) — see nativeTSGridRateNode.
 func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if native := nativeTSGridRateNode(rw, s); native != nil {
+	if native := nativeTSGridRateNode(rw, s, n.Recollapse); native != nil {
 		return native
 	}
 	return n.Fallback.LowerRate(rw, s)
@@ -317,7 +327,7 @@ type NativeChangesLowerer struct {
 // predicate is the intrinsic SHAPE check (changes func, materialised grid,
 // plain Scan/Filter input) — see nativeTSGridMatrixNode.
 func (n NativeChangesLowerer) LowerChanges(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if native := nativeTSGridMatrixNode(rw, "changes", s); native != nil {
+	if native := nativeTSGridMatrixNode(rw, "changes", s, noRecollapse); native != nil {
 		return native
 	}
 	return n.Fallback.LowerChanges(rw, s)
@@ -350,7 +360,7 @@ type NativeResetsLowerer struct {
 // shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
 // check as changes (resets func, materialised grid, plain Scan/Filter input).
 func (n NativeResetsLowerer) LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if native := nativeTSGridMatrixNode(rw, "resets", s); native != nil {
+	if native := nativeTSGridMatrixNode(rw, "resets", s, noRecollapse); native != nil {
 		return native
 	}
 	return n.Fallback.LowerResets(rw, s)
@@ -384,7 +394,7 @@ type NativeDerivLowerer struct {
 // check as changes/resets (deriv func, materialised grid, plain Scan/Filter
 // input) — deriv takes no scalar, so no extra parameter gate applies.
 func (n NativeDerivLowerer) LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if native := nativeTSGridMatrixNode(rw, "deriv", s); native != nil {
+	if native := nativeTSGridMatrixNode(rw, "deriv", s, noRecollapse); native != nil {
 		return native
 	}
 	return n.Fallback.LowerDeriv(rw, s)
@@ -423,7 +433,7 @@ type NativePredictLinearLowerer struct {
 // the native aggregate and stays on the exact fan-out arithmetic.
 func (n NativePredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if nativePredictLinearHorizonEligible(rw) {
-		if native := nativeTSGridMatrixNode(rw, "predict_linear", s); native != nil {
+		if native := nativeTSGridMatrixNode(rw, "predict_linear", s, noRecollapse); native != nil {
 			return native
 		}
 	}

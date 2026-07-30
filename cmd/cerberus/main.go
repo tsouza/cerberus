@@ -625,15 +625,25 @@ func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.M
 // embeds it as the fallback for shapes it cannot handle. The features are
 // independent, so the table composes per-function — native rate can be on while
 // native staleness / changes / resets / deriv / predict_linear are off, and vice
-// versa (changes/resets/deriv/predict_linear also carry a higher 25.9 floor than
-// rate/resample's 25.6). The per-query
+// versa (the whole family shares the 25.9 floor, but each member is probed and
+// resolved on its own). The per-query
 // lowering then
 // dispatches through this table as a plain interface method call: NO
 // feature/version read, NO nil/presence check.
+//
+// ts_grid_recollapse is the one NON-independent knob: it defers the
+// label-shaping tower past the native rate grid, so it only means anything
+// inside the ts_grid_range branch. The registry has no inter-feature dependency
+// mechanism, so that narrowing is expressed HERE — reading it only where a
+// native rate lowerer is being built makes "recollapse without a native grid"
+// unrepresentable rather than merely unlikely.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 	if optSet.Has(chopt.FeatureTSGridRange) {
-		l.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
+		l.Rate = promql.NativeRateLowerer{
+			Fallback:   promql.FanoutRateLowerer{},
+			Recollapse: optSet.Has(chopt.FeatureTSGridRecollapse),
+		}
 	} else {
 		l.Rate = promql.FanoutRateLowerer{}
 	}

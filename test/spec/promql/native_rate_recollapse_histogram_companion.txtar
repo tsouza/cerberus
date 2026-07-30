@@ -1,0 +1,132 @@
+# NEGATIVE fixture: `rate(x_count[5m])` gets neither the native grid nor
+# the shaping hoist, with both experimental sections on.
+#
+# `rate(x_count[5m])` lowers through wrapHistogramCompanionProject, which
+# emits a Project carrying the SAME four aliases and the SAME
+# label-shaping tower as the ordinary selector Project — differing only
+# in projecting `toFloat64(Count) AS Value` instead of the identity
+# `Value`. A classifier that keyed purely on "has a shaping tower aliased
+# to a GroupBy key" would hoist it, and hoisting it would strip the cast
+# and the Count -> Value rename: the aggregate would then read a `Value`
+# column the histogram table does not have.
+#
+# What the goldens below record is that the ambiguity of a `_count`
+# suffix settles the question FIRST. The name can be a histogram
+# companion, a plain sum, or a gauge, so the selector fans out into a
+# 3-arm UnionAll; a UnionAll is not a relation the native grid emitter
+# can read, so lowering keeps the generic RangeWindow fan-out and the
+# hoist is never consulted. That makes this a coverage floor for the
+# UNION shape under the flag rather than a probe of the value-derivation
+# clause: hoistableShapingProject's refusal of a derived Value is pinned
+# directly, on a single-arm input, by the "histogram companion derives
+# Value" case in internal/promql/shaping_hoist_test.go.
+#
+# The fixture is worth pinning here because widening the native emitter
+# to read per-arm unions is a natural next step, and the day it lands
+# this golden moves — which is the prompt to re-check that the value-cast
+# refusal still stands on the arm that carries it.
+
+-- query.promql --
+rate(cerberus_request_duration_count[5m])
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_recollapse --
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('cerberus_request_duration', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0.0, [0, 0, 0], [0.1, 0.5, 1.0]),
+    ('cerberus_request_duration', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 4, 2.0, [2, 1, 1], [0.1, 0.5, 1.0]),
+    ('cerberus_request_duration', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 8, 4.0, [4, 2, 2], [0.1, 0.5, 1.0]),
+    ('cerberus_request_duration', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:03:00', 9), 12, 6.0, [6, 3, 3], [0.1, 0.5, 1.0]),
+    ('cerberus_request_duration', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:04:00', 9), 16, 8.0, [8, 4, 4], [0.1, 0.5, 1.0]),
+    ('cerberus_request_duration', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:05:00', 9), 20, 10.0, [10, 5, 5], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.013333333333333334],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 0.02],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 0.02666666666666667],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 0.03333333333333333],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 0.04],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 0.04666666666666667],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 0.05333333333333334],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 0.06],
+  [{"cerberus_ql": "promql"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 0.06666666666666667]
+]
+-- args --
+[0] string = "cerberus_request_duration_count"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "cerberus_request_duration"
+[8] string = "cerberus.request.duration"
+[9] string = "cerberus.request/duration"
+[10] string = "cerberus.request_duration"
+[11] string = "cerberus/request/duration"
+[12] string = "cerberus/request_duration"
+[13] string = "cerberus_request.duration"
+[14] string = "service.name"
+[15] string = "service_name"
+[16] string = "service.name"
+[17] string = "service_name"
+[18] string = ""
+[19] string = "service_name"
+[20] string = "cerberus_request_duration_count"
+[21] string = "cerberus.request.duration.count"
+[22] string = "cerberus.request.duration/count"
+[23] string = "cerberus.request.duration_count"
+[24] string = "cerberus.request/duration/count"
+[25] string = "cerberus.request/duration_count"
+[26] string = "cerberus.request_duration.count"
+[27] string = "cerberus.request_duration_count"
+[28] string = "cerberus/request/duration/count"
+[29] string = "cerberus/request/duration_count"
+[30] string = "cerberus/request_duration_count"
+[31] string = "cerberus_request.duration.count"
+[32] string = "cerberus_request.duration_count"
+[33] string = "cerberus_request_duration.count"
+[34] string = "service.name"
+[35] string = "service_name"
+[36] string = "service.name"
+[37] string = "service_name"
+[38] string = ""
+[39] string = "service_name"
+[40] string = "cerberus_request_duration_count"
+[41] string = "cerberus.request.duration.count"
+[42] string = "cerberus.request.duration/count"
+[43] string = "cerberus.request.duration_count"
+[44] string = "cerberus.request/duration/count"
+[45] string = "cerberus.request/duration_count"
+[46] string = "cerberus.request_duration.count"
+[47] string = "cerberus.request_duration_count"
+[48] string = "cerberus/request/duration/count"
+[49] string = "cerberus/request/duration_count"
+[50] string = "cerberus/request_duration_count"
+[51] string = "cerberus_request.duration.count"
+[52] string = "cerberus_request.duration_count"
+[53] string = "cerberus_request_duration.count"
+-- chplan --
+RangeWindow func=rate range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  UnionAll arms=3
+    Project ["cerberus_request_duration_count" AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
+      Filter predicate=(MetricName IN ("cerberus_request_duration", "cerberus.request.duration", "cerberus.request/duration", "cerberus.request_duration", "cerberus/request/duration", "cerberus/request_duration", "cerberus_request.duration"))
+        Scan(otel_metrics_histogram)
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("cerberus_request_duration_count", "cerberus.request.duration.count", "cerberus.request.duration/count", "cerberus.request.duration_count", "cerberus.request/duration/count", "cerberus.request/duration_count", "cerberus.request_duration.count", "cerberus.request_duration_count", "cerberus/request/duration/count", "cerberus/request/duration_count", "cerberus/request_duration_count", "cerberus_request.duration.count", "cerberus_request.duration_count", "cerberus_request_duration.count"))
+        Scan(otel_metrics_sum)
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("cerberus_request_duration_count", "cerberus.request.duration.count", "cerberus.request.duration/count", "cerberus.request.duration_count", "cerberus.request/duration/count", "cerberus.request/duration_count", "cerberus.request_duration.count", "cerberus.request_duration_count", "cerberus/request/duration/count", "cerberus/request/duration_count", "cerberus/request_duration_count", "cerberus_request.duration.count", "cerberus_request.duration_count", "cerberus_request_duration.count"))
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, counter_delta * (sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300, nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, `anchor_ts`, arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(window_pairs))) AS `window_pairs` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM ((SELECT ? AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) UNION ALL (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`)))) WHERE length(`window_vals`) >= 2

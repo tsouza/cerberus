@@ -2125,8 +2125,14 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // The OuterRange field is intentionally NOT copied: it is a fan-out-only
 // emit knob (the matrix anchor span) that the native grid encodes
 // directly via Start/End/Step.
-func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.RangeWindowNative {
-	return nativeTSGridMatrixNode(rw, "rate", s)
+//
+// recollapse carries the boot-resolved ts_grid_recollapse decision (see
+// NativeRateLowerer.Recollapse): when set, an eligible input additionally has
+// its label-shaping Project deferred past the aggregate. It is threaded rather
+// than read here for the same reason the native/fan-out choice is — the
+// per-query path reads no feature flag.
+func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics, recollapse bool) *chplan.RangeWindowNative {
+	return nativeTSGridMatrixNode(rw, "rate", s, recollapse)
 }
 
 // nativeTSGridMatrixNode returns a chplan.RangeWindowNative when rw is a
@@ -2135,8 +2141,10 @@ func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Rang
 // embedded fan-out fallback). It is the generalisation of the rate-only
 // predicate to the whole timeSeries*ToGrid matrix family — rate, changes,
 // resets — which share ONE node shape (RangeWindowNative) and ONE eligibility
-// contract: the only per-func difference is the aggregate name the emitter
-// selects from chsql.nativeTSGridFn off RangeWindowNative.Func.
+// contract: the only per-func difference is the aggregate-name triple the
+// emitter selects from chsql.nativeTSGridFn off RangeWindowNative.Func (the
+// plain ToGrid name plus the -State/-Merge pair the deferred-shaping shape
+// needs).
 //
 // Like the rate predicate it reads NO feature flag or server version — the
 // boot decision of whether the native path is active lives in WHICH strategy
@@ -2159,7 +2167,15 @@ func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Rang
 // The OuterRange field is intentionally NOT copied: it is a fan-out-only emit
 // knob (the matrix anchor span) that the native grid encodes directly via
 // Start/End/Step.
-func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics) *chplan.RangeWindowNative {
+//
+// recollapse is the boot-resolved ts_grid_recollapse decision. This function is
+// the ONLY construction site for RangeWindowNative, which makes it the single
+// eligibility funnel for the deferred label-shaping shape: with recollapse set
+// AND the input carrying a hoistable shaping Project, the node additionally
+// gets Recollapse + a widened raw GroupBy (see [hoistShaping]). Every miss
+// keeps the unchanged two-level node — the hoist is purely additive, and never
+// falls back to "no native node at all".
+func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics, recollapse bool) *chplan.RangeWindowNative {
 	if rw.Func != wantFunc {
 		return nil
 	}
@@ -2169,8 +2185,15 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
+	input, groupBy := rw.Input, rw.GroupBy
+	var recollapseProjections []chplan.Projection
+	if recollapse {
+		if hoisted, projections, rawGroupBy, ok := hoistShaping(rw, s); ok {
+			input, recollapseProjections, groupBy = hoisted, projections, rawGroupBy
+		}
+	}
 	return &chplan.RangeWindowNative{
-		Input:           rw.Input,
+		Input:           input,
 		Func:            rw.Func,
 		Range:           rw.Range,
 		Step:            rw.Step,
@@ -2179,7 +2202,10 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 		Offset:          rw.Offset,
 		TimestampColumn: rw.TimestampColumn,
 		ValueColumn:     rw.ValueColumn,
-		GroupBy:         rw.GroupBy,
+		GroupBy:         groupBy,
+		// Recollapse is empty unless the shaping hoist fired, and an empty
+		// Recollapse emits byte-for-byte the pre-hoist two-level shape.
+		Recollapse: recollapseProjections,
 		// Scalars carries predict_linear's literal horizon t (empty for
 		// rate/changes/resets/deriv). The native emitter threads it into
 		// timeSeriesPredictLinearToGrid's 5th parametric arg; the caller
@@ -2250,6 +2276,168 @@ func isPlainScanFilter(n chplan.Node) bool {
 			return false
 		}
 	}
+}
+
+// noRecollapse spells out the [nativeTSGridMatrixNode] recollapse argument for
+// the range functions with no -State/-Merge pair proven exact under merged
+// partial states (see chsql.nativeTSGridFn): only rate is re-collapse-eligible
+// today, so every other family passes this rather than a bare false.
+const noRecollapse = false
+
+// hoistShaping attempts the deferred-label-shaping rewrite on rw: it peels the
+// label-shaping Project off rw.Input so the shaping tower can be re-evaluated
+// once per raw SERIES above the aggregate instead of once per raw ROW beneath
+// it, returning the peeled input, the deferred projections, and the widened raw
+// GroupBy the three-level emit needs.
+//
+// The peel is re-validated with [isNativeRateInput] because peeling changes
+// what the input chain IS: that predicate accepts a Scan / Filter chain wrapped
+// in AT MOST ONE canonical Project, so a chain carrying a second relation under
+// the shaping Project (an intervening Limit, or a nested Project) reads as
+// eligible before the peel and ineligible after it, and handing the emitter a
+// relation it cannot read is a production 502.
+//
+// Today the caller's own [isNativeRateInput] check IMPLIES this one: the only
+// Project it tolerates is the canonical one, which is the same Project the
+// classifier peels. The re-validation is the coupling guard for that
+// implication, which nothing else enforces — the two predicates accept
+// deliberately different sets (the classifier does not require the canonical
+// four-alias set, only an identity timestamp/value pass-through), so widening
+// either one would otherwise silently break it.
+func hoistShaping(rw *chplan.RangeWindow, s schema.Metrics) (input chplan.Node, recollapse []chplan.Projection, rawGroupBy []chplan.Expr, ok bool) {
+	hoisted, projections, raw, ok := hoistableShapingProject(rw.Input, rw.GroupBy, rw.TimestampColumn, rw.ValueColumn)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	if !isNativeRateInput(hoisted, s) {
+		return nil, nil, nil, false
+	}
+	return hoisted, projections, raw, true
+}
+
+// hoistableShapingProject classifies in as a label-shaping Project whose
+// per-row work can be deferred past a native grid aggregate, returning the
+// relation BELOW it, the shaping expressions to re-evaluate above the aggregate
+// (each aliased to the output column name it replaces), and the RAW grouping
+// keys the aggregate must group on instead of the shaped ones.
+//
+// The rewrite is only value-preserving under a narrow set of conditions, and
+// every one of them is a REFUSAL rather than a repair — the caller keeps the
+// unchanged two-level shape, which is correct at the old cost:
+//
+//   - in is a Project with projections and NO Replacements. Replacements
+//     rebind columns in place on the PASS-THROUGH row shape and are only
+//     meaningful when Projections is empty (see chplan.Project), so a node
+//     carrying both is malformed — refuse rather than guess which slot names
+//     the row shape.
+//   - Every groupBy entry is a plain ColumnRef naming one of the Project's
+//     aliases, and no key repeats. A computed key, or a key the Project does
+//     not define, cannot be split into a shaped half and a raw half.
+//   - timestampCol and valueCol pass through as EXACT identity ColumnRefs.
+//     This is the load-bearing discriminator against the histogram-companion
+//     Project ([wrapHistogramCompanionProject]), which emits the same four
+//     canonical aliases over the same shaping tower but derives Value as
+//     `toFloat64(<Count>)`: hoisting that one would strip both the cast and
+//     the rename, feeding the aggregate a column that is not there.
+//   - At least one group key is genuinely shaped (its Project expression is
+//     not an identity ColumnRef) and the shaping reads at least one column.
+//     There is nothing to defer otherwise, and a constant tower would
+//     re-collapse every series onto a single key.
+//   - No pass-through key is read by the shaping. A group key is classified as
+//     a shaping INPUT the moment some deferred expression reads it
+//     (chplan.RangeWindowNative.PartitionRecollapseGroupBy), and shaping inputs
+//     never surface above the merge level, so such a key would silently drop out
+//     of the output series identity.
+//
+// The returned rawGroupBy lists the pass-through keys first (in groupBy order),
+// then the raw columns the shaping reads in first-seen order. The output column
+// NAME set is therefore unchanged by the hoist; only the internal key ORDER can
+// differ from the pre-hoist one.
+func hoistableShapingProject(in chplan.Node, groupBy []chplan.Expr, timestampCol, valueCol string) (input chplan.Node, recollapse []chplan.Projection, rawGroupBy []chplan.Expr, ok bool) {
+	proj, isProject := in.(*chplan.Project)
+	if !isProject || len(proj.Projections) == 0 || len(proj.Replacements) > 0 {
+		return nil, nil, nil, false
+	}
+	byAlias := make(map[string]chplan.Expr, len(proj.Projections))
+	for _, p := range proj.Projections {
+		if p.Alias == "" {
+			return nil, nil, nil, false
+		}
+		if _, dup := byAlias[p.Alias]; dup {
+			return nil, nil, nil, false
+		}
+		byAlias[p.Alias] = p.Expr
+	}
+	// An absent alias fails the identity check as well: byAlias yields a nil
+	// Expr, which is not a *chplan.ColumnRef.
+	if !isIdentityColumnRef(byAlias[timestampCol], timestampCol) || !isIdentityColumnRef(byAlias[valueCol], valueCol) {
+		return nil, nil, nil, false
+	}
+
+	var passThrough []string
+	seenKey := make(map[string]struct{}, len(groupBy))
+	for _, g := range groupBy {
+		ref, isRef := g.(*chplan.ColumnRef)
+		if !isRef {
+			return nil, nil, nil, false
+		}
+		if _, dup := seenKey[ref.Name]; dup {
+			return nil, nil, nil, false
+		}
+		seenKey[ref.Name] = struct{}{}
+		shaped, defined := byAlias[ref.Name]
+		if !defined {
+			return nil, nil, nil, false
+		}
+		if isIdentityColumnRef(shaped, ref.Name) {
+			passThrough = append(passThrough, ref.Name)
+			continue
+		}
+		recollapse = append(recollapse, chplan.Projection{Expr: shaped, Alias: ref.Name})
+	}
+	if len(recollapse) == 0 {
+		return nil, nil, nil, false
+	}
+
+	var rawRefs []string
+	rawSeen := make(map[string]struct{}, len(recollapse))
+	for _, p := range recollapse {
+		chplan.InspectExpr(p.Expr, func(x chplan.Expr) bool {
+			ref, isRef := x.(*chplan.ColumnRef)
+			if !isRef {
+				return true
+			}
+			if _, dup := rawSeen[ref.Name]; !dup {
+				rawSeen[ref.Name] = struct{}{}
+				rawRefs = append(rawRefs, ref.Name)
+			}
+			return true
+		})
+	}
+	if len(rawRefs) == 0 {
+		return nil, nil, nil, false
+	}
+	for _, name := range passThrough {
+		if _, shapingInput := rawSeen[name]; shapingInput {
+			return nil, nil, nil, false
+		}
+	}
+
+	rawGroupBy = make([]chplan.Expr, 0, len(passThrough)+len(rawRefs))
+	for _, name := range passThrough {
+		rawGroupBy = append(rawGroupBy, &chplan.ColumnRef{Name: name})
+	}
+	for _, name := range rawRefs {
+		rawGroupBy = append(rawGroupBy, &chplan.ColumnRef{Name: name})
+	}
+	return proj.Input, recollapse, rawGroupBy, true
+}
+
+// isIdentityColumnRef reports whether x is exactly `ColumnRef(name)` — the
+// shape a projection takes when it carries a column through untouched.
+func isIdentityColumnRef(x chplan.Expr, name string) bool {
+	ref, ok := x.(*chplan.ColumnRef)
+	return ok && ref.Name == name
 }
 
 // wrapRangeWindowPreserveName wraps a RangeWindow with a canonical

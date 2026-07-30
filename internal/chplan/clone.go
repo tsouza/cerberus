@@ -64,6 +64,7 @@ func CloneNode(n Node) Node {
 		c := *v
 		c.Input = CloneNode(v.Input)
 		c.GroupBy = cloneExprs(v.GroupBy)
+		c.Recollapse = cloneProjections(v.Recollapse)
 		c.Scalars = cloneFloats(v.Scalars)
 		return &c
 	case *RangeLWR:

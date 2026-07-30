@@ -221,6 +221,13 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			}
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}
+		if len(v.Recollapse) > 0 {
+			rc := make([]string, len(v.Recollapse))
+			for i, p := range v.Recollapse {
+				rc[i] = fmt.Sprintf("%s AS %s", printExpr(p.Expr), p.Alias)
+			}
+			fmt.Fprintf(b, " recollapse=[%s]", strings.Join(rc, ", "))
+		}
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}

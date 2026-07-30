@@ -1,0 +1,23 @@
+Pin: the deferred-shaping (three-level) native rate shape survives the real
+optimizer. ProjectionPushdown narrows the Scan to the union of the
+(TimeUnix, Value) pair, the Filter predicate ref (MetricName) and the three
+shaping inputs the MIDDLE level reads (Attributes, ResourceAttributes,
+ServiceName) — the tower's `k` lambda parameter is not a column and stays out.
+The emit-path canonicaliser splices NO `* REPLACE (mapSort(…))` layer, because
+a hoisted node's output identity is its Recollapse exprs and the tower is
+already CanonicalMapFunc-rooted; a repair here would mapSort the shaped map a
+second time above the merge. Both properties are wrong-answer-adjacent and
+invisible to the pre-optimizer promql lane and to the optimizer-free chsql
+emit test.
+-- chplan_optimized --
+RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[ResourceAttributes, Attributes, ServiceName] recollapse=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(ResourceAttributes)), mapValues(ResourceAttributes)), Attributes), map("service_name", toString(ServiceName)))) AS Attributes] start=1970-01-01T00:16:40Z end=1970-01-01T00:21:40Z
+  Filter predicate=(MetricName = "http_requests_total")
+    Scan(otel_metrics_sum, columns=[Attributes, MetricName, ResourceAttributes, ServiceName, TimeUnix, Value])
+-- chplan_unoptimized --
+RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[ResourceAttributes, Attributes, ServiceName] recollapse=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(ResourceAttributes)), mapValues(ResourceAttributes)), Attributes), map("service_name", toString(ServiceName)))) AS Attributes] start=1970-01-01T00:16:40Z end=1970-01-01T00:21:40Z
+  Filter predicate=(MetricName = "http_requests_total")
+    Scan(otel_metrics_sum)
+-- optimized --
+SELECT `shaped_key_0` AS `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`ResourceAttributes`)), mapValues(`ResourceAttributes`)), `Attributes`), map('service_name', toString(`ServiceName`)))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1000, 'UTC'), toDateTime(1300, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1000, 'UTC'), toDateTime(1300, 'UTC'), 30) AS `grid_ts` FROM (SELECT `ResourceAttributes`, `Attributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1000, 'UTC'), toDateTime(1300, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?)) WHERE `TimeUnix` > toDateTime64('1970-01-01 00:16:40.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('1970-01-01 00:21:40.000000000', 9) GROUP BY `ResourceAttributes`, `Attributes`, `ServiceName`) GROUP BY `shaped_key_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL
+-- unoptimized --
+SELECT `shaped_key_0` AS `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`ResourceAttributes`)), mapValues(`ResourceAttributes`)), `Attributes`), map('service_name', toString(`ServiceName`)))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1000, 'UTC'), toDateTime(1300, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1000, 'UTC'), toDateTime(1300, 'UTC'), 30) AS `grid_ts` FROM (SELECT `ResourceAttributes`, `Attributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1000, 'UTC'), toDateTime(1300, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?)) WHERE `TimeUnix` > toDateTime64('1970-01-01 00:16:40.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('1970-01-01 00:21:40.000000000', 9) GROUP BY `ResourceAttributes`, `Attributes`, `ServiceName`) GROUP BY `shaped_key_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL

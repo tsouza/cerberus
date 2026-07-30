@@ -14,6 +14,51 @@ import (
 
 var fixtureDir = filepath.Join("..", "..", "test", "spec", "optimizer")
 
+// deferredShapingTower is the OTel -> Prometheus label-shaping expression the
+// PromQL lowering defers past the native aggregate:
+//
+//	mapSort(mapConcat(mapUpdate(<sanitised ResourceAttributes>, Attributes),
+//	                  map('service_name', toString(ServiceName))))
+//
+// It reads three raw columns — ResourceAttributes, Attributes, ServiceName —
+// and binds one lambda parameter, `k`, which is a BareIdent rather than a
+// ColumnRef and so must not reach the narrowed Scan column set. The exact tower
+// the lowering emits (with its resource-attribute key exclusions) is pinned by
+// the promql spec fixtures; what this shape has to carry is the three raw reads
+// and the outermost CanonicalMapFunc.
+func deferredShapingTower() chplan.Expr {
+	sanitize := func(src chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Name: "mapFromArrays", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+				&chplan.Lambda{Params: []string{"k"}, Body: &chplan.FuncCall{
+					Name: "replaceRegexpAll",
+					Args: []chplan.Expr{
+						&chplan.BareIdent{Name: "k"},
+						&chplan.InlineString{V: `[^a-zA-Z0-9_]`},
+						&chplan.InlineString{V: "_"},
+					},
+				}},
+				&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+			}},
+			&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+		}}
+	}
+	return &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{
+		&chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "mapUpdate", Args: []chplan.Expr{
+				sanitize(&chplan.ColumnRef{Name: "ResourceAttributes"}),
+				&chplan.ColumnRef{Name: "Attributes"},
+			}},
+			&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+				&chplan.InlineString{V: "service_name"},
+				&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "ServiceName"},
+				}},
+			}},
+		}},
+	}}
+}
+
 // inputs maps fixture name → unoptimized plan tree. The fixture records
 // both the unoptimized SQL (sanity check that the input was lowered as
 // expected) and the optimized SQL (the actual rule output).
@@ -388,6 +433,51 @@ var inputs = map[string]chplan.Node{
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// pushdown_through_range_window_native_recollapse: the same native shape
+	// with the label shaping DEFERRED past the aggregate — the only fixture that
+	// runs hoist → optimizer → emit as one composition. The unit tests either
+	// side of it each see half the pipeline: the chplan test exercises
+	// CanonicalizeSeriesIdentityKeys on its own, the chsql test emits a
+	// hand-built node with no optimizer, and the spec promql lane is
+	// pre-optimizer. Two properties only this fixture can pin:
+	//
+	//   - the narrowed Scan keeps every column the THREE-level emit reads —
+	//     the (TimeUnix, Value) pair, the Filter predicate ref (MetricName) and
+	//     all three shaping inputs (Attributes, ResourceAttributes,
+	//     ServiceName), which are named at the middle level rather than at the
+	//     node's own GroupBy;
+	//   - no `* REPLACE (mapSort(…))` repair layer appears beneath the node.
+	//     The emit-path canonicaliser reports a hoisted node's identity as its
+	//     Recollapse exprs, and the tower is already CanonicalMapFunc-rooted, so
+	//     the repair correctly stays out. A rule (or a canonicaliser change)
+	//     that re-splices it would put the shaped map through a second mapSort
+	//     ABOVE the merge and undo nothing visible in the result rows.
+	"pushdown_through_range_window_native_recollapse": &chplan.RangeWindowNative{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "http_requests_total"},
+			},
+		},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            30 * time.Second,
+		Start:           time.Unix(1000, 0).UTC(),
+		End:             time.Unix(1300, 0).UTC(),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "ResourceAttributes"},
+			&chplan.ColumnRef{Name: "Attributes"},
+			&chplan.ColumnRef{Name: "ServiceName"},
+		},
+		Recollapse: []chplan.Projection{
+			{Expr: deferredShapingTower(), Alias: "Attributes"},
+		},
 	},
 
 	// pushdown_select_wrap_carriers: the Tempo /api/search

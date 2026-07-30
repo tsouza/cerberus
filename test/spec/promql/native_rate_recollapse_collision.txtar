@@ -1,0 +1,109 @@
+# Deferred label shaping (ts_grid_recollapse) over a NON-INJECTIVE
+# shaping: two RAW series that collapse onto ONE shaped series.
+#
+# This is the fixture that makes the rewrite falsifiable. An ordinary
+# rate() fixture executes identically whether or not the re-collapse
+# happened, because no two of its raw series share a shaped identity —
+# so it is green either way. Here they do:
+#
+#   raw A: Attributes = map('cerberus.ql', 'promql')
+#   raw B: Attributes = map('cerberus_ql', 'promql')
+#
+# Key sanitisation (`[^a-zA-Z0-9_]` -> `_`) maps BOTH onto
+# `cerberus_ql`, so the two raw series are ONE Prometheus series. Their
+# samples are TIME-DISJOINT with a 60s splice gap — well inside the
+# 300s matrix window — so every grid anchor from 00:03:00 on has a
+# window straddling both halves, and the correct rate at those anchors
+# depends on the POOLED sample set, not on either half's finished grid.
+#
+# That is the whole reason the hoist merges partial aggregation STATES
+# (timeSeriesRateToGridState / …Merge) rather than combining two
+# finished grids element-wise: merging states pools samples, and pooled
+# samples are what Prometheus rate() is defined over. An element-wise
+# combination of the two half-grids is a different (wrong) number, and
+# at anchors where one half has fewer than two samples in the window it
+# is a NULL hole where the true rate is non-zero.
+#
+# What the expected_rows below pin, and what each failure mode looks
+# like:
+#
+#   correct              9 rows, ONE series, labels
+#                        {cerberus_ql=promql, service_name=api},
+#                        rate(t) = t / 4500 across the grid.
+#   merge level grouped  12 rows: the A half contributes 9 and the B
+#   on the RAW key       half 3, and at 00:04:00 / 00:04:30 / 00:05:00
+#                        TWO rows share one label set. Duplicate series
+#                        identity — impossible to miss.
+#   shaping dropped      2 series carrying the RAW spellings
+#   entirely             `cerberus.ql` and `cerberus_ql`.
+#
+# native_rate_recollapse_collision_two_level.txtar is the same query
+# over the same seed with the hoist OFF. Its `expected_rows` must stay
+# cell-for-cell identical to this one's: that pair IS the assertion that
+# the hoist preserves semantics — enforced in the default lane by
+# TestNativeRateRecollapseFixturePairPreservesRows (internal/promql),
+# which compares the two sections directly — and it is why this fixture uses
+# a bare rate() rather than wrapping it in `sum by(...)` — an outer
+# aggregate would re-collapse the label set itself and hide a split.
+#
+# ServiceName is populated (rather than left at the backfilled DEFAULT
+# '') so the shaping tower genuinely reads all three raw columns
+# ResourceAttributes / Attributes / ServiceName. Those three are what
+# the state level must GROUP BY, so a projection-pushdown regression
+# that drops one of them from the scan fails here rather than in
+# production.
+
+-- query.promql --
+rate(cerberus_queries_total[5m])
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_recollapse --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName LowCardinality(String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus.ql', 'promql'), map(), 'api', toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus.ql', 'promql'), map(), 'api', toDateTime64('2026-01-01 00:01:00', 9), 4.0),
+    ('cerberus_queries_total', map('cerberus.ql', 'promql'), map(), 'api', toDateTime64('2026-01-01 00:02:00', 9), 8.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), map(), 'api', toDateTime64('2026-01-01 00:03:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), map(), 'api', toDateTime64('2026-01-01 00:04:00', 9), 16.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), map(), 'api', toDateTime64('2026-01-01 00:05:00', 9), 20.0);
+-- expected_rows --
+[
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.013333333333333334],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 0.02],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 0.02666666666666667],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 0.03333333333333333],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 0.04],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 0.04666666666666667],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 0.05333333333333334],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 0.06],
+  [{"cerberus_ql": "promql", "service_name": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 0.06666666666666667]
+]
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = ""
+[5] string = "service_name"
+[6] string = "cerberus_queries_total"
+[7] string = "cerberus.queries.total"
+[8] string = "cerberus.queries/total"
+[9] string = "cerberus.queries_total"
+[10] string = "cerberus/queries/total"
+[11] string = "cerberus/queries_total"
+[12] string = "cerberus_queries.total"
+-- chplan --
+RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[ResourceAttributes, Attributes, ServiceName] recollapse=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total"))
+    Scan(otel_metrics_sum)
+-- sql --
+SELECT `shaped_key_0` AS `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `ResourceAttributes`, `Attributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `ResourceAttributes`, `Attributes`, `ServiceName`) GROUP BY `shaped_key_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL
