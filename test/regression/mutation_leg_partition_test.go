@@ -1,13 +1,14 @@
 package regression
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // repoRoot locates the module root from this package's directory.
@@ -16,27 +17,51 @@ const repoRoot = "../.."
 // testdataDir holds fixture inputs, not mutable production source.
 const testdataDir = "testdata"
 
-// mutationMatrixJob is the job whose matrix partitions packages across legs.
-const mutationMatrixJob = "mutate"
+// mutationMatrixScript owns the phase table mutation.yml expands into its
+// matrix. It is JavaScript rather than YAML because the selector that reads it
+// has to reason about each leg's scope and exclude regex, and a workflow's own
+// `include:` block is data the workflow cannot read back.
+const mutationMatrixScript = ".github/scripts/mutation-matrix.mjs"
 
-// mutationWorkflow mirrors just enough of mutation.yml to read the leg matrix.
-// Everything else in the file is deliberately left untyped: this test pins the
-// file/leg partition, not the workflow's shape.
-type mutationWorkflow struct {
-	Jobs map[string]struct {
-		Strategy struct {
-			Matrix struct {
-				Include []mutationLeg `yaml:"include"`
-			} `yaml:"matrix"`
-		} `yaml:"strategy"`
-	} `yaml:"jobs"`
-}
+// mutationMatrixDumpMode makes that script write the validated table to stdout
+// as JSON and nothing else, which is how this test reads it.
+const mutationMatrixDumpMode = "dump"
 
 // mutationLeg is one matrix entry: a package scope plus the files it skips.
 type mutationLeg struct {
-	Phase        string `yaml:"phase"`
-	Scope        string `yaml:"scope"`
-	ExcludeFiles string `yaml:"exclude_files"`
+	Phase        string `json:"phase"`
+	Scope        string `json:"scope"`
+	ExcludeFiles string `json:"exclude_files"`
+}
+
+// mutationLegs reads the phase table by running the script that owns it, so
+// this test and the CI selector can never disagree about what the legs are.
+//
+// A missing `node` is a hard failure, not a reason to pass: the repo already
+// requires node for commitlint, markdownlint, and every .github/scripts module,
+// and a partition check that quietly opts out on a thin machine is exactly the
+// silent gap the assertions below exist to close.
+func mutationLegs(t *testing.T) []mutationLeg {
+	t.Helper()
+
+	cmd := exec.Command("node", mutationMatrixScript, mutationMatrixDumpMode)
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr = string(exitErr.Stderr)
+		}
+		t.Fatalf("run `node %s %s`: %v\n%s", mutationMatrixScript, mutationMatrixDumpMode, err, stderr)
+	}
+
+	var legs []mutationLeg
+	if err := json.Unmarshal(out, &legs); err != nil {
+		t.Fatalf("parse the %s table: %v", mutationMatrixScript, err)
+	}
+
+	return legs
 }
 
 // TestMutationLegsPartitionEveryScopedFile pins the invariant that every
@@ -65,27 +90,10 @@ type mutationLeg struct {
 func TestMutationLegsPartitionEveryScopedFile(t *testing.T) {
 	t.Parallel()
 
-	raw, err := os.ReadFile(mutationWorkflowPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", mutationWorkflowPath, err)
-	}
-
-	var wf mutationWorkflow
-	if err := yaml.Unmarshal(raw, &wf); err != nil {
-		t.Fatalf("parse %s: %v", mutationWorkflowPath, err)
-	}
-
-	job, ok := wf.Jobs[mutationMatrixJob]
-	if !ok {
-		t.Fatalf("%s has no %q job; if the mutation matrix moved, re-point this test at it rather "+
-			"than deleting it — the partition it guards is still unenforced anywhere else.",
-			mutationWorkflowPath, mutationMatrixJob)
-	}
-
-	legs := job.Strategy.Matrix.Include
+	legs := mutationLegs(t)
 	if len(legs) == 0 {
-		t.Fatalf("%s job %q declares no matrix legs; the partition check below would vacuously pass",
-			mutationWorkflowPath, mutationMatrixJob)
+		t.Fatalf("%s declares no matrix legs; the partition check below would vacuously pass",
+			mutationMatrixScript)
 	}
 
 	// claims[file] = the legs that mutate it.
@@ -102,19 +110,20 @@ func TestMutationLegsPartitionEveryScopedFile(t *testing.T) {
 
 		var exclude *regexp.Regexp
 		if leg.ExcludeFiles != "" {
-			exclude, err = regexp.Compile(leg.ExcludeFiles)
+			compiled, err := regexp.Compile(leg.ExcludeFiles)
 			if err != nil {
 				t.Errorf("matrix leg %q has an uncompilable exclude_files %q: %v",
 					leg.Phase, leg.ExcludeFiles, err)
 
 				continue
 			}
+			exclude = compiled
 		}
 
 		for _, file := range mutableGoFiles(t, dir) {
-			rel, relErr := filepath.Rel(dir, file)
-			if relErr != nil {
-				t.Fatalf("relativise %s against %s: %v", file, dir, relErr)
+			rel, err := filepath.Rel(dir, file)
+			if err != nil {
+				t.Fatalf("relativise %s against %s: %v", file, dir, err)
 			}
 			scoped[file] = true
 			// gremlins matches exclude_files against the path relative to the
@@ -128,7 +137,7 @@ func TestMutationLegsPartitionEveryScopedFile(t *testing.T) {
 
 	if len(scoped) == 0 {
 		t.Fatalf("no mutable Go files found under any matrix scope in %s; the scopes are probably "+
-			"wrong, and every assertion below would vacuously pass", mutationWorkflowPath)
+			"wrong, and every assertion below would vacuously pass", mutationMatrixScript)
 	}
 
 	for file := range scoped {
