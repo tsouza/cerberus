@@ -183,7 +183,7 @@ func inGoPercentile(stream func(func(corpusRow) error) error, spec AggSpec) (Val
 	buckets := map[string][]float64{}
 	all := []float64{}
 	err := stream(func(r corpusRow) error {
-		if !matchScope(r, spec.Scope) {
+		if !admits(r, spec) {
 			return nil
 		}
 		v := r.numericValue(spec.Column)
@@ -215,7 +215,7 @@ func inGoAgg(stream func(func(corpusRow) error) error, spec AggSpec) (Value, err
 	buckets := map[string][]float64{}
 	all := []float64{}
 	err := stream(func(r corpusRow) error {
-		if !matchScope(r, spec.Scope) {
+		if !admits(r, spec) {
 			return nil
 		}
 		v := r.numericValue(spec.Column)
@@ -327,6 +327,21 @@ func matchScope(r corpusRow, scope Scope) bool {
 		}
 	}
 	return true
+}
+
+// admits reports whether a row belongs to spec's population: the Scope equality
+// filter plus, for a geometry column, the classified-row restriction. It is the
+// single admission predicate both aggregate paths share, so a percentile and an
+// agg over the same column cannot disagree about which rows they measure.
+//
+// The classified half mirrors classifiedFrag on the CH backend — both compare the
+// route NAME against the unclassified token, so the two backends admit exactly
+// the same rows.
+func admits(r corpusRow, spec AggSpec) bool {
+	if !matchScope(r, spec.Scope) {
+		return false
+	}
+	return !spec.ClassifiedOnly || r.enumValue(routeColumn) != routeUnclassified
 }
 
 // evidenceAcc accumulates one evidence aggregate over matched rows.
